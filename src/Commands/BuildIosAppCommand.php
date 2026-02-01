@@ -794,18 +794,20 @@ class BuildIosAppCommand extends Command
 
     private function removeUnnecessaryFiles(): void
     {
-
-        $directoriesToRemove = [
-            '.git',
-            '.github',
-            'node_modules',
-            'vendor/bin',
-            'tests',
-            'storage/logs',
-            'storage/framework',
-            'vendor/laravel/pint/builds',
-            'public/storage',
-        ];
+        $directoriesToRemove = array_merge(
+            config('nativephp.cleanup_exclude_files') ?? [],
+            [
+                '.git',
+                '.github',
+                'node_modules',
+                'vendor/bin',
+                'tests',
+                'storage/logs',
+                'storage/framework',
+                'vendor/laravel/pint/builds',
+                'public/storage',
+            ]
+        );
 
         foreach ($directoriesToRemove as $dir) {
             if (is_dir($this->appPath.$dir)) {
