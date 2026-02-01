@@ -130,6 +130,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             // Setup WebView and managers FIRST
             webViewManager = WebViewManager(this, webView, phpBridge)
             webViewManager.setup()
+
+            // Register JavaScript bridge interface
+            webView.addJavascriptInterface(JavaScriptBridge(), "AndroidNativeBridge")
+            Log.d("MainActivity", "✅ JavaScript bridge interface registered")
+
             coord = NativeActionCoordinator.install(this)
 
             // Add JavaScript interface for drawer control
