@@ -794,22 +794,34 @@ class BuildIosAppCommand extends Command
 
     private function removeUnnecessaryFiles(): void
     {
-        $directoriesToRemove = array_merge(
-            config('nativephp.cleanup_exclude_files') ?? [],
-            [
-                '.git',
-                '.github',
-                'node_modules',
-                'vendor/bin',
-                'tests',
-                'storage/logs',
-                'storage/framework',
-                'vendor/laravel/pint/builds',
-                'public/storage',
-            ]
-        );
+        // Get user-configured paths (can be files or directories)
+        $configuredPaths = config('nativephp.cleanup_exclude_files') ?? [];
 
-        foreach ($directoriesToRemove as $dir) {
+        // Default directories to always remove
+        $defaultDirectories = [
+            '.git',
+            '.github',
+            'node_modules',
+            'vendor/bin',
+            'tests',
+            'storage/logs',
+            'storage/framework',
+            'vendor/laravel/pint/builds',
+            'public/storage',
+        ];
+
+        // Process user-configured paths (both files and directories)
+        foreach ($configuredPaths as $path) {
+            $fullPath = $this->appPath.$path;
+            if (is_dir($fullPath)) {
+                File::deleteDirectory($fullPath);
+            } elseif (is_file($fullPath)) {
+                unlink($fullPath);
+            }
+        }
+
+        // Process default directories
+        foreach ($defaultDirectories as $dir) {
             if (is_dir($this->appPath.$dir)) {
                 File::deleteDirectory($this->appPath.$dir);
             }
