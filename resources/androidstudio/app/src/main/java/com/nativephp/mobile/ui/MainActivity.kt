@@ -14,6 +14,7 @@ import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.bridge.LaravelEnvironment
 import com.nativephp.mobile.bridge.registerBridgeFunctions
 import com.nativephp.mobile.network.WebViewManager
+import com.nativephp.mobile.bridge.JavaScriptBridge
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
