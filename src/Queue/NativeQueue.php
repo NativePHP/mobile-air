@@ -2,13 +2,12 @@
 
 namespace Native\Mobile\Queue;
 
-use Illuminate\Contracts\Queue\Queue as QueueContract;
 use Illuminate\Queue\DatabaseQueue;
 use Illuminate\Support\Facades\DB;
 
 /**
  * Native Queue implementation that extends DatabaseQueue.
- * 
+ *
  * Jobs are stored in SQLite and processed when the native layer
  * triggers the queue worker endpoint.
  */
@@ -53,9 +52,9 @@ class NativeQueue extends DatabaseQueue
     public function push($job, $data = '', $queue = null)
     {
         $result = parent::push($job, $data, $queue);
-        
+
         $this->notifyNativeLayer();
-        
+
         return $result;
     }
 

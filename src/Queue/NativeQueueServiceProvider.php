@@ -3,7 +3,6 @@
 namespace Native\Mobile\Queue;
 
 use Illuminate\Support\ServiceProvider;
-use Illuminate\Contracts\Debug\ExceptionHandler;
 
 class NativeQueueServiceProvider extends ServiceProvider
 {

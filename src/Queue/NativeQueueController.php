@@ -7,8 +7,6 @@ use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
-use Illuminate\Queue\Worker;
-use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Throwable;
@@ -17,7 +15,7 @@ class NativeQueueController
 {
     /**
      * Process a single job from the queue.
-     * 
+     *
      * Called by the native layer when it's ready to process a job.
      * Returns immediately after processing one job (or if queue is empty).
      */
@@ -25,7 +23,7 @@ class NativeQueueController
     {
         $queue = $request->input('queue', 'default');
         $connection = $request->input('connection', 'native');
-        
+
         $startTime = microtime(true);
         $jobProcessed = false;
         $jobData = null;
@@ -34,13 +32,13 @@ class NativeQueueController
         try {
             /** @var \Illuminate\Queue\QueueManager $manager */
             $manager = app('queue');
-            
+
             /** @var NativeQueue $queueConnection */
             $queueConnection = $manager->connection($connection);
-            
+
             // Pop a single job
             $job = $queueConnection->pop($queue);
-            
+
             if ($job === null) {
                 return response()->json([
                     'processed' => false,
@@ -112,7 +110,7 @@ class NativeQueueController
         try {
             /** @var \Illuminate\Queue\QueueManager $manager */
             $manager = app('queue');
-            
+
             /** @var NativeQueue $queueConnection */
             $queueConnection = $manager->connection($connection);
 
@@ -182,8 +180,6 @@ class NativeQueueController
         }
 
         // Re-queue the job
-        $payload = json_decode($failedJob->payload, true);
-        
         /** @var \Illuminate\Queue\QueueManager $manager */
         $manager = app('queue');
         $manager->connection($failedJob->connection)

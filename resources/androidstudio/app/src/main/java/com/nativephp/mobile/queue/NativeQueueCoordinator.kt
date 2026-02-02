@@ -2,7 +2,6 @@ package com.nativephp.mobile.queue
 
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.network.PHPRequest
@@ -29,8 +28,6 @@ import java.util.concurrent.atomic.AtomicInteger
 class NativeQueueCoordinator private constructor() {
 
     companion object {
-        private const val TAG = "NativeQueueCoordinator"
-
         @Volatile
         private var instance: NativeQueueCoordinator? = null
 
@@ -84,15 +81,10 @@ class NativeQueueCoordinator private constructor() {
      */
     fun start() {
         if (isRunning.getAndSet(true)) {
-            Log.d(TAG, "⚠️ NativeQueueCoordinator already running")
             return // Already running
         }
 
         processedInBatch = 0
-        Log.d(TAG, "🚀 NativeQueueCoordinator started")
-        Log.d(TAG, "📊 phpBridge initialized: ${phpBridge != null}")
-        Log.d(TAG, "📊 activityProvider initialized: ${activityProvider != null}")
-
         checkForJobs()
     }
 
@@ -103,7 +95,6 @@ class NativeQueueCoordinator private constructor() {
         isRunning.set(false)
         scheduledTask?.cancel(false)
         scheduledTask = null
-        Log.d(TAG, "🛑 NativeQueueCoordinator stopped")
     }
 
     /**
@@ -111,7 +102,6 @@ class NativeQueueCoordinator private constructor() {
      */
     fun pause() {
         isPaused.set(true)
-        Log.d(TAG, "⏸️ NativeQueueCoordinator paused")
     }
 
     /**
@@ -119,7 +109,6 @@ class NativeQueueCoordinator private constructor() {
      */
     fun resume() {
         isPaused.set(false)
-        Log.d(TAG, "▶️ NativeQueueCoordinator resumed")
 
         if (isRunning.get() && pendingJobCount.get() > 0) {
             scheduleNextJob(minDelayBetweenJobs)
@@ -132,8 +121,6 @@ class NativeQueueCoordinator private constructor() {
     fun notifyJobsAvailable(count: Int, queue: String) {
         val wasEmpty = pendingJobCount.get() == 0
         pendingJobCount.set(count)
-
-        Log.d(TAG, "📬 Jobs available: $count on queue '$queue'")
 
         // If we were idle and now have jobs, start processing
         if (wasEmpty && count > 0 && isRunning.get() && !isPaused.get()) {
@@ -159,7 +146,6 @@ class NativeQueueCoordinator private constructor() {
                         minDelayBetweenJobs = config.optLong("min_delay", 100)
                         maxJobsPerBatch = config.optInt("batch_size", 10)
                         emptyQueuePollInterval = config.optLong("poll_interval", 2000)
-                        Log.d(TAG, "📋 Queue config applied: minDelay=${minDelayBetweenJobs}ms, batchSize=$maxJobsPerBatch, pollInterval=${emptyQueuePollInterval}ms")
                     }
 
                     if (pending > 0 && !isPaused.get()) {
@@ -169,8 +155,7 @@ class NativeQueueCoordinator private constructor() {
                         scheduleNextJob(emptyQueuePollInterval)
                     }
                 },
-                onFailure = { error ->
-                    Log.e(TAG, "❌ Queue status check failed: ${error.message}")
+                onFailure = {
                     // Retry after a delay
                     scheduleNextJob(emptyQueuePollInterval)
                 }
@@ -187,15 +172,10 @@ class NativeQueueCoordinator private constructor() {
 
     private fun processNextJob() {
         if (!isRunning.get()) return
-
-        if (isPaused.get()) {
-            Log.d(TAG, "⏸️ Job processing paused, waiting...")
-            return
-        }
+        if (isPaused.get()) return
 
         // Check batch limit
         if (maxJobsPerBatch > 0 && processedInBatch >= maxJobsPerBatch) {
-            Log.d(TAG, "📦 Batch limit reached ($maxJobsPerBatch), yielding...")
             processedInBatch = 0
             scheduleNextJob(emptyQueuePollInterval)
             return
@@ -207,8 +187,7 @@ class NativeQueueCoordinator private constructor() {
 
             result.fold(
                 onSuccess = { json -> handleWorkResponse(json) },
-                onFailure = { error ->
-                    Log.e(TAG, "❌ Job processing failed: ${error.message}")
+                onFailure = {
                     scheduleNextJob(emptyQueuePollInterval)
                 }
             )
@@ -218,7 +197,6 @@ class NativeQueueCoordinator private constructor() {
     private fun handleWorkResponse(json: JSONObject) {
         val processed = json.optBoolean("processed", false)
         val pending = json.optInt("pending", 0)
-        val durationMs = json.optInt("duration_ms", 0)
 
         pendingJobCount.set(pending)
 
@@ -236,7 +214,6 @@ class NativeQueueCoordinator private constructor() {
             val error = json.optJSONObject("error")
             if (error != null) {
                 val errorMessage = error.optString("message", "Unknown error")
-                Log.w(TAG, "⚠️ Job $jobId failed: $errorMessage (${durationMs}ms)")
 
                 // Dispatch failure event
                 dispatchEvent("Native\\Mobile\\Queue\\Events\\JobFailed", JSONObject().apply {
@@ -248,8 +225,6 @@ class NativeQueueCoordinator private constructor() {
                     put("pending", pending)
                 })
             } else {
-                Log.d(TAG, "✅ Job $jobId completed: $jobName (${durationMs}ms)")
-
                 // Dispatch success event
                 dispatchEvent("Native\\Mobile\\Queue\\Events\\JobCompleted", JSONObject().apply {
                     put("jobId", jobId)
@@ -264,8 +239,6 @@ class NativeQueueCoordinator private constructor() {
             if (pending > 0) {
                 scheduleNextJob(minDelayBetweenJobs)
             } else {
-                Log.d(TAG, "🎉 Queue empty! Processed $totalProcessed total jobs")
-
                 // Dispatch queue empty event
                 dispatchEvent("Native\\Mobile\\Queue\\Events\\QueueEmpty", JSONObject().apply {
                     put("queue", queue)
@@ -277,8 +250,6 @@ class NativeQueueCoordinator private constructor() {
             }
         } else {
             // Queue was empty
-            val reason = json.optString("reason", "unknown")
-            Log.d(TAG, "📭 Queue empty (reason: $reason), polling in ${emptyQueuePollInterval}ms")
             scheduleNextJob(emptyQueuePollInterval)
         }
     }
@@ -292,12 +263,9 @@ class NativeQueueCoordinator private constructor() {
     ) {
         val bridge = phpBridge
         if (bridge == null) {
-            Log.e(TAG, "❌ makeRequest failed: PHPBridge not initialized")
             callback(Result.failure(IllegalStateException("PHPBridge not initialized")))
             return
         }
-
-        Log.d(TAG, "📡 makeRequest: $method $path")
 
         executor.execute {
             try {
@@ -310,36 +278,27 @@ class NativeQueueCoordinator private constructor() {
                     )
                 )
 
-                Log.d(TAG, "📤 Calling handleLaravelRequest...")
                 val response = bridge.handleLaravelRequest(request)
-                Log.d(TAG, "📥 Got response: ${response.take(200)}...")
 
                 // Parse response - extract body from HTTP response
                 val parts = response.split("\r\n\r\n", limit = 2)
                 if (parts.size >= 2) {
                     val body = parts[1]
-                    Log.d(TAG, "📋 Response body: ${body.take(500)}")
                     val json = JSONObject(body)
                     callback(Result.success(json))
                 } else {
-                    Log.e(TAG, "❌ Invalid response format - no body separator found")
                     callback(Result.failure(Exception("Invalid response format")))
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "❌ makeRequest exception: ${e.message}", e)
                 callback(Result.failure(e))
             }
         }
     }
 
     private fun dispatchEvent(event: String, payload: JSONObject) {
-        val activity = activityProvider?.invoke()
-        if (activity != null) {
-            mainHandler.post {
-                NativeActionCoordinator.dispatchEvent(activity, event, payload.toString())
-            }
-        } else {
-            Log.e(TAG, "❌ Cannot dispatch event - no activity available")
+        val activity = activityProvider?.invoke() ?: return
+        mainHandler.post {
+            NativeActionCoordinator.dispatchEvent(activity, event, payload.toString())
         }
     }
 }
