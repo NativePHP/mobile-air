@@ -581,6 +581,17 @@ class NestedClass {}');
                 'info_plist' => [
                     'NSCameraUsageDescription' => 'Camera description',  // String
                     'UIRequiredDeviceCapabilities' => ['arm64'],  // Array (if supported)
+                    'UIApplicationSceneManifest' => [ // Dictionary with nested types
+                        'UIApplicationSupportsMultipleScenes' => true,
+                        'UISceneConfigurations' => [
+                            'UIWindowSceneSessionRoleExternalDisplayNonInteractive' => [
+                                [
+                                    'UISceneConfigurationName' => 'External Display',
+                                    'UISceneDelegateClassName' => 'NativePHP.SceneDelegate'
+                                ]
+                            ]
+                        ]
+                    ]
                 ],
             ],
         ]);
@@ -596,6 +607,10 @@ class NestedClass {}');
 
         $this->assertStringContainsString('NSCameraUsageDescription', $content);
         $this->assertStringContainsString('Camera description', $content);
+
+        $this->assertStringContainsString('UISceneConfigurationName', $content);
+        $this->assertStringContainsString('External Display', $content);
+        $this->assertStringContainsString('NativePHP.SceneDelegate', $content);
     }
 
     /**
