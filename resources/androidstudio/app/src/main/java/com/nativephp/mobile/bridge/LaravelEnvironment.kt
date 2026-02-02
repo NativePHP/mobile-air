@@ -13,7 +13,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
 import java.security.MessageDigest
-import kotlinx.coroutines.*
 
 class LaravelEnvironment(private val context: Context) {
     private val appStorageDir = context.getDir("storage", Context.MODE_PRIVATE)
@@ -567,12 +566,8 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     private fun unzip(inputStream: java.io.InputStream, destinationDir: File) {
-        val buffer = ByteArray(65536)  // 64KB buffer - optimized for modern flash storage
+        val buffer = ByteArray(8192)  // 8KB buffer for streaming
         val zis = ZipInputStream(BufferedInputStream(inputStream))
-
-        // Phase 1: Read all entries into memory (ZIP must be read sequentially)
-        val directories = mutableListOf<File>()
-        val fileDataList = mutableListOf<Pair<File, ByteArray>>()
 
         var ze: ZipEntry? = zis.nextEntry
         while (ze != null) {
@@ -587,35 +582,23 @@ class LaravelEnvironment(private val context: Context) {
             val file = File(destinationDir, ze.name)
 
             if (ze.isDirectory) {
-                directories.add(file)
+                file.mkdirs()
             } else {
-                // Read file data into memory
-                val outputStream = java.io.ByteArrayOutputStream()
-                var count: Int
-                while (zis.read(buffer).also { count = it } != -1) {
-                    outputStream.write(buffer, 0, count)
+                // Ensure parent directory exists
+                file.parentFile?.mkdirs()
+
+                // Stream directly to file - no memory buffering
+                FileOutputStream(file).use { fos ->
+                    var count: Int
+                    while (zis.read(buffer).also { count = it } != -1) {
+                        fos.write(buffer, 0, count)
+                    }
                 }
-                fileDataList.add(file to outputStream.toByteArray())
             }
             zis.closeEntry()
             ze = zis.nextEntry
         }
         zis.close()
-
-        // Phase 2: Create all directories
-        directories.forEach { it.mkdirs() }
-
-        // Phase 3: Write files in parallel using coroutines
-        runBlocking {
-            fileDataList.map { (file, data) ->
-                async(Dispatchers.IO) {
-                    file.parentFile?.mkdirs()
-                    FileOutputStream(file).use { fos ->
-                        fos.write(data)
-                    }
-                }
-            }.awaitAll()
-        }
     }
 
     /**
