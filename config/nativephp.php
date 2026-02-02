@@ -273,6 +273,31 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Queue Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Configure the native queue coordinator behavior. These settings control
+    | how jobs are processed in the foreground while the app is active.
+    |
+    | Jobs are processed one at a time between UI interactions to avoid
+    | blocking the main thread. The coordinator throttles processing based
+    | on these settings.
+    |
+    */
+
+    'queue' => [
+        // Minimum delay between processing jobs (milliseconds)
+        'min_delay' => env('NATIVEPHP_QUEUE_MIN_DELAY', 100),
+
+        // Maximum jobs to process per batch before yielding to UI
+        'batch_size' => env('NATIVEPHP_QUEUE_BATCH_SIZE', 10),
+
+        // How often to poll when queue is empty (milliseconds)
+        'poll_interval' => env('NATIVEPHP_QUEUE_POLL_INTERVAL', 2000),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Permissions
     |--------------------------------------------------------------------------
     |

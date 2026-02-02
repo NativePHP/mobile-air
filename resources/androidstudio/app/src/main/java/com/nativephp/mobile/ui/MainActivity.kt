@@ -116,7 +116,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         // Register bridge functions early, before PHP code can execute
         Log.d("MainActivity", "🔌 Registering bridge functions...")
-        registerBridgeFunctions(this, applicationContext)
+        registerBridgeFunctions(this, applicationContext, phpBridge)
         Log.d("MainActivity", "✅ Bridge functions registered")
 
         handleDeepLinkIntent(intent)
@@ -154,6 +154,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             // Start hot reload watcher AFTER Laravel environment is initialized
             startHotReloadWatcher()
             injectJavaScript(webView)
+            
+            // Start queue coordinator now that PHP is ready
+            com.nativephp.mobile.bridge.startQueueCoordinator()
         }
 
         onBackPressedDispatcher.addCallback(this) {

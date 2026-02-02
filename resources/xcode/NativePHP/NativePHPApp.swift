@@ -64,6 +64,10 @@ struct NativePHPApp: App {
         DebugLogger.shared.log("📱 Deferred init: checking for OTA update")
         AppUpdateManager.shared.checkForUpdates()
 
+        // 7. Start the queue coordinator (PHP is now ready)
+        DebugLogger.shared.log("📱 Deferred init: starting queue coordinator")
+        NativeQueueCoordinator.shared.start()
+
         DebugLogger.shared.log("📱 Deferred initialization completed")
 
         // Notify that PHP is ready and allow WebView to be rendered
@@ -273,7 +277,7 @@ struct NativePHPApp: App {
 
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
         setenv("REQUEST_URI", uri, 1)
-        setenv("QUERY_STRING", request.query, 1);
+        setenv("QUERY_STRING", request.query ?? "", 1);
         setenv("REQUEST_METHOD", request.method, 1)
         setenv("SCRIPT_FILENAME", phpFilePath, 1)
         setenv("PHP_SELF", "/native.php", 1)
