@@ -566,7 +566,7 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     private fun unzip(inputStream: java.io.InputStream, destinationDir: File) {
-        val buffer = ByteArray(8192)  // 8KB buffer for streaming
+        val buffer = ByteArray(65536)  // 64KB buffer - optimized for modern flash storage
         val zis = ZipInputStream(BufferedInputStream(inputStream))
 
         var ze: ZipEntry? = zis.nextEntry
