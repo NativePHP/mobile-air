@@ -1,6 +1,6 @@
 # NativePHP for Mobile
 
-Visit the [docs](https://nativephp.com/docs/mobile/1/getting-started/) to learn more.
+Visit the [docs](https://nativephp.com/docs/mobile) to learn more.
 
 ## Credits
 
