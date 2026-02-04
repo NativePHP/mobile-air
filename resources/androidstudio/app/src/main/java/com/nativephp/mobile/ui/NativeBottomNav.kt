@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import android.graphics.Color as AndroidColor
 import android.util.Log
 
 private const val TAG = "NativeBottomNav"
@@ -23,6 +24,9 @@ fun NativeBottomNavigation(
     }
 
     val items = bottomNavData?.children?.mapNotNull { it.data } ?: emptyList()
+
+    // Parse custom active color from config
+    val activeColor = bottomNavData?.activeColor?.let { parseHexColor(it) }
 
     Log.d(TAG, "🎨 Rendering bottom nav with ${items.size} items")
 
@@ -71,6 +75,14 @@ fun NativeBottomNavigation(
                     }
                 },
                 selected = item.active == true,
+                colors = if (activeColor != null) {
+                    NavigationBarItemDefaults.colors(
+                        selectedIconColor = activeColor,
+                        selectedTextColor = activeColor
+                    )
+                } else {
+                    NavigationBarItemDefaults.colors()
+                },
                 onClick = {
                     Log.d(TAG, "🖱️ Nav item clicked: ${item.label} -> ${item.url}")
                     // Optimistically update active state to prevent flash
@@ -97,5 +109,25 @@ private fun parseBadgeColor(colorString: String?): Color {
         "pink" -> Color(0xFFEC4899)
         "orange" -> Color(0xFFF97316)
         else -> Color(0xFFEF4444)  // Default to red
+    }
+}
+
+/**
+ * Parse hex color string to Compose Color
+ * Supports both 6-digit (#RRGGBB) and 8-digit (#RRGGBBAA or #AARRGGBB) hex formats
+ * Returns null if parsing fails
+ */
+private fun parseHexColor(hexString: String): Color? {
+    return try {
+        val sanitized = hexString.trimStart('#')
+        val colorInt = when (sanitized.length) {
+            6 -> AndroidColor.parseColor("#$sanitized")
+            8 -> AndroidColor.parseColor("#$sanitized")
+            else -> return null
+        }
+        Color(colorInt)
+    } catch (e: Exception) {
+        Log.w(TAG, "Failed to parse hex color: $hexString")
+        null
     }
 }

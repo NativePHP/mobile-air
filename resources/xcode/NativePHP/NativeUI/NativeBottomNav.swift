@@ -4,6 +4,7 @@ import UIKit
 struct NativeUITabBar: UIViewRepresentable {
     let items: [BottomNavItemComponent]
     let labelVisibility: String?
+    let activeColor: String?
     @Binding var selectedTab: String
     let onTabSelected: (String) -> Void
 
@@ -24,6 +25,11 @@ struct NativeUITabBar: UIViewRepresentable {
         tabBar.standardAppearance = appearance
         if #available(iOS 15.0, *) {
             tabBar.scrollEdgeAppearance = appearance
+        }
+
+        // Apply custom active color (tint color for selected items)
+        if let activeColorHex = activeColor, let color = UIColor(hex: activeColorHex) {
+            tabBar.tintColor = color
         }
 
         // Don't add extra margins from safe area - we handle positioning via SwiftUI
@@ -86,6 +92,11 @@ struct NativeUITabBar: UIViewRepresentable {
     }
 
     func updateUIView(_ tabBar: UITabBar, context: Context) {
+        // Apply custom active color (ensure it persists across updates)
+        if let activeColorHex = activeColor, let color = UIColor(hex: activeColorHex) {
+            tabBar.tintColor = color
+        }
+
         // Check if items have changed (count or content)
         let currentItemCount = tabBar.items?.count ?? 0
         let itemsChanged = currentItemCount != items.count
@@ -266,6 +277,7 @@ struct NativeBottomNavigation: View {
                 NativeUITabBar(
                     items: items,
                     labelVisibility: bottomNavData.labelVisibility,
+                    activeColor: bottomNavData.activeColor,
                     selectedTab: $selectedTab,
                     onTabSelected: { tabId in
                         loadTabURL(tabId: tabId)
@@ -286,6 +298,7 @@ struct NativeBottomNavigation: View {
                 NativeUITabBar(
                     items: items,
                     labelVisibility: bottomNavData.labelVisibility,
+                    activeColor: bottomNavData.activeColor,
                     selectedTab: $selectedTab,
                     onTabSelected: { tabId in
                         loadTabURL(tabId: tabId)

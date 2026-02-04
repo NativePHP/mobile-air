@@ -24,6 +24,8 @@ data class BottomNavData(
     val dark: Boolean? = null,
     @SerializedName("label_visibility")
     val labelVisibility: String? = "labeled",
+    @SerializedName("active_color")
+    val activeColor: String? = null,
     val children: List<BottomNavItemComponent>? = null
 )
 
