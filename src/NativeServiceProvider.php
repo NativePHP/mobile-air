@@ -131,6 +131,8 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
 
+        Blade::component('nativephp-mobile::components.native-js-bridge', 'native-js-bridge');
+
         $blade = app('blade.compiler');
         $blade->precompiler(new NativeTagPrecompiler($blade));
     }

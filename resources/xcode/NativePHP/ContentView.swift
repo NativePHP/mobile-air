@@ -173,6 +173,7 @@ struct WebView: UIViewRepresentable {
         let logger = ConsoleLogger()
         var webView: WKWebView?
         var hasCompletedInitialLoad = false
+        var: bridgeHandler: JavaScriptBridgeHandler?
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
@@ -416,6 +417,10 @@ struct WebView: UIViewRepresentable {
         webConfiguration.allowsInlineMediaPlayback = true
 
         let webView = WKWebView(frame: .zero, configuration: webConfiguration)
+        // Register JavaScript bridge
+        let bridgeHandler = JavaScriptBridgeHandler(webView: webView)
+        context.coordinator.bridgeHandler = bridgeHandler
+        webView.configuration.userContentController.add(bridgeHandler, name: "nativeBridge")
 
         // Store webView in coordinator and shared instance
         coordinator.webView = webView

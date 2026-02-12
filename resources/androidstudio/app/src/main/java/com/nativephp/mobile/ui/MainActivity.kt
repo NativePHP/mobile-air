@@ -14,6 +14,7 @@ import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.bridge.LaravelEnvironment
 import com.nativephp.mobile.bridge.registerBridgeFunctions
 import com.nativephp.mobile.network.WebViewManager
+import com.nativephp.mobile.bridge.JavaScriptBridge
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
@@ -130,6 +131,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             // Setup WebView and managers FIRST
             webViewManager = WebViewManager(this, webView, phpBridge)
             webViewManager.setup()
+
+            // Register JavaScript bridge interface
+            webView.addJavascriptInterface(JavaScriptBridge(), "AndroidNativeBridge")
+            Log.d("MainActivity", "✅ JavaScript bridge interface registered")
+
             coord = NativeActionCoordinator.install(this)
 
             // Add JavaScript interface for drawer control
