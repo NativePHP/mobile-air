@@ -57,9 +57,9 @@ class WatchCommand extends Command
 
         $targetUdid = $this->argument('target');
 
-        if ($platform === 'ios' || $platform === 'i') {
+        if ($platform === 'ios') {
             $this->startIosHotReload($targetUdid);
-        } elseif ($platform === 'android' || $platform === 'a') {
+        } elseif ($platform === 'android') {
             $this->startAndroidHotReload();
         } else {
             $this->error('Invalid platform. Use: ios, android (or i, a as shortcuts)');

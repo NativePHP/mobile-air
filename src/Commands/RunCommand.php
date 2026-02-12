@@ -61,6 +61,13 @@ class RunCommand extends Command
             $os = 'android';
         } else {
             $os = $this->argument('os');
+            // Support shorthands: 'a' for android, 'i' for ios
+            if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
+                $os = match(strtolower($os)) {
+                    'android', 'a' => 'android',
+                    'ios', 'i' => 'ios',
+                };
+            }
         }
 
         // Check for WSL environment - Android is not supported in WSL
@@ -94,7 +101,7 @@ class RunCommand extends Command
             'release' => 'Release',
         ];
 
-        if ($os === 'android' || $os === 'a') {
+        if ($os === 'android') {
             $buildTypes['bundle'] = 'App Bundle (AAB)';
         }
 
@@ -105,16 +112,16 @@ class RunCommand extends Command
         );
 
         $osName = match ($os) {
-            'android', 'a' => 'Android',
-            'ios', 'i' => 'iOS',
+            'android' => 'Android',
+            'ios' => 'iOS',
             default => throw new \Exception('Invalid OS type.')
         };
 
         intro('Running NativePHP for '.$osName);
 
         match ($os) {
-            'android', 'a' => $this->runAndroid(),
-            'ios', 'i' => $this->runIos(),
+            'android' => $this->runAndroid(),
+            'ios' => $this->runIos(),
         };
 
         $this->showBifrostBanner();
