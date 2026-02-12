@@ -7,6 +7,7 @@ use Native\Mobile\PendingPushNotificationEnrollment;
 
 /**
  * @method static PendingPushNotificationEnrollment enroll()
+ * @method static string|null checkPermission()
  * @method static string|null getToken()
  *
  * @see \Native\Mobile\PushNotifications

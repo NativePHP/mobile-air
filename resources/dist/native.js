@@ -808,6 +808,11 @@ export const Browser = {
 // Push Notifications Functions
 // ============================================================================
 
+export async function PushNotificationsCheckPermission() {
+    const result = await BridgeCall('PushNotification.CheckPermission');
+    return result?.status ?? null;
+}
+
 export async function PushNotificationsEnroll() {
     const result = await BridgeCall('PushNotification.RequestPermission');
     return result?.success === true;
@@ -819,6 +824,7 @@ export async function PushNotificationsGetToken() {
 }
 
 export const PushNotifications = {
+    checkPermission: PushNotificationsCheckPermission,
     enroll: PushNotificationsEnroll,
     getToken: PushNotificationsGetToken
 };

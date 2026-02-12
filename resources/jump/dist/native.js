@@ -1255,6 +1255,14 @@ class PendingPushNotificationEnrollment {
 }
 
 /**
+ * Check current push notification permission status without prompting the user
+ * @returns {Promise<{status: string}>}
+ */
+function checkPermissionFunction() {
+    return bridgeCall('PushNotification.CheckPermission', {});
+}
+
+/**
  * Request push notification permissions and enroll
  * @returns {PendingPushNotificationEnrollment}
  */
@@ -1271,6 +1279,7 @@ function getTokenFunction() {
 }
 
 export const pushNotifications = {
+    checkPermission: checkPermissionFunction,
     enroll: enrollFunction,
     getToken: getTokenFunction
 };
