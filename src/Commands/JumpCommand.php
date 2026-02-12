@@ -11,6 +11,7 @@ use function Laravel\Prompts\select;
 class JumpCommand extends Command
 {
     protected $signature = 'native:jump
+                            {platform? : Target platform (android/a or ios/i)}
                             {--platform= : Target platform (android/a or ios/i)}
                             {--ios : Target iOS platform (shorthand for --platform=ios)}
                             {--android : Target Android platform (shorthand for --platform=android)}
@@ -31,15 +32,16 @@ class JumpCommand extends Command
     {
         intro('NativePHP Jump Server');
 
-        // Get platform (from option or prompt)
+        // Get platform (flags take priority, then argument, then option, then prompt)
         if ($this->option('ios')) {
             $this->platform = 'ios';
         } elseif ($this->option('android')) {
             $this->platform = 'android';
         } else {
-            $platformOption = $this->option('platform');
-            if ($platformOption && in_array(strtolower($platformOption), ['android', 'ios', 'a', 'i'])) {
-                $this->platform = match(strtolower($platformOption)) {
+            $platform = $this->argument('platform') ?? $this->option('platform');
+            
+            if ($platform && in_array(strtolower($platform), ['android', 'ios', 'a', 'i'])) {
+                $this->platform = match(strtolower($platform)) {
                     'android', 'a' => 'android',
                     'ios', 'i' => 'ios',
                 };
