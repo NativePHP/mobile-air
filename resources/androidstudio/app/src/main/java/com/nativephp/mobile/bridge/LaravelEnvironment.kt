@@ -758,7 +758,7 @@ class LaravelEnvironment(private val context: Context) {
                 "DB_DATABASE" to "${appStorageDir.absolutePath}/persisted_data/database/database.sqlite",
                 "CACHE_DRIVER" to "file",
                 "CACHE_STORE" to "file",
-                "QUEUE_CONNECTION" to "sync",
+                "QUEUE_CONNECTION" to "native",
                 "NATIVEPHP_PLATFORM" to "android",
                 "NATIVEPHP_TEMPDIR" to context.cacheDir.absolutePath
             )

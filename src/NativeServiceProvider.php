@@ -72,7 +72,14 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->publishPluginsServiceProvider();
         $this->registerPluginServices();
+        $this->registerQueueDriver();
         $this->prepForIos();
+    }
+
+    protected function registerQueueDriver(): void
+    {
+        // Register the native queue service provider
+        $this->app->register(\Native\Mobile\Queue\NativeQueueServiceProvider::class);
     }
 
     protected function publishPluginsServiceProvider(): void

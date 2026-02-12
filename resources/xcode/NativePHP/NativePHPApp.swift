@@ -17,6 +17,7 @@ public func pipe_php_output(_ cString: UnsafePointer<CChar>?) {
 struct NativePHPApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     static var shared: NativePHPApp?
 
@@ -63,6 +64,10 @@ struct NativePHPApp: App {
         // 6. Check for OTA updates (after everything is set up)
         DebugLogger.shared.log("📱 Deferred init: checking for OTA update")
         AppUpdateManager.shared.checkForUpdates()
+
+        // 7. Start the queue coordinator (PHP is now ready)
+        DebugLogger.shared.log("📱 Deferred init: starting queue coordinator")
+        NativeQueueCoordinator.shared.start()
 
         DebugLogger.shared.log("📱 Deferred initialization completed")
 
@@ -112,6 +117,35 @@ struct NativePHPApp: App {
                     }
                 }
             }
+            .onChange(of: scenePhase) { oldPhase, newPhase in
+                handleScenePhaseChange(from: oldPhase, to: newPhase)
+            }
+        }
+    }
+
+    /// Handle app lifecycle transitions for queue processing handoff.
+    ///
+    /// When the app enters background, we pause foreground processing and schedule
+    /// a background task. When returning to foreground, we cancel any pending
+    /// background task and resume foreground processing.
+    private func handleScenePhaseChange(from oldPhase: ScenePhase, to newPhase: ScenePhase) {
+        switch newPhase {
+        case .active:
+            DebugLogger.shared.log("📱 App became active - resuming foreground queue processing")
+            BackgroundQueueWorker.shared.cancelPendingTask()
+            NativeQueueCoordinator.shared.resume()
+
+        case .background:
+            DebugLogger.shared.log("📱 App entered background - scheduling background queue processing")
+            NativeQueueCoordinator.shared.pause()
+            BackgroundQueueWorker.shared.scheduleIfNeeded()
+
+        case .inactive:
+            // Transitional state, no action needed
+            break
+
+        @unknown default:
+            break
         }
     }
 
@@ -273,7 +307,7 @@ struct NativePHPApp: App {
 
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
         setenv("REQUEST_URI", uri, 1)
-        setenv("QUERY_STRING", request.query, 1);
+        setenv("QUERY_STRING", request.query ?? "", 1);
         setenv("REQUEST_METHOD", request.method, 1)
         setenv("SCRIPT_FILENAME", phpFilePath, 1)
         setenv("PHP_SELF", "/native.php", 1)

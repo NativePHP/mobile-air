@@ -21,6 +21,8 @@ import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.nativephp.mobile.utils.WebViewProvider
 import com.nativephp.mobile.security.LaravelCookieStore
 import com.nativephp.mobile.lifecycle.NativePHPLifecycle
+import com.nativephp.mobile.queue.BackgroundQueueWorker
+import com.nativephp.mobile.queue.NativeQueueCoordinator
 import java.io.File
 import java.net.URL
 import android.webkit.WebChromeClient
@@ -55,7 +57,10 @@ import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity(), WebViewProvider {
     private lateinit var webView: WebView
-    private val phpBridge = PHPBridge(this)
+    private val phpBridge = PHPBridge(this).also {
+        // Register singleton for background worker access
+        PHPBridge.setInstance(it)
+    }
     private lateinit var laravelEnv: LaravelEnvironment
     private lateinit var webViewManager: WebViewManager
     private lateinit var coord: NativeActionCoordinator
@@ -116,7 +121,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         // Register bridge functions early, before PHP code can execute
         Log.d("MainActivity", "🔌 Registering bridge functions...")
-        registerBridgeFunctions(this, applicationContext)
+        registerBridgeFunctions(this, applicationContext, phpBridge)
         Log.d("MainActivity", "✅ Bridge functions registered")
 
         handleDeepLinkIntent(intent)
@@ -154,6 +159,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             // Start hot reload watcher AFTER Laravel environment is initialized
             startHotReloadWatcher()
             injectJavaScript(webView)
+            
+            // Start queue coordinator now that PHP is ready
+            com.nativephp.mobile.bridge.startQueueCoordinator()
         }
 
         onBackPressedDispatcher.addCallback(this) {
@@ -270,6 +278,24 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     override fun onPause() {
         super.onPause()
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_PAUSE)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Cancel background work and resume foreground processing
+        BackgroundQueueWorker.cancel(applicationContext)
+        NativeQueueCoordinator.getInstance().resume()
+        Log.d("MainActivity", "App started - resumed foreground queue processing")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Only schedule background work if not changing configurations (e.g., rotation)
+        if (!isChangingConfigurations) {
+            NativeQueueCoordinator.getInstance().pause()
+            BackgroundQueueWorker.schedule(applicationContext)
+            Log.d("MainActivity", "App stopped - scheduled background queue processing")
+        }
     }
 
     private fun handleDeepLinkIntent(intent: Intent?) {

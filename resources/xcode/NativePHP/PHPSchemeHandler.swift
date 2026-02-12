@@ -3,16 +3,17 @@ import WebKit
 class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
     let domain = "127.0.0.1"
 
+    /// Shared serial queue for ALL PHP execution across the app.
+    /// PHP is single-threaded - concurrent execution causes crashes.
+    /// Both PHPSchemeHandler (WebView requests) and NativeQueueCoordinator (queue jobs) must use this.
+    static let phpSerialQueue: DispatchQueue = {
+        let appName = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "NativePHP"
+        return DispatchQueue(label: "com.NativePHP.\(appName).phpSerialQueue")
+    }()
+
     private let maxRedirects = 10
-    private let phpSerialQueue: DispatchQueue
     private var activeTasks: [ObjectIdentifier: WKURLSchemeTask] = [:]
     private let taskLock = NSLock()
-
-    override init() {
-        let appName = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "DefaultAppName"
-        let queueLabel = "com.NativePHP.\(appName).phpSerialQueue"
-        self.phpSerialQueue = DispatchQueue(label: queueLabel)
-    }
 
     // This method is called when the web view starts loading a request with your custom scheme
     func webView(_ webView: WKWebView, start schemeTask: WKURLSchemeTask) {
@@ -595,7 +596,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private func getResponse(request: RequestData,
                               completion: @escaping (Result<Data, Error>) -> Void) {
-        phpSerialQueue.async {
+        Self.phpSerialQueue.async {
             print()
             print("\(request.method) \(request.uri)")
             print()

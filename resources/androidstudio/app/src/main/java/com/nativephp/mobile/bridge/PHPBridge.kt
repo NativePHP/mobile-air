@@ -38,6 +38,24 @@ class PHPBridge(private val context: Context) {
         private const val TAG = "PHPBridge"
         private const val MAX_REQUEST_AGE = 5 * 60 * 1000L
 
+        @Volatile
+        private var instance: PHPBridge? = null
+
+        /**
+         * Get the singleton instance of PHPBridge.
+         * Returns null if no instance has been created yet.
+         * Used by BackgroundQueueWorker to access the bridge from background context.
+         */
+        fun getInstance(): PHPBridge? = instance
+
+        /**
+         * Set the singleton instance of PHPBridge.
+         * Called by MainActivity when creating the bridge.
+         */
+        fun setInstance(bridge: PHPBridge) {
+            instance = bridge
+        }
+
         init {
             System.loadLibrary("compat")
             System.loadLibrary("php")
