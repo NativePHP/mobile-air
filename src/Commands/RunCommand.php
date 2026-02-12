@@ -21,10 +21,10 @@ class RunCommand extends Command
     use DisplaysMarketingBanners, ManagesViteDevServer, ManagesWatchman, PlatformFileOperations, RunsAndroid, RunsIos;
 
     protected $signature = 'native:run
-        {os? : ios|android}
+        {os? : Platform to run (android/a or ios/i)}
         {udid?}
-        {--ios : Target iOS platform (shorthand for os=ios)}
-        {--android : Target Android platform (shorthand for os=android)}
+        {--ios : Target iOS platform (shorthand for os=ios|i)}
+        {--android : Target Android platform (shorthand for os=android|a)}
         {--build=debug : debug|release|bundle}
         {--W|watch : Enable hot reloading during development}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
