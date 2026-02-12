@@ -16,7 +16,7 @@ class WatchCommand extends Command
     use ManagesViteDevServer, ManagesWatchman, RunsIos, WatchesAndroid, WatchesIos;
 
     protected $signature = 'native:watch
-        {platform? : ios|android}
+        {platform? : Platform to watch (android/a or ios/i)}
         {--ios : Target iOS platform (shorthand for platform=ios)}
         {--android : Target Android platform (shorthand for platform=android)}
         {target? : The device/simulator UDID to watch}';
@@ -45,17 +45,24 @@ class WatchCommand extends Command
                         'android' => 'Android',
                     ]
                 );
+            } else {
+                // Support shorthands: 'a' for android, 'i' for ios
+                $platform = match(strtolower($platform)) {
+                    'android', 'a' => 'android',
+                    'ios', 'i' => 'ios',
+                    default => $platform,
+                };
             }
         }
 
         $targetUdid = $this->argument('target');
 
-        if ($platform === 'ios') {
+        if ($platform === 'ios' || $platform === 'i') {
             $this->startIosHotReload($targetUdid);
-        } elseif ($platform === 'android') {
+        } elseif ($platform === 'android' || $platform === 'a') {
             $this->startAndroidHotReload();
         } else {
-            $this->error('Invalid platform. Use: ios or android');
+            $this->error('Invalid platform. Use: ios, android (or i, a as shortcuts)');
 
             return self::FAILURE;
         }
