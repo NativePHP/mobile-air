@@ -12,6 +12,8 @@ class JumpCommand extends Command
 {
     protected $signature = 'native:jump
                             {--platform= : Target platform (android or ios)}
+                            {--ios : Target iOS platform (shorthand for --platform=ios)}
+                            {--android : Target Android platform (shorthand for --platform=android)}
                             {--host=0.0.0.0 : The host address to serve the application on}
                             {--ip= : The IP address to display in the QR code (overrides auto-detection)}
                             {--http-port= : The HTTP port to serve on}
@@ -30,14 +32,20 @@ class JumpCommand extends Command
         intro('NativePHP Jump Server');
 
         // Get platform (from option or prompt)
-        $platformOption = $this->option('platform');
-        if ($platformOption && in_array(strtolower($platformOption), ['android', 'ios'])) {
-            $this->platform = strtolower($platformOption);
+        if ($this->option('ios')) {
+            $this->platform = 'ios';
+        } elseif ($this->option('android')) {
+            $this->platform = 'android';
         } else {
-            $this->platform = select(
-                label: 'Select target platform',
-                options: ['android' => 'Android', 'ios' => 'iOS'],
-            );
+            $platformOption = $this->option('platform');
+            if ($platformOption && in_array(strtolower($platformOption), ['android', 'ios'])) {
+                $this->platform = strtolower($platformOption);
+            } else {
+                $this->platform = select(
+                    label: 'Select target platform',
+                    options: ['android' => 'Android', 'ios' => 'iOS'],
+                );
+            }
         }
 
         // Run npm build for the selected platform
