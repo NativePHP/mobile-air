@@ -17,6 +17,8 @@ class WatchCommand extends Command
 
     protected $signature = 'native:watch
         {platform? : ios|android}
+        {--ios : Target iOS platform (shorthand for platform=ios)}
+        {--android : Target Android platform (shorthand for platform=android)}
         {target? : The device/simulator UDID to watch}';
 
     protected $description = 'Watch for file changes and sync to running mobile app';
@@ -27,16 +29,23 @@ class WatchCommand extends Command
             return self::FAILURE;
         }
 
-        $platform = $this->argument('platform');
+        // Get platform (flags take priority over argument)
+        if ($this->option('ios')) {
+            $platform = 'ios';
+        } elseif ($this->option('android')) {
+            $platform = 'android';
+        } else {
+            $platform = $this->argument('platform');
 
-        if (! $platform) {
-            $platform = select(
-                label: 'Select platform to watch',
-                options: [
-                    'ios' => 'iOS',
-                    'android' => 'Android',
-                ]
-            );
+            if (! $platform) {
+                $platform = select(
+                    label: 'Select platform to watch',
+                    options: [
+                        'ios' => 'iOS',
+                        'android' => 'Android',
+                    ]
+                );
+            }
         }
 
         $targetUdid = $this->argument('target');
