@@ -24,6 +24,8 @@ class PackageCommand extends Command
 
     protected $signature = 'native:package 
         {platform : The platform to build for (android|ios)}
+        {--ios : Target iOS platform (shorthand for platform=ios)}
+        {--android : Target Android platform (shorthand for platform=android)}
         {--keystore= : Path to Android keystore file for signing}
         {--keystore-password= : Keystore password}
         {--key-alias= : Key alias for signing}
@@ -62,7 +64,14 @@ class PackageCommand extends Command
 
     public function handle(): void
     {
-        $this->platform = $this->argument('platform');
+        // Get platform (flags take priority over argument)
+        if ($this->option('ios')) {
+            $this->platform = 'ios';
+        } elseif ($this->option('android')) {
+            $this->platform = 'android';
+        } else {
+            $this->platform = $this->argument('platform');
+        }
 
         if (! in_array($this->platform, ['android', 'ios'])) {
             \Laravel\Prompts\error('Platform must be either "android" or "ios"');
