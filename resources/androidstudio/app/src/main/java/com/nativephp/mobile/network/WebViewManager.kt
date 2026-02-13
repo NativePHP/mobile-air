@@ -22,7 +22,7 @@ import com.nativephp.mobile.security.LaravelSecurity
 class WebViewManager(
     private val context: Context,
     private val webView: WebView,
-    private val phpBridge: PHPBridge
+    internal val phpBridge: PHPBridge
 ) {
     private val TAG = "PHPMonitor"
     private var fullscreenView: View? = null

@@ -259,7 +259,6 @@ struct WebView: UIViewRepresentable {
                 return literal
             }()
 
-            // 1. Inject JS event into the current web page
             if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []),
                let jsonString = String(data: jsonData, encoding: .utf8) {
 
@@ -275,20 +274,6 @@ struct WebView: UIViewRepresentable {
                         }
                     );
                     document.dispatchEvent(event);
-
-                    fetch('/_native/api/events', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
-                        },
-                        body: JSON.stringify({
-                            event: \(event),
-                            payload: \(jsonString),
-                        })
-                    }).then(response => response.json())
-                      .then(data => console.log("API Event Dispatch Success:", JSON.stringify(data, null, 2)))
-                      .catch(error => console.error("API Event Dispatch Error:", error));
                 })();
                 """
 
@@ -300,16 +285,21 @@ struct WebView: UIViewRepresentable {
                     }
                 }
 
-                // FUTURE: Send a request to Laravel backend directly
-//                let request = RequestData(
-//                    method: "POST",
-//                    uri: "php://127.0.0.1/_native/api/events",
-//                    data: jsonString,
-//                    headers: [
-//                        "Content-Type": "application/json"
-//                    ])
-//
-//                _ = NativePHPApp.laravel(request: request)
+                let requestBody = """
+                {"event":\(event),"payload":\(jsonString)}
+                """
+
+                let request = RequestData(
+                    method: "POST",
+                    uri: "php://127.0.0.1/_native/api/events",
+                    data: requestBody,
+                    query: "",
+                    headers: [
+                        "Content-Type": "application/json",
+                        "X-Requested-With": "XMLHttpRequest"
+                    ])
+
+                _ = NativePHPApp.laravel(request: request)
 
             }
         }
