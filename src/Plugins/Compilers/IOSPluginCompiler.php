@@ -359,19 +359,8 @@ class IOSPluginCompiler
                 continue;
             }
 
-            // Handle array values
-            if (is_array($value)) {
-                $arrayContent = '';
-                foreach ($value as $item) {
-                    $item = $this->substituteEnvPlaceholders($item);
-                    $arrayContent .= "\n\t\t<string>{$item}</string>";
-                }
-                $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
-            } else {
-                // Handle string values - substitute placeholders
-                $value = $this->substituteEnvPlaceholders($value);
-                $entry = "\n\t<key>{$key}</key>\n\t<string>{$value}</string>";
-            }
+            // Handle plist types
+            $entry = $this->handlePlistTypes($key, $value);
 
             // Add before closing </dict>
             $plist = preg_replace(
@@ -383,6 +372,41 @@ class IOSPluginCompiler
         }
 
         return $plist;
+    }
+
+    protected function handlePlistTypes($key, $value)
+    {
+        $entry = "";
+
+        if(is_string($key)){
+            $entry = "\n\t<key>{$key}</key>";
+        }
+
+        // Handle array values
+        if (is_array($value)) {
+            $firstKey = array_key_first($value);
+            if(!is_int($firstKey)){
+                $dictContent = '';
+                foreach($value as $dictKey => $dictItem) {
+                    $dictContent .= $this->handlePlistTypes($dictKey, $dictItem);
+                }
+                $entry .= "\n\t<dict>{$dictContent}\n\t</dict>";
+            } else {
+                $arrayContent = '';
+                foreach ($value as $arrKey => $arrItem) {
+                    $arrayContent .= $this->handlePlistTypes($arrKey, $arrItem);
+                }
+                $entry .= "\n\t<array>{$arrayContent}\n\t</array>";
+            }
+        } else if (is_bool($value)) { 
+            $entry .= $value ? "<true />\n\t" : "<false />";
+        } else {
+            // Handle string values - substitute placeholders
+            $value = $this->substituteEnvPlaceholders($value);
+            $entry .= "\n\t<string>{$value}</string>";
+        }
+
+        return $entry;
     }
 
     /**
