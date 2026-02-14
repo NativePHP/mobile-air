@@ -794,8 +794,11 @@ class BuildIosAppCommand extends Command
 
     private function removeUnnecessaryFiles(): void
     {
+        // Get user-configured paths (can be files or directories)
+        $configuredPaths = config('nativephp.cleanup_exclude_files') ?? [];
 
-        $directoriesToRemove = [
+        // Default directories to always remove
+        $defaultDirectories = [
             '.git',
             '.github',
             'node_modules',
@@ -807,7 +810,18 @@ class BuildIosAppCommand extends Command
             'public/storage',
         ];
 
-        foreach ($directoriesToRemove as $dir) {
+        // Process user-configured paths (both files and directories)
+        foreach ($configuredPaths as $path) {
+            $fullPath = $this->appPath.$path;
+            if (is_dir($fullPath)) {
+                File::deleteDirectory($fullPath);
+            } elseif (is_file($fullPath)) {
+                unlink($fullPath);
+            }
+        }
+
+        // Process default directories
+        foreach ($defaultDirectories as $dir) {
             if (is_dir($this->appPath.$dir)) {
                 File::deleteDirectory($this->appPath.$dir);
             }
