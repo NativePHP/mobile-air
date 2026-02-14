@@ -8,11 +8,12 @@ use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginRegistry;
 
 use function Laravel\Prompts\confirm;
+use function Laravel\Prompts\multiselect;
 
 class PluginRegisterCommand extends Command
 {
     protected $signature = 'native:plugin:register
-                            {plugin : The plugin package name (e.g., vendor/plugin-name)}
+                            {plugin? : The plugin package name (e.g., vendor/plugin-name)}
                             {--remove : Remove the plugin instead of adding it}
                             {--force : Skip conflict warnings}';
 
@@ -27,9 +28,6 @@ class PluginRegisterCommand extends Command
 
     public function handle(): int
     {
-        $packageName = $this->argument('plugin');
-        $remove = $this->option('remove');
-
         $providerPath = app_path('Providers/NativeServiceProvider.php');
 
         if (! $this->files->exists($providerPath)) {
@@ -38,6 +36,15 @@ class PluginRegisterCommand extends Command
 
             return self::FAILURE;
         }
+
+        $packageName = $this->argument('plugin');
+
+        // Interactive mode: no plugin argument given
+        if (! $packageName) {
+            return $this->handleInteractive($providerPath);
+        }
+
+        $remove = $this->option('remove');
 
         // Look up the service provider class from the package
         $serviceProvider = $this->getServiceProviderForPackage($packageName);
@@ -56,6 +63,70 @@ class PluginRegisterCommand extends Command
         }
 
         return $this->addPlugin($serviceProvider, $packageName, $content, $providerPath);
+    }
+
+    protected function handleInteractive(string $providerPath): int
+    {
+        $unregistered = $this->registry->unregistered();
+
+        if ($unregistered->isEmpty()) {
+            $this->components->info('No unregistered plugins found.');
+            $this->newLine();
+            $this->line('All installed nativephp-plugin packages are already registered.');
+
+            return self::SUCCESS;
+        }
+
+        $options = $unregistered->mapWithKeys(function (Plugin $plugin) {
+            $description = $plugin->description ?: 'No description';
+            $functions = count($plugin->getBridgeFunctions());
+
+            return [$plugin->name => "{$plugin->name} (v{$plugin->version}) - {$description} [{$functions} bridge function(s)]"];
+        })->all();
+
+        $selected = multiselect(
+            label: 'Which plugins would you like to register?',
+            options: $options,
+            hint: 'Space to toggle, Enter to confirm',
+        );
+
+        if (empty($selected)) {
+            $this->components->info('No plugins selected.');
+
+            return self::SUCCESS;
+        }
+
+        $content = $this->files->get($providerPath);
+        $failed = 0;
+
+        foreach ($selected as $packageName) {
+            $serviceProvider = $this->getServiceProviderForPackage($packageName);
+
+            if (! $serviceProvider) {
+                $this->components->error("Could not find service provider for '{$packageName}'. Skipping.");
+                $failed++;
+
+                continue;
+            }
+
+            $result = $this->addPlugin($serviceProvider, $packageName, $content, $providerPath);
+
+            if ($result === self::SUCCESS) {
+                // Re-read the file content for the next iteration
+                $content = $this->files->get($providerPath);
+            } else {
+                $failed++;
+            }
+        }
+
+        $registered = count($selected) - $failed;
+
+        if ($registered > 0) {
+            $this->newLine();
+            $this->components->info("Registered {$registered} plugin(s).");
+        }
+
+        return $failed > 0 ? self::FAILURE : self::SUCCESS;
     }
 
     /**
