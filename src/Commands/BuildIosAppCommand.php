@@ -5,7 +5,6 @@ namespace Native\Mobile\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
-use Illuminate\Support\Str;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -15,13 +14,14 @@ use Native\Mobile\Traits\CleansEnvFile;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\InstallsAppIcon;
 use Native\Mobile\Traits\InstallsSplashScreen;
+use Native\Mobile\Traits\PlatformFileOperations;
 use Native\Mobile\Traits\ValidatesAppConfig;
 
 use function Laravel\Prompts\error;
 
 class BuildIosAppCommand extends Command
 {
-    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
+    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, PlatformFileOperations, ValidatesAppConfig;
 
     private bool $verbose;
 
@@ -144,58 +144,29 @@ class BuildIosAppCommand extends Command
     {
         $destination = $this->appPath;
 
-        // Make sure we clear out any old version
         shell_exec("rm -rf {$destination}/*");
 
-        $source = rtrim(str_replace('\\', '/', base_path()), '/').'/';
+        $source = base_path();
 
-        $visitedRealPaths = [];
-        $files = [];
-
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $source,
-                \RecursiveDirectoryIterator::SKIP_DOTS | \FilesystemIterator::FOLLOW_SYMLINKS
-            ),
-            \RecursiveIteratorIterator::LEAVES_ONLY
+        $excludedDirs = array_merge(
+            config('nativephp.cleanup_exclude_files', []),
+            [
+                'vendor/nativephp/mobile/resources',
+                'vendor/nativephp/mobile/vendor',
+                'vendor/',
+                'node_modules/',
+                'nativephp/',
+                'output/',
+                'build/',
+                'dist/',
+                'artifacts/',
+                '.git/',
+                'storage/logs/',
+                'storage/framework/cache/',
+            ]
         );
 
-        foreach ($iterator as $file) {
-            $realPath = $file->getRealPath();
-
-            // Skip if we've already visited this real path (prevents infinite loops from circular symlinks)
-            if ($realPath === false || isset($visitedRealPaths[$realPath])) {
-                continue;
-            }
-
-            $visitedRealPaths[$realPath] = true;
-            $files[] = $file;
-        }
-
-        foreach ($files as $file) {
-            // Where the *link* lives (keeps relative paths correct)
-            $logicalPath = str_replace('\\', '/', $file->getPathname());
-            // Where the link **points** (or the same file if not a link)
-            $realPath = str_replace('\\', '/', $file->getRealPath());
-
-            $relativePath = ltrim(substr($logicalPath, strlen($source)), '/');
-
-            if (Str::startsWith($relativePath, 'vendor/nativephp/mobile/resources') ||
-                Str::startsWith($relativePath, 'vendor/nativephp/mobile/vendor') ||
-                Str::startsWith($relativePath, 'nativephp') ||
-                Str::startsWith($relativePath, 'output/') ||
-                Str::startsWith($relativePath, 'build/') ||
-                Str::startsWith($relativePath, 'dist/') ||
-                Str::startsWith($relativePath, 'artifacts/') ||
-                Str::startsWith($relativePath, '.git/') ||
-                Str::startsWith($relativePath, 'storage/logs/') ||
-                Str::startsWith($relativePath, 'storage/framework/cache/')) {
-                continue;
-            }
-
-            @File::makeDirectory(dirname($destination.$relativePath), recursive: true, force: true);
-            @File::copy($realPath, $destination.$relativePath);
-        }
+        $this->platformOptimizedCopy($source, $destination, $excludedDirs);
     }
 
     private function updateAppVersion(): void
@@ -794,7 +765,6 @@ class BuildIosAppCommand extends Command
 
     private function removeUnnecessaryFiles(): void
     {
-
         $directoriesToRemove = [
             '.git',
             '.github',
