@@ -3,11 +3,20 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
+use Native\Mobile\Traits\PromptsAndroidTarget;
 use Symfony\Component\Process\Process;
+
+use function Laravel\Prompts\select;
 
 class TailCommand extends Command
 {
-    protected $signature = 'native:tail';
+    use PromptsAndroidTarget;
+
+    const LOG_DIR = 'app_storage/persisted_data/storage/logs';
+
+    protected $signature = 'native:tail {udid?}';
 
     protected $description = 'Tail Laravel logs from the Android app';
 
@@ -30,9 +39,13 @@ class TailCommand extends Command
         $this->info("🤖 Tailing Android logs for app: $appId");
         $this->line("Press Ctrl+C to stop...\n");
 
+        $target = $this->argument('udid') ?? $this->promptForAndroidTarget();
+
+        $logFile = $this->promptForLogFile($target, $appId);
+
         $command = [
-            'adb', 'shell', 'run-as', $appId, 'tail', '-f',
-            'app_storage/persisted_data/storage/logs/laravel.log',
+            'adb', '-s', $target, 'shell', 'run-as', $appId, 'tail', '-f',
+            self::LOG_DIR.'/'.$logFile,
         ];
 
         $process = new Process($command);
@@ -55,5 +68,26 @@ class TailCommand extends Command
             $this->line('• An Android device/emulator is connected');
             $this->line('• The app is installed and running');
         }
+    }
+
+    private function promptForLogFile(string $target, $appId): string
+    {
+        $command = [
+            'adb', '-s', $target, 'shell', 'run-as', $appId, 'ls', self::LOG_DIR,
+        ];
+
+        $process = new Process($command);
+        $process->run();
+        $output = $process->getOutput();
+
+        /** @var Collection<int, string> $logFiles */
+        $logFiles = collect(explode(PHP_EOL, $output))
+            ->filter(fn (string $line) => Str::endsWith($line, '.log'));
+
+        if ($logFiles->count() === 1) {
+            return $logFiles->first();
+        }
+
+        return select('Select a log file', $logFiles);
     }
 }
