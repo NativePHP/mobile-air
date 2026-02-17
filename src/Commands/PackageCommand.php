@@ -157,6 +157,10 @@ class PackageCommand extends Command
             $this->prepareAndroidBuild();
         }
 
+        if (! $this->compileAndroidPlugins()) {
+            return;
+        }
+
         // Build with signing
         $gradleTask = $this->buildType === 'bundle' ? 'bundleRelease' : 'assembleRelease';
 
