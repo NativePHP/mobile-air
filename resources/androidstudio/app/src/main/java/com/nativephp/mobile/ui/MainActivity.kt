@@ -800,6 +800,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(paddingValues)
+                                .consumeWindowInsets(paddingValues)
                                 .windowInsetsPadding(WindowInsets.ime),
                             update = { view ->
                                 // Force layout recalculation when Compose size changes
