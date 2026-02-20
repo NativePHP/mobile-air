@@ -179,8 +179,8 @@ class PluginMakeHookCommand extends Command
         $options = [];
         foreach ($plugins as $plugin) {
             $path = $plugin->path;
-            $name = $plugin->manifest->name;
-            $namespace = $plugin->manifest->namespace;
+            $name = $plugin->name;
+            $namespace = $plugin->getNamespace();
 
             // Make path relative for display
             $relativePath = str_replace(base_path().'/', '', $path);
