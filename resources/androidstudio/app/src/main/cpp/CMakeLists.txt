@@ -20,6 +20,8 @@ add_definitions(
         -DHAVE_BUILD_DEFS_H
         -D_REENTRANT
         -DHAVE_BUILTIN_EXPECT
+        -DZTS=1
+        -DPTHREADS
 )
 
 include_directories(
