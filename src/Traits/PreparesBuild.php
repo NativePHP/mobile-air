@@ -774,6 +774,19 @@ trait PreparesBuild
         $shrinkResources = $buildConfig['shrink_resources'] ?? false ? 'true' : 'false';
         $debugSymbols = $buildConfig['debug_symbols'] ?? 'FULL';
 
+        // SDK version configuration
+        $compileSdk = (int) config('nativephp.android.compile_sdk', 36);
+        $minSdk = (int) config('nativephp.android.min_sdk', 33);
+        $targetSdk = (int) config('nativephp.android.target_sdk', 36);
+
+        $gradleContent = str_replace('REPLACE_COMPILE_SDK', (string) $compileSdk, $gradleContent);
+        $gradleContent = str_replace('REPLACE_MIN_SDK', (string) $minSdk, $gradleContent);
+        $gradleContent = str_replace('REPLACE_TARGET_SDK', (string) $targetSdk, $gradleContent);
+
+        $gradleContent = preg_replace('/compileSdk\s*=\s*\d+/', "compileSdk = $compileSdk", $gradleContent);
+        $gradleContent = preg_replace('/minSdk\s*=\s*\d+/', "minSdk = $minSdk", $gradleContent);
+        $gradleContent = preg_replace('/targetSdk\s*=\s*\d+/', "targetSdk = $targetSdk", $gradleContent);
+
         $gradleContent = str_replace('REPLACE_MINIFY_ENABLED', $minifyEnabled, $gradleContent);
         $gradleContent = str_replace('REPLACE_SHRINK_RESOURCES', $shrinkResources, $gradleContent);
         $gradleContent = str_replace('REPLACE_DEBUG_SYMBOLS', $debugSymbols, $gradleContent);

@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <android/log.h>
+#include <signal.h>
 #include "php_embed.h"
 #include "PHP.h"
 #include <zend_exceptions.h>
@@ -27,6 +28,15 @@ static size_t g_collected_capacity = 0;
 #define MAX_BUFFER_SIZE (16 * 1024 * 1024)  // 16MB max buffer
 
 static void (*jni_output_callback_ptr)(const char *) = NULL;
+
+// Safe shutdown: block all signals to prevent mutex access after TSRM destruction
+static void safe_php_embed_shutdown(void) {
+    sigset_t mask, oldmask;
+    sigfillset(&mask);
+    pthread_sigmask(SIG_BLOCK, &mask, &oldmask);
+    php_embed_shutdown();
+    pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+}
 
 void clear_collected_output() {
     if (g_collected_output) {
@@ -152,7 +162,7 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
 
     // 🔁 Reset in case PHP was already initialized
     if (php_initialized) {
-        php_embed_shutdown();
+        safe_php_embed_shutdown();
         php_initialized = 0;
     }
 
@@ -233,7 +243,7 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
     // ✅ Copy output before shutdown
     char *response = g_collected_output ? strdup(g_collected_output) : strdup("");
 
-    php_embed_shutdown();
+    safe_php_embed_shutdown();
     php_initialized = 0;
 
     return response;
@@ -340,33 +350,47 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     }
     argv[argc] = NULL;
 
-    if (php_initialized) {
-        php_embed_shutdown();
-        php_initialized = 0;
-    }
-
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
     setenv("PHP_SELF", "artisan.php", 1);
     setenv("APP_ENV", "local", 1);
 
-    if (php_embed_init(argc, argv) == SUCCESS) {
+    if (!php_initialized) {
+        if (php_embed_init(0, NULL) != SUCCESS) {
+            LOGE("❌ Failed to initialize PHP runtime");
+            (*env)->ReleaseStringUTFChars(env, jcommand, command);
+            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+            (*env)->DeleteLocalRef(env, jLaravelPath);
+            free(commandCopy);
+            return (*env)->NewStringUTF(env, "");
+        }
         php_initialized = 1;
-
-        // Force STDOUT/STDERR through php://output so Symfony StreamOutput works
-        zend_eval_string(
-                "if (!defined('STDOUT')) define('STDOUT', fopen('php://output', 'w')); "
-                "if (!defined('STDERR')) define('STDERR', fopen('php://output', 'w'));",
-                NULL, "patch_stdio"
-        );
-
-        zend_file_handle file_handle;
-        zend_stream_init_filename(&file_handle, artisanPath);
-        php_execute_script(&file_handle);
-        php_embed_shutdown();
-        php_initialized = 0;
-    } else {
-        LOGE("❌ Failed to initialize PHP runtime");
     }
+
+    // Set $argv/$argc via PHP instead of reinitializing the engine
+    {
+        char php_argv_code[4096];
+        snprintf(php_argv_code, sizeof(php_argv_code),
+            "$_SERVER['argv'] = ['php'");
+        size_t offset = strlen(php_argv_code);
+        for (int i = 1; i < argc && offset < sizeof(php_argv_code) - 100; i++) {
+            offset += snprintf(php_argv_code + offset, sizeof(php_argv_code) - offset,
+                ", '%s'", argv[i]);
+        }
+        snprintf(php_argv_code + offset, sizeof(php_argv_code) - offset,
+            "]; $_SERVER['argc'] = %d; "
+            "$GLOBALS['argv'] = $_SERVER['argv']; "
+            "$GLOBALS['argc'] = $_SERVER['argc']; "
+            "if (!defined('STDOUT')) define('STDOUT', fopen('php://output', 'w')); "
+            "if (!defined('STDERR')) define('STDERR', fopen('php://output', 'w'));",
+            argc);
+        zend_eval_string(php_argv_code, NULL, "setup_artisan");
+    }
+
+    zend_file_handle file_handle;
+    zend_stream_init_filename(&file_handle, artisanPath);
+    php_execute_script(&file_handle);
+    safe_php_embed_shutdown();
+    php_initialized = 0;
 
     (*env)->ReleaseStringUTFChars(env, jcommand, command);
     (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
@@ -472,7 +496,7 @@ JNIEXPORT jstring JNICALL native_get_laravel_public_path(JNIEnv *env, jobject th
 
 JNIEXPORT void JNICALL native_shutdown(JNIEnv *env, jobject thiz) {
     if (php_initialized) {
-        php_embed_shutdown();
+        safe_php_embed_shutdown();
         php_initialized = 0;
 
         if (g_callback_obj) {

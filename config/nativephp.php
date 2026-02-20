@@ -139,6 +139,23 @@ return [
 
         /*
         |--------------------------------------------------------------------------
+        | Android SDK Versions
+        |--------------------------------------------------------------------------
+        |
+        | Configure the Android SDK versions for your app build. These control
+        | which Android versions your app can run on and which APIs are available.
+        |
+        | compile_sdk: The SDK version used to compile your app (latest features)
+        | min_sdk:     The minimum Android version your app supports
+        | target_sdk:  The SDK version your app is designed and tested for
+        |
+        */
+        'compile_sdk' => env('NATIVEPHP_ANDROID_COMPILE_SDK', 36),
+        'min_sdk' => env('NATIVEPHP_ANDROID_MIN_SDK', 33),
+        'target_sdk' => env('NATIVEPHP_ANDROID_TARGET_SDK', 36),
+
+        /*
+        |--------------------------------------------------------------------------
         | Status Bar Style
         |--------------------------------------------------------------------------
         |

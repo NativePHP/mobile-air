@@ -16,8 +16,6 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
-    public string $codename = 'android';
-
     protected ?bool $includeIcu = null;
 
     public function promptAndroidOptions(): void
@@ -74,8 +72,8 @@ trait InstallsAndroid
         $includeIcu = $this->includeIcu ?? false;
 
         $url = $includeIcu
-            ? "https://d23y5k23b3lz91.cloudfront.net/android/$this->codename/jniLibsF.zip"
-            : "https://d23y5k23b3lz91.cloudfront.net/android/$this->codename/jniLibs.zip";
+            ? "https://bin.nativephp.com/nativephp-android-3.1.0-php8.5.3-with-icu.zip"
+            : "https://bin.nativephp.com/nativephp-android-3.1.0-php8.5.3-without-icu.zip";
 
         $zipFile = storage_path('android-temp.zip');
         $extractPath = storage_path('android-temp');
