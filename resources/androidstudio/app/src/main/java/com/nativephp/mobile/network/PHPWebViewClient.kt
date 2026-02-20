@@ -338,7 +338,7 @@ class PHPWebViewClient(
             "pdf" -> "application/pdf"
             "txt" -> "text/plain"
             "xml" -> "application/xml"
-            "woff" -? "font/woff"
+            "woff" -> "font/woff"
             "woff2" -> "font/woff2"
             "ttf" -> "font/ttf"
             "eot" -> "application/vnd.ms-fontobject"
