@@ -1,6 +1,12 @@
 #include <jni.h>
 #include <android/log.h>
 #include <string>
+#include <atomic>
+#include <dlfcn.h>
+#include <time.h>
+#include <string.h>
+#include <pthread.h>
+#include <errno.h>
 
 #define LOG_TAG "BridgeJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -12,6 +18,13 @@ extern "C" JavaVM* g_jvm;
 static jclass g_bridgeRouterClass = nullptr;
 static jmethodID g_nativePHPCanMethod = nullptr;
 static jmethodID g_nativePHPCallMethod = nullptr;
+
+// Forward declarations for UI bridge JNI functions (defined below)
+static jboolean ui_is_ready(JNIEnv*, jclass);
+static jint ui_get_tree_version(JNIEnv*, jclass);
+static jbyteArray ui_get_tree_buffer(JNIEnv*, jclass);
+static jint ui_wait_tree_update(JNIEnv*, jclass, jint, jint);
+static void ui_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
 
 // Initialization function to be called from php_bridge.c's JNI_OnLoad
 extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
@@ -51,6 +64,30 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
     }
 
     LOGI("BridgeJNI: Initialization successful");
+
+    /* Register UI bridge native methods */
+    static JNINativeMethod uiMethods[] = {
+        {(char*)"nativeIsUIReady",      (char*)"()Z",      (void*)ui_is_ready},
+        {(char*)"nativeGetTreeVersion", (char*)"()I",      (void*)ui_get_tree_version},
+        {(char*)"nativeGetTreeBuffer",  (char*)"()[B",     (void*)ui_get_tree_buffer},
+        {(char*)"nativeWaitTreeUpdate", (char*)"(II)I",    (void*)ui_wait_tree_update},
+        {(char*)"nativeWriteEvent",     (char*)"(III[B)V", (void*)ui_write_event},
+    };
+
+    jclass uiClass = env->FindClass("com/nativephp/mobile/ui/nativerender/NativeUIBridge");
+    if (uiClass != nullptr) {
+        if (env->RegisterNatives(uiClass, uiMethods, sizeof(uiMethods) / sizeof(uiMethods[0])) == 0) {
+            LOGI("BridgeJNI: UI bridge native methods registered");
+        } else {
+            LOGE("BridgeJNI: Failed to register UI bridge native methods");
+        }
+        env->DeleteLocalRef(uiClass);
+    } else {
+        /* Class not found is OK — UI rendering not available in this build */
+        env->ExceptionClear();
+        LOGI("BridgeJNI: NativeUIBridge class not found (UI rendering disabled)");
+    }
+
     return JNI_OK;
 }
 
@@ -193,4 +230,229 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
 
     LOGI("✅ BridgeJNI: NativePHPCall('%s') completed successfully", functionName);
     return resultCopy;
+}
+
+/* ═══════════════════════════════════════════════════════════
+ * Native UI Bridge — Shared Memory Access
+ *
+ * These JNI functions let Kotlin read the UI tree buffer
+ * and write events back to the shared memory region that
+ * the PHP extension (nativephp_ui.c) created via mmap.
+ * ═══════════════════════════════════════════════════════════ */
+
+/*
+ * Shared region struct — must match nativephp_ui.h layout exactly.
+ * Uses std::atomic<uint32_t> which has the same layout as _Atomic uint32_t
+ * on ARM64 Android (both are lock-free 4-byte aligned).
+ */
+struct NpuiSharedRegion {
+    uint32_t magic;
+
+    uint32_t tree_offset;
+    std::atomic<uint32_t> tree_size;
+    std::atomic<uint32_t> tree_version;
+    std::atomic<uint32_t> tree_version_ack;
+
+    uint32_t patch_offset;
+    std::atomic<uint32_t> patch_size;
+    std::atomic<uint32_t> patch_version;
+    std::atomic<uint32_t> patch_version_ack;
+
+    uint32_t event_offset;
+    std::atomic<uint32_t> event_size;
+    std::atomic<uint32_t> event_count;
+
+    pthread_mutex_t event_mutex;
+    pthread_cond_t  event_cond;
+    pthread_mutex_t tree_mutex;
+    pthread_cond_t  tree_cond;
+
+    std::atomic<uint32_t> shutdown;
+    std::atomic<uint32_t> running;
+};
+
+#define NPUI_MAGIC       0x4E505549  /* "NPUI" */
+#define NPUI_EVENT_MAGIC 0x4E504556  /* "NPEV" */
+
+static NpuiSharedRegion* g_npui_direct_ptr = nullptr;
+static NpuiSharedRegion** g_npui_region_ptr = nullptr;
+
+/*
+ * Called by nativephp_ui.c (via dlsym) to pass the shared region pointer directly.
+ * This avoids symbol visibility issues with dlsym(RTLD_DEFAULT, "g_npui_region").
+ */
+extern "C" __attribute__((visibility("default")))
+void NativeUI_RegisterRegion(void* ptr) {
+    LOGI("UI: NativeUI_RegisterRegion called with ptr=%p", ptr);
+    g_npui_direct_ptr = (NpuiSharedRegion*)ptr;
+}
+
+/*
+ * Called by nativephp_ui.c on shutdown to clear the pointer.
+ */
+extern "C" __attribute__((visibility("default")))
+void NativeUI_UnregisterRegion(void) {
+    LOGI("UI: NativeUI_UnregisterRegion called");
+    g_npui_direct_ptr = nullptr;
+}
+
+/*
+ * Get the shared region pointer.
+ * Tries direct pointer first (set by NativeUI_RegisterRegion),
+ * then falls back to dlsym(RTLD_DEFAULT, "g_npui_region").
+ */
+static NpuiSharedRegion* get_ui_region() {
+    /* Fast path: direct pointer from PHP */
+    if (g_npui_direct_ptr != nullptr) {
+        if (g_npui_direct_ptr->magic == NPUI_MAGIC) {
+            return g_npui_direct_ptr;
+        }
+        return nullptr;
+    }
+
+    /* Fallback: dlsym lookup (try RTLD_DEFAULT, then explicit libphp.so handle) */
+    if (g_npui_region_ptr == nullptr) {
+        g_npui_region_ptr = (NpuiSharedRegion**)dlsym(RTLD_DEFAULT, "g_npui_region");
+        if (g_npui_region_ptr == nullptr) {
+            /* Android namespace-safe: try the PHP library directly */
+            void* ph = dlopen("libphp.so", RTLD_NOLOAD | RTLD_NOW);
+            if (ph) {
+                g_npui_region_ptr = (NpuiSharedRegion**)dlsym(ph, "g_npui_region");
+            }
+        }
+        if (g_npui_region_ptr == nullptr) {
+            return nullptr;
+        }
+    }
+    NpuiSharedRegion* region = *g_npui_region_ptr;
+    if (region == nullptr || region->magic != NPUI_MAGIC) {
+        return nullptr;
+    }
+    return region;
+}
+
+/* Check if UI shared memory is initialized */
+static jboolean ui_is_ready(JNIEnv*, jclass) {
+    return get_ui_region() != nullptr ? JNI_TRUE : JNI_FALSE;
+}
+
+/* Get current tree version (atomic read) */
+static jint ui_get_tree_version(JNIEnv*, jclass) {
+    auto* region = get_ui_region();
+    if (!region) return 0;
+    return (jint)region->tree_version.load(std::memory_order_acquire);
+}
+
+/* Copy the tree buffer into a Java byte array */
+static jbyteArray ui_get_tree_buffer(JNIEnv* env, jclass) {
+    auto* region = get_ui_region();
+    if (!region) return nullptr;
+
+    uint32_t size = region->tree_size.load(std::memory_order_acquire);
+    if (size == 0) return nullptr;
+
+    uint8_t* tree_buf = (uint8_t*)region + region->tree_offset;
+
+    jbyteArray result = env->NewByteArray(size);
+    if (result == nullptr) return nullptr;
+
+    env->SetByteArrayRegion(result, 0, size, (jbyte*)tree_buf);
+    return result;
+}
+
+/*
+ * Block until the tree version changes, times out, or shutdown is signaled.
+ * Returns: new version (>0), 0 on timeout, -1 on shutdown/error.
+ */
+static jint ui_wait_tree_update(JNIEnv*, jclass, jint current_version, jint timeout_ms) {
+    auto* region = get_ui_region();
+    if (!region) return -1;
+
+    pthread_mutex_lock(&region->tree_mutex);
+
+    while ((jint)region->tree_version.load(std::memory_order_acquire) == current_version &&
+           !region->shutdown.load(std::memory_order_acquire)) {
+
+        if (timeout_ms < 0) {
+            pthread_cond_wait(&region->tree_cond, &region->tree_mutex);
+        } else {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec  += timeout_ms / 1000;
+            ts.tv_nsec += (timeout_ms % 1000) * 1000000L;
+            if (ts.tv_nsec >= 1000000000L) {
+                ts.tv_sec++;
+                ts.tv_nsec -= 1000000000L;
+            }
+
+            int rc = pthread_cond_timedwait(&region->tree_cond, &region->tree_mutex, &ts);
+            if (rc == ETIMEDOUT) {
+                pthread_mutex_unlock(&region->tree_mutex);
+                return 0;
+            }
+        }
+    }
+
+    if (region->shutdown.load(std::memory_order_acquire)) {
+        pthread_mutex_unlock(&region->tree_mutex);
+        return -1;
+    }
+
+    jint new_version = (jint)region->tree_version.load(std::memory_order_acquire);
+    pthread_mutex_unlock(&region->tree_mutex);
+
+    /* Acknowledge the version */
+    region->tree_version_ack.store((uint32_t)new_version, std::memory_order_release);
+
+    return new_version;
+}
+
+/*
+ * Write a UI event to shared memory and wake PHP's wait_event().
+ * Event wire format: [4]magic [1]type [4]callback_id [4]node_id [8]timestamp [2]data_size [N]data
+ */
+static void ui_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
+    auto* region = get_ui_region();
+    if (!region) return;
+
+    /* Build event in stack buffer */
+    uint8_t event_buf[512];
+    size_t pos = 0;
+
+    auto write_u8  = [&](uint8_t  v) { if (pos + 1 <= sizeof(event_buf)) { event_buf[pos++] = v; } };
+    auto write_u16 = [&](uint16_t v) { if (pos + 2 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 2); pos += 2; } };
+    auto write_u32 = [&](uint32_t v) { if (pos + 4 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 4); pos += 4; } };
+    auto write_u64 = [&](uint64_t v) { if (pos + 8 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 8); pos += 8; } };
+
+    write_u32(NPUI_EVENT_MAGIC);
+    write_u8((uint8_t)type);
+    write_u32((uint32_t)callback_id);
+    write_u32((uint32_t)node_id);
+
+    /* Timestamp in milliseconds */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    uint64_t timestamp = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+    write_u64(timestamp);
+
+    /* Event-specific data */
+    jsize data_len = data ? env->GetArrayLength(data) : 0;
+    write_u16((uint16_t)data_len);
+    if (data_len > 0 && pos + data_len <= sizeof(event_buf)) {
+        env->GetByteArrayRegion(data, 0, data_len, (jbyte*)(event_buf + pos));
+        pos += data_len;
+    }
+
+    /* Write to shared memory under lock */
+    pthread_mutex_lock(&region->event_mutex);
+
+    uint8_t* shared_event_buf = (uint8_t*)region + region->event_offset;
+    memcpy(shared_event_buf, event_buf, pos);
+    region->event_size.store((uint32_t)pos, std::memory_order_release);
+    region->event_count.store(1, std::memory_order_release);
+
+    pthread_cond_signal(&region->event_cond);
+    pthread_mutex_unlock(&region->event_mutex);
+
+    LOGI("UI: Event written — type=%d cb=%d node=%d size=%zu", type, callback_id, node_id, pos);
 }

@@ -17,6 +17,8 @@ import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
+import com.nativephp.mobile.ui.nativerender.NativeUIBridge
+import com.nativephp.mobile.ui.nativerender.NativeUIContent
 import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.nativephp.mobile.utils.WebViewProvider
 import com.nativephp.mobile.security.LaravelCookieStore
@@ -118,6 +120,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         Log.d("MainActivity", "🔌 Registering bridge functions...")
         registerBridgeFunctions(this, applicationContext)
         Log.d("MainActivity", "✅ Bridge functions registered")
+
+        // Start watching for native UI tree updates from PHP
+        NativeUIBridge.startWatching()
 
         handleDeepLinkIntent(intent)
 
@@ -371,6 +376,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Stop hot reload watcher thread
         shouldStopWatcher = true
         hotReloadWatcherThread?.interrupt()
+
+        // Stop native UI tree watcher
+        NativeUIBridge.stopWatching()
 
         laravelEnv.cleanup()
         phpBridge.shutdown()
@@ -811,6 +819,18 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                     }
                 }
             )
+
+            // Native UI overlay — covers WebView when PHP renders a native tree
+            val nativeUIActive by NativeUIBridge.isActive
+            if (nativeUIActive) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.White)
+                ) {
+                    NativeUIContent()
+                }
+            }
 
             // Splash overlay with fade animation (full screen, no insets)
             AnimatedVisibility(
