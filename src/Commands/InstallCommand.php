@@ -8,12 +8,14 @@ use Native\Mobile\Traits\InstallsAndroid;
 use Native\Mobile\Traits\InstallsIos;
 use Native\Mobile\Traits\PlatformFileOperations;
 
+use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\outro;
 use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
+use function Laravel\Prompts\warning;
 
 class InstallCommand extends Command
 {
@@ -27,7 +29,8 @@ class InstallCommand extends Command
         {--F|fresh : Overwrite existing files (alias for --force)}
         {--with-icu : Include ICU support for Android (adds ~30MB)}
         {--without-icu : Exclude ICU support for Android}
-        {--skip-php : Do not download the PHP binaries}';
+        {--skip-php : Do not download the PHP binaries}
+        {--with-vite : Auto-configure the NativePHP Vite plugin}';
 
     protected $description = 'Install all of the NativePHP resources';
 
@@ -108,6 +111,8 @@ class InstallCommand extends Command
         ]);
 
         $this->callSilently('vendor:publish', ['--tag' => 'nativephp-mobile-config']);
+
+        $this->configureVitePlugin();
 
         if ($installAndroid) {
             $this->setupAndroid();
@@ -200,6 +205,136 @@ class InstallCommand extends Command
         $selected = array_rand(array_flip($words), $count);
 
         return implode('', $selected);
+    }
+
+    protected function configureVitePlugin(): void
+    {
+        // Only relevant for Inertia (React/Vue) projects
+        $packageJsonPath = base_path('package.json');
+        if (! file_exists($packageJsonPath) || ! str_contains(file_get_contents($packageJsonPath), '@inertiajs/')) {
+            return;
+        }
+
+        $viteConfigPath = base_path('vite.config.js');
+
+        if (! file_exists($viteConfigPath)) {
+            $viteConfigPath = base_path('vite.config.ts');
+
+            if (! file_exists($viteConfigPath)) {
+                return;
+            }
+        }
+
+        $contents = file_get_contents($viteConfigPath);
+
+        // Already configured — skip silently
+        if (str_contains($contents, 'nativephpMobile') || str_contains($contents, 'nativephp-mobile')) {
+            return;
+        }
+
+        if (! $this->shouldConfigureVite()) {
+            $this->showViteManualInstructions();
+
+            return;
+        }
+
+        $modified = $contents;
+
+        // 1. Inject import after the last import statement
+        $importLine = "import { nativephpMobile, nativephpHotFile } from './vendor/nativephp/mobile/resources/js/vite-plugin.js';";
+
+        if (preg_match('/^import\s.+$/m', $modified)) {
+            // Find the position after the last import line
+            preg_match_all('/^import\s.+$/m', $modified, $matches, PREG_OFFSET_CAPTURE);
+            $lastImport = end($matches[0]);
+            $insertPos = $lastImport[1] + strlen($lastImport[0]);
+            $modified = substr($modified, 0, $insertPos)."\n".$importLine.substr($modified, $insertPos);
+        } else {
+            $this->showViteManualInstructions();
+
+            return;
+        }
+
+        // 2. Inject hotFile into laravel() call
+        if (preg_match('/(laravel\(\{\s*\n)/', $modified)) {
+            $modified = preg_replace(
+                '/(laravel\(\{\s*\n)/',
+                "$1            hotFile: nativephpHotFile(),\n",
+                $modified,
+                1
+            );
+        } else {
+            $this->showViteManualInstructions();
+
+            return;
+        }
+
+        // 3. Inject nativephpMobile() into plugins array
+        // Match the last plugin entry (closing paren of a plugin call) before the array's closing bracket
+        if (preg_match('/(\bplugins\s*:\s*\[)/s', $modified)) {
+            // Find the closing ] of the plugins array by matching the pattern:
+            // some plugin call ending with ), followed by whitespace/newline, then ]
+            $modified = preg_replace(
+                '/(laravel\(\{[^}]*\}\)\s*,?)(\s*\n\s*\])/',
+                "$1\n        nativephpMobile(),$2",
+                $modified,
+                1
+            );
+
+            // Verify our injection worked
+            if (! str_contains($modified, 'nativephpMobile()')) {
+                $this->showViteManualInstructions();
+
+                return;
+            }
+        } else {
+            $this->showViteManualInstructions();
+
+            return;
+        }
+
+        // Write to a temp file and verify syntax with Node before overwriting
+        $tempPath = sprintf('%s/vite.config.nativephp-tmp.%s', dirname($viteConfigPath), pathinfo($viteConfigPath, PATHINFO_EXTENSION));
+        file_put_contents($tempPath, $modified);
+
+        $nodeCheck = exec('node --check '.escapeshellarg($tempPath).' 2>&1', $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            @unlink($tempPath);
+            $this->showViteManualInstructions();
+
+            return;
+        }
+
+        rename($tempPath, $viteConfigPath);
+
+        $this->components->info('Vite config updated with NativePHP plugin.');
+    }
+
+    protected function shouldConfigureVite(): bool
+    {
+        return $this->option('with-vite') || confirm('Would you like to auto-configure the NativePHP Vite plugin?', true);
+    }
+
+    protected function showViteManualInstructions(): void
+    {
+        warning('Could not auto-configure Vite. Please add the following manually to your vite config:');
+        note(<<<'NOTE'
+            1. Import at the top of the file:
+               import { nativephpMobile, nativephpHotFile } from './vendor/nativephp/mobile/resources/js/vite-plugin.js';
+
+            2. Add hotFile to the laravel() plugin:
+               laravel({
+                   input: [...],
+                   hotFile: nativephpHotFile(),
+               })
+
+            3. Add nativephpMobile() to the plugins array:
+               plugins: [
+                   laravel({...}),
+                   nativephpMobile(),
+               ]
+            NOTE);
     }
 
     protected function setEnvValue(string $key, string $value): void
