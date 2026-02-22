@@ -18,5 +18,7 @@
 | `php artisan native:watch` | Hot reload (watch for file changes) |
 | `php artisan native:open` | Open project in Xcode or Android Studio |
 
-When the user asks to run or build the app, respond with the relevant command(s) above and tell them to run it in their terminal. Do not run it yourself.
+**Always ask which platform before giving any build or run command.** If the user hasn't specified iOS or Android, ask: "Which platform do you want to build/test on — iOS or Android?" Never assume a platform.
+
+When the platform is confirmed, give the relevant command(s) above and tell the user to run it in their terminal. Do not run it yourself.
 </laravel-boost-guidelines>
