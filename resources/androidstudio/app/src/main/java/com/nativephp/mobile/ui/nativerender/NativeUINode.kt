@@ -29,6 +29,7 @@ object EventType {
     const val SELECT_CHANGE = 12
     const val TAB_CHANGE    = 13
     const val SHEET_DISMISS = 14
+    const val HOT_RELOAD    = 15
 }
 
 /**

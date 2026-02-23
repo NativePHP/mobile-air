@@ -416,11 +416,31 @@ trait WatchesAndroid
         $tempSignalPath = '/data/local/tmp/reload_signal.json';
         $signalPath = "/data/data/{$packageName}/app_storage/laravel/storage/framework/reload_signal.json";
 
+        // Ensure the target directory exists on device
+        $mkdirProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'mkdir', '-p', dirname($signalPath)]);
+        $mkdirProcess->run();
+
         $pushProcess = new Process(['adb', 'push', $localTemp, $tempSignalPath]);
         $pushProcess->run();
 
+        if (! $pushProcess->isSuccessful()) {
+            $this->error('Hot reload: adb push failed — '.$pushProcess->getErrorOutput());
+
+            @unlink($localTemp);
+
+            return;
+        }
+
         $copyProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'cp', $tempSignalPath, $signalPath]);
         $copyProcess->run();
+
+        if (! $copyProcess->isSuccessful()) {
+            $this->error('Hot reload: run-as cp failed — '.$copyProcess->getErrorOutput());
+        }
+
+        // Touch the file to ensure mtime updates (some Android cp preserves source mtime)
+        $touchProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'touch', $signalPath]);
+        $touchProcess->run();
 
         $cleanupProcess = new Process(['adb', 'shell', 'rm', $tempSignalPath]);
         $cleanupProcess->run();

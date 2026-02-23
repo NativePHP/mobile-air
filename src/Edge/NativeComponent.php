@@ -4,13 +4,19 @@ namespace Native\Mobile\Edge;
 
 abstract class NativeComponent
 {
+    const EVENT_HOT_RELOAD = 15;
+
     protected CallbackRegistry $callbacks;
+
+    protected bool $hasError = false;
 
     protected bool $running = true;
 
     protected ?NavigationIntent $navigationIntent = null;
 
     protected ?NativeRouter $router = null;
+
+    protected ?array $previousTree = null;
 
     protected array $params = [];
 
@@ -24,9 +30,18 @@ abstract class NativeComponent
 
         $viewData = array_merge($this->getPublicProperties(), $data);
 
+        $t0 = microtime(true);
         view("native.{$name}", $viewData)->render();
+        $t1 = microtime(true);
+        $element = NativeElementCollector::collect();
+        $t2 = microtime(true);
 
-        return NativeElementCollector::collect();
+        NativeRouter::debugLog(sprintf(
+            'PERF view(%s) blade=%.1fms collect=%.1fms',
+            $name, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000
+        ));
+
+        return $element;
     }
 
     private function getPublicProperties(): array
@@ -85,12 +100,38 @@ abstract class NativeComponent
 
         $this->mount();
 
+        $hotReloadPending = false;
+
         while ($this->running) {
             $this->callbacks->reset();
 
-            $tree = $this->render()->toArray($this->callbacks);
+            try {
+                $tree = $this->render()->toArray($this->callbacks);
 
-            nativephp_ui_render($tree);
+                $patches = $this->previousTree !== null
+                    ? $this->diffTree($this->previousTree, $tree)
+                    : null;
+
+                if ($patches === null) {
+                    // First frame or structural change — send full tree
+                    nativephp_ui_render($tree);
+                } elseif (! empty($patches)) {
+                    // Incremental update — send patches
+                    if (function_exists('nativephp_ui_patch')) {
+                        nativephp_ui_patch($patches);
+                    } else {
+                        nativephp_ui_render($tree);
+                    }
+                }
+                // else: empty patches — nothing changed, skip entirely
+
+                $this->previousTree = $tree;
+                $this->hasError = false;
+            } catch (\Throwable $e) {
+                NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage());
+                $this->renderErrorScreen($e);
+                $this->previousTree = null;
+            }
 
             $event = nativephp_ui_wait_event(-1);
 
@@ -98,7 +139,23 @@ abstract class NativeComponent
                 continue;
             }
 
-            $this->dispatch($event);
+            // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
+            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
+                $this->flushCompiledViews();
+                $uri = '/'.ltrim(request()->path(), '/');
+                @file_put_contents(
+                    storage_path('framework/.hot_restart'),
+                    json_encode(['uri' => $uri, 'ts' => time()])
+                );
+                $this->stop();
+
+                continue;
+            }
+
+            // Don't dispatch UI events while showing the error screen
+            if (! $this->hasError) {
+                $this->dispatch($event);
+            }
         }
 
         $this->unmount();
@@ -115,23 +172,69 @@ abstract class NativeComponent
         $this->callbacks = new CallbackRegistry;
         $this->running = true;
         $this->navigationIntent = null;
+        $this->hasError = false;
+        $this->previousTree = null;
 
         while ($this->running) {
             $this->callbacks->reset();
 
             try {
-                $tree = $this->render()->toArray($this->callbacks);
+                $t0 = microtime(true);
+                $element = $this->render();
+                $t1 = microtime(true);
+                $tree = $element->toArray($this->callbacks);
+                $t2 = microtime(true);
+
+                $patches = $this->previousTree !== null
+                    ? $this->diffTree($this->previousTree, $tree)
+                    : null;
+
+                if ($patches === null) {
+                    // First frame or structural change — send full tree
+                    nativephp_ui_render($tree);
+                } elseif (! empty($patches)) {
+                    // Incremental update — send patches
+                    if (function_exists('nativephp_ui_patch')) {
+                        nativephp_ui_patch($patches);
+                    } else {
+                        nativephp_ui_render($tree);
+                    }
+                }
+                // else: empty patches — nothing changed, skip entirely
+
+                $t3 = microtime(true);
+                NativeRouter::debugLog(sprintf(
+                    'PERF [%s] render=%.1fms toArray=%.1fms shm=%.1fms total=%.1fms',
+                    static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
+                    ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
+                ));
+
+                $this->previousTree = $tree;
+                $this->hasError = false;
             } catch (\Throwable $e) {
                 NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage() . "\n" . $e->getTraceAsString());
-                $this->running = false;
-                break;
+                $this->renderErrorScreen($e);
+                $this->previousTree = null;
             }
-
-            nativephp_ui_render($tree);
 
             $event = nativephp_ui_wait_event(-1);
 
             if ($event === null) {
+                continue;
+            }
+
+            // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
+            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
+                $this->flushCompiledViews();
+                $uri = '/'.ltrim(request()->path(), '/');
+                @file_put_contents(
+                    storage_path('framework/.hot_restart'),
+                    json_encode(['uri' => $uri, 'ts' => time()])
+                );
+                NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri");
+                $this->navigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
+                $this->stop();
+
                 continue;
             }
 
@@ -141,7 +244,10 @@ abstract class NativeComponent
                 continue;
             }
 
-            $this->dispatch($event);
+            // Don't dispatch UI events while showing the error screen
+            if (! $this->hasError) {
+                $this->dispatch($event);
+            }
         }
     }
 
@@ -152,28 +258,60 @@ abstract class NativeComponent
 
     // ── Navigation methods ──────────────────────────
 
-    public function navigate(string $uri, array $data = []): void
+    public function navigate(string $uri, array $data = []): static
     {
         $this->navigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
         $this->stop();
+
+        return $this;
     }
 
-    public function back(): void
+    public function back(): static
     {
         $this->navigationIntent = new NavigationIntent(NavigationIntent::BACK);
         $this->stop();
+
+        return $this;
     }
 
-    public function replace(string $uri, array $data = []): void
+    public function replace(string $uri, array $data = []): static
     {
         $this->navigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
         $this->stop();
+
+        return $this;
+    }
+
+    public function transition(Transition $type): static
+    {
+        if ($this->navigationIntent) {
+            $this->navigationIntent = new NavigationIntent(
+                $this->navigationIntent->type,
+                $this->navigationIntent->uri,
+                $this->navigationIntent->data,
+                $type,
+            );
+        }
+
+        return $this;
     }
 
     public function exitToWeb(string $uri): void
     {
         $this->navigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
         $this->stop();
+    }
+
+    // ── Route helper ────────────────────────────────
+
+    /**
+     * Resolve a named route to a URI path for native navigation.
+     *
+     *   $this->navigate($this->route('listing.show', ['id' => 5]));
+     */
+    public function route(string $name, mixed $parameters = []): string
+    {
+        return \Illuminate\Support\Facades\URL::route($name, $parameters, absolute: false);
     }
 
     // ── Parameter / data access ─────────────────────
@@ -205,27 +343,229 @@ abstract class NativeComponent
         $this->navigationData = $data;
     }
 
+    // ── Tree Diffing ────────────────────────────────
+
+    /**
+     * Compare two trees and produce a list of patch operations.
+     * Returns null if structural changes require a full tree send.
+     * Returns empty array if nothing changed.
+     */
+    protected function diffTree(array $old, array $new): ?array
+    {
+        $patches = [];
+
+        if (! $this->diffNode($old, $new, $patches)) {
+            return null; // structural change — fall back to full tree
+        }
+
+        // Too many patches — cheaper to send the full tree
+        if (count($patches) > 50) {
+            return null;
+        }
+
+        return $patches;
+    }
+
+    /**
+     * Recursively diff two nodes. Returns false if structural change detected.
+     */
+    protected function diffNode(array $old, array $new, array &$patches): bool
+    {
+        // Different type or different id → structural change
+        if (($old['type'] ?? '') !== ($new['type'] ?? '') ||
+            ($old['id'] ?? 0) !== ($new['id'] ?? 0)) {
+            return false;
+        }
+
+        $nodeId = $new['id'] ?? 0;
+
+        // Compare props
+        if (($old['props'] ?? []) !== ($new['props'] ?? [])) {
+            $patches[] = ['op' => 'update_props', 'id' => $nodeId, 'props' => $new['props'] ?? []];
+        }
+
+        // Compare layout
+        if (($old['layout'] ?? []) !== ($new['layout'] ?? [])) {
+            $patches[] = ['op' => 'update_layout', 'id' => $nodeId, 'layout' => $new['layout'] ?? []];
+        }
+
+        // Compare style
+        if (($old['style'] ?? []) !== ($new['style'] ?? [])) {
+            $patches[] = ['op' => 'update_style', 'id' => $nodeId, 'style' => $new['style'] ?? []];
+        }
+
+        // Compare callbacks
+        if (($old['on_press'] ?? 0) !== ($new['on_press'] ?? 0) ||
+            ($old['on_long_press'] ?? 0) !== ($new['on_long_press'] ?? 0)) {
+            $patches[] = [
+                'op' => 'update_callbacks',
+                'id' => $nodeId,
+                'on_press' => $new['on_press'] ?? 0,
+                'on_long_press' => $new['on_long_press'] ?? 0,
+            ];
+        }
+
+        // Compare children
+        $oldChildren = $old['children'] ?? [];
+        $newChildren = $new['children'] ?? [];
+
+        if (count($oldChildren) !== count($newChildren)) {
+            return false; // child count changed — structural change
+        }
+
+        foreach ($newChildren as $i => $newChild) {
+            if (! $this->diffNode($oldChildren[$i], $newChild, $patches)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // ── Error screen ────────────────────────────────
+
+    protected function renderErrorScreen(\Throwable $e): void
+    {
+        $this->hasError = true;
+
+        try {
+            $callbacks = new CallbackRegistry;
+
+            $screen = Elements\ScrollView::make()
+                ->fill()
+                ->bg('#FEF2F2')
+                ->safeArea();
+
+            $content = Elements\Column::make()
+                ->fillWidth()
+                ->padding(20, 20, 40, 20)
+                ->gap(10);
+
+            $content->addChild(
+                Elements\Text::make('Render Error')
+                    ->fontSize(22)
+                    ->fontWeight(7)
+                    ->color('#991B1B')
+            );
+
+            $content->addChild(
+                Elements\Text::make(static::class)
+                    ->fontSize(13)
+                    ->color('#B91C1C')
+            );
+
+            $content->addChild(
+                Elements\Divider::make()->fillWidth()
+            );
+
+            $content->addChild(
+                Elements\Text::make($e->getMessage())
+                    ->fontSize(14)
+                    ->fontWeight(5)
+                    ->color('#DC2626')
+            );
+
+            $file = str_replace(base_path() . '/', '', $e->getFile());
+            $content->addChild(
+                Elements\Text::make("{$file}:{$e->getLine()}")
+                    ->fontSize(12)
+                    ->color('#9CA3AF')
+            );
+
+            $content->addChild(
+                Elements\Spacer::make()->height(4)
+            );
+
+            // Show a condensed stack trace
+            $trace = $e->getTraceAsString();
+            // Strip base path for readability
+            $trace = str_replace(base_path() . '/', '', $trace);
+            $traceLines = explode("\n", $trace);
+            $shortTrace = implode("\n", array_slice($traceLines, 0, 10));
+            if (count($traceLines) > 10) {
+                $shortTrace .= "\n... (" . count($traceLines) . " frames total)";
+            }
+
+            $content->addChild(
+                Elements\Text::make($shortTrace)
+                    ->fontSize(10)
+                    ->color('#6B7280')
+            );
+
+            $screen->addChild($content);
+
+            nativephp_ui_render($screen->toArray($callbacks));
+        } catch (\Throwable $renderError) {
+            // If even the error screen fails, just log it
+            NativeRouter::debugLog("Error screen render failed: " . $renderError->getMessage());
+        }
+    }
+
+    // ── Hot reload ──────────────────────────────────
+
+    protected function flushCompiledViews(): void
+    {
+        $viewPath = storage_path('framework/views');
+
+        if (is_dir($viewPath)) {
+            foreach (glob("{$viewPath}/*.php") as $file) {
+                // Skip .blade.php source files — these are created by
+                // Laravel's createBladeViewFromString() for inline component
+                // views (e.g. self-closing components returning ''). Deleting
+                // them causes "View [hash] not found" errors.
+                if (str_ends_with($file, '.blade.php')) {
+                    continue;
+                }
+
+                @unlink($file);
+            }
+        }
+
+        // Critical: clear stat cache AFTER deleting files so PHP sees
+        // the deletions. Long-running processes cache stat() results,
+        // and Blade's isExpired() uses file_exists() / filemtime().
+        clearstatcache();
+
+        // Clear the view finder cache so Blade re-discovers templates
+        if (function_exists('app') && app()->bound('view')) {
+            app('view')->getFinder()->flush();
+        }
+
+        // Reset OPcache if available — the long-running process may
+        // have cached bytecode for the old compiled views
+        if (function_exists('opcache_reset')) {
+            opcache_reset();
+        }
+    }
+
     // ── Event dispatch ──────────────────────────────
 
     protected function dispatch(array $event): void
     {
-        $method = $this->callbacks->resolve($event['callback_id'] ?? 0);
+        $callback = $this->callbacks->resolve($event['callback_id'] ?? 0);
 
-        if ($method === null || ! method_exists($this, $method)) {
+        if ($callback === null) {
+            return;
+        }
+
+        $method = $callback['method'];
+        $args = $callback['args'];
+
+        if (! method_exists($this, $method)) {
             return;
         }
 
         $type = $event['type'] ?? -1;
 
-        match ($type) {
-            0, 1    => $this->$method(),                          // PRESS, LONG_PRESS
-            2, 4    => $this->$method($event['text'] ?? ''),      // TEXT_CHANGE, SUBMIT
-            3, 10   => $this->$method((bool) ($event['value'] ?? false)),  // TOGGLE_CHANGE, CHECKBOX_CHANGE
-            9       => $this->$method((float) ($event['value'] ?? 0.0)),   // SLIDER_CHANGE
-            11, 12  => $this->$method((string) ($event['value'] ?? '')),   // RADIO_CHANGE, SELECT_CHANGE
-            13      => $this->$method((int) ($event['value'] ?? 0)),       // TAB_CHANGE
-            14      => $this->$method(),                                    // SHEET_DISMISS
-            default => $this->$method(),
+        $eventArgs = match ($type) {
+            2, 4    => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
+            3, 10   => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
+            9       => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
+            11, 12  => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
+            13      => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
+            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
         };
+
+        $this->$method(...[...$args, ...$eventArgs]);
     }
 }

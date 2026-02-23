@@ -434,34 +434,84 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     private fun startHotReloadWatcher() {
-        if (!isDebugVersion()) return
-
         // Configure WebView for development - disable caching for hot reload
         webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
 
         hotReloadWatcherThread = Thread {
             val appStorageDir = File(filesDir.parent, "app_storage")
             val reloadFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/reload_signal.json")
+            val restartFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/.hot_restart")
             var lastModified: Long = 0
+            var pollCount = 0
+
+            Log.d("HotReload", "Watcher started — watching: ${reloadFile.absolutePath}")
 
             while (!shouldStopWatcher && !Thread.currentThread().isInterrupted) {
                 try {
+                    pollCount++
+                    if (pollCount % 20 == 0) {
+                        Log.d("HotReload", "Poll #$pollCount — exists=${reloadFile.exists()} lastMod=$lastModified curMod=${if (reloadFile.exists()) reloadFile.lastModified() else "N/A"} nativeUI=${NativeUIBridge.isActive.value}")
+                    }
+
+                    // Check for native UI restart signal (PHP wrote .hot_restart before exiting)
+                    if (restartFile.exists()) {
+                        try {
+                            val content = restartFile.readText()
+                            val json = org.json.JSONObject(content)
+                            val restartUri = json.optString("uri", "/")
+                            restartFile.delete()
+
+                            Log.d("HotReload", "Restart signal found — re-executing PHP for: $restartUri")
+
+                            // Wait briefly for PHP to fully shut down
+                            Thread.sleep(200)
+
+                            // Re-start the native UI watcher (PHP will re-init shared memory)
+                            NativeUIBridge.startWatching()
+
+                            // Directly re-execute the PHP request on a new thread
+                            // This bypasses the WebView entirely — fresh PHP process
+                            Thread({
+                                try {
+                                    Log.d("HotReload", "Re-executing PHP for $restartUri")
+                                    phpBridge.executeNativeRoute(restartUri)
+                                    Log.d("HotReload", "PHP execution completed for $restartUri")
+                                } catch (e: Exception) {
+                                    Log.e("HotReload", "Restart execution failed: ${e.message}", e)
+                                }
+                            }, "npui-hot-restart").start()
+
+                            continue
+                        } catch (e: Exception) {
+                            Log.e("HotReload", "Failed to read restart signal: ${e.message}")
+                            restartFile.delete()
+                        }
+                    }
+
                     if (reloadFile.exists() && reloadFile.lastModified() > lastModified) {
                         lastModified = reloadFile.lastModified()
 
-                        runOnUiThread {
-                            webView.stopLoading()
-                            webView.clearCache(true)
-                            webView.clearHistory()
-                            webView.clearFormData()
+                        if (NativeUIBridge.isActive.value) {
+                            // Native UI mode: send hot reload event through mmap
+                            // PHP will shut down and write .hot_restart signal
+                            Log.d("HotReload", "Native UI active — sending hot reload event (mod=$lastModified)")
+                            NativeUIBridge.sendHotReloadEvent()
+                        } else {
+                            // WebView mode: reload the page
+                            runOnUiThread {
+                                webView.stopLoading()
+                                webView.clearCache(true)
+                                webView.clearHistory()
+                                webView.clearFormData()
 
-                            val currentUrl = webView.url ?: "http://127.0.0.1/"
-                            val separator = if (currentUrl.contains("?")) "&" else "?"
-                            val cacheBustUrl = "${currentUrl}${separator}_cb=${System.currentTimeMillis()}"
+                                val currentUrl = webView.url ?: "http://127.0.0.1/"
+                                val separator = if (currentUrl.contains("?")) "&" else "?"
+                                val cacheBustUrl = "${currentUrl}${separator}_cb=${System.currentTimeMillis()}"
 
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                webView.loadUrl(cacheBustUrl)
-                            }, 100)
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    webView.loadUrl(cacheBustUrl)
+                                }, 100)
+                            }
                         }
                     }
 

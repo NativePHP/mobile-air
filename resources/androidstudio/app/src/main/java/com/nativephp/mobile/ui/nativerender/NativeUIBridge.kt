@@ -3,6 +3,7 @@ package com.nativephp.mobile.ui.nativerender
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -26,6 +27,9 @@ class NativeUIBridge private constructor() {
         @JvmStatic external fun nativeGetTreeBuffer(): ByteArray?
         @JvmStatic external fun nativeWaitTreeUpdate(currentVersion: Int, timeoutMs: Int): Int
         @JvmStatic external fun nativeWriteEvent(type: Int, callbackId: Int, nodeId: Int, data: ByteArray?)
+        @JvmStatic external fun nativeGetPatchVersion(): Int
+        @JvmStatic external fun nativeGetPatchBuffer(): ByteArray?
+        @JvmStatic external fun nativeAckPatchVersion(version: Int)
 
         /* ── Observable state ── */
 
@@ -34,6 +38,24 @@ class NativeUIBridge private constructor() {
 
         /** Whether the native UI system is active */
         val isActive = mutableStateOf(false)
+
+        /** Screen key — incremented on navigation to drive AnimatedContent */
+        val screenKey = mutableIntStateOf(0)
+
+        /** Pending transition type (slide_forward, slide_back, crossfade) */
+        val pendingTransition = mutableStateOf<String?>(null)
+
+        /** Flag set by UI.SetTransition bridge function, consumed by watcher */
+        @Volatile
+        private var navigationPending = false
+
+        /**
+         * Called by UI.SetTransition bridge function to queue a navigation animation.
+         */
+        fun setNavigationPending(transition: String) {
+            pendingTransition.value = transition
+            navigationPending = true
+        }
 
         private var watcherThread: Thread? = null
         private val mainHandler = Handler(Looper.getMainLooper())
@@ -74,8 +96,10 @@ class NativeUIBridge private constructor() {
                     Log.i(TAG, "UI region detected after $pollCount polls — watching for tree updates")
                     mainHandler.post { isActive.value = true }
 
+                    var lastPatchVersion = 0
+
                     while (!Thread.currentThread().isInterrupted) {
-                        // Block until tree version changes (100ms timeout for shutdown check)
+                        // Block until tree version changes (100ms timeout for shutdown/patch check)
                         val newVersion = nativeWaitTreeUpdate(lastVersion, 100)
 
                         when {
@@ -85,7 +109,25 @@ class NativeUIBridge private constructor() {
                                 break
                             }
                             newVersion == 0 -> {
-                                // Timeout — check if region is still valid
+                                // Timeout — check for patches
+                                val patchVer = nativeGetPatchVersion()
+                                if (patchVer > lastPatchVersion) {
+                                    lastPatchVersion = patchVer
+                                    val patchBuf = nativeGetPatchBuffer()
+                                    if (patchBuf != null && currentTree.value != null) {
+                                        val patches = NativeUIPatchReader(patchBuf).read()
+                                        if (patches != null) {
+                                            val patched = applyPatches(currentTree.value!!, patches)
+                                            Log.d(TAG, "Patch v$patchVer applied: ${patches.size} ops")
+                                            mainHandler.post { currentTree.value = patched }
+                                            nativeAckPatchVersion(patchVer)
+                                        } else {
+                                            Log.w(TAG, "Failed to parse patch v$patchVer")
+                                        }
+                                    }
+                                }
+
+                                // Check if region is still valid
                                 if (!nativeIsUIReady()) {
                                     Log.i(TAG, "UI region gone — stopping watcher")
                                     break
@@ -93,13 +135,27 @@ class NativeUIBridge private constructor() {
                                 continue
                             }
                             newVersion != lastVersion -> {
+                                // Full tree update (existing path)
+                                val t0 = System.nanoTime()
                                 lastVersion = newVersion
+                                lastPatchVersion = nativeGetPatchVersion() // sync
                                 val buffer = nativeGetTreeBuffer()
+                                val t1 = System.nanoTime()
                                 if (buffer != null) {
                                     val tree = NativeUITreeReader(buffer).read()
+                                    val t2 = System.nanoTime()
                                     if (tree != null) {
-                                        Log.d(TAG, "Tree v$newVersion parsed: ${countNodes(tree.root)} nodes")
-                                        mainHandler.post { currentTree.value = tree }
+                                        val nodeCount = countNodes(tree.root)
+                                        Log.d(TAG, "PERF tree v$newVersion: buf=${(t1-t0)/1_000_000}ms parse=${(t2-t1)/1_000_000}ms nodes=$nodeCount bufSize=${buffer.size}")
+                                        val isNav = navigationPending
+                                        if (isNav) navigationPending = false
+                                        val postTime = System.nanoTime()
+                                        mainHandler.post {
+                                            val execTime = System.nanoTime()
+                                            Log.d(TAG, "PERF mainHandler delay=${(execTime-postTime)/1_000_000}ms isNav=$isNav")
+                                            if (isNav) screenKey.intValue++
+                                            currentTree.value = tree
+                                        }
                                     } else {
                                         Log.w(TAG, "Failed to parse tree v$newVersion")
                                     }
@@ -208,6 +264,10 @@ class NativeUIBridge private constructor() {
 
         fun sendSheetDismissEvent(callbackId: Int, nodeId: Int) {
             nativeWriteEvent(EventType.SHEET_DISMISS, callbackId, nodeId, null)
+        }
+
+        fun sendHotReloadEvent() {
+            nativeWriteEvent(EventType.HOT_RELOAD, 0, 0, null)
         }
 
         fun sendSelectChangeEvent(callbackId: Int, nodeId: Int, value: String) {

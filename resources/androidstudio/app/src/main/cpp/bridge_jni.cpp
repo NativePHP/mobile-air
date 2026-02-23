@@ -25,6 +25,9 @@ static jint ui_get_tree_version(JNIEnv*, jclass);
 static jbyteArray ui_get_tree_buffer(JNIEnv*, jclass);
 static jint ui_wait_tree_update(JNIEnv*, jclass, jint, jint);
 static void ui_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
+static jint ui_get_patch_version(JNIEnv*, jclass);
+static jbyteArray ui_get_patch_buffer(JNIEnv*, jclass);
+static void ui_ack_patch_version(JNIEnv*, jclass, jint);
 
 // Initialization function to be called from php_bridge.c's JNI_OnLoad
 extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
@@ -67,11 +70,14 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
 
     /* Register UI bridge native methods */
     static JNINativeMethod uiMethods[] = {
-        {(char*)"nativeIsUIReady",      (char*)"()Z",      (void*)ui_is_ready},
-        {(char*)"nativeGetTreeVersion", (char*)"()I",      (void*)ui_get_tree_version},
-        {(char*)"nativeGetTreeBuffer",  (char*)"()[B",     (void*)ui_get_tree_buffer},
-        {(char*)"nativeWaitTreeUpdate", (char*)"(II)I",    (void*)ui_wait_tree_update},
-        {(char*)"nativeWriteEvent",     (char*)"(III[B)V", (void*)ui_write_event},
+        {(char*)"nativeIsUIReady",        (char*)"()Z",      (void*)ui_is_ready},
+        {(char*)"nativeGetTreeVersion",   (char*)"()I",      (void*)ui_get_tree_version},
+        {(char*)"nativeGetTreeBuffer",    (char*)"()[B",     (void*)ui_get_tree_buffer},
+        {(char*)"nativeWaitTreeUpdate",   (char*)"(II)I",    (void*)ui_wait_tree_update},
+        {(char*)"nativeWriteEvent",       (char*)"(III[B)V", (void*)ui_write_event},
+        {(char*)"nativeGetPatchVersion",  (char*)"()I",      (void*)ui_get_patch_version},
+        {(char*)"nativeGetPatchBuffer",   (char*)"()[B",     (void*)ui_get_patch_buffer},
+        {(char*)"nativeAckPatchVersion",  (char*)"(I)V",     (void*)ui_ack_patch_version},
     };
 
     jclass uiClass = env->FindClass("com/nativephp/mobile/ui/nativerender/NativeUIBridge");
@@ -271,8 +277,9 @@ struct NpuiSharedRegion {
     std::atomic<uint32_t> running;
 };
 
-#define NPUI_MAGIC       0x4E505632  /* "NPV2" */
-#define NPUI_EVENT_MAGIC 0x4E504556  /* "NPEV" */
+#define NPUI_MAGIC              0x4E505632  /* "NPV2" */
+#define NPUI_EVENT_MAGIC        0x4E504556  /* "NPEV" */
+#define NPUI_PATCH_BUFFER_SIZE  (512 * 1024)
 
 static NpuiSharedRegion* g_npui_direct_ptr = nullptr;
 static NpuiSharedRegion** g_npui_region_ptr = nullptr;
@@ -465,4 +472,37 @@ static void ui_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jin
     pthread_mutex_unlock(&region->event_mutex);
 
     LOGI("UI: Event written — type=%d cb=%d node=%d size=%zu", type, callback_id, node_id, pos);
+}
+
+/* Get current patch version (atomic read) */
+static jint ui_get_patch_version(JNIEnv*, jclass) {
+    auto* region = get_ui_region();
+    if (!region) return 0;
+    return (jint)region->patch_version.load(std::memory_order_acquire);
+}
+
+/* Copy the patch buffer into a Java byte array */
+static jbyteArray ui_get_patch_buffer(JNIEnv* env, jclass) {
+    auto* region = get_ui_region();
+    if (!region) return nullptr;
+
+    uint32_t size = region->patch_size.load(std::memory_order_acquire);
+    if (size == 0 || size > NPUI_PATCH_BUFFER_SIZE) return nullptr;
+
+    if (region->shutdown.load(std::memory_order_acquire)) return nullptr;
+
+    uint8_t* patch_buf = (uint8_t*)region + region->patch_offset;
+
+    jbyteArray result = env->NewByteArray(size);
+    if (result == nullptr) return nullptr;
+
+    env->SetByteArrayRegion(result, 0, size, (jbyte*)patch_buf);
+    return result;
+}
+
+/* Acknowledge that patches up to this version have been applied */
+static void ui_ack_patch_version(JNIEnv*, jclass, jint version) {
+    auto* region = get_ui_region();
+    if (!region) return;
+    region->patch_version_ack.store((uint32_t)version, std::memory_order_release);
 }

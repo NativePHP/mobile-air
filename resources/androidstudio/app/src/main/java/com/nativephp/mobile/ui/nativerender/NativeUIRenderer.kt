@@ -1,5 +1,19 @@
 package com.nativephp.mobile.ui.nativerender
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,6 +23,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +32,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -49,6 +67,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -84,27 +103,127 @@ import androidx.compose.ui.unit.sp
 /**
  * Root composable that renders a NativeUITree.
  * Call this from your Compose hierarchy when NativeUIBridge.currentTree is non-null.
+ *
+ * Wraps content in AnimatedContent keyed on screenKey so navigation
+ * between NativeComponents plays a slide/fade transition.
+ * Tree snapshots are kept per screen key so the exit animation
+ * shows the OLD screen while the enter animation shows the new one.
  */
 @Composable
 fun NativeUIContent() {
     val tree by NativeUIBridge.currentTree
+    val screenKey by NativeUIBridge.screenKey
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
-    tree?.let {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                    indication = null
-                ) {
-                    focusManager.clearFocus()
-                    keyboardController?.hide()
-                }
-        ) {
-            RenderNode(it.root)
+    // Snapshot the tree for each screen key so exit animations render the old screen
+    val treeSnapshots = remember { mutableMapOf<Int, NativeUITree>() }
+    if (tree != null) {
+        treeSnapshots[screenKey] = tree!!
+    }
+    // Keep only current and previous snapshot
+    treeSnapshots.keys.filter { it < screenKey - 1 }.toList().forEach { treeSnapshots.remove(it) }
+
+    if (treeSnapshots.isEmpty()) return
+
+    // Resolve transition
+    val transition = NativeUIBridge.pendingTransition.value ?: "slide_from_right"
+
+    AnimatedContent(
+        targetState = screenKey,
+        transitionSpec = {
+            val ct = resolveTransition(transition)
+            ct.using(SizeTransform(clip = false))
+        },
+        label = "screen-nav"
+    ) { targetKey ->
+        val snap = treeSnapshots[targetKey]
+        if (snap != null) {
+            SideEffect {
+                android.util.Log.d("NativeUIPerf", "AnimatedContent composed screenKey=$targetKey")
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                    }
+            ) {
+                RenderNode(snap.root)
+            }
         }
+    }
+}
+
+/**
+ * Map a transition type string to Compose enter/exit animations.
+ *
+ * Supported types (modeled after React Native's stack navigator):
+ *   slide_from_right  — iOS-style push (default for navigate)
+ *   slide_from_left   — iOS-style pop  (default for back)
+ *   slide_from_bottom — modal presentation
+ *   fade              — simple crossfade
+ *   fade_from_bottom  — Android Oreo-style
+ *   scale_from_center — Android 10+ style
+ *   none              — instant swap
+ */
+private fun resolveTransition(
+    type: String
+): androidx.compose.animation.ContentTransform {
+    val duration = 300
+
+    return when (type) {
+        "slide_from_right" -> {
+            slideInHorizontally(tween(duration)) { it } +
+                fadeIn(tween(duration / 2)) togetherWith
+                slideOutHorizontally(tween(duration)) { -it / 3 } +
+                fadeOut(tween(duration / 2))
+        }
+
+        "slide_from_left" -> {
+            slideInHorizontally(tween(duration)) { -it } +
+                fadeIn(tween(duration / 2)) togetherWith
+                slideOutHorizontally(tween(duration)) { it / 3 } +
+                fadeOut(tween(duration / 2))
+        }
+
+        "slide_from_bottom" -> {
+            slideInVertically(tween(duration)) { it } +
+                fadeIn(tween(duration / 2)) togetherWith
+                fadeOut(tween(duration / 2))
+        }
+
+        "fade" -> {
+            fadeIn(tween(duration)) togetherWith fadeOut(tween(duration))
+        }
+
+        "fade_from_bottom" -> {
+            slideInVertically(tween(duration)) { it / 4 } +
+                fadeIn(tween(duration)) togetherWith
+                fadeOut(tween(duration / 2))
+        }
+
+        "scale_from_center" -> {
+            scaleIn(tween(duration), initialScale = 0.9f) +
+                fadeIn(tween(duration)) togetherWith
+                scaleOut(tween(duration), targetScale = 1.1f) +
+                fadeOut(tween(duration / 2))
+        }
+
+        "none" -> {
+            EnterTransition.None togetherWith ExitTransition.None
+        }
+
+        // Legacy aliases
+        "slide_forward" -> resolveTransition("slide_from_right")
+        "slide_back" -> resolveTransition("slide_from_left")
+        "crossfade" -> resolveTransition("fade")
+
+        else -> fadeIn(tween(duration)) togetherWith fadeOut(tween(duration))
     }
 }
 
@@ -135,7 +254,7 @@ internal fun RenderColumn(node: NativeUINode, modifier: Modifier) {
     val hAlignment = resolveHorizontalAlignment(layout?.alignItems ?: 0)
 
     Column(
-        modifier = modifier,
+        modifier = modifier.then(applyClickModifier(node)),
         verticalArrangement = vArrangement,
         horizontalAlignment = hAlignment
     ) {
@@ -153,7 +272,7 @@ internal fun RenderRow(node: NativeUINode, modifier: Modifier) {
     val vAlignment = resolveVerticalAlignment(layout?.alignItems ?: 0)
 
     Row(
-        modifier = modifier,
+        modifier = modifier.then(applyClickModifier(node)),
         horizontalArrangement = hArrangement,
         verticalAlignment = vAlignment
     ) {
@@ -166,7 +285,7 @@ internal fun RenderRow(node: NativeUINode, modifier: Modifier) {
 
 @Composable
 internal fun RenderStack(node: NativeUINode, modifier: Modifier) {
-    Box(modifier = modifier) {
+    Box(modifier = modifier.then(applyClickModifier(node))) {
         node.children.forEach { RenderNode(it) }
     }
 }
@@ -174,15 +293,38 @@ internal fun RenderStack(node: NativeUINode, modifier: Modifier) {
 @Composable
 internal fun RenderScrollView(node: NativeUINode, modifier: Modifier) {
     val horizontal = node.props.getBool("horizontal")
-    val scrollState = rememberScrollState()
+
+    // Flatten single-wrapper-column pattern: ScrollView > Column > items
+    // Without this, LazyColumn has 1 item (the wrapper) and composes everything eagerly
+    val sc = remember(node) { flattenScrollContent(node, horizontal) }
+
+    // Apply safe area insets from flattened wrapper (must be in @Composable context)
+    val safeAreaMod = if (sc.hasSafeArea) {
+        Modifier.windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))
+    } else {
+        Modifier
+    }
 
     if (horizontal) {
-        Row(modifier = modifier.horizontalScroll(scrollState)) {
-            node.children.forEach { RenderNode(it) }
+        LazyRow(
+            modifier = modifier.then(safeAreaMod).then(sc.wrapperModifier),
+            horizontalArrangement = if (sc.gap > 0f) Arrangement.spacedBy(sc.gap.dp) else Arrangement.Start,
+            contentPadding = sc.contentPadding
+        ) {
+            items(sc.children, key = { it.id }) { child ->
+                RenderNode(child)
+            }
         }
     } else {
-        Column(modifier = modifier.verticalScroll(scrollState)) {
-            node.children.forEach { RenderNode(it) }
+        LazyColumn(
+            modifier = modifier.then(safeAreaMod).then(sc.wrapperModifier),
+            verticalArrangement = if (sc.gap > 0f) Arrangement.spacedBy(sc.gap.dp) else Arrangement.Top,
+            horizontalAlignment = sc.horizontalAlignment,
+            contentPadding = sc.contentPadding
+        ) {
+            items(sc.children, key = { it.id }) { child ->
+                RenderNode(child)
+            }
         }
     }
 }
@@ -801,6 +943,79 @@ internal fun RenderBottomSheet(node: NativeUINode, modifier: Modifier) {
     }
 }
 
+/* ── ScrollView Flattening ────────────────────────────── */
+
+/**
+ * Container for resolved scroll content after optional flattening.
+ */
+private class ScrollContent(
+    val children: List<NativeUINode>,
+    val gap: Float,
+    val contentPadding: PaddingValues,
+    val wrapperModifier: Modifier,
+    val horizontalAlignment: Alignment.Horizontal,
+    val hasSafeArea: Boolean = false
+)
+
+/**
+ * Common Blade pattern: `<scroll-view><column p-4 gap-4>...items...</column></scroll-view>`
+ *
+ * Without flattening, LazyColumn sees ONE child (the wrapper column) and composes
+ * all ~400 nodes eagerly — defeating lazy virtualization entirely.
+ *
+ * This extracts the wrapper's children, padding, gap, background, and alignment
+ * so LazyColumn can virtualize the actual items.
+ */
+private fun flattenScrollContent(node: NativeUINode, horizontal: Boolean): ScrollContent {
+    val baseGap = node.layout?.gap ?: 0f
+
+    if (node.children.size == 1) {
+        val wrapper = node.children[0]
+        val isMatchingContainer = if (horizontal) wrapper.type == "row" else wrapper.type == "column"
+
+        if (isMatchingContainer && wrapper.children.isNotEmpty()) {
+            val wl = wrapper.layout
+            val ws = wrapper.style
+
+            // Transfer wrapper's padding → LazyColumn contentPadding
+            val padding = if (wl != null && hasEdges(wl.paddingTop, wl.paddingRight, wl.paddingBottom, wl.paddingLeft)) {
+                PaddingValues(
+                    start = wl.paddingLeft.dp,
+                    top = wl.paddingTop.dp,
+                    end = wl.paddingRight.dp,
+                    bottom = wl.paddingBottom.dp
+                )
+            } else {
+                PaddingValues(0.dp)
+            }
+
+            // Transfer wrapper's gap → LazyColumn item spacing
+            val gap = wl?.gap ?: baseGap
+
+            // Transfer wrapper's background → LazyColumn modifier
+            var wrapperMod: Modifier = Modifier
+            if (ws != null) {
+                val bg = argbToColor(ws.bgColor)
+                if (bg != Color.Transparent) {
+                    wrapperMod = wrapperMod.background(bg)
+                }
+            }
+
+            // Transfer wrapper's alignment → LazyColumn horizontalAlignment
+            val hAlign = resolveHorizontalAlignment(wl?.alignItems ?: 0)
+
+            android.util.Log.d("NativeUIPerf",
+                "ScrollView flattened: ${wrapper.children.size} items from ${wrapper.type} wrapper (gap=$gap)")
+
+            val hasSafeArea = wl != null && wl.safeArea != 0
+
+            return ScrollContent(wrapper.children, gap, padding, wrapperMod, hAlign, hasSafeArea)
+        }
+    }
+
+    return ScrollContent(node.children, baseGap, PaddingValues(0.dp), Modifier, Alignment.Start)
+}
+
 /* ── Modifier Building ────────────────────────────────── */
 
 @Composable
@@ -896,12 +1111,28 @@ private fun Modifier.maybeWeight(node: NativeUINode, scope: Any): Modifier {
 }
 
 private fun applyClickModifier(node: NativeUINode): Modifier {
-    return if (node.onPress != 0) {
-        Modifier.clickable {
-            NativeUIBridge.sendPressEvent(node.onPress, node.id)
+    val pressCb = node.onPress
+    val longPressCb = node.onLongPress
+
+    if (pressCb == 0 && longPressCb == 0) return Modifier
+
+    return if (longPressCb != 0) {
+        Modifier.pointerInput(pressCb, longPressCb) {
+            detectTapGestures(
+                onTap = {
+                    if (pressCb != 0) {
+                        NativeUIBridge.sendPressEvent(pressCb, node.id)
+                    }
+                },
+                onLongPress = {
+                    NativeUIBridge.sendLongPressEvent(longPressCb, node.id)
+                }
+            )
         }
     } else {
-        Modifier
+        Modifier.clickable {
+            NativeUIBridge.sendPressEvent(pressCb, node.id)
+        }
     }
 }
 

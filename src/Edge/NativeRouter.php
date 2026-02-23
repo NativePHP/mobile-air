@@ -28,6 +28,39 @@ class NativeRouter
     }
 
     /**
+     * Signal a view transition to the native renderer.
+     * Called before resetBuffers() so the Kotlin side knows how to
+     * animate the next screen swap.
+     */
+    protected static function signalTransition(Transition|string $type): void
+    {
+        $value = $type instanceof Transition ? $type->value : $type;
+
+        if (function_exists('nativephp_call')) {
+            nativephp_call('UI.SetTransition', json_encode(['type' => $value]));
+        }
+    }
+
+    /**
+     * Render a lightweight placeholder frame to shared memory.
+     *
+     * Called after resetBuffers() but before mount()/render() so the
+     * Kotlin renderer has a tree to animate to immediately, rather than
+     * waiting for the (potentially slow) first render of the new component.
+     */
+    protected static function renderPlaceholder(): void
+    {
+        if (! function_exists('nativephp_ui_render')) {
+            return;
+        }
+
+        $callbacks = new CallbackRegistry;
+        $placeholder = Elements\Column::make()->fill()->safeArea();
+
+        nativephp_ui_render($placeholder->toArray($callbacks));
+    }
+
+    /**
      * URI → component class registry.
      * Populated by Route::native() calls.
      *
@@ -151,6 +184,7 @@ class NativeRouter
                 $freshPush = false;
 
                 if (! empty($this->stack)) {
+                    static::signalTransition(Transition::SlideFromLeft);
                     static::resetBuffers();
                 }
 
@@ -173,6 +207,7 @@ class NativeRouter
                     }
 
                     static::debugLog("NAVIGATE: resolved to {$resolved['class']}, resetting buffers");
+                    static::signalTransition($intent->transition ?? Transition::SlideFromRight);
                     static::resetBuffers();
 
                     static::debugLog("NAVIGATE: creating component {$resolved['class']}");
@@ -204,6 +239,7 @@ class NativeRouter
                     }
 
                     static::debugLog("BACK: resetting buffers, stack=" . count($this->stack));
+                    static::signalTransition($intent->transition ?? Transition::SlideFromLeft);
                     static::resetBuffers();
                     break;
 
@@ -224,6 +260,7 @@ class NativeRouter
                     array_pop($this->stack);
 
                     static::debugLog("REPLACE: resetting buffers, stack=" . count($this->stack));
+                    static::signalTransition($intent->transition ?? Transition::Fade);
                     static::resetBuffers();
 
                     try {
@@ -255,6 +292,17 @@ class NativeRouter
                     $this->stack = [];
 
                     return $intent->uri;
+
+                case NavigationIntent::RESTART:
+                    static::debugLog("RESTART: hot reload — PHP will exit, Kotlin handles re-execution");
+                    // Unmount the entire stack — clean exit
+                    while (! empty($this->stack)) {
+                        $this->stack[count($this->stack) - 1]['component']->unmount();
+                        array_pop($this->stack);
+                    }
+
+                    // Return null — the .hot_restart file tells Kotlin to re-execute
+                    return null;
             }
         }
 

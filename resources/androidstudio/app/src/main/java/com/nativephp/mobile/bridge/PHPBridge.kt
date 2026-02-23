@@ -148,6 +148,16 @@ class PHPBridge(private val context: Context) {
         return lastPostData
     }
 
+    /**
+     * Re-execute a native route with a fresh PHP process.
+     * Used by hot reload to restart native UI with updated class definitions.
+     * Blocks the calling thread for the duration of the native UI session.
+     */
+    fun executeNativeRoute(uri: String) {
+        initialize()
+        nativeHandleRequestOnce("GET", uri, null, nativePhpScript)
+    }
+
     fun getLaravelPath(): String {
         val storageDir = context.getDir("storage", Context.MODE_PRIVATE)
         return "${storageDir.absolutePath}/laravel"
