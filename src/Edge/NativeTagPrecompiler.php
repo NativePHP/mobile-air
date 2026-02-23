@@ -2,40 +2,192 @@
 
 namespace Native\Mobile\Edge;
 
-use Illuminate\View\Compilers\BladeCompiler;
-use Illuminate\View\Compilers\ComponentTagCompiler;
-
-class NativeTagPrecompiler extends ComponentTagCompiler
+/**
+ * Compiles <native:*> tags directly into NativeElementCollector calls,
+ * bypassing the Blade component lifecycle (IoC, class instantiation,
+ * render(), sub-view resolution) for significantly faster rendering.
+ */
+class NativeTagPrecompiler
 {
-    public function __construct(BladeCompiler $blade)
-    {
-        parent::__construct(
-            $blade->getClassComponentAliases(),
-            $blade->getClassComponentNamespaces(),
-            $blade
-        );
-    }
+    /**
+     * Elements that capture their slot content as a text prop.
+     * tag name => prop name for the captured text
+     */
+    private const TEXT_ELEMENTS = [
+        'text' => 'text',
+        'button' => 'label',
+    ];
 
-    public function __invoke($value): string
+    private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
+
+    public function __invoke(string $value): string
     {
-        // Convert @press, @longPress, @change, @submit to underscored versions
+        // Convert @press, @longPress, @change, @submit, @dismiss to underscored versions
         // before Blade interprets @ as a directive
         $value = preg_replace('/@(press|longPress|change|submit|dismiss)=/', '_$1=', $value);
 
-        // First transform native: tags to x-native- tags
-        $value = preg_replace(
-            '/<\/\s*native\s*:\s*([a-zA-Z0-9\-_\.]+)\s*>/',
-            '</x-native-$1>',
+        // 1. Self-closing tags: <native:type attrs />
+        $value = preg_replace_callback(
+            '/<\s*native\s*:\s*([a-zA-Z0-9\-_]+)\s*((?:[^>"\']*(?:"[^"]*"|\'[^\']*\')[^>"\']*)*|[^>"\']*?)\s*\/>/s',
+            fn ($m) => $this->compileSelfClosing($m[1], trim($m[2] ?? '')),
             $value
         );
 
-        $value = preg_replace(
-            '/<\s*native\s*:\s*([a-zA-Z0-9\-_\.]+)/',
-            '<x-native-$1',
+        // 2. Closing tags: </native:type>
+        $value = preg_replace_callback(
+            '/<\/\s*native\s*:\s*([a-zA-Z0-9\-_]+)\s*>/s',
+            fn ($m) => $this->compileClosing($m[1]),
             $value
         );
 
-        // Then use parent ComponentTagCompiler to compile the x-native- tags
-        return $this->compileTags($value);
+        // 3. Opening tags: <native:type attrs>
+        $value = preg_replace_callback(
+            '/<\s*native\s*:\s*([a-zA-Z0-9\-_]+)\s*((?:[^>"\']*(?:"[^"]*"|\'[^\']*\')[^>"\']*)*|[^>"\']*?)\s*>/s',
+            fn ($m) => $this->compileOpening($m[1], trim($m[2] ?? '')),
+            $value
+        );
+
+        return $value;
+    }
+
+    private function tagToType(string $tag): string
+    {
+        return str_replace('-', '_', $tag);
+    }
+
+    private function compileSelfClosing(string $tag, string $rawAttrs): string
+    {
+        $type = $this->tagToType($tag);
+        $attrs = $this->compileAttributes($rawAttrs);
+
+        return '<?php '.self::C."::leaf('{$type}', {$attrs}); ?>";
+    }
+
+    private function compileOpening(string $tag, string $rawAttrs): string
+    {
+        $type = $this->tagToType($tag);
+        $attrs = $this->compileAttributes($rawAttrs);
+
+        // Text-capture elements: save attrs and start output buffering
+        if (isset(self::TEXT_ELEMENTS[$tag])) {
+            return "<?php \$__nativeSlotAttrs = {$attrs}; ob_start(); ?>";
+        }
+
+        // Container: push onto collector stack
+        return '<?php '.self::C."::open('{$type}', {$attrs}); ?>";
+    }
+
+    private function compileClosing(string $tag): string
+    {
+        if (isset(self::TEXT_ELEMENTS[$tag])) {
+            $propName = self::TEXT_ELEMENTS[$tag];
+            $type = $this->tagToType($tag);
+
+            $code = '<?php $__nativeSlot = trim(html_entity_decode(strip_tags(ob_get_clean()), ENT_QUOTES, \'UTF-8\'));';
+
+            if ($tag === 'button') {
+                $code .= " if (\$__nativeSlot !== '' && !isset(\$__nativeSlotAttrs['label'])) { \$__nativeSlotAttrs['label'] = \$__nativeSlot; }";
+            } else {
+                $code .= " if (\$__nativeSlot !== '') { \$__nativeSlotAttrs['{$propName}'] = \$__nativeSlot; }";
+            }
+
+            $code .= ' '.self::C."::leaf('{$type}', \$__nativeSlotAttrs); ?>";
+
+            return $code;
+        }
+
+        // Container: pop from collector stack
+        return '<?php '.self::C.'::close(); ?>';
+    }
+
+    /**
+     * Compile an attribute value, interpolating Blade {{ }} and {!! !!} syntax.
+     *
+     * In native context we skip e() since there's no HTML to escape.
+     *   "{{ $category }}"          → ($category)
+     *   "{!! $raw !!}"             → ($raw)
+     *   "Price: {{ $price }}/night" → 'Price: ' . ($price) . '/night'
+     *   "plain text"                → 'plain text'
+     */
+    private function compileAttributeValue(string $value): string
+    {
+        // No Blade interpolation — return as literal string
+        if (! preg_match('/\{\{|\{!!/', $value)) {
+            return "'".addslashes($value)."'";
+        }
+
+        // Split on {{ expr }} and {!! expr !!} boundaries, keeping delimiters
+        $parts = preg_split('/(\{\{.*?\}\}|\{!!.*?!!\})/s', $value, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
+
+        $segments = [];
+
+        foreach ($parts as $part) {
+            if (preg_match('/^\{\{\s*(.+?)\s*\}\}$/s', $part, $m)) {
+                $segments[] = '('.trim($m[1]).')';
+            } elseif (preg_match('/^\{!!\s*(.+?)\s*!!\}$/s', $part, $m)) {
+                $segments[] = '('.trim($m[1]).')';
+            } else {
+                $segments[] = "'".addslashes($part)."'";
+            }
+        }
+
+        return count($segments) === 1 ? $segments[0] : implode(' . ', $segments);
+    }
+
+    private function compileAttributes(string $rawAttrs): string
+    {
+        if ($rawAttrs === '') {
+            return '[]';
+        }
+
+        $parts = [];
+        $remaining = $rawAttrs;
+
+        while (($remaining = ltrim($remaining)) !== '') {
+            // Dynamic attribute :name="expr"
+            if (preg_match('/^:([a-zA-Z0-9_\-]+)\s*=\s*"([^"]*)"/s', $remaining, $m)) {
+                $parts[] = "'".addslashes($m[1])."' => (".$m[2].')';
+                $remaining = substr($remaining, strlen($m[0]));
+
+                continue;
+            }
+
+            // Dynamic attribute :name='expr'
+            if (preg_match("/^:([a-zA-Z0-9_\\-]+)\\s*=\\s*'([^']*)'/s", $remaining, $m)) {
+                $parts[] = "'".addslashes($m[1])."' => (".$m[2].')';
+                $remaining = substr($remaining, strlen($m[0]));
+
+                continue;
+            }
+
+            // Static attribute name="value"
+            if (preg_match('/^([a-zA-Z0-9_\-]+)\s*=\s*"([^"]*)"/s', $remaining, $m)) {
+                $parts[] = "'".addslashes($m[1])."' => ".$this->compileAttributeValue($m[2]);
+                $remaining = substr($remaining, strlen($m[0]));
+
+                continue;
+            }
+
+            // Static attribute name='value'
+            if (preg_match("/^([a-zA-Z0-9_\\-]+)\\s*=\\s*'([^']*)'/s", $remaining, $m)) {
+                $parts[] = "'".addslashes($m[1])."' => ".$this->compileAttributeValue($m[2]);
+                $remaining = substr($remaining, strlen($m[0]));
+
+                continue;
+            }
+
+            // Boolean attribute (standalone word)
+            if (preg_match('/^([a-zA-Z0-9_\-]+)/', $remaining, $m)) {
+                $parts[] = "'".$m[1]."' => true";
+                $remaining = substr($remaining, strlen($m[0]));
+
+                continue;
+            }
+
+            // Skip unrecognized character
+            $remaining = substr($remaining, 1);
+        }
+
+        return '['.implode(', ', $parts).']';
     }
 }

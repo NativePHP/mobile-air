@@ -143,7 +143,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->configureViteHotFile();
 
         $blade = app('blade.compiler');
-        $blade->precompiler(new NativeTagPrecompiler($blade));
+        $blade->precompiler(new NativeTagPrecompiler);
 
         Route::macro('native', function (string $uri, string $componentClass) {
             NativeRouter::register($uri, $componentClass);
