@@ -243,7 +243,9 @@ abstract class Element
 
         if (! empty($this->children)) {
             $node['children'] = array_map(
-                fn (Element $child) => $child->toArray($registry, $nextId),
+                function (Element $child) use ($registry, &$nextId) {
+                    return $child->toArray($registry, $nextId);
+                },
                 $this->children
             );
         }
