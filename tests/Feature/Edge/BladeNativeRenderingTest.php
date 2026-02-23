@@ -24,6 +24,8 @@ use Native\Mobile\Edge\Elements\Chip;
 use Native\Mobile\Edge\Elements\ListItem;
 use Native\Mobile\Edge\Elements\Tab;
 use Native\Mobile\Edge\Elements\TabRow;
+use Native\Mobile\Edge\Elements\ButtonGroup;
+use Native\Mobile\Edge\Elements\Carousel;
 use Native\Mobile\Edge\NativeElementCollector;
 
 beforeEach(function () {
@@ -50,6 +52,8 @@ beforeEach(function () {
     ElementRegistry::register('tab_row', TabRow::class);
     ElementRegistry::register('tab', Tab::class);
     ElementRegistry::register('bottom_sheet', BottomSheet::class);
+    ElementRegistry::register('button_group', ButtonGroup::class);
+    ElementRegistry::register('carousel', Carousel::class);
 
     // Register a view path for test templates
     $testViewPath = __DIR__.'/views';
