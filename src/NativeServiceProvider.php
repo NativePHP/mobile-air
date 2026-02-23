@@ -25,9 +25,16 @@ use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\JumpCommand;
+use Native\Mobile\Commands\MakeNativeComponentCommand;
+use Native\Mobile\Commands\RemoveNativeComponentCommand;
+use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\WatchCommand;
+use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
+use Illuminate\Support\Facades\Route;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -63,6 +70,9 @@ class NativeServiceProvider extends PackageServiceProvider
                 PluginRegisterCommand::class,
                 PluginUninstallCommand::class,
                 PluginValidateCommand::class,
+                MakeNativeComponentCommand::class,
+                RemoveNativeComponentCommand::class,
+                ValidateCommand::class,
             ]);
     }
 
@@ -126,6 +136,7 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         $this->setupComposerPostUpdateScript();
         $this->registerNativeComponents();
+        $this->registerUiPluginComponents();
         $this->registerMiddleware();
         $this->registerFilesystems();
         $this->registerBladeDirectives();
@@ -133,6 +144,24 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $blade = app('blade.compiler');
         $blade->precompiler(new NativeTagPrecompiler($blade));
+
+        Route::macro('native', function (string $uri, string $componentClass) {
+            NativeRouter::register($uri, $componentClass);
+
+            return Route::get($uri, function () use ($componentClass) {
+                $router = new NativeRouter;
+                $resolved = NativeRouter::resolve('/'.ltrim(request()->path(), '/'));
+                $params = $resolved ? $resolved['params'] : [];
+
+                $exitUri = $router->start($componentClass, $params);
+
+                if ($exitUri !== null) {
+                    return redirect($exitUri);
+                }
+
+                return '';
+            });
+        });
     }
 
     protected function registerBladeDirectives(): void
@@ -151,6 +180,21 @@ class NativeServiceProvider extends PackageServiceProvider
 
         Blade::if('android', function () {
             return Facades\System::isAndroid();
+        });
+
+        Blade::directive('nativeError', function ($expression) {
+            return "<?php
+                \$__nativeErrorArgs = [{$expression}];
+                \$__nativeErrorField = \$__nativeErrorArgs[0];
+                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? '#FF0000';
+                if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
+                    \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
+                        'text' => \$errors[\$__nativeErrorField],
+                        'color' => \$__nativeErrorColor,
+                        'fontSize' => 12,
+                    ]);
+                }
+            ?>";
         });
     }
 
@@ -327,6 +371,43 @@ class NativeServiceProvider extends PackageServiceProvider
         }
     }
 
+    /**
+     * Register UI components from installed nativephp-ui-plugin packages.
+     *
+     * For each component declared in a UI plugin's manifest:
+     * - Registers the Element class in ElementRegistry (for NativeElementCollector resolution)
+     * - Registers the Blade component (for <native:vendor-component> tag support)
+     */
+    protected function registerUiPluginComponents(): void
+    {
+        try {
+            $registry = $this->app->make(PluginRegistry::class);
+        } catch (\Throwable) {
+            return;
+        }
+
+        foreach ($registry->components() as $component) {
+            $type = $component['type'];
+            $elementClass = $component['element'];
+            $bladeClass = $component['blade'];
+
+            // Register in ElementRegistry so NativeElementCollector's default case resolves it
+            if (class_exists($elementClass)) {
+                ElementRegistry::register($type, $elementClass);
+            }
+
+            // Convert type to kebab Blade tag name:
+            // "button" → "native-button"
+            // "stripe.payment_sheet" → "native-stripe-payment-sheet"
+            $kebabName = str_replace(['.', '_'], '-', $type);
+            $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', $kebabName)), '-');
+
+            if (class_exists($bladeClass)) {
+                Blade::component("native-{$kebabName}", $bladeClass);
+            }
+        }
+    }
+
     protected function registerNativeComponents(): void
     {
         $componentPath = __DIR__.'/Edge/Components';
@@ -354,8 +435,8 @@ class NativeServiceProvider extends PackageServiceProvider
             // Get just the class name for the component tag
             $className = basename($classPath);
 
-            // Skip the base NativeComponent class
-            if ($className === 'NativeComponent') {
+            // Skip the abstract base class
+            if ($className === 'NativeBladeComponent') {
                 continue;
             }
 

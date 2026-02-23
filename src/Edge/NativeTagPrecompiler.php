@@ -18,6 +18,10 @@ class NativeTagPrecompiler extends ComponentTagCompiler
 
     public function __invoke($value): string
     {
+        // Convert @press, @longPress, @change, @submit to underscored versions
+        // before Blade interprets @ as a directive
+        $value = preg_replace('/@(press|longPress|change|submit|dismiss)=/', '_$1=', $value);
+
         // First transform native: tags to x-native- tags
         $value = preg_replace(
             '/<\/\s*native\s*:\s*([a-zA-Z0-9\-_\.]+)\s*>/',

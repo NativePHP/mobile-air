@@ -13,12 +13,14 @@ import androidx.activity.compose.setContent
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.bridge.LaravelEnvironment
 import com.nativephp.mobile.bridge.registerBridgeFunctions
+import com.nativephp.mobile.bridge.plugins.registerPluginRenderers
 import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
+import com.nativephp.mobile.ui.nativerender.NativeRendererRegistry
 import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.nativephp.mobile.utils.WebViewProvider
 import com.nativephp.mobile.security.LaravelCookieStore
@@ -119,6 +121,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Register bridge functions early, before PHP code can execute
         Log.d("MainActivity", "🔌 Registering bridge functions...")
         registerBridgeFunctions(this, applicationContext)
+        NativeRendererRegistry.registerBuiltins()
+        registerPluginRenderers()
         Log.d("MainActivity", "✅ Bridge functions registered")
 
         // Start watching for native UI tree updates from PHP
@@ -162,7 +166,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
 
         onBackPressedDispatcher.addCallback(this) {
-            if (webView.canGoBack()) {
+            if (NativeUIBridge.isActive.value) {
+                NativeUIBridge.sendSystemBackEvent()
+            } else if (webView.canGoBack()) {
                 webView.goBack()
             } else {
                 finish()

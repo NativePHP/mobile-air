@@ -1,0 +1,3 @@
+<native:column fill center>
+    <native:text fontSize="24" fontWeight="700">{{ CLASS }}</native:text>
+</native:column>

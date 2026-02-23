@@ -72,8 +72,8 @@ trait InstallsAndroid
         $includeIcu = $this->includeIcu ?? false;
 
         $url = $includeIcu
-            ? "https://bin.nativephp.com/nativephp-android-3.1.0-php8.5.3-with-icu.zip"
-            : "https://bin.nativephp.com/nativephp-android-3.1.0-php8.5.3-without-icu.zip";
+            ? "https://bin.nativephp.com/android-3.1.0-php8.5.3-icu_2.zip"
+            : "https://bin.nativephp.com/android-3.1.0-php8.5.3_2.zip";
 
         $zipFile = storage_path('android-temp.zip');
         $extractPath = storage_path('android-temp');

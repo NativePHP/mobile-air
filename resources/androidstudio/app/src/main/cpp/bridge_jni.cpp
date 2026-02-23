@@ -271,7 +271,7 @@ struct NpuiSharedRegion {
     std::atomic<uint32_t> running;
 };
 
-#define NPUI_MAGIC       0x4E505549  /* "NPUI" */
+#define NPUI_MAGIC       0x4E505632  /* "NPV2" */
 #define NPUI_EVENT_MAGIC 0x4E504556  /* "NPEV" */
 
 static NpuiSharedRegion* g_npui_direct_ptr = nullptr;
@@ -349,7 +349,10 @@ static jbyteArray ui_get_tree_buffer(JNIEnv* env, jclass) {
     if (!region) return nullptr;
 
     uint32_t size = region->tree_size.load(std::memory_order_acquire);
-    if (size == 0) return nullptr;
+    if (size == 0 || size > (2 * 1024 * 1024)) return nullptr;
+
+    /* Re-validate region after reading size (shutdown may have occurred) */
+    if (region->shutdown.load(std::memory_order_acquire)) return nullptr;
 
     uint8_t* tree_buf = (uint8_t*)region + region->tree_offset;
 
@@ -390,6 +393,13 @@ static jint ui_wait_tree_update(JNIEnv*, jclass, jint current_version, jint time
                 pthread_mutex_unlock(&region->tree_mutex);
                 return 0;
             }
+        }
+
+        /* After waking, re-validate region pointer — shutdown may have
+         * unregistered and unmapped the region while we were waiting. */
+        if (g_npui_direct_ptr == nullptr && get_ui_region() == nullptr) {
+            pthread_mutex_unlock(&region->tree_mutex);
+            return -1;
         }
     }
 

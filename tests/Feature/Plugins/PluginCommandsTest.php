@@ -58,6 +58,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test plugin description')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -86,6 +87,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -116,6 +118,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'A cool plugin')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -148,6 +151,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -177,6 +181,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -205,6 +210,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -233,6 +239,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'AwesomePlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -260,6 +267,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -308,6 +316,7 @@ class PluginCommandsTest extends TestCase
             '--path' => $this->testPluginPath,
             '--force' => true,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no')
@@ -335,6 +344,7 @@ class PluginCommandsTest extends TestCase
             '--namespace' => 'MyPlugin',
             '--path' => $this->testPluginPath,
         ])
+            ->expectsQuestion('What type of plugin are you creating?', 'system')
             ->expectsQuestion('Describe your plugin briefly', 'Test')
             ->expectsConfirmation('Include Boost AI guidelines?', 'no')
             ->expectsConfirmation('Install AI agents for plugin development?', 'no');

@@ -1,0 +1,14 @@
+<?php
+
+namespace {{ NAMESPACE }};
+
+use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\NativeComponent;
+
+class {{ CLASS }} extends NativeComponent
+{
+    public function render(): Element
+    {
+        return $this->view('{{ VIEW_NAME }}');
+    }
+}

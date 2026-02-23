@@ -7,6 +7,8 @@ use Illuminate\Support\Collection;
 
 class PluginDiscovery
 {
+    protected const PLUGIN_TYPES = ['nativephp-plugin', 'nativephp-ui-plugin'];
+
     protected ?Collection $cachedPlugins = null;
 
     protected ?array $allowedPlugins = null;
@@ -42,7 +44,7 @@ class PluginDiscovery
         $allowedPlugins = $this->getAllowedPlugins();
 
         return $this->cachedPlugins = collect($packages)
-            ->filter(fn ($package) => ($package['type'] ?? null) === 'nativephp-plugin')
+            ->filter(fn ($package) => in_array($package['type'] ?? null, self::PLUGIN_TYPES, true))
             ->filter(fn ($package) => $this->isPluginAllowed($package, $allowedPlugins))
             ->map(fn ($package) => $this->loadPlugin($package))
             ->filter()
@@ -67,7 +69,7 @@ class PluginDiscovery
         $packages = $installed['packages'] ?? $installed;
 
         return collect($packages)
-            ->filter(fn ($package) => ($package['type'] ?? null) === 'nativephp-plugin')
+            ->filter(fn ($package) => in_array($package['type'] ?? null, self::PLUGIN_TYPES, true))
             ->map(fn ($package) => $this->loadPlugin($package))
             ->filter()
             ->values();
@@ -166,7 +168,8 @@ class PluginDiscovery
                 path: $packagePath,
                 manifest: $manifest,
                 description: $package['description'] ?? '',
-                serviceProvider: $serviceProvider
+                serviceProvider: $serviceProvider,
+                composerType: $package['type'] ?? 'nativephp-plugin'
             );
         } catch (\Exception $e) {
             // Log error: Failed to load plugin

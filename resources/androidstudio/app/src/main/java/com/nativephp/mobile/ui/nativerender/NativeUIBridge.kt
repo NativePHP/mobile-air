@@ -128,8 +128,12 @@ class NativeUIBridge private constructor() {
          * Stop the tree watcher thread.
          */
         fun stopWatching() {
-            watcherThread?.interrupt()
+            val thread = watcherThread
             watcherThread = null
+            thread?.interrupt()
+            try {
+                thread?.join(500)
+            } catch (_: InterruptedException) { }
             isActive.value = false
             currentTree.value = null
         }
@@ -170,6 +174,48 @@ class NativeUIBridge private constructor() {
             buf.putShort(textBytes.size.toShort())
             buf.put(textBytes)
             nativeWriteEvent(EventType.SUBMIT, callbackId, nodeId, buf.array())
+        }
+
+        fun sendSystemBackEvent() {
+            nativeWriteEvent(EventType.SYSTEM_BACK, 0, 0, null)
+        }
+
+        fun sendSliderChangeEvent(callbackId: Int, nodeId: Int, value: Float) {
+            val buf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putFloat(value)
+            nativeWriteEvent(EventType.SLIDER_CHANGE, callbackId, nodeId, buf.array())
+        }
+
+        fun sendCheckboxChangeEvent(callbackId: Int, nodeId: Int, value: Boolean) {
+            val buf = ByteBuffer.allocate(1).order(ByteOrder.LITTLE_ENDIAN)
+            buf.put(if (value) 1.toByte() else 0.toByte())
+            nativeWriteEvent(EventType.CHECKBOX_CHANGE, callbackId, nodeId, buf.array())
+        }
+
+        fun sendRadioChangeEvent(callbackId: Int, nodeId: Int, value: String) {
+            val textBytes = value.toByteArray(Charsets.UTF_8)
+            val buf = ByteBuffer.allocate(2 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putShort(textBytes.size.toShort())
+            buf.put(textBytes)
+            nativeWriteEvent(EventType.RADIO_CHANGE, callbackId, nodeId, buf.array())
+        }
+
+        fun sendTabChangeEvent(callbackId: Int, nodeId: Int, index: Int) {
+            val buf = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putShort(index.toShort())
+            nativeWriteEvent(EventType.TAB_CHANGE, callbackId, nodeId, buf.array())
+        }
+
+        fun sendSheetDismissEvent(callbackId: Int, nodeId: Int) {
+            nativeWriteEvent(EventType.SHEET_DISMISS, callbackId, nodeId, null)
+        }
+
+        fun sendSelectChangeEvent(callbackId: Int, nodeId: Int, value: String) {
+            val textBytes = value.toByteArray(Charsets.UTF_8)
+            val buf = ByteBuffer.allocate(2 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putShort(textBytes.size.toShort())
+            buf.put(textBytes)
+            nativeWriteEvent(EventType.SELECT_CHANGE, callbackId, nodeId, buf.array())
         }
 
         /* ── Utilities ── */

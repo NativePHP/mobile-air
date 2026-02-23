@@ -10,7 +10,8 @@ class Plugin
         public readonly string $path,
         public readonly PluginManifest $manifest,
         public readonly string $description = '',
-        public readonly ?string $serviceProvider = null
+        public readonly ?string $serviceProvider = null,
+        public readonly string $composerType = 'nativephp-plugin'
     ) {}
 
     public function getNamespace(): string
@@ -26,6 +27,21 @@ class Plugin
     public function getBridgeFunctions(): array
     {
         return $this->manifest->bridgeFunctions;
+    }
+
+    public function getComponents(): array
+    {
+        return $this->manifest->components;
+    }
+
+    public function isUiPlugin(): bool
+    {
+        return $this->composerType === 'nativephp-ui-plugin';
+    }
+
+    public function isSystemPlugin(): bool
+    {
+        return $this->composerType === 'nativephp-plugin';
     }
 
     public function getAndroidPermissions(): array

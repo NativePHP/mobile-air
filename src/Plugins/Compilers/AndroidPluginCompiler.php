@@ -142,6 +142,7 @@ class AndroidPluginCompiler
 
         if ($allPlugins->isEmpty()) {
             $this->generateEmptyRegistration();
+            $this->generateEmptyRendererRegistration();
 
             return;
         }
@@ -164,12 +165,15 @@ class AndroidPluginCompiler
         $allPlugins->filter(fn (Plugin $p) => $p->hasAndroidCode())
             ->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));
 
-        // Generate the registration file
+        // Generate the bridge function registration file
         if ($hasAndroidFunctions) {
             $this->generateBridgeFunctionRegistration($allPlugins);
         } else {
             $this->generateEmptyRegistration();
         }
+
+        // Generate UI plugin renderer registration
+        $this->generateRendererRegistration($allPlugins);
 
         // Merge AndroidManifest entries (even if no bridge functions)
         $this->mergeManifestEntries($allPlugins);
@@ -341,6 +345,76 @@ class AndroidPluginCompiler
         $content = Stub::make('android/PluginBridgeFunctionRegistration.empty.kt.stub')->render();
 
         $path = $this->generatedPath.'/PluginBridgeFunctionRegistration.kt';
+        $this->files->put($path, $content);
+        $this->generatedFiles[] = $path;
+    }
+
+    /**
+     * Generate PluginRendererRegistration.kt for UI plugin renderers
+     */
+    protected function generateRendererRegistration(Collection $plugins): void
+    {
+        $registrations = [];
+
+        foreach ($plugins as $plugin) {
+            foreach ($plugin->getComponents() as $component) {
+                if (empty($component['android_renderer'])) {
+                    continue;
+                }
+
+                $registrations[] = [
+                    'type' => $component['type'],
+                    'renderer' => $component['android_renderer'],
+                    'plugin' => $plugin->name,
+                ];
+            }
+        }
+
+        if (empty($registrations)) {
+            $this->generateEmptyRendererRegistration();
+
+            return;
+        }
+
+        $imports = collect($registrations)
+            ->pluck('renderer')
+            ->unique()
+            ->sort()
+            ->map(fn ($renderer) => "import {$renderer}")
+            ->implode("\n");
+
+        $registerCalls = collect($registrations)
+            ->map(function ($reg) {
+                // Extract just the class name from FQN: com.vendor.ui.RendererName → RendererName
+                $parts = explode('.', $reg['renderer']);
+                $className = end($parts);
+
+                return "    // Plugin: {$reg['plugin']}\n    NativeRendererRegistry.register(\"{$reg['type']}\", NodeRenderer { node, modifier ->\n        {$className}.Render(node, modifier)\n    })";
+            })
+            ->implode("\n\n");
+
+        $content = Stub::make('android/PluginRendererRegistration.kt.stub')
+            ->replaceAll([
+                'IMPORTS' => $imports,
+                'REGISTRATIONS' => $registerCalls,
+            ])
+            ->render();
+
+        $path = $this->generatedPath.'/PluginRendererRegistration.kt';
+        $this->files->put($path, $content);
+        $this->generatedFiles[] = $path;
+    }
+
+    /**
+     * Generate empty renderer registration when no UI plugins
+     */
+    protected function generateEmptyRendererRegistration(): void
+    {
+        $this->files->ensureDirectoryExists($this->generatedPath);
+
+        $content = Stub::make('android/PluginRendererRegistration.empty.kt.stub')->render();
+
+        $path = $this->generatedPath.'/PluginRendererRegistration.kt';
         $this->files->put($path, $content);
         $this->generatedFiles[] = $path;
     }
