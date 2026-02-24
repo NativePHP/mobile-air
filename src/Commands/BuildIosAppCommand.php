@@ -149,7 +149,7 @@ class BuildIosAppCommand extends Command
         $source = base_path();
 
         $excludedDirs = array_merge(
-            config('nativephp.cleanup_exclude_files', []),
+            config('nativephp.cleanup_exclude_files') ?? [],
             [
                 'vendor/nativephp/mobile/resources',
                 'vendor/nativephp/mobile/vendor',
