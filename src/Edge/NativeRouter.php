@@ -22,9 +22,7 @@ class NativeRouter
      */
     protected static function resetBuffers(): void
     {
-        if (function_exists('nativephp_ui_reset')) {
-            nativephp_ui_reset();
-        }
+        nativephp_element_reset();
     }
 
     /**
@@ -50,14 +48,11 @@ class NativeRouter
      */
     protected static function renderPlaceholder(): void
     {
-        if (! function_exists('nativephp_ui_render')) {
-            return;
-        }
-
         $callbacks = new CallbackRegistry;
         $placeholder = Elements\Column::make()->fill()->safeArea();
+        $tree = $placeholder->toArray($callbacks);
 
-        nativephp_ui_render($placeholder->toArray($callbacks));
+        nativephp_element_publish($tree);
     }
 
     /**
@@ -128,7 +123,7 @@ class NativeRouter
      */
     public function start(string $class, array $params = []): ?string
     {
-        nativephp_ui_init();
+        nativephp_element_init();
 
         try {
             static::debugLog("start: class=$class");
@@ -145,7 +140,7 @@ class NativeRouter
             static::debugLog("start EXCEPTION: " . $e->getMessage() . "\n" . $e->getTraceAsString());
             return null;
         } finally {
-            nativephp_ui_shutdown();
+            nativephp_element_shutdown();
         }
     }
 

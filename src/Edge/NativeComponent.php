@@ -16,8 +16,6 @@ abstract class NativeComponent
 
     protected ?NativeRouter $router = null;
 
-    protected ?array $previousTree = null;
-
     protected array $params = [];
 
     protected array $navigationData = [];
@@ -96,44 +94,23 @@ abstract class NativeComponent
     {
         $this->callbacks = new CallbackRegistry;
 
-        nativephp_ui_init();
+        nativephp_element_init();
 
         $this->mount();
-
-        $hotReloadPending = false;
 
         while ($this->running) {
             $this->callbacks->reset();
 
             try {
                 $tree = $this->render()->toArray($this->callbacks);
-
-                $patches = $this->previousTree !== null
-                    ? $this->diffTree($this->previousTree, $tree)
-                    : null;
-
-                if ($patches === null) {
-                    // First frame or structural change — send full tree
-                    nativephp_ui_render($tree);
-                } elseif (! empty($patches)) {
-                    // Incremental update — send patches
-                    if (function_exists('nativephp_ui_patch')) {
-                        nativephp_ui_patch($patches);
-                    } else {
-                        nativephp_ui_render($tree);
-                    }
-                }
-                // else: empty patches — nothing changed, skip entirely
-
-                $this->previousTree = $tree;
+                nativephp_element_publish($tree);
                 $this->hasError = false;
             } catch (\Throwable $e) {
                 NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage());
                 $this->renderErrorScreen($e);
-                $this->previousTree = null;
             }
 
-            $event = nativephp_ui_wait_event(-1);
+            $event = nativephp_element_wait_event(-1);
 
             if ($event === null) {
                 continue;
@@ -160,7 +137,7 @@ abstract class NativeComponent
 
         $this->unmount();
 
-        nativephp_ui_shutdown();
+        nativephp_element_shutdown();
     }
 
     /**
@@ -173,7 +150,6 @@ abstract class NativeComponent
         $this->running = true;
         $this->navigationIntent = null;
         $this->hasError = false;
-        $this->previousTree = null;
 
         while ($this->running) {
             $this->callbacks->reset();
@@ -185,39 +161,22 @@ abstract class NativeComponent
                 $tree = $element->toArray($this->callbacks);
                 $t2 = microtime(true);
 
-                $patches = $this->previousTree !== null
-                    ? $this->diffTree($this->previousTree, $tree)
-                    : null;
-
-                if ($patches === null) {
-                    // First frame or structural change — send full tree
-                    nativephp_ui_render($tree);
-                } elseif (! empty($patches)) {
-                    // Incremental update — send patches
-                    if (function_exists('nativephp_ui_patch')) {
-                        nativephp_ui_patch($patches);
-                    } else {
-                        nativephp_ui_render($tree);
-                    }
-                }
-                // else: empty patches — nothing changed, skip entirely
+                nativephp_element_publish($tree);
 
                 $t3 = microtime(true);
                 NativeRouter::debugLog(sprintf(
-                    'PERF [%s] render=%.1fms toArray=%.1fms shm=%.1fms total=%.1fms',
+                    'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
                     static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
                     ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
                 ));
 
-                $this->previousTree = $tree;
                 $this->hasError = false;
             } catch (\Throwable $e) {
                 NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage() . "\n" . $e->getTraceAsString());
                 $this->renderErrorScreen($e);
-                $this->previousTree = null;
             }
 
-            $event = nativephp_ui_wait_event(-1);
+            $event = nativephp_element_wait_event(-1);
 
             if ($event === null) {
                 continue;
@@ -343,85 +302,6 @@ abstract class NativeComponent
         $this->navigationData = $data;
     }
 
-    // ── Tree Diffing ────────────────────────────────
-
-    /**
-     * Compare two trees and produce a list of patch operations.
-     * Returns null if structural changes require a full tree send.
-     * Returns empty array if nothing changed.
-     */
-    protected function diffTree(array $old, array $new): ?array
-    {
-        $patches = [];
-
-        if (! $this->diffNode($old, $new, $patches)) {
-            return null; // structural change — fall back to full tree
-        }
-
-        // Too many patches — cheaper to send the full tree
-        if (count($patches) > 50) {
-            return null;
-        }
-
-        return $patches;
-    }
-
-    /**
-     * Recursively diff two nodes. Returns false if structural change detected.
-     */
-    protected function diffNode(array $old, array $new, array &$patches): bool
-    {
-        // Different type or different id → structural change
-        if (($old['type'] ?? '') !== ($new['type'] ?? '') ||
-            ($old['id'] ?? 0) !== ($new['id'] ?? 0)) {
-            return false;
-        }
-
-        $nodeId = $new['id'] ?? 0;
-
-        // Compare props
-        if (($old['props'] ?? []) !== ($new['props'] ?? [])) {
-            $patches[] = ['op' => 'update_props', 'id' => $nodeId, 'props' => $new['props'] ?? []];
-        }
-
-        // Compare layout
-        if (($old['layout'] ?? []) !== ($new['layout'] ?? [])) {
-            $patches[] = ['op' => 'update_layout', 'id' => $nodeId, 'layout' => $new['layout'] ?? []];
-        }
-
-        // Compare style
-        if (($old['style'] ?? []) !== ($new['style'] ?? [])) {
-            $patches[] = ['op' => 'update_style', 'id' => $nodeId, 'style' => $new['style'] ?? []];
-        }
-
-        // Compare callbacks
-        if (($old['on_press'] ?? 0) !== ($new['on_press'] ?? 0) ||
-            ($old['on_long_press'] ?? 0) !== ($new['on_long_press'] ?? 0)) {
-            $patches[] = [
-                'op' => 'update_callbacks',
-                'id' => $nodeId,
-                'on_press' => $new['on_press'] ?? 0,
-                'on_long_press' => $new['on_long_press'] ?? 0,
-            ];
-        }
-
-        // Compare children
-        $oldChildren = $old['children'] ?? [];
-        $newChildren = $new['children'] ?? [];
-
-        if (count($oldChildren) !== count($newChildren)) {
-            return false; // child count changed — structural change
-        }
-
-        foreach ($newChildren as $i => $newChild) {
-            if (! $this->diffNode($oldChildren[$i], $newChild, $patches)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     // ── Error screen ────────────────────────────────
 
     protected function renderErrorScreen(\Throwable $e): void
@@ -494,7 +374,8 @@ abstract class NativeComponent
 
             $screen->addChild($content);
 
-            nativephp_ui_render($screen->toArray($callbacks));
+            $errorTree = $screen->toArray($callbacks);
+            nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             // If even the error screen fails, just log it
             NativeRouter::debugLog("Error screen render failed: " . $renderError->getMessage());
@@ -535,6 +416,23 @@ abstract class NativeComponent
         // have cached bytecode for the old compiled views
         if (function_exists('opcache_reset')) {
             opcache_reset();
+        }
+    }
+
+    // ── Model binding ──────────────────────────────
+
+    public function __syncProperty(string $property, mixed $value): void
+    {
+        if (! property_exists($this, $property)) {
+            return;
+        }
+
+        $this->{$property} = $value;
+
+        $hook = 'updated'.ucfirst($property);
+
+        if (method_exists($this, $hook)) {
+            $this->{$hook}($value);
         }
     }
 

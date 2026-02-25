@@ -28,6 +28,12 @@ class CallbackRegistry
         return $this->map[$id] ?? null;
     }
 
+    /** Look up a callback ID by its expression string. */
+    public function lookup(string $expression): ?int
+    {
+        return $this->expressionMap[$expression] ?? null;
+    }
+
     /**
      * Soft reset — keep ID mappings stable across frames.
      * Same expression always gets the same ID.

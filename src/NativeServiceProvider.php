@@ -159,6 +159,11 @@ class NativeServiceProvider extends PackageServiceProvider
                     return redirect($exitUri);
                 }
 
+                // Hot reload exit — return 204 so the WebView doesn't load stale content
+                if (file_exists(storage_path('framework/.hot_restart'))) {
+                    return response()->noContent();
+                }
+
                 return '';
             });
         });
