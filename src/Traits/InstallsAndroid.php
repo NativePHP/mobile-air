@@ -96,39 +96,48 @@ trait InstallsAndroid
             ? $urls[$phpVersion]['icu']
             : $urls[$phpVersion]['default'];
 
-        $zipFile = storage_path('android-temp.zip');
+        $cacheDir = storage_path('nativephp');
+        File::ensureDirectoryExists($cacheDir);
+
+        $zipFilename = basename(parse_url($url, PHP_URL_PATH));
+        $zipFile = $cacheDir.DIRECTORY_SEPARATOR.$zipFilename;
         $extractPath = storage_path('android-temp');
 
         $this->components->twoColumnDetail('PHP version', $phpVersion === '8.5' ? '8.5.x' : '8.4.x');
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
-        $client = new Client;
-        $downloadFailed = false;
+        if (file_exists($zipFile)) {
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
+        } else {
+            $client = new Client;
+            $downloadFailed = false;
 
-        $this->components->task('Downloading Android PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
-            try {
-                $client->request('GET', $url, [
-                    'sink' => $zipFile,
-                    'connect_timeout' => 60,
-                    'timeout' => 600,
-                ]);
+            $this->components->task('Downloading Android PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
+                try {
+                    $client->request('GET', $url, [
+                        'sink' => $zipFile,
+                        'connect_timeout' => 60,
+                        'timeout' => 600,
+                    ]);
 
-                return true;
-            } catch (RequestException) {
-                $downloadFailed = true;
+                    return true;
+                } catch (RequestException) {
+                    $downloadFailed = true;
 
-                return false;
+                    return false;
+                }
+            });
+
+            if ($downloadFailed) {
+                error('Failed to download PHP binaries.');
+
+                return;
             }
-        });
 
-        if ($downloadFailed) {
-            error('Failed to download PHP binaries.');
-
-            return;
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
         }
-
-        $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
-        $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
 
         File::ensureDirectoryExists($extractPath);
 
@@ -191,7 +200,6 @@ trait InstallsAndroid
         }
 
         try {
-            File::delete($zipFile);
             $this->removeDirectory($extractPath);
         } catch (\Exception $e) {
             warning('Could not remove temporary files: '.$e->getMessage());

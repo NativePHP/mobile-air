@@ -49,36 +49,46 @@ trait InstallsIos
     private function installPHPIos(): void
     {
         $url = $this->zipUrl;
-        $zipFile = storage_path('ios-temp.zip');
+
+        $cacheDir = storage_path('nativephp');
+        File::ensureDirectoryExists($cacheDir);
+
+        $zipFilename = basename(parse_url($url, PHP_URL_PATH));
+        $zipFile = $cacheDir.DIRECTORY_SEPARATOR.$zipFilename;
         $extractPath = storage_path('ios-temp');
 
-        $client = new Client;
-        $downloadFailed = false;
+        if (file_exists($zipFile)) {
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
+        } else {
+            $client = new Client;
+            $downloadFailed = false;
 
-        $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
-            try {
-                $client->request('GET', $url, [
-                    'sink' => $zipFile,
-                    'connect_timeout' => 60,
-                    'timeout' => 600,
-                ]);
+            $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
+                try {
+                    $client->request('GET', $url, [
+                        'sink' => $zipFile,
+                        'connect_timeout' => 60,
+                        'timeout' => 600,
+                    ]);
 
-                return true;
-            } catch (RequestException) {
-                $downloadFailed = true;
+                    return true;
+                } catch (RequestException) {
+                    $downloadFailed = true;
 
-                return false;
+                    return false;
+                }
+            });
+
+            if ($downloadFailed) {
+                error('Failed to download PHP binaries.');
+
+                return;
             }
-        });
 
-        if ($downloadFailed) {
-            error('Failed to download PHP binaries.');
-
-            return;
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
         }
-
-        $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
-        $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
 
         File::ensureDirectoryExists($extractPath);
 
@@ -103,7 +113,6 @@ trait InstallsIos
         });
 
         try {
-            File::delete($zipFile);
             File::deleteDirectory($extractPath);
         } catch (\Exception $e) {
             warning('Could not remove temporary files: '.$e->getMessage());
