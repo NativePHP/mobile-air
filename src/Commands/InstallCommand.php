@@ -12,21 +12,18 @@ use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\outro;
-use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
 
 class InstallCommand extends Command
 {
     use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations;
 
-    protected bool $forcing = false;
+    protected bool $forcing = true;
 
     protected $signature = 'native:install
         {platform? : The platform to install (android, ios, or both)}
-        {--force : Overwrite existing files}
-        {--F|fresh : Overwrite existing files (alias for --force)}
+        {--no-force : Keep existing files instead of overwriting}
         {--with-icu : Include ICU support for Android (adds ~30MB)}
-        {--without-icu : Exclude ICU support for Android}
         {--skip-php : Do not download the PHP binaries}';
 
     protected $description = 'Install all of the NativePHP resources';
@@ -37,7 +34,7 @@ class InstallCommand extends Command
 
         $this->ensureAppIdIsSet();
 
-        $this->forcing = $this->option('force') || $this->option('fresh');
+        $this->forcing = ! $this->option('no-force');
 
         $platform = $this->argument('platform');
 
@@ -64,15 +61,7 @@ class InstallCommand extends Command
         $installIos = false;
 
         if (PHP_OS_FAMILY === 'Darwin') {
-            $choice = $platform ?: select(
-                label: 'Which platforms do you want to install?',
-                options: [
-                    'android' => 'Android',
-                    'ios' => 'iOS',
-                    'both' => 'Both',
-                ],
-                default: 'both'
-            );
+            $choice = $platform ?: 'both';
 
             $installAndroid = $choice === 'android' || $choice === 'both';
             $installIos = $choice === 'ios' || $choice === 'both';

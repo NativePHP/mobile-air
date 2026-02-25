@@ -7,7 +7,6 @@ use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\File;
 use ZipArchive;
 
-use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\warning;
@@ -25,17 +24,7 @@ trait InstallsAndroid
             return;
         }
 
-        if ($this->option('with-icu')) {
-            $this->includeIcu = true;
-        } elseif ($this->option('without-icu')) {
-            $this->includeIcu = false;
-        } else {
-            $this->includeIcu = confirm(
-                label: 'Include ICU-enabled PHP binary for Filament/intl support?',
-                default: false,
-                hint: 'Adds ~30MB to your app size'
-            );
-        }
+        $this->includeIcu = (bool) $this->option('with-icu');
     }
 
     public function setupAndroid(): void
@@ -67,17 +56,50 @@ trait InstallsAndroid
         $this->components->task('Creating Android project', fn () => $this->platformOptimizedCopy($source, $androidPath));
     }
 
+    private function detectPhpVersion(): string
+    {
+        $composerPath = base_path('composer.json');
+
+        if (! file_exists($composerPath)) {
+            return '8.4';
+        }
+
+        $composer = json_decode(file_get_contents($composerPath), true);
+        $constraint = $composer['require']['php'] ?? '';
+
+        // Check if the constraint explicitly requires 8.5+
+        // Matches patterns like ^8.5, >=8.5, ~8.5, 8.5.*, etc.
+        if (preg_match('/(?:\^|>=|~)?8\.5/', $constraint)) {
+            return '8.5';
+        }
+
+        return '8.4';
+    }
+
     private function installPHPAndroid(): void
     {
         $includeIcu = $this->includeIcu ?? false;
+        $phpVersion = $this->detectPhpVersion();
+
+        $urls = [
+            '8.5' => [
+                'icu' => 'https://bin.nativephp.com/android-element-8.5.3-icu.zip',
+                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_2.zip',
+            ],
+            '8.4' => [
+                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18-icu.zip',
+                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18.zip',
+            ],
+        ];
 
         $url = $includeIcu
-            ? "https://bin.nativephp.com/nativephp-android-3.1.0-php8.5.3-with-icu.zip"
-            : "https://bin.nativephp.com/nativephp-android-3.1.0-php8.5.3-without-icu.zip";
+            ? $urls[$phpVersion]['icu']
+            : $urls[$phpVersion]['default'];
 
         $zipFile = storage_path('android-temp.zip');
         $extractPath = storage_path('android-temp');
 
+        $this->components->twoColumnDetail('PHP version', $phpVersion === '8.5' ? '8.5.x' : '8.4.x');
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
         $client = new Client;

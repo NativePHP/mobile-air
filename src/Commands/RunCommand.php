@@ -84,13 +84,22 @@ class RunCommand extends Command
 
         if (! $os) {
             if (PHP_OS_FAMILY === 'Darwin') {
-                $os = select(
-                    label: 'Which platform would you like to run?',
-                    options: [
-                        'android' => 'Android',
-                        'ios' => 'iOS',
-                    ]
-                );
+                $hasAndroid = is_dir(base_path('nativephp/android'));
+                $hasIos = is_dir(base_path('nativephp/ios'));
+
+                if ($hasAndroid && ! $hasIos) {
+                    $os = 'android';
+                } elseif ($hasIos && ! $hasAndroid) {
+                    $os = 'ios';
+                } else {
+                    $os = select(
+                        label: 'Which platform would you like to run?',
+                        options: [
+                            'android' => 'Android',
+                            'ios' => 'iOS',
+                        ]
+                    );
+                }
             } else {
                 $os = 'android';
             }
