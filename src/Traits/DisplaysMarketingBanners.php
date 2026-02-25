@@ -26,7 +26,7 @@ trait DisplaysMarketingBanners
         $this->newLine();
 
         $this->line('  <fg=yellow;options=bold>⚡ Bifrost</> <fg=gray>—</> <fg=white>Ship to stores</> <fg=cyan>→</> <fg=cyan;options=underscore>bifrost.nativephp.com</>');
-        $this->line('  <fg=magenta;options=bold>🔌 Plugins</> <fg=gray>—</> <fg=white>Native features</> <fg=magenta>→</> <fg=magenta;options=underscore>plugins.nativephp.com</>');
+        $this->line('  <fg=magenta;options=bold>🔌 Plugins</> <fg=gray>—</> <fg=white>Native features</> <fg=magenta>→</> <fg=magenta;options=underscore>nativephp.com/plugins</>');
         $this->line('  <fg=white;options=bold>📚 Docs</>    <fg=gray>—</> <fg=white>Get started</> <fg=gray>→</> <fg=gray;options=underscore>nativephp.com/docs/mobile</>');
         $this->newLine();
     }
@@ -71,7 +71,7 @@ trait DisplaysMarketingBanners
         $this->newLine();
         $this->line('  <fg=cyan>Camera</> · <fg=cyan>Biometrics</> · <fg=cyan>Maps</> · <fg=cyan>Push</> · <fg=gray>and more...</>');
         $this->newLine();
-        $this->line('  <fg=magenta>→</> <fg=magenta;options=underscore>plugins.nativephp.com</>');
+        $this->line('  <fg=magenta>→</> <fg=magenta;options=underscore>nativephp.com/plugins</>');
         $this->newLine();
     }
 
@@ -95,7 +95,7 @@ trait DisplaysMarketingBanners
         $this->line('  <fg=yellow>★</> <fg=gray>Set your own price (or make it free)</>');
         $this->line('  <fg=yellow>★</> <fg=gray>80% revenue share</>');
         $this->newLine();
-        $this->line('  <fg=green>→</> <fg=green;options=underscore>plugins.nativephp.com/publish</>');
+        $this->line('  <fg=green>→</> <fg=green;options=underscore>nativephp.com/plugins/publish</>');
         $this->newLine();
     }
 
@@ -129,6 +129,6 @@ trait DisplaysMarketingBanners
     private function showCompactMarketplace(): void
     {
         $this->line('  <fg=magenta;options=bold>🔌 Plugins</> <fg=gray>— Native device features for your app</>');
-        $this->line('  <fg=magenta>→</> <fg=magenta;options=underscore>plugins.nativephp.com</>');
+        $this->line('  <fg=magenta>→</> <fg=magenta;options=underscore>nativephp.com/plugins</>');
     }
 }

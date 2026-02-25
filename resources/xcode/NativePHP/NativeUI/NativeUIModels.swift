@@ -47,11 +47,13 @@ enum ComponentData: Codable {
 struct BottomNavData: Codable, Equatable {
     let dark: Bool?
     let labelVisibility: String?
+    let activeColor: String?
     let children: [BottomNavItemComponent]?
 
     enum CodingKeys: String, CodingKey {
         case dark
         case labelVisibility = "label_visibility"
+        case activeColor = "active_color"
         case children
     }
 }

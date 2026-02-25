@@ -16,7 +16,9 @@ class WatchCommand extends Command
     use ManagesViteDevServer, ManagesWatchman, RunsIos, WatchesAndroid, WatchesIos;
 
     protected $signature = 'native:watch
-        {platform? : ios|android}
+        {platform? : Platform to watch (android/a or ios/i)}
+        {--ios : Target iOS platform (shorthand for platform=ios)}
+        {--android : Target Android platform (shorthand for platform=android)}
         {target? : The device/simulator UDID to watch}';
 
     protected $description = 'Watch for file changes and sync to running mobile app';
@@ -27,16 +29,30 @@ class WatchCommand extends Command
             return self::FAILURE;
         }
 
-        $platform = $this->argument('platform');
+        // Get platform (flags take priority over argument)
+        if ($this->option('ios')) {
+            $platform = 'ios';
+        } elseif ($this->option('android')) {
+            $platform = 'android';
+        } else {
+            $platform = $this->argument('platform');
 
-        if (! $platform) {
-            $platform = select(
-                label: 'Select platform to watch',
-                options: [
-                    'ios' => 'iOS',
-                    'android' => 'Android',
-                ]
-            );
+            if (! $platform) {
+                $platform = select(
+                    label: 'Select platform to watch',
+                    options: [
+                        'ios' => 'iOS',
+                        'android' => 'Android',
+                    ]
+                );
+            } else {
+                // Support shorthands: 'a' for android, 'i' for ios
+                $platform = match(strtolower($platform)) {
+                    'android', 'a' => 'android',
+                    'ios', 'i' => 'ios',
+                    default => $platform,
+                };
+            }
         }
 
         $targetUdid = $this->argument('target');
@@ -46,7 +62,7 @@ class WatchCommand extends Command
         } elseif ($platform === 'android') {
             $this->startAndroidHotReload();
         } else {
-            $this->error('Invalid platform. Use: ios or android');
+            $this->error('Invalid platform. Use: ios, android (or i, a as shortcuts)');
 
             return self::FAILURE;
         }

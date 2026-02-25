@@ -566,7 +566,7 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     private fun unzip(inputStream: java.io.InputStream, destinationDir: File) {
-        val buffer = ByteArray(65536)  // 64KB buffer - optimized for modern flash storage
+        val buffer = ByteArray(65536)  // 64KB buffer
         val zis = ZipInputStream(BufferedInputStream(inputStream))
 
         var ze: ZipEntry? = zis.nextEntry
@@ -584,10 +584,8 @@ class LaravelEnvironment(private val context: Context) {
             if (ze.isDirectory) {
                 file.mkdirs()
             } else {
-                // Ensure parent directory exists
+                // Stream directly to disk instead of buffering in memory
                 file.parentFile?.mkdirs()
-
-                // Stream directly to file - no memory buffering
                 FileOutputStream(file).use { fos ->
                     var count: Int
                     while (zis.read(buffer).also { count = it } != -1) {

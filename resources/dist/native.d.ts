@@ -332,10 +332,12 @@ export const Browser: {
 // Push Notifications Functions
 // ============================================================================
 
+export function PushNotificationsCheckPermission(): Promise<string | null>;
 export function PushNotificationsEnroll(): Promise<boolean>;
 export function PushNotificationsGetToken(): Promise<string | null>;
 
 export const PushNotifications: {
+    checkPermission(): Promise<string | null>;
     enroll(): Promise<boolean>;
     getToken(): Promise<string | null>;
 };

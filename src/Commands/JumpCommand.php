@@ -11,7 +11,10 @@ use function Laravel\Prompts\select;
 class JumpCommand extends Command
 {
     protected $signature = 'native:jump
-                            {--platform= : Target platform (android or ios)}
+                            {platform? : Target platform (android/a or ios/i)}
+                            {--platform= : Target platform (android/a or ios/i)}
+                            {--ios : Target iOS platform (shorthand for --platform=ios)}
+                            {--android : Target Android platform (shorthand for --platform=android)}
                             {--host=0.0.0.0 : The host address to serve the application on}
                             {--ip= : The IP address to display in the QR code (overrides auto-detection)}
                             {--http-port= : The HTTP port to serve on}
@@ -29,15 +32,25 @@ class JumpCommand extends Command
     {
         intro('NativePHP Jump Server');
 
-        // Get platform (from option or prompt)
-        $platformOption = $this->option('platform');
-        if ($platformOption && in_array(strtolower($platformOption), ['android', 'ios'])) {
-            $this->platform = strtolower($platformOption);
+        // Get platform (flags take priority, then argument, then option, then prompt)
+        if ($this->option('ios')) {
+            $this->platform = 'ios';
+        } elseif ($this->option('android')) {
+            $this->platform = 'android';
         } else {
-            $this->platform = select(
-                label: 'Select target platform',
-                options: ['android' => 'Android', 'ios' => 'iOS'],
-            );
+            $platform = $this->argument('platform') ?? $this->option('platform');
+            
+            if ($platform && in_array(strtolower($platform), ['android', 'ios', 'a', 'i'])) {
+                $this->platform = match(strtolower($platform)) {
+                    'android', 'a' => 'android',
+                    'ios', 'i' => 'ios',
+                };
+            } else {
+                $this->platform = select(
+                    label: 'Select target platform',
+                    options: ['android' => 'Android', 'ios' => 'iOS'],
+                );
+            }
         }
 
         // Run npm build for the selected platform

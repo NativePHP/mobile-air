@@ -818,15 +818,22 @@ trait PackagesIos
 
             $stdout = $result->output();
             $stderr = $result->errorOutput();
+            $allOutput = $stdout."\n".$stderr;
             $jsonResponse = $stdout ? json_decode($stdout, true) : null;
 
             // Check for product-errors even if exit code is 0 (Apple's tool is buggy)
             $hasProductErrors = $jsonResponse && ! empty($jsonResponse['product-errors']);
 
-            if ($result->successful() && ! $hasProductErrors) {
+            // altool can return exit code 0 while still failing — check raw output for failure indicators
+            $hasFailureInOutput = str_contains($allOutput, 'Failed to upload package')
+                || str_contains($allOutput, 'Upload failed')
+                || str_contains($allOutput, 'ERROR ITMS-')
+                || str_contains($allOutput, 'error uploading');
+
+            if ($result->successful() && ! $hasProductErrors && ! $hasFailureInOutput) {
                 \Laravel\Prompts\info('Successfully uploaded to App Store Connect');
             } else {
-                \Laravel\Prompts\error('Upload failed');
+                \Laravel\Prompts\error('Upload to App Store Connect failed');
 
                 if ($hasProductErrors) {
                     foreach ($jsonResponse['product-errors'] as $error) {
@@ -839,8 +846,18 @@ trait PackagesIos
                             $this->line('<fg=yellow>'.$reason.'</>');
                         }
                     }
-                } elseif ($stderr) {
+                }
+
+                // Always show raw output when upload fails so the reason isn't swallowed
+                if ($stderr) {
+                    $this->newLine();
+                    $this->line('<fg=yellow>stderr:</>');
                     $this->line($stderr);
+                }
+                if ($stdout) {
+                    $this->newLine();
+                    $this->line('<fg=yellow>stdout:</>');
+                    $this->line($stdout);
                 }
             }
 

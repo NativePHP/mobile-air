@@ -21,8 +21,10 @@ class RunCommand extends Command
     use DisplaysMarketingBanners, ManagesViteDevServer, ManagesWatchman, PlatformFileOperations, RunsAndroid, RunsIos;
 
     protected $signature = 'native:run
-        {os? : ios|android}
+        {os? : Platform to run (android/a or ios/i)}
         {udid?}
+        {--ios : Target iOS platform (shorthand for os=ios|i)}
+        {--android : Target Android platform (shorthand for os=android|a)}
         {--build=debug : debug|release|bundle}
         {--W|watch : Enable hot reloading during development}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
@@ -52,7 +54,21 @@ class RunCommand extends Command
             mkdir($nativephpDir, 0755, true);
         }
 
-        $os = $this->argument('os');
+        // Get platform (flags take priority over argument)
+        if ($this->option('ios')) {
+            $os = 'ios';
+        } elseif ($this->option('android')) {
+            $os = 'android';
+        } else {
+            $os = $this->argument('os');
+            // Support shorthands: 'a' for android, 'i' for ios
+            if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
+                $os = match(strtolower($os)) {
+                    'android', 'a' => 'android',
+                    'ios', 'i' => 'ios',
+                };
+            }
+        }
 
         // Check for WSL environment - Android is not supported in WSL
         if ($this->isRunningInWSL()) {
@@ -85,7 +101,7 @@ class RunCommand extends Command
             'release' => 'Release',
         ];
 
-        if ($os === 'android' || $os === 'a') {
+        if ($os === 'android') {
             $buildTypes['bundle'] = 'App Bundle (AAB)';
         }
 
@@ -96,16 +112,16 @@ class RunCommand extends Command
         );
 
         $osName = match ($os) {
-            'android', 'a' => 'Android',
-            'ios', 'i' => 'iOS',
+            'android' => 'Android',
+            'ios' => 'iOS',
             default => throw new \Exception('Invalid OS type.')
         };
 
         intro('Running NativePHP for '.$osName);
 
         match ($os) {
-            'android', 'a' => $this->runAndroid(),
-            'ios', 'i' => $this->runIos(),
+            'android' => $this->runAndroid(),
+            'ios' => $this->runIos(),
         };
 
         $this->showBifrostBanner();

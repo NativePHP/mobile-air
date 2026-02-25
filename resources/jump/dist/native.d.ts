@@ -876,6 +876,12 @@ export class PendingPushNotificationEnrollment implements PromiseLike<void> {
  */
 export const pushNotifications: {
     /**
+     * Check current push notification permission status without prompting the user
+     * Returns: "granted", "denied", "not_determined", "provisional", or "ephemeral"
+     */
+    checkPermission(): Promise<{ status: string }>;
+
+    /**
      * Request push notification permissions and enroll
      * Returns a PendingPushNotificationEnrollment builder
      *
