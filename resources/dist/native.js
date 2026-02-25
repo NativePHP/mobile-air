@@ -15,7 +15,64 @@
  * await Geolocation.getCurrentPosition().fineAccuracy(true);
  */
 
-const baseUrl = '/_native/api/call';
+// ============================================================================
+// Native Bridge Infrastructure
+// ============================================================================
+
+const _pendingCalls = new Map();
+let _callIdCounter = 0;
+
+function _hasAndroidBridge() {
+    return !!window.AndroidNativeBridge;
+}
+
+function _hasIOSBridge() {
+    return !!window.webkit?.messageHandlers?.nativeBridge;
+}
+
+function _callAndroid(method, params) {
+    const resultJSON = window.AndroidNativeBridge.call(method, JSON.stringify(params));
+    if (resultJSON === null) {
+        throw new Error(`Function '${method}' not found in native bridge`);
+    }
+    return JSON.parse(resultJSON);
+}
+
+function _callIOS(method, params) {
+    return new Promise((resolve, reject) => {
+        const callId = _callIdCounter++;
+        _pendingCalls.set(callId, { resolve, reject, method });
+        window.webkit.messageHandlers.nativeBridge.postMessage({
+            callId,
+            method,
+            parameters: params
+        });
+        setTimeout(() => {
+            if (_pendingCalls.has(callId)) {
+                _pendingCalls.delete(callId);
+                reject(new Error(`Native call '${method}' timed out after 30s`));
+            }
+        }, 30000);
+    });
+}
+
+// iOS native code resolves async calls via evaluateJavaScript("window.NativePHP._resolveCall(...)")
+if (typeof window !== 'undefined') {
+    window.NativePHP = window.NativePHP || {};
+    window.NativePHP._resolveCall = function(callId, result) {
+        const pending = _pendingCalls.get(callId);
+        if (!pending) {
+            console.warn(`[NativePHP] No pending call found for ID ${callId}`);
+            return;
+        }
+        _pendingCalls.delete(callId);
+        if (result.status === 'error') {
+            pending.reject(new Error(result.message || 'Native call failed'));
+        } else {
+            pending.resolve(result);
+        }
+    };
+}
 
 /**
  * Bridge call function - make calls to registered native bridge functions
@@ -30,16 +87,16 @@ const baseUrl = '/_native/api/call';
  * const result = await BridgeCall('MyPlugin.CustomAction', { foo: 'bar' });
  */
 export async function BridgeCall(method, params = {}) {
-    const response = await fetch(baseUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
-        },
-        body: JSON.stringify({ method, params })
-    });
+    let result;
 
-    const result = await response.json();
+    if (_hasAndroidBridge()) {
+        result = _callAndroid(method, params);
+    } else if (_hasIOSBridge()) {
+        result = await _callIOS(method, params);
+    } else {
+        console.error(`[NativePHP] Cannot call "${method}" with params ${JSON.stringify(params)} — not running in a mobile environment`);
+        return;
+    }
 
     if (result.status === 'error') {
         throw new Error(result.message || 'Native call failed');
@@ -304,15 +361,19 @@ export async function SetEdge(components) {
 
 export function SetEdgeSync(components) {
     const payload = Array.isArray(components) ? components : [components];
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/_native/api/call', false);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-    xhr.setRequestHeader('X-CSRF-TOKEN', csrfToken);
-    xhr.send(JSON.stringify({
-        method: 'Edge.Set',
-        params: { components: payload }
-    }));
+
+    if (_hasAndroidBridge()) {
+        _callAndroid('Edge.Set', { components: payload });
+    } else if (_hasIOSBridge()) {
+        // iOS bridge is inherently async; fire-and-forget via postMessage
+        window.webkit.messageHandlers.nativeBridge.postMessage({
+            callId: _callIdCounter++,
+            method: 'Edge.Set',
+            parameters: { components: payload }
+        });
+    } else {
+        console.error('[NativePHP] Cannot call "Edge.Set" — not running in a mobile environment');
+    }
 }
 
 export async function ClearEdge() {
