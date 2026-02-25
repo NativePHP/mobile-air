@@ -106,7 +106,7 @@ trait RunsIos
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
-        if ($this->watching) {
+        if ($this->watching && ! $this->option('no-vite')) {
             $this->startViteDevServer('ios');
         }
 

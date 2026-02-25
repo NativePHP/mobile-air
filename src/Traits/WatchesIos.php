@@ -43,7 +43,9 @@ trait WatchesIos
         }
 
         // Start Vite dev server if the nativephpMobile plugin is installed
-        $this->startViteDevServer('ios');
+        if (! $this->option('no-vite')) {
+            $this->startViteDevServer('ios');
+        }
 
         // Check if Vite hot reloading is active
         $viteHotFile = $this->getHotFilePath('ios');

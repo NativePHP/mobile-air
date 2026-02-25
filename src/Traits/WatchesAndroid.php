@@ -39,14 +39,16 @@ trait WatchesAndroid
             return;
         }
 
-        // Start Vite dev server if the nativephpMobile plugin is installed
-        $this->startViteDevServer('android');
+        if (! $this->option('no-vite')) {
+            // Start Vite dev server if the nativephpMobile plugin is installed
+            $this->startViteDevServer('android');
 
-        // Detect Vite port from public/hot file
-        $this->vitePort = $this->detectVitePort();
+            // Detect Vite port from public/hot file
+            $this->vitePort = $this->detectVitePort();
 
-        if ($this->vitePort) {
-            $this->setupViteDevServerForwarding($this->vitePort);
+            if ($this->vitePort) {
+                $this->setupViteDevServerForwarding($this->vitePort);
+            }
         }
 
         $this->startAndroidWatching();
@@ -162,7 +164,9 @@ trait WatchesAndroid
         $this->checkAdbConnection();
 
         // Check for Vite process output
-        $this->checkViteProcessOutput();
+        if (! $this->option('no-vite')) {
+            $this->checkViteProcessOutput();
+        }
     }
 
     private function handleAndroidFileChange(string $filePath): void
@@ -191,7 +195,7 @@ trait WatchesAndroid
             return;
         }
 
-        if ($this->isViteHandledFile($relativePath)) {
+        if (! $this->option('no-vite') && $this->isViteHandledFile($relativePath)) {
             return;
         }
 

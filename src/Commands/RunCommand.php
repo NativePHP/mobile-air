@@ -27,6 +27,7 @@ class RunCommand extends Command
         {--android : Target Android platform (shorthand for os=android|a)}
         {--build=debug : debug|release|bundle}
         {--W|watch : Enable hot reloading during development}
+        {--no-vite : Skip Vite dev server (for native-only development)}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
         {--no-tty : Disable TTY mode for non-interactive environments}';
 
