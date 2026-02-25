@@ -18,9 +18,11 @@ import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
+import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
 import com.nativephp.mobile.ui.nativerender.NativeRendererRegistry
+import com.nativephp.mobile.ui.nativerender.PerformanceTracker
 import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.nativephp.mobile.utils.WebViewProvider
 import com.nativephp.mobile.security.LaravelCookieStore
@@ -65,6 +67,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private lateinit var coord: NativeActionCoordinator
     private var pendingDeepLink: String? = null
     private var hotReloadWatcherThread: Thread? = null
+    @Volatile private var nativeUIThread: Thread? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
     private var showSplash by mutableStateOf(true)
@@ -127,6 +130,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         // Start watching for native UI tree updates from PHP
         NativeUIBridge.startWatching()
+        NativeElementBridge.startWatching()
+
+        // Attach performance tracker — captures FrameMetrics + interaction latency
+        PerformanceTracker.attachFrameMetrics(window)
 
         handleDeepLinkIntent(intent)
 
@@ -362,6 +369,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         super.onDestroy()
         instance = null
 
+        PerformanceTracker.detachFrameMetrics(window)
+
         // Post lifecycle event for plugins
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_DESTROY)
 
@@ -440,7 +449,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         hotReloadWatcherThread = Thread {
             val appStorageDir = File(filesDir.parent, "app_storage")
             val reloadFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/reload_signal.json")
-            val restartFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/.hot_restart")
+            // PHP's storage_path() resolves to persisted_data/storage/ (set by LARAVEL_STORAGE_PATH)
+            val restartFile = File("${appStorageDir.absolutePath}/persisted_data/storage/framework/.hot_restart")
             var lastModified: Long = 0
             var pollCount = 0
 
@@ -463,15 +473,26 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
                             Log.d("HotReload", "Restart signal found — re-executing PHP for: $restartUri")
 
-                            // Wait briefly for PHP to fully shut down
-                            Thread.sleep(200)
+                            // Wait for old PHP thread to finish (C mutex also guards this,
+                            // but joining here avoids starting a thread that just blocks)
+                            val oldThread = nativeUIThread
+                            if (oldThread != null && oldThread.isAlive) {
+                                Log.d("HotReload", "Waiting for old PHP thread to finish...")
+                                oldThread.join(5000)
+                                if (oldThread.isAlive) {
+                                    Log.w("HotReload", "Old PHP thread still alive after 5s — proceeding anyway (C mutex will serialize)")
+                                } else {
+                                    Log.d("HotReload", "Old PHP thread finished")
+                                }
+                            }
 
                             // Re-start the native UI watcher (PHP will re-init shared memory)
                             NativeUIBridge.startWatching()
+                            NativeElementBridge.startWatching()
 
                             // Directly re-execute the PHP request on a new thread
                             // This bypasses the WebView entirely — fresh PHP process
-                            Thread({
+                            val restartThread = Thread({
                                 try {
                                     Log.d("HotReload", "Re-executing PHP for $restartUri")
                                     phpBridge.executeNativeRoute(restartUri)
@@ -479,7 +500,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 } catch (e: Exception) {
                                     Log.e("HotReload", "Restart execution failed: ${e.message}", e)
                                 }
-                            }, "npui-hot-restart").start()
+                            }, "npui-hot-restart")
+                            nativeUIThread = restartThread
+                            restartThread.start()
 
                             continue
                         } catch (e: Exception) {
@@ -494,8 +517,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         if (NativeUIBridge.isActive.value) {
                             // Native UI mode: send hot reload event through mmap
                             // PHP will shut down and write .hot_restart signal
-                            Log.d("HotReload", "Native UI active — sending hot reload event (mod=$lastModified)")
+                            val elementReady = NativeElementBridge.nativeElementIsReady()
+                            Log.d("HotReload", "Native UI active — sending hot reload event (mod=$lastModified elementReady=$elementReady)")
                             NativeUIBridge.sendHotReloadEvent()
+                            // Brief wait for PHP to process event and write .hot_restart,
+                            // then loop back to check immediately (instead of 500ms sleep)
+                            Thread.sleep(100)
+                            continue
                         } else {
                             // WebView mode: reload the page
                             runOnUiThread {
