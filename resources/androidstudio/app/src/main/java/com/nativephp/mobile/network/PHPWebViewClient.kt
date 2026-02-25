@@ -155,7 +155,7 @@ class PHPWebViewClient(
         redirectCount: Int = 0
     ): WebResourceResponse {
         val requestStart = System.currentTimeMillis()
-        val path = request.url.path ?: "/"
+        val path = request.url.encodedPath ?: "/"
 
         if (redirectCount > 10) {
             Log.e(TAG, "❌ Too many redirects")
@@ -216,7 +216,7 @@ class PHPWebViewClient(
             if (!location.isNullOrEmpty()) {
                 val redirectUrl = when {
                     location.startsWith("/") -> location
-                    location.startsWith("http") -> Uri.parse(location).path ?: "/"
+                    location.startsWith("http") -> Uri.parse(location).encodedPath ?: "/"
                     else -> "/$location"
                 }
 

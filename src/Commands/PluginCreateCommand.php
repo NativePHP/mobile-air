@@ -242,7 +242,7 @@ class PluginCreateCommand extends Command
             ],
             'require' => [
                 'php' => '^8.2',
-                'nativephp/mobile' => '^2.0',
+                'nativephp/mobile' => '^3.0',
             ],
             'autoload' => [
                 'psr-4' => [

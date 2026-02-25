@@ -68,7 +68,7 @@ class PluginListCommand extends Command
                 }
                 $this->newLine();
                 $this->components->info('After publishing the provider, register plugins with:');
-                $this->line('  php artisan native:plugin:register vendor/plugin-name');
+                $this->line('  php artisan native:plugin:register');
             }
 
             return;
@@ -109,21 +109,19 @@ class PluginListCommand extends Command
         }
 
         // Show unregistered plugins
-        if ($unregistered->isNotEmpty() && ($showAll || $this->registry->hasPluginsProvider())) {
+        if ($unregistered->isNotEmpty()) {
             $this->newLine();
             $this->components->warn('Unregistered Plugins (not included in builds):');
 
             foreach ($unregistered as $plugin) {
-                $provider = $plugin->getServiceProvider();
-                $this->line("  - {$plugin->name} (v{$plugin->version})");
-                if ($provider) {
-                    $this->line("    Provider: {$provider}");
-                }
+                $description = $plugin->description ? " - {$plugin->description}" : '';
+                $functions = count($plugin->getBridgeFunctions());
+                $this->line("  - {$plugin->name} (v{$plugin->version}){$description} [{$functions} bridge function(s)]");
             }
 
             $this->newLine();
-            $this->components->info('To register a plugin, run:');
-            $this->line('  php artisan native:plugin:register vendor/plugin-name');
+            $this->components->info('To register plugins, run:');
+            $this->line('  php artisan native:plugin:register');
         }
     }
 
