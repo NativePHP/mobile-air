@@ -1,8 +1,10 @@
 #include <jni.h>
 #include <android/log.h>
 #include <signal.h>
+#include <pthread.h>
 #include "php_embed.h"
 #include "PHP.h"
+#include "native_functions.h"
 #include <zend_exceptions.h>
 
 // Define Android logging macros first
@@ -13,11 +15,14 @@
 JavaVM *g_jvm = NULL;
 jobject g_bridge_instance = NULL;
 
-// Forward declaration for bridge_jni.cpp initialization
+// Forward declarations
 extern jint InitializeBridgeJNI(JNIEnv* env);
+static void safe_php_embed_shutdown(void);
+int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers);
 
 // Global state
-static int php_initialized = 0;
+static int php_initialized = 0;    // tracks whether php_embed_init is active
+static pthread_mutex_t g_php_request_mutex = PTHREAD_MUTEX_INITIALIZER;
 static jobject g_callback_obj = NULL;
 static jmethodID g_callback_method = NULL;
 static char *g_collected_output = NULL;
@@ -28,6 +33,24 @@ static size_t g_collected_capacity = 0;
 #define MAX_BUFFER_SIZE (16 * 1024 * 1024)  // 16MB max buffer
 
 static void (*jni_output_callback_ptr)(const char *) = NULL;
+
+/**
+ * Configure the embed SAPI module with host-registered functions.
+ * Must be called before each php_embed_init().
+ */
+static void setup_embed_module(void) {
+    php_embed_module.ub_write = capture_php_output;
+    php_embed_module.phpinfo_as_text = 1;
+    php_embed_module.php_ini_ignore = 0;
+    php_embed_module.ini_entries = "output_buffering=4096\n"
+                                   "implicit_flush=0\n"
+                                   "display_errors=1\n"
+                                   "error_reporting=E_ALL\n";
+    php_embed_module.header_handler = android_header_handler;
+
+    // Register host-provided PHP functions (nativephp_call, nativephp_element_*, etc.)
+    php_embed_module.additional_functions = nativephp_functions;
+}
 
 // Safe shutdown: block all signals to prevent mutex access after TSRM destruction
 static void safe_php_embed_shutdown(void) {
@@ -157,38 +180,19 @@ int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum 
     return 0;
 }
 
-char* run_php_script_once(const char* scriptPath, const char* method, const char* uri, const char* postData) {
+/**
+ * Handle a single PHP request.
+ * Full php_embed_init()/php_embed_shutdown() per request — required for ZTS
+ * because each thread needs its own interpreter context with function tables.
+ */
+char* run_php_request(const char* scriptPath, const char* method, const char* uri, const char* postData) {
+    LOGI("run_php_request: waiting for mutex (uri=%s)", uri);
+    pthread_mutex_lock(&g_php_request_mutex);
+    LOGI("run_php_request: mutex acquired (uri=%s)", uri);
+
     clear_collected_output();
 
-    // 🔁 Reset in case PHP was already initialized
-    if (php_initialized) {
-        safe_php_embed_shutdown();
-        php_initialized = 0;
-    }
-
-    // 🧠 Get session path from environment (set by Kotlin)
-    const char* session_path = getenv("SESSION_SAVE_PATH");
-    if (!session_path) session_path = "/tmp"; // fallback
-
-    // ✅ Build ini entries per request
-    php_embed_module.ub_write = capture_php_output;
-    php_embed_module.phpinfo_as_text = 1;
-    php_embed_module.php_ini_ignore = 0;
-    php_embed_module.ini_entries = "output_buffering=4096\n"
-                                   "implicit_flush=0\n"
-                                   "display_errors=1\n"
-                                   "error_reporting=E_ALL\n";
-
-    php_embed_module.header_handler = android_header_handler;
-
-    // ✅ Start PHP
-    if (php_embed_init(0, NULL) != SUCCESS) {
-        return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPHP init failed.");
-    }
-    sapi_module.header_handler = android_header_handler;
-    php_initialized = 1;
-
-    // ✅ Set Laravel-relevant env vars
+    // Set Laravel-relevant env vars
     setenv("REQUEST_URI", uri, 1);
     setenv("REQUEST_METHOD", method, 1);
     setenv("SCRIPT_FILENAME", scriptPath, 1);
@@ -198,19 +202,29 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
     setenv("NATIVEPHP_RUNNING", "true", 1);
 
-    // ✅ Set QUERY_STRING and defer parsing
+    // Set QUERY_STRING
     const char* query_string = "";
     const char* query_start = strchr(uri, '?');
     if (query_start && strlen(query_start + 1) > 0) {
         query_string = query_start + 1;
         setenv("QUERY_STRING", query_string, 1);
-        LOGI("✅ Set QUERY_STRING: %s", query_string);
     } else {
         unsetenv("QUERY_STRING");
-        LOGI("⚠️ No QUERY_STRING found in URI");
     }
 
-    // ✅ Activate Zend and parse query data AFTER engine is live
+    // Full init per request — registers host functions
+    setup_embed_module();
+    if (php_embed_init(0, NULL) != SUCCESS) {
+        LOGE("run_php_request: php_embed_init() FAILED");
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPHP init failed.");
+    }
+    sapi_module.header_handler = android_header_handler;
+    // Explicitly register host functions into the active interpreter context
+    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    php_initialized = 1;
+
+    // Per-request setup and execution
     zend_first_try {
                 zend_activate_modules();
 
@@ -218,65 +232,46 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
                     zend_string *query = zend_string_init(query_string, strlen(query_string), 0);
                     sapi_module.treat_data(PARSE_GET, query->val, NULL);
                     zend_string_free(query);
-                    LOGI("✅ Parsed query string into $_GET");
                 }
 
-                // ✅ Set up POST data (if needed)
+                // Set up POST data and request info
                 initialize_php_with_request(postData ?: "", method, uri);
 
-                // ✅ Execute the PHP script
+                // Execute the PHP script
                 zend_file_handle fileHandle;
                 zend_stream_init_filename(&fileHandle, scriptPath);
                 php_execute_script(&fileHandle);
-
-                LOGI("✅ PHP script finished executing");
 
                 if (strlen(query_string) > 0) {
                     zend_string *query2 = zend_string_init(query_string, strlen(query_string), 0);
                     sapi_module.treat_data(PARSE_GET, query2->val, NULL);
                     zend_string_free(query2);
-                    LOGI("✅ Re-parsed query string after php_execute_script()");
                 }
 
             } zend_end_try();
 
-    // ✅ Copy output before shutdown
+    // Copy output before shutdown
     char *response = g_collected_output ? strdup(g_collected_output) : strdup("");
 
     safe_php_embed_shutdown();
     php_initialized = 0;
 
+    LOGI("run_php_request: releasing mutex (uri=%s)", uri);
+    pthread_mutex_unlock(&g_php_request_mutex);
+
     return response;
 }
 
+// Legacy wrapper for compatibility during transition
+char* run_php_script_once(const char* scriptPath, const char* method, const char* uri, const char* postData) {
+    return run_php_request(scriptPath, method, uri, postData);
+}
+
 JNIEXPORT void JNICALL native_initialize(JNIEnv *env, jobject thiz) {
-    if (php_initialized) {
-        LOGI("PHP already initialized");
-        return;
-    }
-
-    LOGI("Initializing PHP");
-
     if (g_bridge_instance) {
-        LOGI("Deleting existing bridge instance");
         (*env)->DeleteGlobalRef(env, g_bridge_instance);
     }
     g_bridge_instance = (*env)->NewGlobalRef(env, thiz);
-    LOGI("Set g_bridge_instance to %p", g_bridge_instance);
-
-    // Configure the embed SAPI
-    php_embed_module.ub_write = capture_php_output;
-    php_embed_module.phpinfo_as_text = 1;
-    php_embed_module.php_ini_ignore = 0;
-
-    // Initialize PHP
-    if (php_embed_init(0, NULL) == SUCCESS) {
-        php_initialized = 1;
-        sapi_module.header_handler = php_embed_module.header_handler;
-        LOGI("PHP initialized successfully");
-    } else {
-        LOGI("PHP initialization failed");
-    }
 }
 
 
@@ -317,10 +312,6 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     LOGI("🛠️ runArtisanCommand: %s", command);
 
     clear_collected_output();
-    php_embed_module.ub_write = capture_php_output;
-    php_embed_module.phpinfo_as_text = 1;
-    php_embed_module.php_ini_ignore = 0;
-    php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
 
     // Get Laravel path
     jclass cls = (*env)->GetObjectClass(env, thiz);
@@ -328,14 +319,26 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     jstring jLaravelPath = (jstring)(*env)->CallObjectMethod(env, thiz, method);
     const char *cLaravelPath = (*env)->GetStringUTFChars(env, jLaravelPath, NULL);
 
-    native_initialize(env, thiz);
+    // Full init per artisan command
+    setup_embed_module();
+    php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
+    if (php_embed_init(0, NULL) != SUCCESS) {
+        LOGE("Failed to initialize PHP for artisan");
+        (*env)->ReleaseStringUTFChars(env, jcommand, command);
+        (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+        (*env)->DeleteLocalRef(env, jLaravelPath);
+        return (*env)->NewStringUTF(env, "");
+    }
+    sapi_module.header_handler = android_header_handler;
+    // Explicitly register host functions into the active interpreter context
+    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    php_initialized = 1;
 
     char artisanPath[1024];
     snprintf(artisanPath, sizeof(artisanPath), "%s/../artisan.php", cLaravelPath);
     char basePath[1024];
     snprintf(basePath, sizeof(basePath), "%s/..", cLaravelPath);
     chdir(basePath);
-    LOGI("✅ Changed CWD to Laravel base: %s", basePath);
 
     // Tokenize command
     char *argv[128];
@@ -354,19 +357,7 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     setenv("PHP_SELF", "artisan.php", 1);
     setenv("APP_ENV", "local", 1);
 
-    if (!php_initialized) {
-        if (php_embed_init(0, NULL) != SUCCESS) {
-            LOGE("❌ Failed to initialize PHP runtime");
-            (*env)->ReleaseStringUTFChars(env, jcommand, command);
-            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
-            (*env)->DeleteLocalRef(env, jLaravelPath);
-            free(commandCopy);
-            return (*env)->NewStringUTF(env, "");
-        }
-        php_initialized = 1;
-    }
-
-    // Set $argv/$argc via PHP instead of reinitializing the engine
+    // Set $argv/$argc via PHP
     {
         char php_argv_code[4096];
         snprintf(php_argv_code, sizeof(php_argv_code),
@@ -389,6 +380,7 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     zend_file_handle file_handle;
     zend_stream_init_filename(&file_handle, artisanPath);
     php_execute_script(&file_handle);
+
     safe_php_embed_shutdown();
     php_initialized = 0;
 
@@ -435,7 +427,7 @@ JNIEXPORT jstring JNICALL native_get_laravel_root_path(JNIEnv *env, jobject thiz
     return (*env)->NewStringUTF(env, fullPath);
 }
 
-JNIEXPORT jstring JNICALL native_handle_request_once(
+JNIEXPORT jstring JNICALL native_handle_request(
         JNIEnv *env, jobject thiz,
         jstring jMethod, jstring jUri, jstring jPostData, jstring jScriptPath) {
 
@@ -444,7 +436,7 @@ JNIEXPORT jstring JNICALL native_handle_request_once(
     const char *post = jPostData ? (*env)->GetStringUTFChars(env, jPostData, NULL) : "";
     const char *path = (*env)->GetStringUTFChars(env, jScriptPath, NULL);
 
-    char *output = run_php_script_once(path, method, uri, post);
+    char *output = run_php_request(path, method, uri, post);
 
     jstring result = (*env)->NewStringUTF(env, output ? output : "");
 
@@ -456,6 +448,23 @@ JNIEXPORT jstring JNICALL native_handle_request_once(
     if (jPostData) (*env)->ReleaseStringUTFChars(env, jPostData, post);
 
     return result;
+}
+
+// JNI entry points for runtime lifecycle (kept for Kotlin compat)
+JNIEXPORT void JNICALL native_runtime_init(JNIEnv *env, jobject thiz) {
+    if (g_bridge_instance) {
+        (*env)->DeleteGlobalRef(env, g_bridge_instance);
+    }
+    g_bridge_instance = (*env)->NewGlobalRef(env, thiz);
+    LOGI("PHP bridge initialized");
+}
+
+JNIEXPORT void JNICALL native_runtime_shutdown(JNIEnv *env, jobject thiz) {
+    if (g_bridge_instance) {
+        (*env)->DeleteGlobalRef(env, g_bridge_instance);
+        g_bridge_instance = NULL;
+    }
+    LOGI("PHP bridge shut down");
 }
 
 JNIEXPORT jstring JNICALL native_get_laravel_public_path(JNIEnv *env, jobject thiz) {
@@ -495,28 +504,23 @@ JNIEXPORT jstring JNICALL native_get_laravel_public_path(JNIEnv *env, jobject th
 }
 
 JNIEXPORT void JNICALL native_shutdown(JNIEnv *env, jobject thiz) {
-    if (php_initialized) {
-        safe_php_embed_shutdown();
-        php_initialized = 0;
+    if (g_callback_obj) {
+        (*env)->DeleteGlobalRef(env, g_callback_obj);
+        g_callback_obj = NULL;
+    }
+    g_callback_method = NULL;
 
-        if (g_callback_obj) {
-            (*env)->DeleteGlobalRef(env, g_callback_obj);
-            g_callback_obj = NULL;
-        }
-        g_callback_method = NULL;
+    if (g_bridge_instance) {
+        (*env)->DeleteGlobalRef(env, g_bridge_instance);
+        g_bridge_instance = NULL;
+    }
 
-        if (g_bridge_instance) {
-            (*env)->DeleteGlobalRef(env, g_bridge_instance);
-            g_bridge_instance = NULL;
-        }
-
-        // Free the collected output buffer
-        if (g_collected_output) {
-            free(g_collected_output);
-            g_collected_output = NULL;
-            g_collected_length = 0;
-            g_collected_capacity = 0;
-        }
+    // Free the collected output buffer
+    if (g_collected_output) {
+        free(g_collected_output);
+        g_collected_output = NULL;
+        g_collected_length = 0;
+        g_collected_capacity = 0;
     }
 }
 
@@ -539,6 +543,8 @@ static JNINativeMethod gMethods[] = {
         {"nativeExecuteScript", "(Ljava/lang/String;)Ljava/lang/String;", (void *) native_execute_script},
         {"initialize", "()V", (void *) native_initialize},
         {"shutdown", "()V", (void *) native_shutdown},
+        {"nativeRuntimeInit", "()V", (void *) native_runtime_init},
+        {"nativeRuntimeShutdown", "()V", (void *) native_runtime_shutdown},
         {"setRequestInfo", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V", (void *) native_set_request_info},
         {"runArtisanCommand", "(Ljava/lang/String;)Ljava/lang/String;", (void *) native_run_artisan_command},
         {"getLaravelPublicPath", "()Ljava/lang/String;", (void *) native_get_laravel_public_path},
@@ -546,7 +552,9 @@ static JNINativeMethod gMethods[] = {
 
         // LaravelEnvironment
         {"nativeSetEnv", "(Ljava/lang/String;Ljava/lang/String;I)I", (void *) native_set_env},
-        {"nativeHandleRequestOnce","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request_once}
+        {"nativeHandleRequest","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request},
+        // Legacy name for compat
+        {"nativeHandleRequestOnce","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request}
 };
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {

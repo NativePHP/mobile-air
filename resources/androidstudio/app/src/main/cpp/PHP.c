@@ -15,8 +15,7 @@ void initialize_php_with_request(const char *post_data, const char *method, cons
 
     // Step 1: Bootstrap PHP internals (superglobals, session, etc)
     if (php_request_startup() == FAILURE) {
-        LOGE("❌ php_request_startup() failed");
-        php_module_shutdown();
+        LOGE("php_request_startup() failed");
         return;
     }
     LOGI("✅ php_request_startup() completed");

@@ -19,15 +19,19 @@ static jclass g_bridgeRouterClass = nullptr;
 static jmethodID g_nativePHPCanMethod = nullptr;
 static jmethodID g_nativePHPCallMethod = nullptr;
 
-// Forward declarations for UI bridge JNI functions (defined below)
-static jboolean ui_is_ready(JNIEnv*, jclass);
-static jint ui_get_tree_version(JNIEnv*, jclass);
-static jbyteArray ui_get_tree_buffer(JNIEnv*, jclass);
-static jint ui_wait_tree_update(JNIEnv*, jclass, jint, jint);
-static void ui_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
-static jint ui_get_patch_version(JNIEnv*, jclass);
-static jbyteArray ui_get_patch_buffer(JNIEnv*, jclass);
-static void ui_ack_patch_version(JNIEnv*, jclass, jint);
+// Cached refs for NativeElementBridge — used by NativeElement_PostTreeUpdate() / stopWatching()
+static jclass g_elementBridgeClass = nullptr;
+static jmethodID g_postTreeUpdateMethod = nullptr;
+static jmethodID g_stopWatchingMethod = nullptr;
+
+// Forward declarations for Element bridge JNI functions
+static jboolean element_is_ready(JNIEnv*, jclass);
+static jint element_wait_update(JNIEnv*, jclass, jint, jint);
+static jobject element_get_flat_buffer(JNIEnv*, jclass);
+static jobject element_get_prop_buffer(JNIEnv*, jclass);
+static jobjectArray element_get_type_table(JNIEnv*, jclass);
+static jint element_get_node_count(JNIEnv*, jclass);
+static void element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
 
 // Initialization function to be called from php_bridge.c's JNI_OnLoad
 extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
@@ -68,30 +72,47 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
 
     LOGI("BridgeJNI: Initialization successful");
 
-    /* Register UI bridge native methods */
-    static JNINativeMethod uiMethods[] = {
-        {(char*)"nativeIsUIReady",        (char*)"()Z",      (void*)ui_is_ready},
-        {(char*)"nativeGetTreeVersion",   (char*)"()I",      (void*)ui_get_tree_version},
-        {(char*)"nativeGetTreeBuffer",    (char*)"()[B",     (void*)ui_get_tree_buffer},
-        {(char*)"nativeWaitTreeUpdate",   (char*)"(II)I",    (void*)ui_wait_tree_update},
-        {(char*)"nativeWriteEvent",       (char*)"(III[B)V", (void*)ui_write_event},
-        {(char*)"nativeGetPatchVersion",  (char*)"()I",      (void*)ui_get_patch_version},
-        {(char*)"nativeGetPatchBuffer",   (char*)"()[B",     (void*)ui_get_patch_buffer},
-        {(char*)"nativeAckPatchVersion",  (char*)"(I)V",     (void*)ui_ack_patch_version},
+    /* Register Element bridge native methods */
+    static JNINativeMethod elementMethods[] = {
+        {(char*)"nativeElementIsReady",    (char*)"()Z",                       (void*)element_is_ready},
+        {(char*)"nativeElementWaitUpdate", (char*)"(II)I",                     (void*)element_wait_update},
+        {(char*)"nativeGetFlatBuffer",     (char*)"()Ljava/nio/ByteBuffer;",   (void*)element_get_flat_buffer},
+        {(char*)"nativeGetPropBuffer",     (char*)"()Ljava/nio/ByteBuffer;",   (void*)element_get_prop_buffer},
+        {(char*)"nativeGetTypeTable",      (char*)"()[Ljava/lang/String;",     (void*)element_get_type_table},
+        {(char*)"nativeGetNodeCount",      (char*)"()I",                       (void*)element_get_node_count},
+        {(char*)"nativeElementWriteEvent", (char*)"(III[B)V",                  (void*)element_write_event},
     };
 
-    jclass uiClass = env->FindClass("com/nativephp/mobile/ui/nativerender/NativeUIBridge");
-    if (uiClass != nullptr) {
-        if (env->RegisterNatives(uiClass, uiMethods, sizeof(uiMethods) / sizeof(uiMethods[0])) == 0) {
-            LOGI("BridgeJNI: UI bridge native methods registered");
+    jclass elClass = env->FindClass("com/nativephp/mobile/ui/nativerender/NativeElementBridge");
+    if (elClass != nullptr) {
+        if (env->RegisterNatives(elClass, elementMethods, sizeof(elementMethods) / sizeof(elementMethods[0])) == 0) {
+            LOGI("BridgeJNI: Element bridge native methods registered");
         } else {
-            LOGE("BridgeJNI: Failed to register UI bridge native methods");
+            LOGE("BridgeJNI: Failed to register Element bridge native methods");
         }
-        env->DeleteLocalRef(uiClass);
+
+        /* Cache class + method refs for direct C → Kotlin push */
+        g_elementBridgeClass = reinterpret_cast<jclass>(env->NewGlobalRef(elClass));
+        g_postTreeUpdateMethod = env->GetStaticMethodID(g_elementBridgeClass, "postTreeUpdate", "()V");
+        if (g_postTreeUpdateMethod) {
+            LOGI("BridgeJNI: Cached postTreeUpdate method for direct JNI push");
+        } else {
+            LOGE("BridgeJNI: Failed to find postTreeUpdate method");
+            env->ExceptionClear();
+        }
+
+        g_stopWatchingMethod = env->GetStaticMethodID(g_elementBridgeClass, "stopWatching", "()V");
+        if (g_stopWatchingMethod) {
+            LOGI("BridgeJNI: Cached stopWatching method for element teardown");
+        } else {
+            LOGE("BridgeJNI: Failed to find stopWatching method");
+            env->ExceptionClear();
+        }
+
+        env->DeleteLocalRef(elClass);
     } else {
-        /* Class not found is OK — UI rendering not available in this build */
         env->ExceptionClear();
-        LOGI("BridgeJNI: NativeUIBridge class not found (UI rendering disabled)");
+        LOGI("BridgeJNI: NativeElementBridge class not found (Element runtime disabled)");
     }
 
     return JNI_OK;
@@ -239,200 +260,160 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Native UI Bridge — Shared Memory Access
+ * Element Runtime Bridge — Direct Flat Buffer Access
  *
- * These JNI functions let Kotlin read the UI tree buffer
- * and write events back to the shared memory region that
- * the PHP extension (nativephp_ui.c) created via mmap.
+ * JNI functions for the Element runtime. Reads fixed-stride
+ * flat nodes from malloc'd buffers instead of parsing V2 binary.
  * ═══════════════════════════════════════════════════════════ */
 
+#define NPHP_ELEMENT_MAGIC   0x454C4531  /* "ELE1" */
+#define NPHP_EVENT_MAGIC_EL  0x4E504556  /* "NPEV" — same format */
+#define NPHP_EVENT_BUFFER_SIZE (256 * 1024)
+
 /*
- * Shared region struct — must match nativephp_ui.h layout exactly.
- * Uses std::atomic<uint32_t> which has the same layout as _Atomic uint32_t
- * on ARM64 Android (both are lock-free 4-byte aligned).
+ * Element region struct — must match nphp_element.h layout exactly.
+ * Uses void* for zval* since we don't have php.h here.
  */
-struct NpuiSharedRegion {
+struct NphpElementRegion {
     uint32_t magic;
-
-    uint32_t tree_offset;
-    std::atomic<uint32_t> tree_size;
     std::atomic<uint32_t> tree_version;
-    std::atomic<uint32_t> tree_version_ack;
+    std::atomic<uint32_t> shutdown;
+    std::atomic<uint32_t> running;
 
-    uint32_t patch_offset;
-    std::atomic<uint32_t> patch_size;
-    std::atomic<uint32_t> patch_version;
-    std::atomic<uint32_t> patch_version_ack;
+    void* current_tree;  /* zval* — opaque to JNI */
+    std::atomic<uint32_t> node_count;
 
-    uint32_t event_offset;
-    std::atomic<uint32_t> event_size;
-    std::atomic<uint32_t> event_count;
+    uint8_t* flat_buffer;
+    std::atomic<uint32_t> flat_buffer_size;
+    uint8_t* prop_buffer;
+    std::atomic<uint32_t> prop_buffer_size;
 
-    pthread_mutex_t event_mutex;
-    pthread_cond_t  event_cond;
+    char type_table[4096];
+    uint16_t type_offsets[128];
+    uint8_t type_count;
+
     pthread_mutex_t tree_mutex;
     pthread_cond_t  tree_cond;
 
-    std::atomic<uint32_t> shutdown;
-    std::atomic<uint32_t> running;
+    std::atomic<uint32_t> event_size;
+    std::atomic<uint32_t> event_count;
+    pthread_mutex_t event_mutex;
+    pthread_cond_t  event_cond;
+    uint8_t event_buffer[NPHP_EVENT_BUFFER_SIZE];
 };
 
-#define NPUI_MAGIC              0x4E505632  /* "NPV2" */
-#define NPUI_EVENT_MAGIC        0x4E504556  /* "NPEV" */
-#define NPUI_PATCH_BUFFER_SIZE  (512 * 1024)
+static NphpElementRegion* g_element_direct_ptr = nullptr;
 
-static NpuiSharedRegion* g_npui_direct_ptr = nullptr;
-static NpuiSharedRegion** g_npui_region_ptr = nullptr;
-
-/*
- * Called by nativephp_ui.c (via dlsym) to pass the shared region pointer directly.
- * This avoids symbol visibility issues with dlsym(RTLD_DEFAULT, "g_npui_region").
- */
 extern "C" __attribute__((visibility("default")))
-void NativeUI_RegisterRegion(void* ptr) {
-    LOGI("UI: NativeUI_RegisterRegion called with ptr=%p", ptr);
-    g_npui_direct_ptr = (NpuiSharedRegion*)ptr;
+void NativeElement_RegisterRegion(void* ptr) {
+    LOGI("Element: NativeElement_RegisterRegion called with ptr=%p", ptr);
+    g_element_direct_ptr = (NphpElementRegion*)ptr;
 }
 
-/*
- * Called by nativephp_ui.c on shutdown to clear the pointer.
- */
 extern "C" __attribute__((visibility("default")))
-void NativeUI_UnregisterRegion(void) {
-    LOGI("UI: NativeUI_UnregisterRegion called");
-    g_npui_direct_ptr = nullptr;
-}
+void NativeElement_UnregisterRegion(void) {
+    LOGI("Element: NativeElement_UnregisterRegion called");
+    g_element_direct_ptr = nullptr;
 
-/*
- * Get the shared region pointer.
- * Tries direct pointer first (set by NativeUI_RegisterRegion),
- * then falls back to dlsym(RTLD_DEFAULT, "g_npui_region").
- */
-static NpuiSharedRegion* get_ui_region() {
-    /* Fast path: direct pointer from PHP */
-    if (g_npui_direct_ptr != nullptr) {
-        if (g_npui_direct_ptr->magic == NPUI_MAGIC) {
-            return g_npui_direct_ptr;
-        }
-        return nullptr;
-    }
-
-    /* Fallback: dlsym lookup (try RTLD_DEFAULT, then explicit libphp.so handle) */
-    if (g_npui_region_ptr == nullptr) {
-        g_npui_region_ptr = (NpuiSharedRegion**)dlsym(RTLD_DEFAULT, "g_npui_region");
-        if (g_npui_region_ptr == nullptr) {
-            /* Android namespace-safe: try the PHP library directly */
-            void* ph = dlopen("libphp.so", RTLD_NOLOAD | RTLD_NOW);
-            if (ph) {
-                g_npui_region_ptr = (NpuiSharedRegion**)dlsym(ph, "g_npui_region");
+    // Notify Kotlin to hide the native Compose overlay
+    if (g_elementBridgeClass && g_stopWatchingMethod) {
+        JNIEnv* env = GetJNIEnv();
+        if (env) {
+            LOGI("Element: UnregisterRegion — calling stopWatching()");
+            env->CallStaticVoidMethod(g_elementBridgeClass, g_stopWatchingMethod);
+            if (env->ExceptionCheck()) {
+                LOGE("Element: UnregisterRegion — stopWatching exception");
+                env->ExceptionDescribe();
+                env->ExceptionClear();
             }
         }
-        if (g_npui_region_ptr == nullptr) {
-            return nullptr;
-        }
     }
-    NpuiSharedRegion* region = *g_npui_region_ptr;
-    if (region == nullptr || region->magic != NPUI_MAGIC) {
-        return nullptr;
-    }
-    return region;
 }
 
-/* Check if UI shared memory is initialized */
-static jboolean ui_is_ready(JNIEnv*, jclass) {
-    return get_ui_region() != nullptr ? JNI_TRUE : JNI_FALSE;
+static NphpElementRegion* get_element_region() {
+    if (g_element_direct_ptr != nullptr &&
+        g_element_direct_ptr->magic == NPHP_ELEMENT_MAGIC) {
+        return g_element_direct_ptr;
+    }
+    return nullptr;
 }
 
-/* Get current tree version (atomic read) */
-static jint ui_get_tree_version(JNIEnv*, jclass) {
-    auto* region = get_ui_region();
-    if (!region) return 0;
+/* ── Element JNI Functions ── */
+
+static jboolean element_is_ready(JNIEnv*, jclass) {
+    return get_element_region() != nullptr ? JNI_TRUE : JNI_FALSE;
+}
+
+/* Legacy stub — tree updates now push directly via NativeElement_PostTreeUpdate().
+ * Kept for JNI registration compat; not called by Kotlin. */
+static jint element_wait_update(JNIEnv*, jclass, jint current_version, jint /*timeout_ms*/) {
+    auto* region = get_element_region();
+    if (!region) return -1;
     return (jint)region->tree_version.load(std::memory_order_acquire);
 }
 
-/* Copy the tree buffer into a Java byte array */
-static jbyteArray ui_get_tree_buffer(JNIEnv* env, jclass) {
-    auto* region = get_ui_region();
+static jobject element_get_flat_buffer(JNIEnv* env, jclass) {
+    auto* region = get_element_region();
     if (!region) return nullptr;
 
-    uint32_t size = region->tree_size.load(std::memory_order_acquire);
-    if (size == 0 || size > (2 * 1024 * 1024)) return nullptr;
-
-    /* Re-validate region after reading size (shutdown may have occurred) */
+    uint32_t size = region->flat_buffer_size.load(std::memory_order_acquire);
+    if (size == 0 || !region->flat_buffer) return nullptr;
     if (region->shutdown.load(std::memory_order_acquire)) return nullptr;
 
-    uint8_t* tree_buf = (uint8_t*)region + region->tree_offset;
-
-    jbyteArray result = env->NewByteArray(size);
-    if (result == nullptr) return nullptr;
-
-    env->SetByteArrayRegion(result, 0, size, (jbyte*)tree_buf);
-    return result;
+    return env->NewDirectByteBuffer(region->flat_buffer, size);
 }
 
-/*
- * Block until the tree version changes, times out, or shutdown is signaled.
- * Returns: new version (>0), 0 on timeout, -1 on shutdown/error.
- */
-static jint ui_wait_tree_update(JNIEnv*, jclass, jint current_version, jint timeout_ms) {
-    auto* region = get_ui_region();
-    if (!region) return -1;
+static jobject element_get_prop_buffer(JNIEnv* env, jclass) {
+    auto* region = get_element_region();
+    if (!region) return nullptr;
 
-    pthread_mutex_lock(&region->tree_mutex);
+    uint32_t size = region->prop_buffer_size.load(std::memory_order_acquire);
+    if (size == 0 || !region->prop_buffer) return nullptr;
+    if (region->shutdown.load(std::memory_order_acquire)) return nullptr;
 
-    while ((jint)region->tree_version.load(std::memory_order_acquire) == current_version &&
-           !region->shutdown.load(std::memory_order_acquire)) {
+    return env->NewDirectByteBuffer(region->prop_buffer, size);
+}
 
-        if (timeout_ms < 0) {
-            pthread_cond_wait(&region->tree_cond, &region->tree_mutex);
-        } else {
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_sec  += timeout_ms / 1000;
-            ts.tv_nsec += (timeout_ms % 1000) * 1000000L;
-            if (ts.tv_nsec >= 1000000000L) {
-                ts.tv_sec++;
-                ts.tv_nsec -= 1000000000L;
-            }
+static jobjectArray element_get_type_table(JNIEnv* env, jclass) {
+    auto* region = get_element_region();
+    if (!region || region->type_count == 0) return nullptr;
 
-            int rc = pthread_cond_timedwait(&region->tree_cond, &region->tree_mutex, &ts);
-            if (rc == ETIMEDOUT) {
-                pthread_mutex_unlock(&region->tree_mutex);
-                return 0;
-            }
-        }
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (!stringClass) return nullptr;
 
-        /* After waking, re-validate region pointer — shutdown may have
-         * unregistered and unmapped the region while we were waiting. */
-        if (g_npui_direct_ptr == nullptr && get_ui_region() == nullptr) {
-            pthread_mutex_unlock(&region->tree_mutex);
-            return -1;
+    jobjectArray arr = env->NewObjectArray(region->type_count, stringClass, nullptr);
+    if (!arr) {
+        env->DeleteLocalRef(stringClass);
+        return nullptr;
+    }
+
+    for (int i = 0; i < region->type_count; i++) {
+        const char* str = region->type_table + region->type_offsets[i];
+        jstring jstr = env->NewStringUTF(str);
+        if (jstr) {
+            env->SetObjectArrayElement(arr, i, jstr);
+            env->DeleteLocalRef(jstr);
         }
     }
 
-    if (region->shutdown.load(std::memory_order_acquire)) {
-        pthread_mutex_unlock(&region->tree_mutex);
-        return -1;
-    }
-
-    jint new_version = (jint)region->tree_version.load(std::memory_order_acquire);
-    pthread_mutex_unlock(&region->tree_mutex);
-
-    /* Acknowledge the version */
-    region->tree_version_ack.store((uint32_t)new_version, std::memory_order_release);
-
-    return new_version;
+    env->DeleteLocalRef(stringClass);
+    return arr;
 }
 
-/*
- * Write a UI event to shared memory and wake PHP's wait_event().
- * Event wire format: [4]magic [1]type [4]callback_id [4]node_id [8]timestamp [2]data_size [N]data
- */
-static void ui_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
-    auto* region = get_ui_region();
-    if (!region) return;
+static jint element_get_node_count(JNIEnv*, jclass) {
+    auto* region = get_element_region();
+    if (!region) return 0;
+    return (jint)region->node_count.load(std::memory_order_acquire);
+}
 
-    /* Build event in stack buffer */
+static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
+    auto* region = get_element_region();
+    if (!region) {
+        LOGE("Element: Event DROPPED — region is NULL (type=%d cb=%d node=%d)", type, callback_id, node_id);
+        return;
+    }
+
+    /* Build event in stack buffer — same NPEV format */
     uint8_t event_buf[512];
     size_t pos = 0;
 
@@ -441,18 +422,16 @@ static void ui_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jin
     auto write_u32 = [&](uint32_t v) { if (pos + 4 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 4); pos += 4; } };
     auto write_u64 = [&](uint64_t v) { if (pos + 8 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 8); pos += 8; } };
 
-    write_u32(NPUI_EVENT_MAGIC);
+    write_u32(NPHP_EVENT_MAGIC_EL);
     write_u8((uint8_t)type);
     write_u32((uint32_t)callback_id);
     write_u32((uint32_t)node_id);
 
-    /* Timestamp in milliseconds */
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     uint64_t timestamp = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
     write_u64(timestamp);
 
-    /* Event-specific data */
     jsize data_len = data ? env->GetArrayLength(data) : 0;
     write_u16((uint16_t)data_len);
     if (data_len > 0 && pos + data_len <= sizeof(event_buf)) {
@@ -460,49 +439,54 @@ static void ui_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jin
         pos += data_len;
     }
 
-    /* Write to shared memory under lock */
+    /* Write to inline event buffer under lock */
     pthread_mutex_lock(&region->event_mutex);
 
-    uint8_t* shared_event_buf = (uint8_t*)region + region->event_offset;
-    memcpy(shared_event_buf, event_buf, pos);
+    memcpy(region->event_buffer, event_buf, pos);
     region->event_size.store((uint32_t)pos, std::memory_order_release);
     region->event_count.store(1, std::memory_order_release);
 
     pthread_cond_signal(&region->event_cond);
     pthread_mutex_unlock(&region->event_mutex);
 
-    LOGI("UI: Event written — type=%d cb=%d node=%d size=%zu", type, callback_id, node_id, pos);
+    LOGI("Element: Event written — type=%d cb=%d node=%d size=%zu", type, callback_id, node_id, pos);
 }
 
-/* Get current patch version (atomic read) */
-static jint ui_get_patch_version(JNIEnv*, jclass) {
-    auto* region = get_ui_region();
-    if (!region) return 0;
-    return (jint)region->patch_version.load(std::memory_order_acquire);
-}
+/* ═══════════════════════════════════════════════════════════
+ * Direct JNI Push — called from native_functions.c on PHP thread
+ *
+ * After nphp_element_publish() builds the flat buffer, it calls
+ * this to push the tree to Kotlin's NativeElementBridge.postTreeUpdate()
+ * which parses the buffer and posts to the Compose renderer.
+ * ═══════════════════════════════════════════════════════════ */
 
-/* Copy the patch buffer into a Java byte array */
-static jbyteArray ui_get_patch_buffer(JNIEnv* env, jclass) {
-    auto* region = get_ui_region();
-    if (!region) return nullptr;
+extern "C" __attribute__((visibility("default")))
+void NativeElement_PostTreeUpdate() {
+    if (!g_elementBridgeClass || !g_postTreeUpdateMethod) {
+        LOGE("Element: PostTreeUpdate — JNI refs not cached");
+        return;
+    }
 
-    uint32_t size = region->patch_size.load(std::memory_order_acquire);
-    if (size == 0 || size > NPUI_PATCH_BUFFER_SIZE) return nullptr;
+    JNIEnv* env = GetJNIEnv();
+    if (!env) {
+        LOGE("Element: PostTreeUpdate — failed to get JNIEnv");
+        return;
+    }
 
-    if (region->shutdown.load(std::memory_order_acquire)) return nullptr;
+    auto* region = get_element_region();
+    if (region) {
+        LOGI("Element: PostTreeUpdate calling Kotlin (nodes=%u flat=%u types=%d ver=%u)",
+             region->node_count.load(std::memory_order_acquire),
+             region->flat_buffer_size.load(std::memory_order_acquire),
+             (int)region->type_count,
+             region->tree_version.load(std::memory_order_acquire));
+    }
 
-    uint8_t* patch_buf = (uint8_t*)region + region->patch_offset;
+    env->CallStaticVoidMethod(g_elementBridgeClass, g_postTreeUpdateMethod);
 
-    jbyteArray result = env->NewByteArray(size);
-    if (result == nullptr) return nullptr;
-
-    env->SetByteArrayRegion(result, 0, size, (jbyte*)patch_buf);
-    return result;
-}
-
-/* Acknowledge that patches up to this version have been applied */
-static void ui_ack_patch_version(JNIEnv*, jclass, jint version) {
-    auto* region = get_ui_region();
-    if (!region) return;
-    region->patch_version_ack.store((uint32_t)version, std::memory_order_release);
+    if (env->ExceptionCheck()) {
+        LOGE("Element: PostTreeUpdate — Java exception thrown");
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
 }

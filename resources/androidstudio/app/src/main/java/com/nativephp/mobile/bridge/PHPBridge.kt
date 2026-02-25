@@ -26,6 +26,14 @@ class PHPBridge(private val context: Context) {
     external fun getLaravelPublicPath(): String
     external fun getLaravelRootPath(): String
     external fun shutdown()
+    external fun nativeRuntimeInit()
+    external fun nativeRuntimeShutdown()
+    external fun nativeHandleRequest(
+        method: String,
+        uri: String,
+        postData: String?,
+        scriptPath: String
+    ): String
     external fun nativeHandleRequestOnce(
         method: String,
         uri: String,
@@ -33,6 +41,17 @@ class PHPBridge(private val context: Context) {
         scriptPath: String
     ): String
 
+
+    @Volatile
+    private var runtimeInitialized = false
+
+    fun ensureRuntimeInitialized() {
+        if (!runtimeInitialized) {
+            nativeRuntimeInit()
+            runtimeInitialized = true
+            Log.i(TAG, "PHP runtime initialized (persistent)")
+        }
+    }
 
     companion object {
         private const val TAG = "PHPBridge"
@@ -72,14 +91,12 @@ class PHPBridge(private val context: Context) {
             val cookieHeader = LaravelCookieStore.asCookieHeader()
             nativeSetEnv("HTTP_COOKIE", cookieHeader, 1)
 
-            Log.d(TAG, "🍪 Sent HTTP_COOKIE to native: $cookieHeader")
-
-            initialize()
+            ensureRuntimeInitialized()
 
             val prepTime = System.currentTimeMillis() - prepStart
             val jniStart = System.currentTimeMillis()
 
-            val output = nativeHandleRequestOnce(
+            val output = nativeHandleRequest(
                 request.method,
                 request.uri,
                 request.body,
@@ -92,14 +109,14 @@ class PHPBridge(private val context: Context) {
             val processedOutput = processRawPHPResponse(output)
 
             val processTime = System.currentTimeMillis() - processStart
-            Log.d("PerfTiming", "⏱️ BRIDGE [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms")
+            Log.d("PerfTiming", "BRIDGE [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms")
 
             processedOutput
         }
 
         val result = future.get()
         val totalTime = System.currentTimeMillis() - requestStart
-        Log.d("PerfTiming", "⏱️ BRIDGE_TOTAL [${request.uri}] ${totalTime}ms")
+        Log.d("PerfTiming", "BRIDGE_TOTAL [${request.uri}] ${totalTime}ms")
         return result
     }
 
@@ -154,8 +171,8 @@ class PHPBridge(private val context: Context) {
      * Blocks the calling thread for the duration of the native UI session.
      */
     fun executeNativeRoute(uri: String) {
-        initialize()
-        nativeHandleRequestOnce("GET", uri, null, nativePhpScript)
+        ensureRuntimeInitialized()
+        nativeHandleRequest("GET", uri, null, nativePhpScript)
     }
 
     fun getLaravelPath(): String {

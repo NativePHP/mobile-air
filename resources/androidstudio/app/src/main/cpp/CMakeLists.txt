@@ -62,6 +62,7 @@ set_target_properties(php PROPERTIES
 add_library(php_wrapper SHARED
         PHP.c
         php_bridge.c
+        native_functions.c
         libphp_wrapper.cpp
         bridge_jni.cpp
 )
