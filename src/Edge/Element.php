@@ -80,22 +80,26 @@ abstract class Element
 
     public function padding(float ...$values): static
     {
-        if (count($values) === 1) {
-            $this->layout['padding'] = $values[0];
-        } elseif (count($values) === 4) {
-            $this->layout['padding'] = $values;
-        }
+        $this->layout['padding'] = match (count($values)) {
+            1 => $values[0],
+            2 => [$values[0], $values[1], $values[0], $values[1]],
+            3 => [$values[0], $values[1], $values[2], $values[1]],
+            4 => $values,
+            default => $this->layout['padding'] ?? 0,
+        };
 
         return $this;
     }
 
     public function margin(float ...$values): static
     {
-        if (count($values) === 1) {
-            $this->layout['margin'] = $values[0];
-        } elseif (count($values) === 4) {
-            $this->layout['margin'] = $values;
-        }
+        $this->layout['margin'] = match (count($values)) {
+            1 => $values[0],
+            2 => [$values[0], $values[1], $values[0], $values[1]],
+            3 => [$values[0], $values[1], $values[2], $values[1]],
+            4 => $values,
+            default => $this->layout['margin'] ?? 0,
+        };
 
         return $this;
     }

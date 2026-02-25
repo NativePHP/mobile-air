@@ -22,6 +22,13 @@ class NativeTagPrecompiler
 
     public function __invoke(string $value): string
     {
+        // Expand @model="propName" into :value="$propName" _change="__syncProperty('propName')"
+        $value = preg_replace_callback(
+            '/@model=["\']([^"\']+)["\']/',
+            fn ($m) => ':value="$'.$m[1].'" _change="__syncProperty(\''.$m[1].'\')"',
+            $value
+        );
+
         // Convert @press, @longPress, @change, @submit, @dismiss to underscored versions
         // before Blade interprets @ as a directive
         $value = preg_replace('/@(press|longPress|change|submit|dismiss)=/', '_$1=', $value);
