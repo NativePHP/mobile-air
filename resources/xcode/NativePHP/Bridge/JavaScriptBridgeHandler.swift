@@ -72,26 +72,16 @@ class JavaScriptBridgeHandler: NSObject, WKScriptMessageHandler {
     }
 
     private func sendResultToJavaScript(callId: Int, result: [String: Any]) {
-        do {
-            let jsonData = try JSONSerialization.data(withJSONObject: result, options: [])
-            guard let jsonString = String(data: jsonData, encoding: .utf8) else {
-                print("❌ JavaScriptBridge: Failed to convert result to JSON")
-                return
-            }
+        let js = "window.NativePHP._resolveCall(callId, result);"
+        let arguments: [String: Any] = ["callId": callId, "result": result]
 
-            let escapedJSON = jsonString
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "'", with: "\\'")
-                .replacingOccurrences(of: "\n", with: "\\n")
-                .replacingOccurrences(of: "\r", with: "\\r")
-
-            let js = "window.NativePHP._resolveCall(\(callId), JSON.parse('\(escapedJSON)'));"
-
-            DispatchQueue.main.async { [weak self] in
-                self?.webView?.evaluateJavaScript(js, completionHandler: nil)
-            }
-        } catch {
-            print("❌ JavaScriptBridge: Failed to serialize result: \(error)")
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.callAsyncJavaScript(
+                js,
+                arguments: arguments,
+                in: nil,
+                contentWorld: .page
+            ) { _ in }
         }
     }
 }

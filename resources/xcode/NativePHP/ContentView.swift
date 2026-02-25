@@ -173,7 +173,7 @@ struct WebView: UIViewRepresentable {
         let logger = ConsoleLogger()
         var webView: WKWebView?
         var hasCompletedInitialLoad = false
-        var: bridgeHandler: JavaScriptBridgeHandler?
+        var bridgeHandler: JavaScriptBridgeHandler?
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
