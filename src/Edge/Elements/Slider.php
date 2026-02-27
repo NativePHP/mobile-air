@@ -65,6 +65,20 @@ class Slider extends Element
         return $this;
     }
 
+    public function color(string $hex): static
+    {
+        $this->sliderProps['color'] = $hex;
+
+        return $this;
+    }
+
+    public function trackColor(string $hex): static
+    {
+        $this->sliderProps['track_color'] = $hex;
+
+        return $this;
+    }
+
     public function disabled(bool $value = true): static
     {
         $this->sliderProps['disabled'] = $value;

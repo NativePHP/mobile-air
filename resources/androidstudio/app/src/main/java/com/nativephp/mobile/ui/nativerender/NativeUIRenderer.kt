@@ -573,6 +573,21 @@ internal fun RenderSlider(node: NativeUINode, modifier: Modifier) {
         0
     }
 
+    val thumbColor = p.getColor("color", 0)
+    val trackColor = p.getColor("track_color", 0)
+
+    val colors = if (thumbColor != 0 || trackColor != 0) {
+        val activeColor = if (thumbColor != 0) argbToColor(thumbColor) else SliderDefaults.colors().thumbColor
+        val activeTrack = if (trackColor != 0) argbToColor(trackColor) else SliderDefaults.colors().activeTrackColor
+        SliderDefaults.colors(
+            thumbColor = activeColor,
+            activeTrackColor = activeTrack,
+            inactiveTrackColor = activeTrack.copy(alpha = 0.3f)
+        )
+    } else {
+        SliderDefaults.colors()
+    }
+
     Slider(
         value = sliderValue,
         onValueChange = { newValue ->
@@ -586,7 +601,8 @@ internal fun RenderSlider(node: NativeUINode, modifier: Modifier) {
         modifier = modifier,
         enabled = !disabled,
         valueRange = min..max,
-        steps = steps.coerceAtLeast(0)
+        steps = steps.coerceAtLeast(0),
+        colors = colors
     )
 }
 

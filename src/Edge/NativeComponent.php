@@ -424,26 +424,18 @@ abstract class NativeComponent
                     ->color('#9CA3AF')
             );
 
-            // Font size controls
-            $controls = Elements\Row::make()->gap(16);
-            $controls->addChild(
-                Elements\Text::make('[ – ]')
-                    ->fontSize(14)
-                    ->color('#D4736A')
-                    ->onPress('__overlayDecreaseFontSize')
+            // Font size slider
+            $content->addChild(
+                Elements\Slider::make()
+                    ->value((float) $this->overlayFontSize)
+                    ->min(6)
+                    ->max(40)
+                    ->step(2)
+                    ->color('#DC2626')
+                    ->trackColor('#991B1B')
+                    ->onChange('__overlaySetFontSize')
+                    ->fillWidth()
             );
-            $controls->addChild(
-                Elements\Text::make("size: {$this->overlayFontSize}")
-                    ->fontSize(12)
-                    ->color('#9CA3AF')
-            );
-            $controls->addChild(
-                Elements\Text::make('[ + ]')
-                    ->fontSize(14)
-                    ->color('#D4736A')
-                    ->onPress('__overlayIncreaseFontSize')
-            );
-            $content->addChild($controls);
 
             $content->addChild(
                 Elements\Divider::make()->fillWidth()
@@ -482,8 +474,7 @@ abstract class NativeComponent
             $errorTree = $screen->toArray($this->callbacks);
 
             $this->overlayCallbackIds = array_filter([
-                $this->callbacks->lookup('__overlayIncreaseFontSize'),
-                $this->callbacks->lookup('__overlayDecreaseFontSize'),
+                $this->callbacks->lookup('__overlaySetFontSize'),
             ]);
 
             nativephp_element_publish($errorTree);
@@ -524,26 +515,18 @@ abstract class NativeComponent
                     ->color('#64748B')
             );
 
-            // Font size controls
-            $controls = Elements\Row::make()->gap(16);
-            $controls->addChild(
-                Elements\Text::make('[ – ]')
-                    ->fontSize(14)
-                    ->color('#94A3B8')
-                    ->onPress('__overlayDecreaseFontSize')
+            // Font size slider
+            $content->addChild(
+                Elements\Slider::make()
+                    ->value((float) $this->overlayFontSize)
+                    ->min(6)
+                    ->max(40)
+                    ->step(2)
+                    ->color('#22D3EE')
+                    ->trackColor('#164E63')
+                    ->onChange('__overlaySetFontSize')
+                    ->fillWidth()
             );
-            $controls->addChild(
-                Elements\Text::make("size: {$this->overlayFontSize}")
-                    ->fontSize(12)
-                    ->color('#475569')
-            );
-            $controls->addChild(
-                Elements\Text::make('[ + ]')
-                    ->fontSize(14)
-                    ->color('#94A3B8')
-                    ->onPress('__overlayIncreaseFontSize')
-            );
-            $content->addChild($controls);
 
             $content->addChild(
                 Elements\Divider::make()->fillWidth()
@@ -560,8 +543,7 @@ abstract class NativeComponent
             $dumpTree = $screen->toArray($this->callbacks);
 
             $this->overlayCallbackIds = array_filter([
-                $this->callbacks->lookup('__overlayIncreaseFontSize'),
-                $this->callbacks->lookup('__overlayDecreaseFontSize'),
+                $this->callbacks->lookup('__overlaySetFontSize'),
             ]);
 
             nativephp_element_publish($dumpTree);
@@ -570,22 +552,11 @@ abstract class NativeComponent
         }
     }
 
-    // ── Overlay font size controls (shared by dump + error screens) ──
+    // ── Overlay font size control (shared by dump + error screens) ──
 
-    public function __overlayIncreaseFontSize(): void
+    public function __overlaySetFontSize(float $size): void
     {
-        $this->overlayFontSize = min($this->overlayFontSize + 2, 24);
-
-        if ($this->dumpException) {
-            $this->renderDumpScreen($this->dumpException);
-        } elseif ($this->errorException) {
-            $this->renderErrorScreen($this->errorException);
-        }
-    }
-
-    public function __overlayDecreaseFontSize(): void
-    {
-        $this->overlayFontSize = max($this->overlayFontSize - 2, 6);
+        $this->overlayFontSize = (int) max(6, min(40, $size));
 
         if ($this->dumpException) {
             $this->renderDumpScreen($this->dumpException);
