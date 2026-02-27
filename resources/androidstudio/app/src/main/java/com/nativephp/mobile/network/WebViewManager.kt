@@ -208,6 +208,11 @@ class WebViewManager(
 
                 val inspectorResponse = requestInspector.shouldInterceptRequest(view, request)
 
+                if (url.contains("/_native/api/call") && inspectorResponse != null) {
+                    Log.d(TAG, "Using inspector response for native bridge call to avoid duplicate handling: $url")
+                    return inspectorResponse
+                }
+
                 if (url.startsWith("http://") && !url.contains(".") && !url.contains("127.0.0.1") && !url.contains("localhost")) {
                     val host = url.substring("http://".length).substringBefore("/")
                     val path = if (url.contains("/")) "/${url.substringAfter("/")}" else "/"
