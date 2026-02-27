@@ -2,9 +2,21 @@
 
 namespace Native\Mobile\Edge;
 
+use Symfony\Component\VarDumper\VarDumper;
+
 abstract class NativeComponent
 {
     const EVENT_HOT_RELOAD = 15;
+
+    private static bool $dumpHandlerRegistered = false;
+
+    private ?NativeDumpException $dumpException = null;
+
+    private ?\Throwable $errorException = null;
+
+    private int $overlayFontSize = 12;
+
+    private array $overlayCallbackIds = [];
 
     protected CallbackRegistry $callbacks;
 
@@ -86,12 +98,55 @@ abstract class NativeComponent
         $this->back();
     }
 
+    protected static function registerDumpHandler(): void
+    {
+        if (self::$dumpHandlerRegistered) {
+            return;
+        }
+
+        self::$dumpHandlerRegistered = true;
+
+        VarDumper::setHandler(function ($var) {
+            $trace = debug_backtrace(0, 10);
+
+            $ddFrame = null;
+            foreach ($trace as $frame) {
+                if (($frame['function'] ?? '') === 'dd') {
+                    $ddFrame = $frame;
+                    break;
+                }
+            }
+
+            if ($ddFrame !== null) {
+                // dd() call — grab all args and throw immediately
+                $args = $ddFrame['args'] ?? [$var];
+                $file = $ddFrame['file'] ?? 'unknown';
+                $line = $ddFrame['line'] ?? 0;
+
+                throw new NativeDumpException($args, $file, $line);
+            }
+
+            // Plain dump() call — log to file without throwing
+            $cloner = new \Symfony\Component\VarDumper\Cloner\VarCloner;
+            $dumper = new \Symfony\Component\VarDumper\Dumper\CliDumper;
+            $dumper->setColors(false);
+
+            $data = $cloner->cloneVar($var);
+            $formatted = $dumper->dump($data, true);
+
+            $logPath = storage_path('logs/edge-nav.log');
+            @file_put_contents($logPath, "[dump] " . $formatted . "\n", FILE_APPEND);
+        });
+    }
+
     /**
      * Full standalone lifecycle — init, mount, loop, unmount, shutdown.
      * Used when running without the NativeRouter.
      */
     public function run(): void
     {
+        static::registerDumpHandler();
+
         $this->callbacks = new CallbackRegistry;
 
         nativephp_element_init();
@@ -101,13 +156,16 @@ abstract class NativeComponent
         while ($this->running) {
             $this->callbacks->reset();
 
-            try {
-                $tree = $this->render()->toArray($this->callbacks);
-                nativephp_element_publish($tree);
-                $this->hasError = false;
-            } catch (\Throwable $e) {
-                NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage());
-                $this->renderErrorScreen($e);
+            if (! $this->hasError) {
+                try {
+                    $tree = $this->render()->toArray($this->callbacks);
+                    nativephp_element_publish($tree);
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage());
+                    $this->renderErrorScreen($e);
+                }
             }
 
             $event = nativephp_element_wait_event(-1);
@@ -129,8 +187,18 @@ abstract class NativeComponent
                 continue;
             }
 
-            // Don't dispatch UI events while showing the error screen
+            // Don't dispatch UI events while showing the error/dump screen
+            // (except overlay controls like font size buttons)
             if (! $this->hasError) {
+                try {
+                    $this->dispatch($event);
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog("dispatch() FAILED in " . static::class . ": " . $e->getMessage());
+                    $this->renderErrorScreen($e);
+                }
+            } elseif (in_array($event['callback_id'] ?? 0, $this->overlayCallbackIds)) {
                 $this->dispatch($event);
             }
         }
@@ -146,6 +214,8 @@ abstract class NativeComponent
      */
     public function runLoop(): void
     {
+        static::registerDumpHandler();
+
         $this->callbacks = new CallbackRegistry;
         $this->running = true;
         $this->navigationIntent = null;
@@ -154,26 +224,28 @@ abstract class NativeComponent
         while ($this->running) {
             $this->callbacks->reset();
 
-            try {
-                $t0 = microtime(true);
-                $element = $this->render();
-                $t1 = microtime(true);
-                $tree = $element->toArray($this->callbacks);
-                $t2 = microtime(true);
+            if (! $this->hasError) {
+                try {
+                    $t0 = microtime(true);
+                    $element = $this->render();
+                    $t1 = microtime(true);
+                    $tree = $element->toArray($this->callbacks);
+                    $t2 = microtime(true);
 
-                nativephp_element_publish($tree);
+                    nativephp_element_publish($tree);
 
-                $t3 = microtime(true);
-                NativeRouter::debugLog(sprintf(
-                    'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
-                    static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                    ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
-                ));
-
-                $this->hasError = false;
-            } catch (\Throwable $e) {
-                NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage() . "\n" . $e->getTraceAsString());
-                $this->renderErrorScreen($e);
+                    $t3 = microtime(true);
+                    NativeRouter::debugLog(sprintf(
+                        'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
+                        static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
+                        ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
+                    ));
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage() . "\n" . $e->getTraceAsString());
+                    $this->renderErrorScreen($e);
+                }
             }
 
             $event = nativephp_element_wait_event(-1);
@@ -197,14 +269,32 @@ abstract class NativeComponent
                 continue;
             }
 
-            // System back button (type 8) — call onBackPressed() or default to back()
+            // System back button (type 8)
             if (($event['type'] ?? -1) === 8) {
+                if ($this->hasError) {
+                    // Dismiss error/dump screen and re-render the component
+                    $this->hasError = false;
+                    $this->dumpException = null;
+                    $this->errorException = null;
+                    $this->overlayCallbackIds = [];
+                    continue;
+                }
                 $this->onBackPressed();
                 continue;
             }
 
-            // Don't dispatch UI events while showing the error screen
+            // Don't dispatch UI events while showing the error/dump screen
+            // (except overlay controls like font size buttons)
             if (! $this->hasError) {
+                try {
+                    $this->dispatch($event);
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog("dispatch() FAILED in " . static::class . ": " . $e->getMessage());
+                    $this->renderErrorScreen($e);
+                }
+            } elseif (in_array($event['callback_id'] ?? 0, $this->overlayCallbackIds)) {
                 $this->dispatch($event);
             }
         }
@@ -307,10 +397,9 @@ abstract class NativeComponent
     protected function renderErrorScreen(\Throwable $e): void
     {
         $this->hasError = true;
+        $this->errorException = $e;
 
         try {
-            $callbacks = new CallbackRegistry;
-
             $screen = Elements\ScrollView::make()
                 ->fill()
                 ->bg('#FEF2F2')
@@ -322,27 +411,10 @@ abstract class NativeComponent
                 ->gap(10);
 
             $content->addChild(
-                Elements\Text::make('Render Error')
+                Elements\Text::make('Exception')
                     ->fontSize(22)
                     ->fontWeight(7)
                     ->color('#991B1B')
-            );
-
-            $content->addChild(
-                Elements\Text::make(static::class)
-                    ->fontSize(13)
-                    ->color('#B91C1C')
-            );
-
-            $content->addChild(
-                Elements\Divider::make()->fillWidth()
-            );
-
-            $content->addChild(
-                Elements\Text::make($e->getMessage())
-                    ->fontSize(14)
-                    ->fontWeight(5)
-                    ->color('#DC2626')
             );
 
             $file = str_replace(base_path() . '/', '', $e->getFile());
@@ -352,33 +424,173 @@ abstract class NativeComponent
                     ->color('#9CA3AF')
             );
 
+            // Font size controls
+            $controls = Elements\Row::make()->gap(16);
+            $controls->addChild(
+                Elements\Text::make('[ – ]')
+                    ->fontSize(14)
+                    ->color('#D4736A')
+                    ->onPress('__overlayDecreaseFontSize')
+            );
+            $controls->addChild(
+                Elements\Text::make("size: {$this->overlayFontSize}")
+                    ->fontSize(12)
+                    ->color('#9CA3AF')
+            );
+            $controls->addChild(
+                Elements\Text::make('[ + ]')
+                    ->fontSize(14)
+                    ->color('#D4736A')
+                    ->onPress('__overlayIncreaseFontSize')
+            );
+            $content->addChild($controls);
+
             $content->addChild(
-                Elements\Spacer::make()->height(4)
+                Elements\Divider::make()->fillWidth()
+            );
+
+            $content->addChild(
+                Elements\Text::make(static::class)
+                    ->fontSize(13)
+                    ->color('#B91C1C')
+            );
+
+            $content->addChild(
+                Elements\Text::make($e->getMessage())
+                    ->fontSize($this->overlayFontSize)
+                    ->fontWeight(5)
+                    ->color('#DC2626')
             );
 
             // Show a condensed stack trace
             $trace = $e->getTraceAsString();
-            // Strip base path for readability
             $trace = str_replace(base_path() . '/', '', $trace);
             $traceLines = explode("\n", $trace);
-            $shortTrace = implode("\n", array_slice($traceLines, 0, 10));
-            if (count($traceLines) > 10) {
+            $shortTrace = implode("\n", array_slice($traceLines, 0, 15));
+            if (count($traceLines) > 15) {
                 $shortTrace .= "\n... (" . count($traceLines) . " frames total)";
             }
 
             $content->addChild(
                 Elements\Text::make($shortTrace)
-                    ->fontSize(10)
+                    ->fontSize($this->overlayFontSize)
                     ->color('#6B7280')
             );
 
             $screen->addChild($content);
 
-            $errorTree = $screen->toArray($callbacks);
+            $errorTree = $screen->toArray($this->callbacks);
+
+            $this->overlayCallbackIds = array_filter([
+                $this->callbacks->lookup('__overlayIncreaseFontSize'),
+                $this->callbacks->lookup('__overlayDecreaseFontSize'),
+            ]);
+
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
-            // If even the error screen fails, just log it
             NativeRouter::debugLog("Error screen render failed: " . $renderError->getMessage());
+        }
+    }
+
+    // ── Dump screen (dd) ─────────────────────────────
+
+    protected function renderDumpScreen(NativeDumpException $e): void
+    {
+        $this->hasError = true;
+        $this->dumpException = $e;
+
+        try {
+            $screen = Elements\ScrollView::make()
+                ->fill()
+                ->bg('#0F172A')
+                ->safeArea();
+
+            $content = Elements\Column::make()
+                ->fillWidth()
+                ->padding(20, 20, 40, 20)
+                ->gap(10);
+
+            $content->addChild(
+                Elements\Text::make('dd()')
+                    ->fontSize(22)
+                    ->fontWeight(7)
+                    ->color('#22D3EE')
+            );
+
+            $file = str_replace(base_path() . '/', '', $e->getSourceFile());
+            $content->addChild(
+                Elements\Text::make("{$file}:{$e->getSourceLine()}")
+                    ->fontSize(12)
+                    ->color('#64748B')
+            );
+
+            // Font size controls
+            $controls = Elements\Row::make()->gap(16);
+            $controls->addChild(
+                Elements\Text::make('[ – ]')
+                    ->fontSize(14)
+                    ->color('#94A3B8')
+                    ->onPress('__overlayDecreaseFontSize')
+            );
+            $controls->addChild(
+                Elements\Text::make("size: {$this->overlayFontSize}")
+                    ->fontSize(12)
+                    ->color('#475569')
+            );
+            $controls->addChild(
+                Elements\Text::make('[ + ]')
+                    ->fontSize(14)
+                    ->color('#94A3B8')
+                    ->onPress('__overlayIncreaseFontSize')
+            );
+            $content->addChild($controls);
+
+            $content->addChild(
+                Elements\Divider::make()->fillWidth()
+            );
+
+            $content->addChild(
+                Elements\Text::make($e->getFormattedDumps())
+                    ->fontSize($this->overlayFontSize)
+                    ->color('#E2E8F0')
+            );
+
+            $screen->addChild($content);
+
+            $dumpTree = $screen->toArray($this->callbacks);
+
+            $this->overlayCallbackIds = array_filter([
+                $this->callbacks->lookup('__overlayIncreaseFontSize'),
+                $this->callbacks->lookup('__overlayDecreaseFontSize'),
+            ]);
+
+            nativephp_element_publish($dumpTree);
+        } catch (\Throwable $renderError) {
+            NativeRouter::debugLog("Dump screen render failed: " . $renderError->getMessage());
+        }
+    }
+
+    // ── Overlay font size controls (shared by dump + error screens) ──
+
+    public function __overlayIncreaseFontSize(): void
+    {
+        $this->overlayFontSize = min($this->overlayFontSize + 2, 24);
+
+        if ($this->dumpException) {
+            $this->renderDumpScreen($this->dumpException);
+        } elseif ($this->errorException) {
+            $this->renderErrorScreen($this->errorException);
+        }
+    }
+
+    public function __overlayDecreaseFontSize(): void
+    {
+        $this->overlayFontSize = max($this->overlayFontSize - 2, 6);
+
+        if ($this->dumpException) {
+            $this->renderDumpScreen($this->dumpException);
+        } elseif ($this->errorException) {
+            $this->renderErrorScreen($this->errorException);
         }
     }
 
