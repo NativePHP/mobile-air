@@ -176,6 +176,11 @@ class BenchmarkComponent extends NativeComponent
                 $this->running = false;
                 break;
             }
+            if (($event['type'] ?? -1) === 8) {
+                $this->back();
+                $this->running = false;
+                break;
+            }
             $this->dispatch($event);
 
             // If dispatch set up a scenario queue, break out to run it
@@ -199,6 +204,10 @@ class BenchmarkComponent extends NativeComponent
             }
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->running = false;
+                break;
+            }
+            if (($event['type'] ?? -1) === 8) {
+                $this->backToMenu();
                 break;
             }
             $this->dispatch($event);
@@ -1130,17 +1139,12 @@ class BenchmarkComponent extends NativeComponent
             );
 
             if ($jank) {
-                $jankRate = (float) ($jank['paint_jank_rate'] ?? 0) * 100;
-                $jankCount = (int) ($jank['paint_jank_count'] ?? 0);
                 $fps = (float) ($jank['effective_fps'] ?? 0);
-                $jankColor = $jankRate > 20 ? '#EF4444' : ($jankRate > 5 ? '#F59E0B' : '#10B981');
                 $fpsColor = $fps > 60 ? '#10B981' : ($fps > 30 ? '#F59E0B' : '#EF4444');
 
                 $cardContent->addChild(
                     Row::make(
                         $this->statChip('eff. FPS', $fps, $fpsColor, 'x'),
-                        $this->statChip('jank', (float) $jankCount, $jankColor, 'none'),
-                        $this->statChip('jank%', $jankRate, $jankColor, '%'),
                     )->fillWidth()->gap(8)
                 );
             }
@@ -1192,18 +1196,13 @@ class BenchmarkComponent extends NativeComponent
                 Text::make("{$frameCount} frames")->fontSize(14)->color('#94A3B8')
             );
 
-            $jankRate = (float) ($frames['jank_rate'] ?? 0) * 100;
             $fps = (float) ($frames['fps'] ?? 0);
-            $jankCount = (int) ($frames['jank_count'] ?? 0);
-            $jankColor = $jankRate > 20 ? '#EF4444' : ($jankRate > 5 ? '#F59E0B' : '#10B981');
             $fpsColor = $fps > 60 ? '#10B981' : ($fps > 30 ? '#F59E0B' : '#EF4444');
 
             $cardContent->addChild(Spacer::make()->height(4));
             $cardContent->addChild(
                 Row::make(
                     $this->statChip('FPS', $fps, $fpsColor, 'x'),
-                    $this->statChip('jank', (float) $jankCount, $jankColor, 'none'),
-                    $this->statChip('jank%', $jankRate, $jankColor, '%'),
                 )->fillWidth()->gap(8)
             );
 
@@ -1305,15 +1304,11 @@ class BenchmarkComponent extends NativeComponent
                 $cardContent->addChild(
                     Text::make('FRAME QUALITY')->fontSize(12)->fontWeight(7)->color('#64748B')
                 );
-                $jankCount = (int) ($frames['jank_count'] ?? 0);
                 $fps = (float) ($frames['fps'] ?? 0);
-                $jankRate = (float) ($frames['jank_rate'] ?? 0) * 100;
-                $jankColor = $jankRate > 20 ? '#EF4444' : ($jankRate > 5 ? '#F59E0B' : '#10B981');
                 $fpsColor = $fps > 60 ? '#10B981' : ($fps > 30 ? '#F59E0B' : '#EF4444');
                 $cardContent->addChild(
                     Row::make(
                         $this->statChip('FPS', $fps, $fpsColor, 'x'),
-                        $this->statChip('jank', (float) $jankCount, $jankColor, 'none'),
                         $this->statChip('p95', (float) ($frames['p95'] ?? 0), '#A78BFA'),
                     )->fillWidth()->gap(8)
                 );

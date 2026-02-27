@@ -87,8 +87,8 @@ trait InstallsAndroid
                 'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3.zip',
             ],
             '8.4' => [
-                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18-icu.zip',
-                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18.zip',
+                'icu' => 'https://bin.nativephp.com/android-element-8.5.3-demo.zip',
+                'default' => 'https://bin.nativephp.com/android-element-8.5.3-demo.zip',
             ],
         ];
 
