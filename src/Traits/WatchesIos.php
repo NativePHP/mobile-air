@@ -100,6 +100,15 @@ trait WatchesIos
 
     private function startIosWatchingDevice(string $target, string $appId, string $viteHotFile): void
     {
+        // Start iproxy to forward port 9999 from the device to localhost over USB
+        // This allows triggerIosReload() to reach the device's HotReloadServer
+        if ($this->startIproxyForwarding($target)) {
+            $this->info('USB port forwarding active - reload triggers will reach the device');
+        } else {
+            $this->warn('iproxy not found - files will sync but automatic reload is unavailable.');
+            $this->line('Install it for automatic reload: <fg=cyan>brew install libimobiledevice</fg=cyan>');
+        }
+
         $this->info('iOS device hot reload active - watching for changes...');
         $this->line('<fg=yellow>Press Ctrl+C to stop</fg=yellow>');
 
@@ -175,11 +184,41 @@ trait WatchesIos
     private function triggerIosReload(): void
     {
         // Connect to the hot reload server to trigger a reload
+        // For simulators this reaches the server directly (shared network)
+        // For physical devices, iproxy forwards this to the device over USB
         $socket = @fsockopen('127.0.0.1', 9999, $errno, $errstr, 1);
         if ($socket) {
             fclose($socket);
             $this->line('<fg=green>Reload triggered</fg=green>');
         }
+    }
+
+    private function startIproxyForwarding(string $target): bool
+    {
+        $check = Process::run('which iproxy');
+
+        if (! $check->successful()) {
+            return false;
+        }
+
+        // Kill any existing processes on port 9999
+        Process::run('lsof -ti:9999 | xargs kill 2>/dev/null');
+        usleep(500000);
+
+        // Start iproxy in background for USB port forwarding
+        $escapedTarget = escapeshellarg($target);
+        exec("iproxy 9999 9999 {$escapedTarget} > /dev/null 2>&1 & echo \$!", $output);
+        $pid = (int) ($output[0] ?? 0);
+
+        if ($pid > 0) {
+            register_shutdown_function(function () use ($pid) {
+                @exec("kill {$pid} 2>/dev/null");
+            });
+
+            return true;
+        }
+
+        return false;
     }
 
     private function promptForWatchTarget(): ?string
