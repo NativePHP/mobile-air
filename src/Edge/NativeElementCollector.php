@@ -212,6 +212,9 @@ class NativeElementCollector
         if (isset($attrs['_dismiss']) && method_exists($element, 'onDismiss')) {
             $element->onDismiss($attrs['_dismiss']);
         }
+        if (isset($attrs['_navigate'])) {
+            $element->setNavigateConfig($attrs['_navigate']);
+        }
     }
 
     protected static function applyElementProps(Element $element, array $attrs): void

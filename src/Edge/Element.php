@@ -16,6 +16,8 @@ abstract class Element
 
     protected ?string $longPressMethod = null;
 
+    protected ?array $navigateConfig = null;
+
     protected array $children = [];
 
     // ── Attribute hydration ──────────────────────────────
@@ -215,6 +217,13 @@ abstract class Element
         return $this;
     }
 
+    public function setNavigateConfig(array $config): static
+    {
+        $this->navigateConfig = $config;
+
+        return $this;
+    }
+
     // ── Resolution ───────────────────────────────────
 
     public function toArray(CallbackRegistry $registry, int &$nextId = 1): array
@@ -243,6 +252,11 @@ abstract class Element
 
         if ($this->longPressMethod !== null) {
             $node['on_long_press'] = $registry->register($this->longPressMethod);
+        }
+
+        if ($this->navigateConfig !== null) {
+            $navKey = $registry->registerNavigation($this->navigateConfig);
+            $node['on_press'] = $registry->register("__navigate('{$navKey}')");
         }
 
         if (! empty($this->children)) {

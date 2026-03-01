@@ -17,7 +17,7 @@ class Button extends NativeBladeComponent
     {
         return function (array $data) {
             $attrs = $data['attributes']->getAttributes();
-            $slot = trim(html_entity_decode(strip_tags($data['slot']->toHtml()), ENT_QUOTES, 'UTF-8'));
+            $slot = preg_replace('/\s+/', ' ', trim(html_entity_decode(strip_tags($data['slot']->toHtml()), ENT_QUOTES, 'UTF-8')));
 
             if ($slot !== '' && ! isset($attrs['label'])) {
                 $attrs['label'] = $slot;

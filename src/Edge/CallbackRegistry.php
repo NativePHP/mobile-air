@@ -10,6 +10,8 @@ class CallbackRegistry
 
     protected array $expressionMap = [];
 
+    protected array $navigationConfigs = [];
+
     public function register(string $expression): int
     {
         if (isset($this->expressionMap[$expression])) {
@@ -41,6 +43,23 @@ class CallbackRegistry
     public function reset(): void
     {
         // Keep expressionMap and map intact for stable IDs.
+    }
+
+    /**
+     * Store a navigation config and return a content-addressed key.
+     * Same config always produces the same key for stable callback IDs.
+     */
+    public function registerNavigation(array $config): string
+    {
+        $key = 'n'.substr(md5(json_encode($config)), 0, 8);
+        $this->navigationConfigs[$key] = $config;
+
+        return $key;
+    }
+
+    public function resolveNavigation(string $key): ?array
+    {
+        return $this->navigationConfigs[$key] ?? null;
     }
 
     private static function parse(string $expression): array

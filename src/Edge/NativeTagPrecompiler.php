@@ -18,6 +18,17 @@ class NativeTagPrecompiler
         'button' => 'label',
     ];
 
+    /** camelCase modifier → Transition enum value */
+    private const NAVIGATE_TRANSITIONS = [
+        'fade' => 'fade',
+        'slideFromRight' => 'slide_from_right',
+        'slideFromLeft' => 'slide_from_left',
+        'slideFromBottom' => 'slide_from_bottom',
+        'fadeFromBottom' => 'fade_from_bottom',
+        'scaleFromCenter' => 'scale_from_center',
+        'none' => 'none',
+    ];
+
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
     public function __invoke(string $value): string
@@ -26,6 +37,19 @@ class NativeTagPrecompiler
         $value = preg_replace_callback(
             '/@model=["\']([^"\']+)["\']/',
             fn ($m) => ':value="$'.$m[1].'" _change="__syncProperty(\''.$m[1].'\')"',
+            $value
+        );
+
+        // Expand @navigate directives into :_navigate dynamic attribute
+        // Paren style:  @navigate.fade('/route', ['data' => 'val'])
+        // Quote style:  @navigate.fade="'/route', ['data' => 'val']"
+        // Boolean style: @navigate.back
+        $value = preg_replace_callback(
+            '/@navigate\b(?:\.([\w.]+))?(?:="([^"]*)"|(\((?:[^()]*|\([^()]*\))*\)))?/',
+            fn ($m) => $this->compileNavigateDirective(
+                $m[1] ?? '',
+                ! empty($m[3]) ? substr($m[3], 1, -1) : ($m[2] ?? ''),
+            ),
             $value
         );
 
@@ -90,7 +114,7 @@ class NativeTagPrecompiler
             $propName = self::TEXT_ELEMENTS[$tag];
             $type = $this->tagToType($tag);
 
-            $code = '<?php $__nativeSlot = trim(html_entity_decode(strip_tags(ob_get_clean()), ENT_QUOTES, \'UTF-8\'));';
+            $code = '<?php $__nativeSlot = preg_replace(\'/\s+/\', \' \', trim(html_entity_decode(strip_tags(ob_get_clean()), ENT_QUOTES, \'UTF-8\')));';
 
             if ($tag === 'button') {
                 $code .= " if (\$__nativeSlot !== '' && !isset(\$__nativeSlotAttrs['label'])) { \$__nativeSlotAttrs['label'] = \$__nativeSlot; }";
@@ -139,6 +163,39 @@ class NativeTagPrecompiler
         }
 
         return count($segments) === 1 ? $segments[0] : implode(' . ', $segments);
+    }
+
+    private function compileNavigateDirective(string $modifiers, string $args): string
+    {
+        $parts = $modifiers !== '' ? explode('.', $modifiers) : [];
+
+        $type = 'navigate';
+        $transition = 'null';
+
+        foreach ($parts as $part) {
+            if (isset(self::NAVIGATE_TRANSITIONS[$part])) {
+                $transition = "'".self::NAVIGATE_TRANSITIONS[$part]."'";
+            } elseif (in_array($part, ['replace', 'exitToWeb', 'back'], true)) {
+                $type = $part;
+            }
+        }
+
+        $args = trim($args);
+        $nav = '\\'.self::class.'::nav';
+
+        if ($args === '') {
+            return ":_navigate=\"{$nav}('{$type}', {$transition})\"";
+        }
+
+        return ":_navigate=\"{$nav}('{$type}', {$transition}, {$args})\"";
+    }
+
+    /**
+     * Runtime helper called from compiled templates to build navigation config.
+     */
+    public static function nav(string $type, ?string $transition, string $uri = '', array $data = []): array
+    {
+        return compact('type', 'transition', 'uri', 'data');
     }
 
     private function compileAttributes(string $rawAttrs): string

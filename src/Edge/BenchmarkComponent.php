@@ -686,8 +686,7 @@ class BenchmarkComponent extends NativeComponent
 
             $t0 = microtime(true);
 
-            // Simulate push: set transition, reset buffers, publish new tree
-            nativephp_call('UI.SetTransition', json_encode(['type' => 'slide_forward']));
+            // Simulate push: reset buffers, publish new tree (no transition)
             nativephp_element_reset();
 
             $element = Column::make(
@@ -699,11 +698,8 @@ class BenchmarkComponent extends NativeComponent
             nativephp_element_publish($tree);
             $t1 = microtime(true);
 
-            usleep(350_000); // 350ms for transition animation
-
-            // Simulate pop: set transition, reset buffers, publish original tree
+            // Simulate pop: reset buffers, publish original tree (no transition)
             $this->callbacks = new CallbackRegistry;
-            nativephp_call('UI.SetTransition', json_encode(['type' => 'slide_back']));
             nativephp_element_reset();
 
             $element = Column::make(
@@ -714,8 +710,6 @@ class BenchmarkComponent extends NativeComponent
             $tree = $element->toArray($this->callbacks);
             nativephp_element_publish($tree);
             $t2 = microtime(true);
-
-            usleep(350_000); // 350ms for return transition
 
             $timings[] = [
                 'push_ms' => ($t1 - $t0) * 1000,

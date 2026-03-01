@@ -602,6 +602,28 @@ abstract class NativeComponent
         }
     }
 
+    // ── Declarative navigation ────────────────────
+
+    public function __navigate(string $key): void
+    {
+        $config = $this->callbacks->resolveNavigation($key);
+
+        if ($config === null) {
+            return;
+        }
+
+        match ($config['type']) {
+            'back' => $this->back(),
+            'replace' => $this->replace($config['uri'] ?? '', $config['data'] ?? []),
+            'exitToWeb' => $this->exitToWeb($config['uri'] ?? ''),
+            default => $this->navigate($config['uri'] ?? '', $config['data'] ?? []),
+        };
+
+        if (($config['transition'] ?? null) !== null) {
+            $this->transition(Transition::from($config['transition']));
+        }
+    }
+
     // ── Model binding ──────────────────────────────
 
     public function __syncProperty(string $property, mixed $value): void
