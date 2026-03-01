@@ -1,8 +1,8 @@
 <?php
 
 use Native\Mobile\Edge\ElementRegistry;
-use Native\Mobile\Edge\Elements\Button;
-use Native\Mobile\Edge\Elements\Text;
+use Nativephp\ComposeUi\Elements\Button;
+use Nativephp\ComposeUi\Elements\Text;
 use Native\Mobile\Edge\TailwindParser;
 
 beforeEach(function () {

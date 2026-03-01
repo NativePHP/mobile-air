@@ -2,17 +2,17 @@
 
 namespace Native\Mobile\Edge;
 
-use Native\Mobile\Edge\Elements\Button;
 use Native\Mobile\Edge\Elements\Column;
-use Native\Mobile\Edge\Elements\Divider;
-use Native\Mobile\Edge\Elements\Icon;
-use Native\Mobile\Edge\Elements\ListItem;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
-use Native\Mobile\Edge\Elements\Spacer;
-use Native\Mobile\Edge\Elements\Text;
-use Native\Mobile\Edge\Elements\TextInput;
-use Native\Mobile\Edge\Elements\Toggle;
+use Nativephp\ComposeUi\Elements\Button;
+use Nativephp\ComposeUi\Elements\Divider;
+use Nativephp\ComposeUi\Elements\Icon;
+use Nativephp\ComposeUi\Elements\ListItem;
+use Nativephp\ComposeUi\Elements\Spacer;
+use Nativephp\ComposeUi\Elements\Text;
+use Nativephp\ComposeUi\Elements\TextInput;
+use Nativephp\ComposeUi\Elements\Toggle;
 
 class BenchmarkComponent extends NativeComponent
 {

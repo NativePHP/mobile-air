@@ -392,6 +392,19 @@ abstract class NativeComponent
         $this->navigationData = $data;
     }
 
+    // ── Element resolution helper ──────────────────
+
+    private function resolveElement(string $type, array $attrs = []): ?Element
+    {
+        $el = ElementRegistry::resolve($type);
+
+        if ($el !== null) {
+            $el->applyAttributes($attrs);
+        }
+
+        return $el;
+    }
+
     // ── Error screen ────────────────────────────────
 
     protected function renderErrorScreen(\Throwable $e): void
@@ -410,49 +423,40 @@ abstract class NativeComponent
                 ->padding(20, 20, 40, 20)
                 ->gap(10);
 
-            $content->addChild(
-                Elements\Text::make('Exception')
-                    ->fontSize(22)
-                    ->fontWeight(7)
-                    ->color('#991B1B')
-            );
+            $title = $this->resolveElement('text', ['text' => 'Exception', 'fontSize' => 22, 'fontWeight' => 7, 'color' => '#991B1B']);
+            if ($title) {
+                $content->addChild($title);
+            }
 
             $file = str_replace(base_path() . '/', '', $e->getFile());
-            $content->addChild(
-                Elements\Text::make("{$file}:{$e->getLine()}")
-                    ->fontSize(12)
-                    ->color('#9CA3AF')
-            );
+            $location = $this->resolveElement('text', ['text' => "{$file}:{$e->getLine()}", 'fontSize' => 12, 'color' => '#9CA3AF']);
+            if ($location) {
+                $content->addChild($location);
+            }
 
             // Font size slider
-            $content->addChild(
-                Elements\Slider::make()
-                    ->value((float) $this->overlayFontSize)
-                    ->min(6)
-                    ->max(40)
-                    ->step(2)
-                    ->color('#DC2626')
-                    ->trackColor('#991B1B')
-                    ->onChange('__overlaySetFontSize')
-                    ->fillWidth()
-            );
+            $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#DC2626', 'trackColor' => '#991B1B']);
+            if ($slider) {
+                if (method_exists($slider, 'onChange')) {
+                    $slider->onChange('__overlaySetFontSize');
+                }
+                $content->addChild($slider->fillWidth());
+            }
 
-            $content->addChild(
-                Elements\Divider::make()->fillWidth()
-            );
+            $divider = $this->resolveElement('divider');
+            if ($divider) {
+                $content->addChild($divider->fillWidth());
+            }
 
-            $content->addChild(
-                Elements\Text::make(static::class)
-                    ->fontSize(13)
-                    ->color('#B91C1C')
-            );
+            $className = $this->resolveElement('text', ['text' => static::class, 'fontSize' => 13, 'color' => '#B91C1C']);
+            if ($className) {
+                $content->addChild($className);
+            }
 
-            $content->addChild(
-                Elements\Text::make($e->getMessage())
-                    ->fontSize($this->overlayFontSize)
-                    ->fontWeight(5)
-                    ->color('#DC2626')
-            );
+            $message = $this->resolveElement('text', ['text' => $e->getMessage(), 'fontSize' => $this->overlayFontSize, 'fontWeight' => 5, 'color' => '#DC2626']);
+            if ($message) {
+                $content->addChild($message);
+            }
 
             // Show a condensed stack trace
             $trace = $e->getTraceAsString();
@@ -463,11 +467,10 @@ abstract class NativeComponent
                 $shortTrace .= "\n... (" . count($traceLines) . " frames total)";
             }
 
-            $content->addChild(
-                Elements\Text::make($shortTrace)
-                    ->fontSize($this->overlayFontSize)
-                    ->color('#6B7280')
-            );
+            $traceText = $this->resolveElement('text', ['text' => $shortTrace, 'fontSize' => $this->overlayFontSize, 'color' => '#6B7280']);
+            if ($traceText) {
+                $content->addChild($traceText);
+            }
 
             $screen->addChild($content);
 
@@ -501,42 +504,35 @@ abstract class NativeComponent
                 ->padding(20, 20, 40, 20)
                 ->gap(10);
 
-            $content->addChild(
-                Elements\Text::make('dd()')
-                    ->fontSize(22)
-                    ->fontWeight(7)
-                    ->color('#22D3EE')
-            );
+            $title = $this->resolveElement('text', ['text' => 'dd()', 'fontSize' => 22, 'fontWeight' => 7, 'color' => '#22D3EE']);
+            if ($title) {
+                $content->addChild($title);
+            }
 
             $file = str_replace(base_path() . '/', '', $e->getSourceFile());
-            $content->addChild(
-                Elements\Text::make("{$file}:{$e->getSourceLine()}")
-                    ->fontSize(12)
-                    ->color('#64748B')
-            );
+            $location = $this->resolveElement('text', ['text' => "{$file}:{$e->getSourceLine()}", 'fontSize' => 12, 'color' => '#64748B']);
+            if ($location) {
+                $content->addChild($location);
+            }
 
             // Font size slider
-            $content->addChild(
-                Elements\Slider::make()
-                    ->value((float) $this->overlayFontSize)
-                    ->min(6)
-                    ->max(40)
-                    ->step(2)
-                    ->color('#22D3EE')
-                    ->trackColor('#164E63')
-                    ->onChange('__overlaySetFontSize')
-                    ->fillWidth()
-            );
+            $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#22D3EE', 'trackColor' => '#164E63']);
+            if ($slider) {
+                if (method_exists($slider, 'onChange')) {
+                    $slider->onChange('__overlaySetFontSize');
+                }
+                $content->addChild($slider->fillWidth());
+            }
 
-            $content->addChild(
-                Elements\Divider::make()->fillWidth()
-            );
+            $divider = $this->resolveElement('divider');
+            if ($divider) {
+                $content->addChild($divider->fillWidth());
+            }
 
-            $content->addChild(
-                Elements\Text::make($e->getFormattedDumps())
-                    ->fontSize($this->overlayFontSize)
-                    ->color('#E2E8F0')
-            );
+            $dumpText = $this->resolveElement('text', ['text' => $e->getFormattedDumps(), 'fontSize' => $this->overlayFontSize, 'color' => '#E2E8F0']);
+            if ($dumpText) {
+                $content->addChild($dumpText);
+            }
 
             $screen->addChild($content);
 
