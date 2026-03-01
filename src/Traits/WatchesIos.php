@@ -187,17 +187,20 @@ trait WatchesIos
         // For simulators this reaches the server directly (shared network)
         // For physical devices, iproxy forwards this to the device over USB
         $socket = @fsockopen('127.0.0.1', 9999, $errno, $errstr, 1);
+
         if ($socket) {
             fclose($socket);
             $this->line('<fg=green>Reload triggered</fg=green>');
+        } else {
+            $this->line("<fg=yellow>Reload failed:</fg=yellow> Could not connect to port 9999 ({$errstr})");
         }
     }
 
     private function startIproxyForwarding(string $target): bool
     {
-        $check = Process::run('which iproxy');
+        $iproxyPath = trim(Process::run('which iproxy')->output());
 
-        if (! $check->successful()) {
+        if (empty($iproxyPath)) {
             return false;
         }
 
@@ -207,18 +210,38 @@ trait WatchesIos
 
         // Start iproxy in background for USB port forwarding
         $escapedTarget = escapeshellarg($target);
-        exec("iproxy 9999 9999 {$escapedTarget} > /dev/null 2>&1 & echo \$!", $output);
+        $logFile = base_path('nativephp/iproxy.log');
+        exec("{$iproxyPath} 9999 9999 {$escapedTarget} > {$logFile} 2>&1 & echo \$!", $output);
         $pid = (int) ($output[0] ?? 0);
 
-        if ($pid > 0) {
-            register_shutdown_function(function () use ($pid) {
-                @exec("kill {$pid} 2>/dev/null");
-            });
+        if ($pid <= 0) {
+            $this->line('<fg=red>Failed to start iproxy</fg=red>');
 
-            return true;
+            return false;
         }
 
-        return false;
+        register_shutdown_function(function () use ($pid) {
+            @exec("kill {$pid} 2>/dev/null");
+        });
+
+        // Give iproxy time to start and check it's still running
+        usleep(500000);
+
+        $stillRunning = Process::run("kill -0 {$pid} 2>/dev/null")->successful();
+
+        if (! $stillRunning) {
+            $this->line('<fg=red>iproxy exited immediately</fg=red>');
+
+            if (file_exists($logFile) && $log = trim(file_get_contents($logFile))) {
+                $this->line("<fg=gray>{$log}</fg=gray>");
+            }
+
+            return false;
+        }
+
+        $this->line("iproxy running (PID {$pid}), log: {$logFile}");
+
+        return true;
     }
 
     private function promptForWatchTarget(): ?string
