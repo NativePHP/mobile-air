@@ -126,8 +126,8 @@ trait WatchesIos
                 '--device', $target,
                 '--domain-type', 'appDataContainer',
                 '--domain-identifier', $appId,
-                $changedFile,
-                'Documents/app/'.$relativePath,
+                '--source', $changedFile,
+                '--destination', 'Documents/app/'.$relativePath,
             ]);
 
             if ($result->successful()) {
