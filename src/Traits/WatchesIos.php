@@ -209,9 +209,10 @@ trait WatchesIos
         usleep(500000);
 
         // Start iproxy in background for USB port forwarding
+        // v2 syntax: iproxy -u UDID LOCAL_PORT:DEVICE_PORT
         $escapedTarget = escapeshellarg($target);
         $logFile = base_path('nativephp/iproxy.log');
-        exec("{$iproxyPath} 9999 9999 {$escapedTarget} > {$logFile} 2>&1 & echo \$!", $output);
+        exec("{$iproxyPath} -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!", $output);
         $pid = (int) ($output[0] ?? 0);
 
         if ($pid <= 0) {
