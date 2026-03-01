@@ -77,7 +77,7 @@ trait WatchesIos
 
             $this->startIosWatching($derivedDataPath, $viteHotFile);
         } else {
-            $this->startIosWatchingDevice($target, $appId, $viteHotFile);
+            $this->startIosWatchingDevice($target, $appId);
         }
     }
 
@@ -98,7 +98,7 @@ trait WatchesIos
         );
     }
 
-    private function startIosWatchingDevice(string $target, string $appId, string $viteHotFile): void
+    private function startIosWatchingDevice(string $target, string $appId): void
     {
         // Start iproxy to forward port 9999 from the device to localhost over USB
         // This allows triggerIosReload() to reach the device's HotReloadServer
@@ -117,13 +117,13 @@ trait WatchesIos
         $this->startWatchman(
             $this->getIosWatchPaths(),
             $this->getIosExcludePatterns(),
-            function (string $changedFile) use ($basePath, $target, $appId, $viteHotFile) {
-                $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId, $viteHotFile);
+            function (string $changedFile) use ($basePath, $target, $appId) {
+                $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId);
             }
         );
     }
 
-    private function handleIosFileChangeDevice(string $changedFile, string $basePath, string $target, string $appId, string $viteHotFile): void
+    private function handleIosFileChangeDevice(string $changedFile, string $basePath, string $target, string $appId): void
     {
         $relativePath = str_replace($basePath.'/', '', $changedFile);
 
@@ -150,9 +150,9 @@ trait WatchesIos
             }
         }
 
-        if (! file_exists($viteHotFile)) {
-            $this->triggerIosReload();
-        }
+        // Physical devices can't reach the Vite dev server on localhost,
+        // so always trigger a full reload regardless of Vite status
+        $this->triggerIosReload();
     }
 
     private function handleIosFileChange(string $changedFile, string $basePath, string $destinationPath, string $viteHotFile): void
