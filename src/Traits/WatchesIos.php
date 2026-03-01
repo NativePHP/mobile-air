@@ -189,6 +189,9 @@ trait WatchesIos
         $socket = @fsockopen('127.0.0.1', 9999, $errno, $errstr, 1);
 
         if ($socket) {
+            // Hold the connection open long enough for iproxy to forward
+            // it to the device over USB before we close
+            usleep(200000);
             fclose($socket);
             $this->line('<fg=green>Reload triggered</fg=green>');
         } else {
