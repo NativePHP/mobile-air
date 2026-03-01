@@ -63,7 +63,7 @@ class RunCommand extends Command
             $os = $this->argument('os');
             // Support shorthands: 'a' for android, 'i' for ios
             if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
-                $os = match(strtolower($os)) {
+                $os = match (strtolower($os)) {
                     'android', 'a' => 'android',
                     'ios', 'i' => 'ios',
                 };

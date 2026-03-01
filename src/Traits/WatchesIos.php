@@ -34,13 +34,18 @@ trait WatchesIos
 
         $appId = config('nativephp.app_id');
 
+        // Populate device and simulator lists
+        $this->getAvailableIosDevices();
+
         if (! $target) {
-            $target = $this->promptForRunningSimulator();
+            $target = $this->promptForWatchTarget();
         }
 
         if (! $target) {
             return;
         }
+
+        $isSimulator = array_key_exists($target, $this->simulators);
 
         // Start Vite dev server if the nativephpMobile plugin is installed
         $this->startViteDevServer('ios');
@@ -55,20 +60,25 @@ trait WatchesIos
             $this->info('No Vite hot reloading detected - will trigger full page reloads');
         }
 
-        // Get the derived data path / data container path
-        $derivedDataPath = Process::run("xcrun simctl get_app_container {$target} {$appId} data")
-            ->output();
-
-        $derivedDataPath = trim($derivedDataPath);
-
-        if (empty($derivedDataPath)) {
-            $this->error('Could not find app container path. Make sure the app is installed and running.');
-
-            return;
-        }
-
         $this->line('Watching iOS paths: '.implode(', ', $this->getIosWatchPaths()));
-        $this->startIosWatching($derivedDataPath, $viteHotFile);
+
+        if ($isSimulator) {
+            // Get the derived data path / data container path
+            $derivedDataPath = Process::run("xcrun simctl get_app_container {$target} {$appId} data")
+                ->output();
+
+            $derivedDataPath = trim($derivedDataPath);
+
+            if (empty($derivedDataPath)) {
+                $this->error('Could not find app container path. Make sure the app is installed and running on the simulator.');
+
+                return;
+            }
+
+            $this->startIosWatching($derivedDataPath, $viteHotFile);
+        } else {
+            $this->startIosWatchingDevice($target, $appId, $viteHotFile);
+        }
     }
 
     private function startIosWatching(string $derivedDataPath, string $viteHotFile): void
@@ -86,6 +96,54 @@ trait WatchesIos
                 $this->handleIosFileChange($changedFile, $basePath, $destinationPath, $viteHotFile);
             }
         );
+    }
+
+    private function startIosWatchingDevice(string $target, string $appId, string $viteHotFile): void
+    {
+        $this->info('iOS device hot reload active - watching for changes...');
+        $this->line('<fg=yellow>Press Ctrl+C to stop</fg=yellow>');
+
+        $basePath = base_path();
+
+        $this->startWatchman(
+            $this->getIosWatchPaths(),
+            $this->getIosExcludePatterns(),
+            function (string $changedFile) use ($basePath, $target, $appId, $viteHotFile) {
+                $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId, $viteHotFile);
+            }
+        );
+    }
+
+    private function handleIosFileChangeDevice(string $changedFile, string $basePath, string $target, string $appId, string $viteHotFile): void
+    {
+        $relativePath = str_replace($basePath.'/', '', $changedFile);
+
+        $this->line("<fg=blue>File changed:</fg=blue> {$relativePath}");
+
+        if (file_exists($changedFile) && ! is_dir($changedFile)) {
+            $result = Process::timeout(30)->run([
+                'xcrun', 'devicectl', 'device', 'copy', 'to',
+                '--device', $target,
+                '--domain-type', 'appDataContainer',
+                '--domain-identifier', $appId,
+                $changedFile,
+                'Documents/app/'.$relativePath,
+            ]);
+
+            if ($result->successful()) {
+                $this->line("<fg=green>Synced to device:</fg=green> {$relativePath}");
+            } else {
+                $this->line("<fg=red>Failed to sync:</fg=red> {$relativePath}");
+
+                if ($errorOutput = trim($result->errorOutput())) {
+                    $this->line("<fg=gray>{$errorOutput}</fg=gray>");
+                }
+            }
+        }
+
+        if (! file_exists($viteHotFile)) {
+            $this->triggerIosReload();
+        }
     }
 
     private function handleIosFileChange(string $changedFile, string $basePath, string $destinationPath, string $viteHotFile): void
@@ -124,40 +182,48 @@ trait WatchesIos
         }
     }
 
-    private function promptForRunningSimulator(): ?string
+    private function promptForWatchTarget(): ?string
     {
-        $this->info('Checking for running simulators...');
-        $runningSims = $this->getRunningSimulators();
+        $this->info('Checking for available targets...');
 
-        if (empty($runningSims)) {
-            $this->error('No running iOS simulators found.');
-            $this->line('First, start a simulator and open the "'.config('app.name').'" app on it.');
-            $this->line('If the app is not installed on that simulator yet, run: php artisan native:run ios');
+        $runningSims = $this->getRunningSimulators();
+        $connectedDevices = array_values($this->devices);
+
+        if (empty($runningSims) && empty($connectedDevices)) {
+            $this->error('No running simulators or connected devices found.');
+            $this->line('Start a simulator or connect a device, then make sure the app is installed.');
+            $this->line('If the app is not installed yet, run: php artisan native:run ios');
 
             return null;
         }
 
-        // If there's only one running simulator, automatically select it
-        if (count($runningSims) === 1) {
-            $sim = $runningSims[0];
-            $this->info("Auto-selecting simulator: {$sim['name']} ({$sim['version']})");
+        $options = [];
 
-            return $sim['udid'];
+        foreach ($connectedDevices as $device) {
+            $options[$device['udid']] = sprintf(
+                '%s (%s) [Device]',
+                $device['name'],
+                $device['version']
+            );
         }
 
-        $options = [];
         foreach ($runningSims as $sim) {
-            $label = sprintf(
-                '%s (%s) [%s]',
+            $options[$sim['udid']] = sprintf(
+                '%s (%s) [Simulator]',
                 $sim['name'],
-                $sim['version'],
-                $sim['udid']
+                $sim['version']
             );
-            $options[$sim['udid']] = $label;
+        }
+
+        if (count($options) === 1) {
+            $udid = array_key_first($options);
+            $this->info("Auto-selecting: {$options[$udid]}");
+
+            return $udid;
         }
 
         return select(
-            label: 'Select a running simulator to watch',
+            label: 'Select a device or simulator to watch',
             options: $options
         );
     }
