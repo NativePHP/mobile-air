@@ -418,8 +418,13 @@ struct WebView: UIViewRepresentable {
         #if DEBUG
         // Allow the WebView to load HTTP subresources (e.g. Vite dev server assets)
         // without being blocked by WebKit's mixed content policy, since the custom
-        // php:// scheme is treated as a secure context
-        webConfiguration.preferences.setValue(true, forKey: "allowRunningInsecureContent")
+        // php:// scheme is treated as a secure context.
+        // Uses responds(to:) to safely check the key exists before setting it,
+        // since this is an internal WebKit preference not available on all platforms.
+        let insecureContentSelector = NSSelectorFromString("setAllowRunningInsecureContent:")
+        if webConfiguration.preferences.responds(to: insecureContentSelector) {
+            webConfiguration.preferences.setValue(true, forKey: "allowRunningInsecureContent")
+        }
         #endif
 
         let webView = WKWebView(frame: .zero, configuration: webConfiguration)
