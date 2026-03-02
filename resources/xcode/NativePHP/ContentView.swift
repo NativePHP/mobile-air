@@ -415,6 +415,13 @@ struct WebView: UIViewRepresentable {
         webConfiguration.setURLSchemeHandler(schemeHandler, forURLScheme: "php")
         webConfiguration.allowsInlineMediaPlayback = true
 
+        #if DEBUG
+        // Allow the WebView to load HTTP subresources (e.g. Vite dev server assets)
+        // without being blocked by WebKit's mixed content policy, since the custom
+        // php:// scheme is treated as a secure context
+        webConfiguration.preferences.setValue(true, forKey: "allowRunningInsecureContent")
+        #endif
+
         let webView = WKWebView(frame: .zero, configuration: webConfiguration)
 
         // Store webView in coordinator and shared instance
