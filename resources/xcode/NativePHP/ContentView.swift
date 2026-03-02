@@ -317,6 +317,10 @@ struct WebView: UIViewRepresentable {
         @objc func reloadWebView() {
             _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
 
+            // Clear cached native UI state so EDGE components are re-applied
+            // from the fresh render instead of being skipped by the JSON cache
+            NativeUIState.shared.clearAll()
+
             self.webView?.reload()
         }
 
