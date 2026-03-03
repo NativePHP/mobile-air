@@ -35,6 +35,9 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -70,6 +73,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -253,7 +257,7 @@ fun RenderNode(node: NativeUINode, prebuiltModifier: Modifier? = null) {
     } else {
         // Unknown type — render children in a column as fallback
         Column(modifier = modifier) {
-            node.children.forEach { RenderNode(it) }
+            node.children.forEach { key(it.id) { RenderNode(it) } }
         }
     }
 }
@@ -272,8 +276,10 @@ internal fun RenderColumn(node: NativeUINode, modifier: Modifier) {
         horizontalAlignment = hAlignment
     ) {
         node.children.forEach { child ->
-            val childMod = buildModifier(child).maybeWeight(child, this)
-            RenderNode(child, childMod)
+            key(child.id) {
+                val childMod = buildModifier(child).maybeWeight(child, this)
+                RenderNode(child, childMod)
+            }
         }
     }
 }
@@ -290,8 +296,10 @@ internal fun RenderRow(node: NativeUINode, modifier: Modifier) {
         verticalAlignment = vAlignment
     ) {
         node.children.forEach { child ->
-            val childMod = buildModifier(child).maybeWeight(child, this)
-            RenderNode(child, childMod)
+            key(child.id) {
+                val childMod = buildModifier(child).maybeWeight(child, this)
+                RenderNode(child, childMod)
+            }
         }
     }
 }
@@ -299,13 +307,14 @@ internal fun RenderRow(node: NativeUINode, modifier: Modifier) {
 @Composable
 internal fun RenderStack(node: NativeUINode, modifier: Modifier) {
     Box(modifier = modifier.then(applyClickModifier(node))) {
-        node.children.forEach { RenderNode(it) }
+        node.children.forEach { key(it.id) { RenderNode(it) } }
     }
 }
 
 @Composable
 internal fun RenderScrollView(node: NativeUINode, modifier: Modifier) {
     val horizontal = node.props.getBool("horizontal")
+    val autoScrollTo = node.props.getInt("auto_scroll_to", -1)
 
     // Flatten single-wrapper-column pattern: ScrollView > Column > items
     // Without this, LazyColumn has 1 item (the wrapper) and composes everything eagerly
@@ -318,8 +327,22 @@ internal fun RenderScrollView(node: NativeUINode, modifier: Modifier) {
         Modifier
     }
 
+    val listState = rememberLazyListState()
+
+    // Auto-scroll: smooth continuous scroll over 6 seconds
+    if (autoScrollTo > 0) {
+        LaunchedEffect(autoScrollTo) {
+            kotlinx.coroutines.delay(500)
+            listState.animateScrollBy(
+                value = 100_000_000f,
+                animationSpec = tween(durationMillis = 6000, easing = LinearEasing)
+            )
+        }
+    }
+
     if (horizontal) {
         LazyRow(
+            state = listState,
             modifier = modifier.then(safeAreaMod).then(sc.wrapperModifier),
             horizontalArrangement = if (sc.gap > 0f) Arrangement.spacedBy(sc.gap.dp) else Arrangement.Start,
             contentPadding = sc.contentPadding
@@ -330,6 +353,7 @@ internal fun RenderScrollView(node: NativeUINode, modifier: Modifier) {
         }
     } else {
         LazyColumn(
+            state = listState,
             modifier = modifier.then(safeAreaMod).then(sc.wrapperModifier),
             verticalArrangement = if (sc.gap > 0f) Arrangement.spacedBy(sc.gap.dp) else Arrangement.Top,
             horizontalAlignment = sc.horizontalAlignment,
@@ -642,20 +666,22 @@ internal fun RenderRadioGroup(node: NativeUINode, modifier: Modifier) {
 
     Column(modifier = modifier) {
         node.children.forEach { child ->
-            if (child.type == "radio") {
-                RenderRadio(
-                    node = child,
-                    modifier = buildModifier(child),
-                    selectedValue = selectedValue,
-                    onSelect = { value ->
-                        selectedValue = value
-                        if (onChangeCb != 0) {
-                            NativeUIBridge.sendRadioChangeEvent(onChangeCb, node.id, value)
+            key(child.id) {
+                if (child.type == "radio") {
+                    RenderRadio(
+                        node = child,
+                        modifier = buildModifier(child),
+                        selectedValue = selectedValue,
+                        onSelect = { value ->
+                            selectedValue = value
+                            if (onChangeCb != 0) {
+                                NativeUIBridge.sendRadioChangeEvent(onChangeCb, node.id, value)
+                            }
                         }
-                    }
-                )
-            } else {
-                RenderNode(child)
+                    )
+                } else {
+                    RenderNode(child)
+                }
             }
         }
     }
@@ -828,7 +854,7 @@ internal fun RenderCard(node: NativeUINode, modifier: Modifier) {
 
     val content: @Composable () -> Unit = {
         Column {
-            node.children.forEach { RenderNode(it) }
+            node.children.forEach { key(it.id) { RenderNode(it) } }
         }
     }
 
@@ -967,7 +993,7 @@ internal fun RenderBottomSheet(node: NativeUINode, modifier: Modifier) {
         sheetState = sheetState
     ) {
         Column(modifier = modifier) {
-            node.children.forEach { RenderNode(it) }
+            node.children.forEach { key(it.id) { RenderNode(it) } }
         }
     }
 }

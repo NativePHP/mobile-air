@@ -216,8 +216,8 @@ static inline const char* npui_read_str(npui_reader_t *r, uint16_t *out_len) {
  * ══════════════════════════════════════════════════════ */
 
 #define NPHP_ELEMENT_MAGIC       0x454C4531  /* "ELE1" */
-#define NPHP_FLAT_BUFFER_SIZE    (256 * 1024)
-#define NPHP_PROP_BUFFER_SIZE    (512 * 1024)
+#define NPHP_FLAT_BUFFER_SIZE    (4 * 1024 * 1024)
+#define NPHP_PROP_BUFFER_SIZE    (4 * 1024 * 1024)
 #define NPHP_EVENT_BUFFER_SIZE   (256 * 1024)
 
 typedef struct nphp_element_region {

@@ -33,6 +33,13 @@ class ScrollView extends Element
         return $this;
     }
 
+    public function autoScrollTo(int $index): static
+    {
+        $this->scrollProps['auto_scroll_to'] = $index;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         return $this->scrollProps;

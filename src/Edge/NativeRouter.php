@@ -123,6 +123,8 @@ class NativeRouter
      */
     public function start(string $class, array $params = []): ?string
     {
+        NativeComponent::registerDumpHandler();
+
         nativephp_element_init();
 
         try {
@@ -158,12 +160,19 @@ class NativeRouter
 
             static::debugLog("loop: top, component=" . get_class($component) . " freshPush=" . ($freshPush ? 'Y' : 'N') . " stack=" . count($this->stack));
 
-            if ($freshPush) {
-                static::debugLog("loop: calling mount() on " . get_class($component));
-                $component->mount();
-            } else {
-                static::debugLog("loop: calling onResume() on " . get_class($component));
-                $component->onResume();
+            try {
+                if ($freshPush) {
+                    static::debugLog("loop: calling mount() on " . get_class($component));
+                    $component->mount();
+                } else {
+                    static::debugLog("loop: calling onResume() on " . get_class($component));
+                    $component->onResume();
+                }
+            } catch (NativeDumpException $e) {
+                $component->renderDumpScreen($e);
+            } catch (\Throwable $e) {
+                static::debugLog("mount/onResume FAILED in " . get_class($component) . ": " . $e->getMessage());
+                $component->renderErrorScreen($e);
             }
 
             static::debugLog("loop: entering runLoop() on " . get_class($component));

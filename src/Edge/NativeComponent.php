@@ -98,7 +98,7 @@ abstract class NativeComponent
         $this->back();
     }
 
-    protected static function registerDumpHandler(): void
+    public static function registerDumpHandler(): void
     {
         if (self::$dumpHandlerRegistered) {
             return;
@@ -151,7 +151,14 @@ abstract class NativeComponent
 
         nativephp_element_init();
 
-        $this->mount();
+        try {
+            $this->mount();
+        } catch (NativeDumpException $e) {
+            $this->renderDumpScreen($e);
+        } catch (\Throwable $e) {
+            NativeRouter::debugLog("mount() FAILED in " . static::class . ": " . $e->getMessage());
+            $this->renderErrorScreen($e);
+        }
 
         while ($this->running) {
             $this->callbacks->reset();
@@ -216,10 +223,9 @@ abstract class NativeComponent
     {
         static::registerDumpHandler();
 
-        $this->callbacks = new CallbackRegistry;
+        $this->callbacks ??= new CallbackRegistry;
         $this->running = true;
         $this->navigationIntent = null;
-        $this->hasError = false;
 
         while ($this->running) {
             $this->callbacks->reset();
@@ -407,10 +413,11 @@ abstract class NativeComponent
 
     // ── Error screen ────────────────────────────────
 
-    protected function renderErrorScreen(\Throwable $e): void
+    public function renderErrorScreen(\Throwable $e): void
     {
         $this->hasError = true;
         $this->errorException = $e;
+        $this->callbacks ??= new CallbackRegistry;
 
         try {
             $screen = Elements\ScrollView::make()
@@ -488,10 +495,11 @@ abstract class NativeComponent
 
     // ── Dump screen (dd) ─────────────────────────────
 
-    protected function renderDumpScreen(NativeDumpException $e): void
+    public function renderDumpScreen(NativeDumpException $e): void
     {
         $this->hasError = true;
         $this->dumpException = $e;
+        $this->callbacks ??= new CallbackRegistry;
 
         try {
             $screen = Elements\ScrollView::make()

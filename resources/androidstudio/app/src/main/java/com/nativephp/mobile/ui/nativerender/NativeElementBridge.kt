@@ -45,6 +45,14 @@ class NativeElementBridge private constructor() {
         private val mainHandler = Handler(Looper.getMainLooper())
         private var cachedTypeTable: Array<String>? = null
 
+        /** Previous tree for incremental diff — reuse unchanged node references */
+        private var previousTree: NativeUITree? = null
+
+        /** Runtime toggle for tree diff — set via Perf.SetDiffEnabled */
+        @Volatile
+        @JvmStatic
+        var diffEnabled = true
+
         /** Event queue — Compose callbacks enqueue, pollEvent() dequeues (blocks PHP thread) */
         private val eventQueue = LinkedBlockingQueue<NativeUIEvent>()
 
@@ -104,6 +112,23 @@ class NativeElementBridge private constructor() {
                     val isNav = NativeUIBridge.navigationPending
                     if (isNav) NativeUIBridge.navigationPending = false
 
+                    // Diff against previous tree — reuse unchanged node references
+                    val prev = previousTree
+                    val isDiffOn = diffEnabled
+                    val diffedTree: NativeUITree
+                    if (prev != null && !isNav && isDiffOn) {
+                        val stats = DiffStats()
+                        val t3 = System.nanoTime()
+                        val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
+                        val t4 = System.nanoTime()
+                        diffedTree = tree.copy(root = diffedRoot)
+                        PerformanceTracker.onTreeDiffed(t4 - t3, stats.reused, stats.replaced, true)
+                    } else {
+                        diffedTree = tree
+                        PerformanceTracker.onTreeDiffed(0, 0, nc, false)
+                    }
+                    previousTree = diffedTree
+
                     Log.d(TAG, "PERF tree: jni=${(t1-t0)/1_000_000}ms parse=${(t2-t1)/1_000_000}ms nodes=$nc types=${typeTable.size} isNav=$isNav flatSize=${flatBytes.size}")
 
                     mainHandler.post {
@@ -111,8 +136,8 @@ class NativeElementBridge private constructor() {
                         NativeUIBridge.isActive.value = true
                         val prevKey = NativeUIBridge.screenKey.intValue
                         if (isNav) NativeUIBridge.screenKey.intValue++
-                        NativeUIBridge.currentTree.value = tree
-                        Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${tree.root.type}")
+                        NativeUIBridge.currentTree.value = diffedTree
+                        Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
                     }
                 } else {
                     Log.e(TAG, "Failed to parse tree (nodeCount=$nodeCount flatSize=${flatBytes.size} typeCount=${typeTable.size} expected=${nodeCount * FLAT_NODE_SIZE})")
@@ -150,12 +175,14 @@ class NativeElementBridge private constructor() {
             Log.d(TAG, "startWatching() — resetting state for new cycle")
             clearEvents()
             cachedTypeTable = null
+            previousTree = null
         }
 
         @JvmStatic
         fun stopWatching() {
             clearEvents()
             cachedTypeTable = null
+            previousTree = null
             mainHandler.post {
                 NativeUIBridge.isActive.value = false
                 NativeUIBridge.currentTree.value = null
@@ -416,6 +443,61 @@ class NativeElementBridge private constructor() {
             buf.putShort(textBytes.size.toShort())
             buf.put(textBytes)
             nativeElementWriteEvent(EventType.SELECT_CHANGE, callbackId, nodeId, buf.array())
+        }
+
+        /* ── Tree Diff — reuse unchanged node references ── */
+
+        class DiffStats(var reused: Int = 0, var replaced: Int = 0)
+
+        /**
+         * Recursively diff old and new trees with stats tracking.
+         * Returns old node reference when the subtree is identical
+         * (reference equality = fast Compose skip).
+         */
+        private fun diffNodeWithStats(old: NativeUINode, new: NativeUINode, stats: DiffStats): NativeUINode {
+            // Structural mismatch — use new node entirely
+            if (old.id != new.id || old.type != new.type || old.children.size != new.children.size) {
+                stats.replaced += countNodes(new)
+                return new
+            }
+
+            // Recursively diff children
+            var allChildrenReused = true
+            val diffedChildren = if (new.children.isEmpty()) {
+                new.children
+            } else {
+                val list = ArrayList<NativeUINode>(new.children.size)
+                for (i in new.children.indices) {
+                    val diffed = diffNodeWithStats(old.children[i], new.children[i], stats)
+                    if (diffed !== old.children[i]) allChildrenReused = false
+                    list.add(diffed)
+                }
+                list
+            }
+
+            // Check if this node's own fields changed
+            val fieldsMatch = old.layout == new.layout &&
+                    old.style == new.style &&
+                    old.onPress == new.onPress &&
+                    old.onLongPress == new.onLongPress &&
+                    old.props == new.props
+
+            // Entire subtree identical — reuse old reference
+            if (fieldsMatch && allChildrenReused) {
+                stats.reused++
+                return old
+            }
+
+            // This node is replaced (children already counted recursively)
+            stats.replaced++
+
+            // Fields same but some children changed — old fields + diffed children
+            if (fieldsMatch) {
+                return old.copy(children = diffedChildren)
+            }
+
+            // Fields changed — new values + diffed children
+            return new.copy(children = diffedChildren)
         }
 
         /* ── Utilities ── */

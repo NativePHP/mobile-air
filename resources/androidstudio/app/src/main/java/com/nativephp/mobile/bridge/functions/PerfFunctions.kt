@@ -70,6 +70,15 @@ object PerfFunctions {
         }
     }
 
+    /** Toggle tree diff optimization on/off for A/B benchmarking. */
+    class SetDiffEnabled : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val enabled = parameters["enabled"] as? Boolean ?: true
+            NativeElementBridge.diffEnabled = enabled
+            return mapOf("success" to true, "diff_enabled" to enabled)
+        }
+    }
+
     /** Simulate a press event — triggers PerformanceTracker T0 and enqueues the event for PHP. */
     class SimulatePress : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {

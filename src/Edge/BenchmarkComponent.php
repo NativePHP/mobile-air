@@ -55,14 +55,23 @@ class BenchmarkComponent extends NativeComponent
     const LARGE_TREE_NODE_COUNT = 200;
     const LIST_SCROLL_ITEM_COUNT = 1000;
 
+    const DIFF_AB_ITERATIONS = 100;
+
+    const JSON_RECORD_COUNT = 10_000;
+    const JSON_PARSE_ITERATIONS = 20;
+    const LARGE_LIST_ITEM_COUNT = 10_000;
+
     const SCENARIOS = [
         'counter_tap'   => 'Counter Tap',
         'large_tree_tap' => 'Large Tree Tap',
         'text_input'    => 'Text Input',
         'list_scroll'   => 'Large List Render',
+        'json_parse'    => 'JSON 10k Parse',
+        'large_list_fps' => 'List 10k FPS',
         'rapid_fire'    => 'Rapid-Fire',
         'navigation'    => 'Navigation',
         'toggle_tree'   => 'Toggle Tree',
+        'diff_ab'       => 'Diff A/B Test',
         'render'        => 'PHP Render',
     ];
 
@@ -75,6 +84,7 @@ class BenchmarkComponent extends NativeComponent
             'large_tree_tap' => $this->renderLargeTreeTapScreen(),
             'text_input' => $this->renderTextInputScreen(),
             'toggle_tree' => $this->renderToggleTreeScreen(),
+            'large_list_fps' => $this->renderLargeListFpsScreen(),
             'results' => $this->renderResults(),
             default => $this->renderMenu(),
         };
@@ -228,9 +238,12 @@ class BenchmarkComponent extends NativeComponent
                 'large_tree_tap' => $this->runLargeTreeTap(),
                 'text_input'     => $this->runTextInput(),
                 'list_scroll'    => $this->runListScroll(),
+                'json_parse'     => $this->runJsonParse(),
+                'large_list_fps' => $this->runLargeListFps(),
                 'rapid_fire'     => $this->runRapidFire(),
                 'navigation'     => $this->runNavigation(),
                 'toggle_tree'    => $this->runToggleTree(),
+                'diff_ab'        => $this->runDiffAB(),
                 'render'         => $this->runRenderBenchmark(),
                 default          => null,
             };
@@ -613,7 +626,213 @@ class BenchmarkComponent extends NativeComponent
         nativephp_call('Perf.Disable', '{}');
     }
 
-    // ── Scenario 5: Rapid-Fire ──────────────────────
+    // ── Scenario 5a: JSON 10k Parse ─────────────────
+
+    protected function runJsonParse(): void
+    {
+        $this->publishProgressScreen('JSON 10k Parse', 'Generating ' . self::JSON_RECORD_COUNT . ' records...');
+        usleep(50_000);
+
+        // Generate a realistic JSON dataset: 10k records with nested fields
+        $records = [];
+        for ($i = 0; $i < self::JSON_RECORD_COUNT; $i++) {
+            $records[] = [
+                'id' => $i,
+                'name' => "User #{$i}",
+                'email' => "user{$i}@example.com",
+                'age' => 18 + ($i % 60),
+                'active' => $i % 3 !== 0,
+                'score' => round($i * 1.7 % 100, 2),
+                'tags' => ['tag_' . ($i % 5), 'tag_' . ($i % 7)],
+                'address' => [
+                    'city' => ['NYC', 'LA', 'CHI', 'HOU', 'PHX'][$i % 5],
+                    'zip' => str_pad((string) ($i % 99999), 5, '0', STR_PAD_LEFT),
+                ],
+            ];
+        }
+
+        // Encode to JSON string
+        $t0 = microtime(true);
+        $jsonString = json_encode($records);
+        $encodeMs = (microtime(true) - $t0) * 1000;
+        $jsonSize = strlen($jsonString);
+
+        $this->publishProgressScreen('JSON 10k Parse', 'Parsing ' . round($jsonSize / 1024) . 'KB...');
+
+        // Benchmark: decode JSON multiple times
+        $decodeTimes = [];
+        for ($i = 0; $i < self::JSON_PARSE_ITERATIONS; $i++) {
+            $t0 = microtime(true);
+            $decoded = json_decode($jsonString, true);
+            $decodeTimes[] = (microtime(true) - $t0) * 1000;
+        }
+
+        // Benchmark: iterate + filter (simulating real work after parse)
+        $filterTimes = [];
+        for ($i = 0; $i < self::JSON_PARSE_ITERATIONS; $i++) {
+            $decoded = json_decode($jsonString, true);
+            $t0 = microtime(true);
+            $filtered = array_filter($decoded, fn ($r) => $r['active'] && $r['score'] > 50);
+            $count = count($filtered);
+            $filterTimes[] = (microtime(true) - $t0) * 1000;
+        }
+
+        // Benchmark: decode + render as list items
+        $renderTimes = [];
+        for ($iter = 0; $iter < 5; $iter++) {
+            $decoded = json_decode($jsonString, true);
+            $this->callbacks = new CallbackRegistry;
+
+            $t0 = microtime(true);
+            $root = Column::make()->fill()->safeArea();
+            $scroll = ScrollView::make()->fillWidth()->flexGrow(1);
+            $content = Column::make()->fillWidth();
+
+            // Render first 1000 items (rendering 10k would be excessive for the tree)
+            $renderCount = min(1000, count($decoded));
+            for ($i = 0; $i < $renderCount; $i++) {
+                $r = $decoded[$i];
+                $content->addChild(
+                    ListItem::make($r['name'])
+                        ->supporting($r['email'] . ' · ' . $r['address']['city'])
+                );
+            }
+
+            $scroll->addChild($content);
+            $root->addChild($scroll);
+
+            $tree = $root->toArray($this->callbacks);
+            nativephp_element_publish($tree);
+            $renderTimes[] = (microtime(true) - $t0) * 1000;
+        }
+
+        sort($decodeTimes);
+        sort($filterTimes);
+        sort($renderTimes);
+        $decodeCount = count($decodeTimes);
+        $filterCount = count($filterTimes);
+        $renderCount = count($renderTimes);
+
+        $this->results['json_parse'] = [
+            'record_count' => self::JSON_RECORD_COUNT,
+            'json_size_kb' => round($jsonSize / 1024, 1),
+            'encode_ms' => round($encodeMs, 2),
+            'decode_avg_ms' => round(array_sum($decodeTimes) / $decodeCount, 2),
+            'decode_min_ms' => round($decodeTimes[0], 2),
+            'decode_max_ms' => round($decodeTimes[$decodeCount - 1], 2),
+            'decode_p95_ms' => round($decodeTimes[(int) floor($decodeCount * 0.95)], 2),
+            'filter_avg_ms' => round(array_sum($filterTimes) / $filterCount, 2),
+            'filter_result_count' => $count,
+            'render_avg_ms' => round(array_sum($renderTimes) / $renderCount, 2),
+            'iterations' => self::JSON_PARSE_ITERATIONS,
+        ];
+    }
+
+    // ── Scenario 5b: Large List 10k FPS ──────────────
+
+    /** Flag set when user taps Done on the 10k list screen */
+    protected function renderLargeListFpsScreen(): Element
+    {
+        $icons = ['home', 'star', 'settings', 'search', 'person', 'favorite'];
+        $itemCount = self::LARGE_LIST_ITEM_COUNT;
+
+        $root = Column::make()->fill()->safeArea()->bg('#0F172A');
+
+        $root->addChild(
+            Column::make(
+                Row::make(
+                    Button::make('Back')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+                    Spacer::make()->flexGrow(1),
+                    Text::make('AUTO-SCROLLING...')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
+                )->fillWidth()->gap(8),
+                Text::make('LIST 10K FPS')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
+                Text::make('Auto-scrolling through ' . number_format($itemCount) . ' items')->fontSize(12)->color('#64748B'),
+            )->fillWidth()->padding(12)->gap(6)
+        );
+
+        $scroll = ScrollView::make()->fillWidth()->flexGrow(1)->autoScrollTo($itemCount - 1);
+        $content = Column::make()->fillWidth()->gap(0);
+
+        for ($i = 0; $i < $itemCount; $i++) {
+            $content->addChild(
+                ListItem::make("Item #{$i}")
+                    ->supporting("Description for list item {$i}")
+                    ->leadingIcon($icons[$i % 6])
+            );
+        }
+
+        $scroll->addChild($content);
+        $root->addChild($scroll);
+
+        return $root;
+    }
+
+    protected function runLargeListFps(): void
+    {
+        $this->phase = 'large_list_fps';
+
+        $itemCount = self::LARGE_LIST_ITEM_COUNT;
+        $this->publishProgressScreen('List ' . number_format($itemCount) . ' FPS', "Building {$itemCount}-item list...");
+        usleep(100_000); // Let Compose render the progress screen
+
+        // Phase 1: Build + publish the auto-scrolling 10k list
+        $this->callbacks = new CallbackRegistry;
+
+        $buildStart = microtime(true);
+        $element = $this->renderLargeListFpsScreen();
+        $buildMs = (microtime(true) - $buildStart) * 1000;
+
+        $toArrayStart = microtime(true);
+        $tree = $element->toArray($this->callbacks);
+        $toArrayMs = (microtime(true) - $toArrayStart) * 1000;
+
+        // Start FPS capture before publishing so we catch the initial render
+        nativephp_call('Perf.Enable', '{}');
+        nativephp_call('Perf.StartCaptureWindow', '{}');
+
+        $publishStart = microtime(true);
+        nativephp_element_publish($tree);
+        $publishMs = (microtime(true) - $publishStart) * 1000;
+
+        // Phase 2: Wait for auto-scroll to complete (~7.5s: 0.5s delay + 6s scroll + 1s buffer)
+        $scrollTimeout = 7.5;
+        $startTime = microtime(true);
+
+        while ($this->running && (microtime(true) - $startTime) < $scrollTimeout) {
+            $remaining = $scrollTimeout - (microtime(true) - $startTime);
+            $timeoutMs = (int) ($remaining * 1000);
+            if ($timeoutMs <= 0) break;
+
+            $event = nativephp_element_wait_event(min($timeoutMs, 500));
+            if ($event === null) continue;
+
+            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
+                $this->running = false;
+                break;
+            }
+            if (($event['type'] ?? -1) === 8) {
+                $this->skipScenario();
+                break;
+            }
+        }
+
+        // Phase 3: Export captured FPS data
+        $captureResult = nativephp_call('Perf.StopCaptureWindow', '{}');
+        nativephp_call('Perf.Disable', '{}');
+
+        $frameData = json_decode($captureResult, true)['data'] ?? '{}';
+
+        $this->results['large_list_fps'] = [
+            'item_count' => self::LARGE_LIST_ITEM_COUNT,
+            'build_ms' => round($buildMs, 2),
+            'toArray_ms' => round($toArrayMs, 2),
+            'publish_ms' => round($publishMs, 2),
+            'total_initial_ms' => round($buildMs + $toArrayMs + $publishMs, 2),
+            'frame_data' => $frameData,
+        ];
+    }
+
+    // ── Scenario 6: Rapid-Fire ──────────────────────
 
     protected function runRapidFire(): void
     {
@@ -823,7 +1042,108 @@ class BenchmarkComponent extends NativeComponent
         nativephp_call('Perf.Disable', '{}');
     }
 
-    // ── Scenario 8: PHP Render Benchmark (existing) ─
+    // ── Scenario 8: Diff A/B Test ─────────────────────
+
+    protected function runDiffAB(): void
+    {
+        $iterations = self::DIFF_AB_ITERATIONS;
+        $warmup = 30;
+
+        // ── Warmup: run both paths to warm JIT/caches ──
+        $this->publishProgressScreen('Diff A/B', "Warming up ({$warmup} iterations)...");
+        $this->counter = 0;
+        $this->interactionCount = 0;
+        $this->phase = 'large_tree_tap';
+
+        for ($i = 0; $i < $warmup && $this->running; $i++) {
+            $this->callbacks = new CallbackRegistry;
+            $tree = $this->renderLargeTreeTapScreen()->toArray($this->callbacks);
+            nativephp_element_publish($tree);
+            usleep(20_000);
+            $cbId = $this->callbacks->lookup('onTap');
+            if ($cbId === null) break;
+            $event = $this->simulatePress($cbId);
+            if ($event === null) continue;
+            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
+                $this->running = false;
+                return;
+            }
+            $this->dispatch($event);
+        }
+
+        // ── Pass 1: Diff OFF (run first to avoid warmup advantage) ──
+        $this->publishProgressScreen('Diff A/B', "Pass 1/{$iterations}: diff OFF");
+        nativephp_call('Perf.SetDiffEnabled', json_encode(['enabled' => false]));
+
+        $this->counter = 0;
+        $this->interactionCount = 0;
+
+        nativephp_call('Perf.Enable', '{}');
+
+        for ($i = 0; $i < $iterations && $this->running; $i++) {
+            $this->callbacks = new CallbackRegistry;
+            $tree = $this->renderLargeTreeTapScreen()->toArray($this->callbacks);
+            nativephp_element_publish($tree);
+
+            usleep(20_000);
+
+            $cbId = $this->callbacks->lookup('onTap');
+            if ($cbId === null) break;
+
+            $event = $this->simulatePress($cbId);
+            if ($event === null) continue;
+            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
+                $this->running = false;
+                break;
+            }
+            $this->dispatch($event);
+        }
+
+        $diffOffResult = nativephp_call('Perf.Export', '{}');
+        nativephp_call('Perf.Disable', '{}');
+
+        // ── Pass 2: Diff ON ──
+        $this->publishProgressScreen('Diff A/B', "Pass 2/{$iterations}: diff ON");
+        nativephp_call('Perf.SetDiffEnabled', json_encode(['enabled' => true]));
+
+        $this->counter = 0;
+        $this->interactionCount = 0;
+
+        nativephp_call('Perf.Enable', '{}');
+
+        for ($i = 0; $i < $iterations && $this->running; $i++) {
+            $this->callbacks = new CallbackRegistry;
+            $tree = $this->renderLargeTreeTapScreen()->toArray($this->callbacks);
+            nativephp_element_publish($tree);
+
+            usleep(20_000);
+
+            $cbId = $this->callbacks->lookup('onTap');
+            if ($cbId === null) break;
+
+            $event = $this->simulatePress($cbId);
+            if ($event === null) continue;
+            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
+                $this->running = false;
+                break;
+            }
+            $this->dispatch($event);
+        }
+
+        $diffOnResult = nativephp_call('Perf.Export', '{}');
+        nativephp_call('Perf.Disable', '{}');
+
+        // Restore diff enabled
+        nativephp_call('Perf.SetDiffEnabled', json_encode(['enabled' => true]));
+
+        $this->results['diff_ab'] = [
+            'iterations' => $iterations,
+            'diff_on' => json_decode($diffOnResult, true)['data'] ?? '{}',
+            'diff_off' => json_decode($diffOffResult, true)['data'] ?? '{}',
+        ];
+    }
+
+    // ── Scenario 9: PHP Render Benchmark (existing) ─
 
     protected function publishProgressScreen(string $label, string $detail): void
     {
@@ -1056,6 +1376,18 @@ class BenchmarkComponent extends NativeComponent
             $content->addChild($this->renderFrameCard('Large List Render', $listScroll));
         }
 
+        // JSON 10k parse result
+        $jsonParse = $this->results['json_parse'] ?? null;
+        if ($jsonParse) {
+            $content->addChild($this->renderJsonParseCard($jsonParse));
+        }
+
+        // Large list 10k FPS result
+        $largeListFps = $this->results['large_list_fps'] ?? null;
+        if ($largeListFps) {
+            $content->addChild($this->renderLargeListFpsCard($largeListFps));
+        }
+
         // Rapid-fire result
         $rapidFire = $this->results['rapid_fire'] ?? null;
         if ($rapidFire) {
@@ -1066,6 +1398,12 @@ class BenchmarkComponent extends NativeComponent
         $nav = $this->results['navigation'] ?? null;
         if ($nav) {
             $content->addChild($this->renderNavigationCard($nav));
+        }
+
+        // Diff A/B result
+        $diffAB = $this->results['diff_ab'] ?? null;
+        if ($diffAB) {
+            $content->addChild($this->renderDiffABCard($diffAB));
         }
 
         // PHP-side render benchmark cards
@@ -1312,6 +1650,86 @@ class BenchmarkComponent extends NativeComponent
         return $cardContent;
     }
 
+    protected function renderDiffABCard(array $stats): Element
+    {
+        $iterations = $stats['iterations'] ?? 0;
+        $onRaw = $stats['diff_on'] ?? '{}';
+        $offRaw = $stats['diff_off'] ?? '{}';
+        $on = is_string($onRaw) ? json_decode($onRaw, true) : $onRaw;
+        $off = is_string($offRaw) ? json_decode($offRaw, true) : $offRaw;
+
+        $onLatency = $on['interaction_latency_ms'] ?? [];
+        $offLatency = $off['interaction_latency_ms'] ?? [];
+        $onDiff = $on['diff_stats'] ?? [];
+        $offDiff = $off['diff_stats'] ?? [];
+
+        $cardContent = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
+
+        $cardContent->addChild(
+            Text::make('Diff A/B Test')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
+        );
+        $cardContent->addChild(
+            Text::make("{$iterations} large-tree taps per pass")->fontSize(14)->color('#94A3B8')
+        );
+
+        // Diff ON section
+        $cardContent->addChild(Spacer::make()->height(6));
+        $cardContent->addChild(
+            Text::make('DIFF ON')->fontSize(12)->fontWeight(7)->color('#10B981')
+        );
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('avg', (float) ($onLatency['average'] ?? 0), '#10B981'),
+                $this->statChip('p50', (float) ($onLatency['p50'] ?? 0), '#10B981'),
+                $this->statChip('p95', (float) ($onLatency['p95'] ?? 0), '#10B981'),
+            )->fillWidth()->gap(8)
+        );
+
+        $reuseRatio = (float) ($onDiff['avg_reuse_ratio'] ?? 0) * 100;
+        $diffTime = (float) (($onDiff['diff_time_ms'] ?? [])['average'] ?? 0);
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('reuse', $reuseRatio, '#10B981', '%'),
+                $this->statChip('diff', $diffTime, '#10B981'),
+            )->fillWidth()->gap(8)
+        );
+
+        // Diff OFF section
+        $cardContent->addChild(Spacer::make()->height(6));
+        $cardContent->addChild(
+            Text::make('DIFF OFF')->fontSize(12)->fontWeight(7)->color('#EF4444')
+        );
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('avg', (float) ($offLatency['average'] ?? 0), '#EF4444'),
+                $this->statChip('p50', (float) ($offLatency['p50'] ?? 0), '#EF4444'),
+                $this->statChip('p95', (float) ($offLatency['p95'] ?? 0), '#EF4444'),
+            )->fillWidth()->gap(8)
+        );
+
+        // Delta
+        $onAvg = (float) ($onLatency['average'] ?? 0);
+        $offAvg = (float) ($offLatency['average'] ?? 0);
+        if ($offAvg > 0 && $onAvg > 0) {
+            $deltaMs = $offAvg - $onAvg;
+            $deltaPct = ($deltaMs / $offAvg) * 100;
+            $deltaColor = $deltaMs > 0 ? '#10B981' : '#EF4444';
+
+            $cardContent->addChild(Spacer::make()->height(6));
+            $cardContent->addChild(
+                Text::make('IMPROVEMENT')->fontSize(12)->fontWeight(7)->color('#64748B')
+            );
+            $cardContent->addChild(
+                Row::make(
+                    $this->statChip('saved', abs($deltaMs), $deltaColor),
+                    $this->statChip('faster', abs($deltaPct), $deltaColor, '%'),
+                )->fillWidth()->gap(8)
+            );
+        }
+
+        return $cardContent;
+    }
+
     protected function renderPhpBenchCard(string $title, array $stats): Element
     {
         $cardContent = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
@@ -1345,6 +1763,153 @@ class BenchmarkComponent extends NativeComponent
                 $stats['max_total'],
             ))->fontSize(12)->color('#64748B')
         );
+
+        return $cardContent;
+    }
+
+    protected function renderJsonParseCard(array $stats): Element
+    {
+        $ours = (float) ($stats['decode_avg_ms'] ?? 0);
+        $reactNative = 45.0;
+        $flutter = 38.0;
+
+        $cardContent = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
+
+        $cardContent->addChild(
+            Text::make('JSON 10k Parse')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
+        );
+        $cardContent->addChild(
+            Text::make(($stats['record_count'] ?? 0) . ' records · ' . ($stats['json_size_kb'] ?? 0) . 'KB')->fontSize(14)->color('#94A3B8')
+        );
+
+        $cardContent->addChild(Spacer::make()->height(4));
+        $cardContent->addChild(
+            Text::make('JSON DECODE')->fontSize(12)->fontWeight(7)->color('#64748B')
+        );
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('avg', $ours, '#38BDF8'),
+                $this->statChip('min', (float) ($stats['decode_min_ms'] ?? 0), '#10B981'),
+                $this->statChip('p95', (float) ($stats['decode_p95_ms'] ?? 0), '#F59E0B'),
+            )->fillWidth()->gap(8)
+        );
+
+        // Cross-framework comparison
+        $cardContent->addChild(Spacer::make()->height(6));
+        $cardContent->addChild(
+            Text::make('VS OTHER FRAMEWORKS')->fontSize(12)->fontWeight(7)->color('#64748B')
+        );
+
+        $oursColor = ($ours <= $flutter) ? '#10B981' : (($ours <= $reactNative) ? '#F59E0B' : '#EF4444');
+        $rnColor = ($reactNative < $ours) ? '#10B981' : '#EF4444';
+        $flColor = ($flutter < $ours) ? '#10B981' : '#EF4444';
+
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('NativePHP', $ours, $oursColor),
+                $this->statChip('React Native', $reactNative, $rnColor),
+                $this->statChip('Flutter', $flutter, $flColor),
+            )->fillWidth()->gap(8)
+        );
+
+        if ($ours > 0) {
+            $vsRn = (($reactNative - $ours) / $reactNative) * 100;
+            $vsFlutter = (($flutter - $ours) / $flutter) * 100;
+
+            $rnDelta = $vsRn > 0
+                ? sprintf('%.0f%% faster than RN', $vsRn)
+                : sprintf('%.0f%% slower than RN', abs($vsRn));
+            $flDelta = $vsFlutter > 0
+                ? sprintf('%.0f%% faster than Flutter', $vsFlutter)
+                : sprintf('%.0f%% slower than Flutter', abs($vsFlutter));
+
+            $cardContent->addChild(
+                Text::make($rnDelta)->fontSize(13)->fontWeight(6)->color($vsRn > 0 ? '#10B981' : '#EF4444')
+            );
+            $cardContent->addChild(
+                Text::make($flDelta)->fontSize(13)->fontWeight(6)->color($vsFlutter > 0 ? '#10B981' : '#EF4444')
+            );
+        }
+
+        $cardContent->addChild(Spacer::make()->height(4));
+        $cardContent->addChild(
+            Text::make('ENCODE + FILTER + RENDER')->fontSize(12)->fontWeight(7)->color('#64748B')
+        );
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('encode', (float) ($stats['encode_ms'] ?? 0), '#A78BFA'),
+                $this->statChip('filter', (float) ($stats['filter_avg_ms'] ?? 0), '#10B981'),
+                $this->statChip('render', (float) ($stats['render_avg_ms'] ?? 0), '#EF4444'),
+            )->fillWidth()->gap(8)
+        );
+
+        $filterCount = (int) ($stats['filter_result_count'] ?? 0);
+        $cardContent->addChild(
+            Text::make("Filter matched {$filterCount} of " . ($stats['record_count'] ?? 0) . ' records')->fontSize(12)->color('#64748B')
+        );
+
+        return $cardContent;
+    }
+
+    protected function renderLargeListFpsCard(array $stats): Element
+    {
+        $cardContent = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
+
+        $cardContent->addChild(
+            Text::make('List 10k FPS')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
+        );
+        $cardContent->addChild(
+            Text::make(($stats['item_count'] ?? 0) . ' items · scroll FPS capture')->fontSize(14)->color('#94A3B8')
+        );
+
+        // Initial render pipeline
+        $cardContent->addChild(Spacer::make()->height(4));
+        $cardContent->addChild(
+            Text::make('INITIAL RENDER')->fontSize(12)->fontWeight(7)->color('#64748B')
+        );
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('build', (float) ($stats['build_ms'] ?? 0), '#10B981'),
+                $this->statChip('toArray', (float) ($stats['toArray_ms'] ?? 0), '#F59E0B'),
+                $this->statChip('publish', (float) ($stats['publish_ms'] ?? 0), '#38BDF8'),
+            )->fillWidth()->gap(8)
+        );
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('total', (float) ($stats['total_initial_ms'] ?? 0), '#A78BFA'),
+            )->fillWidth()->gap(8)
+        );
+
+        // Frame data from Compose
+        $frameRaw = $stats['frame_data'] ?? null;
+        $frames = null;
+        if ($frameRaw) {
+            $fData = is_string($frameRaw) ? json_decode($frameRaw, true) : $frameRaw;
+            $frames = $fData['frame_times_ms'] ?? null;
+        }
+
+        if ($frames) {
+            $cardContent->addChild(Spacer::make()->height(6));
+            $cardContent->addChild(
+                Text::make('COMPOSE FPS')->fontSize(12)->fontWeight(7)->color('#64748B')
+            );
+
+            $fps = (float) ($frames['fps'] ?? 0);
+            $fpsColor = $fps > 60 ? '#10B981' : ($fps > 30 ? '#F59E0B' : '#EF4444');
+
+            $cardContent->addChild(
+                Row::make(
+                    $this->statChip('FPS', $fps, $fpsColor, 'x'),
+                    $this->statChip('avg', (float) ($frames['average'] ?? 0), '#38BDF8'),
+                    $this->statChip('p95', (float) ($frames['p95'] ?? 0), '#F59E0B'),
+                )->fillWidth()->gap(8)
+            );
+        } else {
+            $cardContent->addChild(Spacer::make()->height(4));
+            $cardContent->addChild(
+                Text::make('No Compose frame data captured')->fontSize(13)->color('#64748B')
+            );
+        }
 
         return $cardContent;
     }

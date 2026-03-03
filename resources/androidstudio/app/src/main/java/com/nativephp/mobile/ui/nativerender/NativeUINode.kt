@@ -134,6 +134,14 @@ class GenericProps(private val map: Map<String, Any> = emptyMap()) {
     fun has(key: String): Boolean = map.containsKey(key)
 
     val isEmpty: Boolean get() = map.isEmpty()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is GenericProps) return false
+        return map == other.map
+    }
+
+    override fun hashCode(): Int = map.hashCode()
 }
 
 /**

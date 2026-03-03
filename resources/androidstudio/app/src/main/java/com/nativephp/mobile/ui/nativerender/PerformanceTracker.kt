@@ -68,6 +68,11 @@ object PerformanceTracker {
     /** Completed round-trip measurements. */
     private val interactions = CopyOnWriteArrayList<InteractionMeasurement>()
 
+    /* ── Diff stats tracking ── */
+
+    /** Per-frame diff measurements (time + node reuse). */
+    private val diffMeasurements = CopyOnWriteArrayList<DiffMeasurement>()
+
     /* ── Capture window ── */
 
     /** When true, frame data is being captured for a specific window (e.g. scroll FPS). */
@@ -114,6 +119,32 @@ object PerformanceTracker {
         if (!enabled) return
         lastTreePostNanos = System.nanoTime()
         treePostVersion = treeUpdateVersion
+    }
+
+    /**
+     * Called from NativeElementBridge after diffNode() completes.
+     * Records diff time and node reuse statistics.
+     */
+    fun onTreeDiffed(diffTimeNanos: Long, nodesReused: Int, nodesReplaced: Int, diffEnabled: Boolean) {
+        if (!enabled) return
+        val total = nodesReused + nodesReplaced
+        val m = DiffMeasurement(
+            timestampMs = System.currentTimeMillis(),
+            diffTimeMs = diffTimeNanos / 1_000_000.0,
+            nodesReused = nodesReused,
+            nodesReplaced = nodesReplaced,
+            reuseRatio = if (total > 0) nodesReused.toDouble() / total else 0.0,
+            diffEnabled = diffEnabled,
+        )
+        diffMeasurements.add(m)
+
+        if (logRealtime) {
+            Log.d(TAG, String.format(
+                "DIFF diff=%s time=%.3fms reused=%d replaced=%d ratio=%.1f%%",
+                if (diffEnabled) "ON" else "OFF",
+                m.diffTimeMs, nodesReused, nodesReplaced, m.reuseRatio * 100
+            ))
+        }
     }
 
     /**
@@ -362,6 +393,22 @@ object PerformanceTracker {
             root.put("frame_times_ms", frameStats)
         }
 
+        // Diff stats
+        if (diffMeasurements.isNotEmpty()) {
+            val diffTimes = diffMeasurements.map { it.diffTimeMs }.sorted()
+            val reuseRatios = diffMeasurements.map { it.reuseRatio }
+            val diffEnabled = diffMeasurements.lastOrNull()?.diffEnabled ?: true
+
+            val diffStats = JSONObject()
+            diffStats.put("diff_enabled", diffEnabled)
+            diffStats.put("frame_count", diffMeasurements.size)
+            diffStats.put("diff_time_ms", statsJson(diffTimes))
+            diffStats.put("avg_reuse_ratio", reuseRatios.average())
+            diffStats.put("avg_nodes_reused", diffMeasurements.map { it.nodesReused.toDouble() }.average())
+            diffStats.put("avg_nodes_replaced", diffMeasurements.map { it.nodesReplaced.toDouble() }.average())
+            root.put("diff_stats", diffStats)
+        }
+
         // Raw data arrays for detailed charting
         val rawInteractions = JSONArray()
         interactions.forEach { m ->
@@ -399,6 +446,7 @@ object PerformanceTracker {
         interactionTypes.clear()
         interactions.clear()
         frameData.clear()
+        diffMeasurements.clear()
         captureWindowFrames.clear()
         captureWindowActive = false
         lastTreeUpdateNanos = 0L
@@ -478,6 +526,16 @@ data class InteractionMeasurement(
     val framePaintMs: Double,
     /** End-to-end: click → frame drawn */
     val totalRoundTripMs: Double,
+)
+
+/** Per-frame diff statistics. */
+data class DiffMeasurement(
+    val timestampMs: Long,
+    val diffTimeMs: Double,
+    val nodesReused: Int,
+    val nodesReplaced: Int,
+    val reuseRatio: Double,
+    val diffEnabled: Boolean,
 )
 
 /** Single frame's Android rendering pipeline breakdown. */
