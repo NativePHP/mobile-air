@@ -186,6 +186,7 @@ class NativeElementBridge private constructor() {
             mainHandler.post {
                 NativeUIBridge.isActive.value = false
                 NativeUIBridge.currentTree.value = null
+                NativeEdgeDrawerState.sideNavNode.value = null
             }
         }
 

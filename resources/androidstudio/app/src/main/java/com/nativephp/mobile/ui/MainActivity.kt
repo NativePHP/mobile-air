@@ -255,11 +255,23 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
     private fun initializeEnvironmentAsync(onReady: () -> Unit) {
         Thread {
-            Log.d("LaravelInit", "📦 Starting async Laravel extraction...")
+            Log.d("LaravelInit", "Starting async Laravel extraction...")
             laravelEnv = LaravelEnvironment(this)
             laravelEnv.initialize()
 
-            Log.d("LaravelInit", "✅ Laravel environment ready — continuing")
+            Log.d("LaravelInit", "Laravel environment ready")
+
+            // Boot persistent PHP runtime BEFORE WebView loads
+            // This boots Laravel once — all subsequent requests dispatch through the live interpreter
+            val bootStart = System.currentTimeMillis()
+            val booted = phpBridge.bootPersistentRuntime()
+            val bootTime = System.currentTimeMillis() - bootStart
+
+            if (booted) {
+                Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
+            } else {
+                Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
+            }
 
             Handler(Looper.getMainLooper()).post {
                 onReady()
@@ -395,6 +407,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Stop native UI tree watcher
         NativeUIBridge.stopWatching()
 
+        // Shutdown persistent runtime before cleanup
+        if (phpBridge.isPersistentMode()) {
+            phpBridge.shutdownPersistentRuntime()
+        }
+
         laravelEnv.cleanup()
         phpBridge.shutdown()
     }
@@ -486,6 +503,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 }
                             }
 
+                            // If persistent mode, reboot interpreter to pick up new class definitions
+                            if (phpBridge.isPersistentMode()) {
+                                Log.d("HotReload", "Rebooting persistent runtime for native UI restart...")
+                                phpBridge.shutdownPersistentRuntime()
+                                phpBridge.bootPersistentRuntime()
+                            }
+
                             // Re-start the native UI watcher (PHP will re-init shared memory)
                             NativeUIBridge.startWatching()
                             NativeElementBridge.startWatching()
@@ -526,6 +550,15 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             continue
                         } else {
                             // WebView mode: reload the page
+                            // If persistent mode, reboot the interpreter to pick up new class definitions
+                            if (phpBridge.isPersistentMode()) {
+                                Log.d("HotReload", "Rebooting persistent runtime for hot reload...")
+                                val rebootStart = System.currentTimeMillis()
+                                phpBridge.shutdownPersistentRuntime()
+                                phpBridge.bootPersistentRuntime()
+                                Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
+                            }
+
                             runOnUiThread {
                                 webView.stopLoading()
                                 webView.clearCache(true)
@@ -887,34 +920,37 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         // Use paddingValues to respect TopBar and BottomNav heights
                         // IMPORTANT: Add IME (keyboard) inset padding so content isn't hidden behind keyboard
 
-                        AndroidView(
-                            factory = { webView },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(paddingValues)
-                                .consumeWindowInsets(paddingValues)
-                                .windowInsetsPadding(WindowInsets.ime),
-                            update = { view ->
-                                // Force layout recalculation when Compose size changes
-                                // This ensures viewport units (100vh, 100vw) work correctly
-                                view.requestLayout()
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            AndroidView(
+                                factory = { webView },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(paddingValues)
+                                    .consumeWindowInsets(paddingValues)
+                                    .windowInsetsPadding(WindowInsets.ime),
+                                update = { view ->
+                                    // Force layout recalculation when Compose size changes
+                                    // This ensures viewport units (100vh, 100vw) work correctly
+                                    view.requestLayout()
+                                }
+                            )
+
+                            // Native UI overlay — covers WebView when PHP renders a native tree
+                            // Must be inside SideDrawerContent so the drawer renders on top
+                            val nativeUIActive by NativeUIBridge.isActive
+                            if (nativeUIActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.White)
+                                ) {
+                                    NativeUIContent()
+                                }
                             }
-                        )
+                        }
                     }
                 }
             )
-
-            // Native UI overlay — covers WebView when PHP renders a native tree
-            val nativeUIActive by NativeUIBridge.isActive
-            if (nativeUIActive) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.White)
-                ) {
-                    NativeUIContent()
-                }
-            }
 
             // Splash overlay with fade animation (full screen, no insets)
             AnimatedVisibility(

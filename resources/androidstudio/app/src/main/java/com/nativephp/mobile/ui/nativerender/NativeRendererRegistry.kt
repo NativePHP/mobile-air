@@ -43,6 +43,19 @@ object NativeRendererRegistry {
         register("row", NodeRenderer { node, modifier -> RenderRow(node, modifier) })
         register("stack", NodeRenderer { node, modifier -> RenderStack(node, modifier) })
         register("scroll_view", NodeRenderer { node, modifier -> RenderScrollView(node, modifier) })
+
+        // Navigation chrome
+        register("top_bar", NodeRenderer { node, modifier -> RenderTopBar(node, modifier) })
+        register("top_bar_action", NodeRenderer { node, modifier -> RenderTopBarAction(node, modifier) })
+        register("bottom_nav", NodeRenderer { node, modifier -> RenderBottomNav(node, modifier) })
+        register("bottom_nav_item", NodeRenderer { node, modifier -> RenderBottomNavItem(node, modifier) })
+        register("side_nav", NodeRenderer { node, modifier -> RenderSideNav(node, modifier) })
+        register("side_nav_item", NodeRenderer { node, modifier -> RenderSideNavItem(node, modifier) })
+        register("side_nav_group", NodeRenderer { node, modifier -> RenderSideNavGroup(node, modifier) })
+        register("side_nav_header", NodeRenderer { node, modifier -> RenderSideNavHeader(node, modifier) })
+        register("fab", NodeRenderer { node, modifier -> RenderFab(node, modifier) })
+        register("horizontal_divider", NodeRenderer { node, modifier -> RenderHorizontalDivider(node, modifier) })
+
         // All other components provided by compose-ui plugin
     }
 }
