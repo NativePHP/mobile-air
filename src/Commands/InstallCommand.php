@@ -12,6 +12,7 @@ use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\outro;
+use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
 
@@ -134,6 +135,16 @@ class InstallCommand extends Command
         }
 
         outro('NativePHP for Mobile installed successfully!');
+
+        if (confirm('Would you mind starring us on GitHub? It really helps!', default: false)) {
+            $url = 'https://github.com/NativePHP/mobile-air';
+
+            match (PHP_OS_FAMILY) {
+                'Darwin' => exec("open {$url}"),
+                'Windows' => exec("start {$url}"),
+                default => exec("xdg-open {$url}"),
+            };
+        }
 
         $this->showProBanner();
     }
