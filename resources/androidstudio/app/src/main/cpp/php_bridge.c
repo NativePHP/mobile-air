@@ -267,6 +267,336 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
     return run_php_request(scriptPath, method, uri, postData);
 }
 
+// ============================================================================
+// Persistent PHP Runtime
+// ============================================================================
+// Keeps the PHP interpreter alive across requests. Boot once, dispatch many.
+// The mutex serializes all access — only one PHP execution at a time.
+
+static int persistent_initialized = 0;
+
+/**
+ * Boot the persistent PHP interpreter once.
+ * Initializes php_embed, registers native functions, and executes the
+ * persistent bootstrap script (which boots Laravel and stores the kernel).
+ */
+JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    pthread_mutex_lock(&g_php_request_mutex);
+
+    if (persistent_initialized) {
+        LOGI("persistent_boot: already initialized, skipping");
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return 0;
+    }
+
+    const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
+    LOGI("persistent_boot: initializing with bootstrap=%s", bootstrapPath);
+
+    clear_collected_output();
+
+    // Set env vars BEFORE php_embed_init so they're available when Laravel boots
+    // (registerFilesystems checks NATIVEPHP_RUNNING during packageBooted)
+    setenv("NATIVEPHP_RUNNING", "true", 1);
+    setenv("APP_URL", "http://127.0.0.1", 1);
+    setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
+
+    setup_embed_module();
+    if (php_embed_init(0, NULL) != SUCCESS) {
+        LOGE("persistent_boot: php_embed_init() FAILED");
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return -1;
+    }
+    sapi_module.header_handler = android_header_handler;
+    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    php_initialized = 1;
+
+    // Execute the persistent bootstrap script (boots Laravel, stores kernel globally)
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, bootstrapPath);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    // Check if bootstrap produced errors
+    if (g_collected_output && strstr(g_collected_output, "FATAL") != NULL) {
+        LOGE("persistent_boot: bootstrap produced errors: %.200s", g_collected_output);
+    }
+
+    persistent_initialized = 1;
+    LOGI("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
+
+    (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+    pthread_mutex_unlock(&g_php_request_mutex);
+    return 0;
+}
+
+/**
+ * Dispatch a request through the persistent interpreter.
+ * Sets env vars, calls Runtime::dispatch() via zend_eval_string, captures output.
+ */
+JNIEXPORT jstring JNICALL native_persistent_dispatch(
+        JNIEnv *env, jobject thiz,
+        jstring jMethod, jstring jUri, jstring jPostData, jstring jScriptPath) {
+
+    pthread_mutex_lock(&g_php_request_mutex);
+
+    if (!persistent_initialized) {
+        LOGE("persistent_dispatch: runtime not initialized!");
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return (*env)->NewStringUTF(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.");
+    }
+
+    const char *method = (*env)->GetStringUTFChars(env, jMethod, NULL);
+    const char *uri = (*env)->GetStringUTFChars(env, jUri, NULL);
+    const char *post = jPostData ? (*env)->GetStringUTFChars(env, jPostData, NULL) : "";
+    const char *path = (*env)->GetStringUTFChars(env, jScriptPath, NULL);
+
+    LOGI("persistent_dispatch: %s %s", method, uri);
+
+    clear_collected_output();
+
+    // Set env vars for this request
+    setenv("REQUEST_URI", uri, 1);
+    setenv("REQUEST_METHOD", method, 1);
+    setenv("SCRIPT_FILENAME", path, 1);
+    setenv("PHP_SELF", "/native.php", 1);
+    setenv("HTTP_HOST", "127.0.0.1", 1);
+    setenv("APP_URL", "http://127.0.0.1", 1);
+    setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
+    setenv("NATIVEPHP_RUNNING", "true", 1);
+
+    // Set QUERY_STRING
+    const char* query_string = "";
+    const char* query_start = strchr(uri, '?');
+    if (query_start && strlen(query_start + 1) > 0) {
+        query_string = query_start + 1;
+        setenv("QUERY_STRING", query_string, 1);
+    } else {
+        unsetenv("QUERY_STRING");
+    }
+
+    // Reset SAPI state from previous dispatch.
+    // We can't call php_request_startup() (it reinitializes too much),
+    // so we manually reset the flags that matter:
+    SG(headers_sent) = 0;           // Allow headers to be sent again
+    SG(post_read) = 0;              // Allow php://input to be read again
+    SG(read_post_bytes) = 0;        // Reset POST byte counter
+    SG(request_info).request_method = method;
+    SG(request_info).request_uri = (char *)uri;
+    SG(request_info).proto_num = 1001; // HTTP/1.1
+
+    // Reset SAPI headers for fresh response
+    memset(&SG(sapi_headers), 0, sizeof(sapi_headers_struct));
+    SG(sapi_headers).http_response_code = 200;
+    zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
+
+    if (post && strlen(post) > 0) {
+        // Create a memory stream with the POST data for php://input
+        php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
+        if (post_stream) {
+            php_stream_write(post_stream, post, strlen(post));
+            // Rewind so PHP can read from the beginning
+            php_stream_seek(post_stream, 0, SEEK_SET);
+
+            // Clean up any previous request body
+            if (SG(request_info).request_body) {
+                php_stream_close(SG(request_info).request_body);
+            }
+            SG(request_info).request_body = post_stream;
+            SG(request_info).content_length = strlen(post);
+
+            // Check both CONTENT_TYPE and HTTP_CONTENT_TYPE (Kotlin prefixes all headers with HTTP_)
+            const char *content_type = getenv("CONTENT_TYPE");
+            if (!content_type) content_type = getenv("HTTP_CONTENT_TYPE");
+            if (content_type && strstr(content_type, "json")) {
+                SG(request_info).content_type = "application/json";
+            } else {
+                SG(request_info).content_type = "application/x-www-form-urlencoded";
+            }
+        }
+    } else {
+        if (SG(request_info).request_body) {
+            php_stream_close(SG(request_info).request_body);
+            SG(request_info).request_body = NULL;
+        }
+        SG(request_info).content_length = 0;
+    }
+
+    // Build the dispatch call — Runtime::dispatch() handles everything
+    // We must update $_SERVER directly since setenv() in C doesn't affect PHP's $_SERVER
+    char eval_code[8192];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    // Clean PHP output buffers from previous dispatch\n"
+        "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
+        "\n"
+        "    // Sync $_SERVER from current env (setenv in C doesn't update PHP $_SERVER)\n"
+        "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
+        "    $_SERVER['REQUEST_URI'] = '%s';\n"
+        "    $_SERVER['SCRIPT_FILENAME'] = '%s';\n"
+        "    $_SERVER['PHP_SELF'] = '/native.php';\n"
+        "    $_SERVER['HTTP_HOST'] = '127.0.0.1';\n"
+        "    $_SERVER['SERVER_NAME'] = '127.0.0.1';\n"
+        "    $_SERVER['SERVER_PORT'] = '80';\n"
+        "    $_SERVER['APP_URL'] = 'http://127.0.0.1';\n"
+        "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
+        "\n"
+        "    // Sync ALL env vars into $_SERVER (C setenv() doesn't update PHP $_SERVER)\n"
+        "    // getenv() without args returns all current process env vars including those set by C\n"
+        "    foreach (getenv() as $__k => $__v) {\n"
+        "        $_SERVER[$__k] = $__v;\n"
+        "    }\n"
+        "\n"
+        "    // Ensure CONTENT_TYPE is set without HTTP_ prefix (CGI convention)\n"
+        "    // Symfony/Laravel reads $_SERVER['CONTENT_TYPE'], not HTTP_CONTENT_TYPE\n"
+        "    if (isset($_SERVER['HTTP_CONTENT_TYPE'])) {\n"
+        "        $_SERVER['CONTENT_TYPE'] = $_SERVER['HTTP_CONTENT_TYPE'];\n"
+        "    }\n"
+        "    if (isset($_SERVER['HTTP_CONTENT_LENGTH'])) {\n"
+        "        $_SERVER['CONTENT_LENGTH'] = $_SERVER['HTTP_CONTENT_LENGTH'];\n"
+        "    }\n"
+        "\n"
+        "    // Set QUERY_STRING from the URI\n"
+        "    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');\n"
+        "    if ($__qpos !== false) {\n"
+        "        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);\n"
+        "    } else {\n"
+        "        $_SERVER['QUERY_STRING'] = '';\n"
+        "    }\n"
+        "\n"
+        "    // Reset superglobals for this request\n"
+        "    $_GET = [];\n"
+        "    $_POST = [];\n"
+        "    $_COOKIE = [];\n"
+        "    $_FILES = [];\n"
+        "    $_REQUEST = [];\n"
+        "\n"
+        "    // Parse cookies\n"
+        "    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {\n"
+        "        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {\n"
+        "            $__parts = explode('=', $__pair, 2);\n"
+        "            if (count($__parts) === 2) {\n"
+        "                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    // Parse query string\n"
+        "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
+        "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
+        "    }\n"
+        "\n"
+        "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
+        "        \\Illuminate\\Http\\Request::capture()\n"
+        "    );\n"
+        "    $__code = $__response->getStatusCode();\n"
+        "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
+        "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
+        "    foreach ($__response->headers->all() as $__name => $__values) {\n"
+        "        foreach ($__values as $__value) {\n"
+        "            echo \"{$__name}: {$__value}\\r\\n\";\n"
+        "        }\n"
+        "    }\n"
+        "    echo \"\\r\\n\";\n"
+        "    $__response->sendContent();\n"
+        "} catch (\\Throwable $e) {\n"
+        "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
+        "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
+        "    echo 'Persistent dispatch error: ' . $e->getMessage() . \"\\n\";\n"
+        "    echo $e->getTraceAsString();\n"
+        "}\n",
+        method, uri, path);
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "persistent_dispatch");
+    } zend_end_try();
+
+    char *response = g_collected_output ? strdup(g_collected_output) : strdup("");
+
+    (*env)->ReleaseStringUTFChars(env, jMethod, method);
+    (*env)->ReleaseStringUTFChars(env, jUri, uri);
+    if (jPostData) (*env)->ReleaseStringUTFChars(env, jPostData, post);
+    (*env)->ReleaseStringUTFChars(env, jScriptPath, path);
+
+    jstring result = (*env)->NewStringUTF(env, response);
+    free(response);
+
+    pthread_mutex_unlock(&g_php_request_mutex);
+    return result;
+}
+
+/**
+ * Run an artisan command through the persistent interpreter.
+ * No boot/shutdown — just eval the command through the existing kernel.
+ */
+JNIEXPORT jstring JNICALL native_persistent_artisan(JNIEnv *env, jobject thiz, jstring jCommand) {
+    pthread_mutex_lock(&g_php_request_mutex);
+
+    if (!persistent_initialized) {
+        LOGE("persistent_artisan: runtime not initialized!");
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return (*env)->NewStringUTF(env, "Persistent runtime not initialized.");
+    }
+
+    const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
+    LOGI("persistent_artisan: %s", command);
+
+    clear_collected_output();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+
+    char eval_code[4096];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    echo 'Artisan error: ' . $e->getMessage();\n"
+        "}\n",
+        command);
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "persistent_artisan");
+    } zend_end_try();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
+
+    (*env)->ReleaseStringUTFChars(env, jCommand, command);
+
+    jstring result = (*env)->NewStringUTF(env, g_collected_output ? g_collected_output : "");
+    pthread_mutex_unlock(&g_php_request_mutex);
+    return result;
+}
+
+/**
+ * Shut down the persistent PHP interpreter.
+ * Called on app destroy or before hot-reload reboot.
+ */
+JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_php_request_mutex);
+
+    if (!persistent_initialized) {
+        LOGI("persistent_shutdown: not initialized, nothing to do");
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return;
+    }
+
+    LOGI("persistent_shutdown: shutting down persistent interpreter");
+
+    // Call Runtime::shutdown() to let PHP clean up
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "persistent_shutdown");
+    } zend_end_try();
+
+    safe_php_embed_shutdown();
+    php_initialized = 0;
+    persistent_initialized = 0;
+
+    LOGI("persistent_shutdown: done");
+    pthread_mutex_unlock(&g_php_request_mutex);
+}
+
 JNIEXPORT void JNICALL native_initialize(JNIEnv *env, jobject thiz) {
     if (g_bridge_instance) {
         (*env)->DeleteGlobalRef(env, g_bridge_instance);
@@ -554,7 +884,13 @@ static JNINativeMethod gMethods[] = {
         {"nativeSetEnv", "(Ljava/lang/String;Ljava/lang/String;I)I", (void *) native_set_env},
         {"nativeHandleRequest","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request},
         // Legacy name for compat
-        {"nativeHandleRequestOnce","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request}
+        {"nativeHandleRequestOnce","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request},
+
+        // Persistent runtime methods
+        {"nativePersistentBoot","(Ljava/lang/String;)I",(void *) native_persistent_boot},
+        {"nativePersistentDispatch","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_dispatch},
+        {"nativePersistentArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_artisan},
+        {"nativePersistentShutdown","()V",(void *) native_persistent_shutdown}
 };
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {

@@ -104,6 +104,27 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Runtime Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Controls how the PHP interpreter runs on device. In 'persistent' mode,
+    | PHP boots once and stays alive — subsequent requests dispatch through
+    | the running interpreter (~5-30ms instead of ~200-300ms). In 'classic'
+    | mode, each request does a full php_embed_init/shutdown cycle.
+    |
+    | reset_instances:        Clear resolved facade instances between dispatches
+    | gc_between_dispatches:  Run gc_collect_cycles() between dispatches
+    |
+    */
+
+    'runtime' => [
+        'mode' => env('NATIVEPHP_RUNTIME_MODE', 'persistent'),
+        'reset_instances' => true,
+        'gc_between_dispatches' => false,
+    ],
+
     'cleanup_env_keys' => [
         'AWS_*',
         'GITHUB_*',

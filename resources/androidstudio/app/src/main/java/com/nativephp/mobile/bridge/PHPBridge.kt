@@ -18,6 +18,9 @@ class PHPBridge(private val context: Context) {
     private val nativePhpScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/native.php"
 
+    private val persistentBootstrapScript: String
+        get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/persistent.php"
+
     external fun nativeExecuteScript(filename: String): String
     external fun nativeSetEnv(name: String, value: String, overwrite: Int): Int
     external fun runArtisanCommand(command: String): String
@@ -41,9 +44,25 @@ class PHPBridge(private val context: Context) {
         scriptPath: String
     ): String
 
+    // Persistent runtime JNI methods
+    external fun nativePersistentBoot(bootstrapPath: String): Int
+    external fun nativePersistentDispatch(
+        method: String,
+        uri: String,
+        postData: String?,
+        scriptPath: String
+    ): String
+    external fun nativePersistentArtisan(command: String): String
+    external fun nativePersistentShutdown()
 
     @Volatile
     private var runtimeInitialized = false
+
+    @Volatile
+    private var persistentMode = false
+
+    @Volatile
+    private var persistentBooted = false
 
     fun ensureRuntimeInitialized() {
         if (!runtimeInitialized) {
@@ -63,6 +82,62 @@ class PHPBridge(private val context: Context) {
             System.loadLibrary("php_wrapper")
         }
     }
+
+    /**
+     * Boot the persistent PHP runtime. Call once during app startup.
+     * PHP interpreter stays alive — no init/shutdown per request.
+     */
+    fun bootPersistentRuntime(): Boolean {
+        val future = phpExecutor.submit<Boolean> {
+            val start = System.currentTimeMillis()
+
+            // Set up env vars needed for bootstrap
+            ensureRuntimeInitialized()
+
+            val result = nativePersistentBoot(persistentBootstrapScript)
+            val elapsed = System.currentTimeMillis() - start
+
+            if (result == 0) {
+                persistentBooted = true
+                persistentMode = true
+                Log.i(TAG, "Persistent runtime booted in ${elapsed}ms")
+                true
+            } else {
+                Log.e(TAG, "Persistent runtime boot FAILED (code=$result) after ${elapsed}ms")
+                false
+            }
+        }
+        return future.get()
+    }
+
+    /**
+     * Shut down the persistent runtime. Called before hot reload reboot or app destroy.
+     */
+    fun shutdownPersistentRuntime() {
+        if (!persistentBooted) return
+        val future = phpExecutor.submit<Unit> {
+            nativePersistentShutdown()
+            persistentBooted = false
+            Log.i(TAG, "Persistent runtime shut down")
+        }
+        future.get()
+    }
+
+    /**
+     * Run an artisan command through the persistent interpreter (no boot/shutdown per command).
+     */
+    fun runPersistentArtisan(command: String): String {
+        if (!persistentBooted) {
+            Log.w(TAG, "Persistent runtime not booted, falling back to classic artisan")
+            return runArtisanCommand(command)
+        }
+        val future = phpExecutor.submit<String> {
+            nativePersistentArtisan(command)
+        }
+        return future.get()
+    }
+
+    fun isPersistentMode(): Boolean = persistentMode && persistentBooted
 
     fun handleLaravelRequest(request: PHPRequest): String {
         val requestStart = System.currentTimeMillis()
@@ -91,17 +166,27 @@ class PHPBridge(private val context: Context) {
             val cookieHeader = LaravelCookieStore.asCookieHeader()
             nativeSetEnv("HTTP_COOKIE", cookieHeader, 1)
 
-            ensureRuntimeInitialized()
-
             val prepTime = System.currentTimeMillis() - prepStart
             val jniStart = System.currentTimeMillis()
 
-            val output = nativeHandleRequest(
-                request.method,
-                request.uri,
-                request.body,
-                nativePhpScript
-            )
+            val output = if (persistentMode && persistentBooted) {
+                // Persistent mode: dispatch through the already-running interpreter
+                nativePersistentDispatch(
+                    request.method,
+                    request.uri,
+                    request.body,
+                    nativePhpScript
+                )
+            } else {
+                // Classic mode: full init/shutdown per request
+                ensureRuntimeInitialized()
+                nativeHandleRequest(
+                    request.method,
+                    request.uri,
+                    request.body,
+                    nativePhpScript
+                )
+            }
 
             val jniTime = System.currentTimeMillis() - jniStart
             val processStart = System.currentTimeMillis()
@@ -109,7 +194,8 @@ class PHPBridge(private val context: Context) {
             val processedOutput = processRawPHPResponse(output)
 
             val processTime = System.currentTimeMillis() - processStart
-            Log.d("PerfTiming", "BRIDGE [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms")
+            val mode = if (persistentMode && persistentBooted) "PERSISTENT" else "CLASSIC"
+            Log.d("PerfTiming", "BRIDGE[$mode] [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms")
 
             processedOutput
         }
@@ -171,8 +257,15 @@ class PHPBridge(private val context: Context) {
      * Blocks the calling thread for the duration of the native UI session.
      */
     fun executeNativeRoute(uri: String) {
-        ensureRuntimeInitialized()
-        nativeHandleRequest("GET", uri, null, nativePhpScript)
+        val future = phpExecutor.submit<Unit> {
+            if (persistentMode && persistentBooted) {
+                nativePersistentDispatch("GET", uri, null, nativePhpScript)
+            } else {
+                ensureRuntimeInitialized()
+                nativeHandleRequest("GET", uri, null, nativePhpScript)
+            }
+        }
+        future.get()  // Block caller — native UI route runs until navigation exits
     }
 
     fun getLaravelPath(): String {
