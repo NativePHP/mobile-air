@@ -30,6 +30,7 @@ use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -136,6 +137,7 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         $this->setupComposerPostUpdateScript();
         $this->registerNativeComponents();
+        $this->registerNavigationElements();
         $this->registerUiPluginComponents();
         $this->registerMiddleware();
         $this->registerFilesystems();
@@ -410,6 +412,26 @@ class NativeServiceProvider extends PackageServiceProvider
             if (class_exists($bladeClass)) {
                 Blade::component("native-{$kebabName}", $bladeClass);
             }
+        }
+    }
+
+    protected function registerNavigationElements(): void
+    {
+        $elements = [
+            'top_bar' => Elements\TopBar::class,
+            'top_bar_action' => Elements\TopBarAction::class,
+            'bottom_nav' => Elements\BottomNav::class,
+            'bottom_nav_item' => Elements\BottomNavItem::class,
+            'fab' => Elements\Fab::class,
+            'horizontal_divider' => Elements\HorizontalDivider::class,
+            'side_nav' => Elements\SideNav::class,
+            'side_nav_item' => Elements\SideNavItem::class,
+            'side_nav_group' => Elements\SideNavGroup::class,
+            'side_nav_header' => Elements\SideNavHeader::class,
+        ];
+
+        foreach ($elements as $type => $class) {
+            ElementRegistry::register($type, $class);
         }
     }
 

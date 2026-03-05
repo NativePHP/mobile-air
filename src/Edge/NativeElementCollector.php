@@ -11,7 +11,7 @@ class NativeElementCollector
 {
     protected static array $stack = [];
 
-    protected static ?Element $root = null;
+    protected static array $roots = [];
 
     public static function open(string $type, array $attrs): void
     {
@@ -24,7 +24,7 @@ class NativeElementCollector
         $element = array_pop(static::$stack);
 
         if (empty(static::$stack)) {
-            static::$root = $element;
+            static::$roots[] = $element;
         } else {
             static::$stack[count(static::$stack) - 1]->addChild($element);
         }
@@ -35,7 +35,7 @@ class NativeElementCollector
         $element = static::createElement($type, $attrs);
 
         if (empty(static::$stack)) {
-            static::$root = $element;
+            static::$roots[] = $element;
         } else {
             static::$stack[count(static::$stack) - 1]->addChild($element);
         }
@@ -43,20 +43,32 @@ class NativeElementCollector
 
     public static function collect(): Element
     {
-        $root = static::$root;
+        $roots = static::$roots;
         static::reset();
 
-        if ($root === null) {
+        if (empty($roots)) {
             throw new \RuntimeException('No root element was built by the Blade template.');
         }
 
-        return $root;
+        // Single root — return directly
+        if (count($roots) === 1) {
+            return $roots[0];
+        }
+
+        // Multiple top-level elements — wrap in an implicit column
+        $wrapper = Column::make();
+        $wrapper->fill();
+        foreach ($roots as $root) {
+            $wrapper->addChild($root);
+        }
+
+        return $wrapper;
     }
 
     public static function reset(): void
     {
         static::$stack = [];
-        static::$root = null;
+        static::$roots = [];
     }
 
     protected static function createElement(string $type, array $attrs): Element
