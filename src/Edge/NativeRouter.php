@@ -27,8 +27,6 @@ class NativeRouter
 
     /**
      * Signal a view transition to the native renderer.
-     * Called before resetBuffers() so the Kotlin side knows how to
-     * animate the next screen swap.
      */
     protected static function signalTransition(Transition|string $type): void
     {
@@ -41,10 +39,8 @@ class NativeRouter
 
     /**
      * Render a lightweight placeholder frame to shared memory.
-     *
-     * Called after resetBuffers() but before mount()/render() so the
-     * Kotlin renderer has a tree to animate to immediately, rather than
-     * waiting for the (potentially slow) first render of the new component.
+     * Available for long-loading screens that want to show a skeleton
+     * before the real content renders.
      */
     protected static function renderPlaceholder(): void
     {
@@ -70,6 +66,32 @@ class NativeRouter
      * @var array<int, array{component: NativeComponent, uri: string, params: array}>
      */
     protected array $stack = [];
+
+    /**
+     * Deferred transition — set during navigation, flushed just before
+     * the first publish() so the old tree stays visible until the new
+     * one is ready.
+     */
+    protected ?Transition $deferredTransition = null;
+
+    /**
+     * Flush the deferred transition — resets buffers and signals the
+     * transition type to Kotlin. Called just before the first publish()
+     * of a new component so the old tree stays visible until the new
+     * one is ready.
+     */
+    public function flushDeferredTransition(): void
+    {
+        if ($this->deferredTransition === null) {
+            return;
+        }
+
+        $t = $this->deferredTransition;
+        $this->deferredTransition = null;
+
+        static::signalTransition($t);
+        static::resetBuffers();
+    }
 
     // ── Static registry ─────────────────────────────
 
@@ -188,8 +210,7 @@ class NativeRouter
                 $freshPush = false;
 
                 if (! empty($this->stack)) {
-                    static::signalTransition(Transition::SlideFromLeft);
-                    static::resetBuffers();
+                    $this->deferredTransition = Transition::SlideFromLeft;
                 }
 
                 continue;
@@ -210,9 +231,8 @@ class NativeRouter
                         return $intent->uri;
                     }
 
-                    static::debugLog("NAVIGATE: resolved to {$resolved['class']}, resetting buffers");
-                    static::signalTransition($intent->transition ?? Transition::SlideFromRight);
-                    static::resetBuffers();
+                    static::debugLog("NAVIGATE: resolved to {$resolved['class']}, deferring transition");
+                    $this->deferredTransition = $intent->transition ?? Transition::SlideFromRight;
 
                     static::debugLog("NAVIGATE: creating component {$resolved['class']}");
                     $next = $this->createComponent(
@@ -242,9 +262,8 @@ class NativeRouter
                         return null;
                     }
 
-                    static::debugLog("BACK: resetting buffers, stack=" . count($this->stack));
-                    static::signalTransition($intent->transition ?? Transition::SlideFromLeft);
-                    static::resetBuffers();
+                    static::debugLog("BACK: deferring transition, stack=" . count($this->stack));
+                    $this->deferredTransition = $intent->transition ?? Transition::SlideFromLeft;
                     break;
 
                 case NavigationIntent::REPLACE:
@@ -263,9 +282,8 @@ class NativeRouter
                     $component->unmount();
                     array_pop($this->stack);
 
-                    static::debugLog("REPLACE: resetting buffers, stack=" . count($this->stack));
-                    static::signalTransition($intent->transition ?? Transition::Fade);
-                    static::resetBuffers();
+                    static::debugLog("REPLACE: deferring transition, stack=" . count($this->stack));
+                    $this->deferredTransition = $intent->transition ?? Transition::Fade;
 
                     try {
                         static::debugLog("REPLACE: creating component {$resolved['class']}");
