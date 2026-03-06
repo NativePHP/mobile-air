@@ -942,7 +942,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .background(Color.White)
+                                        .background(MaterialTheme.colorScheme.background)
                                 ) {
                                     NativeUIContent()
                                 }

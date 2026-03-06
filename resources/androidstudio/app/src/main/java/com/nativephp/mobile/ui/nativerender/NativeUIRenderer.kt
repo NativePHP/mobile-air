@@ -36,8 +36,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -146,31 +144,44 @@ fun NativeUIContent() {
     // Resolve transition
     val transition = NativeUIBridge.pendingTransition.value ?: "slide_from_right"
 
-    AnimatedContent(
-        targetState = screenKey,
-        transitionSpec = {
-            val ct = resolveTransition(transition)
-            ct.using(SizeTransform(clip = false))
-        },
-        label = "screen-nav"
-    ) { targetKey ->
-        val snap = treeSnapshots[targetKey]
+    // Shared content block — renders a tree snapshot with dismiss-keyboard-on-tap
+    val renderSnapshot: @Composable (NativeUITree) -> Unit = { snap ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null
+                ) {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+        ) {
+            RenderNode(snap.root)
+        }
+    }
+
+    if (transition == "none") {
+        // Instant swap — skip AnimatedContent entirely to avoid any intermediate frames
+        val snap = treeSnapshots[screenKey]
         if (snap != null) {
-            SideEffect {
-                android.util.Log.d("NativeUIPerf", "AnimatedContent composed screenKey=$targetKey root=${snap.root.type} children=${snap.root.children.size}")
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
-                    }
-            ) {
-                RenderNode(snap.root)
+            renderSnapshot(snap)
+        }
+    } else {
+        AnimatedContent(
+            targetState = screenKey,
+            transitionSpec = {
+                val ct = resolveTransition(transition)
+                ct.using(SizeTransform(clip = false))
+            },
+            label = "screen-nav"
+        ) { targetKey ->
+            val snap = treeSnapshots[targetKey]
+            if (snap != null) {
+                SideEffect {
+                    android.util.Log.d("NativeUIPerf", "AnimatedContent composed screenKey=$targetKey root=${snap.root.type} children=${snap.root.children.size}")
+                }
+                renderSnapshot(snap)
             }
         }
     }
@@ -329,14 +340,11 @@ internal fun RenderScrollView(node: NativeUINode, modifier: Modifier) {
 
     val listState = rememberLazyListState()
 
-    // Auto-scroll: smooth continuous scroll over 6 seconds
+    // Auto-scroll to target item index
     if (autoScrollTo > 0) {
         LaunchedEffect(autoScrollTo) {
-            kotlinx.coroutines.delay(500)
-            listState.animateScrollBy(
-                value = 100_000_000f,
-                animationSpec = tween(durationMillis = 6000, easing = LinearEasing)
-            )
+            kotlinx.coroutines.delay(300)
+            listState.animateScrollToItem(autoScrollTo)
         }
     }
 
