@@ -246,6 +246,13 @@ typedef struct nphp_element_region {
     pthread_mutex_t event_mutex;
     pthread_cond_t  event_cond;
     uint8_t event_buffer[NPHP_EVENT_BUFFER_SIZE];
+
+    /* Shadow buffers for frame-skip optimization */
+    uint8_t *shadow_flat_buffer;
+    uint8_t *shadow_prop_buffer;
+    uint32_t shadow_node_count;
+    uint32_t shadow_flat_size;
+    uint32_t shadow_prop_size;
 } nphp_element_region_t;
 
 /* Flat node layout — 108 bytes packed */
@@ -283,6 +290,15 @@ typedef struct nphp_flat_node {
 
 static nphp_element_region_t *g_element_region = NULL;
 static pthread_mutex_t g_region_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* ── Streaming Renderer State ── */
+#define NPHP_MAX_DEPTH 64
+static size_t    g_stream_flat_pos = 0;
+static npui_writer_t g_stream_pw;
+static uint32_t  g_stream_next_id = 1;
+static size_t    g_stream_stack[NPHP_MAX_DEPTH];
+static int       g_stream_depth = 0;
+static int       g_stream_active = 0;
 
 /* ── Register/Unregister with JNI bridge (same .so, direct calls) ── */
 
@@ -772,14 +788,21 @@ static int nphp_element_init(void) {
 
     r->flat_buffer = (uint8_t *)malloc(NPHP_FLAT_BUFFER_SIZE);
     r->prop_buffer = (uint8_t *)malloc(NPHP_PROP_BUFFER_SIZE);
-    if (!r->flat_buffer || !r->prop_buffer) {
+    r->shadow_flat_buffer = (uint8_t *)calloc(1, NPHP_FLAT_BUFFER_SIZE);
+    r->shadow_prop_buffer = (uint8_t *)calloc(1, NPHP_PROP_BUFFER_SIZE);
+    if (!r->flat_buffer || !r->prop_buffer || !r->shadow_flat_buffer || !r->shadow_prop_buffer) {
         NF_LOGE("Failed to allocate buffers");
         free(r->flat_buffer);
         free(r->prop_buffer);
+        free(r->shadow_flat_buffer);
+        free(r->shadow_prop_buffer);
         free(r);
         pthread_mutex_unlock(&g_region_mutex);
         return 0;
     }
+    r->shadow_node_count = 0;
+    r->shadow_flat_size = 0;
+    r->shadow_prop_size = 0;
 
     pthread_mutex_init(&r->tree_mutex, NULL);
     pthread_cond_init(&r->tree_cond, NULL);
@@ -829,6 +852,8 @@ static void nphp_element_shutdown(void) {
 
     free(r->flat_buffer);
     free(r->prop_buffer);
+    free(r->shadow_flat_buffer);
+    free(r->shadow_prop_buffer);
     free(r);
 
     g_element_region = NULL;
@@ -856,6 +881,11 @@ static void nphp_element_reset(void) {
      * that matches the flat buffer's type indices. */
     r->type_count = 0;
 
+    /* Invalidate shadow so next publish always pushes */
+    r->shadow_node_count = 0;
+    r->shadow_flat_size = 0;
+    r->shadow_prop_size = 0;
+
     pthread_mutex_unlock(&r->event_mutex);
     pthread_mutex_unlock(&r->tree_mutex);
 
@@ -880,6 +910,33 @@ static int nphp_element_publish(zval *tree) {
     }
 
     uint32_t node_count = (uint32_t)(flat_pos / sizeof(nphp_flat_node_t));
+
+    /* Shadow buffer comparison — skip JNI push if frame is identical */
+    if (node_count == r->shadow_node_count &&
+        (uint32_t)flat_pos == r->shadow_flat_size &&
+        (uint32_t)pw.pos == r->shadow_prop_size &&
+        memcmp(r->flat_buffer, r->shadow_flat_buffer, flat_pos) == 0 &&
+        memcmp(r->prop_buffer, r->shadow_prop_buffer, pw.pos) == 0) {
+
+        /* Frame identical — still hold tree ref to prevent GC */
+        if (r->current_tree) {
+            zval_ptr_dtor(r->current_tree);
+            efree(r->current_tree);
+        }
+        r->current_tree = (zval *)emalloc(sizeof(zval));
+        ZVAL_COPY(r->current_tree, tree);
+
+        NF_LOGI("publish: shadow_skip nodes=%u", node_count);
+        return 1;
+    }
+
+    /* Update shadow buffers */
+    memcpy(r->shadow_flat_buffer, r->flat_buffer, flat_pos);
+    memcpy(r->shadow_prop_buffer, r->prop_buffer, pw.pos);
+    r->shadow_node_count = node_count;
+    r->shadow_flat_size = (uint32_t)flat_pos;
+    r->shadow_prop_size = (uint32_t)pw.pos;
+
     atomic_store(&r->flat_buffer_size, (uint32_t)flat_pos);
     atomic_store(&r->prop_buffer_size, (uint32_t)pw.pos);
     atomic_store(&r->node_count, node_count);
@@ -1036,6 +1093,63 @@ static int nphp_element_wait_event(int timeout_ms, zval *result) {
 }
 
 /* ══════════════════════════════════════════════════════
+ * Streaming Renderer Helpers
+ * ══════════════════════════════════════════════════════ */
+
+static nphp_flat_node_t *stream_current_node(void) {
+    nphp_element_region_t *r = g_element_region;
+    return (nphp_flat_node_t *)(r->flat_buffer + g_stream_flat_pos);
+}
+
+static nphp_flat_node_t *stream_node_at(size_t offset) {
+    nphp_element_region_t *r = g_element_region;
+    return (nphp_flat_node_t *)(r->flat_buffer + offset);
+}
+
+static int stream_write_node(const char *type, size_t type_len,
+                             HashTable *layout_ht, HashTable *style_ht,
+                             HashTable *props_ht,
+                             uint32_t on_press, uint32_t on_long_press) {
+    nphp_element_region_t *r = g_element_region;
+
+    if (g_stream_flat_pos + sizeof(nphp_flat_node_t) > NPHP_FLAT_BUFFER_SIZE) {
+        NF_LOGE("Streaming flat buffer overflow at node %u", g_stream_next_id);
+        return 0;
+    }
+
+    nphp_flat_node_t *fn = stream_current_node();
+    memset(fn, 0, sizeof(nphp_flat_node_t));
+
+    fn->id = g_stream_next_id++;
+    fn->type_idx = nphp_intern_type(type, type_len);
+    fn->on_press = on_press;
+    fn->on_long_press = on_long_press;
+
+    if (layout_ht) {
+        fill_layout(fn, layout_ht);
+    } else {
+        fn->width_mode = NPUI_SIZE_WRAP;
+        fn->height_mode = NPUI_SIZE_WRAP;
+        fn->flex_shrink = 1.0f;
+        fn->opacity = 1.0f;
+    }
+
+    if (style_ht) {
+        fill_style(fn, style_ht);
+    } else {
+        fn->opacity = 1.0f;
+    }
+
+    if (props_ht && zend_hash_num_elements(props_ht) > 0) {
+        fn->prop_offset = (uint32_t)g_stream_pw.pos;
+        npui_write_generic_props(&g_stream_pw, props_ht);
+        fn->prop_size = (uint16_t)(g_stream_pw.pos - fn->prop_offset);
+    }
+
+    return 1;
+}
+
+/* ══════════════════════════════════════════════════════
  * PHP_FUNCTION Implementations
  * ══════════════════════════════════════════════════════ */
 
@@ -1137,6 +1251,198 @@ PHP_FUNCTION(nativephp_element_shutdown)
     nphp_element_shutdown();
 }
 
+/* ── Streaming Renderer PHP Functions ── */
+
+PHP_FUNCTION(nphp_frame_begin)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    if (!g_element_region) {
+        php_error_docref(NULL, E_WARNING, "Element not initialized.");
+        RETURN_FALSE;
+    }
+
+    g_stream_flat_pos = 0;
+    g_stream_next_id = 1;
+    g_stream_depth = 0;
+    g_stream_active = 1;
+    npui_writer_init(&g_stream_pw, g_element_region->prop_buffer, NPHP_PROP_BUFFER_SIZE);
+
+    RETURN_TRUE;
+}
+
+PHP_FUNCTION(nphp_node_open)
+{
+    char *type;
+    size_t type_len;
+    zval *layout = NULL, *style = NULL;
+    zend_long on_press = 0, on_long_press = 0;
+
+    ZEND_PARSE_PARAMETERS_START(1, 5)
+        Z_PARAM_STRING(type, type_len)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_ARRAY_OR_NULL(layout)
+        Z_PARAM_ARRAY_OR_NULL(style)
+        Z_PARAM_LONG(on_press)
+        Z_PARAM_LONG(on_long_press)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (!g_element_region || !g_stream_active) {
+        php_error_docref(NULL, E_WARNING, "No active streaming frame.");
+        RETURN_LONG(0);
+    }
+
+    if (g_stream_depth >= NPHP_MAX_DEPTH) {
+        php_error_docref(NULL, E_WARNING, "Streaming depth overflow (max %d).", NPHP_MAX_DEPTH);
+        RETURN_LONG(0);
+    }
+
+    size_t my_pos = g_stream_flat_pos;
+
+    /* Update parent's child tracking */
+    if (g_stream_depth > 0) {
+        nphp_flat_node_t *parent = stream_node_at(g_stream_stack[g_stream_depth - 1]);
+        if (parent->child_count == 0) {
+            parent->first_child_offset = (uint32_t)my_pos;
+        }
+        parent->child_count++;
+    }
+
+    if (!stream_write_node(type, type_len,
+                           layout ? Z_ARRVAL_P(layout) : NULL,
+                           style ? Z_ARRVAL_P(style) : NULL,
+                           NULL,
+                           (uint32_t)on_press, (uint32_t)on_long_press)) {
+        RETURN_LONG(0);
+    }
+
+    uint32_t node_id = stream_current_node()->id;
+
+    /* Push onto stack, advance */
+    g_stream_stack[g_stream_depth++] = my_pos;
+    g_stream_flat_pos += sizeof(nphp_flat_node_t);
+
+    RETURN_LONG((zend_long)node_id);
+}
+
+PHP_FUNCTION(nphp_node_leaf)
+{
+    char *type;
+    size_t type_len;
+    zval *layout = NULL, *style = NULL, *props = NULL;
+    zend_long on_press = 0, on_long_press = 0;
+
+    ZEND_PARSE_PARAMETERS_START(1, 6)
+        Z_PARAM_STRING(type, type_len)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_ARRAY_OR_NULL(layout)
+        Z_PARAM_ARRAY_OR_NULL(style)
+        Z_PARAM_ARRAY_OR_NULL(props)
+        Z_PARAM_LONG(on_press)
+        Z_PARAM_LONG(on_long_press)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (!g_element_region || !g_stream_active) {
+        php_error_docref(NULL, E_WARNING, "No active streaming frame.");
+        RETURN_LONG(0);
+    }
+
+    size_t my_pos = g_stream_flat_pos;
+
+    /* Update parent's child tracking */
+    if (g_stream_depth > 0) {
+        nphp_flat_node_t *parent = stream_node_at(g_stream_stack[g_stream_depth - 1]);
+        if (parent->child_count == 0) {
+            parent->first_child_offset = (uint32_t)my_pos;
+        }
+        parent->child_count++;
+    }
+
+    if (!stream_write_node(type, type_len,
+                           layout ? Z_ARRVAL_P(layout) : NULL,
+                           style ? Z_ARRVAL_P(style) : NULL,
+                           props ? Z_ARRVAL_P(props) : NULL,
+                           (uint32_t)on_press, (uint32_t)on_long_press)) {
+        RETURN_LONG(0);
+    }
+
+    uint32_t node_id = stream_current_node()->id;
+
+    /* No stack push for leaf — just advance */
+    g_stream_flat_pos += sizeof(nphp_flat_node_t);
+
+    RETURN_LONG((zend_long)node_id);
+}
+
+PHP_FUNCTION(nphp_node_close)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    if (!g_element_region || !g_stream_active) {
+        php_error_docref(NULL, E_WARNING, "No active streaming frame.");
+        RETURN_NULL();
+    }
+
+    if (g_stream_depth <= 0) {
+        php_error_docref(NULL, E_WARNING, "Streaming stack underflow — close() without matching open().");
+        RETURN_NULL();
+    }
+
+    g_stream_depth--;
+}
+
+PHP_FUNCTION(nphp_frame_end)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    if (!g_element_region || !g_stream_active) {
+        php_error_docref(NULL, E_WARNING, "No active streaming frame.");
+        RETURN_FALSE;
+    }
+
+    g_stream_active = 0;
+
+    if (g_stream_depth != 0) {
+        php_error_docref(NULL, E_WARNING, "Streaming frame ended with %d unclosed node(s).", g_stream_depth);
+        g_stream_depth = 0;
+    }
+
+    /* Publish: set buffer sizes, bump version, push to Kotlin */
+    nphp_element_region_t *r = g_element_region;
+    uint32_t node_count = (uint32_t)(g_stream_flat_pos / sizeof(nphp_flat_node_t));
+
+    /* Shadow buffer comparison — skip JNI push if frame is identical */
+    if (node_count == r->shadow_node_count &&
+        (uint32_t)g_stream_flat_pos == r->shadow_flat_size &&
+        (uint32_t)g_stream_pw.pos == r->shadow_prop_size &&
+        memcmp(r->flat_buffer, r->shadow_flat_buffer, g_stream_flat_pos) == 0 &&
+        memcmp(r->prop_buffer, r->shadow_prop_buffer, g_stream_pw.pos) == 0) {
+
+        NF_LOGI("PERF: streamed shadow_skip nodes=%u", node_count);
+        RETURN_TRUE;
+    }
+
+    /* Update shadow buffers */
+    memcpy(r->shadow_flat_buffer, r->flat_buffer, g_stream_flat_pos);
+    memcpy(r->shadow_prop_buffer, r->prop_buffer, g_stream_pw.pos);
+    r->shadow_node_count = node_count;
+    r->shadow_flat_size = (uint32_t)g_stream_flat_pos;
+    r->shadow_prop_size = (uint32_t)g_stream_pw.pos;
+
+    atomic_store(&r->flat_buffer_size, (uint32_t)g_stream_flat_pos);
+    atomic_store(&r->prop_buffer_size, (uint32_t)g_stream_pw.pos);
+    atomic_store(&r->node_count, node_count);
+
+    atomic_fetch_add(&r->tree_version, 1);
+
+    NF_LOGI("PERF: streamed frame nodes=%u flat=%zu prop=%zu",
+            node_count, g_stream_flat_pos, g_stream_pw.pos);
+
+    NativeElement_PostTreeUpdate();
+
+    RETURN_TRUE;
+}
+
 /* ══════════════════════════════════════════════════════
  * Arginfo (function signatures for Zend)
  * ══════════════════════════════════════════════════════ */
@@ -1166,6 +1472,33 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_nativephp_element_shutdown, 0, 0, IS_VOID, 0)
 ZEND_END_ARG_INFO()
 
+/* ── Streaming Renderer Arginfo ── */
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_nphp_frame_begin, 0, 0, _IS_BOOL, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_nphp_node_open, 0, 1, IS_LONG, 0)
+    ZEND_ARG_TYPE_INFO(0, type, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, layout, IS_ARRAY, 1, "null")
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, style, IS_ARRAY, 1, "null")
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, on_press, IS_LONG, 0, "0")
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, on_long_press, IS_LONG, 0, "0")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_nphp_node_leaf, 0, 1, IS_LONG, 0)
+    ZEND_ARG_TYPE_INFO(0, type, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, layout, IS_ARRAY, 1, "null")
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, style, IS_ARRAY, 1, "null")
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, props, IS_ARRAY, 1, "null")
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, on_press, IS_LONG, 0, "0")
+    ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, on_long_press, IS_LONG, 0, "0")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_nphp_node_close, 0, 0, IS_VOID, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_nphp_frame_end arginfo_nphp_frame_begin
+
 /* ══════════════════════════════════════════════════════
  * Function Entry Table
  *
@@ -1180,5 +1513,10 @@ zend_function_entry nativephp_functions[] = {
     ZEND_FE(nativephp_element_wait_event,  arginfo_nativephp_element_wait_event)
     ZEND_FE(nativephp_element_reset,       arginfo_nativephp_element_reset)
     ZEND_FE(nativephp_element_shutdown,    arginfo_nativephp_element_shutdown)
+    ZEND_FE(nphp_frame_begin,              arginfo_nphp_frame_begin)
+    ZEND_FE(nphp_node_open,                arginfo_nphp_node_open)
+    ZEND_FE(nphp_node_leaf,                arginfo_nphp_node_leaf)
+    ZEND_FE(nphp_node_close,               arginfo_nphp_node_close)
+    ZEND_FE(nphp_frame_end,                arginfo_nphp_frame_end)
     ZEND_FE_END
 };
