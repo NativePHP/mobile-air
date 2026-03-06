@@ -41,10 +41,18 @@ abstract class NativeBladeComponent extends Component
         if (! $this->handlesCollectorManually) {
             $attrs = $this->attributes->getAttributes();
 
-            if ($this->isSelfClosing) {
-                NativeElementCollector::leaf($this->elementType(), $attrs);
+            if (NativeElementCollector::isStreaming()) {
+                if ($this->isSelfClosing) {
+                    NativeElementCollector::leafStreaming($this->elementType(), $attrs);
+                } else {
+                    NativeElementCollector::openStreaming($this->elementType(), $attrs);
+                }
             } else {
-                NativeElementCollector::open($this->elementType(), $attrs);
+                if ($this->isSelfClosing) {
+                    NativeElementCollector::leaf($this->elementType(), $attrs);
+                } else {
+                    NativeElementCollector::open($this->elementType(), $attrs);
+                }
             }
         }
 

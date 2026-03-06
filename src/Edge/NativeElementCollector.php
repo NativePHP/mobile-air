@@ -13,6 +13,283 @@ class NativeElementCollector
 
     protected static array $roots = [];
 
+    protected static bool $streaming = false;
+
+    protected static ?CallbackRegistry $callbacks = null;
+
+    // ── Streaming control ────────────────────────────
+
+    public static function setStreaming(bool $enabled): void
+    {
+        static::$streaming = $enabled;
+    }
+
+    public static function isStreaming(): bool
+    {
+        return static::$streaming;
+    }
+
+    public static function setCallbacks(CallbackRegistry $callbacks): void
+    {
+        static::$callbacks = $callbacks;
+    }
+
+    // ── Streaming methods (write directly to C) ──────
+
+    public static function openStreaming(string $type, array $attrs): void
+    {
+        if (isset($attrs['class'])) {
+            $classAttrs = TailwindParser::parse($attrs['class']);
+            $attrs = array_merge($classAttrs, $attrs);
+            unset($attrs['class']);
+        }
+
+        $builtinTypes = ['column', 'row', 'stack', 'scroll_view'];
+
+        if (in_array($type, $builtinTypes, true)) {
+            $layout = static::buildLayoutArray($attrs);
+            $style = static::buildStyleArray($attrs);
+            $onPress = static::resolveOnPress($attrs);
+            $onLongPress = static::resolveOnLongPress($attrs);
+
+            nphp_node_open(
+                $type,
+                ! empty($layout) ? $layout : null,
+                ! empty($style) ? $style : null,
+                $onPress,
+                $onLongPress,
+            );
+        } else {
+            // Plugin element — instantiate for resolveProps/applyAttributes
+            $element = ElementRegistry::resolve($type);
+            if (! $element) {
+                throw new \RuntimeException("Unknown native element type: {$type}");
+            }
+
+            $element->applyAttributes($attrs);
+            static::applyLayout($element, $attrs);
+            static::applyStyle($element, $attrs);
+            static::applyCallbacks($element, $attrs);
+            static::applyElementProps($element, $attrs);
+
+            $layout = $element->getLayout();
+            $style = $element->getStyle();
+            $onPress = $element->getPressCallbackId(static::$callbacks);
+            $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
+
+            nphp_node_open(
+                $type,
+                ! empty($layout) ? $layout : null,
+                ! empty($style) ? $style : null,
+                $onPress,
+                $onLongPress,
+            );
+        }
+    }
+
+    public static function closeStreaming(): void
+    {
+        nphp_node_close();
+    }
+
+    public static function leafStreaming(string $type, array $attrs): void
+    {
+        if (isset($attrs['class'])) {
+            $classAttrs = TailwindParser::parse($attrs['class']);
+            $attrs = array_merge($classAttrs, $attrs);
+            unset($attrs['class']);
+        }
+
+        $builtinTypes = ['column', 'row', 'stack', 'scroll_view'];
+
+        if (in_array($type, $builtinTypes, true)) {
+            $layout = static::buildLayoutArray($attrs);
+            $style = static::buildStyleArray($attrs);
+            $onPress = static::resolveOnPress($attrs);
+            $onLongPress = static::resolveOnLongPress($attrs);
+
+            nphp_node_leaf(
+                $type,
+                ! empty($layout) ? $layout : null,
+                ! empty($style) ? $style : null,
+                null,
+                $onPress,
+                $onLongPress,
+            );
+        } else {
+            // Plugin element — instantiate for resolveProps/applyAttributes
+            $element = ElementRegistry::resolve($type);
+            if (! $element) {
+                throw new \RuntimeException("Unknown native element type: {$type}");
+            }
+
+            $element->applyAttributes($attrs);
+            static::applyLayout($element, $attrs);
+            static::applyStyle($element, $attrs);
+            static::applyCallbacks($element, $attrs);
+            static::applyElementProps($element, $attrs);
+
+            $layout = $element->getLayout();
+            $style = $element->getStyle();
+            $props = $element->getResolvedProps(static::$callbacks);
+            $onPress = $element->getPressCallbackId(static::$callbacks);
+            $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
+
+            nphp_node_leaf(
+                $type,
+                ! empty($layout) ? $layout : null,
+                ! empty($style) ? $style : null,
+                ! empty($props) ? $props : null,
+                $onPress,
+                $onLongPress,
+            );
+        }
+    }
+
+    // ── Layout/style array builders ──────────────────
+
+    public static function buildLayoutArray(array $attrs): array
+    {
+        $layout = [];
+
+        if (! empty($attrs['fill'])) {
+            $layout['width'] = 'fill';
+            $layout['height'] = 'fill';
+        }
+        if (! empty($attrs['fillWidth'])) {
+            $layout['width'] = 'fill';
+        }
+        if (! empty($attrs['fillHeight'])) {
+            $layout['height'] = 'fill';
+        }
+        if (isset($attrs['width'])) {
+            $layout['width'] = $attrs['width'];
+        }
+        if (isset($attrs['height'])) {
+            $layout['height'] = $attrs['height'];
+        }
+
+        // Padding
+        $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;
+        $pt = $attrs['paddingTop'] ?? null;
+        $pr = $attrs['paddingRight'] ?? null;
+        $pb = $attrs['paddingBottom'] ?? null;
+        $pl = $attrs['paddingLeft'] ?? null;
+
+        if ($pt !== null || $pr !== null || $pb !== null || $pl !== null) {
+            $base = $uniformPadding ?? 0;
+            $layout['padding'] = [
+                (float) ($pt ?? $base),
+                (float) ($pr ?? $base),
+                (float) ($pb ?? $base),
+                (float) ($pl ?? $base),
+            ];
+        } elseif (isset($attrs['padding'])) {
+            $layout['padding'] = is_array($attrs['padding'])
+                ? array_map('floatval', $attrs['padding'])
+                : (float) $attrs['padding'];
+        }
+
+        // Margin
+        $uniformMargin = isset($attrs['margin']) && ! is_array($attrs['margin']) ? (float) $attrs['margin'] : null;
+        $mt = $attrs['marginTop'] ?? null;
+        $mr = $attrs['marginRight'] ?? null;
+        $mb = $attrs['marginBottom'] ?? null;
+        $ml = $attrs['marginLeft'] ?? null;
+
+        if ($mt !== null || $mr !== null || $mb !== null || $ml !== null) {
+            $base = $uniformMargin ?? 0;
+            $layout['margin'] = [
+                (float) ($mt ?? $base),
+                (float) ($mr ?? $base),
+                (float) ($mb ?? $base),
+                (float) ($ml ?? $base),
+            ];
+        } elseif (isset($attrs['margin'])) {
+            $layout['margin'] = is_array($attrs['margin'])
+                ? array_map('floatval', $attrs['margin'])
+                : (float) $attrs['margin'];
+        }
+
+        if (isset($attrs['gap'])) {
+            $layout['gap'] = (float) $attrs['gap'];
+        }
+        if (! empty($attrs['center'])) {
+            $layout['align_items'] = 1;
+            $layout['justify_content'] = 1;
+        }
+        if (! empty($attrs['safeArea'])) {
+            $layout['safe_area'] = 1;
+        }
+        if (isset($attrs['flexGrow'])) {
+            $layout['flex_grow'] = (float) $attrs['flexGrow'];
+        }
+        if (isset($attrs['flexShrink'])) {
+            $layout['flex_shrink'] = (float) $attrs['flexShrink'];
+        }
+        if (isset($attrs['alignSelf'])) {
+            $layout['align_self'] = (int) $attrs['alignSelf'];
+        }
+        if (isset($attrs['alignItems'])) {
+            $layout['align_items'] = (int) $attrs['alignItems'];
+        }
+        if (isset($attrs['justifyContent'])) {
+            $layout['justify_content'] = (int) $attrs['justifyContent'];
+        }
+
+        return $layout;
+    }
+
+    public static function buildStyleArray(array $attrs): array
+    {
+        $style = [];
+
+        if (isset($attrs['bg'])) {
+            $style['bg_color'] = $attrs['bg'];
+        }
+        if (isset($attrs['borderRadius'])) {
+            $style['border_radius'] = (float) $attrs['borderRadius'];
+        }
+        if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
+            $style['border_width'] = (float) $attrs['borderWidth'];
+            $style['border_color'] = $attrs['borderColor'];
+        }
+        if (isset($attrs['opacity'])) {
+            $style['opacity'] = (float) $attrs['opacity'];
+        }
+        if (isset($attrs['elevation'])) {
+            $style['elevation'] = (float) $attrs['elevation'];
+        }
+
+        return $style;
+    }
+
+    protected static function resolveOnPress(array $attrs): int
+    {
+        if (isset($attrs['_navigate']) && static::$callbacks) {
+            $navKey = static::$callbacks->registerNavigation($attrs['_navigate']);
+
+            return static::$callbacks->register("__navigate('{$navKey}')");
+        }
+
+        if (isset($attrs['_press']) && static::$callbacks) {
+            return static::$callbacks->register($attrs['_press']);
+        }
+
+        return 0;
+    }
+
+    protected static function resolveOnLongPress(array $attrs): int
+    {
+        if (isset($attrs['_longPress']) && static::$callbacks) {
+            return static::$callbacks->register($attrs['_longPress']);
+        }
+
+        return 0;
+    }
+
+    // ── Legacy methods (object-based tree building) ───
+
     public static function open(string $type, array $attrs): void
     {
         $element = static::createElement($type, $attrs);
@@ -69,6 +346,7 @@ class NativeElementCollector
     {
         static::$stack = [];
         static::$roots = [];
+        static::$streaming = false;
     }
 
     protected static function createElement(string $type, array $attrs): Element

@@ -34,6 +34,16 @@ abstract class NativeComponent
 
     abstract public function render(): Element;
 
+    /**
+     * Override to render directly into the C flat buffer via streaming.
+     * Call streamView() here instead of view().
+     * Return true to skip legacy toArray/publish path.
+     */
+    protected function renderStreaming(): bool
+    {
+        return false;
+    }
+
     protected function view(string $name, array $data = []): Element
     {
         NativeElementCollector::reset();
@@ -52,6 +62,34 @@ abstract class NativeComponent
         ));
 
         return $element;
+    }
+
+    /**
+     * Streaming view — renders Blade directly into C flat buffer.
+     * No Element objects, no toArray(), no intermediate PHP arrays.
+     */
+    protected function streamView(string $name, array $data = []): void
+    {
+        $viewData = array_merge($this->getPublicProperties(), $data);
+
+        NativeElementCollector::setCallbacks($this->callbacks);
+        NativeElementCollector::setStreaming(true);
+
+        nphp_frame_begin();
+
+        $t0 = microtime(true);
+        view("native.{$name}", $viewData)->render();
+        $t1 = microtime(true);
+
+        nphp_frame_end();
+        $t2 = microtime(true);
+
+        NativeElementCollector::setStreaming(false);
+
+        NativeRouter::debugLog(sprintf(
+            'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
+            $name, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000, ($t2 - $t0) * 1000
+        ));
     }
 
     private function getPublicProperties(): array
@@ -165,8 +203,10 @@ abstract class NativeComponent
 
             if (! $this->hasError) {
                 try {
-                    $tree = $this->render()->toArray($this->callbacks);
-                    nativephp_element_publish($tree);
+                    if (! $this->renderStreaming()) {
+                        $tree = $this->render()->toArray($this->callbacks);
+                        nativephp_element_publish($tree);
+                    }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -233,19 +273,33 @@ abstract class NativeComponent
             if (! $this->hasError) {
                 try {
                     $t0 = microtime(true);
-                    $element = $this->render();
-                    $t1 = microtime(true);
-                    $tree = $element->toArray($this->callbacks);
-                    $t2 = microtime(true);
 
-                    nativephp_element_publish($tree);
+                    if ($this->renderStreaming()) {
+                        // Streaming path — Blade wrote directly to C buffer
+                        $this->router?->flushDeferredTransition();
+                        $t3 = microtime(true);
+                        NativeRouter::debugLog(sprintf(
+                            'PERF [%s] streaming total=%.1fms',
+                            static::class, ($t3 - $t0) * 1000
+                        ));
+                    } else {
+                        // Legacy path
+                        $element = $this->render();
+                        $t1 = microtime(true);
+                        $tree = $element->toArray($this->callbacks);
+                        $t2 = microtime(true);
 
-                    $t3 = microtime(true);
-                    NativeRouter::debugLog(sprintf(
-                        'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
-                        static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                        ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
-                    ));
+                        $this->router?->flushDeferredTransition();
+
+                        nativephp_element_publish($tree);
+
+                        $t3 = microtime(true);
+                        NativeRouter::debugLog(sprintf(
+                            'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
+                            static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
+                            ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
+                        ));
+                    }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -487,6 +541,7 @@ abstract class NativeComponent
                 $this->callbacks->lookup('__overlaySetFontSize'),
             ]);
 
+            $this->router?->flushDeferredTransition();
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog("Error screen render failed: " . $renderError->getMessage());
@@ -550,6 +605,7 @@ abstract class NativeComponent
                 $this->callbacks->lookup('__overlaySetFontSize'),
             ]);
 
+            $this->router?->flushDeferredTransition();
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog("Dump screen render failed: " . $renderError->getMessage());

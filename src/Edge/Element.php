@@ -224,6 +224,52 @@ abstract class Element
         return $this;
     }
 
+    // ── Streaming getters ────────────────────────────
+
+    public function getType(): string
+    {
+        return $this->type;
+    }
+
+    public function getLayout(): array
+    {
+        return $this->layout;
+    }
+
+    public function getStyle(): array
+    {
+        return $this->style;
+    }
+
+    public function getPressCallbackId(CallbackRegistry $registry): int
+    {
+        if ($this->navigateConfig !== null) {
+            $navKey = $registry->registerNavigation($this->navigateConfig);
+
+            return $registry->register("__navigate('{$navKey}')");
+        }
+
+        if ($this->pressMethod !== null) {
+            return $registry->register($this->pressMethod);
+        }
+
+        return 0;
+    }
+
+    public function getLongPressCallbackId(CallbackRegistry $registry): int
+    {
+        if ($this->longPressMethod !== null) {
+            return $registry->register($this->longPressMethod);
+        }
+
+        return 0;
+    }
+
+    public function getResolvedProps(CallbackRegistry $registry): array
+    {
+        return $this->resolveProps($registry);
+    }
+
     // ── Resolution ───────────────────────────────────
 
     public function toArray(CallbackRegistry $registry, int &$nextId = 1): array

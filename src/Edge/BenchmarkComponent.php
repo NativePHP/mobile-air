@@ -73,6 +73,7 @@ class BenchmarkComponent extends NativeComponent
         'toggle_tree'   => 'Toggle Tree',
         'diff_ab'       => 'Diff A/B Test',
         'render'        => 'PHP Render',
+        'stream_render' => 'Streaming Render',
     ];
 
     public function render(): Element
@@ -245,6 +246,7 @@ class BenchmarkComponent extends NativeComponent
                 'toggle_tree'    => $this->runToggleTree(),
                 'diff_ab'        => $this->runDiffAB(),
                 'render'         => $this->runRenderBenchmark(),
+                'stream_render'  => $this->runStreamRenderBenchmark(),
                 default          => null,
             };
 
@@ -1170,6 +1172,130 @@ class BenchmarkComponent extends NativeComponent
         }
     }
 
+    // ── Streaming Render Benchmark ──────────────────
+
+    protected function runStreamRenderBenchmark(): void
+    {
+        if (! function_exists('nphp_frame_begin')) {
+            $this->publishProgressScreen('Streaming Render', 'Skipped — rebuild PHP with streaming functions');
+            usleep(1_500_000);
+
+            return;
+        }
+
+        $total = count(self::SIZES);
+        foreach (self::SIZES as $idx => $size) {
+            $step = $idx + 1;
+            $this->publishProgressScreen('Streaming Render', "{$size} nodes ({$step}/{$total})");
+            usleep(50_000);
+            $this->results["stream_{$size}"] = $this->benchmarkStreamSize($size);
+        }
+    }
+
+    protected function benchmarkStreamSize(int $targetNodes): array
+    {
+        $timings = [];
+
+        for ($i = 0; $i < self::ITERATIONS; $i++) {
+            $t0 = microtime(true);
+
+            nphp_frame_begin();
+            $nodeCount = 0;
+            $this->buildStreamSubtree($targetNodes, $i, 0, $nodeCount);
+            $t1 = microtime(true);
+
+            nphp_frame_end();
+            $t2 = microtime(true);
+
+            $timings[] = [
+                'render' => ($t1 - $t0) * 1000,
+                'toArray' => 0.0,
+                'publish' => ($t2 - $t1) * 1000,
+                'total' => ($t2 - $t0) * 1000,
+            ];
+
+            usleep(1_000);
+        }
+
+        $measured = array_slice($timings, self::WARMUP);
+        $stats = $this->computeStats($measured);
+
+        NativeRouter::debugLog(sprintf(
+            'BENCH STREAM nodes=%d iter=%d avg_render=%.2fms avg_publish=%.2fms avg_total=%.2fms p50=%.2fms p95=%.2fms',
+            $targetNodes,
+            count($measured),
+            $stats['avg_render'],
+            $stats['avg_publish'],
+            $stats['avg_total'],
+            $stats['p50_total'],
+            $stats['p95_total'],
+        ));
+
+        return $stats;
+    }
+
+    protected function buildStreamSubtree(int $targetNodes, int $seed, int $depth, int &$nodeCount): void
+    {
+        $nodeCount++;
+
+        if ($depth >= 8 || $nodeCount >= $targetNodes) {
+            $this->streamLeaf($seed + $nodeCount);
+
+            return;
+        }
+
+        $branchFactor = 2 + (($seed + $depth) % 4);
+        $isRow = ($depth % 2 === 1);
+        $type = $isRow ? 'row' : 'column';
+
+        $layout = [];
+        if ($depth === 0) {
+            $layout = ['width' => 'fill', 'height' => 'fill', 'safe_area' => 1];
+        } else {
+            $layout = ['width' => 'fill', 'gap' => 4.0];
+        }
+
+        nphp_node_open($type, $layout, null, 0, 0);
+
+        $nodesPerChild = max(1, (int) (($targetNodes - $nodeCount) / $branchFactor));
+
+        for ($i = 0; $i < $branchFactor && $nodeCount < $targetNodes; $i++) {
+            $this->buildStreamSubtree(
+                min($targetNodes, $nodeCount + $nodesPerChild),
+                $seed + $i * 7,
+                $depth + 1,
+                $nodeCount,
+            );
+        }
+
+        nphp_node_close();
+    }
+
+    protected function streamLeaf(int $seed): void
+    {
+        $leafTypes = ['text', 'button', 'list_item', 'icon', 'divider', 'spacer'];
+        $type = $leafTypes[$seed % count($leafTypes)];
+        $colors = ['#1F2937', '#DC2626', '#059669', '#2563EB', '#7C3AED', '#D97706'];
+        $icons = ['home', 'star', 'settings', 'search', 'person', 'favorite'];
+
+        $props = match ($type) {
+            'text' => ['text' => "Item #{$seed}", 'fontSize' => 14, 'color' => $colors[$seed % count($colors)]],
+            'button' => ['label' => "Btn #{$seed}", 'color' => $colors[($seed + 1) % count($colors)]],
+            'list_item' => ['headline' => "Headline #{$seed}", 'supporting' => "Supporting text for item {$seed}", 'leadingIcon' => $icons[$seed % count($icons)]],
+            'icon' => ['name' => $icons[$seed % count($icons)], 'size' => 24, 'color' => $colors[($seed + 2) % count($colors)]],
+            'divider' => [],
+            'spacer' => [],
+        };
+
+        $layout = match ($type) {
+            'divider' => ['width' => 'fill'],
+            'spacer' => ['height' => 8.0],
+            default => null,
+        };
+
+        nphp_node_leaf($type, $layout, null, ! empty($props) ? $props : null, 0, 0);
+    }
+
     protected function benchmarkSize(int $targetNodes): array
     {
         $timings = [];
@@ -1413,12 +1539,32 @@ class BenchmarkComponent extends NativeComponent
                 if (! $hasRender) {
                     $content->addChild(Spacer::make()->height(4));
                     $content->addChild(
-                        Text::make('PHP RENDER')->fontSize(13)->fontWeight(7)->color('#38BDF8')
+                        Text::make('PHP RENDER (LEGACY)')->fontSize(13)->fontWeight(7)->color('#38BDF8')
                     );
                     $hasRender = true;
                 }
                 $nodeCount = str_replace('render_', '', $key);
                 $content->addChild($this->renderPhpBenchCard("{$nodeCount} nodes", $stats));
+            }
+        }
+
+        // Streaming render benchmark cards
+        $hasStream = false;
+        foreach ($this->results as $key => $stats) {
+            if (str_starts_with($key, 'stream_') && is_array($stats) && isset($stats['avg_total'])) {
+                if (! $hasStream) {
+                    $content->addChild(Spacer::make()->height(4));
+                    $content->addChild(
+                        Text::make('STREAMING RENDER')->fontSize(13)->fontWeight(7)->color('#10B981')
+                    );
+                    $hasStream = true;
+                }
+                $nodeCount = str_replace('stream_', '', $key);
+
+                // Show comparison if legacy result exists
+                $legacyKey = "render_{$nodeCount}";
+                $legacyStats = $this->results[$legacyKey] ?? null;
+                $content->addChild($this->renderStreamBenchCard("{$nodeCount} nodes", $stats, $legacyStats));
             }
         }
 
@@ -1754,6 +1900,57 @@ class BenchmarkComponent extends NativeComponent
                 $this->statChip('publish', $stats['avg_publish'], '#38BDF8'),
             )->fillWidth()->gap(8)
         );
+
+        $cardContent->addChild(Spacer::make()->height(4));
+        $cardContent->addChild(
+            Text::make(sprintf(
+                'min %.2fms  ·  max %.2fms',
+                $stats['min_total'],
+                $stats['max_total'],
+            ))->fontSize(12)->color('#64748B')
+        );
+
+        return $cardContent;
+    }
+
+    protected function renderStreamBenchCard(string $title, array $stats, ?array $legacyStats): Element
+    {
+        $cardContent = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
+
+        $cardContent->addChild(
+            Text::make($title)->fontSize(20)->fontWeight(7)->color('#F1F5F9')
+        );
+
+        $cardContent->addChild(Spacer::make()->height(4));
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('Total', $stats['avg_total'], '#10B981'),
+                $this->statChip('p50', $stats['p50_total'], '#A78BFA'),
+                $this->statChip('p95', $stats['p95_total'], '#F59E0B'),
+            )->fillWidth()->gap(8)
+        );
+
+        $cardContent->addChild(
+            Row::make(
+                $this->statChip('build', $stats['avg_render'], '#10B981'),
+                $this->statChip('frame_end', $stats['avg_publish'], '#38BDF8'),
+            )->fillWidth()->gap(8)
+        );
+
+        // Speedup vs legacy
+        if ($legacyStats && $legacyStats['avg_total'] > 0) {
+            $speedup = $legacyStats['avg_total'] / max(0.001, $stats['avg_total']);
+            $speedupColor = $speedup >= 5 ? '#10B981' : ($speedup >= 2 ? '#F59E0B' : '#EF4444');
+
+            $cardContent->addChild(Spacer::make()->height(4));
+            $cardContent->addChild(
+                Row::make(
+                    $this->statChip('legacy', $legacyStats['avg_total'], '#EF4444'),
+                    $this->statChip('stream', $stats['avg_total'], '#10B981'),
+                    $this->statChip(sprintf('%.1fx', $speedup), $speedup, $speedupColor, 'x'),
+                )->fillWidth()->gap(8)
+            );
+        }
 
         $cardContent->addChild(Spacer::make()->height(4));
         $cardContent->addChild(
