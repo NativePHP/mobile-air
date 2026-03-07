@@ -55,6 +55,11 @@ class PHPBridge(private val context: Context) {
     external fun nativePersistentArtisan(command: String): String
     external fun nativePersistentShutdown()
 
+    // Worker (background queue) JNI methods — runs on a separate thread with its own TSRM context
+    external fun nativeWorkerBoot(bootstrapPath: String): Int
+    external fun nativeWorkerArtisan(command: String): String
+    external fun nativeWorkerShutdown()
+
     @Volatile
     private var runtimeInitialized = false
 

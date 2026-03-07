@@ -144,6 +144,10 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
 
+        if (config('nativephp-internal.running')) {
+            $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+        }
+
         $blade = app('blade.compiler');
         $blade->precompiler(new NativeTagPrecompiler);
 

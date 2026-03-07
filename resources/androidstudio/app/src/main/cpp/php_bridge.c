@@ -25,14 +25,49 @@ static int php_initialized = 0;    // tracks whether php_embed_init is active
 static pthread_mutex_t g_php_request_mutex = PTHREAD_MUTEX_INITIALIZER;
 static jobject g_callback_obj = NULL;
 static jmethodID g_callback_method = NULL;
-static char *g_collected_output = NULL;
-static size_t g_collected_length = 0;
-static size_t g_collected_capacity = 0;
 
 #define BUFFER_CHUNK_SIZE (256 * 1024)  // 256KB increments
 #define MAX_BUFFER_SIZE (16 * 1024 * 1024)  // 16MB max buffer
 
+// Thread-local output buffer
+typedef struct {
+    char *output;
+    size_t length;
+    size_t capacity;
+} php_output_buffer_t;
+
+static pthread_key_t g_output_buffer_key;
+static pthread_once_t g_output_key_once = PTHREAD_ONCE_INIT;
+
+static void destroy_output_buffer(void *ptr) {
+    if (ptr) {
+        php_output_buffer_t *buf = (php_output_buffer_t *)ptr;
+        if (buf->output) free(buf->output);
+        free(buf);
+    }
+}
+
+static void create_output_buffer_key(void) {
+    pthread_key_create(&g_output_buffer_key, destroy_output_buffer);
+}
+
+static php_output_buffer_t *get_thread_output_buffer(void) {
+    pthread_once(&g_output_key_once, create_output_buffer_key);
+    php_output_buffer_t *buf = (php_output_buffer_t *)pthread_getspecific(g_output_buffer_key);
+    if (!buf) {
+        buf = (php_output_buffer_t *)calloc(1, sizeof(php_output_buffer_t));
+        if (buf) {
+            pthread_setspecific(g_output_buffer_key, buf);
+        }
+    }
+    return buf;
+}
+
 static void (*jni_output_callback_ptr)(const char *) = NULL;
+
+// Worker state
+static int worker_initialized = 0;
+static pthread_mutex_t g_worker_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * Configure the embed SAPI module with host-registered functions.
@@ -62,26 +97,33 @@ static void safe_php_embed_shutdown(void) {
 }
 
 void clear_collected_output() {
-    if (g_collected_output) {
-        free(g_collected_output);
-        g_collected_output = NULL;
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    if (!buf) return;
+
+    if (buf->output) {
+        free(buf->output);
+        buf->output = NULL;
     }
 
-    g_collected_capacity = BUFFER_CHUNK_SIZE;
-    g_collected_length = 0;
-    g_collected_output = (char *) malloc(g_collected_capacity);
-    if (g_collected_output) {
-        g_collected_output[0] = '\0';
+    buf->capacity = BUFFER_CHUNK_SIZE;
+    buf->length = 0;
+    buf->output = (char *) malloc(buf->capacity);
+    if (buf->output) {
+        buf->output[0] = '\0';
     }
 }
 
+static char *get_collected_output(void) {
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    return buf ? buf->output : NULL;
+}
 
 void pipe_php_output(const char *str) {
-
-//    LOGI("PIPE: Output received: %s", str);
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    if (!buf) return;
 
     // Safety check
-    if (!g_collected_output) {
+    if (!buf->output) {
         clear_collected_output();
         return;  // Failed to allocate
     }
@@ -89,56 +131,49 @@ void pipe_php_output(const char *str) {
     size_t length = strlen(str);
 
     // Check if we need more space
-    if (g_collected_length + length + 1 > g_collected_capacity) {
+    if (buf->length + length + 1 > buf->capacity) {
         // Calculate new size in chunks
-        size_t needed_capacity = g_collected_capacity;
-        while (needed_capacity < g_collected_length + length + 1) {
+        size_t needed_capacity = buf->capacity;
+        while (needed_capacity < buf->length + length + 1) {
             needed_capacity += BUFFER_CHUNK_SIZE;
         }
 
         // Enforce maximum size limit
         if (needed_capacity > MAX_BUFFER_SIZE) {
             LOGE("Output buffer exceeded maximum size of %d MB", MAX_BUFFER_SIZE / (1024 * 1024));
-            // Just return and drop output beyond this point
             return;
         }
 
         // Reallocate with the new size
-        char *new_buffer = (char *) realloc(g_collected_output, needed_capacity);
+        char *new_buffer = (char *) realloc(buf->output, needed_capacity);
         if (new_buffer) {
-            g_collected_output = new_buffer;
-            g_collected_capacity = needed_capacity;
+            buf->output = new_buffer;
+            buf->capacity = needed_capacity;
         } else {
             LOGE("Failed to reallocate output buffer to %zu bytes", needed_capacity);
-            return;  // Failed to reallocate
+            return;
         }
     }
 
     // Append the string
-    strcpy(g_collected_output + g_collected_length, str);
-    g_collected_length += length;
+    strcpy(buf->output + buf->length, str);
+    buf->length += length;
 }
 
 void cleanup_output_buffer() {
-    if (g_collected_output) {
-        g_collected_output[0] = '\0';
-        g_collected_length = 0;
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    if (buf && buf->output) {
+        buf->output[0] = '\0';
+        buf->length = 0;
     }
 }
 
 size_t capture_php_output(const char *str, size_t str_length) {
-    // Log the raw output coming from PHP
-//    LOGI("PHP output captured: length=%zu", str_length);
-    if (str_length > 0) {
-        // Log a preview of the output (first 100 chars or so)
-        char preview[10001] = {0};
-        strncpy(preview, str, str_length > 10000 ? 10000 : str_length);
-        preview[10000] = '\0'; // Ensure null termination
-    } else {
+    if (str_length == 0) {
         LOGI("Empty output received");
+        return 0;
     }
 
-    // Rest of your original code...
     char *buffer = malloc(str_length + 1);
     if (buffer) {
         memcpy(buffer, str, str_length);
@@ -251,7 +286,8 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
             } zend_end_try();
 
     // Copy output before shutdown
-    char *response = g_collected_output ? strdup(g_collected_output) : strdup("");
+    char *collected = get_collected_output();
+    char *response = collected ? strdup(collected) : strdup("");
 
     safe_php_embed_shutdown();
     php_initialized = 0;
@@ -320,8 +356,9 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     } zend_end_try();
 
     // Check if bootstrap produced errors
-    if (g_collected_output && strstr(g_collected_output, "FATAL") != NULL) {
-        LOGE("persistent_boot: bootstrap produced errors: %.200s", g_collected_output);
+    char *boot_output = get_collected_output();
+    if (boot_output && strstr(boot_output, "FATAL") != NULL) {
+        LOGE("persistent_boot: bootstrap produced errors: %.200s", boot_output);
     }
 
     persistent_initialized = 1;
@@ -513,7 +550,8 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
         zend_eval_string(eval_code, NULL, "persistent_dispatch");
     } zend_end_try();
 
-    char *response = g_collected_output ? strdup(g_collected_output) : strdup("");
+    char *dispatch_output = get_collected_output();
+    char *response = dispatch_output ? strdup(dispatch_output) : strdup("");
 
     (*env)->ReleaseStringUTFChars(env, jMethod, method);
     (*env)->ReleaseStringUTFChars(env, jUri, uri);
@@ -564,7 +602,8 @@ JNIEXPORT jstring JNICALL native_persistent_artisan(JNIEnv *env, jobject thiz, j
 
     (*env)->ReleaseStringUTFChars(env, jCommand, command);
 
-    jstring result = (*env)->NewStringUTF(env, g_collected_output ? g_collected_output : "");
+    char *artisan_output = get_collected_output();
+    jstring result = (*env)->NewStringUTF(env, artisan_output ? artisan_output : "");
     pthread_mutex_unlock(&g_php_request_mutex);
     return result;
 }
@@ -719,7 +758,8 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     (*env)->DeleteLocalRef(env, jLaravelPath);
     free(commandCopy);
 
-    return (*env)->NewStringUTF(env, g_collected_output ? g_collected_output : "");
+    char *cmd_output = get_collected_output();
+    return (*env)->NewStringUTF(env, cmd_output ? cmd_output : "");
 }
 
 JNIEXPORT jstring JNICALL native_get_laravel_root_path(JNIEnv *env, jobject thiz) {
@@ -845,13 +885,7 @@ JNIEXPORT void JNICALL native_shutdown(JNIEnv *env, jobject thiz) {
         g_bridge_instance = NULL;
     }
 
-    // Free the collected output buffer
-    if (g_collected_output) {
-        free(g_collected_output);
-        g_collected_output = NULL;
-        g_collected_length = 0;
-        g_collected_capacity = 0;
-    }
+    // Thread-local output buffer is cleaned up by pthread_key destructor
 }
 
 JNIEXPORT jstring JNICALL native_execute_script(JNIEnv *env, jobject thiz, jstring filename) {
@@ -865,7 +899,177 @@ JNIEXPORT jstring JNICALL native_execute_script(JNIEnv *env, jobject thiz, jstri
     (*env)->ReleaseStringUTFChars(env, filename, phpFilePath);
 
     // Return collected output
-    return (*env)->NewStringUTF(env, g_collected_output ? g_collected_output : "");
+    char *script_output = get_collected_output();
+    return (*env)->NewStringUTF(env, script_output ? script_output : "");
+}
+
+// ============================================================================
+// Background Queue Worker — separate TSRM context
+// ============================================================================
+// Runs on its own thread with its own PHP interpreter context.
+// Uses ts_resource(0) to allocate thread-local TSRM storage, then
+// php_request_startup() to initialize the executor for this thread.
+// The main thread's tsrm_startup() has already been called by php_embed_init().
+
+/**
+ * Initialize PHP interpreter context for the worker thread.
+ * Skips tsrm_startup() (already done by main thread).
+ * Allocates a new TSRM context for this thread and starts a request.
+ */
+static int worker_embed_init(void) {
+    LOGI("worker_embed_init: allocating TSRM context for worker thread");
+
+    // Allocate thread-local TSRM storage for this thread
+    ts_resource(0);
+
+    // Configure SAPI for worker (uses thread-local ub_write via capture_php_output)
+    setup_embed_module();
+
+    // php_module_startup() is guarded by module_initialized — it won't re-init
+    // but it will call sapi_activate() for this thread's context
+    if (php_embed_module.startup(&php_embed_module) == FAILURE) {
+        LOGE("worker_embed_init: module startup failed");
+        return FAILURE;
+    }
+
+    // Initialize request for this thread (executor, compiler globals)
+    if (php_request_startup() == FAILURE) {
+        LOGE("worker_embed_init: request startup failed");
+        return FAILURE;
+    }
+
+    // Register native bridge functions in worker's function table
+    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+
+    LOGI("worker_embed_init: worker PHP context ready");
+    return SUCCESS;
+}
+
+/**
+ * Shut down worker's PHP context.
+ * Only does request shutdown + thread cleanup. Does NOT call php_module_shutdown.
+ */
+static void worker_embed_shutdown(void) {
+    LOGI("worker_embed_shutdown: cleaning up worker thread");
+    php_request_shutdown(NULL);
+    ts_free_thread();
+    LOGI("worker_embed_shutdown: done");
+}
+
+/**
+ * Boot the worker PHP interpreter and execute the persistent bootstrap script.
+ * Called once from the worker thread when it starts.
+ */
+JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    pthread_mutex_lock(&g_worker_mutex);
+
+    if (worker_initialized) {
+        LOGI("worker_boot: already initialized, skipping");
+        pthread_mutex_unlock(&g_worker_mutex);
+        return 0;
+    }
+
+    const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
+    LOGI("worker_boot: initializing with bootstrap=%s", bootstrapPath);
+
+    clear_collected_output();
+
+    if (worker_embed_init() != SUCCESS) {
+        LOGE("worker_boot: worker_embed_init() FAILED");
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        pthread_mutex_unlock(&g_worker_mutex);
+        return -1;
+    }
+
+    // Execute the persistent bootstrap script to boot Laravel on worker thread
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, bootstrapPath);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    char *worker_boot_output = get_collected_output();
+    if (worker_boot_output && strstr(worker_boot_output, "FATAL") != NULL) {
+        LOGE("worker_boot: bootstrap produced errors: %.200s", worker_boot_output);
+    }
+
+    worker_initialized = 1;
+    LOGI("worker_boot: worker PHP interpreter ready");
+
+    (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+    pthread_mutex_unlock(&g_worker_mutex);
+    return 0;
+}
+
+/**
+ * Run an artisan command on the worker thread.
+ * Uses the worker's own TSRM context — does not touch the main thread's mutex.
+ */
+JNIEXPORT jstring JNICALL native_worker_artisan(JNIEnv *env, jobject thiz, jstring jCommand) {
+    pthread_mutex_lock(&g_worker_mutex);
+
+    if (!worker_initialized) {
+        LOGE("worker_artisan: worker not initialized!");
+        pthread_mutex_unlock(&g_worker_mutex);
+        return (*env)->NewStringUTF(env, "Worker runtime not initialized.");
+    }
+
+    const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
+    LOGI("worker_artisan: %s", command);
+
+    clear_collected_output();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+
+    char eval_code[4096];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    echo 'Worker artisan error: ' . $e->getMessage();\n"
+        "}\n",
+        command);
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "worker_artisan");
+    } zend_end_try();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
+
+    (*env)->ReleaseStringUTFChars(env, jCommand, command);
+
+    char *worker_output = get_collected_output();
+    jstring result = (*env)->NewStringUTF(env, worker_output ? worker_output : "");
+    pthread_mutex_unlock(&g_worker_mutex);
+    return result;
+}
+
+/**
+ * Shut down the worker PHP interpreter.
+ * Called when the queue worker thread is stopping.
+ */
+JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_worker_mutex);
+
+    if (!worker_initialized) {
+        LOGI("worker_shutdown: not initialized, nothing to do");
+        pthread_mutex_unlock(&g_worker_mutex);
+        return;
+    }
+
+    LOGI("worker_shutdown: shutting down worker interpreter");
+
+    // Call Runtime::shutdown() to let PHP clean up
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "worker_shutdown");
+    } zend_end_try();
+
+    worker_embed_shutdown();
+    worker_initialized = 0;
+
+    LOGI("worker_shutdown: done");
+    pthread_mutex_unlock(&g_worker_mutex);
 }
 
 static JNINativeMethod gMethods[] = {
@@ -890,7 +1094,12 @@ static JNINativeMethod gMethods[] = {
         {"nativePersistentBoot","(Ljava/lang/String;)I",(void *) native_persistent_boot},
         {"nativePersistentDispatch","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_dispatch},
         {"nativePersistentArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_artisan},
-        {"nativePersistentShutdown","()V",(void *) native_persistent_shutdown}
+        {"nativePersistentShutdown","()V",(void *) native_persistent_shutdown},
+
+        // Worker (background queue) methods
+        {"nativeWorkerBoot","(Ljava/lang/String;)I",(void *) native_worker_boot},
+        {"nativeWorkerArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_worker_artisan},
+        {"nativeWorkerShutdown","()V",(void *) native_worker_shutdown}
 };
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
