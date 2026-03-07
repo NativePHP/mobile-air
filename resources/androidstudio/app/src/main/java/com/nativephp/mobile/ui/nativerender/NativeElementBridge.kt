@@ -186,7 +186,8 @@ class NativeElementBridge private constructor() {
             mainHandler.post {
                 NativeUIBridge.isActive.value = false
                 NativeUIBridge.currentTree.value = null
-                NativeEdgeDrawerState.sideNavNode.value = null
+                // Don't clear sideNavNode — the new page's RenderSideNav will overwrite it.
+                // Clearing it mid-navigation causes a null→non-null flicker that glitches the drawer.
             }
         }
 
