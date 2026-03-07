@@ -100,7 +100,7 @@ fun NativeSideDrawer(
                 // Native EDGE path — render from shared memory tree node
                 RenderSideNavDrawerContent(
                     node = edgeSideNavNode!!,
-                    onCloseDrawer = { scope.launch { drawerState.close() } },
+                    onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } },
                     onNavigate = onNavigate
                 )
             } else {
@@ -116,7 +116,7 @@ fun NativeSideDrawer(
                                     SideNavHeaderView(
                                         header = it,
                                         onNavigate = onNavigate,
-                                        onCloseDrawer = { scope.launch { drawerState.close() } }
+                                        onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
                                     )
                                 }
                             }
@@ -139,7 +139,7 @@ fun NativeSideDrawer(
                                             SideNavHeaderView(
                                                 header = it,
                                                 onNavigate = onNavigate,
-                                                onCloseDrawer = { scope.launch { drawerState.close() } }
+                                                onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
                                             )
                                         }
                                     }
@@ -150,7 +150,7 @@ fun NativeSideDrawer(
                                                 item = it,
                                                 labelVisibility = sideNavData?.labelVisibility,
                                                 onNavigate = onNavigate,
-                                                onCloseDrawer = { scope.launch { drawerState.close() } }
+                                                onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
                                             )
                                         }
                                     }
@@ -170,7 +170,7 @@ fun NativeSideDrawer(
                                                 onToggle = { expandedGroups[it.heading] = !(expandedGroups[it.heading] ?: false) },
                                                 labelVisibility = sideNavData?.labelVisibility,
                                                 onNavigate = onNavigate,
-                                                onCloseDrawer = { scope.launch { drawerState.close() } }
+                                                onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
                                             )
                                         }
                                     }
@@ -203,7 +203,7 @@ private fun SideNavItemView(
     item: SideNavItem,
     labelVisibility: String?,
     onNavigate: (String) -> Unit,
-    onCloseDrawer: () -> Unit,
+    onCloseDrawer: (() -> Unit) -> Unit,
     modifier: Modifier = Modifier.padding(horizontal = 12.dp)
 ) {
     val context = LocalContext.current
@@ -255,12 +255,11 @@ private fun SideNavItemView(
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to open external URL: ${item.url}", e)
                 }
+                onCloseDrawer {}
             } else {
                 Log.d(TAG, "📱 Opening internal URL in WebView: ${item.url}")
-                onNavigate(item.url)
+                onCloseDrawer { onNavigate(item.url) }
             }
-
-            onCloseDrawer()
         },
         modifier = modifier
     )
@@ -285,7 +284,7 @@ private fun SideNavGroupView(
     onToggle: () -> Unit,
     labelVisibility: String?,
     onNavigate: (String) -> Unit,
-    onCloseDrawer: () -> Unit
+    onCloseDrawer: (() -> Unit) -> Unit
 ) {
     Column {
         // Group header (clickable to expand/collapse)
@@ -347,7 +346,7 @@ private fun SideNavGroupView(
 private fun SideNavHeaderView(
     header: SideNavHeader,
     onNavigate: (String) -> Unit,
-    onCloseDrawer: () -> Unit
+    onCloseDrawer: (() -> Unit) -> Unit
 ) {
     val backgroundColor = header.backgroundColor?.let { parseColor(it) }
 
@@ -395,7 +394,7 @@ private fun SideNavHeaderView(
 
             // Close button
             if (header.showCloseButton == true) {
-                IconButton(onClick = onCloseDrawer) {
+                IconButton(onClick = { onCloseDrawer {} }) {
                     MaterialIcon(
                         name = "close",
                         contentDescription = "Close drawer",

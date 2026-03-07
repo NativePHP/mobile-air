@@ -176,7 +176,7 @@ internal fun RenderSideNav(node: NativeUINode, modifier: Modifier) {
 @Composable
 internal fun RenderSideNavDrawerContent(
     node: NativeUINode,
-    onCloseDrawer: () -> Unit,
+    onCloseDrawer: (() -> Unit) -> Unit,
     onNavigate: ((String) -> Unit)? = null
 ) {
     val labelVisibility = node.props.getString("label_visibility", "labeled")
@@ -241,7 +241,7 @@ internal fun RenderSideNavDrawerContent(
 @Composable
 private fun RenderSideNavHeaderContent(
     node: NativeUINode,
-    onCloseDrawer: () -> Unit
+    onCloseDrawer: (() -> Unit) -> Unit
 ) {
     val props = node.props
     val title = props.getString("title")
@@ -292,7 +292,7 @@ private fun RenderSideNavHeaderContent(
             }
 
             if (showCloseButton) {
-                IconButton(onClick = onCloseDrawer) {
+                IconButton(onClick = { onCloseDrawer {} }) {
                     MaterialIcon(
                         name = "close",
                         contentDescription = "Close drawer",
@@ -308,7 +308,7 @@ private fun RenderSideNavHeaderContent(
 private fun RenderSideNavItemContent(
     node: NativeUINode,
     labelVisibility: String,
-    onCloseDrawer: () -> Unit,
+    onCloseDrawer: (() -> Unit) -> Unit,
     onNavigate: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier.padding(horizontal = 12.dp)
 ) {
@@ -356,12 +356,14 @@ private fun RenderSideNavItemContent(
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to open URL: $url", e)
                 }
+                onCloseDrawer {}
             } else if (node.onPress != 0) {
-                NativeUIBridge.sendPressEvent(node.onPress, node.id)
+                onCloseDrawer { NativeUIBridge.sendPressEvent(node.onPress, node.id) }
             } else if (url.isNotEmpty() && onNavigate != null) {
-                onNavigate(url)
+                onCloseDrawer { onNavigate(url) }
+            } else {
+                onCloseDrawer {}
             }
-            onCloseDrawer()
         },
         modifier = modifier
     )
@@ -373,7 +375,7 @@ private fun RenderSideNavGroupContent(
     isExpanded: Boolean,
     onToggle: () -> Unit,
     labelVisibility: String,
-    onCloseDrawer: () -> Unit,
+    onCloseDrawer: (() -> Unit) -> Unit,
     onNavigate: ((String) -> Unit)? = null
 ) {
     val heading = node.props.getString("heading", "Group")

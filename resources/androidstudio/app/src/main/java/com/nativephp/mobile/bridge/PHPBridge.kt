@@ -21,6 +21,9 @@ class PHPBridge(private val context: Context) {
     private val persistentBootstrapScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/persistent.php"
 
+    private val workerBootstrapScript: String
+        get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/persistent.php"
+
     external fun nativeExecuteScript(filename: String): String
     external fun nativeSetEnv(name: String, value: String, overwrite: Int): Int
     external fun runArtisanCommand(command: String): String
@@ -143,6 +146,37 @@ class PHPBridge(private val context: Context) {
     }
 
     fun isPersistentMode(): Boolean = persistentMode && persistentBooted
+
+    /**
+     * Boot the worker PHP runtime on a dedicated TSRM context.
+     * Does NOT use phpExecutor — no contention with UI requests.
+     */
+    fun bootWorkerRuntime(): Boolean {
+        ensureRuntimeInitialized()
+        val result = nativeWorkerBoot(workerBootstrapScript)
+        if (result == 0) {
+            Log.i(TAG, "Worker runtime booted")
+        } else {
+            Log.e(TAG, "Worker runtime boot FAILED (code=$result)")
+        }
+        return result == 0
+    }
+
+    /**
+     * Run an artisan command through the worker interpreter.
+     * Runs on the caller's thread — no phpExecutor involvement.
+     */
+    fun runWorkerArtisan(command: String): String {
+        return nativeWorkerArtisan(command)
+    }
+
+    /**
+     * Shut down the worker runtime.
+     */
+    fun shutdownWorkerRuntime() {
+        nativeWorkerShutdown()
+        Log.i(TAG, "Worker runtime shut down")
+    }
 
     fun handleLaravelRequest(request: PHPRequest): String {
         val requestStart = System.currentTimeMillis()

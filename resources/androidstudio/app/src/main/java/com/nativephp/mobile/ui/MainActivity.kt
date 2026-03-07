@@ -514,10 +514,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             // If persistent mode, reboot interpreter to pick up new class definitions
                             if (phpBridge.isPersistentMode()) {
                                 Log.d("HotReload", "Rebooting persistent runtime for native UI restart...")
-                                queueWorker?.pause()
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
-                                queueWorker?.resume()
                             }
 
                             // Re-start the native UI watcher (PHP will re-init shared memory)
@@ -563,12 +561,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             // If persistent mode, reboot the interpreter to pick up new class definitions
                             if (phpBridge.isPersistentMode()) {
                                 Log.d("HotReload", "Rebooting persistent runtime for hot reload...")
-                                queueWorker?.pause()
                                 val rebootStart = System.currentTimeMillis()
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
                                 Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
-                                queueWorker?.resume()
                             }
 
                             runOnUiThread {

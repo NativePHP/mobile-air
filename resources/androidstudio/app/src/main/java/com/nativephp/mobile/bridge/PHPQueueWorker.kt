@@ -5,10 +5,8 @@ import android.util.Log
 /**
  * Background queue worker that processes Laravel queue jobs.
  *
- * Schedules `queue:work --once` calls through the persistent runtime's artisan
- * method. PHP execution is serialized with UI requests via the phpExecutor,
- * but the scheduling loop runs on its own thread so jobs process automatically
- * between UI requests without any manual triggering.
+ * Uses a dedicated PHP TSRM context (worker runtime) so queue processing
+ * never contends with the main phpExecutor used for UI requests.
  */
 class PHPQueueWorker(private val phpBridge: PHPBridge) {
 
@@ -23,12 +21,9 @@ class PHPQueueWorker(private val phpBridge: PHPBridge) {
     @Volatile
     private var running = false
 
-    @Volatile
-    private var paused = false
-
     /**
      * Start the background queue worker thread.
-     * No separate PHP boot needed — uses the main persistent runtime.
+     * Boots a dedicated worker PHP runtime — fully independent from phpExecutor.
      */
     fun start() {
         if (running) {
@@ -37,23 +32,22 @@ class PHPQueueWorker(private val phpBridge: PHPBridge) {
         }
 
         running = true
-        paused = false
 
         workerThread = Thread({
-            Log.i(TAG, "Queue worker started (serialized mode)")
+            Log.i(TAG, "Queue worker starting (dedicated context)")
+
+            val booted = phpBridge.bootWorkerRuntime()
+            if (!booted) {
+                Log.e(TAG, "Failed to boot worker runtime, aborting")
+                running = false
+                return@Thread
+            }
+
+            Log.i(TAG, "Worker runtime booted, processing jobs")
 
             while (running) {
-                if (paused) {
-                    try {
-                        Thread.sleep(500)
-                    } catch (e: InterruptedException) {
-                        // check running flag
-                    }
-                    continue
-                }
-
                 try {
-                    val output = phpBridge.runPersistentArtisan("queue:work --once --quiet")
+                    val output = phpBridge.runWorkerArtisan("queue:work --once --quiet")
                     if (output.isNotEmpty() && output != "0") {
                         Log.d(TAG, "Job output: ${output.take(200)}")
                     }
@@ -73,6 +67,7 @@ class PHPQueueWorker(private val phpBridge: PHPBridge) {
                 }
             }
 
+            phpBridge.shutdownWorkerRuntime()
             Log.i(TAG, "Queue worker stopped")
         }, "php-queue-worker").apply {
             isDaemon = true
@@ -83,32 +78,13 @@ class PHPQueueWorker(private val phpBridge: PHPBridge) {
     }
 
     /**
-     * Pause job processing (e.g., during hot reload).
-     */
-    fun pause() {
-        if (!running) return
-        paused = true
-        Log.i(TAG, "Worker paused")
-    }
-
-    /**
-     * Resume job processing after a pause.
-     */
-    fun resume() {
-        if (!running) return
-        paused = false
-        Log.i(TAG, "Worker resumed")
-    }
-
-    /**
-     * Stop the worker thread.
+     * Stop the worker thread and shut down the worker runtime.
      */
     fun stop() {
         if (!running) return
 
         Log.i(TAG, "Stopping worker...")
         running = false
-        paused = false
         workerThread?.interrupt()
 
         try {
