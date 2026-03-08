@@ -863,6 +863,22 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
         }
     }
 
+    /**
+     * Lightweight initialization for background execution (WorkManager).
+     * Sets environment variables and ensures directories exist.
+     * Skips bundle extraction and artisan commands — those are done at install time.
+     */
+    fun initializeForBackground() {
+        try {
+            setupDirectories()
+            setupEnvironment()
+            Log.d(TAG, "Background environment initialized")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing background environment", e)
+            throw RuntimeException("Failed to initialize background environment", e)
+        }
+    }
+
     fun cleanup() {
         try {
             phpBridge.shutdown()

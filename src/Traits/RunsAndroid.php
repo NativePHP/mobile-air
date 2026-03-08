@@ -104,7 +104,9 @@ trait RunsAndroid
             return;
         }
 
-        $this->runTheAndroidBuild($target);
+        if (! $this->runTheAndroidBuild($target)) {
+            return;
+        }
 
         if ($this->option('watch')) {
             $this->logToFile('Starting hot reload...');
@@ -393,7 +395,7 @@ XML;
         File::put($path, "sdk.dir=$sdkPath".PHP_EOL);
     }
 
-    private function runTheAndroidBuild(?string $targetDeviceId): void
+    private function runTheAndroidBuild(?string $targetDeviceId): bool
     {
         $androidPath = base_path('nativephp/android');
         $gradleWrapper = PHP_OS_FAMILY === 'Windows' ? 'gradlew.bat' : './gradlew';
@@ -450,7 +452,7 @@ XML;
                 error('Gradle build failed');
                 note("Check the build log for details: {$this->androidLogPath}");
 
-                return;
+                return false;
             }
 
             $buildSuccessful = $result->successful();
@@ -461,7 +463,7 @@ XML;
             error('Build failed.');
             note("Check the build log for details: {$this->androidLogPath}");
 
-            return;
+            return false;
         }
 
         $this->logToFile('Gradle build completed successfully');
@@ -485,7 +487,7 @@ XML;
                 note($installResult->errorOutput() ?: $installResult->output());
                 note('Try freeing up space on the device or uninstalling old apps.');
 
-                return;
+                return false;
             }
 
             $this->logToFile('APK installed on device');
@@ -500,7 +502,7 @@ XML;
                 error('App launch failed');
                 note($launchResult->errorOutput() ?: $launchResult->output());
 
-                return;
+                return false;
             }
 
             $this->logToFile('App launched on device');
@@ -508,6 +510,8 @@ XML;
 
             // Run post-build hooks for all plugins
             $this->runAndroidPostBuildHooks();
+
+            return true;
         } else {
             $outputPath = match ($this->buildType) {
                 'release' => $this->findReleaseApk(),
@@ -544,6 +548,8 @@ XML;
 
             // Run post-build hooks for all plugins
             $this->runAndroidPostBuildHooks();
+
+            return true;
         }
     }
 

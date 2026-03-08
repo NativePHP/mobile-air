@@ -281,6 +281,32 @@ trait PreparesBuild
                 return true;
             });
 
+            // Generate background task manifest if the command is available (from background-tasks plugin)
+            $this->logToFile('  Checking for background task manifest command...');
+            $this->components->task('Generating background task manifest', function () use ($tempDir) {
+                $result = Process::path($tempDir)
+                    ->timeout(60)
+                    ->run('php artisan native:background-manifest 2>&1');
+
+                if (str_contains($result->output(), 'not defined') || ! $result->successful()) {
+                    $this->logToFile('  Background manifest command not available (install nativephp/mobile-background-tasks plugin to enable)');
+
+                    return true;
+                }
+
+                $this->logToFile($result->output());
+
+                return true;
+            });
+
+            // Copy background_tasks.json to assets if it was generated
+            $manifestSource = $tempDir.DIRECTORY_SEPARATOR.'background_tasks.json';
+            if (file_exists($manifestSource)) {
+                $assetsDir = base_path('nativephp/android/app/src/main/assets');
+                copy($manifestSource, $assetsDir.DIRECTORY_SEPARATOR.'background_tasks.json');
+                $this->logToFile('  Copied background_tasks.json to Android assets');
+            }
+
             $version = config('nativephp.version', now()->format('Ymd-His'));
             $this->logToFile("  Writing version file: $version");
             file_put_contents($tempDir.DIRECTORY_SEPARATOR.'.version', $version.PHP_EOL);

@@ -11,5 +11,7 @@ import com.nativephp.mobile.bridge.BridgeFunctionRegistry
 fun registerPluginBridgeFunctions(activity: FragmentActivity, context: Context) {
     val registry = BridgeFunctionRegistry.shared
 
+{{ INIT_FUNCTIONS }}
+
 {{ REGISTRATIONS }}
 }

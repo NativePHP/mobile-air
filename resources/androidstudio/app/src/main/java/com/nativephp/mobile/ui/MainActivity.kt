@@ -274,6 +274,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
                 // Start background queue worker after persistent runtime is ready
                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+
+                // Background tasks are now registered via the background-tasks plugin init_function
             } else {
                 Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
             }
@@ -514,8 +516,16 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             // If persistent mode, reboot interpreter to pick up new class definitions
                             if (phpBridge.isPersistentMode()) {
                                 Log.d("HotReload", "Rebooting persistent runtime for native UI restart...")
+
+                                // Stop queue worker before shutdown — its TSRM context
+                                // will be destroyed by php_module_shutdown
+                                queueWorker?.stop()
+
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
+
+                                // Restart queue worker with fresh runtime
+                                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
                             }
 
                             // Re-start the native UI watcher (PHP will re-init shared memory)
@@ -562,8 +572,18 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             if (phpBridge.isPersistentMode()) {
                                 Log.d("HotReload", "Rebooting persistent runtime for hot reload...")
                                 val rebootStart = System.currentTimeMillis()
+
+                                // Stop queue worker before shutdown — its TSRM context
+                                // will be destroyed by php_module_shutdown, causing SIGABRT
+                                // if still active
+                                queueWorker?.stop()
+
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
+
+                                // Restart queue worker with fresh runtime
+                                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+
                                 Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
                             }
 
@@ -874,6 +894,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      */
     @Composable
     private fun MainScreen() {
+        var showDebugLog by remember { mutableStateOf(false) }
+        val isDebug = remember { isDebugVersion() }
+
         Box(Modifier.fillMaxSize()) {
             // Side drawer wraps the main content (correct ModalNavigationDrawer usage)
             SideDrawerContent(
@@ -959,6 +982,25 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                     }
                 }
             )
+
+            // Debug log FAB — only in DEBUG mode
+            if (isDebug) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.systemBars)
+                        .padding(start = 12.dp, bottom = 12.dp),
+                    contentAlignment = Alignment.BottomStart
+                ) {
+                    DebugLogFab { showDebugLog = true }
+                }
+
+                DebugLogSheet(
+                    context = this@MainActivity,
+                    visible = showDebugLog,
+                    onDismiss = { showDebugLog = false }
+                )
+            }
 
             // Splash overlay with fade animation (full screen, no insets)
             AnimatedVisibility(

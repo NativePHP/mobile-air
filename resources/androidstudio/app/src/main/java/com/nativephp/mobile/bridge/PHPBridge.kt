@@ -63,6 +63,11 @@ class PHPBridge(private val context: Context) {
     external fun nativeWorkerArtisan(command: String): String
     external fun nativeWorkerShutdown()
 
+    // Scheduler (WorkManager background tasks) JNI methods — runs on its own TSRM context
+    external fun nativeSchedulerBoot(bootstrapPath: String): Int
+    external fun nativeSchedulerArtisan(command: String): String
+    external fun nativeSchedulerShutdown()
+
     @Volatile
     private var runtimeInitialized = false
 
@@ -176,6 +181,30 @@ class PHPBridge(private val context: Context) {
     fun shutdownWorkerRuntime() {
         nativeWorkerShutdown()
         Log.i(TAG, "Worker runtime shut down")
+    }
+
+    /**
+     * Boot the scheduler PHP runtime on a dedicated TSRM context.
+     * Used by WorkManager's PHPSchedulerWorker for background task execution.
+     */
+    fun bootSchedulerRuntime(): Boolean {
+        ensureRuntimeInitialized()
+        val result = nativeSchedulerBoot(workerBootstrapScript)
+        if (result == 0) {
+            Log.i(TAG, "Scheduler runtime booted")
+        } else {
+            Log.e(TAG, "Scheduler runtime boot FAILED (code=$result)")
+        }
+        return result == 0
+    }
+
+    fun runSchedulerArtisan(command: String): String {
+        return nativeSchedulerArtisan(command)
+    }
+
+    fun shutdownSchedulerRuntime() {
+        nativeSchedulerShutdown()
+        Log.i(TAG, "Scheduler runtime shut down")
     }
 
     fun handleLaravelRequest(request: PHPRequest): String {
