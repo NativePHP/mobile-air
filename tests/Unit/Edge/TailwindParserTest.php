@@ -1,14 +1,15 @@
 <?php
 
 use Native\Mobile\Edge\ElementRegistry;
-use Nativephp\ComposeUi\Elements\Button;
-use Nativephp\ComposeUi\Elements\Text;
+use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\TailwindParser;
 
 beforeEach(function () {
     TailwindParser::clearCache();
     ElementRegistry::reset();
-    ElementRegistry::register('button', Button::class);
+    if (class_exists(\Nativephp\ComposeUi\Elements\Button::class)) {
+        ElementRegistry::register('button', \Nativephp\ComposeUi\Elements\Button::class);
+    }
     ElementRegistry::register('text', Text::class);
 });
 

@@ -73,11 +73,15 @@ fun NativeSideDrawer(
 
     if (hasData) {
         Log.d(TAG, "🎨 Rendering side nav with ${children.size} children")
-        children.forEachIndexed { index, child ->
-            Log.d(TAG, "🎨   Child $index: type=${child.type}")
-        }
     } else {
         Log.d(TAG, "No side nav data - drawer will be disabled")
+    }
+
+    // Don't wrap in ModalNavigationDrawer until we actually have data.
+    // Rendering an empty drawer causes a flicker when content first arrives.
+    if (!hasData) {
+        content()
+        return
     }
 
     // Separate pinned and scrollable content
@@ -90,10 +94,9 @@ fun NativeSideDrawer(
         }
     }
 
-    // Always render ModalNavigationDrawer to keep composable structure stable for WebView
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = hasData && gesturesEnabled,  // Controlled via Laravel
+        gesturesEnabled = gesturesEnabled,
         drawerContent = {
             if (hasEdgeData) {
                 Log.d(TAG, "EDGE drawer: children=${edgeSideNavNode!!.children.size} types=${edgeSideNavNode!!.children.map { it.type }}")

@@ -22,11 +22,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
+import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 import java.io.File
 
 enum class LogLevel(val label: String, val color: Color) {
@@ -99,7 +97,7 @@ private fun parseLogFile(content: String): List<LogEntry> {
 
 private enum class DebugTab(val label: String) {
     LOGS("Logs"),
-    JOBS("Jobs")
+    SCHEDULER("Scheduler")
 }
 
 data class ScheduledJob(
@@ -110,55 +108,105 @@ data class ScheduledJob(
     val nextRunTimeMillis: Long = 0L
 )
 
+/**
+ * Query WorkManager's internal SQLite database directly to find all scheduled work.
+ * This avoids any compile-time dependency on work-runtime-ktx.
+ */
 private fun loadScheduledJobs(context: Context): List<ScheduledJob> {
+    val TAG = "DebugLogViewer"
     val jobs = mutableListOf<ScheduledJob>()
 
-    // Read manifest from assets
-    val manifest = try {
-        val content = context.assets.open("background_tasks.json").bufferedReader().use { it.readText() }
-        JSONObject(content)
-    } catch (_: Exception) {
-        return emptyList()
-    }
+    try {
+        // WorkManager stores its database in the no_backup directory
+        val dbFile = java.io.File(context.noBackupFilesDir, "androidx.work.workdb")
+        if (!dbFile.exists()) {
+            Log.d(TAG, "WorkManager database not found at ${dbFile.absolutePath}")
+            return emptyList()
+        }
 
-    val tasksArray = manifest.optJSONArray("tasks") ?: return emptyList()
+        val db = android.database.sqlite.SQLiteDatabase.openDatabase(
+            dbFile.absolutePath, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+        )
 
-    // Query WorkManager for live status
-    val workManager = try { WorkManager.getInstance(context) } catch (_: Exception) { null }
+        // Query work specs joined with tags, including constraint and timing columns
+        val cursor = db.rawQuery("""
+            SELECT ws.id, ws.state, ws.interval_duration,
+                   ws.last_enqueue_time, ws.schedule_requested_at,
+                   ws.required_network_type, ws.requires_charging,
+                   ws.requires_battery_not_low, ws.requires_device_idle,
+                   GROUP_CONCAT(wt.tag, '||') as tags
+            FROM WorkSpec ws
+            LEFT JOIN WorkTag wt ON ws.id = wt.work_spec_id
+            GROUP BY ws.id
+            ORDER BY ws.schedule_requested_at DESC
+        """.trimIndent(), null)
 
-    for (i in 0 until tasksArray.length()) {
-        val task = tasksArray.getJSONObject(i)
-        val command = task.getString("command")
-        val intervalMinutes = task.getLong("interval_minutes")
-        val constraintsJson = task.optJSONObject("constraints")
+        Log.d(TAG, "WorkManager DB: ${cursor.count} work item(s)")
 
-        val constraintMap = mutableMapOf<String, Any>()
-        if (constraintsJson != null) {
-            val keys = constraintsJson.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                constraintMap[key] = constraintsJson.get(key)
+        while (cursor.moveToNext()) {
+            val id = cursor.getString(0)
+            val stateInt = cursor.getInt(1)
+            val intervalMs = cursor.getLong(2)
+            val lastEnqueueTime = cursor.getLong(3)
+            val scheduleRequestedAt = cursor.getLong(4)
+            val requiredNetworkType = cursor.getInt(5)
+            val requiresCharging = cursor.getInt(6) != 0
+            val requiresBatteryNotLow = cursor.getInt(7) != 0
+            val requiresDeviceIdle = cursor.getInt(8) != 0
+            val tagsRaw = cursor.getString(9) ?: ""
+            val tags = tagsRaw.split("||").filter { it.isNotEmpty() }
+
+            val status = when (stateInt) {
+                0 -> "ENQUEUED"
+                1 -> "RUNNING"
+                2 -> "SUCCEEDED"
+                3 -> "FAILED"
+                4 -> "BLOCKED"
+                5 -> "CANCELLED"
+                else -> "UNKNOWN($stateInt)"
             }
-        }
 
-        // Get live status and next run time from WorkManager
-        var status = "UNKNOWN"
-        var nextRunTimeMillis = 0L
-        if (workManager != null) {
-            try {
-                val tag = "nativephp_scheduled_$command"
-                val workInfos = workManager.getWorkInfosByTag(tag).get()
-                val info = workInfos.firstOrNull()
-                status = info?.state?.name ?: "UNKNOWN"
-                if (info != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    nextRunTimeMillis = info.nextScheduleTimeMillis
+            // Extract command name from tags
+            val commandTag = tags.firstOrNull { it.startsWith("nativephp_scheduled_") && !it.contains("immediate_") }
+            val command = commandTag?.removePrefix("nativephp_scheduled_")
+                ?: tags.firstOrNull { !it.contains(".") }
+                ?: tags.firstOrNull()
+                ?: id.take(8)
+
+            val intervalMinutes = if (intervalMs > 0) intervalMs / 60000 else 0L
+
+            // Calculate next run time from last enqueue + interval
+            val nextRunTimeMillis = if (intervalMs > 0 && lastEnqueueTime > 0) {
+                lastEnqueueTime + intervalMs
+            } else 0L
+
+            // Build constraints map
+            val constraintMap = mutableMapOf<String, Any>()
+            if (requiredNetworkType > 0) {
+                val networkName = when (requiredNetworkType) {
+                    1 -> "CONNECTED"
+                    2 -> "UNMETERED"
+                    3 -> "NOT_ROAMING"
+                    4 -> "METERED"
+                    else -> "TYPE_$requiredNetworkType"
                 }
-            } catch (_: Exception) { }
-        } else {
-            status = "NO WORKMANAGER"
+                constraintMap["network"] = networkName
+            }
+            if (requiresCharging) constraintMap["charging"] = true
+            if (requiresBatteryNotLow) constraintMap["battery"] = true
+            if (requiresDeviceIdle) constraintMap["idle"] = true
+
+            Log.d(TAG, "Work: $command state=$status interval=${intervalMinutes}min next=${nextRunTimeMillis} constraints=$constraintMap")
+
+            jobs.add(ScheduledJob(command, intervalMinutes, constraintMap, status, nextRunTimeMillis))
         }
 
-        jobs.add(ScheduledJob(command, intervalMinutes, constraintMap, status, nextRunTimeMillis))
+        cursor.close()
+        db.close()
+
+        Log.d(TAG, "Found ${jobs.size} work item(s)")
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to query WorkManager DB: ${e.javaClass.name}: ${e.message}", e)
     }
 
     return jobs
@@ -242,7 +290,7 @@ fun DebugLogSheet(
     ) {
         when (activeTab) {
             DebugTab.LOGS -> LogsTabContent(context)
-            DebugTab.JOBS -> JobsTabContent(context)
+            DebugTab.SCHEDULER -> JobsTabContent(context)
         }
     }
 }
@@ -438,13 +486,13 @@ private fun JobsTabContent(context: Context) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "Scheduled Jobs",
+                "Scheduler",
                 color = Color.White,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "${jobs.size} job(s)",
+                "${jobs.size} command(s)",
                 color = Color(0xFF888888),
                 fontSize = 12.sp
             )
@@ -475,13 +523,13 @@ private fun JobsTabContent(context: Context) {
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        "No scheduled jobs",
+                        "No scheduled commands",
                         color = Color(0xFF666666),
                         fontSize = 14.sp
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Install nativephp/mobile-background-tasks plugin",
+                        "Define commands in routes/console.php with Schedule::command()",
                         color = Color(0xFF555555),
                         fontSize = 11.sp
                     )

@@ -632,7 +632,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
     }
 
-
     private fun injectJavaScript(view: WebView) {
         val jsCode = """
         (function() {
@@ -989,8 +988,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                     modifier = Modifier
                         .fillMaxSize()
                         .windowInsetsPadding(WindowInsets.systemBars)
-                        .padding(start = 12.dp, bottom = 12.dp),
-                    contentAlignment = Alignment.BottomStart
+                        .padding(end = 16.dp, bottom = 80.dp),
+                    contentAlignment = Alignment.BottomEnd
                 ) {
                     DebugLogFab { showDebugLog = true }
                 }

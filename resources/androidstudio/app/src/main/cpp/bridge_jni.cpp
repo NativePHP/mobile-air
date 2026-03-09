@@ -23,6 +23,7 @@ static jmethodID g_nativePHPCallMethod = nullptr;
 static jclass g_elementBridgeClass = nullptr;
 static jmethodID g_postTreeUpdateMethod = nullptr;
 static jmethodID g_stopWatchingMethod = nullptr;
+static jmethodID g_startWatchingMethod = nullptr;
 
 // Forward declarations for Element bridge JNI functions
 static jboolean element_is_ready(JNIEnv*, jclass);
@@ -106,6 +107,14 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
             LOGI("BridgeJNI: Cached stopWatching method for element teardown");
         } else {
             LOGE("BridgeJNI: Failed to find stopWatching method");
+            env->ExceptionClear();
+        }
+
+        g_startWatchingMethod = env->GetStaticMethodID(g_elementBridgeClass, "startWatching", "()V");
+        if (g_startWatchingMethod) {
+            LOGI("BridgeJNI: Cached startWatching method for element setup");
+        } else {
+            LOGE("BridgeJNI: Failed to find startWatching method");
             env->ExceptionClear();
         }
 
@@ -308,6 +317,19 @@ extern "C" __attribute__((visibility("default")))
 void NativeElement_RegisterRegion(void* ptr) {
     LOGI("Element: NativeElement_RegisterRegion called with ptr=%p", ptr);
     g_element_direct_ptr = (NphpElementRegion*)ptr;
+
+    // Restart the shadow thread so it can process tree updates for the new page
+    if (g_elementBridgeClass && g_startWatchingMethod) {
+        JNIEnv* env = GetJNIEnv();
+        if (env) {
+            LOGI("Element: RegisterRegion — calling startWatching()");
+            env->CallStaticVoidMethod(g_elementBridgeClass, g_startWatchingMethod);
+            if (env->ExceptionCheck()) {
+                LOGE("Element: RegisterRegion — startWatching exception");
+                env->ExceptionClear();
+            }
+        }
+    }
 }
 
 extern "C" __attribute__((visibility("default")))

@@ -7,6 +7,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Element Runtime bridge — direct JNI push architecture.
@@ -45,7 +47,7 @@ class NativeElementBridge private constructor() {
         private val mainHandler = Handler(Looper.getMainLooper())
         private var cachedTypeTable: Array<String>? = null
 
-        /** Previous tree for incremental diff — reuse unchanged node references */
+        /** Previous tree for incremental diff — reuse unchanged node references (shadow thread only) */
         private var previousTree: NativeUITree? = null
 
         /** Runtime toggle for tree diff — set via Perf.SetDiffEnabled */
@@ -56,12 +58,22 @@ class NativeElementBridge private constructor() {
         /** Event queue — Compose callbacks enqueue, pollEvent() dequeues (blocks PHP thread) */
         private val eventQueue = LinkedBlockingQueue<NativeUIEvent>()
 
+        /* ── Shadow Thread ── */
+
+        /** Pending update — AtomicReference for lock-free coalescing */
+        private val pendingUpdate = AtomicReference<ShadowUpdate?>(null)
+
+        /** Shadow thread reference */
+        private var shadowThread: Thread? = null
+
+        /** Shadow thread run flag */
+        @Volatile
+        private var shadowRunning = false
+
         /**
-         * Called from JNI on the PHP thread after nativephp_element_publish()
-         * builds the flat buffer. Reads the flat buffer, parses the tree,
-         * and posts it to the main thread.
-         *
-         * This replaces the watcher thread entirely.
+         * Called from JNI on the PHP thread after nativephp_element_publish().
+         * Copies raw buffers and signals the shadow thread — returns immediately
+         * to unblock PHP. Parsing and diffing happen on the shadow thread.
          */
         @JvmStatic
         fun postTreeUpdate() {
@@ -69,8 +81,7 @@ class NativeElementBridge private constructor() {
                 val t0 = System.nanoTime()
                 PerformanceTracker.onTreeUpdateReceived()
 
-                // Always read fresh type table — types accumulate across pages
-                // and the cached table may be stale after navigation
+                // JNI calls must happen on PHP thread (reads native memory PHP owns)
                 val typeTable = nativeGetTypeTable()
                 if (typeTable == null) {
                     Log.e(TAG, "postTreeUpdate: nativeGetTypeTable() returned null")
@@ -91,9 +102,7 @@ class NativeElementBridge private constructor() {
                 }
                 val propDirect = nativeGetPropBuffer()
 
-                val t1 = System.nanoTime()
-
-                // Bulk-copy DirectByteBuffer → heap for fast reading
+                // Bulk-copy DirectByteBuffer → heap (must happen on PHP thread)
                 val flatBytes = ByteArray(flatDirect.capacity())
                 flatDirect.get(flatBytes)
                 val flatBuf = ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -104,47 +113,91 @@ class NativeElementBridge private constructor() {
                     ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
                 } else null
 
-                val tree = readTreeFromFlatBuffer(flatBuf, propBuf, typeTable, nodeCount)
-                val t2 = System.nanoTime()
+                // Snapshot navigation flag on PHP thread (avoid race with next update)
+                val isNav = NativeUIBridge.navigationPending
+                if (isNav) NativeUIBridge.navigationPending = false
 
-                if (tree != null) {
-                    val nc = countNodes(tree.root)
-                    val isNav = NativeUIBridge.navigationPending
-                    if (isNav) NativeUIBridge.navigationPending = false
+                val t1 = System.nanoTime()
+                Log.d(TAG, "postTreeUpdate: jni+copy=${(t1-t0)/1_000_000}ms nodes=$nodeCount → shadow thread")
 
-                    // Diff against previous tree — reuse unchanged node references
-                    val prev = previousTree
-                    val isDiffOn = diffEnabled
-                    val diffedTree: NativeUITree
-                    if (prev != null && !isNav && isDiffOn) {
-                        val stats = DiffStats()
-                        val t3 = System.nanoTime()
-                        val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
-                        val t4 = System.nanoTime()
-                        diffedTree = tree.copy(root = diffedRoot)
-                        PerformanceTracker.onTreeDiffed(t4 - t3, stats.reused, stats.replaced, true)
-                    } else {
-                        diffedTree = tree
-                        PerformanceTracker.onTreeDiffed(0, 0, nc, false)
+                // Ensure shadow thread is running (self-healing if it was stopped)
+                if (shadowThread == null || shadowThread?.isAlive != true) {
+                    Log.w(TAG, "postTreeUpdate: shadow thread not running — auto-starting")
+                    shadowRunning = true
+                    shadowThread = Thread({ shadowThreadLoop() }, "NativeUI-Shadow").also {
+                        it.priority = Thread.MAX_PRIORITY - 1
+                        it.start()
                     }
-                    previousTree = diffedTree
-
-                    Log.d(TAG, "PERF tree: jni=${(t1-t0)/1_000_000}ms parse=${(t2-t1)/1_000_000}ms nodes=$nc types=${typeTable.size} isNav=$isNav flatSize=${flatBytes.size}")
-
-                    mainHandler.post {
-                        PerformanceTracker.onTreePostedToMain()
-                        NativeUIBridge.isActive.value = true
-                        val prevKey = NativeUIBridge.screenKey.intValue
-                        if (isNav) NativeUIBridge.screenKey.intValue++
-                        NativeUIBridge.currentTree.value = diffedTree
-                        Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
-                    }
-                } else {
-                    Log.e(TAG, "Failed to parse tree (nodeCount=$nodeCount flatSize=${flatBytes.size} typeCount=${typeTable.size} expected=${nodeCount * FLAT_NODE_SIZE})")
                 }
+
+                // Hand off to shadow thread — overwrites any pending update (coalescing)
+                val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, t0, t1)
+                pendingUpdate.set(update)
+                shadowThread?.let { LockSupport.unpark(it) }
             } catch (e: Throwable) {
                 Log.e(TAG, "postTreeUpdate failed: ${e.message}", e)
             }
+        }
+
+        /**
+         * Shadow thread main loop. Parks when idle, wakes on signal from
+         * postTreeUpdate(). Grabs the latest pending update (coalescing),
+         * parses the tree, diffs against previous, posts to main thread.
+         */
+        private fun shadowThreadLoop() {
+            Log.d(TAG, "Shadow thread started")
+            while (shadowRunning) {
+                val update = pendingUpdate.getAndSet(null)
+                if (update == null) {
+                    LockSupport.park()
+                    continue
+                }
+
+                try {
+                    val tParseStart = System.nanoTime()
+                    val tree = readTreeFromFlatBuffer(update.flatBuf, update.propBuf, update.typeTable, update.nodeCount)
+                    val tParseEnd = System.nanoTime()
+
+                    if (tree != null) {
+                        val nc = countNodes(tree.root)
+                        val prev = previousTree
+                        val isDiffOn = diffEnabled
+                        val diffedTree: NativeUITree
+
+                        if (prev != null && !update.isNav && isDiffOn) {
+                            val stats = DiffStats()
+                            val tDiffStart = System.nanoTime()
+                            val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
+                            val tDiffEnd = System.nanoTime()
+                            diffedTree = tree.copy(root = diffedRoot)
+                            PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
+                            PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
+                        } else {
+                            diffedTree = tree
+                            PerformanceTracker.onTreeDiffed(0, 0, nc, false)
+                            PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, 0)
+                        }
+                        previousTree = diffedTree
+
+                        Log.d(TAG, "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav}")
+
+                        val isNav = update.isNav
+                        mainHandler.post {
+                            PerformanceTracker.onTreePostedToMain()
+                            NativeUIBridge.isActive.value = true
+                            val prevKey = NativeUIBridge.screenKey.intValue
+                            if (isNav) NativeUIBridge.screenKey.intValue++
+                            NativeUIBridge.currentTree.value = diffedTree
+                            Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
+                        }
+                    } else {
+                        Log.e(TAG, "Shadow: failed to parse tree (nodeCount=${update.nodeCount})")
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Shadow thread processing failed: ${e.message}", e)
+                }
+            }
+            Log.d(TAG, "Shadow thread stopped")
         }
 
         /**
@@ -172,14 +225,40 @@ class NativeElementBridge private constructor() {
 
         /** Reset state for new hot-reload cycle */
         fun startWatching() {
-            Log.d(TAG, "startWatching() — resetting state for new cycle")
+            Log.d(TAG, "startWatching() — resetting state, starting shadow thread")
+
+            // Stop existing shadow thread before starting a new one
+            val oldThread = shadowThread
+            if (oldThread != null && oldThread.isAlive) {
+                shadowRunning = false
+                LockSupport.unpark(oldThread)
+                oldThread.join(2000)
+                if (oldThread.isAlive) {
+                    Log.w(TAG, "Old shadow thread still alive after 2s — proceeding anyway")
+                }
+            }
+
             clearEvents()
             cachedTypeTable = null
             previousTree = null
+            pendingUpdate.set(null)
+
+            // Start shadow thread
+            shadowRunning = true
+            shadowThread = Thread({ shadowThreadLoop() }, "NativeUI-Shadow").also {
+                it.priority = Thread.MAX_PRIORITY - 1
+                it.start()
+            }
         }
 
         @JvmStatic
         fun stopWatching() {
+            // Stop shadow thread
+            shadowRunning = false
+            shadowThread?.let { LockSupport.unpark(it) }
+            shadowThread = null
+            pendingUpdate.set(null)
+
             clearEvents()
             cachedTypeTable = null
             previousTree = null
@@ -509,6 +588,20 @@ class NativeElementBridge private constructor() {
         }
     }
 }
+
+/**
+ * Snapshot of raw buffer data passed from PHP thread to shadow thread.
+ * Heap-copied ByteBuffers are safe to read on any thread.
+ */
+private data class ShadowUpdate(
+    val flatBuf: ByteBuffer,
+    val propBuf: ByteBuffer?,
+    val typeTable: Array<String>,
+    val nodeCount: Int,
+    val isNav: Boolean,
+    val t0: Long,   // nanoTime at postTreeUpdate entry
+    val t1: Long,   // nanoTime after JNI + buffer copy
+)
 
 /**
  * UI event data class for the event queue.

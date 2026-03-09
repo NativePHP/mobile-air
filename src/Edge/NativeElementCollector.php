@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
@@ -44,7 +45,7 @@ class NativeElementCollector
             unset($attrs['class']);
         }
 
-        $builtinTypes = ['column', 'row', 'stack', 'scroll_view'];
+        $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
@@ -56,6 +57,7 @@ class NativeElementCollector
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
+                null,
                 $onPress,
                 $onLongPress,
             );
@@ -74,6 +76,7 @@ class NativeElementCollector
 
             $layout = $element->getLayout();
             $style = $element->getStyle();
+            $props = $element->getResolvedProps(static::$callbacks);
             $onPress = $element->getPressCallbackId(static::$callbacks);
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
@@ -81,6 +84,7 @@ class NativeElementCollector
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
+                ! empty($props) ? $props : null,
                 $onPress,
                 $onLongPress,
             );
@@ -100,7 +104,7 @@ class NativeElementCollector
             unset($attrs['class']);
         }
 
-        $builtinTypes = ['column', 'row', 'stack', 'scroll_view'];
+        $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
@@ -363,6 +367,10 @@ class NativeElementCollector
             'row' => Row::make(),
             'stack' => Stack::make(),
             'scroll_view' => ScrollView::make(),
+            'spacer' => Elements\Spacer::make(),
+            'divider' => Elements\Divider::make(),
+            'pressable' => Elements\Pressable::make(),
+            'canvas' => Elements\Canvas::make(),
             default => ElementRegistry::resolve($type)
                 ?? throw new \RuntimeException("Unknown native element type: {$type}"),
         };

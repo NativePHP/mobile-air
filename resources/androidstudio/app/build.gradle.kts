@@ -205,6 +205,10 @@ dependencies {
     // AndroidX Security for encrypted storage
     implementation(libs.androidx.security.crypto)
 
+    // Coil3 for image loading
+    implementation("io.coil-kt.coil3:coil-compose:3.1.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.1.0")
+
     // CameraX for camera preview
     val camerax_version = "1.4.1"
     implementation("androidx.camera:camera-core:$camerax_version")

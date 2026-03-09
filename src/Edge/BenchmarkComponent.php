@@ -3,16 +3,12 @@
 namespace Native\Mobile\Edge;
 
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Divider;
+use Native\Mobile\Edge\Elements\Pressable;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
-use Nativephp\ComposeUi\Elements\Button;
-use Nativephp\ComposeUi\Elements\Divider;
-use Nativephp\ComposeUi\Elements\Icon;
-use Nativephp\ComposeUi\Elements\ListItem;
-use Nativephp\ComposeUi\Elements\Spacer;
-use Nativephp\ComposeUi\Elements\Text;
-use Nativephp\ComposeUi\Elements\TextInput;
-use Nativephp\ComposeUi\Elements\Toggle;
+use Native\Mobile\Edge\Elements\Spacer;
+use Native\Mobile\Edge\Elements\Text;
 
 class BenchmarkComponent extends NativeComponent
 {
@@ -116,15 +112,15 @@ class BenchmarkComponent extends NativeComponent
         foreach (self::SCENARIOS as $key => $label) {
 
             $content->addChild(
-                Button::make($label)->onPress("startScenario('{$key}')")->fillWidth()
-                    ->color('#1E293B')->labelColor('#E2E8F0')
+                $this->makeButton($label)->onPress("startScenario('{$key}')")
             );
         }
 
         $content->addChild(Spacer::make()->height(4));
         $content->addChild(
-            Button::make('Run All Scenarios')->onPress('startAll')->fillWidth()
-                ->color('#059669')->labelColor('#FFFFFF')
+            Pressable::make(
+                Text::make('Run All Scenarios')->fontSize(14)->fontWeight(6)->color('#FFFFFF')
+            )->fillWidth()->bg('#059669')->borderRadius(10)->padding(14)->center()->onPress('startAll')
         );
 
         $scroll->addChild($content);
@@ -342,7 +338,7 @@ class BenchmarkComponent extends NativeComponent
 
         return Column::make(
             Row::make(
-                Button::make('Back')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+                Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                 Spacer::make()->flexGrow(1),
                 Text::make("{$this->interactionCount}/" . self::TAP_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
             )->fillWidth()->padding(12)->gap(8),
@@ -353,7 +349,7 @@ class BenchmarkComponent extends NativeComponent
             Spacer::make()->height(8),
             Text::make("{$pct}%")->fontSize(14)->color('#64748B'),
             Spacer::make()->height(24),
-            Button::make('+1')->onPress('onTap')->color('#1E293B')->labelColor('#38BDF8'),
+            Pressable::make(Text::make('+1')->fontSize(16)->fontWeight(7)->color('#38BDF8'))->bg('#1E293B')->borderRadius(10)->padding(14, 28)->onPress('onTap'),
             Spacer::make()->height(1)->flexGrow(1),
         )->fill()->center()->safeArea()->bg('#0F172A');
     }
@@ -398,7 +394,7 @@ class BenchmarkComponent extends NativeComponent
 
         $root->addChild(
             Row::make(
-                Button::make('Back')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+                Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                 Text::make('LARGE TREE TAP')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
                 Spacer::make()->flexGrow(1),
                 Text::make("{$this->interactionCount}/" . self::LARGE_TREE_TAP_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
@@ -416,7 +412,7 @@ class BenchmarkComponent extends NativeComponent
             Row::make(
                 Text::make((string) $this->counter)->fontSize(32)->fontWeight(7)->color('#38BDF8'),
                 Spacer::make()->width(16),
-                Button::make('+1')->onPress('onTap')->color('#1E293B')->labelColor('#38BDF8'),
+                Pressable::make(Text::make('+1')->fontSize(16)->fontWeight(7)->color('#38BDF8'))->bg('#1E293B')->borderRadius(10)->padding(14, 28)->onPress('onTap'),
             )->fillWidth()->center()->padding(12)->bg('#0F172A')->borderRadius(8)
         );
 
@@ -429,12 +425,12 @@ class BenchmarkComponent extends NativeComponent
     protected function buildLargeTreeContent(Element $container, int &$nodeCount): void
     {
         $colors = ['#1F2937', '#DC2626', '#059669', '#2563EB', '#7C3AED', '#D97706'];
-        $icons = ['home', 'star', 'settings', 'search', 'person', 'favorite'];
+        $bullets = ['●', '★', '◆', '▶', '■', '▲'];
 
-        // Generate ~200 nodes as a mix of rows, text, icons
+        // Generate ~200 nodes as a mix of rows, text, bullets
         while ($nodeCount < self::LARGE_TREE_NODE_COUNT) {
             $row = Row::make()->fillWidth()->gap(8)->padding(4);
-            $row->addChild(Icon::make($icons[$nodeCount % count($icons)])->size(20)->color($colors[$nodeCount % count($colors)]));
+            $row->addChild(Text::make($bullets[$nodeCount % count($bullets)])->fontSize(16)->color($colors[$nodeCount % count($colors)]));
             $row->addChild(Text::make("Node #{$nodeCount}")->fontSize(13)->color($colors[($nodeCount + 1) % count($colors)]));
             $row->addChild(Spacer::make()->flexGrow(1));
             $row->addChild(Text::make(sprintf('%.1fms', $nodeCount * 0.1))->fontSize(11)->color('#9CA3AF'));
@@ -487,22 +483,21 @@ class BenchmarkComponent extends NativeComponent
     {
         return Column::make(
             Row::make(
-                Button::make('Back')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+                Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                 Spacer::make()->flexGrow(1),
                 Text::make("{$this->interactionCount}/" . self::TEXT_INPUT_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
             )->fillWidth()->padding(12)->gap(8),
             Spacer::make()->height(1)->flexGrow(1),
             Text::make('TEXT INPUT')->fontSize(11)->fontWeight(7)->color('#38BDF8'),
             Spacer::make()->height(12),
-            TextInput::make()
-                ->placeholder('Type here...')
-                ->value($this->textValue)
-                ->onChange('onTextChange')
-                ->fillWidth(),
+            Pressable::make(
+                Text::make($this->textValue ?: 'Type here...')
+                    ->fontSize(15)->color($this->textValue ? '#F1F5F9' : '#475569')
+            )->fillWidth()->bg('#1E293B')->borderRadius(8)->padding(14)->onPress('onTextChange'),
             Spacer::make()->height(12),
             Text::make($this->textValue ?: 'waiting for input...')->fontSize(14)->color('#64748B'),
             Spacer::make()->height(24),
-            Button::make('Skip')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+            Pressable::make(Text::make('Skip')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
             Spacer::make()->height(1)->flexGrow(1),
         )->fill()->center()->padding(24)->safeArea()->bg('#0F172A');
     }
@@ -557,9 +552,9 @@ class BenchmarkComponent extends NativeComponent
         $root->addChild(
             Column::make(
                 Row::make(
-                    Button::make('Back')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+                    Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                     Spacer::make()->flexGrow(1),
-                    Button::make('Done')->onPress('onScrollDone')->color('#059669')->labelColor('#FFFFFF'),
+                    Pressable::make(Text::make('Done')->fontSize(13)->fontWeight(5)->color('#FFFFFF'))->bg('#059669')->borderRadius(8)->padding(8, 14)->onPress('onScrollDone'),
                 )->fillWidth()->gap(8),
                 Text::make('LARGE LIST RENDER')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
                 Text::make('Scroll through the list, then tap Done')->fontSize(12)->color('#64748B'),
@@ -570,10 +565,9 @@ class BenchmarkComponent extends NativeComponent
         $content = Column::make()->fillWidth()->gap(0);
 
         for ($i = 0; $i < self::LIST_SCROLL_ITEM_COUNT; $i++) {
+            $bullets = ['●', '★', '◆', '▶', '■', '▲'];
             $content->addChild(
-                ListItem::make("Item #{$i}")
-                    ->supporting("Description for list item {$i}")
-                    ->leadingIcon(['home', 'star', 'settings', 'search', 'person', 'favorite'][$i % 6])
+                $this->makeListItem("Item #{$i}", "Description for list item {$i}", $bullets[$i % 6])
             );
         }
 
@@ -588,7 +582,6 @@ class BenchmarkComponent extends NativeComponent
     protected function runListScroll(): void
     {
         $this->phase = 'list_scroll';
-        $icons = ['home', 'star', 'settings', 'search', 'person', 'favorite'];
 
         nativephp_call('Perf.Enable', '{}');
         nativephp_call('Perf.StartCaptureWindow', '{}');
@@ -607,11 +600,10 @@ class BenchmarkComponent extends NativeComponent
             $scroll = ScrollView::make()->fillWidth()->flexGrow(1);
             $content = Column::make()->fillWidth();
 
+            $bullets = ['●', '★', '◆', '▶', '■', '▲'];
             for ($i = 0; $i < self::LIST_SCROLL_ITEM_COUNT; $i++) {
                 $content->addChild(
-                    ListItem::make("Item #" . (($i + $frame) % self::LIST_SCROLL_ITEM_COUNT))
-                        ->supporting("Frame {$frame}")
-                        ->leadingIcon($icons[$i % 6])
+                    $this->makeListItem("Item #" . (($i + $frame) % self::LIST_SCROLL_ITEM_COUNT), "Frame {$frame}", $bullets[$i % 6])
                 );
             }
 
@@ -695,8 +687,7 @@ class BenchmarkComponent extends NativeComponent
             for ($i = 0; $i < $renderCount; $i++) {
                 $r = $decoded[$i];
                 $content->addChild(
-                    ListItem::make($r['name'])
-                        ->supporting($r['email'] . ' · ' . $r['address']['city'])
+                    $this->makeListItem($r['name'], $r['email'] . ' · ' . $r['address']['city'])
                 );
             }
 
@@ -735,7 +726,6 @@ class BenchmarkComponent extends NativeComponent
     /** Flag set when user taps Done on the 10k list screen */
     protected function renderLargeListFpsScreen(): Element
     {
-        $icons = ['home', 'star', 'settings', 'search', 'person', 'favorite'];
         $itemCount = self::LARGE_LIST_ITEM_COUNT;
 
         $root = Column::make()->fill()->safeArea()->bg('#0F172A');
@@ -743,7 +733,7 @@ class BenchmarkComponent extends NativeComponent
         $root->addChild(
             Column::make(
                 Row::make(
-                    Button::make('Back')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+                    Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                     Spacer::make()->flexGrow(1),
                     Text::make('AUTO-SCROLLING...')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
                 )->fillWidth()->gap(8),
@@ -755,11 +745,10 @@ class BenchmarkComponent extends NativeComponent
         $scroll = ScrollView::make()->fillWidth()->flexGrow(1)->autoScrollTo($itemCount - 1);
         $content = Column::make()->fillWidth()->gap(0);
 
+        $bullets = ['●', '★', '◆', '▶', '■', '▲'];
         for ($i = 0; $i < $itemCount; $i++) {
             $content->addChild(
-                ListItem::make("Item #{$i}")
-                    ->supporting("Description for list item {$i}")
-                    ->leadingIcon($icons[$i % 6])
+                $this->makeListItem("Item #{$i}", "Description for list item {$i}", $bullets[$i % 6])
             );
         }
 
@@ -974,7 +963,7 @@ class BenchmarkComponent extends NativeComponent
         $root->addChild(
             Column::make(
                 Row::make(
-                    Button::make('Back')->onPress('skipScenario')->color('#334155')->labelColor('#94A3B8'),
+                    Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                     Spacer::make()->flexGrow(1),
                     Text::make("{$this->interactionCount}/" . self::TOGGLE_TREE_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
                 )->fillWidth()->gap(8),
@@ -983,7 +972,10 @@ class BenchmarkComponent extends NativeComponent
                 Row::make(
                     Text::make('Show 200-node subtree')->fontSize(14)->color('#CBD5E1'),
                     Spacer::make()->flexGrow(1),
-                    Toggle::make()->value($this->toggleState)->onChange('onToggle'),
+                    Pressable::make(
+                        Text::make($this->toggleState ? 'ON' : 'OFF')
+                            ->fontSize(13)->fontWeight(6)->color($this->toggleState ? '#10B981' : '#64748B')
+                    )->bg($this->toggleState ? '#064E3B' : '#1E293B')->borderRadius(16)->padding(8, 16)->onPress('onToggle'),
                 )->fillWidth()->gap(8),
             )->fillWidth()->padding(16)->gap(4)
         );
@@ -1273,27 +1265,35 @@ class BenchmarkComponent extends NativeComponent
 
     protected function streamLeaf(int $seed): void
     {
-        $leafTypes = ['text', 'button', 'list_item', 'icon', 'divider', 'spacer'];
+        $leafTypes = ['text', 'pressable', 'text', 'divider', 'spacer'];
         $type = $leafTypes[$seed % count($leafTypes)];
         $colors = ['#1F2937', '#DC2626', '#059669', '#2563EB', '#7C3AED', '#D97706'];
-        $icons = ['home', 'star', 'settings', 'search', 'person', 'favorite'];
 
         $props = match ($type) {
-            'text' => ['text' => "Item #{$seed}", 'fontSize' => 14, 'color' => $colors[$seed % count($colors)]],
-            'button' => ['label' => "Btn #{$seed}", 'color' => $colors[($seed + 1) % count($colors)]],
-            'list_item' => ['headline' => "Headline #{$seed}", 'supporting' => "Supporting text for item {$seed}", 'leadingIcon' => $icons[$seed % count($icons)]],
-            'icon' => ['name' => $icons[$seed % count($icons)], 'size' => 24, 'color' => $colors[($seed + 2) % count($colors)]],
-            'divider' => [],
-            'spacer' => [],
+            'text' => ['text' => "Item #{$seed}", 'font_size' => 14, 'color' => $colors[$seed % count($colors)]],
+            'pressable', 'divider', 'spacer' => [],
         };
 
         $layout = match ($type) {
             'divider' => ['width' => 'fill'],
             'spacer' => ['height' => 8.0],
+            'pressable' => ['padding' => [10.0, 14.0, 10.0, 14.0]],
             default => null,
         };
 
-        nphp_node_leaf($type, $layout, null, ! empty($props) ? $props : null, 0, 0);
+        $style = match ($type) {
+            'pressable' => ['bg_color' => $colors[($seed + 1) % count($colors)], 'border_radius' => 8.0],
+            default => null,
+        };
+
+        if ($type === 'pressable') {
+            // Pressable with a text child
+            nphp_node_open('pressable', $layout, $style, 0, 0);
+            nphp_node_leaf('text', null, null, ['text' => "Btn #{$seed}", 'font_size' => 13, 'color' => '#E2E8F0'], 0, 0);
+            nphp_node_close();
+        } else {
+            nphp_node_leaf($type, $layout, $style, ! empty($props) ? $props : null, 0, 0);
+        }
     }
 
     protected function benchmarkSize(int $targetNodes): array
@@ -1442,26 +1442,47 @@ class BenchmarkComponent extends NativeComponent
 
     protected function makeLeaf(int $seed): Element
     {
-        $leafTypes = ['text', 'button', 'list_item', 'icon', 'divider', 'spacer'];
+        $leafTypes = ['text', 'pressable', 'row', 'divider', 'spacer'];
         $type = $leafTypes[$seed % count($leafTypes)];
         $colors = ['#1F2937', '#DC2626', '#059669', '#2563EB', '#7C3AED', '#D97706'];
-        $icons = ['home', 'star', 'settings', 'search', 'person', 'favorite'];
+        $bullets = ['●', '★', '◆', '▶', '■', '▲'];
 
         return match ($type) {
             'text' => Text::make("Item #{$seed}")
                 ->fontSize(14)
                 ->color($colors[$seed % count($colors)]),
-            'button' => Button::make("Btn #{$seed}")
-                ->color($colors[($seed + 1) % count($colors)]),
-            'list_item' => ListItem::make("Headline #{$seed}")
-                ->supporting("Supporting text for item {$seed}")
-                ->leadingIcon($icons[$seed % count($icons)]),
-            'icon' => Icon::make($icons[$seed % count($icons)])
-                ->size(24)
-                ->color($colors[($seed + 2) % count($colors)]),
+            'pressable' => Pressable::make(
+                Text::make("Btn #{$seed}")->fontSize(13)->fontWeight(5)->color('#E2E8F0')
+            )->bg($colors[($seed + 1) % count($colors)])->borderRadius(8)->padding(10, 14),
+            'row' => $this->makeListItem("Headline #{$seed}", "Supporting text for item {$seed}", $bullets[$seed % count($bullets)]),
             'divider' => Divider::make()->fillWidth(),
             'spacer' => Spacer::make()->height(8),
         };
+    }
+
+    // ── Primitive Helpers ────────────────────────────
+
+    protected function makeButton(string $label): Pressable
+    {
+        return Pressable::make(
+            Text::make($label)->fontSize(14)->fontWeight(6)->color('#E2E8F0')
+        )->fillWidth()->bg('#1E293B')->borderRadius(10)->padding(14)->center();
+    }
+
+    protected function makeListItem(string $headline, string $supporting = '', string $bullet = '•'): Row
+    {
+        $row = Row::make()->fillWidth()->gap(12)->padding(14, 16);
+
+        $row->addChild(Text::make($bullet)->fontSize(16)->color('#64748B'));
+
+        $textCol = Column::make()->flexGrow(1)->gap(2);
+        $textCol->addChild(Text::make($headline)->fontSize(15)->fontWeight(5)->color('#E2E8F0'));
+        if ($supporting !== '') {
+            $textCol->addChild(Text::make($supporting)->fontSize(13)->color('#94A3B8'));
+        }
+        $row->addChild($textCol);
+
+        return $row;
     }
 
     // ── Results Screen ──────────────────────────────
@@ -1570,8 +1591,7 @@ class BenchmarkComponent extends NativeComponent
 
         $content->addChild(Spacer::make()->height(8));
         $content->addChild(
-            Button::make('Back to Menu')->onPress('backToMenu')->fillWidth()
-                ->color('#1E293B')->labelColor('#94A3B8')
+            $this->makeButton('Back to Menu')->onPress('backToMenu')
         );
 
         $scroll->addChild($content);

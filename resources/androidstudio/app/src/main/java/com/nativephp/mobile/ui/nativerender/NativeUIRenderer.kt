@@ -377,42 +377,6 @@ internal fun RenderScrollView(node: NativeUINode, modifier: Modifier) {
 /* ── Leaf Nodes ───────────────────────────────────────── */
 
 @Composable
-internal fun RenderText(node: NativeUINode, modifier: Modifier) {
-    val p = node.props
-    val text = p.getString("text")
-    if (text.isEmpty()) return
-
-    Text(
-        text = text,
-        modifier = modifier.then(applyClickModifier(node)),
-        color = argbToColor(p.getColor("color", 0xFF000000.toInt())),
-        fontSize = p.getFloat("font_size", 16f).sp,
-        fontWeight = resolveFontWeight(p.getInt("font_weight")),
-        textAlign = resolveTextAlign(p.getInt("text_align")),
-        maxLines = p.getInt("max_lines").let { if (it > 0) it else Int.MAX_VALUE },
-        overflow = TextOverflow.Ellipsis
-    )
-}
-
-@Composable
-internal fun RenderImage(node: NativeUINode, modifier: Modifier) {
-    val src = node.props.getString("src")
-
-    Box(
-        modifier = modifier
-            .then(applyClickModifier(node))
-            .background(Color(0xFFE0E0E0)),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = src.takeLast(20),
-            fontSize = 10.sp,
-            color = Color.Gray
-        )
-    }
-}
-
-@Composable
 internal fun RenderButton(node: NativeUINode, modifier: Modifier) {
     val p = node.props
     val label = p.getString("label")
@@ -531,23 +495,6 @@ internal fun RenderToggle(node: NativeUINode, modifier: Modifier) {
         modifier = modifier,
         enabled = !disabled
     )
-}
-
-@Composable
-internal fun RenderSpacer(node: NativeUINode, modifier: Modifier) {
-    val layout = node.layout
-    if (layout != null && layout.widthMode == SizeMode.FIXED && layout.width > 0) {
-        Spacer(modifier = modifier.width(layout.width.dp))
-    } else if (layout != null && layout.heightMode == SizeMode.FIXED && layout.height > 0) {
-        Spacer(modifier = modifier.height(layout.height.dp))
-    } else {
-        Spacer(modifier = modifier.fillMaxWidth().height(0.dp))
-    }
-}
-
-@Composable
-internal fun RenderDivider(node: NativeUINode, modifier: Modifier) {
-    HorizontalDivider(modifier = modifier)
 }
 
 /* ── New Element Nodes ───────────────────────────────── */

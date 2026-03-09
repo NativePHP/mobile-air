@@ -56,6 +56,17 @@ object NativeRendererRegistry {
         register("fab", NodeRenderer { node, modifier -> RenderFab(node, modifier) })
         register("horizontal_divider", NodeRenderer { node, modifier -> RenderHorizontalDivider(node, modifier) })
 
+        // Core visual primitives
+        register("text", NodeRenderer { node, modifier -> RenderText(node, modifier) })
+        register("image", NodeRenderer { node, modifier -> RenderImage(node, modifier) })
+        register("spacer", NodeRenderer { node, modifier -> RenderSpacer(node, modifier) })
+        register("divider", NodeRenderer { node, modifier -> RenderDivider(node, modifier) })
+        register("pressable", NodeRenderer { node, modifier -> RenderPressable(node, modifier) })
+        register("canvas", NodeRenderer { node, modifier -> RenderCanvas(node, modifier) })
+        register("rect", NodeRenderer { node, modifier -> RenderRect(node, modifier) })
+        register("circle", NodeRenderer { node, modifier -> RenderCircle(node, modifier) })
+        register("line", NodeRenderer { node, modifier -> RenderLine(node, modifier) })
+
         // All other components provided by compose-ui plugin
     }
 }

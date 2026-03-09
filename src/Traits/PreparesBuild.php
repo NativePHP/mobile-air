@@ -281,32 +281,6 @@ trait PreparesBuild
                 return true;
             });
 
-            // Generate background task manifest if the command is available (from background-tasks plugin)
-            $this->logToFile('  Checking for background task manifest command...');
-            $this->components->task('Generating background task manifest', function () use ($tempDir) {
-                $result = Process::path($tempDir)
-                    ->timeout(60)
-                    ->run('php artisan native:background-manifest 2>&1');
-
-                if (str_contains($result->output(), 'not defined') || ! $result->successful()) {
-                    $this->logToFile('  Background manifest command not available (install nativephp/mobile-background-tasks plugin to enable)');
-
-                    return true;
-                }
-
-                $this->logToFile($result->output());
-
-                return true;
-            });
-
-            // Copy background_tasks.json to assets if it was generated
-            $manifestSource = $tempDir.DIRECTORY_SEPARATOR.'background_tasks.json';
-            if (file_exists($manifestSource)) {
-                $assetsDir = base_path('nativephp/android/app/src/main/assets');
-                copy($manifestSource, $assetsDir.DIRECTORY_SEPARATOR.'background_tasks.json');
-                $this->logToFile('  Copied background_tasks.json to Android assets');
-            }
-
             $version = config('nativephp.version', now()->format('Ymd-His'));
             $this->logToFile("  Writing version file: $version");
             file_put_contents($tempDir.DIRECTORY_SEPARATOR.'.version', $version.PHP_EOL);
@@ -332,6 +306,24 @@ trait PreparesBuild
                 \Laravel\Prompts\error('Failed to create valid zip file.');
                 exit(1);
             }
+
+            // Write bundle_meta.json so the app can read version/bifrost info
+            // without scanning the entire ZIP at boot time
+            $envPath = $tempDir.DIRECTORY_SEPARATOR.'.env';
+            $bifrostAppId = null;
+            if (file_exists($envPath)) {
+                $envContent = file_get_contents($envPath);
+                if (preg_match('/^BIFROST_APP_ID=(.+)$/m', $envContent, $m)) {
+                    $bifrostAppId = trim($m[1], " \t\n\r\"'");
+                }
+            }
+
+            $metaPath = dirname($destinationZip).DIRECTORY_SEPARATOR.'bundle_meta.json';
+            file_put_contents($metaPath, json_encode([
+                'version' => $version,
+                'bifrost_app_id' => $bifrostAppId ?: null,
+            ]));
+            $this->logToFile("  Wrote bundle_meta.json: version=$version, bifrost_app_id=".($bifrostAppId ?: 'null'));
 
             $sizeMB = round(filesize($destinationZip) / 1024 / 1024, 2);
             $this->logToFile("  Bundle size: {$sizeMB} MB");

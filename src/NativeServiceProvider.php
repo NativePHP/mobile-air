@@ -137,7 +137,7 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         $this->setupComposerPostUpdateScript();
         $this->registerNativeComponents();
-        $this->registerNavigationElements();
+        $this->registerCoreElements();
         $this->registerUiPluginComponents();
         $this->registerMiddleware();
         $this->registerFilesystems();
@@ -403,7 +403,8 @@ class NativeServiceProvider extends PackageServiceProvider
             $bladeClass = $component['blade'];
 
             // Register in ElementRegistry so NativeElementCollector's default case resolves it
-            if (class_exists($elementClass)) {
+            // Skip types already registered as core elements
+            if (class_exists($elementClass) && ! ElementRegistry::has($type)) {
                 ElementRegistry::register($type, $elementClass);
             }
 
@@ -419,7 +420,7 @@ class NativeServiceProvider extends PackageServiceProvider
         }
     }
 
-    protected function registerNavigationElements(): void
+    protected function registerCoreElements(): void
     {
         $elements = [
             'top_bar' => Elements\TopBar::class,
@@ -432,6 +433,15 @@ class NativeServiceProvider extends PackageServiceProvider
             'side_nav_item' => Elements\SideNavItem::class,
             'side_nav_group' => Elements\SideNavGroup::class,
             'side_nav_header' => Elements\SideNavHeader::class,
+            'text' => Elements\Text::class,
+            'image' => Elements\Image::class,
+            'spacer' => Elements\Spacer::class,
+            'divider' => Elements\Divider::class,
+            'pressable' => Elements\Pressable::class,
+            'canvas' => Elements\Canvas::class,
+            'rect' => Elements\Rect::class,
+            'circle' => Elements\Circle::class,
+            'line' => Elements\Line::class,
         ];
 
         foreach ($elements as $type => $class) {

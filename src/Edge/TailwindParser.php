@@ -227,6 +227,8 @@ class TailwindParser
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
+            str_starts_with($class, 'left-') => self::parseSpacingUniform('left', substr($class, 5)),
+            str_starts_with($class, 'top-') => self::parseSpacingUniform('top', substr($class, 4)),
 
             // Colors and text
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
@@ -457,6 +459,8 @@ class TailwindParser
             'rounded' => ['borderRadius' => (float) $value],
             'border' => $isColor ? ['borderColor' => self::normalizeHex($value)] : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
+            'left' => ['left' => (float) $value],
+            'top' => ['top' => (float) $value],
             default => null,
         };
     }

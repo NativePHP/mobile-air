@@ -68,6 +68,13 @@ object PerformanceTracker {
     /** Completed round-trip measurements. */
     private val interactions = CopyOnWriteArrayList<InteractionMeasurement>()
 
+    /* ── Shadow thread tracking ── */
+
+    @Volatile var lastShadowParseNanos: Long = 0L
+        private set
+    @Volatile var lastShadowDiffNanos: Long = 0L
+        private set
+
     /* ── Diff stats tracking ── */
 
     /** Per-frame diff measurements (time + node reuse). */
@@ -119,6 +126,23 @@ object PerformanceTracker {
         if (!enabled) return
         lastTreePostNanos = System.nanoTime()
         treePostVersion = treeUpdateVersion
+    }
+
+    /**
+     * Called from the shadow thread after parse + diff completes.
+     * Records shadow thread work time for pipeline breakdown.
+     */
+    fun onShadowThreadWork(parseNanos: Long, diffNanos: Long) {
+        if (!enabled) return
+        lastShadowParseNanos = parseNanos
+        lastShadowDiffNanos = diffNanos
+        if (logRealtime) {
+            Log.d(TAG, String.format(
+                "SHADOW parse=%.3fms diff=%.3fms total=%.3fms",
+                parseNanos / 1_000_000.0, diffNanos / 1_000_000.0,
+                (parseNanos + diffNanos) / 1_000_000.0
+            ))
+        }
     }
 
     /**
@@ -451,6 +475,8 @@ object PerformanceTracker {
         captureWindowActive = false
         lastTreeUpdateNanos = 0L
         lastTreePostNanos = 0L
+        lastShadowParseNanos = 0L
+        lastShadowDiffNanos = 0L
         treeUpdateVersion = 0L
         treePostVersion = 0L
         Log.d(TAG, "Reset — all data cleared")
