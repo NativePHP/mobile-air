@@ -16,7 +16,7 @@ trait InstallsIos
 {
     public string $iosPath;
 
-    public string $zipUrl = 'https://bin.nativephp.com/nativephp-ios-2.0.0-php8.4.zip';
+    public string $zipUrl = 'https://bin.nativephp.com/ios-3.1.0-php8.4.17.zip';
 
     public function setupIos(): void
     {

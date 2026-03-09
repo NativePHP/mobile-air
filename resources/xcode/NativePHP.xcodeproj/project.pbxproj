@@ -34,6 +34,8 @@
 		954DE1E82E07DCC60095118A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 954DE1E72E07DCC60095118A /* ZIPFoundation */; };
 		956423072E31757600F25A31 /* libonig.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 956423062E31757600F25A31 /* libonig.a */; };
 		956423092E31758C00F25A31 /* libonig.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 956423082E31758C00F25A31 /* libonig.a */; };
+		9564230A2E3175B000F25A31 /* libsodium.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9564230C2E3175B000F25A31 /* libsodium.a */; };
+		9564230B2E3175B000F25A31 /* libsodium.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9564230D2E3175B000F25A31 /* libsodium.a */; };
 		95BD62342D29732500C72704 /* PHP.c in Sources */ = {isa = PBXBuildFile; fileRef = 95BD62332D29731900C72704 /* PHP.c */; };
 /* End PBXBuildFile section */
 
@@ -600,6 +602,8 @@
 		9503807D2D923577004D24B3 /* libzip.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libzip.a; sourceTree = "<group>"; };
 		956423062E31757600F25A31 /* libonig.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libonig.a; sourceTree = "<group>"; };
 		956423082E31758C00F25A31 /* libonig.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libonig.a; sourceTree = "<group>"; };
+		9564230C2E3175B000F25A31 /* libsodium.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsodium.a; sourceTree = "<group>"; };
+		9564230D2E3175B000F25A31 /* libsodium.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsodium.a; sourceTree = "<group>"; };
 		95BD5DC12D178E9D00C72704 /* NativePHP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NativePHP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95BD5DD12D178E9E00C72704 /* NativePHPTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NativePHPTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		95BD5DDB2D178E9E00C72704 /* NativePHPUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NativePHPUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -665,6 +669,7 @@
 				950380862D923577004D24B3 /* libcrypto.a in Frameworks */,
 				950380872D923577004D24B3 /* libcurl.a in Frameworks */,
 				950380882D923577004D24B3 /* libssl.a in Frameworks */,
+				9564230B2E3175B000F25A31 /* libsodium.a in Frameworks */,
 				954DE1E82E07DCC60095118A /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -685,6 +690,7 @@
 				950380702D92356B004D24B3 /* libiconv.a in Frameworks */,
 				950380712D92356B004D24B3 /* libcharset.a in Frameworks */,
 				950380722D92356B004D24B3 /* libssl.a in Frameworks */,
+				9564230A2E3175B000F25A31 /* libsodium.a in Frameworks */,
 				954DE1E62E07DCB80095118A /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -721,6 +727,7 @@
 				950380652D92356B004D24B3 /* libxml2.a */,
 				950380662D92356B004D24B3 /* libz.a */,
 				950380672D92356B004D24B3 /* libzip.a */,
+				9564230C2E3175B000F25A31 /* libsodium.a */,
 			);
 			path = iphoneos;
 			sourceTree = "<group>";
@@ -740,6 +747,7 @@
 				9503807B2D923577004D24B3 /* libxml2.a */,
 				9503807C2D923577004D24B3 /* libz.a */,
 				9503807D2D923577004D24B3 /* libzip.a */,
+				9564230D2E3175B000F25A31 /* libsodium.a */,
 			);
 			path = iphonesimulator;
 			sourceTree = "<group>";
