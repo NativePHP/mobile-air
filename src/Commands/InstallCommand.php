@@ -24,7 +24,8 @@ class InstallCommand extends Command
         {platform? : The platform to install (android, ios, or both)}
         {--no-force : Keep existing files instead of overwriting}
         {--with-icu : Include ICU support for Android (adds ~30MB)}
-        {--skip-php : Do not download the PHP binaries}';
+        {--skip-php : Do not download the PHP binaries}
+        {--F|force : Force re-download of PHP binaries by clearing the cache}';
 
     protected $description = 'Install all of the NativePHP resources';
 
@@ -35,6 +36,18 @@ class InstallCommand extends Command
         $this->ensureAppIdIsSet();
 
         $this->forcing = ! $this->option('no-force');
+
+        if ($this->option('force')) {
+            $cacheDir = storage_path('nativephp');
+            if (is_dir($cacheDir)) {
+                $this->components->task('Clearing cached PHP binaries', function () use ($cacheDir) {
+                    $files = glob($cacheDir.'/*.zip');
+                    foreach ($files as $file) {
+                        unlink($file);
+                    }
+                });
+            }
+        }
 
         $platform = $this->argument('platform');
 
