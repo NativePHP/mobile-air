@@ -83,12 +83,12 @@ trait InstallsAndroid
 
         $urls = [
             '8.5' => [
-                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3-icu.zip',
-                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3.zip',
+                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3-icu_2.zip',
+                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_5.zip',
             ],
             '8.4' => [
-                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18-icu.zip',
-                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18.zip',
+                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18-icu_2.zip',
+                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18_2.zip',
             ],
         ];
 

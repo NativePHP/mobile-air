@@ -30,7 +30,7 @@ android {
                     "-DANDROID_ARM_NEON=TRUE"
                 )
                 cppFlags("-std=c++17", "-fexceptions", "-frtti")
-                targets("php_wrapper", "compat")
+                targets("php_wrapper")
                 arguments("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384")
             }
         }

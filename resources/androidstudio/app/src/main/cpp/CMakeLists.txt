@@ -6,7 +6,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC -fvisibility=default")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -fexceptions -frtti -fPIC -fvisibility=default")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
 
-set(PHP_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/arm64-v8a)
+set(PHP_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../staticLibs/arm64-v8a)
 set(PHP_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include/php)
 
 add_definitions(
@@ -34,36 +34,31 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/compat
 )
 
-# Compat library first
-add_library(compat SHARED
-        ${CMAKE_CURRENT_SOURCE_DIR}/compat/android_compat.cpp
-)
+# Import PHP as a static library
+add_library(php STATIC IMPORTED)
+set_target_properties(php PROPERTIES IMPORTED_LOCATION ${PHP_LIB_DIR}/libphp.a)
 
-target_link_libraries(compat
-        android
-        log
-)
+# Import static dependencies (always present)
+foreach(DEP_NAME z ssl crypto xml2 sqlite3 iconv charset onig curl sodium png16 glob_compat compat)
+    add_library(${DEP_NAME} STATIC IMPORTED)
+    set_target_properties(${DEP_NAME} PROPERTIES IMPORTED_LOCATION ${PHP_LIB_DIR}/lib${DEP_NAME}.a)
+endforeach()
 
+# Import ICU static libraries (optional — only present in ICU builds)
+foreach(ICU_NAME icui18n icuuc icudata icuio)
+    if(EXISTS ${PHP_LIB_DIR}/lib${ICU_NAME}.a)
+        add_library(${ICU_NAME} STATIC IMPORTED)
+        set_target_properties(${ICU_NAME} PROPERTIES IMPORTED_LOCATION ${PHP_LIB_DIR}/lib${ICU_NAME}.a)
+    endif()
+endforeach()
 
-set_target_properties(compat PROPERTIES
-        LINK_FLAGS "-Wl,--export-dynamic -Wl,-z,defs -Wl,-z,max-page-size=16384"
-        VERSION 1.0
-        SOVERSION 1
-)
-
-# Import PHP as an imported library
-add_library(php SHARED IMPORTED)
-set_target_properties(php PROPERTIES
-        IMPORTED_LOCATION ${PHP_LIB_DIR}/libphp.so
-        IMPORTED_NO_SONAME 1
-)
-
-# PHP wrapper
+# PHP wrapper — single shared library output
 add_library(php_wrapper SHARED
         PHP.c
         php_bridge.c
         libphp_wrapper.cpp
         bridge_jni.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/compat/android_compat.cpp
 )
 
 target_include_directories(php_wrapper PUBLIC
@@ -74,23 +69,25 @@ target_include_directories(php_wrapper PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include/php/TSRM
 )
 
+# Link libphp.a with --whole-archive to preserve PHP module registration constructors
 target_link_libraries(php_wrapper
-        compat
+        -Wl,--whole-archive
+        php
+        -Wl,--no-whole-archive
+        z ssl crypto xml2 sqlite3 iconv charset onig curl sodium png16 glob_compat compat
         android
         log
         dl
-        php
 )
+
+# Conditionally link ICU libraries if they exist
+foreach(ICU_NAME icui18n icuuc icudata icuio)
+    if(EXISTS ${PHP_LIB_DIR}/lib${ICU_NAME}.a)
+        target_link_libraries(php_wrapper ${ICU_NAME})
+    endif()
+endforeach()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_definitions(DEBUG=1)
     add_compile_options(-g -O0 -fno-limit-debug-info)
 endif()
-
-# Copy libraries to output directory
-add_custom_command(
-        TARGET compat POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:compat> ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/
-        COMMAND ${CMAKE_COMMAND} -E copy ${PHP_LIB_DIR}/libphp.so ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/
-)

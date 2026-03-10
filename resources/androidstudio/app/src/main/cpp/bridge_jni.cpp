@@ -80,6 +80,38 @@ static JNIEnv* GetJNIEnv() {
     return env;
 }
 
+// ── Native UI bridge stubs ──────────────────────────────
+// These symbols are referenced by the nativephp_ui and nphp_element
+// PHP extensions compiled into libphp.a.  They must be present at
+// link time now that we use static linking with --whole-archive.
+
+static void* g_nativeui_region  = nullptr;
+static void* g_element_region   = nullptr;
+
+extern "C" void NativeUI_RegisterRegion(void* region) {
+    g_nativeui_region = region;
+    LOGI("NativeUI_RegisterRegion: %p", region);
+}
+
+extern "C" void NativeUI_UnregisterRegion(void) {
+    LOGI("NativeUI_UnregisterRegion");
+    g_nativeui_region = nullptr;
+}
+
+extern "C" void NativeElement_RegisterRegion(void* region) {
+    g_element_region = region;
+    LOGI("NativeElement_RegisterRegion: %p", region);
+}
+
+extern "C" void NativeElement_UnregisterRegion(void) {
+    LOGI("NativeElement_UnregisterRegion");
+    g_element_region = nullptr;
+}
+
+extern "C" void NativeElement_PostTreeUpdate(void) {
+    LOGI("NativeElement_PostTreeUpdate");
+}
+
 // C functions that PHP can call
 
 /**
