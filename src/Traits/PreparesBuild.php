@@ -295,6 +295,22 @@ trait PreparesBuild
                 exit(1);
             }
 
+            // Write bundle_meta.json alongside the ZIP for fast boot-time metadata reads
+            $assetsDir = dirname($destinationZip);
+            $bifrostAppId = null;
+            if (file_exists($source . DIRECTORY_SEPARATOR . '.env')) {
+                $envContent = file_get_contents($source . DIRECTORY_SEPARATOR . '.env');
+                if (preg_match('/BIFROST_APP_ID=(.+)/', $envContent, $matches)) {
+                    $bifrostAppId = trim($matches[1]);
+                }
+            }
+            $bundleMeta = json_encode([
+                'version' => $version,
+                'bifrost_app_id' => $bifrostAppId,
+            ], JSON_PRETTY_PRINT);
+            file_put_contents($assetsDir . DIRECTORY_SEPARATOR . 'bundle_meta.json', $bundleMeta);
+            $this->logToFile("  Written bundle_meta.json: version=$version, bifrost=" . ($bifrostAppId ?? 'null'));
+
             $sizeMB = round(filesize($destinationZip) / 1024 / 1024, 2);
             $this->logToFile("  Bundle size: {$sizeMB} MB");
             $this->components->twoColumnDetail('Bundle size', "{$sizeMB} MB");

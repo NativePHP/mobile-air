@@ -11,6 +11,7 @@ import android.webkit.CookieManager
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import com.nativephp.mobile.bridge.PHPBridge
+import com.nativephp.mobile.bridge.PHPQueueWorker
 import com.nativephp.mobile.bridge.LaravelEnvironment
 import com.nativephp.mobile.bridge.registerBridgeFunctions
 import com.nativephp.mobile.network.WebViewManager
@@ -61,6 +62,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private lateinit var coord: NativeActionCoordinator
     private var pendingDeepLink: String? = null
     private var hotReloadWatcherThread: Thread? = null
+    private var queueWorker: PHPQueueWorker? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
     private var showSplash by mutableStateOf(true)
@@ -237,11 +239,26 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
     private fun initializeEnvironmentAsync(onReady: () -> Unit) {
         Thread {
-            Log.d("LaravelInit", "📦 Starting async Laravel extraction...")
+            Log.d("LaravelInit", "Starting async Laravel extraction...")
             laravelEnv = LaravelEnvironment(this)
             laravelEnv.initialize()
 
-            Log.d("LaravelInit", "✅ Laravel environment ready — continuing")
+            Log.d("LaravelInit", "Laravel environment ready")
+
+            // Boot persistent PHP runtime BEFORE WebView loads
+            // This boots Laravel once — all subsequent requests dispatch through the live interpreter
+            val bootStart = System.currentTimeMillis()
+            val booted = phpBridge.bootPersistentRuntime()
+            val bootTime = System.currentTimeMillis() - bootStart
+
+            if (booted) {
+                Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
+
+                // Start background queue worker after persistent runtime is ready
+                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+            } else {
+                Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
+            }
 
             Handler(Looper.getMainLooper()).post {
                 onReady()
@@ -371,6 +388,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Stop hot reload watcher thread
         shouldStopWatcher = true
         hotReloadWatcherThread?.interrupt()
+
+        // Stop background queue worker before persistent runtime shutdown
+        queueWorker?.stop()
+
+        // Shutdown persistent runtime before cleanup
+        if (phpBridge.isPersistentMode()) {
+            phpBridge.shutdownPersistentRuntime()
+        }
 
         laravelEnv.cleanup()
         phpBridge.shutdown()
