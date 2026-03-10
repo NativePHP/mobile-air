@@ -1,5 +1,11 @@
 // android_compat.cpp
 #include "android_compat.h"
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <dirent.h>
+#include <fnmatch.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <syscall.h>

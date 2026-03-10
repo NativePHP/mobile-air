@@ -6,7 +6,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC -fvisibility=default")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -fexceptions -frtti -fPIC -fvisibility=default")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
 
-set(STATIC_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../staticLibs/arm64-v8a)
+set(PHP_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../staticLibs/arm64-v8a)
 set(PHP_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include/php)
 
 add_definitions(
@@ -37,10 +37,10 @@ include_directories(
 # Import static libraries — only those that exist
 set(STATIC_DEP_LIBS "")
 foreach(LIB z ssl crypto xml2 sqlite3 iconv charset onig zip curl sodium png16 glob_compat compat icui18n icuuc icudata icuio)
-    if(EXISTS ${STATIC_LIB_DIR}/lib${LIB}.a)
+    if(EXISTS ${PHP_LIB_DIR}/lib${LIB}.a)
         add_library(${LIB} STATIC IMPORTED)
         set_target_properties(${LIB} PROPERTIES
-            IMPORTED_LOCATION ${STATIC_LIB_DIR}/lib${LIB}.a
+            IMPORTED_LOCATION ${PHP_LIB_DIR}/lib${LIB}.a
         )
         list(APPEND STATIC_DEP_LIBS ${LIB})
     else()
@@ -49,12 +49,12 @@ foreach(LIB z ssl crypto xml2 sqlite3 iconv charset onig zip curl sodium png16 g
 endforeach()
 
 # PHP must exist
-if(NOT EXISTS ${STATIC_LIB_DIR}/libphp.a)
-    message(FATAL_ERROR "libphp.a not found in ${STATIC_LIB_DIR}")
+if(NOT EXISTS ${PHP_LIB_DIR}/libphp.a)
+    message(FATAL_ERROR "libphp.a not found in ${PHP_LIB_DIR}")
 endif()
 add_library(php STATIC IMPORTED)
 set_target_properties(php PROPERTIES
-    IMPORTED_LOCATION ${STATIC_LIB_DIR}/libphp.a
+    IMPORTED_LOCATION ${PHP_LIB_DIR}/libphp.a
 )
 
 # Single .so output — everything linked in
@@ -65,6 +65,7 @@ add_library(php_wrapper SHARED
         compat/android_compat.cpp
 )
 
+# Link libphp.a with --whole-archive to preserve PHP module registration constructors
 target_link_libraries(php_wrapper
         # --whole-archive for libphp.a: PHP uses constructor functions for
         # module registration that would be stripped without this
@@ -76,6 +77,13 @@ target_link_libraries(php_wrapper
         # System
         android log dl
 )
+
+# Conditionally link ICU libraries if they exist
+foreach(ICU_NAME icui18n icuuc icudata icuio)
+    if(EXISTS ${PHP_LIB_DIR}/lib${ICU_NAME}.a)
+        target_link_libraries(php_wrapper ${ICU_NAME})
+    endif()
+endforeach()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_definitions(DEBUG=1)

@@ -16,8 +16,6 @@ trait InstallsIos
 {
     public string $iosPath;
 
-    public string $zipUrl = 'https://bin.nativephp.com/ios-3.1.0-php8.4.17.zip';
-
     public function setupIos(): void
     {
         $this->iosPath = base_path('nativephp/ios');
@@ -48,7 +46,16 @@ trait InstallsIos
 
     private function installPHPIos(): void
     {
-        $url = $this->zipUrl;
+        $phpVersion = $this->detectPhpVersion();
+
+        $urls = [
+            '8.5' => 'https://bin.nativephp.com/ios-3.1.0-php8.5.3.zip',
+            '8.4' => 'https://bin.nativephp.com/ios-3.1.0-php8.4.18.zip',
+        ];
+
+        $url = $urls[$phpVersion];
+
+        $this->components->twoColumnDetail('PHP version', $phpVersion === '8.5' ? '8.5.x' : '8.4.x');
 
         $cacheDir = storage_path('nativephp');
         File::ensureDirectoryExists($cacheDir);
