@@ -10,7 +10,6 @@ use Native\Mobile\Plugins\PluginDiscovery;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\outro;
 use function Laravel\Prompts\select;
-use function Laravel\Prompts\text;
 
 class PluginBoostCommand extends Command
 {
@@ -316,7 +315,7 @@ BLADE;
                 $content .= "}\n";
             }
 
-            $content .= <<<BLADE
+            $content .= <<<'BLADE'
 </code-snippet>
 @endverbatim
 BLADE;
@@ -342,7 +341,7 @@ BLADE;
             $content .= "const result = await {$this->toCamelCase($namespace)}.{$methodName}();\n";
         }
 
-        $content .= <<<BLADE
+        $content .= <<<'BLADE'
 </code-snippet>
 @endverbatim
 BLADE;

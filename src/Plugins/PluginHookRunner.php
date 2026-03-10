@@ -164,7 +164,7 @@ class PluginHookRunner
                 $this->substitutePlaceholders($destPath, $plugin);
             }
 
-            $this->twoColumnDetail("<fg=blue>Copied asset</>", "{$source} → {$destination}");
+            $this->twoColumnDetail('<fg=blue>Copied asset</>', "{$source} → {$destination}");
         }
     }
 

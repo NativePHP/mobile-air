@@ -100,7 +100,7 @@ class PluginUninstallCommand extends Command
 
             if ($this->files->isDirectory($sourcePath)) {
                 $deleteFiles = $this->option('force') || confirm(
-                    label: "Delete plugin source directory?",
+                    label: 'Delete plugin source directory?',
                     default: true,
                     hint: $sourcePath
                 );

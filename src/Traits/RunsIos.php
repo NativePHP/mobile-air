@@ -354,6 +354,13 @@ trait RunsIos
         } else {
             outro('App launched!');
         }
+
+        if ($this->watching) {
+            $this->call('native:watch', [
+                'platform' => 'ios',
+                'target' => $target,
+            ]);
+        }
     }
 
     private function promptForIosTarget(array $devices): string

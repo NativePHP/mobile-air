@@ -317,6 +317,10 @@ struct WebView: UIViewRepresentable {
         @objc func reloadWebView() {
             _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
 
+            // Clear cached native UI state so EDGE components are re-applied
+            // from the fresh render instead of being skipped by the JSON cache
+            NativeUIState.shared.clearAll()
+
             self.webView?.reload()
         }
 
@@ -414,6 +418,18 @@ struct WebView: UIViewRepresentable {
         webConfiguration.websiteDataStore = WebView.dataStore
         webConfiguration.setURLSchemeHandler(schemeHandler, forURLScheme: "php")
         webConfiguration.allowsInlineMediaPlayback = true
+
+        #if DEBUG
+        // Allow the WebView to load HTTP subresources (e.g. Vite dev server assets)
+        // without being blocked by WebKit's mixed content policy, since the custom
+        // php:// scheme is treated as a secure context.
+        // Uses responds(to:) to safely check the key exists before setting it,
+        // since this is an internal WebKit preference not available on all platforms.
+        let insecureContentSelector = NSSelectorFromString("setAllowRunningInsecureContent:")
+        if webConfiguration.preferences.responds(to: insecureContentSelector) {
+            webConfiguration.preferences.setValue(true, forKey: "allowRunningInsecureContent")
+        }
+        #endif
 
         let webView = WKWebView(frame: .zero, configuration: webConfiguration)
 
