@@ -129,13 +129,15 @@ class LaravelEnvironment(private val context: Context) {
         try {
             setupDirectories()
 
-            // Check for OTA updates first (reads BIFROST_APP_ID from bundled .env)
-            val didExtract = if (checkAndApplyOTAUpdate()) {
-                Log.d(TAG, "✅ OTA update applied successfully")
-                true
-            } else {
-                extractLaravelBundle()
-            }
+            // OTA check commented out — adds ~300ms network latency on every cold boot
+            // TODO: Re-enable when OTA is ready for production
+            // val didExtract = if (checkAndApplyOTAUpdate()) {
+            //     Log.d(TAG, "✅ OTA update applied successfully")
+            //     true
+            // } else {
+            //     extractLaravelBundle()
+            // }
+            val didExtract = extractLaravelBundle()
 
             setupEnvironment()
 

@@ -152,6 +152,24 @@ return [
         'storage/logs/laravel.log',
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Runtime Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Controls the persistent PHP runtime behavior. In 'persistent' mode,
+    | Laravel boots once and the kernel is reused across requests (~5-30ms
+    | per dispatch instead of ~200-300ms). Falls back to 'classic' mode
+    | (full init/shutdown per request) if persistent boot fails.
+    |
+    */
+
+    'runtime' => [
+        'mode' => env('NATIVEPHP_RUNTIME_MODE', 'persistent'),
+        'reset_instances' => true,
+        'gc_between_dispatches' => false,
+    ],
+
     'android' => [
         'gradle_jdk_path' => env('NATIVEPHP_GRADLE_PATH'),
         'android_sdk_path' => env('NATIVEPHP_ANDROID_SDK_LOCATION'),

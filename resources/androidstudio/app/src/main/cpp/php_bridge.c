@@ -198,8 +198,6 @@ void override_embed_module_output(void (*callback)(const char *)) {
 }
 
 void jni_output_callback(const char *output) {
-//    LOGI("PHP Output Debug - Callback called with: %s", output);
-
     JNIEnv *env;
     if ((*g_jvm)->GetEnv(g_jvm, (void **) &env, JNI_VERSION_1_6) != JNI_OK) {
         LOGE("Failed to get JNI environment");
@@ -207,17 +205,14 @@ void jni_output_callback(const char *output) {
     }
 
     if (g_callback_obj && g_callback_method) {
-        LOGI("WE MADE IT HERE");
         jstring joutput = (*env)->NewStringUTF(env, output);
         (*env)->CallVoidMethod(env, g_callback_obj, g_callback_method, joutput);
         (*env)->DeleteLocalRef(env, joutput);
     }
-
 }
 
 int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers) {
-    LOGI("📤 SAPI header: %s", sapi_header->header);
-    // You can collect headers here if you want
+    LOGI("SAPI header: %s", sapi_header->header);
     return 0;
 }
 
@@ -683,7 +678,7 @@ JNIEXPORT void JNICALL native_set_request_info(JNIEnv *env, jobject thiz,
 
 JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, jstring jcommand) {
     const char *command = (*env)->GetStringUTFChars(env, jcommand, NULL);
-    LOGI("🛠️ runArtisanCommand: %s", command);
+    LOGI("runArtisanCommand: %s", command);
 
     clear_collected_output();
 
@@ -787,7 +782,6 @@ JNIEXPORT jstring JNICALL native_get_laravel_root_path(JNIEnv *env, jobject thiz
     // Convert to C string for concatenation
     const char *cStoragePath = (*env)->GetStringUTFChars(env, storagePath, NULL);
 
-    // Concatenate with "/laravel/public"
     char fullPath[1024];
     sprintf(fullPath, "%s/laravel", cStoragePath);
 
@@ -797,7 +791,6 @@ JNIEXPORT jstring JNICALL native_get_laravel_root_path(JNIEnv *env, jobject thiz
     (*env)->DeleteLocalRef(env, storageDir);
     (*env)->DeleteLocalRef(env, storagePath);
 
-    // Return the final path
     return (*env)->NewStringUTF(env, fullPath);
 }
 
@@ -863,7 +856,6 @@ JNIEXPORT jstring JNICALL native_get_laravel_public_path(JNIEnv *env, jobject th
     const char *cStoragePath = (*env)->GetStringUTFChars(env, storagePath, NULL);
     setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
 
-    // Concatenate with "/laravel/public"
     char fullPath[1024];
     sprintf(fullPath, "%s/laravel/public", cStoragePath);
 
@@ -873,7 +865,6 @@ JNIEXPORT jstring JNICALL native_get_laravel_public_path(JNIEnv *env, jobject th
     (*env)->DeleteLocalRef(env, storageDir);
     (*env)->DeleteLocalRef(env, storagePath);
 
-    // Return the final path
     return (*env)->NewStringUTF(env, fullPath);
 }
 
@@ -977,6 +968,10 @@ JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBo
 
     clear_collected_output();
 
+    // Set PHP_SELF before boot so $_SERVER['PHP_SELF'] is available during bootstrap
+    setenv("PHP_SELF", "artisan.php", 1);
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+
     if (worker_embed_init() != SUCCESS) {
         LOGE("worker_boot: worker_embed_init() FAILED");
         (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
@@ -1024,10 +1019,13 @@ JNIEXPORT jstring JNICALL native_worker_artisan(JNIEnv *env, jobject thiz, jstri
     clear_collected_output();
 
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+    setenv("PHP_SELF", "artisan.php", 1);
 
     char eval_code[4096];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
+        "    $_SERVER['PHP_SELF'] = 'artisan.php';\n"
+        "    $_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n"
         "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
         "} catch (\\Throwable $e) {\n"
         "    echo 'Worker artisan error: ' . $e->getMessage();\n"

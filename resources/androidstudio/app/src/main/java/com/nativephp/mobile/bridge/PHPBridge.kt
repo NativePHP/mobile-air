@@ -275,7 +275,7 @@ class PHPBridge(private val context: Context) {
     // New function to store request data with a key
     fun storeRequestData(key: String, data: String) {
         requestDataMap[key] = data
-        Log.d(TAG, "🔑 Stored request data with key: $key (length=${data.length})")
+        Log.d(TAG, "Stored request data with key: $key (length=${data.length})")
 
         // Also update last post data for backward compatibility
         lastPostData = data
@@ -309,7 +309,7 @@ class PHPBridge(private val context: Context) {
         // Remove old entries
         keysToRemove.forEach { requestDataMap.remove(it) }
         if (keysToRemove.isNotEmpty()) {
-            Log.d(TAG, "🧹 Cleaned up ${keysToRemove.size} old request entries")
+            Log.d(TAG, "Cleaned up ${keysToRemove.size} old request entries")
         }
     }
 
@@ -341,18 +341,18 @@ class PHPBridge(private val context: Context) {
 
     fun processRawPHPResponse(response: String): String {
         // Log the first 200 characters to understand the response format
-        Log.d(TAG, "🔍 Response first 200 chars: ${response.take(200)}")
+        Log.d(TAG, "Response first 200 chars: ${response.take(200)}")
 
         // Check for Set-Cookie headers regardless of response format
         if (response.contains("Set-Cookie:", ignoreCase = true)) {
-            Log.d(TAG, "🍪 Found Set-Cookie in raw response!")
+            Log.d(TAG, "Found Set-Cookie in raw response!")
 
             // Extract all Set-Cookie lines
             val setCookieLines = response.split("\r\n")
                 .filter { it.startsWith("Set-Cookie:", ignoreCase = true) }
 
             setCookieLines.forEach { cookieLine ->
-                Log.d(TAG, "🍪 Cookie line: $cookieLine")
+                Log.d(TAG, "Cookie line: $cookieLine")
 
                 // Extract the cookie value (after "Set-Cookie:")
                 val cookieValue = cookieLine.substringAfter(":", "").trim()
@@ -360,15 +360,15 @@ class PHPBridge(private val context: Context) {
                     // Manually set this cookie
                     val cookieManager = CookieManager.getInstance()
                     cookieManager.setCookie("http://127.0.0.1", cookieValue)
-                    Log.d(TAG, "🍪 Manually set cookie: $cookieValue")
+                    Log.d(TAG, "Manually set cookie: $cookieValue")
                 }
             }
 
             // Make sure to flush the cookies
             CookieManager.getInstance().flush()
-            Log.d(TAG, "🍪 Flushed cookies after extraction")
+            Log.d(TAG, "Flushed cookies after extraction")
         } else {
-            Log.d(TAG, "⚠️ No Set-Cookie headers found in the response")
+            Log.d(TAG, "No Set-Cookie headers found in the response")
         }
 
         // Continue with your existing logic for different response types
