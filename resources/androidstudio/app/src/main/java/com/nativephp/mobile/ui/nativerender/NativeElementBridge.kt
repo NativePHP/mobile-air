@@ -303,10 +303,6 @@ class NativeElementBridge private constructor() {
             val widthMode = buf.get().toInt() and 0xFF
             val height = buf.float
             val heightMode = buf.get().toInt() and 0xFF
-            val alignSelf = buf.get().toInt() and 0xFF
-            val alignItems = buf.get().toInt() and 0xFF
-            val justifyContent = buf.get().toInt() and 0xFF
-            val safeArea = buf.get().toInt() and 0xFF
 
             val paddingTop = buf.float
             val paddingRight = buf.float
@@ -320,7 +316,11 @@ class NativeElementBridge private constructor() {
 
             val flexGrow = buf.float
             val flexShrink = buf.float
+            val alignSelf = buf.get().toInt() and 0xFF
+            val alignItems = buf.get().toInt() and 0xFF
+            val justifyContent = buf.get().toInt() and 0xFF
             val gap = buf.float
+            val safeArea = buf.get().toInt() and 0xFF
 
             val bgColor = buf.int
             val borderRadius = buf.float

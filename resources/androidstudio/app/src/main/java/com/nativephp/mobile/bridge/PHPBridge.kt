@@ -90,8 +90,6 @@ class PHPBridge(private val context: Context) {
         private const val MAX_REQUEST_AGE = 5 * 60 * 1000L
 
         init {
-            System.loadLibrary("compat")
-            System.loadLibrary("php")
             System.loadLibrary("php_wrapper")
         }
     }

@@ -4,7 +4,6 @@
 #include <pthread.h>
 #include "php_embed.h"
 #include "PHP.h"
-#include "native_functions.h"
 #include <zend_exceptions.h>
 
 // Define Android logging macros first
@@ -90,8 +89,8 @@ static void setup_embed_module(void) {
                                    "error_reporting=E_ALL\n";
     php_embed_module.header_handler = android_header_handler;
 
-    // Register host-provided PHP functions (nativephp_call, nativephp_element_*, etc.)
-    php_embed_module.additional_functions = nativephp_functions;
+    // Extension functions are now statically linked via --enable-nativephp
+    // and self-register on every php_embed_init() — no manual registration needed.
 }
 
 // Safe shutdown: block all signals to prevent mutex access after TSRM destruction
@@ -262,8 +261,7 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
         return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPHP init failed.");
     }
     sapi_module.header_handler = android_header_handler;
-    // Explicitly register host functions into the active interpreter context
-    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    // nativephp extension self-registers via static linking
     php_initialized = 1;
 
     // Per-request setup and execution
@@ -351,7 +349,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
         return -1;
     }
     sapi_module.header_handler = android_header_handler;
-    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    // nativephp extension self-registers via static linking
     php_initialized = 1;
 
     // Execute the persistent bootstrap script (boots Laravel, stores kernel globally)
@@ -706,8 +704,7 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
         return (*env)->NewStringUTF(env, "");
     }
     sapi_module.header_handler = android_header_handler;
-    // Explicitly register host functions into the active interpreter context
-    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    // nativephp extension self-registers via static linking
     php_initialized = 1;
 
     char artisanPath[1024];
@@ -945,8 +942,7 @@ static int worker_embed_init(void) {
         return FAILURE;
     }
 
-    // Register native bridge functions in worker's function table
-    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    // nativephp extension self-registers via static linking
 
     LOGI("worker_embed_init: worker PHP context ready");
     return SUCCESS;
@@ -1103,7 +1099,7 @@ static int scheduler_embed_init(void) {
             return FAILURE;
         }
 
-        zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+        // nativephp extension self-registers via static linking
         scheduler_cold_booted = 0;
 
         LOGI("scheduler_embed_init: hot path ready");
@@ -1127,7 +1123,7 @@ static int scheduler_embed_init(void) {
         return FAILURE;
     }
     sapi_module.header_handler = android_header_handler;
-    zend_register_functions(NULL, nativephp_functions, NULL, MODULE_PERSISTENT);
+    // nativephp extension self-registers via static linking
     scheduler_cold_booted = 1;
 
     LOGI("scheduler_embed_init: cold path ready");

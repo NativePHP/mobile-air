@@ -269,46 +269,76 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
 }
 
 /* ═══════════════════════════════════════════════════════════
+ * NativeUI Bridge — Legacy shared-memory UI system
+ * ═══════════════════════════════════════════════════════════ */
+
+static void* g_native_ui_region = nullptr;
+
+extern "C" __attribute__((visibility("default")))
+void NativeUI_RegisterRegion(void* ptr) {
+    LOGI("NativeUI: RegisterRegion ptr=%p", ptr);
+    g_native_ui_region = ptr;
+}
+
+extern "C" __attribute__((visibility("default")))
+void NativeUI_UnregisterRegion(void) {
+    LOGI("NativeUI: UnregisterRegion");
+    g_native_ui_region = nullptr;
+}
+
+/* ═══════════════════════════════════════════════════════════
  * Element Runtime Bridge — Direct Flat Buffer Access
  *
  * JNI functions for the Element runtime. Reads fixed-stride
  * flat nodes from malloc'd buffers instead of parsing V2 binary.
  * ═══════════════════════════════════════════════════════════ */
 
-#define NPHP_ELEMENT_MAGIC   0x454C4531  /* "ELE1" */
+#define NPHP_ELEMENT_MAGIC   0x4E504845  /* "NPHE" — must match nphp_element.h */
 #define NPHP_EVENT_MAGIC_EL  0x4E504556  /* "NPEV" — same format */
-#define NPHP_EVENT_BUFFER_SIZE (256 * 1024)
 
 /*
- * Element region struct — must match nphp_element.h layout exactly.
+ * Element region struct — must match nphp_element_region_t in nphp_element.h EXACTLY.
  * Uses void* for zval* since we don't have php.h here.
  */
 struct NphpElementRegion {
     uint32_t magic;
+
     std::atomic<uint32_t> tree_version;
     std::atomic<uint32_t> shutdown;
     std::atomic<uint32_t> running;
-
-    void* current_tree;  /* zval* — opaque to JNI */
     std::atomic<uint32_t> node_count;
-
-    uint8_t* flat_buffer;
     std::atomic<uint32_t> flat_buffer_size;
-    uint8_t* prop_buffer;
     std::atomic<uint32_t> prop_buffer_size;
 
-    char type_table[4096];
-    uint16_t type_offsets[128];
-    uint8_t type_count;
-
+    /* Sync */
     pthread_mutex_t tree_mutex;
     pthread_cond_t  tree_cond;
-
-    std::atomic<uint32_t> event_size;
-    std::atomic<uint32_t> event_count;
     pthread_mutex_t event_mutex;
     pthread_cond_t  event_cond;
-    uint8_t event_buffer[NPHP_EVENT_BUFFER_SIZE];
+
+    /* Events */
+    std::atomic<uint32_t> event_size;
+    std::atomic<uint32_t> event_count;
+    uint8_t event_buffer[4096];
+
+    /* Buffers (heap-allocated) */
+    uint8_t* flat_buffer;
+    uint8_t* prop_buffer;
+
+    /* Shadow buffers for frame-skip optimization */
+    uint8_t* shadow_flat_buffer;
+    uint8_t* shadow_prop_buffer;
+    uint32_t shadow_node_count;
+    uint32_t shadow_flat_size;
+    uint32_t shadow_prop_size;
+
+    /* Type interning table */
+    uint8_t  type_count;
+    uint16_t type_offsets[128];
+    char     type_table[4096];
+
+    /* Held zval reference (opaque to JNI) */
+    void* current_tree;
 };
 
 static NphpElementRegion* g_element_direct_ptr = nullptr;
@@ -475,7 +505,7 @@ static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Direct JNI Push — called from native_functions.c on PHP thread
+ * Direct JNI Push — called from nphp_element.c on PHP thread
  *
  * After nphp_element_publish() builds the flat buffer, it calls
  * this to push the tree to Kotlin's NativeElementBridge.postTreeUpdate()

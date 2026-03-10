@@ -83,12 +83,12 @@ trait InstallsAndroid
 
         $urls = [
             '8.5' => [
-                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_4.zip',
-                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_4.zip',
+                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3-icu_2.zip',
+                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_5.zip',
             ],
             '8.4' => [
-                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_4.zip',
-                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_4.zip',
+                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18-icu_2.zip',
+                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18_2.zip',
             ],
         ];
 
@@ -186,10 +186,30 @@ trait InstallsAndroid
             });
         }
 
-        $destination = base_path('nativephp/android/app/src/main');
-        File::ensureDirectoryExists($destination);
+        $mainDir = base_path('nativephp/android/app/src/main');
+        File::ensureDirectoryExists($mainDir);
 
-        $this->components->task('Installing Android libraries', fn () => $this->platformOptimizedCopy($extractPath, $destination));
+        // Static libs go to app/src/main/staticLibs/
+        $staticLibsSrc = $extractPath.DIRECTORY_SEPARATOR.'staticLibs';
+        $staticLibsDst = $mainDir.DIRECTORY_SEPARATOR.'staticLibs';
+
+        // Headers go to app/src/main/cpp/include/
+        $includeSrc = $extractPath.DIRECTORY_SEPARATOR.'include';
+        $includeDst = $mainDir.DIRECTORY_SEPARATOR.'cpp'.DIRECTORY_SEPARATOR.'include';
+
+        $this->components->task('Installing static libraries', function () use ($staticLibsSrc, $staticLibsDst) {
+            if (is_dir($staticLibsSrc)) {
+                File::ensureDirectoryExists($staticLibsDst);
+                $this->platformOptimizedCopy($staticLibsSrc, $staticLibsDst);
+            }
+        });
+
+        $this->components->task('Installing PHP headers', function () use ($includeSrc, $includeDst) {
+            if (is_dir($includeSrc)) {
+                File::ensureDirectoryExists($includeDst);
+                $this->platformOptimizedCopy($includeSrc, $includeDst);
+            }
+        });
 
         // Store ICU preference for run command
         $icuFlagFile = base_path('nativephp/android/.icu-enabled');

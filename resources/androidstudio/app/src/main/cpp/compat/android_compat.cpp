@@ -4,6 +4,8 @@
 #include <sys/resource.h>
 #include <syscall.h>
 #include <android/log.h>
+#include <string.h>
+#include <langinfo.h>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "Compat", __VA_ARGS__)
 
@@ -25,3 +27,135 @@ extern "C" ssize_t copy_file_range(int fd_in, off64_t *off_in,
     return syscall(__NR_copy_file_range, fd_in, off_in,
                    fd_out, off_out, len, flags);
 }
+
+// nl_langinfo: not available on Android < API 26.
+// PHP uses it for locale charset detection — return safe defaults.
+__attribute__((visibility("default")))
+extern "C" char* nl_langinfo(nl_item item) {
+    if (item == CODESET) {
+        return (char*)"UTF-8";
+    }
+    return (char*)"";
+}
+
+// ctermid: not available on Android.
+// PHP's posix_ctermid() calls this — return /dev/null as safe fallback.
+__attribute__((visibility("default")))
+extern "C" char* ctermid(char* s) {
+    static char buf[] = "/dev/null";
+    if (s) {
+        strcpy(s, buf);
+        return s;
+    }
+    return buf;
+}
+
+// glob/globfree: not available on Android API < 28.
+// The build scripts compile libglob_compat.a targeting API 28, so those
+// implementations get compiled out. We provide them here since CMake
+// compiles against the app's minSdkVersion (API 24).
+#if __ANDROID_API__ < 28
+#include <glob.h>
+#include <dirent.h>
+#include <fnmatch.h>
+#include <errno.h>
+#include <stdlib.h>
+
+__attribute__((visibility("default")))
+extern "C" int glob(const char *pattern, int flags,
+                    int (*errfunc)(const char *epath, int eerrno),
+                    glob_t *pglob)
+{
+    const char *dir_end;
+    const char *base_pattern;
+    char dir_path[4096];
+    DIR *dir;
+    struct dirent *entry;
+    size_t count = 0;
+    size_t capacity = 32;
+
+    if (!pglob) return GLOB_NOMATCH;
+
+    if (!(flags & GLOB_APPEND)) {
+        pglob->gl_pathc = 0;
+        pglob->gl_pathv = nullptr;
+    }
+
+    dir_end = strrchr(pattern, '/');
+    if (dir_end) {
+        size_t dir_len = dir_end - pattern;
+        if (dir_len >= sizeof(dir_path)) return GLOB_NOMATCH;
+        memcpy(dir_path, pattern, dir_len);
+        dir_path[dir_len] = '\0';
+        base_pattern = dir_end + 1;
+    } else {
+        strcpy(dir_path, ".");
+        base_pattern = pattern;
+    }
+
+    dir = opendir(dir_path);
+    if (!dir) {
+        if (errfunc && errfunc(dir_path, errno))
+            return GLOB_ABORTED;
+        return GLOB_NOMATCH;
+    }
+
+    pglob->gl_pathv = (char**)malloc(capacity * sizeof(char *));
+    if (!pglob->gl_pathv) {
+        closedir(dir);
+        return GLOB_NOSPACE;
+    }
+
+    while ((entry = readdir(dir)) != nullptr) {
+        if (fnmatch(base_pattern, entry->d_name, 0) == 0) {
+            if (count + 1 >= capacity) {
+                capacity *= 2;
+                char **new_pathv = (char**)realloc(pglob->gl_pathv, capacity * sizeof(char *));
+                if (!new_pathv) {
+                    closedir(dir);
+                    return GLOB_NOSPACE;
+                }
+                pglob->gl_pathv = new_pathv;
+            }
+
+            size_t path_len = strlen(dir_path) + 1 + strlen(entry->d_name) + 1;
+            pglob->gl_pathv[count] = (char*)malloc(path_len);
+            if (!pglob->gl_pathv[count]) {
+                closedir(dir);
+                return GLOB_NOSPACE;
+            }
+
+            if (strcmp(dir_path, ".") == 0) {
+                strcpy(pglob->gl_pathv[count], entry->d_name);
+            } else {
+                snprintf(pglob->gl_pathv[count], path_len, "%s/%s", dir_path, entry->d_name);
+            }
+            count++;
+        }
+    }
+
+    closedir(dir);
+    pglob->gl_pathc = count;
+    pglob->gl_pathv[count] = nullptr;
+
+    if (count == 0) {
+        free(pglob->gl_pathv);
+        pglob->gl_pathv = nullptr;
+        return GLOB_NOMATCH;
+    }
+
+    return 0;
+}
+
+__attribute__((visibility("default")))
+extern "C" void globfree(glob_t *pglob)
+{
+    if (!pglob || !pglob->gl_pathv) return;
+    for (size_t i = 0; i < pglob->gl_pathc; i++) {
+        free(pglob->gl_pathv[i]);
+    }
+    free(pglob->gl_pathv);
+    pglob->gl_pathv = nullptr;
+    pglob->gl_pathc = 0;
+}
+#endif /* __ANDROID_API__ < 28 */

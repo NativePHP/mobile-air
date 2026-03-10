@@ -30,7 +30,7 @@ android {
                     "-DANDROID_ARM_NEON=TRUE"
                 )
                 cppFlags("-std=c++17", "-fexceptions", "-frtti")
-                targets("php_wrapper", "compat")
+                targets("php_wrapper")
                 arguments("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384")
             }
         }
@@ -119,15 +119,6 @@ android {
         jniLibs {
             useLegacyPackaging = true
             keepDebugSymbols.add("**/*.so")
-            pickFirsts.add("lib/arm64-v8a/libc++_shared.so")
-            pickFirsts.add("lib/armeabi-v7a/libc++_shared.so")
-            pickFirsts.add("lib/x86/libc++_shared.so")
-            pickFirsts.add("lib/x86_64/libc++_shared.so")
-        }
-
-        // Exclude conflicting native libraries
-        resources {
-            excludes += "/lib/arm64-v8a/libstdc++.so"
         }
     }
 
@@ -147,11 +138,7 @@ android {
     // NDK version specification
     ndkVersion = "27.0.12077973" // Updated to NDK r27
 
-    sourceSets {
-        getByName("main") {
-            jniLibs.srcDirs("src/main/jniLibs")
-        }
-    }
+    // Static libs are linked by CMake into libphp_wrapper.so — no pre-built jniLibs needed
 }
 
 dependencies {
