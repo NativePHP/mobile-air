@@ -1,12 +1,9 @@
-import SwiftUI
+import UIKit
 
-struct RenderRect: View {
-    let node: NativeUINode
-
-    var body: some View {
-        // Render as an empty container (like Android's Box(modifier)).
-        // NodeModifier applies bgColor, borderRadius, border, size.
-        // Canvas parent handles offset positioning.
-        Color.clear
+struct RectViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        // Rect is a styled container — bgColor, borderRadius, border all handled by applyStyle
+        return UIView()
     }
+    func updateView(_ view: UIView, node: NativeUINode) {}
 }

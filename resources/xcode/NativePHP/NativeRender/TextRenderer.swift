@@ -1,27 +1,36 @@
-import SwiftUI
+import UIKit
 
-struct RenderText: View {
-    let node: NativeUINode
+struct TextViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        let label = UILabel()
+        label.numberOfLines = 0
+        applyProps(label, node: node)
+        return label
+    }
 
-    var body: some View {
+    func updateView(_ view: UIView, node: NativeUINode) {
+        guard let label = view as? UILabel else { return }
+        applyProps(label, node: node)
+    }
+
+    private func applyProps(_ label: UILabel, node: NativeUINode) {
         let p = node.props
-        let text = p.getString("text")
-
-        if !text.isEmpty {
-            Text(text)
-                .font(.system(
-                    size: CGFloat(p.getFloat("font_size", default: 16)),
-                    weight: resolveTextFontWeight(p.getInt("font_weight"))
-                ))
-                .foregroundColor(Color(argb: p.getColor("color", default: 0xFF000000)))
-                .multilineTextAlignment(resolveTextAlignment(p.getInt("text_align")))
-                .lineLimit(p.getInt("max_lines") > 0 ? p.getInt("max_lines") : nil)
-                .truncationMode(.tail)
-        }
+        label.text = p.getString("text")
+        label.font = .systemFont(
+            ofSize: CGFloat(p.getFloat("font_size", default: 16)),
+            weight: resolveWeight(p.getInt("font_weight"))
+        )
+        label.textColor = UIColor(argb: p.getColor("color", default: 0xFF000000))
+        label.textAlignment = resolveAlignment(p.getInt("text_align"))
+        let maxLines = p.getInt("max_lines")
+        label.numberOfLines = maxLines > 0 ? maxLines : 0
+        label.lineBreakMode = .byTruncatingTail
+        label.adjustsFontSizeToFitWidth = true
+        label.minimumScaleFactor = 0.5
     }
 }
 
-private func resolveTextFontWeight(_ weight: Int) -> Font.Weight {
+private func resolveWeight(_ weight: Int) -> UIFont.Weight {
     switch weight {
     case 1: return .thin
     case 2: return .light
@@ -34,11 +43,11 @@ private func resolveTextFontWeight(_ weight: Int) -> Font.Weight {
     }
 }
 
-private func resolveTextAlignment(_ align: Int) -> TextAlignment {
+private func resolveAlignment(_ align: Int) -> NSTextAlignment {
     switch align {
-    case 0: return .leading
+    case 0: return .left
     case 1: return .center
-    case 2: return .trailing
-    default: return .leading
+    case 2: return .right
+    default: return .natural
     }
 }

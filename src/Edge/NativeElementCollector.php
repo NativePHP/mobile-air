@@ -53,6 +53,11 @@ class NativeElementCollector
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
+            // ScrollView needs overflow: scroll so Yoga doesn't constrain children
+            if ($type === 'scroll_view' && ! isset($layout['overflow'])) {
+                $layout['overflow'] = 2;
+            }
+
             nphp_node_open(
                 $type,
                 ! empty($layout) ? $layout : null,
@@ -292,16 +297,28 @@ class NativeElementCollector
         return 0;
     }
 
-    // ── Legacy methods (object-based tree building) ───
+    // ── Public methods (delegates to streaming or legacy) ───
 
     public static function open(string $type, array $attrs): void
     {
+        if (static::$streaming) {
+            static::openStreaming($type, $attrs);
+
+            return;
+        }
+
         $element = static::createElement($type, $attrs);
         static::$stack[] = $element;
     }
 
     public static function close(): void
     {
+        if (static::$streaming) {
+            static::closeStreaming();
+
+            return;
+        }
+
         $element = array_pop(static::$stack);
 
         if (empty(static::$stack)) {
@@ -313,6 +330,12 @@ class NativeElementCollector
 
     public static function leaf(string $type, array $attrs): void
     {
+        if (static::$streaming) {
+            static::leafStreaming($type, $attrs);
+
+            return;
+        }
+
         $element = static::createElement($type, $attrs);
 
         if (empty(static::$stack)) {
@@ -476,8 +499,7 @@ class NativeElementCollector
 
     protected static function applyStyle(Element $element, array $attrs): void
     {
-        // Button handles bg as tint color in its own props — skip node-level background
-        if (isset($attrs['bg']) && ! ($element instanceof Elements\Button)) {
+        if (isset($attrs['bg'])) {
             $element->bg($attrs['bg']);
         }
         if (isset($attrs['borderRadius'])) {

@@ -16,7 +16,7 @@ fun RenderCanvas(node: NativeUINode, modifier: Modifier) {
             val left = child.props.getFloat("left", 0f)
             val top = child.props.getFloat("top", 0f)
 
-            val childMod = buildModifier(child)
+            val childMod = buildStyleModifier(child)
 
             // offset must be outermost so it moves the entire styled child
             val offsetMod = if (left != 0f || top != 0f) {

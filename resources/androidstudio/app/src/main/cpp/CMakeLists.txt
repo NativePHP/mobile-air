@@ -3,7 +3,7 @@ project("com_nativephp_mobile")
 
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC -fvisibility=default")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -fexceptions -frtti -fPIC -fvisibility=default")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20 -fexceptions -frtti -fPIC -fvisibility=default")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
 
 set(PHP_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../staticLibs/arm64-v8a)
@@ -32,6 +32,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/include/php/TSRM
         ${CMAKE_CURRENT_SOURCE_DIR}/include/php/sapi/embed
         ${CMAKE_CURRENT_SOURCE_DIR}/compat
+        ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 # Import static libraries — only those that exist
@@ -57,12 +58,19 @@ set_target_properties(php PROPERTIES
     IMPORTED_LOCATION ${PHP_LIB_DIR}/libphp.a
 )
 
+# Yoga layout engine (vendored sources)
+file(GLOB_RECURSE YOGA_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/yoga/*.cpp
+)
+
 # Single .so output — everything linked in
 add_library(php_wrapper SHARED
         PHP.c
         php_bridge.c
         bridge_jni.cpp
+        yoga_bridge.cpp
         compat/android_compat.cpp
+        ${YOGA_SOURCES}
 )
 
 # Link libphp.a with --whole-archive to preserve PHP module registration constructors

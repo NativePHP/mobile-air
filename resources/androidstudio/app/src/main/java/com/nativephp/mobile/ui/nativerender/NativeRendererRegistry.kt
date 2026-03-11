@@ -16,10 +16,9 @@ fun interface NodeRenderer {
 
 /**
  * Thread-safe registry mapping type strings to renderers.
- * Follows the same pattern as BridgeFunctionRegistry.
  *
- * Built-in types are registered at app startup via registerBuiltins().
- * Third-party plugins can register additional renderers at runtime.
+ * Container types (column, row, stack, pressable, canvas) are NOT registered —
+ * RenderNode handles them generically via Yoga absolute positioning.
  */
 object NativeRendererRegistry {
 
@@ -39,11 +38,6 @@ object NativeRendererRegistry {
     }
 
     fun registerBuiltins() {
-        register("column", NodeRenderer { node, modifier -> RenderColumn(node, modifier) })
-        register("row", NodeRenderer { node, modifier -> RenderRow(node, modifier) })
-        register("stack", NodeRenderer { node, modifier -> RenderStack(node, modifier) })
-        register("scroll_view", NodeRenderer { node, modifier -> RenderScrollView(node, modifier) })
-
         // Navigation chrome
         register("top_bar", NodeRenderer { node, modifier -> RenderTopBar(node, modifier) })
         register("top_bar_action", NodeRenderer { node, modifier -> RenderTopBarAction(node, modifier) })
@@ -53,20 +47,27 @@ object NativeRendererRegistry {
         register("side_nav_item", NodeRenderer { node, modifier -> RenderSideNavItem(node, modifier) })
         register("side_nav_group", NodeRenderer { node, modifier -> RenderSideNavGroup(node, modifier) })
         register("side_nav_header", NodeRenderer { node, modifier -> RenderSideNavHeader(node, modifier) })
-        register("fab", NodeRenderer { node, modifier -> RenderFab(node, modifier) })
-        register("horizontal_divider", NodeRenderer { node, modifier -> RenderHorizontalDivider(node, modifier) })
 
         // Core visual primitives
         register("text", NodeRenderer { node, modifier -> RenderText(node, modifier) })
         register("image", NodeRenderer { node, modifier -> RenderImage(node, modifier) })
         register("spacer", NodeRenderer { node, modifier -> RenderSpacer(node, modifier) })
         register("divider", NodeRenderer { node, modifier -> RenderDivider(node, modifier) })
-        register("pressable", NodeRenderer { node, modifier -> RenderPressable(node, modifier) })
-        register("canvas", NodeRenderer { node, modifier -> RenderCanvas(node, modifier) })
         register("rect", NodeRenderer { node, modifier -> RenderRect(node, modifier) })
         register("circle", NodeRenderer { node, modifier -> RenderCircle(node, modifier) })
         register("line", NodeRenderer { node, modifier -> RenderLine(node, modifier) })
 
-        // All other components provided by compose-ui plugin
+        // Content
+        register("icon", NodeRenderer { node, modifier -> RenderIcon(node, modifier) })
+
+        // Core interactive components
+        register("button", NodeRenderer { node, modifier -> RenderButton(node, modifier) })
+        register("text_input", NodeRenderer { node, modifier -> RenderTextInput(node, modifier) })
+        register("toggle", NodeRenderer { node, modifier -> RenderToggle(node, modifier) })
+        register("activity_indicator", NodeRenderer { node, modifier -> RenderActivityIndicator(node, modifier) })
+
+        // Special containers (need custom rendering, not just absolute positioning)
+        register("scroll_view", NodeRenderer { node, modifier -> RenderScrollView(node, modifier) })
+        register("bottom_sheet", NodeRenderer { node, modifier -> RenderBottomSheet(node, modifier) })
     }
 }

@@ -278,7 +278,8 @@ data class NativeUINode(
     val props: GenericProps,
     val onPress: Int,
     val onLongPress: Int,
-    val children: List<NativeUINode>
+    val children: List<NativeUINode>,
+    val computed: ComputedLayout? = null
 )
 
 /**
@@ -303,7 +304,37 @@ data class NodeLayout(
     val alignItems: Int,
     val justifyContent: Int,
     val gap: Float,
-    val safeArea: Int = 0
+    val safeArea: Int = 0,
+    // Extended layout fields (Yoga)
+    val minWidth: Float = 0f,
+    val minHeight: Float = 0f,
+    val maxWidth: Float = 0f,
+    val maxHeight: Float = 0f,
+    val flexBasis: Float = 0f,
+    val flexBasisMode: Int = 0,
+    val flexWrap: Int = 0,
+    val flexDirection: Int = 0,
+    val positionType: Int = 0,
+    val positionTop: Float = 0f,
+    val positionRight: Float = 0f,
+    val positionBottom: Float = 0f,
+    val positionLeft: Float = 0f,
+    val display: Int = 0,
+    val overflow: Int = 0,
+    val alignContent: Int = 0,
+    val direction: Int = 0,
+    val aspectRatio: Float = 0f,
+    val rowGap: Float = 0f
+)
+
+/**
+ * Yoga-computed layout result for a node.
+ */
+data class ComputedLayout(
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float
 )
 
 /**

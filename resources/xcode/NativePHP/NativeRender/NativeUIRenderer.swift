@@ -1,1010 +1,494 @@
+import UIKit
 import SwiftUI
 
-// MARK: - Root Content View
+// MARK: - SwiftUI Hosting (bridges UIView tree into SwiftUI shell)
 
-/// Root composable that renders a NativeUITree.
-/// Equivalent to Android's NativeUIContent().
-struct NativeUIContent: View {
+struct NativeUIContent: UIViewRepresentable {
     @ObservedObject var bridge = NativeUIBridge.shared
 
-    var body: some View {
+    func makeUIView(context: Context) -> NativeUIViewRenderer {
+        NativeUIViewRenderer()
+    }
+
+    func updateUIView(_ renderer: NativeUIViewRenderer, context: Context) {
         if let tree = bridge.currentTree {
-            RenderNode(node: tree.root)
+            renderer.applyTree(tree)
+        } else {
+            renderer.clear()
         }
     }
 }
 
-// MARK: - Node Renderer
+// MARK: - UIView Tree Renderer
 
-/// Recursively render a NativeUINode via the renderer registry.
-struct RenderNode: View {
-    let node: NativeUINode
+/// Manages a UIView tree driven by NativeUINode trees from PHP.
+/// Each node maps to a UIView. On tree update, diffs and mutates views imperatively.
+final class NativeUIViewRenderer: UIView {
 
-    var body: some View {
-        if let renderer = NativeRendererRegistry.shared.get(node.type) {
-            renderer(node)
-                .modifier(NodeModifier(node: node))
+    /// Flat map of nodeId → UIView for O(1) lookup during diff
+    private var viewMap: [Int: UIView] = [:]
+
+    /// Track which node is currently associated with each view
+    private var nodeMap: [Int: NativeUINode] = [:]
+
+    /// Special container types that need custom rendering
+    private static let scrollTypes: Set<String> = ["scroll_view"]
+    private static let sheetTypes: Set<String> = ["bottom_sheet"]
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .systemBackground
+        // Dismiss keyboard on tap
+        let tap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
+        tap.cancelsTouchesInView = false
+        addGestureRecognizer(tap)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func dismissKeyboard() {
+        endEditing(true)
+    }
+
+    // MARK: - Apply Tree
+
+    func applyTree(_ tree: NativeUITree) {
+        print("DEBUG TREE: renderer.bounds=\(self.bounds) renderer.frame=\(self.frame)")
+        let root = tree.root
+        print("DEBUG TREE: root type=\(root.type) computed=\(root.computed.map { "(\($0.x),\($0.y),\($0.width),\($0.height))" } ?? "nil") children=\(root.children.count)")
+        for (i, child) in root.children.enumerated() {
+            print("DEBUG TREE: root.child[\(i)] type=\(child.type) computed=\(child.computed.map { "(\($0.x),\($0.y),\($0.width),\($0.height))" } ?? "nil") children=\(child.children.count) safeArea=\(child.layout?.safeArea ?? -1)")
+        }
+        applyNode(node: tree.root, parentView: self, index: 0)
+        // Remove stale subviews from self that aren't the root
+        removeStaleChildren(parentView: self, expectedChildren: [tree.root])
+    }
+
+    func clear() {
+        subviews.forEach { $0.removeFromSuperview() }
+        viewMap.removeAll()
+        nodeMap.removeAll()
+    }
+
+    // MARK: - Recursive Node Application
+
+    private func applyNode(node: NativeUINode, parentView: UIView, index: Int) {
+        if node.type == "button" || node.type == "icon" {
+            let c = node.computed
+            let hasRenderer = NativeRendererRegistry.shared.get(node.type) != nil
+            print("DEBUG applyNode: type=\(node.type) id=\(node.id) children=\(node.children.count) computed=\(c.map { "(\($0.x),\($0.y),\($0.width),\($0.height))" } ?? "nil") hasRenderer=\(hasRenderer) props=\(node.props.debugDescription) parentFrame=\(parentView.frame) existing=\(viewMap[node.id] != nil)")
+        }
+        if let existingView = viewMap[node.id] {
+            // Check reference equality — if same object, diff says unchanged
+            if nodeMap[node.id] === node {
+                // Unchanged — but ensure correct parent/order
+                ensureParent(existingView, parentView: parentView, index: index)
+                return
+            }
+
+            // Same ID, changed props/style/layout — update in place
+            ensureParent(existingView, parentView: parentView, index: index)
+            applyLayout(existingView, node: node)
+            applyStyle(existingView, node: node)
+            applyClickHandlers(existingView, node: node)
+            updateLeafContent(existingView, node: node)
+            nodeMap[node.id] = node
+
+            // Recurse children
+            reconcileChildren(existingView, node: node)
         } else {
-            // Unknown type — render children in a VStack as fallback
-            VStack(spacing: 0) {
-                ForEach(node.children) { child in
-                    RenderNode(node: child)
+            // New node — create view
+            let view = createNodeView(node: node)
+            applyLayout(view, node: node)
+            applyStyle(view, node: node)
+            applyClickHandlers(view, node: node)
+            nodeMap[node.id] = node
+            viewMap[node.id] = view
+
+            if node.type == "button" || node.type == "icon" {
+                let s = node.style
+                print("DEBUG post-create: type=\(node.type) id=\(node.id) viewType=\(type(of: view)) frame=\(view.frame) alpha=\(view.alpha) hidden=\(view.isHidden) bg=\(String(describing: view.backgroundColor)) clipsToBounds=\(view.clipsToBounds) cornerRadius=\(view.layer.cornerRadius) style.opacity=\(s?.opacity ?? -1) style.bgColor=\(s.map { String(format: "0x%08X", UInt32(bitPattern: Int32(truncatingIfNeeded: $0.bgColor))) } ?? "nil") parentClips=\(parentView.clipsToBounds)")
+                if let label = view as? UILabel {
+                    print("DEBUG label: text='\(label.text ?? "nil")' textColor=\(label.textColor!) font=\(label.font!)")
+                }
+                if let iv = view as? UIImageView {
+                    print("DEBUG imageView: image=\(iv.image != nil) tint=\(iv.tintColor!)")
                 }
             }
-            .modifier(NodeModifier(node: node))
+
+            insertView(view, intoParent: parentView, atIndex: index)
+
+            // Create children recursively
+            if Self.scrollTypes.contains(node.type) {
+                reconcileScrollChildren(view, node: node)
+            } else if Self.sheetTypes.contains(node.type) {
+                // Bottom sheet handled separately
+                handleBottomSheet(view, node: node)
+            } else {
+                for (i, child) in node.children.enumerated() {
+                    applyNode(node: child, parentView: view, index: i)
+                }
+            }
         }
     }
-}
 
-// MARK: - Node Modifier (layout + style)
+    // MARK: - View Creation
 
-/// Applies layout and style from a NativeUINode to any view.
-/// Equivalent to Android's buildModifier().
-struct NodeModifier: ViewModifier {
-    let node: NativeUINode
-
-    func body(content: Content) -> some View {
-        // Modifier order matching Compose buildModifier() semantics:
-        //
-        // Compose (outside-in): size → margin → shadow → clip → bg → border → opacity → padding
-        //
-        // SwiftUI applies inside-out. Key insight: in Compose, padding is the
-        // innermost modifier (last applied). In SwiftUI that means apply it first.
-        // But .frame(maxWidth: .infinity) after .padding() would cause the padded
-        // view to fill WITHIN bounds (padding is inside the fill). However, styling
-        // (bg, clip) needs to wrap the padded content, not the frame.
-        //
-        // Order: content → size → margin → shadow → clip → bg → border → opacity → padding
-        // SwiftUI: content → padding → opacity → bg → clip → border → shadow → margin → size
-        //
-        // HOWEVER: padding before size causes SwiftUI layout issues when greedy
-        // views (Color.clear) are involved. So we keep size outermost but use
-        // a nested approach for styles.
-        var view = AnyView(content)
-
-        // Compose buildModifier (outside-in): size → margin → shadow → clip → bg → border → opacity → padding
-        //
-        // Key SwiftUI challenge: fixed sizes (w-[40]) must be INSIDE background
-        // so bg fills the area. But fill sizes (w-full) must be OUTSIDE everything
-        // to avoid padding expanding beyond screen bounds.
-        //
-        // Solution: apply fixed sizes early, fill sizes late.
-
-        // 1. Inner padding (innermost — content breathing room)
-        if let layout = node.layout, hasEdges(layout.paddingTop, layout.paddingRight, layout.paddingBottom, layout.paddingLeft) {
-            view = AnyView(view.padding(EdgeInsets(
-                top: CGFloat(layout.paddingTop),
-                leading: CGFloat(layout.paddingLeft),
-                bottom: CGFloat(layout.paddingBottom),
-                trailing: CGFloat(layout.paddingRight)
-            )))
+    private func createNodeView(node: NativeUINode) -> UIView {
+        if Self.scrollTypes.contains(node.type) {
+            return createScrollView(node: node)
+        }
+        if Self.sheetTypes.contains(node.type) {
+            let v = UIView()
+            v.isOpaque = false
+            return v
         }
 
-        // 2. ALL sizing (fixed + fill) — before background so bg fills the area
-        if let layout = node.layout {
-            view = AnyView(applyFixedSize(view, layout: layout))
-            view = AnyView(applyFillSize(view, layout: layout))
+        // Check registry for leaf renderers
+        if node.children.isEmpty, let renderer = NativeRendererRegistry.shared.get(node.type) {
+            let v = renderer.createView(node: node)
+            v.isOpaque = false
+            return v
         }
 
-        if let style = node.style {
-            // 3. Background (fills the sized area)
-            let bgColor = Color(argb: style.bgColor)
-            if bgColor != Color(argb: 0x00000000) {
-                view = AnyView(view.background(bgColor))
-            }
+        // Container — plain UIView, transparent by default
+        let container = UIView()
+        container.isOpaque = false
+        container.clipsToBounds = false
+        return container
+    }
 
-            // 4. Corner radius + clipping
-            if style.borderRadius > 0 {
-                view = AnyView(view.clipShape(RoundedRectangle(cornerRadius: CGFloat(style.borderRadius))))
-            }
-
-            // 5. Border (skip for line nodes — their border-* classes control stroke, not decoration)
-            if style.borderWidth > 0 && node.type != "line" {
-                let shape = RoundedRectangle(cornerRadius: CGFloat(style.borderRadius))
-                view = AnyView(view.overlay(shape.stroke(Color(argb: style.borderColor), lineWidth: CGFloat(style.borderWidth))))
-            }
-
-            // 6. Shadow / elevation
-            if style.elevation > 0 {
-                view = AnyView(view.shadow(color: .black.opacity(0.25), radius: CGFloat(style.elevation), x: 0, y: CGFloat(style.elevation / 2)))
-            }
-
-            // 7. Opacity
-            if style.opacity < 1 {
-                view = AnyView(view.opacity(Double(style.opacity)))
-            }
+    private func updateLeafContent(_ view: UIView, node: NativeUINode) {
+        if node.children.isEmpty, let renderer = NativeRendererRegistry.shared.get(node.type) {
+            renderer.updateView(view, node: node)
         }
+    }
 
-        // 8. Click/press handlers (after all styling so the full area is tappable)
-        // Matches Android where click handling is part of buildModifier().
-        if node.onPress != 0 || node.onLongPress != 0 {
-            view = AnyView(view
-                .contentShape(Rectangle())
-                .applyClickHandlers(node: node)
-            )
-        }
+    // MARK: - Layout (frame from Yoga)
 
-        // 9. Margin (outer spacing)
-        if let layout = node.layout, hasEdges(layout.marginTop, layout.marginRight, layout.marginBottom, layout.marginLeft) {
-            view = AnyView(view.padding(EdgeInsets(
-                top: CGFloat(layout.marginTop),
-                leading: CGFloat(layout.marginLeft),
-                bottom: CGFloat(layout.marginBottom),
-                trailing: CGFloat(layout.marginRight)
-            )))
-        }
+    private func applyLayout(_ view: UIView, node: NativeUINode) {
+        guard let c = node.computed else { return }
 
-        // 10. Safe area
+        var frame = CGRect(
+            x: CGFloat(c.x), y: CGFloat(c.y),
+            width: CGFloat(c.width), height: CGFloat(c.height)
+        )
+
+        // Safe area: offset the root content down by safe area top inset
         if let layout = node.layout, layout.safeArea != 0 {
-            view = AnyView(view.safeAreaPadding(.all))
+            let insets = safeAreaInsets
+            frame.origin.y += insets.top
+            frame.size.height -= (insets.top + insets.bottom)
         }
 
-        return view
+        view.frame = frame
+
+        // Canvas clips children to bounds
+        if node.type == "canvas" {
+            view.clipsToBounds = true
+        }
+
+        // Toggle with label needs internal layout
+        if node.type == "toggle" && !node.props.getString("label").isEmpty {
+            ToggleViewRenderer.layoutToggleContainer(view)
+        }
     }
 
-    /// Apply fixed dimensions (w-[40], h-[200]) BEFORE background
-    /// so the background fills the specified area.
-    @ViewBuilder
-    private func applyFixedSize<V: View>(_ view: V, layout: NodeLayout) -> some View {
-        let w = layout.widthMode
-        let h = layout.heightMode
+    // MARK: - Style
 
-        view.frame(
-            width: w == SizeMode.fixed && layout.width > 0 ? CGFloat(layout.width) : nil,
-            height: h == SizeMode.fixed && layout.height > 0 ? CGFloat(layout.height) : nil
-        )
-    }
+    private func applyStyle(_ view: UIView, node: NativeUINode) {
+        guard let style = node.style else {
+            view.backgroundColor = nil
+            view.layer.cornerRadius = 0
+            view.layer.borderWidth = 0
+            view.layer.shadowOpacity = 0
+            view.alpha = 1
+            return
+        }
 
-    /// Apply fill dimensions (w-full, h-full).
-    /// Uses FillLayout to hard-constrain width/height to the proposed size,
-    /// matching Compose's fillMaxWidth()/fillMaxHeight() behavior.
-    /// SwiftUI's .frame(maxWidth: .infinity) only sets a preference — children
-    /// can still report wider sizes and expand the parent. FillLayout prevents this.
-    @ViewBuilder
-    private func applyFillSize<V: View>(_ view: V, layout: NodeLayout) -> some View {
-        let w = layout.widthMode
-        let h = layout.heightMode
-
-        if w == SizeMode.fill || h == SizeMode.fill {
-            // .frame(maxWidth/maxHeight) inside FillLayout makes the child
-            // fill the proposed size and centers content (default alignment).
-            // FillLayout constrains the REPORTED size to prevent parent expansion.
-            FillLayout(fillWidth: w == SizeMode.fill, fillHeight: h == SizeMode.fill) {
-                view.frame(
-                    maxWidth: w == SizeMode.fill ? .infinity : nil,
-                    maxHeight: h == SizeMode.fill ? .infinity : nil
-                )
-            }
+        // Background color (0x00000000 = transparent/unset)
+        let argb = style.bgColor
+        let v = UInt32(bitPattern: Int32(truncatingIfNeeded: argb))
+        let alpha = (v >> 24) & 0xFF
+        if v == 0 || alpha == 0 {
+            view.backgroundColor = nil
+            view.isOpaque = false
         } else {
-            view
+            view.backgroundColor = UIColor(argb: argb)
+            view.isOpaque = true
         }
+
+        // Corner radius — clamp to half the shortest dimension (pill shape)
+        let maxRadius = min(view.frame.width, view.frame.height) / 2
+        let radius = min(CGFloat(style.borderRadius), maxRadius)
+        view.layer.cornerRadius = radius
+        if radius > 0 {
+            view.clipsToBounds = style.elevation <= 0 // Don't clip if shadow needed
+        }
+
+        // Border
+        if style.borderWidth > 0 && node.type != "line" {
+            view.layer.borderWidth = CGFloat(style.borderWidth)
+            view.layer.borderColor = UIColor(argb: style.borderColor).cgColor
+        } else {
+            view.layer.borderWidth = 0
+        }
+
+        // Shadow (elevation)
+        if style.elevation > 0 {
+            view.layer.shadowColor = UIColor.black.cgColor
+            view.layer.shadowOpacity = 0.25
+            view.layer.shadowRadius = CGFloat(style.elevation)
+            view.layer.shadowOffset = CGSize(width: 0, height: CGFloat(style.elevation / 2))
+            view.clipsToBounds = false
+        } else {
+            view.layer.shadowOpacity = 0
+        }
+
+        // Opacity
+        view.alpha = CGFloat(style.opacity)
     }
-}
 
-// MARK: - Fill Layout
+    // MARK: - Click Handlers
 
-/// Custom Layout that constrains children to the parent's proposed size,
-/// matching Compose's fillMaxWidth()/fillMaxHeight() behavior.
-/// Unlike .frame(maxWidth: .infinity), this prevents children from
-/// reporting a wider/taller size than the parent proposed.
-struct FillLayout: Layout {
-    let fillWidth: Bool
-    let fillHeight: Bool
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let child = subviews.first else { return .zero }
-
-        // Propose the parent's size to the child
-        let childSize = child.sizeThatFits(proposal)
-
-        // Report the PARENT's proposed size for fill axes,
-        // and the CHILD's size for wrap axes
-        return CGSize(
-            width: fillWidth ? (proposal.width ?? childSize.width) : childSize.width,
-            height: fillHeight ? (proposal.height ?? childSize.height) : childSize.height
-        )
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard let child = subviews.first else { return }
-
-        // Place child with the constrained bounds
-        child.place(
-            at: bounds.origin,
-            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
-        )
-    }
-}
-
-// MARK: - Container Views
-
-struct RenderColumn: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let layout = node.layout
-        let gap = CGFloat(layout?.gap ?? 0)
-        let hAlign = resolveHorizontalAlignment(layout?.alignItems ?? 0)
-        let justifyContent = layout?.justifyContent ?? 0
-
-        VStack(alignment: hAlign, spacing: gap) {
-            if justifyContent == 1 || justifyContent == 2 || justifyContent == 4 || justifyContent == 5 { // center, end, spaceAround, spaceEvenly
-                Spacer(minLength: 0)
-            }
-            ForEach(Array(node.children.enumerated()), id: \.element.id) { index, child in
-                if justifyContent == 3 && index > 0 { // spaceBetween
-                    Spacer(minLength: 0)
-                }
-                if justifyContent == 4 && index > 0 { // spaceAround
-                    Spacer(minLength: 0)
-                }
-                if justifyContent == 5 && index > 0 { // spaceEvenly
-                    Spacer(minLength: 0)
-                }
-                RenderNode(node: child)
-                    .maybeFlexGrow(child, axis: .vertical)
-            }
-            if justifyContent == 1 || justifyContent == 4 || justifyContent == 5 { // center, spaceAround, spaceEvenly
-                Spacer(minLength: 0)
+    private func applyClickHandlers(_ view: UIView, node: NativeUINode) {
+        // Remove existing gesture recognizers we added
+        view.gestureRecognizers?.forEach { gr in
+            if gr is NodeTapGesture || gr is NodeLongPressGesture {
+                view.removeGestureRecognizer(gr)
             }
         }
+
+        if node.onPress != 0 {
+            let tap = NodeTapGesture(target: self, action: #selector(handleTap(_:)))
+            tap.callbackId = node.onPress
+            tap.nodeId = node.id
+            view.addGestureRecognizer(tap)
+            view.isUserInteractionEnabled = true
+        }
+
+        if node.onLongPress != 0 {
+            let lp = NodeLongPressGesture(target: self, action: #selector(handleLongPress(_:)))
+            lp.callbackId = node.onLongPress
+            lp.nodeId = node.id
+            lp.minimumPressDuration = 0.5
+            view.addGestureRecognizer(lp)
+            view.isUserInteractionEnabled = true
+        }
     }
-}
 
-struct RenderRow: View {
-    let node: NativeUINode
+    @objc private func handleTap(_ gesture: NodeTapGesture) {
+        NativeElementBridge.sendPressEvent(gesture.callbackId, nodeId: gesture.nodeId)
+    }
 
-    var body: some View {
-        let layout = node.layout
-        let gap = CGFloat(layout?.gap ?? 0)
-        let vAlign = resolveVerticalAlignment(layout?.alignItems ?? 0)
-        let justifyContent = layout?.justifyContent ?? 0
-        let fillWidth = (layout?.widthMode ?? 0) == SizeMode.fill
+    @objc private func handleLongPress(_ gesture: NodeLongPressGesture) {
+        guard gesture.state == .began else { return }
+        NativeElementBridge.sendLongPressEvent(gesture.callbackId, nodeId: gesture.nodeId)
+    }
 
-        HStack(alignment: vAlign, spacing: gap) {
-            if justifyContent == 1 || justifyContent == 2 || justifyContent == 4 || justifyContent == 5 { // center, end, spaceAround, spaceEvenly
-                Spacer(minLength: 0)
-            }
-            ForEach(Array(node.children.enumerated()), id: \.element.id) { index, child in
-                if justifyContent == 3 && index > 0 { // spaceBetween
-                    Spacer(minLength: 0)
-                }
-                if justifyContent == 4 && index > 0 { // spaceAround
-                    Spacer(minLength: 0)
-                }
-                if justifyContent == 5 && index > 0 { // spaceEvenly
-                    Spacer(minLength: 0)
-                }
-                RenderNode(node: child)
-                    .maybeFlexGrow(child, axis: .horizontal)
-            }
-            if justifyContent == 1 || justifyContent == 4 || justifyContent == 5 { // center, spaceAround, spaceEvenly
-                Spacer(minLength: 0)
-            }
-            // When fill width, push content to leading edge by adding trailing spacer
-            // (only when justifyContent is start and no spacers already present)
-            if fillWidth && justifyContent == 0 {
-                Spacer(minLength: 0)
+    // MARK: - Child Reconciliation
+
+    private func reconcileChildren(_ parentView: UIView, node: NativeUINode) {
+        if Self.scrollTypes.contains(node.type) {
+            reconcileScrollChildren(parentView, node: node)
+            return
+        }
+        if Self.sheetTypes.contains(node.type) {
+            handleBottomSheet(parentView, node: node)
+            return
+        }
+
+        for (i, child) in node.children.enumerated() {
+            applyNode(node: child, parentView: parentView, index: i)
+        }
+        removeStaleChildren(parentView: parentView, expectedChildren: node.children)
+    }
+
+    private func removeStaleChildren(parentView: UIView, expectedChildren: [NativeUINode]) {
+        let expectedIds = Set(expectedChildren.map { $0.id })
+        for subview in parentView.subviews {
+            let viewNodeId = nodeIdForView(subview)
+            if viewNodeId != nil && !expectedIds.contains(viewNodeId!) {
+                removeViewRecursively(subview)
             }
         }
     }
-}
 
-struct RenderStack: View {
-    let node: NativeUINode
+    private func removeViewRecursively(_ view: UIView) {
+        // Remove children first
+        for sub in view.subviews {
+            removeViewRecursively(sub)
+        }
+        // Remove from maps
+        if let nodeId = nodeIdForView(view) {
+            viewMap.removeValue(forKey: nodeId)
+            nodeMap.removeValue(forKey: nodeId)
+        }
+        view.removeFromSuperview()
+    }
 
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(node.children) { child in
-                RenderNode(node: child)
-            }
+    private func nodeIdForView(_ view: UIView) -> Int? {
+        for (id, v) in viewMap where v === view {
+            return id
+        }
+        return nil
+    }
+
+    private func ensureParent(_ view: UIView, parentView: UIView, index: Int) {
+        if view.superview !== parentView {
+            view.removeFromSuperview()
+            insertView(view, intoParent: parentView, atIndex: index)
         }
     }
-}
 
-struct RenderScrollView: View {
-    let node: NativeUINode
+    private func insertView(_ view: UIView, intoParent parent: UIView, atIndex index: Int) {
+        if index < parent.subviews.count {
+            parent.insertSubview(view, at: index)
+        } else {
+            parent.addSubview(view)
+        }
+    }
 
-    var body: some View {
+    // MARK: - Scroll View
+
+    private func createScrollView(node: NativeUINode) -> UIScrollView {
+        let sv = UIScrollView()
         let horizontal = node.props.getBool("horizontal")
-
-        if horizontal {
-            ScrollView(.horizontal, showsIndicators: node.props.getBool("shows_indicators", default: true)) {
-                LazyHStack(spacing: CGFloat(node.layout?.gap ?? 0)) {
-                    ForEach(flattenedChildren) { child in
-                        RenderNode(node: child)
-                    }
-                }
-                .padding(contentPadding)
-            }
-        } else {
-            ScrollView(.vertical, showsIndicators: node.props.getBool("shows_indicators", default: true)) {
-                LazyVStack(alignment: resolveHorizontalAlignment(wrapperAlignItems), spacing: CGFloat(effectiveGap)) {
-                    ForEach(flattenedChildren) { child in
-                        RenderNode(node: child)
-                    }
-                }
-                .padding(contentPadding)
-            }
-        }
+        sv.showsVerticalScrollIndicator = !horizontal && node.props.getBool("shows_indicators", default: true)
+        sv.showsHorizontalScrollIndicator = horizontal && node.props.getBool("shows_indicators", default: true)
+        sv.alwaysBounceVertical = !horizontal
+        sv.alwaysBounceHorizontal = horizontal
+        sv.clipsToBounds = true
+        return sv
     }
 
-    // Flatten single wrapper column/row for lazy virtualization
-    private var flattenedChildren: [NativeUINode] {
-        let horizontal = node.props.getBool("horizontal")
-        if node.children.count == 1 {
-            let wrapper = node.children[0]
-            let isMatch = horizontal ? wrapper.type == "row" : wrapper.type == "column"
-            if isMatch && !wrapper.children.isEmpty {
-                return wrapper.children
+    private func reconcileScrollChildren(_ scrollViewOrWrapper: UIView, node: NativeUINode) {
+        guard let sv = scrollViewOrWrapper as? UIScrollView else { return }
+
+        // Apply children directly to scroll view
+        for (i, child) in node.children.enumerated() {
+            applyNode(node: child, parentView: sv, index: i)
+        }
+        removeStaleChildren(parentView: sv, expectedChildren: node.children)
+
+        // Compute content size from children extents
+        var maxX: CGFloat = 0
+        var maxY: CGFloat = 0
+        for child in node.children {
+            if let c = child.computed {
+                maxX = max(maxX, CGFloat(c.x + c.width))
+                maxY = max(maxY, CGFloat(c.y + c.height))
             }
         }
-        return node.children
+        sv.contentSize = CGSize(width: maxX, height: maxY)
+        print("DEBUG SCROLL: frame=\(sv.frame) contentSize=\(sv.contentSize) bounce=\(sv.alwaysBounceVertical) children=\(node.children.count) childComputed=\(node.children.first?.computed.map { "(\($0.x),\($0.y),\($0.width),\($0.height))" } ?? "nil")")
     }
 
-    private var effectiveGap: Float {
-        if node.children.count == 1 {
-            let wrapper = node.children[0]
-            let horizontal = node.props.getBool("horizontal")
-            let isMatch = horizontal ? wrapper.type == "row" : wrapper.type == "column"
-            if isMatch, let wl = wrapper.layout {
-                return wl.gap
-            }
-        }
-        return node.layout?.gap ?? 0
-    }
+    // MARK: - Bottom Sheet
 
-    private var wrapperAlignItems: Int {
-        if node.children.count == 1 {
-            let wrapper = node.children[0]
-            if let wl = wrapper.layout { return wl.alignItems }
-        }
-        return 0
-    }
-
-    private var contentPadding: EdgeInsets {
-        if node.children.count == 1 {
-            let wrapper = node.children[0]
-            if let wl = wrapper.layout, hasEdges(wl.paddingTop, wl.paddingRight, wl.paddingBottom, wl.paddingLeft) {
-                return EdgeInsets(
-                    top: CGFloat(wl.paddingTop),
-                    leading: CGFloat(wl.paddingLeft),
-                    bottom: CGFloat(wl.paddingBottom),
-                    trailing: CGFloat(wl.paddingRight)
-                )
-            }
-        }
-        return EdgeInsets()
-    }
-}
-
-// MARK: - Leaf Renderers (built into core)
-
-struct RenderButton: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let p = node.props
-        let label = p.getString("label")
-        let _ = print("[NativeUI] RenderButton label='\(label)' props=\(p.map)")
-        let pressCbId = { let cb = p.getCallbackId("on_press"); return cb != 0 ? cb : node.onPress }()
-        let longPressCbId = node.onLongPress
-        let disabled = p.getBool("disabled")
-        // bg-* class sets style.bgColor; color prop may be text color (e.g. text-white).
-        // Use style bgColor if set, otherwise fall back to color prop for button bg.
-        let styleBg = node.style?.bgColor ?? 0
-        let color = styleBg != 0 ? styleBg : p.getColor("color", default: 0xFF007AFF)
-        let labelColor = p.getColor("label_color", default: 0xFFFFFFFF)
-        // text-white sets "color" prop — use it for label if label_color not set
-        let propColor = p.getColor("color", default: 0)
-        let effectiveLabelColor = (p.getColor("label_color", default: 0) != 0)
-            ? labelColor
-            : (propColor != 0 ? propColor : labelColor)
-        let fontSize = p.getFloat("font_size")
-
-        // Custom Box-style button (matches Android's RenderButton which uses
-        // a styled Box, not Material Button). This lets NodeModifier sizing
-        // (w-full etc.) stretch the background properly.
-        buttonContent(label: label, fontSize: fontSize, labelColor: effectiveLabelColor,
-                      color: color, disabled: disabled, hasStyleBg: styleBg != 0,
-                      pressCbId: pressCbId, longPressCbId: longPressCbId)
-    }
-
-    @ViewBuilder
-    private func buttonContent(label: String, fontSize: Float, labelColor: Int,
-                               color: Int, disabled: Bool, hasStyleBg: Bool,
-                               pressCbId: Int, longPressCbId: Int) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 20)
-        let fillWidth = (node.layout?.widthMode ?? 0) == SizeMode.fill
-
-        // Build the styled label. Skip internal background if NodeModifier
-        // already applies one via bg-* class.
-        let styledLabel = Text(label)
-            .font(.system(size: fontSize > 0 ? CGFloat(fontSize) : 16, weight: .medium))
-            .foregroundColor(Color(argb: labelColor))
-            .padding(.horizontal, 24)
-            .frame(minHeight: 40)
-            .frame(maxWidth: fillWidth ? .infinity : nil)
-
-        let withBg = hasStyleBg
-            ? AnyView(styledLabel)
-            : AnyView(styledLabel.background(Color(argb: color)).clipShape(shape))
-
-        let content = withBg
-            .contentShape(shape)
-            .opacity(disabled ? 0.5 : 1.0)
-
-        if longPressCbId != 0 {
-            content
-                .onLongPressGesture(minimumDuration: 0.5) {
-                    guard !disabled else { return }
-                    NativeUIBridge.sendLongPressEvent(longPressCbId, nodeId: node.id)
-                }
-                .onTapGesture {
-                    guard !disabled else { return }
-                    if pressCbId != 0 {
-                        NativeUIBridge.sendPressEvent(pressCbId, nodeId: node.id)
-                    }
-                }
-        } else {
-            content
-                .onTapGesture {
-                    guard !disabled else { return }
-                    if pressCbId != 0 {
-                        NativeUIBridge.sendPressEvent(pressCbId, nodeId: node.id)
-                    }
-                }
-        }
-    }
-}
-
-struct RenderTextInput: View {
-    let node: NativeUINode
-    @State private var text: String = ""
-
-    var body: some View {
-        let p = node.props
-        let placeholder = p.getString("placeholder")
-        let onChangeCb = p.getCallbackId("on_change")
-        let onSubmitCb = p.getCallbackId("on_submit")
-        let secure = p.getBool("secure")
-
-        Group {
-            if secure {
-                SecureField(placeholder, text: $text)
-            } else {
-                TextField(placeholder, text: $text)
-            }
-        }
-        .textFieldStyle(.roundedBorder)
-        .onChange(of: text) { _, newValue in
-            if onChangeCb != 0 {
-                NativeUIBridge.sendTextChangeEvent(onChangeCb, nodeId: node.id, text: newValue)
-            }
-        }
-        .onSubmit {
-            if onSubmitCb != 0 {
-                NativeUIBridge.sendSubmitEvent(onSubmitCb, nodeId: node.id, text: text)
-            }
-        }
-        .onAppear {
-            text = node.props.getString("value")
-        }
-    }
-}
-
-struct RenderToggle: View {
-    let node: NativeUINode
-    @State private var isOn: Bool = false
-
-    var body: some View {
-        let p = node.props
-        let onChangeCb = p.getCallbackId("on_change")
-        let disabled = p.getBool("disabled")
-        let label = p.getString("label")
-
-        Toggle(label, isOn: $isOn)
-            .disabled(disabled)
-            .onChange(of: isOn) { _, newValue in
-                if onChangeCb != 0 {
-                    NativeUIBridge.sendToggleChangeEvent(onChangeCb, nodeId: node.id, value: newValue)
-                }
-            }
-            .onAppear {
-                isOn = node.props.getBool("value")
-            }
-    }
-}
-
-struct RenderCheckbox: View {
-    let node: NativeUINode
-    @State private var checked: Bool = false
-
-    var body: some View {
-        let p = node.props
-        let label = p.getString("label")
-        let labelColor = p.getColor("label_color", default: 0xFF000000)
-        let onChangeCb = p.getCallbackId("on_change")
-        let disabled = p.getBool("disabled")
-
-        Button(action: {
-            guard !disabled else { return }
-            checked.toggle()
-            if onChangeCb != 0 {
-                NativeUIBridge.sendCheckboxChangeEvent(onChangeCb, nodeId: node.id, value: checked)
-            }
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: checked ? "checkmark.square.fill" : "square")
-                    .foregroundColor(checked ? .accentColor : .secondary)
-                if !label.isEmpty {
-                    Text(label)
-                        .foregroundColor(Color(argb: labelColor))
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .onAppear {
-            checked = node.props.getBool("value")
-        }
-    }
-}
-
-struct RenderSlider: View {
-    let node: NativeUINode
-    @State private var value: Double = 0
-
-    var body: some View {
-        let p = node.props
-        let min = Double(p.getFloat("min", default: 0))
-        let max = Double(p.getFloat("max", default: 1))
-        let step = Double(p.getFloat("step"))
-        let onChangeCb = p.getCallbackId("on_change")
-        let disabled = p.getBool("disabled")
-        let color = p.getColor("color", default: 0)
-
-        Group {
-            if step > 0 {
-                Slider(value: $value, in: min...max, step: step) {
-                    EmptyView()
-                } onEditingChanged: { editing in
-                    if !editing && onChangeCb != 0 {
-                        NativeUIBridge.sendSliderChangeEvent(onChangeCb, nodeId: node.id, value: Float(value))
-                    }
-                }
-            } else {
-                Slider(value: $value, in: min...max) {
-                    EmptyView()
-                } onEditingChanged: { editing in
-                    if !editing && onChangeCb != 0 {
-                        NativeUIBridge.sendSliderChangeEvent(onChangeCb, nodeId: node.id, value: Float(value))
-                    }
-                }
-            }
-        }
-        .disabled(disabled)
-        .tint(color != 0 ? Color(argb: color) : nil)
-        .onAppear {
-            value = Double(node.props.getFloat("value"))
-        }
-    }
-}
-
-struct RenderProgressBar: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let p = node.props
-        let value = Double(p.getFloat("value")).clamped(to: 0...1)
-        let color = p.getColor("color", default: 0xFF007AFF)
-
-        ProgressView(value: value)
-            .tint(Color(argb: color))
-    }
-}
-
-struct RenderActivityIndicator: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let p = node.props
-        let color = p.getColor("color", default: 0xFF007AFF)
-
-        ProgressView()
-            .tint(Color(argb: color))
-    }
-}
-
-struct RenderRadioGroup: View {
-    let node: NativeUINode
-    @State private var selectedValue: String = ""
-
-    var body: some View {
-        let onChangeCb = node.props.getCallbackId("on_change")
-
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(node.children.filter { $0.type == "radio" }) { child in
-                RenderRadio(
-                    node: child,
-                    selectedValue: selectedValue,
-                    onSelect: { value in
-                        selectedValue = value
-                        if onChangeCb != 0 {
-                            NativeUIBridge.sendRadioChangeEvent(onChangeCb, nodeId: node.id, value: value)
-                        }
-                    }
-                )
-            }
-        }
-        .onAppear {
-            selectedValue = node.props.getString("value")
-        }
-    }
-}
-
-struct RenderRadio: View {
-    let node: NativeUINode
-    let selectedValue: String
-    let onSelect: (String) -> Void
-
-    var body: some View {
-        let p = node.props
-        let value = p.getString("value")
-        let label = p.getString("label")
-        let labelColor = p.getColor("label_color", default: 0xFF000000)
-        let disabled = p.getBool("disabled")
-        let isSelected = selectedValue == value
-
-        Button(action: {
-            guard !disabled else { return }
-            onSelect(value)
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: isSelected ? "circle.inset.filled" : "circle")
-                    .foregroundColor(isSelected ? .accentColor : .secondary)
-                if !label.isEmpty {
-                    Text(label)
-                        .foregroundColor(Color(argb: labelColor))
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-struct RenderIcon: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let p = node.props
-        let name = p.getString("name")
-        let size = CGFloat(p.getFloat("size", default: 24))
-        let color = p.getColor("color", default: 0xFF000000)
-
-        Image(systemName: getIconForName(name))
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .frame(width: size, height: size)
-            .foregroundColor(Color(argb: color))
-    }
-}
-
-struct RenderSelect: View {
-    let node: NativeUINode
-    @State private var selected: String = ""
-
-    var body: some View {
-        let p = node.props
-        let options = p.getStringList("options")
-        let onChangeCb = p.getCallbackId("on_change")
-        let disabled = p.getBool("disabled")
-        let placeholder = p.getString("placeholder")
-
-        Menu {
-            ForEach(options, id: \.self) { option in
-                Button(option) {
-                    selected = option
-                    if onChangeCb != 0 {
-                        NativeUIBridge.sendSelectChangeEvent(onChangeCb, nodeId: node.id, value: option)
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                Text(selected.isEmpty ? placeholder : selected)
-                    .foregroundColor(selected.isEmpty ? .secondary : .primary)
-                Spacer()
-                Image(systemName: "chevron.up.chevron.down")
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(.systemGray6))
-            .cornerRadius(8)
-        }
-        .disabled(disabled)
-        .onAppear {
-            selected = node.props.getString("value")
-        }
-    }
-}
-
-struct RenderBadge: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let p = node.props
-        let count = p.getInt("count")
-        let color = p.getColor("color", default: 0xFFFF0000)
-        let textColor = p.getColor("text_color", default: 0xFFFFFFFF)
-
-        Text(count > 99 ? "99+" : "\(count)")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundColor(Color(argb: textColor))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color(argb: color))
-            .clipShape(Capsule())
-    }
-}
-
-struct RenderCard: View {
-    let node: NativeUINode
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(node.children) { child in
-                RenderNode(node: child)
-            }
-        }
-        .background(Color(.systemBackground))
-        .cornerRadius(12)
-        .shadow(radius: 2)
-    }
-}
-
-struct RenderListItem: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let p = node.props
-        let headline = p.getString("headline")
-        let supporting = p.getString("supporting")
-        let overline = p.getString("overline")
-        let leadingIcon = p.getString("leading_icon")
-        let trailingIcon = p.getString("trailing_icon")
-
-        HStack(spacing: 16) {
-            if !leadingIcon.isEmpty {
-                Image(systemName: getIconForName(leadingIcon))
-                    .frame(width: 24, height: 24)
-                    .foregroundColor(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                if !overline.isEmpty {
-                    Text(overline)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Text(headline)
-                    .font(.body)
-                if !supporting.isEmpty {
-                    Text(supporting)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            Spacer()
-
-            if !trailingIcon.isEmpty {
-                Image(systemName: getIconForName(trailingIcon))
-                    .frame(width: 24, height: 24)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
-}
-
-struct RenderTabRow: View {
-    let node: NativeUINode
-    @State private var selectedIndex: Int = 0
-
-    var body: some View {
-        let onChangeCb = node.props.getCallbackId("on_change")
-        let tabs = node.children.filter { $0.type == "tab" }
-
-        if !tabs.isEmpty {
-            VStack(spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-                            let label = tab.props.getString("label")
-                            let icon = tab.props.getString("icon")
-                            let isSelected = index == selectedIndex
-
-                            Button(action: {
-                                selectedIndex = index
-                                if onChangeCb != 0 {
-                                    NativeUIBridge.sendTabChangeEvent(onChangeCb, nodeId: node.id, index: index)
-                                }
-                            }) {
-                                VStack(spacing: 4) {
-                                    if !icon.isEmpty {
-                                        Image(systemName: getIconForName(icon))
-                                    }
-                                    if !label.isEmpty {
-                                        Text(label)
-                                            .font(.subheadline)
-                                    }
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .foregroundColor(isSelected ? .accentColor : .secondary)
-                            }
-                            .overlay(alignment: .bottom) {
-                                if isSelected {
-                                    Rectangle()
-                                        .fill(Color.accentColor)
-                                        .frame(height: 2)
-                                }
-                            }
-                        }
-                    }
-                }
-                Divider()
-            }
-        }
-    }
-}
-
-struct RenderBottomSheet: View {
-    let node: NativeUINode
-    @State private var isPresented: Bool = false
-
-    var body: some View {
+    private func handleBottomSheet(_ view: UIView, node: NativeUINode) {
         let visible = node.props.getBool("visible")
+        view.isHidden = true // Placeholder view is always hidden
+
+        guard visible else { return }
+
+        // Find the presenting view controller
+        guard let vc = findViewController() else { return }
+
+        let sheetVC = UIViewController()
+        sheetVC.view.backgroundColor = .systemBackground
+
+        // Build sheet content
+        let contentView = UIView()
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        sheetVC.view.addSubview(contentView)
+        NSLayoutConstraint.activate([
+            contentView.topAnchor.constraint(equalTo: sheetVC.view.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: sheetVC.view.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: sheetVC.view.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: sheetVC.view.bottomAnchor),
+        ])
+
+        for (i, child) in node.children.enumerated() {
+            applyNode(node: child, parentView: contentView, index: i)
+        }
+
+        if let sheet = sheetVC.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+
         let onDismissCb = node.props.getCallbackId("on_dismiss")
+        sheetVC.presentationController?.delegate = SheetDismissDelegate(callbackId: onDismissCb, nodeId: node.id)
 
-        Color.clear.frame(width: 0, height: 0)
-            .sheet(isPresented: $isPresented, onDismiss: {
-                if onDismissCb != 0 {
-                    NativeUIBridge.sendSheetDismissEvent(onDismissCb, nodeId: node.id)
-                }
-            }) {
-                VStack(spacing: 0) {
-                    ForEach(node.children) { child in
-                        RenderNode(node: child)
-                    }
-                }
-                .presentationDetents([.medium, .large])
-            }
-            .onAppear { isPresented = visible }
-            .onChange(of: visible) { _, v in isPresented = v }
+        vc.present(sheetVC, animated: true)
+    }
+
+    private func findViewController() -> UIViewController? {
+        var responder: UIResponder? = self
+        while let next = responder?.next {
+            if let vc = next as? UIViewController { return vc }
+            responder = next
+        }
+        return nil
     }
 }
 
-struct RenderChip: View {
-    let node: NativeUINode
-    @State private var isSelected: Bool = false
+// MARK: - Gesture Recognizer Subclasses
 
-    var body: some View {
-        let p = node.props
-        let label = p.getString("label")
-        let onChangeCb = p.getCallbackId("on_change")
-        let iconName = p.getString("icon")
+final class NodeTapGesture: UITapGestureRecognizer {
+    var callbackId: Int = 0
+    var nodeId: Int = 0
+}
 
-        Button(action: {
-            isSelected.toggle()
-            if onChangeCb != 0 {
-                NativeUIBridge.sendToggleChangeEvent(onChangeCb, nodeId: node.id, value: isSelected)
-            }
-        }) {
-            HStack(spacing: 6) {
-                if !iconName.isEmpty {
-                    Image(systemName: getIconForName(iconName))
-                        .font(.system(size: 14))
-                }
-                Text(label)
-                    .font(.subheadline)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(isSelected ? Color.accentColor.opacity(0.15) : Color(.systemGray6))
-            .foregroundColor(isSelected ? .accentColor : .primary)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(isSelected ? Color.accentColor : Color(.systemGray4), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .onAppear {
-            isSelected = node.props.getBool("selected")
+final class NodeLongPressGesture: UILongPressGestureRecognizer {
+    var callbackId: Int = 0
+    var nodeId: Int = 0
+}
+
+// MARK: - Sheet Dismiss Delegate
+
+final class SheetDismissDelegate: NSObject, UIAdaptivePresentationControllerDelegate {
+    let callbackId: Int
+    let nodeId: Int
+
+    init(callbackId: Int, nodeId: Int) {
+        self.callbackId = callbackId
+        self.nodeId = nodeId
+    }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        if callbackId != 0 {
+            NativeElementBridge.sendSheetDismissEvent(callbackId, nodeId: nodeId)
         }
     }
 }
 
-// MARK: - Alignment Helpers
+// MARK: - UIColor Extension
 
-func resolveHorizontalAlignment(_ alignItems: Int) -> HorizontalAlignment {
-    switch alignItems {
-    case 0: return .leading
-    case 1: return .center
-    case 2: return .trailing
-    default: return .leading
+extension UIColor {
+    convenience init(argb: Int) {
+        let v = UInt32(bitPattern: Int32(truncatingIfNeeded: argb))
+        let a = CGFloat((v >> 24) & 0xFF) / 255.0
+        let r = CGFloat((v >> 16) & 0xFF) / 255.0
+        let g = CGFloat((v >> 8) & 0xFF) / 255.0
+        let b = CGFloat(v & 0xFF) / 255.0
+        self.init(red: r, green: g, blue: b, alpha: a)
     }
 }
 
-func resolveVerticalAlignment(_ alignItems: Int) -> VerticalAlignment {
-    switch alignItems {
-    case 0: return .top
-    case 1: return .center
-    case 2: return .bottom
-    default: return .top
+// MARK: - Color Helpers (keep for backward compat with other files)
+
+extension Color {
+    init(argb: Int) {
+        let a = Double((argb >> 24) & 0xFF) / 255.0
+        let r = Double((argb >> 16) & 0xFF) / 255.0
+        let g = Double((argb >> 8) & 0xFF) / 255.0
+        let b = Double(argb & 0xFF) / 255.0
+        self.init(.sRGB, red: r, green: g, blue: b, opacity: a)
     }
 }
-
-// MARK: - Color / Utility Helpers
 
 func hasEdges(_ top: Float, _ right: Float, _ bottom: Float, _ left: Float) -> Bool {
     top > 0 || right > 0 || bottom > 0 || left > 0
-}
-
-extension Double {
-    func clamped(to range: ClosedRange<Double>) -> Double {
-        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
-    }
-}
-
-// MARK: - Click Handler Extension
-
-extension View {
-    @ViewBuilder
-    func applyClickHandlers(node: NativeUINode) -> some View {
-        if node.onPress != 0 && node.onLongPress != 0 {
-            // Both tap and long press: use onLongPressGesture for long press,
-            // onTapGesture for tap. Order matters — onLongPressGesture must
-            // come first so it gets priority over the tap recognizer.
-            self
-                .onLongPressGesture(minimumDuration: 0.5) {
-                    NativeUIBridge.sendLongPressEvent(node.onLongPress, nodeId: node.id)
-                }
-                .onTapGesture {
-                    NativeUIBridge.sendPressEvent(node.onPress, nodeId: node.id)
-                }
-        } else if node.onLongPress != 0 {
-            self
-                .onLongPressGesture(minimumDuration: 0.5) {
-                    NativeUIBridge.sendLongPressEvent(node.onLongPress, nodeId: node.id)
-                }
-        } else if node.onPress != 0 {
-            self
-                .onTapGesture {
-                    NativeUIBridge.sendPressEvent(node.onPress, nodeId: node.id)
-                }
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
-    func maybeFlexGrow(_ node: NativeUINode, axis: Axis = .vertical) -> some View {
-        let grow = node.layout?.flexGrow ?? 0
-        if grow > 0 {
-            // Use layoutPriority to approximate weighted flex-grow.
-            // Higher grow values get more space.
-            switch axis {
-            case .vertical:
-                self.frame(maxHeight: .infinity)
-                    .layoutPriority(Double(grow))
-            case .horizontal:
-                self.frame(maxWidth: .infinity)
-                    .layoutPriority(Double(grow))
-            }
-        } else {
-            self
-        }
-    }
 }

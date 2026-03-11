@@ -9,6 +9,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
+import android.content.res.Resources
 
 /**
  * Element Runtime bridge — direct JNI push architecture.
@@ -18,21 +19,31 @@ import java.util.concurrent.locks.LockSupport
  * - Compose callbacks enqueue events into eventQueue
  * - PHP thread calls pollEvent() which blocks on the queue
  *
- * Flat node layout (108 bytes packed, little-endian):
+ * Flat node layout (160 bytes packed, little-endian):
  *   0: id (u32)           4: type_idx (u16)      6: child_count (u16)
  *   8: first_child_offset  12: on_press           16: on_long_press
  *  20: width (f32)        24: width_mode (u8)    25: height (f32)
- *  29: height_mode (u8)   30: align_self (u8)    31: align_items (u8)
- *  32: justify_content     33: safe_area          34: padding[4] (4×f32)
- *  50: margin[4] (4×f32)  66: flex_grow          70: flex_shrink
- *  74: gap                78: bg_color (u32)     82: border_radius
- *  86: border_width       90: border_color       94: opacity
- *  98: elevation         102: prop_offset        106: prop_size (u16)
+ *  29: height_mode (u8)   30: padding[4] (4×f32) 46: margin[4] (4×f32)
+ *  62: flex_grow          66: flex_shrink         70: align_self (u8)
+ *  71: align_items (u8)   72: justify_content     73: gap (f32)
+ *  77: safe_area (u8)
+ *  --- Extended layout (Yoga) ---
+ *  78: min_width          82: min_height          86: max_width
+ *  90: max_height         94: flex_basis           98: flex_basis_mode (u8)
+ *  99: flex_wrap (u8)    100: flex_direction (u8) 101: position_type (u8)
+ * 102: position[4] (4×f32)                       118: display (u8)
+ * 119: overflow (u8)     120: align_content (u8)  121: direction (u8)
+ * 122: aspect_ratio      126: row_gap
+ *  --- Style ---
+ * 130: bg_color          134: border_radius       138: border_width
+ * 142: border_color      146: opacity             150: elevation
+ * 154: prop_offset       158: prop_size (u16)
  */
 class NativeElementBridge private constructor() {
     companion object {
         private const val TAG = "NativeElementBridge"
-        private const val FLAT_NODE_SIZE = 108
+        private const val LEGACY_NODE_SIZE = 108
+        private const val YOGA_NODE_SIZE = 160
 
         /* ── JNI native methods (registered by bridge_jni.cpp) ── */
 
@@ -131,7 +142,7 @@ class NativeElementBridge private constructor() {
                 }
 
                 // Hand off to shadow thread — overwrites any pending update (coalescing)
-                val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, t0, t1)
+                val update = ShadowUpdate(flatBuf, propBuf, flatBytes, typeTable, nodeCount, isNav, t0, t1)
                 pendingUpdate.set(update)
                 shadowThread?.let { LockSupport.unpark(it) }
             } catch (e: Throwable) {
@@ -159,7 +170,15 @@ class NativeElementBridge private constructor() {
                     val tParseEnd = System.nanoTime()
 
                     if (tree != null) {
-                        val nc = countNodes(tree.root)
+                        // Yoga layout computation (if enabled)
+                        val yogaTree = if (YogaBridge.yogaEnabled) {
+                            YogaBridge.computeLayout(
+                                tree, update.flatBytes, update.nodeCount,
+                                update.typeTable, Resources.getSystem().displayMetrics
+                            )
+                        } else tree
+
+                        val nc = countNodes(yogaTree.root)
                         val prev = previousTree
                         val isDiffOn = diffEnabled
                         val diffedTree: NativeUITree
@@ -167,13 +186,13 @@ class NativeElementBridge private constructor() {
                         if (prev != null && !update.isNav && isDiffOn) {
                             val stats = DiffStats()
                             val tDiffStart = System.nanoTime()
-                            val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
+                            val diffedRoot = diffNodeWithStats(prev.root, yogaTree.root, stats)
                             val tDiffEnd = System.nanoTime()
-                            diffedTree = tree.copy(root = diffedRoot)
+                            diffedTree = yogaTree.copy(root = diffedRoot)
                             PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
                             PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
                         } else {
-                            diffedTree = tree
+                            diffedTree = yogaTree
                             PerformanceTracker.onTreeDiffed(0, 0, nc, false)
                             PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, 0)
                         }
@@ -279,18 +298,33 @@ class NativeElementBridge private constructor() {
             nodeCount: Int
         ): NativeUITree? {
             if (nodeCount == 0) return null
-            if (flatBuf.remaining() < nodeCount * FLAT_NODE_SIZE) return null
 
-            val root = readNodeDFS(flatBuf, propBuf, typeTable) ?: return null
+            // Auto-detect node stride from buffer size
+            val perNode = flatBuf.remaining() / nodeCount
+            val stride = when {
+                perNode >= YOGA_NODE_SIZE -> YOGA_NODE_SIZE
+                perNode >= LEGACY_NODE_SIZE -> LEGACY_NODE_SIZE
+                else -> {
+                    Log.e(TAG, "unexpected node size $perNode (flat=${flatBuf.remaining()} nodes=$nodeCount)")
+                    return null
+                }
+            }
+
+            if (flatBuf.remaining() < nodeCount * stride) return null
+
+            val root = readNodeDFS(flatBuf, propBuf, typeTable, stride) ?: return null
             return NativeUITree(0, 0, root)
         }
 
         private fun readNodeDFS(
             buf: ByteBuffer,
             propBuf: ByteBuffer?,
-            typeTable: Array<String>
+            typeTable: Array<String>,
+            stride: Int
         ): NativeUINode? {
-            if (buf.remaining() < FLAT_NODE_SIZE) return null
+            if (buf.remaining() < stride) return null
+
+            val isYoga = stride >= YOGA_NODE_SIZE
 
             val id = buf.int
             val typeIdx = buf.short.toInt() and 0xFFFF
@@ -322,6 +356,38 @@ class NativeElementBridge private constructor() {
             val gap = buf.float
             val safeArea = buf.get().toInt() and 0xFF
 
+            // Extended layout fields (Yoga) — only present in 160-byte nodes
+            val minWidth: Float; val minHeight: Float; val maxWidth: Float; val maxHeight: Float
+            val flexBasis: Float; val flexBasisMode: Int; val flexWrap: Int; val flexDirection: Int
+            val positionType: Int
+            val positionTop: Float; val positionRight: Float; val positionBottom: Float; val positionLeft: Float
+            val display: Int; val overflow: Int; val alignContent: Int; val direction: Int
+            val aspectRatio: Float; val rowGap: Float
+
+            if (isYoga) {
+                minWidth = buf.float; minHeight = buf.float
+                maxWidth = buf.float; maxHeight = buf.float
+                flexBasis = buf.float
+                flexBasisMode = buf.get().toInt() and 0xFF
+                flexWrap = buf.get().toInt() and 0xFF
+                flexDirection = buf.get().toInt() and 0xFF
+                positionType = buf.get().toInt() and 0xFF
+                positionTop = buf.float; positionRight = buf.float
+                positionBottom = buf.float; positionLeft = buf.float
+                display = buf.get().toInt() and 0xFF
+                overflow = buf.get().toInt() and 0xFF
+                alignContent = buf.get().toInt() and 0xFF
+                direction = buf.get().toInt() and 0xFF
+                aspectRatio = buf.float; rowGap = buf.float
+            } else {
+                minWidth = 0f; minHeight = 0f; maxWidth = 0f; maxHeight = 0f
+                flexBasis = 0f; flexBasisMode = 0; flexWrap = 0; flexDirection = 0
+                positionType = 0
+                positionTop = 0f; positionRight = 0f; positionBottom = 0f; positionLeft = 0f
+                display = 0; overflow = 0; alignContent = 0; direction = 0
+                aspectRatio = 0f; rowGap = 0f
+            }
+
             val bgColor = buf.int
             val borderRadius = buf.float
             val borderWidth = buf.float
@@ -339,7 +405,12 @@ class NativeElementBridge private constructor() {
                 paddingTop, paddingRight, paddingBottom, paddingLeft,
                 marginTop, marginRight, marginBottom, marginLeft,
                 flexGrow, flexShrink,
-                alignSelf, alignItems, justifyContent, gap, safeArea
+                alignSelf, alignItems, justifyContent, gap, safeArea,
+                minWidth, minHeight, maxWidth, maxHeight,
+                flexBasis, flexBasisMode, flexWrap, flexDirection, positionType,
+                positionTop, positionRight, positionBottom, positionLeft,
+                display, overflow, alignContent, direction,
+                aspectRatio, rowGap
             )
 
             val style = NodeStyle(bgColor, borderRadius, borderWidth, borderColor, opacity, elevation)
@@ -352,7 +423,7 @@ class NativeElementBridge private constructor() {
 
             val children = ArrayList<NativeUINode>(childCount)
             for (i in 0 until childCount) {
-                val child = readNodeDFS(buf, propBuf, typeTable) ?: break
+                val child = readNodeDFS(buf, propBuf, typeTable, stride) ?: break
                 children.add(child)
             }
 
@@ -561,7 +632,8 @@ class NativeElementBridge private constructor() {
                     old.style == new.style &&
                     old.onPress == new.onPress &&
                     old.onLongPress == new.onLongPress &&
-                    old.props == new.props
+                    old.props == new.props &&
+                    old.computed == new.computed
 
             // Entire subtree identical — reuse old reference
             if (fieldsMatch && allChildrenReused) {
@@ -596,6 +668,7 @@ class NativeElementBridge private constructor() {
 private data class ShadowUpdate(
     val flatBuf: ByteBuffer,
     val propBuf: ByteBuffer?,
+    val flatBytes: ByteArray,   // raw bytes for Yoga bridge
     val typeTable: Array<String>,
     val nodeCount: Int,
     val isNav: Boolean,

@@ -24,9 +24,11 @@ class Circle extends Element
         if (isset($attrs['top'])) {
             $this->circleProps['top'] = (float) $attrs['top'];
         }
+    }
 
-        // Force circular shape — buildModifier clips bg with this radius
-        $this->borderRadius(9999);
+    protected function styleDefaults(): array
+    {
+        return ['border_radius' => 9999];
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

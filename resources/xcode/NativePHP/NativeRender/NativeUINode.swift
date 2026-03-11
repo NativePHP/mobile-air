@@ -1,4 +1,4 @@
-import SwiftUI
+import Foundation
 
 // MARK: - Size Modes (must match nativephp_ui.h)
 
@@ -151,6 +151,8 @@ final class GenericProps: Equatable {
 
     var isEmpty: Bool { map.isEmpty }
 
+    var debugDescription: String { "\(map)" }
+
     static func == (lhs: GenericProps, rhs: GenericProps) -> Bool {
         NSDictionary(dictionary: lhs.map).isEqual(to: rhs.map)
     }
@@ -175,6 +177,7 @@ final class NativeUINode: Identifiable, Equatable {
     let onPress: Int
     let onLongPress: Int
     let children: [NativeUINode]
+    let computed: ComputedLayout?
 
     init(
         id: Int,
@@ -184,7 +187,8 @@ final class NativeUINode: Identifiable, Equatable {
         props: GenericProps,
         onPress: Int,
         onLongPress: Int,
-        children: [NativeUINode]
+        children: [NativeUINode],
+        computed: ComputedLayout? = nil
     ) {
         self.id = id
         self.type = type
@@ -194,13 +198,15 @@ final class NativeUINode: Identifiable, Equatable {
         self.onPress = onPress
         self.onLongPress = onLongPress
         self.children = children
+        self.computed = computed
     }
 
-    func copy(children: [NativeUINode]? = nil) -> NativeUINode {
+    func copy(children: [NativeUINode]? = nil, computed: ComputedLayout? = nil) -> NativeUINode {
         NativeUINode(
             id: id, type: type, layout: layout, style: style,
             props: props, onPress: onPress, onLongPress: onLongPress,
-            children: children ?? self.children
+            children: children ?? self.children,
+            computed: computed ?? self.computed
         )
     }
 
@@ -231,6 +237,35 @@ struct NodeLayout: Equatable {
     let justifyContent: Int
     let gap: Float
     let safeArea: Int
+    // Extended layout fields (Yoga)
+    let minWidth: Float
+    let minHeight: Float
+    let maxWidth: Float
+    let maxHeight: Float
+    let flexBasis: Float
+    let flexBasisMode: Int
+    let flexWrap: Int
+    let flexDirection: Int
+    let positionType: Int
+    let positionTop: Float
+    let positionRight: Float
+    let positionBottom: Float
+    let positionLeft: Float
+    let display: Int
+    let overflow: Int
+    let alignContent: Int
+    let direction: Int
+    let aspectRatio: Float
+    let rowGap: Float
+}
+
+// MARK: - Computed Layout (Yoga output)
+
+struct ComputedLayout: Equatable {
+    let x: Float
+    let y: Float
+    let width: Float
+    let height: Float
 }
 
 // MARK: - Style
@@ -283,14 +318,3 @@ enum ColorParser {
     }
 }
 
-// MARK: - Color Extension
-
-extension Color {
-    init(argb: Int) {
-        let a = Double((argb >> 24) & 0xFF) / 255.0
-        let r = Double((argb >> 16) & 0xFF) / 255.0
-        let g = Double((argb >> 8) & 0xFF) / 255.0
-        let b = Double(argb & 0xFF) / 255.0
-        self.init(.sRGB, red: r, green: g, blue: b, opacity: a)
-    }
-}

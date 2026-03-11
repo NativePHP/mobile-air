@@ -46,22 +46,14 @@ abstract class NativeComponent
 
     protected function view(string $name, array $data = []): Element
     {
-        NativeElementCollector::reset();
-
         $viewData = array_merge($this->getPublicProperties(), $data);
 
-        $t0 = microtime(true);
+        NativeElementCollector::reset();
+        NativeElementCollector::setCallbacks($this->callbacks);
+
         view("native.{$name}", $viewData)->render();
-        $t1 = microtime(true);
-        $element = NativeElementCollector::collect();
-        $t2 = microtime(true);
 
-        NativeRouter::debugLog(sprintf(
-            'PERF view(%s) blade=%.1fms collect=%.1fms',
-            $name, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000
-        ));
-
-        return $element;
+        return NativeElementCollector::collect();
     }
 
     /**
@@ -77,19 +69,21 @@ abstract class NativeComponent
 
         nphp_frame_begin();
 
-        $t0 = microtime(true);
-        view("native.{$name}", $viewData)->render();
-        $t1 = microtime(true);
+        try {
+            $t0 = microtime(true);
+            view("native.{$name}", $viewData)->render();
+            $t1 = microtime(true);
 
-        nphp_frame_end();
-        $t2 = microtime(true);
+            nphp_frame_end();
+            $t2 = microtime(true);
 
-        NativeElementCollector::setStreaming(false);
-
-        NativeRouter::debugLog(sprintf(
-            'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
-            $name, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000, ($t2 - $t0) * 1000
-        ));
+            NativeRouter::debugLog(sprintf(
+                'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
+                $name, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000, ($t2 - $t0) * 1000
+            ));
+        } finally {
+            NativeElementCollector::setStreaming(false);
+        }
     }
 
     private function getPublicProperties(): array
@@ -204,7 +198,8 @@ abstract class NativeComponent
             if (! $this->hasError) {
                 try {
                     if (! $this->renderStreaming()) {
-                        $tree = $this->render()->toArray($this->callbacks);
+                        $element = $this->render();
+                        $tree = $element->toArray($this->callbacks);
                         nativephp_element_publish($tree);
                     }
                 } catch (NativeDumpException $e) {
@@ -275,7 +270,7 @@ abstract class NativeComponent
                     $t0 = microtime(true);
 
                     if ($this->renderStreaming()) {
-                        // Streaming path — Blade wrote directly to C buffer
+                        // Explicit streaming path
                         $this->router?->flushDeferredTransition();
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
@@ -283,8 +278,8 @@ abstract class NativeComponent
                             static::class, ($t3 - $t0) * 1000
                         ));
                     } else {
-                        // Legacy path
                         $element = $this->render();
+
                         $t1 = microtime(true);
                         $tree = $element->toArray($this->callbacks);
                         $t2 = microtime(true);

@@ -29,10 +29,6 @@ class Button extends Element
         if (isset($attrs['disabled'])) {
             $this->buttonProps['disabled'] = (bool) $attrs['disabled'];
         }
-        // bg-* on a button sets the button tint color, not the node background
-        if (isset($attrs['bg'])) {
-            $this->buttonProps['color'] = $attrs['bg'];
-        }
         if (isset($attrs['color'])) {
             $this->buttonProps['label_color'] = $attrs['color'];
         }

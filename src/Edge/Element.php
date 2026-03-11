@@ -163,6 +163,132 @@ abstract class Element
         return $this;
     }
 
+    // ── Extended layout methods (Yoga) ──────────────
+
+    public function minWidth(float $value): static
+    {
+        $this->layout['min_width'] = $value;
+
+        return $this;
+    }
+
+    public function minHeight(float $value): static
+    {
+        $this->layout['min_height'] = $value;
+
+        return $this;
+    }
+
+    public function maxWidth(float $value): static
+    {
+        $this->layout['max_width'] = $value;
+
+        return $this;
+    }
+
+    public function maxHeight(float $value): static
+    {
+        $this->layout['max_height'] = $value;
+
+        return $this;
+    }
+
+    public function flexBasis(float|string $value): static
+    {
+        $this->layout['flex_basis'] = $value;
+
+        return $this;
+    }
+
+    public function flexWrap(int $value = 1): static
+    {
+        $this->layout['flex_wrap'] = $value;
+
+        return $this;
+    }
+
+    public function flexDirection(int $value): static
+    {
+        $this->layout['flex_direction'] = $value;
+
+        return $this;
+    }
+
+    public function positionType(int $value): static
+    {
+        $this->layout['position_type'] = $value;
+
+        return $this;
+    }
+
+    public function absolute(): static
+    {
+        $this->layout['position_type'] = 1;
+
+        return $this;
+    }
+
+    public function insets(float ...$values): static
+    {
+        $this->layout['position'] = match (count($values)) {
+            1 => [$values[0], $values[0], $values[0], $values[0]],
+            2 => [$values[0], $values[1], $values[0], $values[1]],
+            4 => $values,
+            default => $this->layout['position'] ?? [0, 0, 0, 0],
+        };
+
+        return $this;
+    }
+
+    public function display(int $value): static
+    {
+        $this->layout['display'] = $value;
+
+        return $this;
+    }
+
+    public function hidden(): static
+    {
+        $this->layout['display'] = 1;
+
+        return $this;
+    }
+
+    public function overflow(int $value): static
+    {
+        $this->layout['overflow'] = $value;
+
+        return $this;
+    }
+
+    public function alignContent(int $value): static
+    {
+        $this->layout['align_content'] = $value;
+
+        return $this;
+    }
+
+    public function direction(int $value): static
+    {
+        $this->layout['direction'] = $value;
+
+        return $this;
+    }
+
+    public function aspectRatio(float $value): static
+    {
+        $this->layout['aspect_ratio'] = $value;
+
+        return $this;
+    }
+
+    public function rowGap(float $value): static
+    {
+        $this->layout['row_gap'] = $value;
+
+        return $this;
+    }
+
     // ── Style methods ────────────────────────────────
 
     public function bg(string $color): static
@@ -224,6 +350,23 @@ abstract class Element
         return $this;
     }
 
+    // ── Defaults (override in subclasses) ──────────────
+
+    protected function defaults(): array
+    {
+        return [];
+    }
+
+    protected function layoutDefaults(): array
+    {
+        return [];
+    }
+
+    protected function styleDefaults(): array
+    {
+        return [];
+    }
+
     // ── Streaming getters ────────────────────────────
 
     public function getType(): string
@@ -233,12 +376,12 @@ abstract class Element
 
     public function getLayout(): array
     {
-        return $this->layout;
+        return array_merge($this->layoutDefaults(), $this->layout);
     }
 
     public function getStyle(): array
     {
-        return $this->style;
+        return array_merge($this->styleDefaults(), $this->style);
     }
 
     public function getPressCallbackId(CallbackRegistry $registry): int
@@ -267,10 +410,10 @@ abstract class Element
 
     public function getResolvedProps(CallbackRegistry $registry): array
     {
-        return $this->resolveProps($registry);
+        return array_merge($this->defaults(), $this->resolveProps($registry));
     }
 
-    // ── Resolution ───────────────────────────────────
+    // ── Legacy tree serialization ───────────────────
 
     public function toArray(CallbackRegistry $registry, int &$nextId = 1): array
     {
@@ -279,15 +422,17 @@ abstract class Element
             'type' => $this->type,
         ];
 
-        if (! empty($this->layout)) {
-            $node['layout'] = $this->layout;
+        $layout = $this->getLayout();
+        if (! empty($layout)) {
+            $node['layout'] = $layout;
         }
 
-        if (! empty($this->style)) {
-            $node['style'] = $this->style;
+        $style = $this->getStyle();
+        if (! empty($style)) {
+            $node['style'] = $style;
         }
 
-        $props = $this->resolveProps($registry);
+        $props = $this->getResolvedProps($registry);
         if (! empty($props)) {
             $node['props'] = $props;
         }
@@ -316,6 +461,8 @@ abstract class Element
 
         return $node;
     }
+
+    // ── Resolution ───────────────────────────────────
 
     protected function resolveProps(CallbackRegistry $registry): array
     {
