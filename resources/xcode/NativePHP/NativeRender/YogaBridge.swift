@@ -8,9 +8,6 @@ import Bridge
 /// and returns an annotated tree with ComputedLayout on each node.
 final class YogaBridge {
 
-    /// Feature flag — when false, Yoga is skipped entirely
-    static var yogaEnabled = true
-
     /// Compute Yoga layout for a tree and return an annotated copy with ComputedLayout on each node.
     static func computeLayout(
         tree: NativeUITree,
@@ -19,13 +16,15 @@ final class YogaBridge {
         typeTable: [String],
         viewportSize: CGSize
     ) -> NativeUITree {
-        guard yogaEnabled else { return tree }
         guard nodeCount > 0 else { return tree }
 
-        // Yoga C bridge requires 160-byte flat nodes. If PHP writes 108-byte nodes,
-        // skip Yoga and fall back to SwiftUI layout.
         let perNode = flatData.count / nodeCount
-        guard perNode >= 160 else { return tree }
+        print("YogaBridge: nodes=\(nodeCount) perNode=\(perNode) viewport=\(viewportSize.width)x\(viewportSize.height) flat=\(flatData.count)")
+
+        guard perNode >= 160 else {
+            print("YogaBridge: ERROR node size \(perNode) < 160 — rebuild PHP binaries")
+            return tree
+        }
 
         let t0 = CFAbsoluteTimeGetCurrent()
 

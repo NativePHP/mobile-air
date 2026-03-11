@@ -24,9 +24,8 @@ import os
 /// 142: border_color      146: opacity             150: elevation
 /// 154: prop_offset       158: prop_size (u16)
 final class NativeElementBridge {
-    /// Node stride: 108 for legacy PHP binaries, 160 for Yoga-aware
-    private static let legacyNodeSize = 108
-    private static let yogaNodeSize = 160
+    /// Node stride: 160 bytes (Yoga-aware). Legacy 108-byte nodes are not supported.
+    private static let nodeSize = 160
 
     // MARK: - Region struct offsets (arm64 Darwin, computed via offsetof)
     // Must match nphp_element_region_t in nphp_element.h
@@ -88,6 +87,9 @@ final class NativeElementBridge {
     /// Shadow thread reference and run flag
     private static var shadowThread: pthread_t?
     private static var shadowRunning = false
+
+    /// Viewport size cached from main thread (UIScreen.main is not thread-safe)
+    private static var cachedViewportSize = CGSize(width: 393, height: 852) // default iPhone 15
 
     // MARK: - Region Management
 
@@ -193,6 +195,15 @@ final class NativeElementBridge {
 
         cachedTypeTable = typeTable
 
+        // Capture viewport size from main thread (UIScreen.main is not thread-safe)
+        if Thread.isMainThread {
+            cachedViewportSize = UIScreen.main.bounds.size
+        } else {
+            DispatchQueue.main.sync {
+                cachedViewportSize = UIScreen.main.bounds.size
+            }
+        }
+
         let update = ShadowUpdate(
             flatData: flatData, propData: propData,
             typeTable: typeTable, nodeCount: nodeCount, isNav: isNav
@@ -271,20 +282,15 @@ final class NativeElementBridge {
                 continue
             }
 
-            // Yoga layout computation (if enabled)
-            let yogaTree: NativeUITree
-            if YogaBridge.yogaEnabled {
-                let screenSize = UIScreen.main.bounds.size
-                yogaTree = YogaBridge.computeLayout(
-                    tree: tree,
-                    flatData: update.flatData,
-                    nodeCount: update.nodeCount,
-                    typeTable: update.typeTable,
-                    viewportSize: screenSize
-                )
-            } else {
-                yogaTree = tree
-            }
+            // Yoga layout computation
+            let viewport = cachedViewportSize
+            let yogaTree = YogaBridge.computeLayout(
+                tree: tree,
+                flatData: update.flatData,
+                nodeCount: update.nodeCount,
+                typeTable: update.typeTable,
+                viewportSize: viewport
+            )
 
             // Diff against previous tree (reuse unchanged subtrees)
             let finalTree: NativeUITree
@@ -474,17 +480,12 @@ final class NativeElementBridge {
     private static func readTreeFromFlatBuffer(_ flatData: Data, propData: Data?, typeTable: [String], nodeCount: Int) -> NativeUITree? {
         guard nodeCount > 0 else { return nil }
 
-        // Auto-detect node stride from buffer size
-        let stride: Int
         let perNode = flatData.count / nodeCount
-        if perNode >= yogaNodeSize {
-            stride = yogaNodeSize
-        } else if perNode >= legacyNodeSize {
-            stride = legacyNodeSize
-        } else {
-            print("NativeElementBridge: unexpected node size \(perNode) (flat=\(flatData.count) nodes=\(nodeCount))")
+        guard perNode >= nodeSize else {
+            print("NativeElementBridge: ERROR node size \(perNode) < \(nodeSize) — rebuild PHP binaries with 160-byte struct (flat=\(flatData.count) nodes=\(nodeCount))")
             return nil
         }
+        let stride = nodeSize
 
         guard flatData.count >= nodeCount * stride else { return nil }
 
@@ -497,8 +498,6 @@ final class NativeElementBridge {
 
     private static func readNodeDFS(_ flatData: Data, propData: Data?, typeTable: [String], stride: Int, offset: inout Int) -> NativeUINode? {
         guard offset + stride <= flatData.count else { return nil }
-
-        let isYoga = stride >= yogaNodeSize
 
         return flatData.withUnsafeBytes { buf in
             let base = buf.baseAddress!.advanced(by: offset)
@@ -547,54 +546,35 @@ final class NativeElementBridge {
             let borderColor: Int, opacity: Float, elevation: Float
             let propOffset: Int, propSize: Int
 
-            if isYoga {
-                // 160-byte node: extended Yoga fields at 78..129, style at 130, props at 154
-                minWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 78, as: UInt32.self).littleEndian)
-                minHeight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 82, as: UInt32.self).littleEndian)
-                maxWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 86, as: UInt32.self).littleEndian)
-                maxHeight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 90, as: UInt32.self).littleEndian)
-                flexBasis = Float(bitPattern: base.loadUnaligned(fromByteOffset: 94, as: UInt32.self).littleEndian)
-                flexBasisMode = Int(base.load(fromByteOffset: 98, as: UInt8.self))
-                flexWrap = Int(base.load(fromByteOffset: 99, as: UInt8.self))
-                flexDirection = Int(base.load(fromByteOffset: 100, as: UInt8.self))
-                positionType = Int(base.load(fromByteOffset: 101, as: UInt8.self))
-                positionTop = Float(bitPattern: base.loadUnaligned(fromByteOffset: 102, as: UInt32.self).littleEndian)
-                positionRight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 106, as: UInt32.self).littleEndian)
-                positionBottom = Float(bitPattern: base.loadUnaligned(fromByteOffset: 110, as: UInt32.self).littleEndian)
-                positionLeft = Float(bitPattern: base.loadUnaligned(fromByteOffset: 114, as: UInt32.self).littleEndian)
-                display = Int(base.load(fromByteOffset: 118, as: UInt8.self))
-                overflow = Int(base.load(fromByteOffset: 119, as: UInt8.self))
-                alignContent = Int(base.load(fromByteOffset: 120, as: UInt8.self))
-                direction = Int(base.load(fromByteOffset: 121, as: UInt8.self))
-                aspectRatio = Float(bitPattern: base.loadUnaligned(fromByteOffset: 122, as: UInt32.self).littleEndian)
-                rowGap = Float(bitPattern: base.loadUnaligned(fromByteOffset: 126, as: UInt32.self).littleEndian)
+            // 160-byte node: extended Yoga fields at 78..129, style at 130, props at 154
+            minWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 78, as: UInt32.self).littleEndian)
+            minHeight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 82, as: UInt32.self).littleEndian)
+            maxWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 86, as: UInt32.self).littleEndian)
+            maxHeight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 90, as: UInt32.self).littleEndian)
+            flexBasis = Float(bitPattern: base.loadUnaligned(fromByteOffset: 94, as: UInt32.self).littleEndian)
+            flexBasisMode = Int(base.load(fromByteOffset: 98, as: UInt8.self))
+            flexWrap = Int(base.load(fromByteOffset: 99, as: UInt8.self))
+            flexDirection = Int(base.load(fromByteOffset: 100, as: UInt8.self))
+            positionType = Int(base.load(fromByteOffset: 101, as: UInt8.self))
+            positionTop = Float(bitPattern: base.loadUnaligned(fromByteOffset: 102, as: UInt32.self).littleEndian)
+            positionRight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 106, as: UInt32.self).littleEndian)
+            positionBottom = Float(bitPattern: base.loadUnaligned(fromByteOffset: 110, as: UInt32.self).littleEndian)
+            positionLeft = Float(bitPattern: base.loadUnaligned(fromByteOffset: 114, as: UInt32.self).littleEndian)
+            display = Int(base.load(fromByteOffset: 118, as: UInt8.self))
+            overflow = Int(base.load(fromByteOffset: 119, as: UInt8.self))
+            alignContent = Int(base.load(fromByteOffset: 120, as: UInt8.self))
+            direction = Int(base.load(fromByteOffset: 121, as: UInt8.self))
+            aspectRatio = Float(bitPattern: base.loadUnaligned(fromByteOffset: 122, as: UInt32.self).littleEndian)
+            rowGap = Float(bitPattern: base.loadUnaligned(fromByteOffset: 126, as: UInt32.self).littleEndian)
 
-                bgColor = Int(Int32(bitPattern: base.loadUnaligned(fromByteOffset: 130, as: UInt32.self).littleEndian))
-                borderRadius = Float(bitPattern: base.loadUnaligned(fromByteOffset: 134, as: UInt32.self).littleEndian)
-                borderWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 138, as: UInt32.self).littleEndian)
-                borderColor = Int(Int32(bitPattern: base.loadUnaligned(fromByteOffset: 142, as: UInt32.self).littleEndian))
-                opacity = Float(bitPattern: base.loadUnaligned(fromByteOffset: 146, as: UInt32.self).littleEndian)
-                elevation = Float(bitPattern: base.loadUnaligned(fromByteOffset: 150, as: UInt32.self).littleEndian)
-                propOffset = Int(base.loadUnaligned(fromByteOffset: 154, as: UInt32.self).littleEndian)
-                propSize = Int(base.loadUnaligned(fromByteOffset: 158, as: UInt16.self).littleEndian)
-            } else {
-                // 108-byte node: no Yoga fields, style at 78, props at 102
-                minWidth = 0; minHeight = 0; maxWidth = 0; maxHeight = 0
-                flexBasis = 0; flexBasisMode = 0; flexWrap = 0; flexDirection = 0
-                positionType = 0
-                positionTop = 0; positionRight = 0; positionBottom = 0; positionLeft = 0
-                display = 0; overflow = 0; alignContent = 0; direction = 0
-                aspectRatio = 0; rowGap = 0
-
-                bgColor = Int(Int32(bitPattern: base.loadUnaligned(fromByteOffset: 78, as: UInt32.self).littleEndian))
-                borderRadius = Float(bitPattern: base.loadUnaligned(fromByteOffset: 82, as: UInt32.self).littleEndian)
-                borderWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 86, as: UInt32.self).littleEndian)
-                borderColor = Int(Int32(bitPattern: base.loadUnaligned(fromByteOffset: 90, as: UInt32.self).littleEndian))
-                opacity = Float(bitPattern: base.loadUnaligned(fromByteOffset: 94, as: UInt32.self).littleEndian)
-                elevation = Float(bitPattern: base.loadUnaligned(fromByteOffset: 98, as: UInt32.self).littleEndian)
-                propOffset = Int(base.loadUnaligned(fromByteOffset: 102, as: UInt32.self).littleEndian)
-                propSize = Int(base.loadUnaligned(fromByteOffset: 106, as: UInt16.self).littleEndian)
-            }
+            bgColor = Int(Int32(bitPattern: base.loadUnaligned(fromByteOffset: 130, as: UInt32.self).littleEndian))
+            borderRadius = Float(bitPattern: base.loadUnaligned(fromByteOffset: 134, as: UInt32.self).littleEndian)
+            borderWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 138, as: UInt32.self).littleEndian)
+            borderColor = Int(Int32(bitPattern: base.loadUnaligned(fromByteOffset: 142, as: UInt32.self).littleEndian))
+            opacity = Float(bitPattern: base.loadUnaligned(fromByteOffset: 146, as: UInt32.self).littleEndian)
+            elevation = Float(bitPattern: base.loadUnaligned(fromByteOffset: 150, as: UInt32.self).littleEndian)
+            propOffset = Int(base.loadUnaligned(fromByteOffset: 154, as: UInt32.self).littleEndian)
+            propSize = Int(base.loadUnaligned(fromByteOffset: 158, as: UInt16.self).littleEndian)
 
             let type = typeIdx < typeTable.count ? typeTable[typeIdx] : "column"
 
