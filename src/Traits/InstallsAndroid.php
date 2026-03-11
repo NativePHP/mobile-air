@@ -92,6 +92,7 @@ trait InstallsAndroid
             ],
         ];
 
+
         $url = $includeIcu
             ? $urls[$phpVersion]['icu']
             : $urls[$phpVersion]['default'];
