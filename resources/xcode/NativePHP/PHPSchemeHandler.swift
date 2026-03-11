@@ -4,15 +4,8 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
     let domain = "127.0.0.1"
 
     private let maxRedirects = 10
-    private let phpSerialQueue: DispatchQueue
     private var activeTasks: [ObjectIdentifier: WKURLSchemeTask] = [:]
     private let taskLock = NSLock()
-
-    override init() {
-        let appName = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "DefaultAppName"
-        let queueLabel = "com.NativePHP.\(appName).phpSerialQueue"
-        self.phpSerialQueue = DispatchQueue(label: queueLabel)
-    }
 
     // This method is called when the web view starts loading a request with your custom scheme
     func webView(_ webView: WKWebView, start schemeTask: WKURLSchemeTask) {
@@ -595,14 +588,20 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private func getResponse(request: RequestData,
                               completion: @escaping (Result<Data, Error>) -> Void) {
-        phpSerialQueue.async {
+        // Execute on dedicated PHP thread (same thread as php_embed_init for ZTS compatibility)
+        PersistentPHPRuntime.shared.executeOnPHPThreadAsync {
             print()
             print("\(request.method) \(request.uri)")
             print()
-            print(request.headers.map { "\($0.key)=\($0.value)" }.joined(separator: "\n"))
 
-            // Pass the request to Laravel and get Laravel's response
-            let response = NativePHPApp.laravel(request: request) ?? "No response from Laravel"
+            let response: String
+            if PersistentPHPRuntime.shared.isBooted {
+                // Persistent mode — dispatch through booted Laravel kernel
+                response = PersistentPHPRuntime.shared.dispatch(request: request)
+            } else {
+                // Fallback to legacy per-request mode
+                response = NativePHPApp.laravel(request: request) ?? "No response from Laravel"
+            }
 
             // Extract cookie headers
             let components = response.components(separatedBy: "\r\n\r\n")
@@ -610,12 +609,16 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
             let headersList = headers.components(separatedBy: "\n").filter { !$0.isEmpty }
 
-            let setCookieHeaders = headersList.filter { $0.hasPrefix("Set-Cookie:") }
+            let setCookieHeaders = headersList.filter { $0.hasPrefix("Set-Cookie:") || $0.hasPrefix("set-cookie:") }
 
             DispatchQueue.main.async {
                 for header in setCookieHeaders {
-                    // Remove "Set-Cookie: " prefix
-                    let cookieString = header.replacingOccurrences(of: "Set-Cookie: ", with: "")
+                    // Remove "Set-Cookie: " prefix (case-insensitive)
+                    var cookieString = header
+                    if let range = cookieString.range(of: "Set-Cookie: ", options: .caseInsensitive) {
+                        cookieString = String(cookieString[range.upperBound...])
+                    }
+                    cookieString = cookieString
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .replacingOccurrences(of: ";\\s+", with: ";", options: .regularExpression)
 

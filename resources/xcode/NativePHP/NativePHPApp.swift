@@ -17,6 +17,7 @@ public func pipe_php_output(_ cString: UnsafePointer<CChar>?) {
 struct NativePHPApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     static var shared: NativePHPApp?
 
@@ -24,6 +25,9 @@ struct NativePHPApp: App {
         Self.shared = self
 
         DebugLogger.shared.log("📱 NativePHPApp.init() starting (minimal)")
+
+        // Register BGTaskScheduler handlers before app finishes launching
+        PHPScheduler.shared.registerBackgroundTasks()
 
         // Only register bridge functions in init - this is fast and doesn't block
         // All heavy initialization is deferred to after the splash view is visible
@@ -36,19 +40,44 @@ struct NativePHPApp: App {
     /// Performs heavy initialization work after the splash view is visible.
     /// This runs on a background thread to avoid blocking the main thread.
     private func performDeferredInitialization() {
-        DebugLogger.shared.log("📱 Deferred initialization starting")
+        NSLog("TRACE[1]: performDeferredInitialization START")
 
-        // 1. Initialize PHP environment
-        DebugLogger.shared.log("📱 Deferred init: preparing PHP environment")
+        // 1. Initialize PHP environment (env vars, php.ini, database)
+        NSLog("TRACE[2]: preparePhpEnvironment START")
         _ = preparePhpEnvironment()
+        NSLog("TRACE[3]: preparePhpEnvironment DONE")
 
         // 2. Ensure app is extracted from bundle if needed
-        DebugLogger.shared.log("📱 Deferred init: checking for app")
+        NSLog("TRACE[4]: ensureAppExists START")
         AppUpdateManager.shared.ensureAppExists()
+        NSLog("TRACE[5]: ensureAppExists DONE")
 
-        // 3. Create storage symlink
-        DebugLogger.shared.log("📱 Deferred init: creating storage symlink")
-        createStorageLink()
+        // 3. Boot persistent PHP runtime (one-time Laravel boot)
+        NSLog("TRACE[6]: PersistentPHPRuntime.boot() START")
+        let booted = PersistentPHPRuntime.shared.boot()
+        NSLog("TRACE[7]: PersistentPHPRuntime.boot() DONE, booted=\(booted)")
+
+        if booted {
+            NSLog("TRACE[8]: artisan migrate START")
+            _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
+            NSLog("TRACE[9]: artisan migrate DONE")
+
+            NSLog("TRACE[10]: artisan storage:link START")
+            _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
+            NSLog("TRACE[11]: artisan storage:link DONE")
+
+            // 3b. Start background queue worker (separate TSRM context)
+            NSLog("TRACE[11b]: PHPQueueWorker.start()")
+            PHPQueueWorker.shared.start()
+
+            // 3c. Schedule background task runner
+            NSLog("TRACE[11c]: PHPScheduler.scheduleNextRun()")
+            PHPScheduler.shared.scheduleNextRun()
+        } else {
+            NSLog("TRACE[8b]: boot failed, legacy fallback")
+            createStorageLink()
+            NSLog("TRACE[9b]: legacy fallback DONE")
+        }
 
         // 4. Execute plugin initialization callbacks (on main thread)
         DispatchQueue.main.async {
@@ -61,16 +90,21 @@ struct NativePHPApp: App {
         #endif
 
         // 6. Check for OTA updates (after everything is set up)
-        DebugLogger.shared.log("📱 Deferred init: checking for OTA update")
+        NSLog("TRACE[12]: checkForUpdates START")
         AppUpdateManager.shared.checkForUpdates()
+        NSLog("TRACE[13]: checkForUpdates DONE")
 
-        DebugLogger.shared.log("📱 Deferred initialization completed")
+        NSLog("TRACE[14]: marking ready to load")
 
-        // Notify that PHP is ready and allow WebView to be rendered
-        // WebView will call markInitialized() when first page loads to dismiss splash
+        // Notify that PHP is ready, render WebView, and dismiss splash.
+        // We dismiss splash on boot completion rather than waiting for the WebView's
+        // first page load, because Route::native() blocks the dispatch thread
+        // indefinitely (the native UI renders separately via shared memory).
         DispatchQueue.main.async {
+            NSLog("TRACE[15]: markPhpReady + markReadyToLoad + markInitialized on main thread")
             DeepLinkRouter.shared.markPhpReady()
             AppState.shared.markReadyToLoad()
+            AppState.shared.markInitialized()
         }
     }
 
@@ -110,6 +144,12 @@ struct NativePHPApp: App {
                     if !DeepLinkRouter.shared.hasPendingURL() {
                         DeepLinkRouter.shared.handle(url: url)   // Universal Links
                     }
+                }
+            }
+            .onChange(of: scenePhase) { newPhase in
+                if newPhase == .background {
+                    // Re-schedule background tasks when entering background
+                    PHPScheduler.shared.scheduleNextRun()
                 }
             }
         }

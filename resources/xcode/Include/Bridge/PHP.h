@@ -9,4 +9,30 @@ void initialize_php_with_request(const char *post_data,
                                  const char *method,
                                  const char *uri);
 
+// Persistent PHP Runtime
+int  persistent_php_boot(const char *bootstrapPath);
+const char *persistent_php_dispatch(const char *method,
+                                    const char *uri,
+                                    const char *postData,
+                                    const char *scriptPath,
+                                    const char *cookieHeader,
+                                    const char *contentType);
+const char *persistent_php_artisan(const char *command);
+void persistent_php_shutdown(void);
+int  persistent_php_is_booted(void);
+void persistent_php_save_context(void);
+void persistent_php_restore_context(void);
+
+// Queue Worker Runtime (separate TSRM context)
+int  worker_php_boot(const char *bootstrapPath);
+const char *worker_php_artisan(const char *command);
+void worker_php_shutdown(void);
+int  worker_php_is_booted(void);
+
+// Scheduler Runtime (ephemeral TSRM context — boot/run/shutdown per invocation)
+int  scheduler_php_boot(const char *bootstrapPath);
+const char *scheduler_php_artisan(const char *command);
+void scheduler_php_shutdown(void);
+int  scheduler_php_is_booted(void);
+
 #endif
