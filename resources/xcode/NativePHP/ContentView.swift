@@ -10,17 +10,29 @@ extension NSNotification.Name {
 struct ContentView: View {
     @State private var phpOutput = ""
     @StateObject private var uiState = NativeUIState.shared
+    @ObservedObject private var nativeUIBridge = NativeUIBridge.shared
 
     var body: some View {
-        NativeSideNavigation(onNavigate: handleNavigation) {
-            WebViewLayoutContainer(onTabSelected: handleNavigation)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if uiState.hasTopBar() {
-                        NativeTopBar(onNavigate: handleNavigation)
+        ZStack {
+            NativeSideNavigation(onNavigate: handleNavigation) {
+                WebViewLayoutContainer(onTabSelected: handleNavigation)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if uiState.hasTopBar() {
+                            NativeTopBar(onNavigate: handleNavigation)
+                        }
                     }
-                }
+            }
+
+            // Native Element UI overlay — shown when Route::native() publishes a UI tree
+            if nativeUIBridge.isActive {
+                NativeUIContent()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemBackground))
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isActive)
     }
 
     /// Handle navigation from any UI component

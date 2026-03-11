@@ -264,16 +264,43 @@ public func NativePHPCall(
 @_cdecl("NativeUI_RegisterRegion")
 public func NativeUI_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
     guard let region = region else {
-        print("⚠️ NativeUI_RegisterRegion called with nil region")
+        print("NativeUI_RegisterRegion called with nil region")
         return
     }
-    print("🖼️ NativeUI_RegisterRegion: region at \(region)")
-    // TODO: Store region pointer for native UI rendering
+    print("NativeUI_RegisterRegion: region at \(region)")
 }
 
 /// Called by PHP's nativephp_ui_shutdown() to unregister the shared memory region.
 @_cdecl("NativeUI_UnregisterRegion")
 public func NativeUI_UnregisterRegion() {
-    print("🖼️ NativeUI_UnregisterRegion: region released")
-    // TODO: Clear stored region pointer
+    print("NativeUI_UnregisterRegion: region released")
+}
+
+// MARK: - NativeElement Bridge Functions (Element Runtime)
+
+/// Called by nphp_element_init() to register the element shared memory region.
+/// The region contains flat_buffer, prop_buffer, type_table, and event_buffer.
+@_cdecl("NativeElement_RegisterRegion")
+public func NativeElement_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
+    guard let region = region else {
+        print("NativeElement_RegisterRegion called with nil region")
+        return
+    }
+    print("NativeElement_RegisterRegion: region at \(region)")
+    NativeElementBridge.registerRegion(region)
+}
+
+/// Called by nphp_element_shutdown() to unregister the element region.
+@_cdecl("NativeElement_UnregisterRegion")
+public func NativeElement_UnregisterRegion() {
+    print("NativeElement_UnregisterRegion: region released")
+    NativeElementBridge.unregisterRegion()
+}
+
+/// Called by nphp_element_publish() / nphp_frame_end() after the flat buffer
+/// is written. Reads buffers from the registered region and posts the parsed
+/// tree to the SwiftUI renderer on the main thread.
+@_cdecl("NativeElement_PostTreeUpdate")
+public func NativeElement_PostTreeUpdate() {
+    NativeElementBridge.postTreeUpdateFromRegion()
 }

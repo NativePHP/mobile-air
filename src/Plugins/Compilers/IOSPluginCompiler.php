@@ -332,7 +332,7 @@ class IOSPluginCompiler
 
         $registerCalls = collect($registrations)
             ->map(function ($reg) {
-                return "    // Plugin: {$reg['plugin']}\n    NativeRendererRegistry.shared.register(\"{$reg['type']}\", renderer: {$reg['renderer']}())";
+                return "    // Plugin: {$reg['plugin']}\n    NativeRendererRegistry.shared.register(\"{$reg['type']}\") { AnyView({$reg['renderer']}(node: \$0)) }";
             })
             ->implode("\n\n");
 

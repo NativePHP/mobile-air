@@ -7,6 +7,12 @@ func registerBridgeFunctions() {
 
     registry.register("Edge.Set", function: EdgeFunctions.Set())
 
+    // Register built-in native element renderers
+    NativeRendererRegistry.shared.registerBuiltins()
+
+    // Register plugin renderers (overrides built-in with more featured versions)
+    registerPluginRenderers()
+
     // Register plugin bridge functions
     registerPluginBridgeFunctions()
 }
