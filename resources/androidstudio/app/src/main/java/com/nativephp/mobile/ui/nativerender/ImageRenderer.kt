@@ -1,8 +1,7 @@
 package com.nativephp.mobile.ui.nativerender
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
@@ -11,7 +10,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,7 +36,7 @@ fun RenderImage(node: NativeUINode, modifier: Modifier) {
     SubcomposeAsyncImage(
         model = src,
         contentDescription = null,
-        modifier = modifier.then(applyImageClickModifier(node)),
+        modifier = modifier,
         contentScale = contentScale,
         colorFilter = colorFilter,
         loading = {
@@ -62,28 +60,4 @@ fun RenderImage(node: NativeUINode, modifier: Modifier) {
             }
         }
     )
-}
-
-private fun applyImageClickModifier(node: NativeUINode): Modifier {
-    val pressCb = node.onPress
-    val longPressCb = node.onLongPress
-
-    if (pressCb == 0 && longPressCb == 0) return Modifier
-
-    return if (longPressCb != 0) {
-        Modifier.pointerInput(pressCb, longPressCb) {
-            detectTapGestures(
-                onTap = {
-                    if (pressCb != 0) {
-                        NativeUIBridge.sendPressEvent(pressCb, node.id)
-                    }
-                },
-                onLongPress = {
-                    NativeUIBridge.sendLongPressEvent(longPressCb, node.id)
-                }
-            )
-        }
-    } else {
-        Modifier.clickable { NativeUIBridge.sendPressEvent(pressCb, node.id) }
-    }
 }

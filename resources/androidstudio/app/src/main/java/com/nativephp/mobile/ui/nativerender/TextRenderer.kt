@@ -1,12 +1,9 @@
 package com.nativephp.mobile.ui.nativerender
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -20,7 +17,7 @@ fun RenderText(node: NativeUINode, modifier: Modifier) {
 
     Text(
         text = text,
-        modifier = modifier.then(applyTextClickModifier(node)),
+        modifier = modifier,
         color = Color(p.getColor("color", 0xFF000000.toInt())),
         fontSize = p.getFloat("font_size", 16f).sp,
         fontWeight = resolveTextFontWeight(p.getInt("font_weight")),
@@ -28,30 +25,6 @@ fun RenderText(node: NativeUINode, modifier: Modifier) {
         maxLines = p.getInt("max_lines").let { if (it > 0) it else Int.MAX_VALUE },
         overflow = TextOverflow.Ellipsis
     )
-}
-
-private fun applyTextClickModifier(node: NativeUINode): Modifier {
-    val pressCb = node.onPress
-    val longPressCb = node.onLongPress
-
-    if (pressCb == 0 && longPressCb == 0) return Modifier
-
-    return if (longPressCb != 0) {
-        Modifier.pointerInput(pressCb, longPressCb) {
-            detectTapGestures(
-                onTap = {
-                    if (pressCb != 0) {
-                        NativeUIBridge.sendPressEvent(pressCb, node.id)
-                    }
-                },
-                onLongPress = {
-                    NativeUIBridge.sendLongPressEvent(longPressCb, node.id)
-                }
-            )
-        }
-    } else {
-        Modifier.clickable { NativeUIBridge.sendPressEvent(pressCb, node.id) }
-    }
 }
 
 private fun resolveTextFontWeight(weight: Int): FontWeight {

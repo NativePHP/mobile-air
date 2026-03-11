@@ -282,7 +282,7 @@ internal fun RenderColumn(node: NativeUINode, modifier: Modifier) {
     val hAlignment = resolveHorizontalAlignment(layout?.alignItems ?: 0)
 
     Column(
-        modifier = modifier.then(applyClickModifier(node)),
+        modifier = modifier,
         verticalArrangement = vArrangement,
         horizontalAlignment = hAlignment
     ) {
@@ -302,7 +302,7 @@ internal fun RenderRow(node: NativeUINode, modifier: Modifier) {
     val vAlignment = resolveVerticalAlignment(layout?.alignItems ?: 0)
 
     Row(
-        modifier = modifier.then(applyClickModifier(node)),
+        modifier = modifier,
         horizontalArrangement = hArrangement,
         verticalAlignment = vAlignment
     ) {
@@ -317,7 +317,7 @@ internal fun RenderRow(node: NativeUINode, modifier: Modifier) {
 
 @Composable
 internal fun RenderStack(node: NativeUINode, modifier: Modifier) {
-    Box(modifier = modifier.then(applyClickModifier(node))) {
+    Box(modifier = modifier) {
         node.children.forEach { key(it.id) { RenderNode(it) } }
     }
 }
@@ -689,7 +689,7 @@ internal fun RenderIcon(node: NativeUINode, modifier: Modifier) {
     com.nativephp.mobile.ui.MaterialIcon(
         name = name,
         contentDescription = name,
-        modifier = modifier.then(applyClickModifier(node)),
+        modifier = modifier,
         size = p.getFloat("size", 24f).dp,
         tint = argbToColor(p.getColor("color", 0xFF000000.toInt()))
     )
@@ -815,15 +815,15 @@ internal fun RenderCard(node: NativeUINode, modifier: Modifier) {
 
     when (variant) {
         1 -> OutlinedCard(
-            modifier = modifier.then(applyClickModifier(node)),
+            modifier = modifier,
             content = { content() }
         )
         2 -> ElevatedCard(
-            modifier = modifier.then(applyClickModifier(node)),
+            modifier = modifier,
             content = { content() }
         )
         else -> Card(
-            modifier = modifier.then(applyClickModifier(node)),
+            modifier = modifier,
             content = { content() }
         )
     }
@@ -848,7 +848,7 @@ internal fun RenderListItem(node: NativeUINode, modifier: Modifier) {
                 color = if (headlineColor != 0) argbToColor(headlineColor) else Color.Unspecified
             )
         },
-        modifier = modifier.then(applyClickModifier(node)),
+        modifier = modifier,
         overlineContent = if (overline.isNotEmpty()) {
             { Text(text = overline) }
         } else null,
@@ -1085,8 +1085,8 @@ internal fun buildModifier(node: NativeUINode): Modifier {
             mod = mod.background(bgColor)
         }
 
-        // Border
-        if (style.borderWidth > 0) {
+        // Border (skip for line nodes — their border-* classes control stroke, not decoration)
+        if (style.borderWidth > 0 && node.type != "line") {
             val shape = if (style.borderRadius > 0) RoundedCornerShape(style.borderRadius.dp) else RoundedCornerShape(0.dp)
             mod = mod.border(style.borderWidth.dp, argbToColor(style.borderColor), shape)
         }
@@ -1106,6 +1106,9 @@ internal fun buildModifier(node: NativeUINode): Modifier {
             bottom = layout.paddingBottom.dp
         )
     }
+
+    // Click/press handlers (after all styling so the full area is tappable)
+    mod = mod.then(applyClickModifier(node))
 
     return mod
 }
