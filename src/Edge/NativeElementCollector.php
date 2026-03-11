@@ -476,7 +476,8 @@ class NativeElementCollector
 
     protected static function applyStyle(Element $element, array $attrs): void
     {
-        if (isset($attrs['bg'])) {
+        // Button handles bg as tint color in its own props — skip node-level background
+        if (isset($attrs['bg']) && ! ($element instanceof Elements\Button)) {
             $element->bg($attrs['bg']);
         }
         if (isset($attrs['borderRadius'])) {
