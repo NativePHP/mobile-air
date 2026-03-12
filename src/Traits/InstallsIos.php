@@ -14,7 +14,10 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
-    private string $iosBinaryUrlPrefix = 'main/';
+    private function getIosBinaryBranch(): string
+    {
+        return env('NATIVEPHP_BIN_BRANCH', 'main');
+    }
 
     public string $iosPath;
 
@@ -50,15 +53,36 @@ trait InstallsIos
     {
         $phpVersion = $this->detectPhpVersion();
 
-        $base = 'https://bin.nativephp.com/'.$this->iosBinaryUrlPrefix;
+        $branch = $this->getIosBinaryBranch();
+        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
 
-        $urls = [
-            '8.5' => $base.'8.5/ios/ios-3.1.0-php8.5.3.zip',
-            '8.4' => $base.'8.4/ios/ios-3.1.0-php8.4.19.zip',
-            '8.3' => $base.'8.3/ios/ios-3.1.0-php8.3.30.zip',
-        ];
+        $client = new Client;
 
-        $url = $urls[$phpVersion];
+        try {
+            $versions = json_decode(
+                $client->get($versionsUrl)->getBody()->getContents(),
+                true
+            );
+        } catch (RequestException $e) {
+            error("Failed to fetch versions manifest from: {$versionsUrl}");
+
+            return;
+        }
+
+        if (! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available in {$branch} branch");
+
+            return;
+        }
+
+        $iosFiles = $versions['versions'][$phpVersion]['ios'] ?? [];
+        $url = $iosFiles[0] ?? null;
+
+        if (! $url) {
+            error("No iOS binary found for PHP {$phpVersion}");
+
+            return;
+        }
 
         $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
 
