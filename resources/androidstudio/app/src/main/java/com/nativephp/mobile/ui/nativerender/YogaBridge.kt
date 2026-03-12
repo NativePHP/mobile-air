@@ -20,6 +20,13 @@ object YogaBridge {
     @JvmStatic
     var yogaEnabled = true
 
+    /** Cached safe area insets in pixels — set from main thread when window insets change */
+    @Volatile
+    var safeAreaTopPx: Int = 0
+
+    @Volatile
+    var safeAreaBottomPx: Int = 0
+
     /**
      * Native JNI method — computes Yoga layout from flat buffer.
      */
@@ -51,6 +58,29 @@ object YogaBridge {
         if (perNode < 160) return tree
 
         val t0 = System.nanoTime()
+
+        // Inject safe area insets as Yoga padding for ANY node with the safe_area flag.
+        // This must happen before Yoga compute so layout accounts for safe area correctly,
+        // especially inside scroll views where post-layout adjustments cause clipping.
+        // Byte 77 = safe_area flag in 160-byte flat node layout.
+        val density = metrics.density
+        val topDp = safeAreaTopPx / density
+        val bottomDp = safeAreaBottomPx / density
+
+        if (topDp > 0 || bottomDp > 0) {
+            val buf = java.nio.ByteBuffer.wrap(flatBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            for (i in 0 until nodeCount) {
+                val offset = i * 160
+                if (offset + 160 > flatBytes.size) break
+                val safeArea = flatBytes[offset + 77].toInt() and 0xFF
+                if (safeArea != 0) {
+                    val existingTop = buf.getFloat(offset + 30)
+                    val existingBottom = buf.getFloat(offset + 38)
+                    buf.putFloat(offset + 30, existingTop + topDp)
+                    buf.putFloat(offset + 38, existingBottom + bottomDp)
+                }
+            }
+        }
 
         // Phase 3: Pre-measure leaf nodes
         val measurements = FloatArray(nodeCount * 2)
@@ -153,7 +183,14 @@ object YogaBridge {
             "text_input" -> Pair(0f, 48f)
             "slider" -> Pair(0f, 32f)
             "progress_bar" -> Pair(0f, 4f)
-            "activity_indicator" -> Pair(20f, 20f)
+            "activity_indicator" -> {
+                val size = node.props.getInt("size")
+                when (size) {
+                    1 -> Pair(48f, 48f)   // large
+                    2 -> Pair(16f, 16f)   // small
+                    else -> Pair(28f, 28f) // default
+                }
+            }
             "divider", "line", "horizontal_divider" -> Pair(0f, 1f)
             "spacer" -> Pair(0f, 0f)
             "image" -> {
@@ -194,8 +231,9 @@ object YogaBridge {
 
         val fontSize = node.props.getFloat("font_size", 16f)
         val maxLines = node.props.getInt("max_lines")
+        val fontWeight = node.props.getInt("font_weight")
 
-        return measureString(text, fontSize, maxWidthDp, density, maxLines)
+        return measureString(text, fontSize, maxWidthDp, density, maxLines, fontWeight)
     }
 
     private fun measureButton(node: NativeUINode, maxWidthDp: Float, density: Float): Pair<Float, Float> {
@@ -206,15 +244,18 @@ object YogaBridge {
         val hPad = 48f // 24 each side
         val effectiveMaxW = if (maxWidthDp > hPad) maxWidthDp - hPad else Float.MAX_VALUE
 
-        val (tw, th) = measureString(label, fontSize, effectiveMaxW, density)
+        // Buttons always render bold
+        val (tw, th) = measureString(label, fontSize, effectiveMaxW, density, fontWeight = 6)
         return Pair(tw + hPad, maxOf(th + 16f, 40f))
     }
 
     /** Measure text string in dp units using Android's Paint. Thread-safe. */
-    private fun measureString(text: String, fontSizeDp: Float, maxWidthDp: Float, density: Float, maxLines: Int = 0): Pair<Float, Float> {
+    private fun measureString(text: String, fontSizeDp: Float, maxWidthDp: Float, density: Float, maxLines: Int = 0, fontWeight: Int = 0): Pair<Float, Float> {
+        val isBold = fontWeight >= 4  // semibold and above
         val paint = Paint().apply {
             textSize = fontSizeDp * density
             isAntiAlias = true
+            if (isBold) typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
 
         val maxWidthPx = if (maxWidthDp < Float.MAX_VALUE) maxWidthDp * density else Float.MAX_VALUE
@@ -227,7 +268,8 @@ object YogaBridge {
             val heightPx = bounds.height().toFloat().coerceAtLeast(paint.textSize * 1.2f)
 
             if (widthPx <= maxWidthPx) {
-                return Pair(widthPx / density, heightPx / density)
+                // +1dp buffer to prevent sub-pixel rounding clipping last character
+                return Pair(widthPx / density + 1f, heightPx / density)
             }
         }
 
@@ -236,6 +278,7 @@ object YogaBridge {
             .obtain(text, 0, text.length, android.text.TextPaint().apply {
                 textSize = fontSizeDp * density
                 isAntiAlias = true
+                if (isBold) typeface = android.graphics.Typeface.DEFAULT_BOLD
             }, (if (maxWidthPx < Float.MAX_VALUE) maxWidthPx else 10000f).toInt())
             .apply {
                 if (maxLines > 0) setMaxLines(maxLines)
@@ -245,6 +288,7 @@ object YogaBridge {
         val w = (0 until sl.lineCount).maxOf { sl.getLineWidth(it) }
         val h = sl.height.toFloat()
 
-        return Pair(w / density, h / density)
+        // +1dp buffer to prevent sub-pixel rounding clipping last character
+        return Pair(w / density + 1f, h / density)
     }
 }

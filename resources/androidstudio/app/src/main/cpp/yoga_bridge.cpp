@@ -480,6 +480,10 @@ Java_com_nativephp_mobile_ui_nativerender_YogaBridge_nativeComputeLayout(
         return nullptr;
     }
 
+    /* Root node always fills the viewport */
+    YGNodeStyleSetWidth(root, viewportWidth / density);
+    YGNodeStyleSetHeight(root, viewportHeight / density);
+
     /* Pass 1: layout with scroll nodes using overflow:visible (flex_grow works) */
     YGNodeCalculateLayout(root, viewportWidth / density, viewportHeight / density, YGDirectionLTR);
 

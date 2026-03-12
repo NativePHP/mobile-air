@@ -418,6 +418,10 @@ int yoga_compute_layout(
         return 0;
     }
 
+    // Root node always fills the viewport
+    YGNodeStyleSetWidth(root, viewportWidth);
+    YGNodeStyleSetHeight(root, viewportHeight);
+
     // Pass 1: layout with scroll nodes using overflow:visible (flex_grow works)
     YGNodeCalculateLayout(root, viewportWidth, viewportHeight, YGDirectionLTR);
 

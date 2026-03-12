@@ -9,6 +9,10 @@ import Bridge
 final class YogaBridge {
 
     /// Compute Yoga layout for a tree and return an annotated copy with ComputedLayout on each node.
+    /// Cached safe area insets in points — set from main thread
+    static var safeAreaTop: CGFloat = 0
+    static var safeAreaBottom: CGFloat = 0
+
     static func computeLayout(
         tree: NativeUITree,
         flatData: Data,
@@ -28,6 +32,35 @@ final class YogaBridge {
 
         let t0 = CFAbsoluteTimeGetCurrent()
 
+        // Inject safe area insets as Yoga padding for ANY node with the safe_area flag.
+        // This must happen before Yoga compute so layout accounts for safe area correctly,
+        // especially inside scroll views where post-layout adjustments cause clipping.
+        // Byte 77 = safe_area flag in 160-byte flat node layout.
+        var mutableFlatData = flatData
+        let topPt = Float(safeAreaTop)
+        let bottomPt = Float(safeAreaBottom)
+
+        if topPt > 0 || bottomPt > 0 {
+            for i in 0..<nodeCount {
+                let offset = i * 160
+                guard offset + 160 <= mutableFlatData.count else { break }
+                let safeArea = mutableFlatData[offset + 77]
+                guard safeArea != 0 else { continue }
+
+                var existingTop: Float = 0
+                var existingBottom: Float = 0
+                mutableFlatData.withUnsafeBytes { buf in
+                    existingTop = buf.loadUnaligned(fromByteOffset: offset + 30, as: Float.self)
+                    existingBottom = buf.loadUnaligned(fromByteOffset: offset + 38, as: Float.self)
+                }
+
+                var newTop = existingTop + topPt
+                var newBottom = existingBottom + bottomPt
+                mutableFlatData.replaceSubrange((offset + 30)..<(offset + 34), with: withUnsafeBytes(of: &newTop) { Data($0) })
+                mutableFlatData.replaceSubrange((offset + 38)..<(offset + 42), with: withUnsafeBytes(of: &newBottom) { Data($0) })
+            }
+        }
+
         // Phase 3: Pre-measure leaf nodes for intrinsic sizes
         var measurements = Array(repeating: Float(0), count: nodeCount * 2)
         preMeasure(node: tree.root, measurements: &measurements, index: 0, maxWidth: Float(viewportSize.width))
@@ -45,14 +78,14 @@ final class YogaBridge {
         let zeroLayout = YogaComputedLayout(x: 0, y: 0, width: 0, height: 0)
         var layouts = Array(repeating: zeroLayout, count: nodeCount)
 
-        let resultCount: Int = flatData.withUnsafeBytes { flatBuf in
+        let resultCount: Int = mutableFlatData.withUnsafeBytes { flatBuf in
             cStringPtrs.withUnsafeBufferPointer { typePtr in
                 measurements.withUnsafeBufferPointer { measPtr in
                     let typePtrBase = UnsafeRawPointer(typePtr.baseAddress!)
                         .assumingMemoryBound(to: UnsafePointer<CChar>?.self)
                     return Int(yoga_compute_layout(
                         flatBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                        flatData.count,
+                        mutableFlatData.count,
                         Int32(nodeCount),
                         Float(viewportSize.width),
                         Float(viewportSize.height),
