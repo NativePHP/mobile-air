@@ -86,6 +86,10 @@ trait InstallsIos
 
                     return true;
                 } catch (RequestException) {
+                    // Remove any partial/error response written to disk
+                    if (file_exists($zipFile)) {
+                        unlink($zipFile);
+                    }
                     $downloadFailed = true;
 
                     return false;
@@ -93,10 +97,20 @@ trait InstallsIos
             });
 
             if ($downloadFailed) {
-                error('Failed to download PHP binaries.');
+                error("Failed to download PHP binaries from: $url");
 
                 return;
             }
+
+            // Verify the downloaded file is actually a ZIP
+            $zip = new ZipArchive;
+            if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
+                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                unlink($zipFile);
+
+                return;
+            }
+            $zip->close();
 
             $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
             $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
