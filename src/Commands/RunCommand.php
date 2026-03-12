@@ -7,6 +7,7 @@ use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\ManagesViteDevServer;
 use Native\Mobile\Traits\ManagesWatchman;
 use Native\Mobile\Traits\PlatformFileOperations;
+use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Traits\RunsAndroid;
 use Native\Mobile\Traits\RunsIos;
 
@@ -128,6 +129,8 @@ class RunCommand extends Command
 
         intro('Running NativePHP for '.$osName);
 
+        $this->checkForUnregisteredPlugins();
+
         match ($os) {
             'android' => $this->runAndroid(),
             'ios' => $this->runIos(),
@@ -136,6 +139,25 @@ class RunCommand extends Command
         $this->showBifrostBanner();
 
         return self::SUCCESS;
+    }
+
+    protected function checkForUnregisteredPlugins(): void
+    {
+        $registry = app(PluginRegistry::class);
+        $unregistered = $registry->unregistered();
+
+        if ($unregistered->isEmpty()) {
+            return;
+        }
+
+        warning('The following plugins are installed but not registered:');
+
+        $unregistered->each(function ($plugin) {
+            $this->components->twoColumnDetail($plugin->name, '<fg=yellow>not registered</>');
+        });
+
+        note('Register them in your NativeServiceProvider or run: php artisan native:plugin:register');
+        $this->newLine();
     }
 
     protected function ensureValidAppId(): void
