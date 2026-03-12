@@ -1,8 +1,18 @@
 package com.nativephp.mobile.ui.nativerender
 
+import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -13,165 +23,197 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.nativephp.mobile.ui.MaterialIcon
 import com.nativephp.mobile.ui.NativeUIState
+import com.nativephp.mobile.ui.getIconName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 private const val TAG = "NativeNavRenderers"
 
-// ── Top Bar ──────────────────────────────────────────────
+// ── Top Bar (View-based) ──
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun RenderTopBar(node: NativeUINode, modifier: Modifier) {
-    val props = node.props
-    val title = props.getString("title", "")
-    val subtitle = props.getString("subtitle")
-    val showNavIcon = props.getBool("show_navigation_icon", true)
-    val bgColorStr = props.getString("background_color")
-    val textColorStr = props.getString("text_color")
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
+class TopBarViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        val container = LinearLayout(context)
+        container.orientation = LinearLayout.HORIZONTAL
+        container.gravity = Gravity.CENTER_VERTICAL
+        applyProps(container, context, node)
+        return container
+    }
 
-    val bgColor = parseHexColor(bgColorStr)
-    val textColor = parseHexColor(textColorStr)
+    override fun updateView(view: View, node: NativeUINode) {
+        val container = view as? LinearLayout ?: return
+        container.removeAllViews()
+        applyProps(container, view.context, node)
+    }
 
-    // Collect top_bar_action children
-    val actions = node.children.filter { it.type == "top_bar_action" }
-    val visibleActions = actions.take(3)
-    val overflowActions = actions.drop(3)
-    var showOverflowMenu by remember { mutableStateOf(false) }
+    private fun applyProps(container: LinearLayout, context: Context, node: NativeUINode) {
+        val props = node.props
+        val title = props.getString("title", "")
+        val textColorStr = props.getString("text_color")
+        val textColor = parseHexColorInt(textColorStr)
 
-    TopAppBar(
-        modifier = modifier.windowInsetsPadding(WindowInsets.statusBars),
-        title = {
-            Column {
-                Text(
-                    text = title,
-                    color = textColor ?: MaterialTheme.colorScheme.onSurface
-                )
-                if (subtitle.isNotEmpty()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = (textColor ?: MaterialTheme.colorScheme.onSurface).copy(alpha = 0.7f)
-                    )
-                }
-            }
-        },
-        navigationIcon = {
-            if (showNavIcon) {
-                IconButton(onClick = {
-                    Log.d(TAG, "Navigation icon clicked — opening drawer")
-                    scope.launch {
-                        NativeUIState.drawerState?.open()
-                    }
-                }) {
-                    MaterialIcon(
-                        name = "menu",
-                        contentDescription = "Menu",
-                        tint = textColor ?: MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-        },
-        actions = {
-            visibleActions.forEach { action ->
-                val aProps = action.props
-                val icon = aProps.getString("icon", "more_vert")
-                val label = aProps.getString("label")
-                val url = aProps.getString("url")
+        val density = context.resources.displayMetrics.density
 
-                IconButton(onClick = {
-                    if (url.isNotEmpty()) {
-                        if (isExternalUrl(url)) {
-                            try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to open URL: $url", e)
-                            }
-                        } else {
-                            // Navigate via press callback if available
-                            if (action.onPress != 0) {
-                                NativeUIBridge.sendPressEvent(action.onPress, action.id)
-                            }
-                        }
-                    }
-                }) {
-                    MaterialIcon(
-                        name = icon,
-                        contentDescription = label.ifEmpty { null },
-                        tint = textColor ?: MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-
-            if (overflowActions.isNotEmpty()) {
-                IconButton(onClick = { showOverflowMenu = true }) {
-                    MaterialIcon(
-                        name = "more_vert",
-                        contentDescription = "More options",
-                        tint = textColor ?: MaterialTheme.colorScheme.onSurface
-                    )
-                }
-                DropdownMenu(
-                    expanded = showOverflowMenu,
-                    onDismissRequest = { showOverflowMenu = false }
-                ) {
-                    overflowActions.forEach { action ->
-                        val aProps = action.props
-                        DropdownMenuItem(
-                            text = { Text(aProps.getString("label", aProps.getString("id"))) },
-                            onClick = {
-                                showOverflowMenu = false
-                                if (action.onPress != 0) {
-                                    NativeUIBridge.sendPressEvent(action.onPress, action.id)
-                                }
-                            },
-                            leadingIcon = {
-                                MaterialIcon(
-                                    name = aProps.getString("icon", "circle"),
-                                    contentDescription = aProps.getString("label")
-                                )
-                            }
-                        )
-                    }
-                }
-            }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = bgColor ?: MaterialTheme.colorScheme.surface,
-            titleContentColor = textColor ?: MaterialTheme.colorScheme.onSurface,
-            navigationIconContentColor = textColor ?: MaterialTheme.colorScheme.onSurface
+        container.setPadding(
+            (16 * density).toInt(),
+            (8 * density).toInt(),
+            (16 * density).toInt(),
+            (8 * density).toInt()
         )
-    )
+
+        // Nav icon (hamburger menu)
+        val showNavIcon = props.getBool("show_navigation_icon", true)
+        if (showNavIcon) {
+            val navIcon = createIconTextView(context, "menu", 24f, textColor ?: Color.BLACK)
+            navIcon.setPadding((8 * density).toInt(), (8 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
+            navIcon.setOnClickListener {
+                Log.d(TAG, "Navigation icon clicked — opening drawer")
+                NativeUIState.drawerScope?.launch {
+                    NativeUIState.drawerState?.open()
+                }
+            }
+            container.addView(navIcon)
+        }
+
+        // Title
+        val titleView = TextView(context)
+        titleView.text = title
+        titleView.textSize = 20f
+        titleView.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        titleView.setTextColor(textColor ?: Color.BLACK)
+        titleView.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        container.addView(titleView)
+
+        // Action buttons
+        val actions = node.children.filter { it.type == "top_bar_action" }
+        for (action in actions.take(3)) {
+            val aProps = action.props
+            val icon = aProps.getString("icon", "more_vert")
+            val url = aProps.getString("url")
+
+            val iconView = createIconTextView(context, icon, 24f, textColor ?: Color.BLACK)
+            iconView.setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+            iconView.setOnClickListener {
+                if (url.isNotEmpty() && isExternalUrl(url)) {
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to open URL: $url", e)
+                    }
+                } else if (action.onPress != 0) {
+                    NativeElementBridge.sendPressEvent(action.onPress, action.id)
+                }
+            }
+            container.addView(iconView)
+        }
+    }
 }
 
-// ── Side Nav ─────────────────────────────────────────────
-// The side_nav node doesn't render visible content inline.
-// Instead it stores its children so the drawer (triggered by top_bar hamburger)
-// can display them. We use NativeEdgeDrawerState as a bridge.
+// ── Bottom Nav (View-based) ──
+
+class BottomNavViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        val container = LinearLayout(context)
+        container.orientation = LinearLayout.HORIZONTAL
+        val dark = (context.resources.configuration.uiMode and
+            Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        container.setBackgroundColor(if (dark) Color.parseColor("#1C1C1E") else Color.WHITE)
+        applyProps(container, context, node)
+        return container
+    }
+
+    override fun updateView(view: View, node: NativeUINode) {
+        val container = view as? LinearLayout ?: return
+        container.removeAllViews()
+        applyProps(container, view.context, node)
+    }
+
+    private fun applyProps(container: LinearLayout, context: Context, node: NativeUINode) {
+        val items = node.children.filter { it.type == "bottom_nav_item" }
+        if (items.isEmpty()) return
+
+        val density = context.resources.displayMetrics.density
+        container.elevation = 8 * density
+
+        for (item in items) {
+            val iProps = item.props
+            val label = iProps.getString("label", "")
+            val icon = iProps.getString("icon", "circle")
+            val active = iProps.getBool("active")
+
+            val itemLayout = LinearLayout(context)
+            itemLayout.orientation = LinearLayout.VERTICAL
+            itemLayout.gravity = Gravity.CENTER
+            itemLayout.setPadding(0, (8 * density).toInt(), 0, (8 * density).toInt())
+            itemLayout.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+
+            val activeColor = if (active) Color.parseColor("#1976D2") else Color.parseColor("#757575")
+
+            val iconView = createIconTextView(context, icon, 24f, activeColor)
+            itemLayout.addView(iconView)
+
+            if (label.isNotEmpty()) {
+                val labelView = TextView(context)
+                labelView.text = label
+                labelView.textSize = 12f
+                labelView.setTextColor(activeColor)
+                labelView.gravity = Gravity.CENTER
+                itemLayout.addView(labelView)
+            }
+
+            itemLayout.setOnClickListener {
+                if (item.onPress != 0) {
+                    NativeElementBridge.sendPressEvent(item.onPress, item.id)
+                }
+            }
+
+            container.addView(itemLayout)
+        }
+    }
+}
+
+// ── Side Nav (View-based — renders nothing, stores node for drawer) ──
+
+class SideNavViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        NativeEdgeDrawerState.sideNavNode.value = node
+        val v = View(context)
+        v.visibility = View.GONE
+        return v
+    }
+
+    override fun updateView(view: View, node: NativeUINode) {
+        NativeEdgeDrawerState.sideNavNode.value = node
+    }
+}
+
+// ── Empty Renderer ──
+
+class EmptyViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        val v = View(context)
+        v.visibility = View.GONE
+        return v
+    }
+
+    override fun updateView(view: View, node: NativeUINode) {}
+}
+
+// ── Side Nav Drawer State (Compose bridge) ──
 
 internal object NativeEdgeDrawerState {
     val sideNavNode = mutableStateOf<NativeUINode?>(null)
 }
 
-@Composable
-internal fun RenderSideNav(node: NativeUINode, modifier: Modifier) {
-    Log.d(TAG, "RenderSideNav: children=${node.children.size} types=${node.children.map { it.type }}")
-    // Store the side_nav node for the drawer to render
-    SideEffect {
-        NativeEdgeDrawerState.sideNavNode.value = node
-    }
-    // Render nothing — the drawer is handled by the wrapper
-}
-
 /**
  * Renders the drawer content from a side_nav NativeUINode tree.
  * Called from NativeSideDrawer when native EDGE data is available.
+ * This remains Compose-based since the drawer itself is managed by Compose Scaffold.
  */
 @Composable
 internal fun RenderSideNavDrawerContent(
@@ -181,7 +223,6 @@ internal fun RenderSideNavDrawerContent(
 ) {
     val labelVisibility = node.props.getString("label_visibility", "labeled")
 
-    // Separate pinned headers from scrollable content
     val pinnedHeaders = node.children.filter {
         it.type == "side_nav_header" && it.props.getBool("pinned")
     }
@@ -189,17 +230,14 @@ internal fun RenderSideNavDrawerContent(
         !(it.type == "side_nav_header" && it.props.getBool("pinned"))
     }
 
-    // Track expanded groups
     val expandedGroups = remember { mutableStateMapOf<String, Boolean>() }
 
     ModalDrawerSheet {
         Column(modifier = Modifier.fillMaxHeight()) {
-            // Pinned headers
             pinnedHeaders.forEach { child ->
                 RenderSideNavHeaderContent(child, onCloseDrawer)
             }
 
-            // Scrollable content
             Column(
                 modifier = Modifier
                     .fillMaxHeight()
@@ -339,7 +377,7 @@ private fun RenderSideNavItemContent(
                 if (badge.isNotEmpty()) {
                     Badge(
                         containerColor = parseBadgeColor(badgeColor),
-                        contentColor = Color.White
+                        contentColor = androidx.compose.ui.graphics.Color.White
                     ) {
                         Text(text = badge, style = MaterialTheme.typography.labelLarge)
                     }
@@ -421,179 +459,25 @@ private fun RenderSideNavGroupContent(
     }
 }
 
-// ── Bottom Nav ───────────────────────────────────────────
+// ── Utility ──
 
-@Composable
-internal fun RenderBottomNav(node: NativeUINode, modifier: Modifier) {
-    val props = node.props
-    val labelVisibility = props.getString("label_visibility", "labeled")
-    val activeColorStr = props.getString("active_color")
-    val activeColor = parseHexColor(activeColorStr)
-
-    val items = node.children.filter { it.type == "bottom_nav_item" }
-    if (items.isEmpty()) return
-
-    NavigationBar(modifier = modifier) {
-        items.forEach { item ->
-            val iProps = item.props
-            val label = iProps.getString("label", "")
-            val icon = iProps.getString("icon", "circle")
-            val active = iProps.getBool("active")
-            val badge = iProps.getString("badge")
-            val badgeColor = iProps.getString("badge_color")
-            val news = iProps.getBool("news")
-
-            NavigationBarItem(
-                icon = {
-                    BadgedBox(
-                        badge = {
-                            when {
-                                news -> Badge(containerColor = parseBadgeColor("red"))
-                                badge.isNotEmpty() -> Badge(
-                                    containerColor = parseBadgeColor(badgeColor),
-                                    contentColor = Color.White
-                                ) {
-                                    Text(text = badge, style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                        }
-                    ) {
-                        MaterialIcon(name = icon, contentDescription = label)
-                    }
-                },
-                label = {
-                    when (labelVisibility) {
-                        "unlabeled" -> {}
-                        "selected" -> if (active) Text(label)
-                        else -> Text(label)
-                    }
-                },
-                selected = active,
-                colors = if (activeColor != null) {
-                    NavigationBarItemDefaults.colors(
-                        selectedIconColor = activeColor,
-                        selectedTextColor = activeColor
-                    )
-                } else {
-                    NavigationBarItemDefaults.colors()
-                },
-                onClick = {
-                    Log.d(TAG, "Bottom nav item clicked: $label")
-                    if (item.onPress != 0) {
-                        NativeUIBridge.sendPressEvent(item.onPress, item.id)
-                    }
-                }
-            )
-        }
-    }
+private fun createIconTextView(context: Context, iconName: String, size: Float, color: Int): TextView {
+    val tv = TextView(context)
+    tv.text = getIconName(iconName)
+    tv.typeface = IconViewRenderer.getMaterialIconsTypeface(context)
+    tv.textSize = size
+    tv.setTextColor(color)
+    tv.gravity = Gravity.CENTER
+    return tv
 }
 
-// ── FAB ──────────────────────────────────────────────────
-
-@Composable
-internal fun RenderFab(node: NativeUINode, modifier: Modifier) {
-    val props = node.props
-    val icon = props.getString("icon", "add")
-    val label = props.getString("label")
-    val containerColorStr = props.getString("container_color")
-    val contentColorStr = props.getString("content_color")
-    val size = props.getString("size", "regular")
-
-    val containerColor = parseHexColor(containerColorStr) ?: MaterialTheme.colorScheme.primaryContainer
-    val contentColor = parseHexColor(contentColorStr) ?: MaterialTheme.colorScheme.onPrimaryContainer
-
-    when (size) {
-        "small" -> SmallFloatingActionButton(
-            onClick = {
-                if (node.onPress != 0) NativeUIBridge.sendPressEvent(node.onPress, node.id)
-            },
-            containerColor = containerColor,
-            contentColor = contentColor,
-            modifier = modifier
-        ) {
-            MaterialIcon(name = icon, contentDescription = label)
-        }
-        "large" -> LargeFloatingActionButton(
-            onClick = {
-                if (node.onPress != 0) NativeUIBridge.sendPressEvent(node.onPress, node.id)
-            },
-            containerColor = containerColor,
-            contentColor = contentColor,
-            modifier = modifier
-        ) {
-            MaterialIcon(name = icon, contentDescription = label)
-        }
-        "extended" -> ExtendedFloatingActionButton(
-            onClick = {
-                if (node.onPress != 0) NativeUIBridge.sendPressEvent(node.onPress, node.id)
-            },
-            containerColor = containerColor,
-            contentColor = contentColor,
-            modifier = modifier,
-            icon = { MaterialIcon(name = icon, contentDescription = null) },
-            text = { Text(label) }
-        )
-        else -> FloatingActionButton(
-            onClick = {
-                if (node.onPress != 0) NativeUIBridge.sendPressEvent(node.onPress, node.id)
-            },
-            containerColor = containerColor,
-            contentColor = contentColor,
-            modifier = modifier
-        ) {
-            MaterialIcon(name = icon, contentDescription = label)
-        }
-    }
-}
-
-// ── Horizontal Divider ───────────────────────────────────
-
-@Composable
-internal fun RenderHorizontalDivider(node: NativeUINode, modifier: Modifier) {
-    HorizontalDivider(modifier = modifier.padding(vertical = 8.dp))
-}
-
-// ── Bottom Nav Item (standalone, shouldn't render outside bottom_nav) ──
-
-@Composable
-internal fun RenderBottomNavItem(node: NativeUINode, modifier: Modifier) {
-    // bottom_nav_item is rendered by its parent bottom_nav renderer
-    // If it appears standalone, render nothing
-}
-
-// ── Top Bar Action (standalone, shouldn't render outside top_bar) ──
-
-@Composable
-internal fun RenderTopBarAction(node: NativeUINode, modifier: Modifier) {
-    // top_bar_action is rendered by its parent top_bar renderer
-}
-
-// ── Side Nav children (standalone, shouldn't render outside side_nav) ──
-
-@Composable
-internal fun RenderSideNavItem(node: NativeUINode, modifier: Modifier) {
-    // Rendered by side_nav drawer content
-}
-
-@Composable
-internal fun RenderSideNavGroup(node: NativeUINode, modifier: Modifier) {
-    // Rendered by side_nav drawer content
-}
-
-@Composable
-internal fun RenderSideNavHeader(node: NativeUINode, modifier: Modifier) {
-    // Rendered by side_nav drawer content
-}
-
-// ── Utility ──────────────────────────────────────────────
-
-private fun parseHexColor(hex: String): Color? {
+private fun parseHexColor(hex: String): androidx.compose.ui.graphics.Color? {
     if (hex.isEmpty()) return null
     return try {
         val sanitized = hex.removePrefix("#")
         when (sanitized.length) {
-            6 -> Color(android.graphics.Color.parseColor("#$sanitized"))
-            8 -> Color(android.graphics.Color.parseColor("#$sanitized"))
+            6 -> androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor("#$sanitized"))
+            8 -> androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor("#$sanitized"))
             else -> null
         }
     } catch (e: Exception) {
@@ -601,17 +485,31 @@ private fun parseHexColor(hex: String): Color? {
     }
 }
 
-private fun parseBadgeColor(colorString: String): Color {
+private fun parseHexColorInt(hex: String): Int? {
+    if (hex.isEmpty()) return null
+    return try {
+        val sanitized = hex.removePrefix("#")
+        when (sanitized.length) {
+            6 -> android.graphics.Color.parseColor("#$sanitized")
+            8 -> android.graphics.Color.parseColor("#$sanitized")
+            else -> null
+        }
+    } catch (e: Exception) {
+        null
+    }
+}
+
+private fun parseBadgeColor(colorString: String): androidx.compose.ui.graphics.Color {
     return when (colorString.lowercase()) {
-        "lime" -> Color(0xFF84CC16)
-        "green" -> Color(0xFF22C55E)
-        "blue" -> Color(0xFF3B82F6)
-        "red" -> Color(0xFFEF4444)
-        "yellow" -> Color(0xFFEAB308)
-        "purple" -> Color(0xFFA855F7)
-        "pink" -> Color(0xFFEC4899)
-        "orange" -> Color(0xFFF97316)
-        else -> Color(0xFF6366F1)
+        "lime" -> androidx.compose.ui.graphics.Color(0xFF84CC16)
+        "green" -> androidx.compose.ui.graphics.Color(0xFF22C55E)
+        "blue" -> androidx.compose.ui.graphics.Color(0xFF3B82F6)
+        "red" -> androidx.compose.ui.graphics.Color(0xFFEF4444)
+        "yellow" -> androidx.compose.ui.graphics.Color(0xFFEAB308)
+        "purple" -> androidx.compose.ui.graphics.Color(0xFFA855F7)
+        "pink" -> androidx.compose.ui.graphics.Color(0xFFEC4899)
+        "orange" -> androidx.compose.ui.graphics.Color(0xFFF97316)
+        else -> androidx.compose.ui.graphics.Color(0xFF6366F1)
     }
 }
 

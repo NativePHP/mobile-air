@@ -1,159 +1,210 @@
-import SwiftUI
+import UIKit
+import SwiftUI  // For NativeEdgeDrawerState (ObservableObject used by SwiftUI shell)
 
 // MARK: - Top Bar
 
-struct RenderTopBar: View {
-    let node: NativeUINode
+struct TopBarViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        let container = UIView()
+        buildTopBar(container, node: node)
+        return container
+    }
 
-    var body: some View {
+    func updateView(_ view: UIView, node: NativeUINode) {
+        view.subviews.forEach { $0.removeFromSuperview() }
+        buildTopBar(view, node: node)
+    }
+
+    private func buildTopBar(_ container: UIView, node: NativeUINode) {
         let p = node.props
         let title = p.getString("title")
         let subtitle = p.getString("subtitle")
 
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.headline)
-                    if !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                }
+        // Title label
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = .preferredFont(forTextStyle: .headline)
+        container.addSubview(titleLabel)
 
-                Spacer()
+        var labelBottom: CGFloat = 0
 
-                // Action buttons (max 3 visible, rest overflow)
-                let actions = node.children.filter { $0.type == "top_bar_action" }
-                ForEach(actions.prefix(3)) { action in
-                    let icon = action.props.getString("icon", default: "ellipsis")
+        // Subtitle
+        var subtitleLabel: UILabel?
+        if !subtitle.isEmpty {
+            let sl = UILabel()
+            sl.text = subtitle
+            sl.font = .preferredFont(forTextStyle: .subheadline)
+            sl.textColor = .secondaryLabel
+            container.addSubview(sl)
+            subtitleLabel = sl
+        }
 
-                    Button(action: {
-                        if action.onPress != 0 {
-                            NativeUIBridge.sendPressEvent(action.onPress, nodeId: action.id)
-                        }
-                    }) {
-                        Image(systemName: getIconForName(icon))
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+        // Action buttons (max 3)
+        let actions = node.children.filter { $0.type == "top_bar_action" }
+        var actionButtons: [UIButton] = []
+        for action in actions.prefix(3) {
+            let icon = action.props.getString("icon", default: "ellipsis")
+            let sfName = getIconForName(icon)
+            let btn = UIButton(type: .system)
+            btn.setImage(UIImage(systemName: sfName), for: .normal)
+            btn.tag = action.onPress
+            btn.accessibilityIdentifier = "\(action.id)"
+            btn.addTarget(TopBarActionTarget.shared, action: #selector(TopBarActionTarget.actionTapped(_:)), for: .touchUpInside)
+            container.addSubview(btn)
+            actionButtons.append(btn)
+        }
+
+        // Layout in layoutSubviews override or manual frame
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+
+        // Manual layout
+        let bounds = container.bounds
+        let hPad: CGFloat = 16
+        let vPad: CGFloat = 12
+
+        // Action buttons from right
+        var rightX = bounds.width - hPad
+        for btn in actionButtons.reversed() {
+            let size: CGFloat = 28
+            rightX -= size
+            btn.frame = CGRect(x: rightX, y: vPad, width: size, height: size)
+            rightX -= 8
+        }
+
+        let textMaxW = rightX - hPad
+        titleLabel.frame = CGRect(x: hPad, y: vPad, width: textMaxW, height: 20)
+        titleLabel.sizeToFit()
+        titleLabel.frame.size.width = min(titleLabel.frame.width, textMaxW)
+
+        labelBottom = titleLabel.frame.maxY
+        if let sl = subtitleLabel {
+            sl.frame = CGRect(x: hPad, y: labelBottom + 2, width: textMaxW, height: 16)
+            sl.sizeToFit()
+            sl.frame.size.width = min(sl.frame.width, textMaxW)
+        }
+    }
+}
+
+class TopBarActionTarget {
+    static let shared = TopBarActionTarget()
+    @objc func actionTapped(_ sender: UIButton) {
+        let callbackId = sender.tag
+        let nodeId = Int(sender.accessibilityIdentifier ?? "0") ?? 0
+        if callbackId != 0 {
+            NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
         }
     }
 }
 
 // MARK: - Side Nav
 
-/// Stores side_nav node for the drawer to render. The side_nav node
-/// itself doesn't render inline — it provides data for the drawer.
-class NativeEdgeDrawerState: ObservableObject {
-    static let shared = NativeEdgeDrawerState()
-    @Published var sideNavNode: NativeUINode?
-}
+struct SideNavViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        // Side nav stores its node for the drawer to render — doesn't render inline
+        NativeEdgeDrawerState.shared.sideNavNode = node
+        let v = UIView()
+        v.isHidden = true
+        return v
+    }
 
-struct RenderSideNav: View {
-    let node: NativeUINode
-
-    var body: some View {
-        Color.clear.frame(width: 0, height: 0)
-            .onAppear {
-                NativeEdgeDrawerState.shared.sideNavNode = node
-            }
+    func updateView(_ view: UIView, node: NativeUINode) {
+        NativeEdgeDrawerState.shared.sideNavNode = node
     }
 }
 
 // MARK: - Bottom Nav
 
-struct RenderBottomNav: View {
-    let node: NativeUINode
+struct BottomNavViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .systemBackground
+        buildBottomNav(container, node: node)
+        return container
+    }
 
-    var body: some View {
+    func updateView(_ view: UIView, node: NativeUINode) {
+        view.subviews.forEach { $0.removeFromSuperview() }
+        buildBottomNav(view, node: node)
+    }
+
+    private func buildBottomNav(_ container: UIView, node: NativeUINode) {
         let items = node.children.filter { $0.type == "bottom_nav_item" }
-        guard !items.isEmpty else { return AnyView(EmptyView()) }
+        guard !items.isEmpty else { return }
 
-        return AnyView(
-            HStack(spacing: 0) {
-                ForEach(items) { item in
-                    let p = item.props
-                    let label = p.getString("label")
-                    let icon = p.getString("icon", default: "circle")
-                    let active = p.getBool("active")
-                    let badge = p.getString("badge")
+        let itemWidth = container.bounds.width / CGFloat(items.count)
+        let vPad: CGFloat = 8
 
-                    Button(action: {
-                        if item.onPress != 0 {
-                            NativeUIBridge.sendPressEvent(item.onPress, nodeId: item.id)
-                        }
-                    }) {
-                        VStack(spacing: 4) {
-                            ZStack(alignment: .topTrailing) {
-                                Image(systemName: getIconForName(icon))
-                                    .font(.system(size: 22))
+        for (i, item) in items.enumerated() {
+            let p = item.props
+            let label = p.getString("label")
+            let icon = p.getString("icon", default: "circle")
+            let active = p.getBool("active")
 
-                                if !badge.isEmpty {
-                                    Text(badge)
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 1)
-                                        .background(Color.red)
-                                        .clipShape(Capsule())
-                                        .offset(x: 8, y: -4)
-                                }
-                            }
+            let itemView = UIView()
+            itemView.frame = CGRect(x: itemWidth * CGFloat(i), y: 0, width: itemWidth, height: container.bounds.height)
 
-                            Text(label)
-                                .font(.system(size: 10))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .foregroundColor(active ? .accentColor : .secondary)
-                    }
-                }
+            // Icon
+            let sfName = getIconForName(icon)
+            let iconIV = UIImageView(image: UIImage(systemName: sfName))
+            iconIV.contentMode = .scaleAspectFit
+            iconIV.tintColor = active ? .systemBlue : .secondaryLabel
+            iconIV.frame = CGRect(x: (itemWidth - 22) / 2, y: vPad, width: 22, height: 22)
+            itemView.addSubview(iconIV)
+
+            // Label
+            let lbl = UILabel()
+            lbl.text = label
+            lbl.font = .systemFont(ofSize: 10)
+            lbl.textColor = active ? .systemBlue : .secondaryLabel
+            lbl.textAlignment = .center
+            lbl.frame = CGRect(x: 0, y: vPad + 24, width: itemWidth, height: 14)
+            itemView.addSubview(lbl)
+
+            // Badge
+            let badge = p.getString("badge")
+            if !badge.isEmpty {
+                let badgeLabel = UILabel()
+                badgeLabel.text = badge
+                badgeLabel.font = .systemFont(ofSize: 10, weight: .bold)
+                badgeLabel.textColor = .white
+                badgeLabel.backgroundColor = .red
+                badgeLabel.textAlignment = .center
+                badgeLabel.layer.cornerRadius = 8
+                badgeLabel.clipsToBounds = true
+                let bw = max(16, CGFloat(badge.count) * 8 + 8)
+                badgeLabel.frame = CGRect(x: (itemWidth + 22) / 2 - 4, y: vPad - 4, width: bw, height: 16)
+                itemView.addSubview(badgeLabel)
             }
-            .padding(.vertical, 8)
-            .background(Color(.systemBackground))
-        )
+
+            // Tap target
+            let btn = UIButton(type: .system)
+            btn.frame = itemView.bounds
+            btn.tag = item.onPress
+            btn.accessibilityIdentifier = "\(item.id)"
+            btn.addTarget(BottomNavTarget.shared, action: #selector(BottomNavTarget.itemTapped(_:)), for: .touchUpInside)
+            itemView.addSubview(btn)
+
+            container.addSubview(itemView)
+        }
     }
 }
 
-// MARK: - FAB
-
-struct RenderFab: View {
-    let node: NativeUINode
-
-    var body: some View {
-        let p = node.props
-        let icon = p.getString("icon", default: "plus")
-        let label = p.getString("label")
-        let size = p.getString("size", default: "regular")
-
-        let buttonSize: CGFloat = switch size {
-        case "small": 40
-        case "large": 64
-        default: 56
+class BottomNavTarget {
+    static let shared = BottomNavTarget()
+    @objc func itemTapped(_ sender: UIButton) {
+        let callbackId = sender.tag
+        let nodeId = Int(sender.accessibilityIdentifier ?? "0") ?? 0
+        if callbackId != 0 {
+            NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
         }
-
-        Button(action: {
-            if node.onPress != 0 {
-                NativeUIBridge.sendPressEvent(node.onPress, nodeId: node.id)
-            }
-        }) {
-            if size == "extended" && !label.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: getIconForName(icon))
-                    Text(label)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            } else {
-                Image(systemName: getIconForName(icon))
-                    .font(.system(size: buttonSize * 0.4))
-                    .frame(width: buttonSize, height: buttonSize)
-            }
-        }
-        .buttonStyle(.borderedProminent)
-        .clipShape(RoundedRectangle(cornerRadius: buttonSize / 4))
     }
+}
+
+// MARK: - NativeEdgeDrawerState (kept for compatibility)
+// This was originally a SwiftUI ObservableObject. We keep it as a simple holder.
+
+class NativeEdgeDrawerState: ObservableObject {
+    static let shared = NativeEdgeDrawerState()
+    @Published var sideNavNode: NativeUINode?
 }

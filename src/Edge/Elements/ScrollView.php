@@ -19,9 +19,21 @@ class ScrollView extends Element
         return $el;
     }
 
+    protected function layoutDefaults(): array
+    {
+        return [
+            'overflow' => 2, // scroll — tells Yoga not to constrain children on scroll axis
+        ];
+    }
+
     public function horizontal(bool $value = true): static
     {
         $this->scrollProps['horizontal'] = $value;
+
+        if ($value) {
+            // Tell Yoga the main axis is horizontal so overflow:scroll applies to width
+            $this->layout['flex_direction'] = 1; // row
+        }
 
         return $this;
     }

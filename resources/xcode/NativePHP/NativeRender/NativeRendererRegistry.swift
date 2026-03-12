@@ -1,22 +1,37 @@
+import UIKit
 import SwiftUI
 
-/// Thread-safe registry mapping type strings to renderers.
-/// Follows the same pattern as Android's NativeRendererRegistry.
+/// Protocol for leaf node renderers.
+/// Each type (text, button, image, etc.) implements create + update.
+protocol NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView
+    func updateView(_ view: UIView, node: NativeUINode)
+}
+
+/// Thread-safe registry mapping type strings to UIView renderers.
 final class NativeRendererRegistry {
     static let shared = NativeRendererRegistry()
 
-    private var renderers: [String: (NativeUINode) -> AnyView] = [:]
+    private var renderers: [String: NativeViewRenderer] = [:]
     private let lock = NSLock()
 
     private init() {}
 
-    func register(_ type: String, renderer: @escaping (NativeUINode) -> AnyView) {
+    func register(_ type: String, renderer: NativeViewRenderer) {
         lock.lock()
         defer { lock.unlock() }
         renderers[type] = renderer
     }
 
-    func get(_ type: String) -> ((NativeUINode) -> AnyView)? {
+    /// Legacy closure-based registration for plugins still using SwiftUI.
+    /// Wraps the SwiftUI view in a UIHostingController.
+    func register(_ type: String, _ swiftUIRenderer: @escaping (NativeUINode) -> AnyView) {
+        lock.lock()
+        defer { lock.unlock() }
+        renderers[type] = SwiftUIViewRenderer(render: swiftUIRenderer)
+    }
+
+    func get(_ type: String) -> NativeViewRenderer? {
         lock.lock()
         defer { lock.unlock() }
         return renderers[type]
@@ -24,58 +39,55 @@ final class NativeRendererRegistry {
 
     /// Register all built-in primitive renderers.
     func registerBuiltins() {
-        // Containers
-        register("column") { AnyView(RenderColumn(node: $0)) }
-        register("row") { AnyView(RenderRow(node: $0)) }
-        register("stack") { AnyView(RenderStack(node: $0)) }
-        register("scroll_view") { AnyView(RenderScrollView(node: $0)) }
+        register("text", renderer: TextViewRenderer())
+        register("image", renderer: ImageViewRenderer())
+        register("button", renderer: ButtonViewRenderer())
+        register("text_input", renderer: TextInputViewRenderer())
+        register("toggle", renderer: ToggleViewRenderer())
+        register("icon", renderer: IconViewRenderer())
+        register("activity_indicator", renderer: ActivityIndicatorViewRenderer())
+        register("spacer", renderer: SpacerViewRenderer())
+        register("divider", renderer: DividerViewRenderer())
+        register("rect", renderer: RectViewRenderer())
+        register("circle", renderer: CircleViewRenderer())
+        register("line", renderer: LineViewRenderer())
 
         // Navigation chrome
-        register("top_bar") { AnyView(RenderTopBar(node: $0)) }
-        register("top_bar_action") { _ in AnyView(EmptyView()) }
-        register("bottom_nav") { AnyView(RenderBottomNav(node: $0)) }
-        register("bottom_nav_item") { _ in AnyView(EmptyView()) }
-        register("side_nav") { AnyView(RenderSideNav(node: $0)) }
-        register("side_nav_item") { _ in AnyView(EmptyView()) }
-        register("side_nav_group") { _ in AnyView(EmptyView()) }
-        register("side_nav_header") { _ in AnyView(EmptyView()) }
-        register("fab") { AnyView(RenderFab(node: $0)) }
-        register("horizontal_divider") { _ in AnyView(Divider().padding(.vertical, 8)) }
+        register("top_bar", renderer: TopBarViewRenderer())
+        register("top_bar_action", renderer: EmptyViewRenderer())
+        register("bottom_nav", renderer: BottomNavViewRenderer())
+        register("bottom_nav_item", renderer: EmptyViewRenderer())
+        register("side_nav", renderer: SideNavViewRenderer())
+        register("side_nav_item", renderer: EmptyViewRenderer())
+        register("side_nav_group", renderer: EmptyViewRenderer())
+        register("side_nav_header", renderer: EmptyViewRenderer())
+    }
+}
 
-        // Core visual primitives
-        register("text") { AnyView(RenderText(node: $0)) }
-        register("image") { AnyView(RenderImage(node: $0)) }
-        register("spacer") { AnyView(RenderSpacer(node: $0)) }
-        register("divider") { AnyView(RenderDivider(node: $0)) }
-        register("pressable") { AnyView(RenderPressable(node: $0)) }
-        register("canvas") { AnyView(RenderCanvas(node: $0)) }
-        register("rect") { AnyView(RenderRect(node: $0)) }
-        register("circle") { AnyView(RenderCircle(node: $0)) }
-        register("line") { AnyView(RenderLine(node: $0)) }
+/// Renderer that produces an empty (zero-size) view.
+struct EmptyViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        let v = UIView()
+        v.isHidden = true
+        return v
+    }
+    func updateView(_ view: UIView, node: NativeUINode) {}
+}
 
-        // Interactive inputs
-        register("button") { AnyView(RenderButton(node: $0)) }
-        register("text_input") { AnyView(RenderTextInput(node: $0)) }
-        register("toggle") { AnyView(RenderToggle(node: $0)) }
-        register("checkbox") { AnyView(RenderCheckbox(node: $0)) }
-        register("slider") { AnyView(RenderSlider(node: $0)) }
-        register("radio_group") { AnyView(RenderRadioGroup(node: $0)) }
-        register("select") { AnyView(RenderSelect(node: $0)) }
+/// Bridges legacy SwiftUI renderers (from plugins) into the UIView system.
+/// Creates a UIHostingController to embed the SwiftUI view.
+private struct SwiftUIViewRenderer: NativeViewRenderer {
+    let render: (NativeUINode) -> AnyView
 
-        // Display components
-        register("icon") { AnyView(RenderIcon(node: $0)) }
-        register("badge") { AnyView(RenderBadge(node: $0)) }
-        register("chip") { AnyView(RenderChip(node: $0)) }
-        register("card") { AnyView(RenderCard(node: $0)) }
-        register("list_item") { AnyView(RenderListItem(node: $0)) }
+    func createView(node: NativeUINode) -> UIView {
+        let hostVC = UIHostingController(rootView: render(node))
+        hostVC.view.backgroundColor = .clear
+        return hostVC.view
+    }
 
-        // Indicators & controls
-        register("progress_bar") { AnyView(RenderProgressBar(node: $0)) }
-        register("activity_indicator") { AnyView(RenderActivityIndicator(node: $0)) }
-        register("tab_row") { AnyView(RenderTabRow(node: $0)) }
-        register("tab") { _ in AnyView(EmptyView()) }
-
-        // Special containers
-        register("bottom_sheet") { AnyView(RenderBottomSheet(node: $0)) }
+    func updateView(_ view: UIView, node: NativeUINode) {
+        // Find the hosting controller and update its root view
+        // The view is the UIHostingController's view — we can't easily update it
+        // without the controller reference. For now, recreate is fine for plugins.
     }
 }

@@ -14,6 +14,8 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
+    private string $iosBinaryUrlPrefix = 'multiversion/';
+
     public string $iosPath;
 
     public function setupIos(): void
@@ -48,14 +50,17 @@ trait InstallsIos
     {
         $phpVersion = $this->detectPhpVersion();
 
+        $base = 'https://bin.nativephp.com/'.$this->iosBinaryUrlPrefix;
+
         $urls = [
-            '8.5' => 'https://bin.nativephp.com/ios-3.1.0-php8.5.3.zip',
-            '8.4' => 'https://bin.nativephp.com/ios-3.1.0-php8.4.18.zip',
+            '8.5' => $base.'8.5/ios/ios-3.1.0-php8.5.3.zip',
+            '8.4' => $base.'8.4/ios/ios-3.1.0-php8.4.18.zip',
+            '8.3' => $base.'8.3/ios/ios-3.1.0-php8.3.30.zip',
         ];
 
         $url = $urls[$phpVersion];
 
-        $this->components->twoColumnDetail('PHP version', $phpVersion === '8.5' ? '8.5.x' : '8.4.x');
+        $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
 
         $cacheDir = storage_path('nativephp');
         File::ensureDirectoryExists($cacheDir);
@@ -81,6 +86,10 @@ trait InstallsIos
 
                     return true;
                 } catch (RequestException) {
+                    // Remove any partial/error response written to disk
+                    if (file_exists($zipFile)) {
+                        unlink($zipFile);
+                    }
                     $downloadFailed = true;
 
                     return false;
@@ -88,10 +97,20 @@ trait InstallsIos
             });
 
             if ($downloadFailed) {
-                error('Failed to download PHP binaries.');
+                error("Failed to download PHP binaries from: $url");
 
                 return;
             }
+
+            // Verify the downloaded file is actually a ZIP
+            $zip = new ZipArchive;
+            if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
+                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                unlink($zipFile);
+
+                return;
+            }
+            $zip->close();
 
             $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
             $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");

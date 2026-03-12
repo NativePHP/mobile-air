@@ -1,21 +1,14 @@
 package com.nativephp.mobile.ui.nativerender
 
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import android.content.Context
+import android.view.View
 
-@Composable
-fun RenderSpacer(node: NativeUINode, modifier: Modifier) {
-    val layout = node.layout
-    if (layout != null && layout.widthMode == SizeMode.FIXED && layout.width > 0) {
-        Spacer(modifier = modifier.width(layout.width.dp))
-    } else if (layout != null && layout.heightMode == SizeMode.FIXED && layout.height > 0) {
-        Spacer(modifier = modifier.height(layout.height.dp))
-    } else {
-        Spacer(modifier = modifier.fillMaxWidth().height(0.dp))
+class SpacerViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        return View(context)
+    }
+
+    override fun updateView(view: View, node: NativeUINode) {
+        // No-op — spacer is just an empty view sized by Yoga
     }
 }

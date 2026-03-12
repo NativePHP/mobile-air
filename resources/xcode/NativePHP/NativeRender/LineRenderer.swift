@@ -1,39 +1,46 @@
-import SwiftUI
+import UIKit
 
-struct RenderLine: View {
-    let node: NativeUINode
+struct LineViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        let v = LineView()
+        applyProps(v, node: node)
+        return v
+    }
 
-    var body: some View {
+    func updateView(_ view: UIView, node: NativeUINode) {
+        guard let v = view as? LineView else { return }
+        applyProps(v, node: node)
+        v.setNeedsDisplay()
+    }
+
+    private func applyProps(_ v: LineView, node: NativeUINode) {
         let p = node.props
-        let fromX = CGFloat(p.getFloat("from_x"))
-        let fromY = CGFloat(p.getFloat("from_y"))
-        let toX = CGFloat(p.getFloat("to_x"))
-        let toY = CGFloat(p.getFloat("to_y"))
-
-        let style = node.style
-        let strokeColor = (style != nil && style!.borderColor != 0)
-            ? Color(argb: style!.borderColor)
-            : Color.black
-        let strokeWidth = (style != nil && style!.borderWidth > 0)
-            ? CGFloat(style!.borderWidth)
+        v.fromPoint = CGPoint(x: CGFloat(p.getFloat("from_x")), y: CGFloat(p.getFloat("from_y")))
+        v.toPoint = CGPoint(x: CGFloat(p.getFloat("to_x")), y: CGFloat(p.getFloat("to_y")))
+        v.strokeColor = (node.style?.borderColor != 0)
+            ? UIColor(argb: node.style!.borderColor)
+            : .black
+        v.strokeWidth = (node.style?.borderWidth ?? 0) > 0
+            ? CGFloat(node.style!.borderWidth)
             : 1.0
-
-        // Use a Path shape instead of SwiftUI Canvas to avoid being greedy.
-        // The line is positioned absolutely by the parent canvas offset.
-        LinePath(from: CGPoint(x: fromX, y: fromY), to: CGPoint(x: toX, y: toY))
-            .stroke(strokeColor, lineWidth: strokeWidth)
-            .allowsHitTesting(false)
+        v.backgroundColor = .clear
+        v.isOpaque = false
+        v.isUserInteractionEnabled = false
     }
 }
 
-private struct LinePath: Shape {
-    let from: CGPoint
-    let to: CGPoint
+private class LineView: UIView {
+    var fromPoint: CGPoint = .zero
+    var toPoint: CGPoint = .zero
+    var strokeColor: UIColor = .black
+    var strokeWidth: CGFloat = 1.0
 
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: from)
-        p.addLine(to: to)
-        return p
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        ctx.setStrokeColor(strokeColor.cgColor)
+        ctx.setLineWidth(strokeWidth)
+        ctx.move(to: fromPoint)
+        ctx.addLine(to: toPoint)
+        ctx.strokePath()
     }
 }

@@ -50,14 +50,20 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
+            $darkProps = static::buildDarkProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
+
+            // ScrollView needs overflow: scroll so Yoga doesn't constrain children
+            if ($type === 'scroll_view' && ! isset($layout['overflow'])) {
+                $layout['overflow'] = 2;
+            }
 
             nphp_node_open(
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
-                null,
+                ! empty($darkProps) ? $darkProps : null,
                 $onPress,
                 $onLongPress,
             );
@@ -77,6 +83,10 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            $darkProps = static::buildDarkProps($attrs);
+            if (! empty($darkProps)) {
+                $props = array_merge($props ?? [], $darkProps);
+            }
             $onPress = $element->getPressCallbackId(static::$callbacks);
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
@@ -109,6 +119,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
+            $darkProps = static::buildDarkProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -116,7 +127,7 @@ class NativeElementCollector
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
-                null,
+                ! empty($darkProps) ? $darkProps : null,
                 $onPress,
                 $onLongPress,
             );
@@ -136,6 +147,10 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            $darkProps = static::buildDarkProps($attrs);
+            if (! empty($darkProps)) {
+                $props = array_merge($props ?? [], $darkProps);
+            }
             $onPress = $element->getPressCallbackId(static::$callbacks);
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
@@ -268,6 +283,41 @@ class NativeElementCollector
         return $style;
     }
 
+    /**
+     * Build dark mode override props from the 'dark' attribute key.
+     * Maps TailwindParser output keys to prop names prefixed with 'dark_'.
+     */
+    public static function buildDarkProps(array $attrs): array
+    {
+        if (! isset($attrs['dark']) || ! is_array($attrs['dark'])) {
+            return [];
+        }
+
+        $dark = $attrs['dark'];
+        $props = [];
+
+        // Style overrides
+        if (isset($dark['bg'])) {
+            $props['dark_bg_color'] = $dark['bg'];
+        }
+        if (isset($dark['borderColor'])) {
+            $props['dark_border_color'] = $dark['borderColor'];
+        }
+        if (isset($dark['opacity'])) {
+            $props['dark_opacity'] = (float) $dark['opacity'];
+        }
+
+        // Text/color overrides
+        if (isset($dark['color'])) {
+            $props['dark_color'] = $dark['color'];
+        }
+        if (isset($dark['fontSize'])) {
+            $props['dark_font_size'] = (int) $dark['fontSize'];
+        }
+
+        return $props;
+    }
+
     protected static function resolveOnPress(array $attrs): int
     {
         if (isset($attrs['_navigate']) && static::$callbacks) {
@@ -292,16 +342,28 @@ class NativeElementCollector
         return 0;
     }
 
-    // ── Legacy methods (object-based tree building) ───
+    // ── Public methods (delegates to streaming or legacy) ───
 
     public static function open(string $type, array $attrs): void
     {
+        if (static::$streaming) {
+            static::openStreaming($type, $attrs);
+
+            return;
+        }
+
         $element = static::createElement($type, $attrs);
         static::$stack[] = $element;
     }
 
     public static function close(): void
     {
+        if (static::$streaming) {
+            static::closeStreaming();
+
+            return;
+        }
+
         $element = array_pop(static::$stack);
 
         if (empty(static::$stack)) {
@@ -313,6 +375,12 @@ class NativeElementCollector
 
     public static function leaf(string $type, array $attrs): void
     {
+        if (static::$streaming) {
+            static::leafStreaming($type, $attrs);
+
+            return;
+        }
+
         $element = static::createElement($type, $attrs);
 
         if (empty(static::$stack)) {
@@ -382,6 +450,12 @@ class NativeElementCollector
         static::applyStyle($element, $attrs);
         static::applyCallbacks($element, $attrs);
         static::applyElementProps($element, $attrs);
+
+        // Dark mode overrides — merge into element's extra props
+        $darkProps = static::buildDarkProps($attrs);
+        if (! empty($darkProps)) {
+            $element->mergeDarkProps($darkProps);
+        }
 
         return $element;
     }
@@ -476,8 +550,7 @@ class NativeElementCollector
 
     protected static function applyStyle(Element $element, array $attrs): void
     {
-        // Button handles bg as tint color in its own props — skip node-level background
-        if (isset($attrs['bg']) && ! ($element instanceof Elements\Button)) {
+        if (isset($attrs['bg'])) {
             $element->bg($attrs['bg']);
         }
         if (isset($attrs['borderRadius'])) {

@@ -166,7 +166,11 @@ class TailwindParser
         foreach ($classes as $class) {
             $parsed = self::parseClass($class);
             if ($parsed !== null) {
-                $result = array_merge($result, $parsed);
+                if (isset($parsed['dark']) && isset($result['dark'])) {
+                    $result['dark'] = array_merge($result['dark'], $parsed['dark']);
+                } else {
+                    $result = array_merge($result, $parsed);
+                }
             }
         }
 
@@ -182,6 +186,16 @@ class TailwindParser
 
     private static function parseClass(string $class): ?array
     {
+        // Dark mode variant: dark:class-name
+        if (str_starts_with($class, 'dark:')) {
+            $inner = self::parseClass(substr($class, 5));
+            if ($inner === null) {
+                return null;
+            }
+
+            return ['dark' => $inner];
+        }
+
         // Arbitrary values: prefix-[value]
         if (str_contains($class, '[')) {
             if (preg_match('/^(.+?)-\[([^\]]+)\]$/', $class, $m)) {

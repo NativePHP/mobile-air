@@ -15,6 +15,8 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
+    private string $binaryUrlPrefix = 'multiversion/';
+
     protected ?bool $includeIcu = null;
 
     public function promptAndroidOptions(): void
@@ -61,19 +63,22 @@ trait InstallsAndroid
         $composerPath = base_path('composer.json');
 
         if (! file_exists($composerPath)) {
-            return '8.4';
+            return '8.3';
         }
 
         $composer = json_decode(file_get_contents($composerPath), true);
         $constraint = $composer['require']['php'] ?? '';
 
-        // Check if the constraint explicitly requires 8.5+
-        // Matches patterns like ^8.5, >=8.5, ~8.5, 8.5.*, etc.
+        // Check from highest to lowest — first match wins
         if (preg_match('/(?:\^|>=|~)?8\.5/', $constraint)) {
             return '8.5';
         }
 
-        return '8.4';
+        if (preg_match('/(?:\^|>=|~)?8\.4/', $constraint)) {
+            return '8.4';
+        }
+
+        return '8.3';
     }
 
     private function installPHPAndroid(): void
@@ -81,14 +86,20 @@ trait InstallsAndroid
         $includeIcu = $this->includeIcu ?? false;
         $phpVersion = $this->detectPhpVersion();
 
+        $base = 'https://bin.nativephp.com/'.$this->binaryUrlPrefix;
+
         $urls = [
             '8.5' => [
-                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3-icu_2.zip',
-                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.5.3_5.zip',
+                'icu' => $base.'8.5/android/android-3.1.0-php8.5.3-icu.zip',
+                'default' => $base.'8.5/android/android-3.1.0-php8.5.3.zip',
             ],
             '8.4' => [
-                'icu' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18-icu_2.zip',
-                'default' => 'https://bin.nativephp.com/android-3.1.0-php8.4.18_2.zip',
+                'icu' => $base.'8.4/android/android-3.1.0-php8.4.18-icu.zip',
+                'default' => $base.'8.4/android/android-3.1.0-php8.4.18.zip',
+            ],
+            '8.3' => [
+                'icu' => $base.'8.3/android/android-3.1.0-php8.3.30-icu.zip',
+                'default' => $base.'8.3/android/android-3.1.0-php8.3.30.zip',
             ],
         ];
 
@@ -104,7 +115,7 @@ trait InstallsAndroid
         $zipFile = $cacheDir.DIRECTORY_SEPARATOR.$zipFilename;
         $extractPath = storage_path('android-temp');
 
-        $this->components->twoColumnDetail('PHP version', $phpVersion === '8.5' ? '8.5.x' : '8.4.x');
+        $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
         if (file_exists($zipFile)) {
@@ -124,6 +135,10 @@ trait InstallsAndroid
 
                     return true;
                 } catch (RequestException) {
+                    // Remove any partial/error response written to disk
+                    if (file_exists($zipFile)) {
+                        unlink($zipFile);
+                    }
                     $downloadFailed = true;
 
                     return false;
@@ -131,10 +146,20 @@ trait InstallsAndroid
             });
 
             if ($downloadFailed) {
-                error('Failed to download PHP binaries.');
+                error("Failed to download PHP binaries from: $url");
 
                 return;
             }
+
+            // Verify the downloaded file is actually a ZIP
+            $zip = new ZipArchive;
+            if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
+                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                unlink($zipFile);
+
+                return;
+            }
+            $zip->close();
 
             $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
             $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");

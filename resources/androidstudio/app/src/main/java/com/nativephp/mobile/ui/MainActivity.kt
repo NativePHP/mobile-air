@@ -109,6 +109,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 injectKeyboardVisibility(imeVisible)
             }
 
+            // Cache safe area insets for Yoga layout engine
+            com.nativephp.mobile.ui.nativerender.YogaBridge.safeAreaTopPx = systemBars.top
+            com.nativephp.mobile.ui.nativerender.YogaBridge.safeAreaBottomPx = systemBars.bottom
+
             insets
         }
 

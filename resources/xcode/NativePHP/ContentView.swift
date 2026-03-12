@@ -28,6 +28,7 @@ struct ContentView: View {
             if nativeUIBridge.isActive {
                 NativeUIContent()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
                     .background(Color(.systemBackground))
                     .transition(.opacity)
             }

@@ -423,42 +423,44 @@ class NativeServiceProvider extends PackageServiceProvider
     protected function registerCoreElements(): void
     {
         $elements = [
+            // Layout
+            'column' => Elements\Column::class,
+            'row' => Elements\Row::class,
+            'stack' => Elements\Stack::class,
+            'scroll_view' => Elements\ScrollView::class,
+            'spacer' => Elements\Spacer::class,
+
+            // Content
+            'text' => Elements\Text::class,
+            'image' => Elements\Image::class,
+            'icon' => Elements\Icon::class,
+
+            // Input
+            'pressable' => Elements\Pressable::class,
+            'button' => Elements\Button::class,
+            'text_input' => Elements\TextInput::class,
+            'toggle' => Elements\Toggle::class,
+
+            // Feedback
+            'activity_indicator' => Elements\ActivityIndicator::class,
+            'bottom_sheet' => Elements\BottomSheet::class,
+
+            // Navigation chrome
             'top_bar' => Elements\TopBar::class,
             'top_bar_action' => Elements\TopBarAction::class,
             'bottom_nav' => Elements\BottomNav::class,
             'bottom_nav_item' => Elements\BottomNavItem::class,
-            'fab' => Elements\Fab::class,
-            'horizontal_divider' => Elements\HorizontalDivider::class,
             'side_nav' => Elements\SideNav::class,
             'side_nav_item' => Elements\SideNavItem::class,
             'side_nav_group' => Elements\SideNavGroup::class,
             'side_nav_header' => Elements\SideNavHeader::class,
-            'text' => Elements\Text::class,
-            'button' => Elements\Button::class,
-            'image' => Elements\Image::class,
-            'spacer' => Elements\Spacer::class,
-            'divider' => Elements\Divider::class,
-            'pressable' => Elements\Pressable::class,
+
+            // Canvas/shapes
             'canvas' => Elements\Canvas::class,
             'rect' => Elements\Rect::class,
             'circle' => Elements\Circle::class,
             'line' => Elements\Line::class,
-            'icon' => Elements\Icon::class,
-            'text_input' => Elements\TextInput::class,
-            'toggle' => Elements\Toggle::class,
-            'checkbox' => Elements\Checkbox::class,
-            'slider' => Elements\Slider::class,
-            'radio_group' => Elements\RadioGroup::class,
-            'select' => Elements\Select::class,
-            'badge' => Elements\Badge::class,
-            'chip' => Elements\Chip::class,
-            'card' => Elements\Card::class,
-            'list_item' => Elements\ListItem::class,
-            'progress_bar' => Elements\ProgressBar::class,
-            'activity_indicator' => Elements\ActivityIndicator::class,
-            'tab_row' => Elements\TabRow::class,
-            'tab' => Elements\Tab::class,
-            'bottom_sheet' => Elements\BottomSheet::class,
+            'divider' => Elements\Divider::class,
         ];
 
         foreach ($elements as $type => $class) {

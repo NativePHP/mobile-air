@@ -1,14 +1,5 @@
-import SwiftUI
+import UIKit
 
-struct RenderPressable: View {
-    let node: NativeUINode
-
-    var body: some View {
-        ZStack {
-            ForEach(node.children) { child in
-                RenderNode(node: child)
-            }
-        }
-        // Click handling is done by NodeModifier (after all styling/sizing)
-    }
-}
+// Pressable is a generic container — click handling is applied by the
+// main NativeUIViewRenderer via applyClickHandlers(), reading node.onPress
+// and node.onLongPress. No special renderer needed.

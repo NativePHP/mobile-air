@@ -56,3 +56,5 @@ test-keystore.jks
 .github/workflows/test-package-local.yml
 
 /composer.lock
+UserInterfaceState.xcuserstate
+resources/xcode/NativePHP.xcworkspace/xcuserdata/shanerosenthal.xcuserdatad/UserInterfaceState.xcuserstate

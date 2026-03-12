@@ -1,18 +1,21 @@
-import SwiftUI
+import UIKit
 
-struct RenderDivider: View {
-    let node: NativeUINode
+struct DividerViewRenderer: NativeViewRenderer {
+    func createView(node: NativeUINode) -> UIView {
+        let v = UIView()
+        applyProps(v, node: node)
+        return v
+    }
 
-    var body: some View {
-        let color = node.style.map { Color(argb: $0.borderColor) }
-        let thickness = node.style?.borderWidth ?? 0
+    func updateView(_ view: UIView, node: NativeUINode) {
+        applyProps(view, node: node)
+    }
 
-        if let color, color != Color(argb: 0) {
-            Divider()
-                .overlay(color)
-                .frame(height: thickness > 0 ? CGFloat(thickness) : nil)
+    private func applyProps(_ view: UIView, node: NativeUINode) {
+        if let style = node.style, style.borderColor != 0 {
+            view.backgroundColor = UIColor(argb: style.borderColor)
         } else {
-            Divider()
+            view.backgroundColor = UIColor.separator
         }
     }
 }

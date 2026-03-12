@@ -1,22 +1,14 @@
 package com.nativephp.mobile.ui.nativerender
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.offset
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import android.content.Context
+import android.view.View
 
-@Composable
-fun RenderRect(node: NativeUINode, modifier: Modifier) {
-    val left = node.props.getFloat("left", 0f)
-    val top = node.props.getFloat("top", 0f)
-
-    // offset must be outermost so it moves the entire styled box
-    val finalMod = if (left != 0f || top != 0f) {
-        Modifier.offset(x = left.dp, y = top.dp).then(modifier)
-    } else {
-        modifier
+class RectViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        return View(context)
     }
 
-    Box(modifier = finalMod)
+    override fun updateView(view: View, node: NativeUINode) {
+        // Styled by applyStyle in the core renderer
+    }
 }
