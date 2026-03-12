@@ -50,6 +50,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
+            $darkProps = static::buildDarkProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -62,7 +63,7 @@ class NativeElementCollector
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
-                null,
+                ! empty($darkProps) ? $darkProps : null,
                 $onPress,
                 $onLongPress,
             );
@@ -82,6 +83,10 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            $darkProps = static::buildDarkProps($attrs);
+            if (! empty($darkProps)) {
+                $props = array_merge($props ?? [], $darkProps);
+            }
             $onPress = $element->getPressCallbackId(static::$callbacks);
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
@@ -114,6 +119,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
+            $darkProps = static::buildDarkProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -121,7 +127,7 @@ class NativeElementCollector
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
-                null,
+                ! empty($darkProps) ? $darkProps : null,
                 $onPress,
                 $onLongPress,
             );
@@ -141,6 +147,10 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            $darkProps = static::buildDarkProps($attrs);
+            if (! empty($darkProps)) {
+                $props = array_merge($props ?? [], $darkProps);
+            }
             $onPress = $element->getPressCallbackId(static::$callbacks);
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
@@ -271,6 +281,41 @@ class NativeElementCollector
         }
 
         return $style;
+    }
+
+    /**
+     * Build dark mode override props from the 'dark' attribute key.
+     * Maps TailwindParser output keys to prop names prefixed with 'dark_'.
+     */
+    public static function buildDarkProps(array $attrs): array
+    {
+        if (! isset($attrs['dark']) || ! is_array($attrs['dark'])) {
+            return [];
+        }
+
+        $dark = $attrs['dark'];
+        $props = [];
+
+        // Style overrides
+        if (isset($dark['bg'])) {
+            $props['dark_bg_color'] = $dark['bg'];
+        }
+        if (isset($dark['borderColor'])) {
+            $props['dark_border_color'] = $dark['borderColor'];
+        }
+        if (isset($dark['opacity'])) {
+            $props['dark_opacity'] = (float) $dark['opacity'];
+        }
+
+        // Text/color overrides
+        if (isset($dark['color'])) {
+            $props['dark_color'] = $dark['color'];
+        }
+        if (isset($dark['fontSize'])) {
+            $props['dark_font_size'] = (int) $dark['fontSize'];
+        }
+
+        return $props;
     }
 
     protected static function resolveOnPress(array $attrs): int
@@ -405,6 +450,12 @@ class NativeElementCollector
         static::applyStyle($element, $attrs);
         static::applyCallbacks($element, $attrs);
         static::applyElementProps($element, $attrs);
+
+        // Dark mode overrides — merge into element's extra props
+        $darkProps = static::buildDarkProps($attrs);
+        if (! empty($darkProps)) {
+            $element->mergeDarkProps($darkProps);
+        }
 
         return $element;
     }

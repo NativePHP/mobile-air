@@ -20,6 +20,8 @@ abstract class Element
 
     protected array $children = [];
 
+    protected array $darkProps = [];
+
     // ── Attribute hydration ──────────────────────────────
 
     /**
@@ -350,6 +352,13 @@ abstract class Element
         return $this;
     }
 
+    public function mergeDarkProps(array $props): static
+    {
+        $this->darkProps = array_merge($this->darkProps, $props);
+
+        return $this;
+    }
+
     // ── Defaults (override in subclasses) ──────────────
 
     protected function defaults(): array
@@ -410,7 +419,13 @@ abstract class Element
 
     public function getResolvedProps(CallbackRegistry $registry): array
     {
-        return array_merge($this->defaults(), $this->resolveProps($registry));
+        $props = array_merge($this->defaults(), $this->resolveProps($registry));
+
+        if (! empty($this->darkProps)) {
+            $props = array_merge($props, $this->darkProps);
+        }
+
+        return $props;
     }
 
     // ── Legacy tree serialization ───────────────────

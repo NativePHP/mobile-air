@@ -342,6 +342,71 @@ it('later classes override earlier ones for same key', function () {
     expect($result)->toBe(['bg' => '#3B82F6']);
 });
 
+// ── Dark Mode ───────────────────────────────────────
+
+it('parses dark: background color', function () {
+    $result = TailwindParser::parse('bg-white dark:bg-gray-900');
+
+    expect($result)->toBe([
+        'bg' => '#FFFFFF',
+        'dark' => ['bg' => '#111827'],
+    ]);
+});
+
+it('parses dark: text color', function () {
+    $result = TailwindParser::parse('text-black dark:text-white');
+
+    expect($result)->toBe([
+        'color' => '#000000',
+        'dark' => ['color' => '#FFFFFF'],
+    ]);
+});
+
+it('parses multiple dark: overrides', function () {
+    $result = TailwindParser::parse('bg-white text-gray-900 dark:bg-gray-900 dark:text-white');
+
+    expect($result)->toBe([
+        'bg' => '#FFFFFF',
+        'color' => '#111827',
+        'dark' => [
+            'bg' => '#111827',
+            'color' => '#FFFFFF',
+        ],
+    ]);
+});
+
+it('parses dark: border color', function () {
+    $result = TailwindParser::parse('border-gray-300 dark:border-gray-700');
+
+    expect($result)->toBe([
+        'borderColor' => '#D1D5DB',
+        'dark' => ['borderColor' => '#374151'],
+    ]);
+});
+
+it('parses dark: with arbitrary values', function () {
+    $result = TailwindParser::parse('bg-[#FFFFFF] dark:bg-[#1a1a1a]');
+
+    expect($result)->toBe([
+        'bg' => '#FFFFFF',
+        'dark' => ['bg' => '#1A1A1A'],
+    ]);
+});
+
+it('parses dark: opacity', function () {
+    $result = TailwindParser::parse('opacity-100 dark:opacity-80');
+
+    expect($result)->toBe([
+        'opacity' => 1.0,
+        'dark' => ['opacity' => 0.8],
+    ]);
+});
+
+it('ignores unknown dark: classes', function () {
+    $result = TailwindParser::parse('dark:hover:bg-blue-500');
+    expect($result)->toBe([]);
+});
+
 // ── Edge Cases ──────────────────────────────────────
 
 it('ignores unknown classes silently', function () {
