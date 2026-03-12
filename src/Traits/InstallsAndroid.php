@@ -15,7 +15,7 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
-    private string $binaryUrlPrefix = '';
+    private string $binaryUrlPrefix = 'main/';
 
     protected ?bool $includeIcu = null;
 

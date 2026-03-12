@@ -14,7 +14,7 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
-    private string $iosBinaryUrlPrefix = '';
+    private string $iosBinaryUrlPrefix = 'main/';
 
     public string $iosPath;
 
