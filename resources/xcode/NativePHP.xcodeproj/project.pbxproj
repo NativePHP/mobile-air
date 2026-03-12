@@ -34,9 +34,11 @@
 		954DE1E82E07DCC60095118A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 954DE1E72E07DCC60095118A /* ZIPFoundation */; };
 		956423072E31757600F25A31 /* libonig.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 956423062E31757600F25A31 /* libonig.a */; };
 		956423092E31758C00F25A31 /* libonig.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 956423082E31758C00F25A31 /* libonig.a */; };
-		9564230A2E3175B000F25A31 /* libsodium.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9564230C2E3175B000F25A31 /* libsodium.a */; };
-		9564230B2E3175B000F25A31 /* libsodium.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9564230D2E3175B000F25A31 /* libsodium.a */; };
+		9564230B2E3B8A0000F25A31 /* libsodium.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9564230A2E3B8A0000F25A31 /* libsodium.a */; };
+		9564230D2E3B8A0100F25A31 /* libsodium.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9564230C2E3B8A0100F25A31 /* libsodium.a */; };
 		95BD62342D29732500C72704 /* PHP.c in Sources */ = {isa = PBXBuildFile; fileRef = 95BD62332D29731900C72704 /* PHP.c */; };
+		B137604517D71A399CE1DC9E /* Pods_NativePHP.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B1E6F29E670A0AADBBDD5545 /* Pods_NativePHP.framework */; };
+		BD850B6B06D4E7C89D165CA7 /* Pods_NativePHP_simulator.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E361232951AE1446C2F6CE01 /* Pods_NativePHP_simulator.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -58,6 +60,9 @@
 
 /* Begin PBXFileReference section */
 		1EE65C422D42A0C100F2812B /* NativePHP-simulator.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NativePHP-simulator.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		7BB04FB8776320C2BE91597C /* Pods-NativePHP-simulator.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativePHP-simulator.debug.xcconfig"; path = "Target Support Files/Pods-NativePHP-simulator/Pods-NativePHP-simulator.debug.xcconfig"; sourceTree = "<group>"; };
+		8204E9F5D8B6BF54CAD77015 /* Pods-NativePHP.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativePHP.debug.xcconfig"; path = "Target Support Files/Pods-NativePHP/Pods-NativePHP.debug.xcconfig"; sourceTree = "<group>"; };
+		917E6BCEDF70D01800B45248 /* Pods-NativePHP.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativePHP.release.xcconfig"; path = "Target Support Files/Pods-NativePHP/Pods-NativePHP.release.xcconfig"; sourceTree = "<group>"; };
 		95037E2A2D923555004D24B3 /* curl.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = curl.h; sourceTree = "<group>"; };
 		95037E2B2D923555004D24B3 /* curlver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = curlver.h; sourceTree = "<group>"; };
 		95037E2C2D923555004D24B3 /* easy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = easy.h; sourceTree = "<group>"; };
@@ -602,8 +607,8 @@
 		9503807D2D923577004D24B3 /* libzip.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libzip.a; sourceTree = "<group>"; };
 		956423062E31757600F25A31 /* libonig.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libonig.a; sourceTree = "<group>"; };
 		956423082E31758C00F25A31 /* libonig.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libonig.a; sourceTree = "<group>"; };
-		9564230C2E3175B000F25A31 /* libsodium.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsodium.a; sourceTree = "<group>"; };
-		9564230D2E3175B000F25A31 /* libsodium.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsodium.a; sourceTree = "<group>"; };
+		9564230A2E3B8A0000F25A31 /* libsodium.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsodium.a; sourceTree = "<group>"; };
+		9564230C2E3B8A0100F25A31 /* libsodium.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsodium.a; sourceTree = "<group>"; };
 		95BD5DC12D178E9D00C72704 /* NativePHP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NativePHP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95BD5DD12D178E9E00C72704 /* NativePHPTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NativePHPTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		95BD5DDB2D178E9E00C72704 /* NativePHPUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NativePHPUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -611,6 +616,9 @@
 		95BD62332D29731900C72704 /* PHP.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = PHP.c; sourceTree = "<group>"; };
 		95BD62352D29732B00C72704 /* PHP.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PHP.h; sourceTree = "<group>"; };
 		95E0EFB62D9A12E50069C23A /* NativePHP-simulator-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "NativePHP-simulator-Info.plist"; sourceTree = "<group>"; };
+		B1E6F29E670A0AADBBDD5545 /* Pods_NativePHP.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_NativePHP.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		E361232951AE1446C2F6CE01 /* Pods_NativePHP_simulator.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_NativePHP_simulator.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		F6296017A23CA4D47797637A /* Pods-NativePHP-simulator.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativePHP-simulator.release.xcconfig"; path = "Target Support Files/Pods-NativePHP-simulator/Pods-NativePHP-simulator.release.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -642,11 +650,15 @@
 		};
 		95BD5DD42D178E9E00C72704 /* NativePHPTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = NativePHPTests;
 			sourceTree = "<group>";
 		};
 		95BD5DDE2D178E9E00C72704 /* NativePHPUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = NativePHPUITests;
 			sourceTree = "<group>";
 		};
@@ -666,11 +678,12 @@
 				950380842D923577004D24B3 /* libiconv.a in Frameworks */,
 				950380852D923577004D24B3 /* libzip.a in Frameworks */,
 				956423072E31757600F25A31 /* libonig.a in Frameworks */,
+				9564230B2E3B8A0000F25A31 /* libsodium.a in Frameworks */,
 				950380862D923577004D24B3 /* libcrypto.a in Frameworks */,
 				950380872D923577004D24B3 /* libcurl.a in Frameworks */,
 				950380882D923577004D24B3 /* libssl.a in Frameworks */,
-				9564230B2E3175B000F25A31 /* libsodium.a in Frameworks */,
 				954DE1E82E07DCC60095118A /* ZIPFoundation in Frameworks */,
+				BD850B6B06D4E7C89D165CA7 /* Pods_NativePHP_simulator.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -686,12 +699,13 @@
 				9503806D2D92356B004D24B3 /* libpng16.a in Frameworks */,
 				9503806E2D92356B004D24B3 /* libsqlite3.a in Frameworks */,
 				956423092E31758C00F25A31 /* libonig.a in Frameworks */,
+				9564230D2E3B8A0100F25A31 /* libsodium.a in Frameworks */,
 				9503806F2D92356B004D24B3 /* libz.a in Frameworks */,
 				950380702D92356B004D24B3 /* libiconv.a in Frameworks */,
 				950380712D92356B004D24B3 /* libcharset.a in Frameworks */,
 				950380722D92356B004D24B3 /* libssl.a in Frameworks */,
-				9564230A2E3175B000F25A31 /* libsodium.a in Frameworks */,
 				954DE1E62E07DCB80095118A /* ZIPFoundation in Frameworks */,
+				B137604517D71A399CE1DC9E /* Pods_NativePHP.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -716,6 +730,7 @@
 			isa = PBXGroup;
 			children = (
 				956423082E31758C00F25A31 /* libonig.a */,
+				9564230C2E3B8A0100F25A31 /* libsodium.a */,
 				9503805D2D92356B004D24B3 /* libcharset.a */,
 				9503805E2D92356B004D24B3 /* libcrypto.a */,
 				9503805F2D92356B004D24B3 /* libcurl.a */,
@@ -727,7 +742,6 @@
 				950380652D92356B004D24B3 /* libxml2.a */,
 				950380662D92356B004D24B3 /* libz.a */,
 				950380672D92356B004D24B3 /* libzip.a */,
-				9564230C2E3175B000F25A31 /* libsodium.a */,
 			);
 			path = iphoneos;
 			sourceTree = "<group>";
@@ -736,6 +750,7 @@
 			isa = PBXGroup;
 			children = (
 				956423062E31757600F25A31 /* libonig.a */,
+				9564230A2E3B8A0000F25A31 /* libsodium.a */,
 				950380732D923577004D24B3 /* libcharset.a */,
 				950380742D923577004D24B3 /* libcrypto.a */,
 				950380752D923577004D24B3 /* libcurl.a */,
@@ -747,7 +762,6 @@
 				9503807B2D923577004D24B3 /* libxml2.a */,
 				9503807C2D923577004D24B3 /* libz.a */,
 				9503807D2D923577004D24B3 /* libzip.a */,
-				9564230D2E3175B000F25A31 /* libsodium.a */,
 			);
 			path = iphonesimulator;
 			sourceTree = "<group>";
@@ -1617,6 +1631,8 @@
 				95BD608E2D27309B00C72704 /* Include */,
 				95BD60902D27309B00C72704 /* Libraries */,
 				95E0EFB62D9A12E50069C23A /* NativePHP-simulator-Info.plist */,
+				ABE6E5440BD54C4159CBE162 /* Pods */,
+				A7AD74D98A09B042E4568207 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -1667,6 +1683,27 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
+		A7AD74D98A09B042E4568207 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B1E6F29E670A0AADBBDD5545 /* Pods_NativePHP.framework */,
+				E361232951AE1446C2F6CE01 /* Pods_NativePHP_simulator.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		ABE6E5440BD54C4159CBE162 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				8204E9F5D8B6BF54CAD77015 /* Pods-NativePHP.debug.xcconfig */,
+				917E6BCEDF70D01800B45248 /* Pods-NativePHP.release.xcconfig */,
+				7BB04FB8776320C2BE91597C /* Pods-NativePHP-simulator.debug.xcconfig */,
+				F6296017A23CA4D47797637A /* Pods-NativePHP-simulator.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1674,6 +1711,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1EE65C3F2D42A0C100F2812B /* Build configuration list for PBXNativeTarget "NativePHP-simulator" */;
 			buildPhases = (
+				BFB9094FADC5B5A633047435 /* [CP] Check Pods Manifest.lock */,
 				95B0DA0E2E2843BA00244DFE /* NativePHP Build */,
 				1EE65C2F2D42A0C100F2812B /* Sources */,
 				1EE65C322D42A0C100F2812B /* Frameworks */,
@@ -1698,6 +1736,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 95BD5DE52D178E9E00C72704 /* Build configuration list for PBXNativeTarget "NativePHP" */;
 			buildPhases = (
+				634FC0E17F1F7E1C31AF9987 /* [CP] Check Pods Manifest.lock */,
 				95B0DA0D2E28429C00244DFE /* NativePHP Build */,
 				95BD5DBD2D178E9D00C72704 /* Sources */,
 				95BD5DBE2D178E9D00C72704 /* Frameworks */,
@@ -1735,8 +1774,6 @@
 				95BD5DD42D178E9E00C72704 /* NativePHPTests */,
 			);
 			name = NativePHPTests;
-			packageProductDependencies = (
-			);
 			productName = NativePHPTests;
 			productReference = 95BD5DD12D178E9E00C72704 /* NativePHPTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -1758,8 +1795,6 @@
 				95BD5DDE2D178E9E00C72704 /* NativePHPUITests */,
 			);
 			name = NativePHPUITests;
-			packageProductDependencies = (
-			);
 			productName = NativePHPUITests;
 			productReference = 95BD5DDB2D178E9E00C72704 /* NativePHPUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -1844,6 +1879,28 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		634FC0E17F1F7E1C31AF9987 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-NativePHP-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
 		95B0DA0D2E28429C00244DFE /* NativePHP Build */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -1881,6 +1938,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/zsh;
 			shellScript = "source ~/.zshrc\n\nif [[ -z \"$NATIVEPHP_CLI_BUILD\" ]]; then\n    NATIVEPHP_XCODE_BUILD=1 php ../../artisan native:build\nfi\n";
+		};
+		BFB9094FADC5B5A633047435 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-NativePHP-simulator-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1933,6 +2012,7 @@
 /* Begin XCBuildConfiguration section */
 		1EE65C402D42A0C100F2812B /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7BB04FB8776320C2BE91597C /* Pods-NativePHP-simulator.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1941,13 +2021,17 @@
 				DEVELOPMENT_ASSET_PATHS = "\"NativePHP/Preview Content\"";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				EXCLUDED_RECURSIVE_SEARCH_PATH_SUBDIRECTORIES = "*.nib *.lproj *.framework *.gch *.xcode* *.xcassets (*) .DS_Store CVS .svn .git .hg *.pbproj *.pbxproj node_modules";
 				EXCLUDED_SOURCE_FILE_NAMES = (
 					.editorconfig,
 					.gitignore,
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Include/**";
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Include/**",
+					"$(PROJECT_DIR)/NativePHP",
+				);
 				INFOPLIST_FILE = "NativePHP-simulator-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NativePHP;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -1980,6 +2064,7 @@
 		};
 		1EE65C412D42A0C100F2812B /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = F6296017A23CA4D47797637A /* Pods-NativePHP-simulator.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1988,13 +2073,17 @@
 				DEVELOPMENT_ASSET_PATHS = "\"NativePHP/Preview Content\"";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				EXCLUDED_RECURSIVE_SEARCH_PATH_SUBDIRECTORIES = "*.nib *.lproj *.framework *.gch *.xcode* *.xcassets (*) .DS_Store CVS .svn .git .hg *.pbproj *.pbxproj node_modules";
 				EXCLUDED_SOURCE_FILE_NAMES = (
 					.editorconfig,
 					.gitignore,
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Include/**";
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Include/**",
+					"$(PROJECT_DIR)/NativePHP",
+				);
 				INFOPLIST_FILE = "NativePHP-simulator-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NativePHP;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -2146,6 +2235,7 @@
 		};
 		95BD5DE62D178E9E00C72704 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8204E9F5D8B6BF54CAD77015 /* Pods-NativePHP.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -2161,7 +2251,10 @@
 					.gitignore,
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Include/**";
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Include/**",
+					"$(PROJECT_DIR)/NativePHP",
+				);
 				INFOPLIST_FILE = NativePHP/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NativePHP;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
@@ -2195,6 +2288,7 @@
 		};
 		95BD5DE72D178E9E00C72704 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 917E6BCEDF70D01800B45248 /* Pods-NativePHP.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -2210,7 +2304,10 @@
 					.gitignore,
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Include/**";
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Include/**",
+					"$(PROJECT_DIR)/NativePHP",
+				);
 				INFOPLIST_FILE = NativePHP/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NativePHP;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
