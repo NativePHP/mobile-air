@@ -1,10 +1,17 @@
 package com.nativephp.mobile.ui.nativerender
 
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
+import android.content.Context
+import android.graphics.Color
+import android.view.View
 
-@Composable
-fun RenderDivider(node: NativeUINode, modifier: Modifier) {
-    HorizontalDivider(modifier = modifier)
+class DividerViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        val v = View(context)
+        v.setBackgroundColor(Color.parseColor("#E0E0E0"))
+        return v
+    }
+
+    override fun updateView(view: View, node: NativeUINode) {
+        // Divider is just a styled line — color handled by applyStyle or default
+    }
 }

@@ -1,73 +1,68 @@
 package com.nativephp.mobile.ui.nativerender
 
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
+import android.content.Context
+import android.view.View
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
 /**
- * Composable renderer function type for a single node.
+ * Imperative view renderer interface — mirrors iOS NativeViewRenderer protocol.
  */
-fun interface NodeRenderer {
-    @Composable
-    fun Render(node: NativeUINode, modifier: Modifier)
+interface NativeViewRenderer {
+    fun createView(context: Context, node: NativeUINode): View
+    fun updateView(view: View, node: NativeUINode)
 }
 
 /**
- * Thread-safe registry mapping type strings to renderers.
+ * Thread-safe registry mapping type strings to view renderers.
  *
  * Container types (column, row, stack, pressable, canvas) are NOT registered —
- * RenderNode handles them generically via Yoga absolute positioning.
+ * NativeUIViewRenderer handles them generically via Yoga absolute positioning.
  */
 object NativeRendererRegistry {
 
     private val lock = ReentrantReadWriteLock()
-    private val renderers = mutableMapOf<String, NodeRenderer>()
+    private val viewRenderers = mutableMapOf<String, NativeViewRenderer>()
 
-    fun register(type: String, renderer: NodeRenderer) {
+    fun register(type: String, renderer: NativeViewRenderer) {
         lock.write {
-            renderers[type] = renderer
+            viewRenderers[type] = renderer
         }
     }
 
-    fun get(type: String): NodeRenderer? {
+    fun getView(type: String): NativeViewRenderer? {
         return lock.read {
-            renderers[type]
+            viewRenderers[type]
         }
     }
 
     fun registerBuiltins() {
-        // Navigation chrome
-        register("top_bar", NodeRenderer { node, modifier -> RenderTopBar(node, modifier) })
-        register("top_bar_action", NodeRenderer { node, modifier -> RenderTopBarAction(node, modifier) })
-        register("bottom_nav", NodeRenderer { node, modifier -> RenderBottomNav(node, modifier) })
-        register("bottom_nav_item", NodeRenderer { node, modifier -> RenderBottomNavItem(node, modifier) })
-        register("side_nav", NodeRenderer { node, modifier -> RenderSideNav(node, modifier) })
-        register("side_nav_item", NodeRenderer { node, modifier -> RenderSideNavItem(node, modifier) })
-        register("side_nav_group", NodeRenderer { node, modifier -> RenderSideNavGroup(node, modifier) })
-        register("side_nav_header", NodeRenderer { node, modifier -> RenderSideNavHeader(node, modifier) })
-
         // Core visual primitives
-        register("text", NodeRenderer { node, modifier -> RenderText(node, modifier) })
-        register("image", NodeRenderer { node, modifier -> RenderImage(node, modifier) })
-        register("spacer", NodeRenderer { node, modifier -> RenderSpacer(node, modifier) })
-        register("divider", NodeRenderer { node, modifier -> RenderDivider(node, modifier) })
-        register("rect", NodeRenderer { node, modifier -> RenderRect(node, modifier) })
-        register("circle", NodeRenderer { node, modifier -> RenderCircle(node, modifier) })
-        register("line", NodeRenderer { node, modifier -> RenderLine(node, modifier) })
+        register("text", TextViewRenderer())
+        register("image", ImageViewRenderer())
+        register("spacer", SpacerViewRenderer())
+        register("divider", DividerViewRenderer())
+        register("rect", RectViewRenderer())
+        register("circle", CircleViewRenderer())
+        register("line", LineViewRenderer())
 
-        // Content
-        register("icon", NodeRenderer { node, modifier -> RenderIcon(node, modifier) })
+        // Interactive components
+        register("button", ButtonViewRenderer())
+        register("text_input", TextInputViewRenderer())
+        register("toggle", ToggleViewRenderer())
+        register("icon", IconViewRenderer())
+        register("activity_indicator", ActivityIndicatorViewRenderer())
 
-        // Core interactive components
-        register("button", NodeRenderer { node, modifier -> RenderButton(node, modifier) })
-        register("text_input", NodeRenderer { node, modifier -> RenderTextInput(node, modifier) })
-        register("toggle", NodeRenderer { node, modifier -> RenderToggle(node, modifier) })
-        register("activity_indicator", NodeRenderer { node, modifier -> RenderActivityIndicator(node, modifier) })
-
-        // Special containers (need custom rendering, not just absolute positioning)
-        register("scroll_view", NodeRenderer { node, modifier -> RenderScrollView(node, modifier) })
-        register("bottom_sheet", NodeRenderer { node, modifier -> RenderBottomSheet(node, modifier) })
+        // Navigation chrome (empty renderers — handled at higher level)
+        val empty = EmptyViewRenderer()
+        register("top_bar", TopBarViewRenderer())
+        register("top_bar_action", empty)
+        register("bottom_nav", BottomNavViewRenderer())
+        register("bottom_nav_item", empty)
+        register("side_nav", SideNavViewRenderer())
+        register("side_nav_item", empty)
+        register("side_nav_group", empty)
+        register("side_nav_header", empty)
     }
 }

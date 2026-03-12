@@ -1,63 +1,54 @@
 package com.nativephp.mobile.ui.nativerender
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import coil3.compose.SubcomposeAsyncImage
+import android.content.Context
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
+import android.view.View
+import android.widget.ImageView
+import coil3.ImageLoader
+import coil3.request.ImageRequest
+import coil3.target.ImageViewTarget
 
-@Composable
-fun RenderImage(node: NativeUINode, modifier: Modifier) {
-    val p = node.props
-    val src = p.getString("src")
-    val fit = p.getInt("fit")
-    val tintColor = p.getColor("tint_color", 0)
-
-    val contentScale = when (fit) {
-        0 -> ContentScale.None
-        1 -> ContentScale.Fit
-        2 -> ContentScale.Crop
-        3 -> ContentScale.FillBounds
-        4 -> ContentScale.Inside
-        else -> ContentScale.Fit
+class ImageViewRenderer : NativeViewRenderer {
+    override fun createView(context: Context, node: NativeUINode): View {
+        val iv = ImageView(context)
+        iv.clipToOutline = true
+        applyProps(iv, node)
+        return iv
     }
 
-    val colorFilter = if (tintColor != 0) ColorFilter.tint(Color(tintColor)) else null
+    override fun updateView(view: View, node: NativeUINode) {
+        val iv = view as? ImageView ?: return
+        applyProps(iv, node)
+    }
 
-    SubcomposeAsyncImage(
-        model = src,
-        contentDescription = null,
-        modifier = modifier,
-        contentScale = contentScale,
-        colorFilter = colorFilter,
-        loading = {
-            Box(
-                modifier = Modifier.background(Color(0xFFE0E0E0)),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier,
-                    strokeWidth = 2.dp,
-                    color = Color.Gray
-                )
-            }
-        },
-        error = {
-            Box(
-                modifier = Modifier.background(Color(0xFFE0E0E0)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(text = src.takeLast(20), fontSize = 10.sp, color = Color.Gray)
-            }
+    private fun applyProps(iv: ImageView, node: NativeUINode) {
+        val p = node.props
+        val src = p.getString("src")
+        val fit = p.getInt("fit")
+        val tintColor = p.getColor("tint_color", 0)
+
+        iv.scaleType = when (fit) {
+            0 -> ImageView.ScaleType.CENTER
+            1 -> ImageView.ScaleType.FIT_CENTER
+            2 -> ImageView.ScaleType.CENTER_CROP
+            3 -> ImageView.ScaleType.FIT_XY
+            4 -> ImageView.ScaleType.FIT_CENTER
+            else -> ImageView.ScaleType.FIT_CENTER
         }
-    )
+
+        if (tintColor != 0) {
+            iv.colorFilter = PorterDuffColorFilter(tintColor, PorterDuff.Mode.SRC_IN)
+        } else {
+            iv.colorFilter = null
+        }
+
+        if (src.isNotEmpty()) {
+            val request = ImageRequest.Builder(iv.context)
+                .data(src)
+                .target(ImageViewTarget(iv))
+                .build()
+            ImageLoader(iv.context).enqueue(request)
+        }
+    }
 }
