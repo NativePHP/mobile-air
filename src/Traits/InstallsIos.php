@@ -14,7 +14,7 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
-    private string $iosBinaryUrlPrefix = 'multiversion/';
+    private string $iosBinaryUrlPrefix = '';
 
     public string $iosPath;
 

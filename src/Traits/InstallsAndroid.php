@@ -15,7 +15,7 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
-    private string $binaryUrlPrefix = 'multiversion/';
+    private string $binaryUrlPrefix = '';
 
     protected ?bool $includeIcu = null;
 
