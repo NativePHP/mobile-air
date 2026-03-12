@@ -7,27 +7,19 @@ struct ToggleViewRenderer: NativeViewRenderer {
 
         if label.isEmpty {
             let toggle = NativeSwitch()
-            toggle.nodeId = node.id
-            toggle.onChangeCb = p.getCallbackId("on_change")
-            toggle.isOn = p.getBool("value")
-            toggle.isEnabled = !p.getBool("disabled")
-            toggle.addTarget(toggle, action: #selector(NativeSwitch.valueChanged), for: .valueChanged)
+            applySwitch(toggle, node: node)
             return toggle
         }
 
-        // Toggle with label — horizontal container
         let container = UIView()
         let labelView = UILabel()
         labelView.text = label
+        applyLabelColor(labelView, node: node)
         labelView.tag = 1
         container.addSubview(labelView)
 
         let toggle = NativeSwitch()
-        toggle.nodeId = node.id
-        toggle.onChangeCb = p.getCallbackId("on_change")
-        toggle.isOn = p.getBool("value")
-        toggle.isEnabled = !p.getBool("disabled")
-        toggle.addTarget(toggle, action: #selector(NativeSwitch.valueChanged), for: .valueChanged)
+        applySwitch(toggle, node: node)
         toggle.tag = 2
         container.addSubview(toggle)
 
@@ -38,22 +30,54 @@ struct ToggleViewRenderer: NativeViewRenderer {
         let p = node.props
 
         if let toggle = view as? NativeSwitch {
-            toggle.nodeId = node.id
-            toggle.onChangeCb = p.getCallbackId("on_change")
-            toggle.isOn = p.getBool("value")
-            toggle.isEnabled = !p.getBool("disabled")
+            applySwitch(toggle, node: node)
         } else {
-            // Container with label + switch
             if let labelView = view.viewWithTag(1) as? UILabel {
                 labelView.text = p.getString("label")
+                applyLabelColor(labelView, node: node)
             }
             if let toggle = view.viewWithTag(2) as? NativeSwitch {
-                toggle.nodeId = node.id
-                toggle.onChangeCb = p.getCallbackId("on_change")
-                toggle.isOn = p.getBool("value")
-                toggle.isEnabled = !p.getBool("disabled")
+                applySwitch(toggle, node: node)
             }
         }
+    }
+
+    private func applyLabelColor(_ label: UILabel, node: NativeUINode) {
+        let isDark = UITraitCollection.current.userInterfaceStyle == .dark
+
+        // text-* classes → color prop, dark:text-* → dark_color prop
+        let darkColor = isDark ? node.props.getColor("dark_color", default: 0) : 0
+        let color = node.props.getColor("color", default: 0)
+        let labelColor = node.props.getColor("label_color", default: 0)
+
+        if darkColor != 0 {
+            label.textColor = UIColor(argb: darkColor)
+        } else if labelColor != 0 {
+            label.textColor = UIColor(argb: labelColor)
+        } else if color != 0 {
+            label.textColor = UIColor(argb: color)
+        } else {
+            label.textColor = .label
+        }
+    }
+
+    private func applySwitch(_ toggle: NativeSwitch, node: NativeUINode) {
+        let p = node.props
+        toggle.nodeId = node.id
+        toggle.onChangeCb = p.getCallbackId("on_change")
+        toggle.isOn = p.getBool("value")
+        toggle.isEnabled = !p.getBool("disabled")
+
+        // bg-* classes → style.bgColor for toggle tint
+        if let style = node.style {
+            let argb = style.bgColor
+            let alpha = (argb >> 24) & 0xFF
+            if argb != 0 && alpha != 0 {
+                toggle.onTintColor = UIColor(argb: argb)
+            }
+        }
+
+        toggle.addTarget(toggle, action: #selector(NativeSwitch.valueChanged), for: .valueChanged)
     }
 }
 
@@ -70,7 +94,6 @@ class NativeSwitch: UISwitch {
 
 // Layout the toggle container when frame changes
 extension ToggleViewRenderer {
-    // Called externally by the renderer after frame is set, since we use manual layout
     static func layoutToggleContainer(_ container: UIView) {
         guard let label = container.viewWithTag(1) as? UILabel,
               let toggle = container.viewWithTag(2) as? UISwitch else { return }

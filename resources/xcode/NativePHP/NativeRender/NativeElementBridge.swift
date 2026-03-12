@@ -195,13 +195,19 @@ final class NativeElementBridge {
 
         cachedTypeTable = typeTable
 
-        // Capture viewport size from main thread (UIScreen.main is not thread-safe)
-        if Thread.isMainThread {
+        // Capture viewport size and safe area insets from main thread (UIScreen.main is not thread-safe)
+        let captureOnMain = {
             cachedViewportSize = UIScreen.main.bounds.size
-        } else {
-            DispatchQueue.main.sync {
-                cachedViewportSize = UIScreen.main.bounds.size
+            if let window = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first?.windows.first {
+                YogaBridge.safeAreaTop = window.safeAreaInsets.top
+                YogaBridge.safeAreaBottom = window.safeAreaInsets.bottom
             }
+        }
+        if Thread.isMainThread {
+            captureOnMain()
+        } else {
+            DispatchQueue.main.sync { captureOnMain() }
         }
 
         let update = ShadowUpdate(
@@ -648,6 +654,9 @@ final class NativeElementBridge {
                     let (s, newPos) = readString(base, pos: pos, limit: offset + size)
                     key = s
                     pos = newPos
+                    if key.hasPrefix("dark_") {
+                        print("DARK PROP READ: fallback key='\(key)' at pos=\(pos)")
+                    }
                 }
 
                 let typeTag = Int(base.load(fromByteOffset: pos, as: UInt8.self))

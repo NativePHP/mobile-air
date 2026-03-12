@@ -73,7 +73,7 @@ final class NativeUIViewRenderer: UIView {
     // MARK: - Recursive Node Application
 
     private func applyNode(node: NativeUINode, parentView: UIView, index: Int) {
-        if node.type == "button" || node.type == "icon" {
+        if node.type == "button" || node.type == "icon" || node.type == "text" {
             let c = node.computed
             let hasRenderer = NativeRendererRegistry.shared.get(node.type) != nil
             print("DEBUG applyNode: type=\(node.type) id=\(node.id) children=\(node.children.count) computed=\(c.map { "(\($0.x),\($0.y),\($0.width),\($0.height))" } ?? "nil") hasRenderer=\(hasRenderer) props=\(node.props.debugDescription) parentFrame=\(parentView.frame) existing=\(viewMap[node.id] != nil)")
@@ -100,12 +100,11 @@ final class NativeUIViewRenderer: UIView {
             // New node — create view
             let view = createNodeView(node: node)
             applyLayout(view, node: node)
-            applyStyle(view, node: node)
             applyClickHandlers(view, node: node)
             nodeMap[node.id] = node
             viewMap[node.id] = view
 
-            if node.type == "button" || node.type == "icon" {
+            if node.type == "button" || node.type == "icon" || node.type == "text" {
                 let s = node.style
                 print("DEBUG post-create: type=\(node.type) id=\(node.id) viewType=\(type(of: view)) frame=\(view.frame) alpha=\(view.alpha) hidden=\(view.isHidden) bg=\(String(describing: view.backgroundColor)) clipsToBounds=\(view.clipsToBounds) cornerRadius=\(view.layer.cornerRadius) style.opacity=\(s?.opacity ?? -1) style.bgColor=\(s.map { String(format: "0x%08X", UInt32(bitPattern: Int32(truncatingIfNeeded: $0.bgColor))) } ?? "nil") parentClips=\(parentView.clipsToBounds)")
                 if let label = view as? UILabel {
@@ -117,6 +116,13 @@ final class NativeUIViewRenderer: UIView {
             }
 
             insertView(view, intoParent: parentView, atIndex: index)
+
+            // Apply style and leaf content AFTER insertion so view.traitCollection
+            // reflects the window's dark mode setting
+            applyStyle(view, node: node)
+            if node.children.isEmpty, let renderer = NativeRendererRegistry.shared.get(node.type) {
+                renderer.updateView(view, node: node)
+            }
 
             // Create children recursively
             if Self.scrollTypes.contains(node.type) {
@@ -169,17 +175,10 @@ final class NativeUIViewRenderer: UIView {
     private func applyLayout(_ view: UIView, node: NativeUINode) {
         guard let c = node.computed else { return }
 
-        var frame = CGRect(
+        let frame = CGRect(
             x: CGFloat(c.x), y: CGFloat(c.y),
             width: CGFloat(c.width), height: CGFloat(c.height)
         )
-
-        // Safe area: offset the root content down by safe area top inset
-        if let layout = node.layout, layout.safeArea != 0 {
-            let insets = safeAreaInsets
-            frame.origin.y += insets.top
-            frame.size.height -= (insets.top + insets.bottom)
-        }
 
         view.frame = frame
 
@@ -196,6 +195,15 @@ final class NativeUIViewRenderer: UIView {
 
     // MARK: - Style
 
+    private var isDarkMode: Bool {
+        if #available(iOS 13.0, *) {
+            // Use self.traitCollection (UIView's own) rather than UITraitCollection.current
+            // which may not be set correctly outside UIKit rendering callbacks
+            return self.traitCollection.userInterfaceStyle == .dark
+        }
+        return false
+    }
+
     private func applyStyle(_ view: UIView, node: NativeUINode) {
         guard let style = node.style else {
             view.backgroundColor = nil
@@ -206,8 +214,16 @@ final class NativeUIViewRenderer: UIView {
             return
         }
 
+        let dark = isDarkMode
+
+        // Debug: check if dark props exist and dark mode state
+        if node.props.has("dark_bg_color") || node.props.has("dark_color") {
+            print("DARK DEBUG: node=\(node.type) isDark=\(dark) has_dark_bg=\(node.props.has("dark_bg_color")) has_dark_color=\(node.props.has("dark_color")) dark_bg_val=\(node.props.getColor("dark_bg_color", default: 0))")
+        }
+
         // Background color (0x00000000 = transparent/unset)
-        let argb = style.bgColor
+        let darkBg = dark ? node.props.getColor("dark_bg_color", default: 0) : 0
+        let argb = darkBg != 0 ? darkBg : style.bgColor
         let v = UInt32(bitPattern: Int32(truncatingIfNeeded: argb))
         let alpha = (v >> 24) & 0xFF
         if v == 0 || alpha == 0 {
@@ -229,7 +245,9 @@ final class NativeUIViewRenderer: UIView {
         // Border
         if style.borderWidth > 0 && node.type != "line" {
             view.layer.borderWidth = CGFloat(style.borderWidth)
-            view.layer.borderColor = UIColor(argb: style.borderColor).cgColor
+            let darkBorderColor = dark ? node.props.getColor("dark_border_color", default: 0) : 0
+            let borderArgb = darkBorderColor != 0 ? darkBorderColor : style.borderColor
+            view.layer.borderColor = UIColor(argb: borderArgb).cgColor
         } else {
             view.layer.borderWidth = 0
         }
@@ -246,7 +264,8 @@ final class NativeUIViewRenderer: UIView {
         }
 
         // Opacity
-        view.alpha = CGFloat(style.opacity)
+        let darkOpacity = dark ? node.props.getFloat("dark_opacity") : 0
+        view.alpha = darkOpacity > 0 ? CGFloat(darkOpacity) : CGFloat(style.opacity)
     }
 
     // MARK: - Click Handlers

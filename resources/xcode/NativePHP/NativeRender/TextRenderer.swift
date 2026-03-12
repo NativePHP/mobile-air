@@ -20,7 +20,19 @@ struct TextViewRenderer: NativeViewRenderer {
             ofSize: CGFloat(p.getFloat("font_size", default: 16)),
             weight: resolveWeight(p.getInt("font_weight"))
         )
-        label.textColor = UIColor(argb: p.getColor("color", default: 0xFF000000))
+        let dark: Bool = {
+            if #available(iOS 13.0, *) {
+                // Use label's own traitCollection for reliable dark mode detection
+                return label.traitCollection.userInterfaceStyle == .dark
+            }
+            return false
+        }()
+        if p.has("dark_color") {
+            print("DARK DEBUG TEXT: isDark=\(dark) has_dark_color=true dark_color_val=\(p.getColor("dark_color", default: 0)) text=\(p.getString("text").prefix(20))")
+        }
+        let darkColor = dark ? p.getColor("dark_color", default: 0) : 0
+        let textArgb = darkColor != 0 ? darkColor : p.getColor("color", default: 0xFF000000)
+        label.textColor = UIColor(argb: textArgb)
         label.textAlignment = resolveAlignment(p.getInt("text_align"))
         let maxLines = p.getInt("max_lines")
         label.numberOfLines = maxLines > 0 ? maxLines : 0

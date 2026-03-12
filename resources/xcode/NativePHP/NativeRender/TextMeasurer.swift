@@ -34,7 +34,12 @@ enum TextMeasurer {
         case "progress_bar":
             return (0, 4)
         case "activity_indicator":
-            return (20, 20)
+            let aiSize = node.props.getInt("size")
+            switch aiSize {
+            case 1: return (48, 48)   // large
+            case 2: return (16, 16)   // small
+            default: return (28, 28)  // default
+            }
         case "divider", "line", "horizontal_divider":
             return (0, 1)
         case "spacer":
@@ -84,7 +89,8 @@ enum TextMeasurer {
             h = min(h, lineHeight * Float(maxLines))
         }
 
-        return (Float(ceil(boundingRect.width)), h)
+        // +1pt buffer to prevent sub-pixel rounding clipping last character
+        return (Float(ceil(boundingRect.width)) + 1, h)
     }
 
     // MARK: - Button
@@ -97,7 +103,7 @@ enum TextMeasurer {
         let hPad: Float = 48 // 24 each side
         let effectiveMaxW = maxWidth > hPad ? maxWidth - hPad : Float.greatestFiniteMagnitude
 
-        let (tw, th) = measureString(label, fontSize: fontSize, maxWidth: effectiveMaxW)
+        let (tw, th) = measureString(label, fontSize: fontSize, maxWidth: effectiveMaxW, weight: .bold)
         return (tw + hPad, max(th + 16, 40))
     }
 
@@ -123,15 +129,16 @@ enum TextMeasurer {
 
     // MARK: - Helpers
 
-    private static func measureString(_ text: String, fontSize: Float, maxWidth: Float) -> (Float, Float) {
-        let font = UIFont.systemFont(ofSize: CGFloat(fontSize))
+    private static func measureString(_ text: String, fontSize: Float, maxWidth: Float, weight: UIFont.Weight = .regular) -> (Float, Float) {
+        let font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: weight)
         let rect = (text as NSString).boundingRect(
             with: CGSize(width: CGFloat(maxWidth), height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: font],
             context: nil
         )
-        return (Float(ceil(rect.width)), Float(ceil(rect.height)))
+        // +1pt buffer to prevent sub-pixel rounding clipping last character
+        return (Float(ceil(rect.width)) + 1, Float(ceil(rect.height)))
     }
 
     private static func mapFontWeight(_ weight: Int) -> UIFont.Weight {
