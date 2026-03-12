@@ -80,10 +80,18 @@ target_link_libraries(php_wrapper
         -Wl,--whole-archive
         php
         -Wl,--no-whole-archive
-        # Dependencies (only referenced symbols pulled in)
+        # Dependencies wrapped in link group to resolve circular references
+        # (e.g. libxml2 <-> libiconv)
+        -Wl,--start-group
         ${STATIC_DEP_LIBS}
+        -Wl,--end-group
         # System
         android log dl
+        # libiconv exports libiconv_open/close/iconv but libxml2 references
+        # iconv_open/close/iconv — alias them at link time
+        -Wl,--defsym,iconv_open=libiconv_open
+        -Wl,--defsym,iconv_close=libiconv_close
+        -Wl,--defsym,iconv=libiconv
 )
 
 # Conditionally link ICU libraries if they exist
