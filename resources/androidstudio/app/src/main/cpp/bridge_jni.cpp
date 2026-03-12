@@ -333,7 +333,7 @@ struct NphpElementRegion {
     uint32_t shadow_prop_size;
 
     /* Type interning table */
-    uint8_t  type_count;
+    std::atomic<uint8_t>  type_count;
     uint16_t type_offsets[128];
     char     type_table[4096];
 
@@ -428,19 +428,27 @@ static jobject element_get_prop_buffer(JNIEnv* env, jclass) {
 
 static jobjectArray element_get_type_table(JNIEnv* env, jclass) {
     auto* region = get_element_region();
-    if (!region || region->type_count == 0) return nullptr;
+    if (!region) return nullptr;
+
+    uint8_t tc = region->type_count.load(std::memory_order_acquire);
+    if (tc == 0) return nullptr;
 
     jclass stringClass = env->FindClass("java/lang/String");
     if (!stringClass) return nullptr;
 
-    jobjectArray arr = env->NewObjectArray(region->type_count, stringClass, nullptr);
+    jobjectArray arr = env->NewObjectArray(tc, stringClass, nullptr);
     if (!arr) {
         env->DeleteLocalRef(stringClass);
         return nullptr;
     }
 
-    for (int i = 0; i < region->type_count; i++) {
-        const char* str = region->type_table + region->type_offsets[i];
+    for (int i = 0; i < tc; i++) {
+        uint16_t toff = region->type_offsets[i];
+        if (toff >= sizeof(region->type_table)) {
+            LOGE("Type table offset out of bounds: %u >= %zu", toff, sizeof(region->type_table));
+            continue;
+        }
+        const char* str = region->type_table + toff;
         jstring jstr = env->NewStringUTF(str);
         if (jstr) {
             env->SetObjectArrayElement(arr, i, jstr);
@@ -485,6 +493,11 @@ static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id
     write_u64(timestamp);
 
     jsize data_len = data ? env->GetArrayLength(data) : 0;
+    if (data_len > 0 && pos + data_len > sizeof(event_buf)) {
+        LOGE("Element: Event data too large (%d bytes, max %zu) — truncating",
+             data_len, sizeof(event_buf) - pos);
+        data_len = (jsize)(sizeof(event_buf) - pos);
+    }
     write_u16((uint16_t)data_len);
     if (data_len > 0 && pos + data_len <= sizeof(event_buf)) {
         env->GetByteArrayRegion(data, 0, data_len, (jbyte*)(event_buf + pos));
@@ -530,7 +543,7 @@ void NativeElement_PostTreeUpdate() {
         LOGI("Element: PostTreeUpdate calling Kotlin (nodes=%u flat=%u types=%d ver=%u)",
              region->node_count.load(std::memory_order_acquire),
              region->flat_buffer_size.load(std::memory_order_acquire),
-             (int)region->type_count,
+             (int)region->type_count.load(std::memory_order_acquire),
              region->tree_version.load(std::memory_order_acquire));
     }
 
