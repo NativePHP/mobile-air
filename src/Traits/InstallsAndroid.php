@@ -15,7 +15,10 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
-    private string $binaryUrlPrefix = 'multiversion/';
+    private function getBinaryBranch(): string
+    {
+        return env('NATIVEPHP_BIN_BRANCH', 'main');
+    }
 
     protected ?bool $includeIcu = null;
 
@@ -86,27 +89,48 @@ trait InstallsAndroid
         $includeIcu = $this->includeIcu ?? false;
         $phpVersion = $this->detectPhpVersion();
 
-        $base = 'https://bin.nativephp.com/'.$this->binaryUrlPrefix;
+        $branch = $this->getBinaryBranch();
+        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
 
-        $urls = [
-            '8.5' => [
-                'icu' => $base.'8.5/android/android-3.1.0-php8.5.3-icu.zip',
-                'default' => $base.'8.5/android/android-3.1.0-php8.5.3.zip',
-            ],
-            '8.4' => [
-                'icu' => $base.'8.4/android/android-3.1.0-php8.4.18-icu.zip',
-                'default' => $base.'8.4/android/android-3.1.0-php8.4.18.zip',
-            ],
-            '8.3' => [
-                'icu' => $base.'8.3/android/android-3.1.0-php8.3.30-icu.zip',
-                'default' => $base.'8.3/android/android-3.1.0-php8.3.30.zip',
-            ],
-        ];
+        $client = new Client;
 
+        try {
+            $versions = json_decode(
+                $client->get($versionsUrl)->getBody()->getContents(),
+                true
+            );
+        } catch (RequestException $e) {
+            error("Failed to fetch versions manifest from: {$versionsUrl}");
 
-        $url = $includeIcu
-            ? $urls[$phpVersion]['icu']
-            : $urls[$phpVersion]['default'];
+            return;
+        }
+
+        if (! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available in {$branch} branch");
+
+            return;
+        }
+
+        $androidFiles = $versions['versions'][$phpVersion]['android'] ?? [];
+
+        $url = null;
+        foreach ($androidFiles as $fileUrl) {
+            $isIcu = str_contains($fileUrl, '-icu.');
+            if ($includeIcu && $isIcu) {
+                $url = $fileUrl;
+                break;
+            } elseif (! $includeIcu && ! $isIcu) {
+                $url = $fileUrl;
+                break;
+            }
+        }
+
+        if (! $url) {
+            $variant = $includeIcu ? 'ICU' : 'non-ICU';
+            error("No {$variant} Android binary found for PHP {$phpVersion}");
+
+            return;
+        }
 
         $cacheDir = storage_path('nativephp');
         File::ensureDirectoryExists($cacheDir);
