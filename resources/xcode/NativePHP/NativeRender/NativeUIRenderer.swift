@@ -31,6 +31,9 @@ final class NativeUIViewRenderer: UIView {
     /// Track which node is currently associated with each view
     private var nodeMap: [Int: NativeUINode] = [:]
 
+    /// Track the element type for each node ID so we can detect type changes
+    private var nodeTypeMap: [Int: String] = [:]
+
     /// Special container types that need custom rendering
     private static let scrollTypes: Set<String> = ["scroll_view"]
     private static let sheetTypes: Set<String> = ["bottom_sheet"]
@@ -68,6 +71,7 @@ final class NativeUIViewRenderer: UIView {
         subviews.forEach { $0.removeFromSuperview() }
         viewMap.removeAll()
         nodeMap.removeAll()
+        nodeTypeMap.removeAll()
     }
 
     // MARK: - Recursive Node Application
@@ -79,61 +83,70 @@ final class NativeUIViewRenderer: UIView {
             print("DEBUG applyNode: type=\(node.type) id=\(node.id) children=\(node.children.count) computed=\(c.map { "(\($0.x),\($0.y),\($0.width),\($0.height))" } ?? "nil") hasRenderer=\(hasRenderer) props=\(node.props.debugDescription) parentFrame=\(parentView.frame) existing=\(viewMap[node.id] != nil)")
         }
         if let existingView = viewMap[node.id] {
-            // Check reference equality — if same object, diff says unchanged
-            if nodeMap[node.id] === node {
-                // Unchanged — but ensure correct parent/order
+            // Type changed — destroy old view and fall through to create new one
+            if nodeTypeMap[node.id] != node.type {
+                removeViewRecursively(existingView)
+                // Fall through to the create branch below
+            } else {
+                // Check reference equality — if same object, diff says unchanged
+                if nodeMap[node.id] === node {
+                    // Unchanged — but ensure correct parent/order
+                    ensureParent(existingView, parentView: parentView, index: index)
+                    return
+                }
+
+                // Same ID, same type, changed props/style/layout — update in place
                 ensureParent(existingView, parentView: parentView, index: index)
+                applyLayout(existingView, node: node)
+                applyStyle(existingView, node: node)
+                applyClickHandlers(existingView, node: node)
+                updateLeafContent(existingView, node: node)
+                nodeMap[node.id] = node
+                nodeTypeMap[node.id] = node.type
+
+                // Recurse children
+                reconcileChildren(existingView, node: node)
                 return
             }
+        }
 
-            // Same ID, changed props/style/layout — update in place
-            ensureParent(existingView, parentView: parentView, index: index)
-            applyLayout(existingView, node: node)
-            applyStyle(existingView, node: node)
-            applyClickHandlers(existingView, node: node)
-            updateLeafContent(existingView, node: node)
-            nodeMap[node.id] = node
+        // New node or type-changed node — create view
+        let view = createNodeView(node: node)
+        applyLayout(view, node: node)
+        applyClickHandlers(view, node: node)
+        nodeMap[node.id] = node
+        nodeTypeMap[node.id] = node.type
+        viewMap[node.id] = view
 
-            // Recurse children
-            reconcileChildren(existingView, node: node)
+        if node.type == "button" || node.type == "icon" || node.type == "text" {
+            let s = node.style
+            print("DEBUG post-create: type=\(node.type) id=\(node.id) viewType=\(type(of: view)) frame=\(view.frame) alpha=\(view.alpha) hidden=\(view.isHidden) bg=\(String(describing: view.backgroundColor)) clipsToBounds=\(view.clipsToBounds) cornerRadius=\(view.layer.cornerRadius) style.opacity=\(s?.opacity ?? -1) style.bgColor=\(s.map { String(format: "0x%08X", UInt32(bitPattern: Int32(truncatingIfNeeded: $0.bgColor))) } ?? "nil") parentClips=\(parentView.clipsToBounds)")
+            if let label = view as? UILabel {
+                print("DEBUG label: text='\(label.text ?? "nil")' textColor=\(label.textColor!) font=\(label.font!)")
+            }
+            if let iv = view as? UIImageView {
+                print("DEBUG imageView: image=\(iv.image != nil) tint=\(iv.tintColor!)")
+            }
+        }
+
+        insertView(view, intoParent: parentView, atIndex: index)
+
+        // Apply style and leaf content AFTER insertion so view.traitCollection
+        // reflects the window's dark mode setting
+        applyStyle(view, node: node)
+        if node.children.isEmpty, let renderer = NativeRendererRegistry.shared.get(node.type) {
+            renderer.updateView(view, node: node)
+        }
+
+        // Create children recursively
+        if Self.scrollTypes.contains(node.type) {
+            reconcileScrollChildren(view, node: node)
+        } else if Self.sheetTypes.contains(node.type) {
+            // Bottom sheet handled separately
+            handleBottomSheet(view, node: node)
         } else {
-            // New node — create view
-            let view = createNodeView(node: node)
-            applyLayout(view, node: node)
-            applyClickHandlers(view, node: node)
-            nodeMap[node.id] = node
-            viewMap[node.id] = view
-
-            if node.type == "button" || node.type == "icon" || node.type == "text" {
-                let s = node.style
-                print("DEBUG post-create: type=\(node.type) id=\(node.id) viewType=\(type(of: view)) frame=\(view.frame) alpha=\(view.alpha) hidden=\(view.isHidden) bg=\(String(describing: view.backgroundColor)) clipsToBounds=\(view.clipsToBounds) cornerRadius=\(view.layer.cornerRadius) style.opacity=\(s?.opacity ?? -1) style.bgColor=\(s.map { String(format: "0x%08X", UInt32(bitPattern: Int32(truncatingIfNeeded: $0.bgColor))) } ?? "nil") parentClips=\(parentView.clipsToBounds)")
-                if let label = view as? UILabel {
-                    print("DEBUG label: text='\(label.text ?? "nil")' textColor=\(label.textColor!) font=\(label.font!)")
-                }
-                if let iv = view as? UIImageView {
-                    print("DEBUG imageView: image=\(iv.image != nil) tint=\(iv.tintColor!)")
-                }
-            }
-
-            insertView(view, intoParent: parentView, atIndex: index)
-
-            // Apply style and leaf content AFTER insertion so view.traitCollection
-            // reflects the window's dark mode setting
-            applyStyle(view, node: node)
-            if node.children.isEmpty, let renderer = NativeRendererRegistry.shared.get(node.type) {
-                renderer.updateView(view, node: node)
-            }
-
-            // Create children recursively
-            if Self.scrollTypes.contains(node.type) {
-                reconcileScrollChildren(view, node: node)
-            } else if Self.sheetTypes.contains(node.type) {
-                // Bottom sheet handled separately
-                handleBottomSheet(view, node: node)
-            } else {
-                for (i, child) in node.children.enumerated() {
-                    applyNode(node: child, parentView: view, index: i)
-                }
+            for (i, child) in node.children.enumerated() {
+                applyNode(node: child, parentView: view, index: i)
             }
         }
     }
@@ -342,6 +355,7 @@ final class NativeUIViewRenderer: UIView {
         if let nodeId = nodeIdForView(view) {
             viewMap.removeValue(forKey: nodeId)
             nodeMap.removeValue(forKey: nodeId)
+            nodeTypeMap.removeValue(forKey: nodeId)
         }
         view.removeFromSuperview()
     }
