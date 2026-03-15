@@ -75,8 +75,7 @@ trait InstallsIos
             return;
         }
 
-        $iosFiles = $versions['versions'][$phpVersion]['ios'] ?? [];
-        $url = $iosFiles[0] ?? null;
+        $url = $versions['versions'][$phpVersion]['ios'][0] ?? null;
 
         if (! $url) {
             error("No iOS binary found for PHP {$phpVersion}");

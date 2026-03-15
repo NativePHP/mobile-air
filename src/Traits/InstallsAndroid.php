@@ -113,17 +113,14 @@ trait InstallsAndroid
 
         $androidFiles = $versions['versions'][$phpVersion]['android'] ?? [];
 
-        $url = null;
-        foreach ($androidFiles as $fileUrl) {
+        // Filter by ICU preference
+        $candidates = array_filter($androidFiles, function ($fileUrl) use ($includeIcu) {
             $isIcu = str_contains($fileUrl, '-icu.');
-            if ($includeIcu && $isIcu) {
-                $url = $fileUrl;
-                break;
-            } elseif (! $includeIcu && ! $isIcu) {
-                $url = $fileUrl;
-                break;
-            }
-        }
+
+            return $includeIcu ? $isIcu : ! $isIcu;
+        });
+
+        $url = reset($candidates) ?: null;
 
         if (! $url) {
             $variant = $includeIcu ? 'ICU' : 'non-ICU';
