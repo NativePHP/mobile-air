@@ -5,6 +5,7 @@ import android.webkit.WebView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
+import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import org.json.JSONObject
 
 interface WebViewProvider {
@@ -94,6 +95,13 @@ class NativeActionCoordinator : Fragment() {
             Log.d("NativeActionCoordinator", "📢 Dispatching JS event: $event")
 
             (activity as? WebViewProvider)?.getWebView()?.evaluateJavascript(js, null)
+
+            // Also inject into the element event queue for #[OnNative] listeners
+            try {
+                NativeElementBridge.sendNativeEvent(event, payloadJson)
+            } catch (e: Exception) {
+                Log.d("NativeActionCoordinator", "Element event injection skipped (no active region)")
+            }
         }
 
 

@@ -264,6 +264,7 @@ struct WebView: UIViewRepresentable {
             event: String,
             payload: [String: Any]
         ) {
+            let rawEventName = event
             let event: String = {
                 let data = try! JSONSerialization.data(withJSONObject: [event])
                 var literal = String(data: data, encoding: .utf8)!
@@ -324,6 +325,12 @@ struct WebView: UIViewRepresentable {
 //
 //                _ = NativePHPApp.laravel(request: request)
 
+            }
+
+            // Also inject into the element event queue for #[OnNative] listeners
+            if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                NativeElementBridge.sendNativeEvent(eventName: rawEventName, payloadJson: jsonString)
             }
         }
 

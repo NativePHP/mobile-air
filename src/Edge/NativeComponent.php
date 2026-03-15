@@ -2,11 +2,14 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Attributes\OnNative;
 use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
 {
     const EVENT_HOT_RELOAD = 15;
+
+    const EVENT_NATIVE = 20;
 
     private static bool $dumpHandlerRegistered = false;
 
@@ -17,6 +20,9 @@ abstract class NativeComponent
     private int $overlayFontSize = 12;
 
     private array $overlayCallbackIds = [];
+
+    /** @var array<string, string> event name → method name */
+    private array $nativeEventListeners = [];
 
     protected CallbackRegistry $callbacks;
 
@@ -100,6 +106,71 @@ abstract class NativeComponent
         return $props;
     }
 
+    /**
+     * Scan this component's methods for #[OnNative] attributes
+     * and build the event name → method map.
+     */
+    private function registerNativeEventListeners(): void
+    {
+        $reflect = new \ReflectionClass($this);
+
+        foreach ($reflect->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            $attributes = $method->getAttributes(OnNative::class);
+
+            foreach ($attributes as $attribute) {
+                $instance = $attribute->newInstance();
+                $this->nativeEventListeners[$instance->event] = $method->getName();
+            }
+        }
+    }
+
+    /**
+     * Handle a native event (type 20) by looking up #[OnNative] listeners.
+     */
+    protected function dispatchNativeEvent(array $event): void
+    {
+        $eventName = $event['event'] ?? '';
+        $payload = $event['payload'] ?? [];
+
+        $method = $this->nativeEventListeners[$eventName]
+            ?? $this->nativeEventListeners['native:'.$eventName]
+            ?? null;
+
+        if ($method === null || ! method_exists($this, $method)) {
+            return;
+        }
+
+        if (is_array($payload)) {
+            $reflect = new \ReflectionMethod($this, $method);
+            $args = [];
+            foreach ($reflect->getParameters() as $param) {
+                $name = $param->getName();
+                if (array_key_exists($name, $payload)) {
+                    $value = $payload[$name];
+
+                    // Coerce the value to match the parameter's type hint
+                    $type = $param->getType();
+                    if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
+                        $value = match ($type->getName()) {
+                            'int' => (int) $value,
+                            'float' => (float) $value,
+                            'string' => (string) $value,
+                            'bool' => (bool) $value,
+                            default => $value,
+                        };
+                    }
+
+                    $args[] = $value;
+                } elseif ($param->isDefaultValueAvailable()) {
+                    $args[] = $param->getDefaultValue();
+                }
+            }
+            $this->$method(...$args);
+        } else {
+            $this->$method($payload);
+        }
+    }
+
     public function mount(): void
     {
         //
@@ -180,6 +251,7 @@ abstract class NativeComponent
         static::registerDumpHandler();
 
         $this->callbacks = new CallbackRegistry;
+        $this->registerNativeEventListeners();
 
         nativephp_element_init();
 
@@ -229,6 +301,19 @@ abstract class NativeComponent
                 continue;
             }
 
+            // Native event from bridge function — dispatch to #[OnNative] listeners
+            if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
+                try {
+                    $this->dispatchNativeEvent($event);
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog("dispatchNativeEvent() FAILED in " . static::class . ": " . $e->getMessage());
+                    $this->renderErrorScreen($e);
+                }
+                continue;
+            }
+
             // Don't dispatch UI events while showing the error/dump screen
             // (except overlay controls like font size buttons)
             if (! $this->hasError) {
@@ -261,6 +346,10 @@ abstract class NativeComponent
         $this->callbacks ??= new CallbackRegistry;
         $this->running = true;
         $this->navigationIntent = null;
+
+        if (empty($this->nativeEventListeners)) {
+            $this->registerNativeEventListeners();
+        }
 
         while ($this->running) {
             $this->callbacks->reset();
@@ -335,6 +424,19 @@ abstract class NativeComponent
                     continue;
                 }
                 $this->onBackPressed();
+                continue;
+            }
+
+            // Native event from bridge function — dispatch to #[OnNative] listeners
+            if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
+                try {
+                    $this->dispatchNativeEvent($event);
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog("dispatchNativeEvent() FAILED in " . static::class . ": " . $e->getMessage());
+                    $this->renderErrorScreen($e);
+                }
                 continue;
             }
 
