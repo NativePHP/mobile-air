@@ -41,14 +41,15 @@ class NativeTagPrecompiler
         );
 
         // Expand @navigate directives into :_navigate dynamic attribute
+        // Short style:  @navigate.fade='/route'  or  @navigate='/route'
         // Paren style:  @navigate.fade('/route', ['data' => 'val'])
         // Quote style:  @navigate.fade="'/route', ['data' => 'val']"
         // Boolean style: @navigate.back
         $value = preg_replace_callback(
-            '/@navigate\b(?:\.([\w.]+))?(?:="([^"]*)"|(\((?:[^()]*|\([^()]*\))*\)))?/',
+            '/@navigate\b(?:\.([\w.]+))?(?:=\'([^\']*)\'|="([^"]*)"|(\((?:[^()]*|\([^()]*\))*\)))?/',
             fn ($m) => $this->compileNavigateDirective(
                 $m[1] ?? '',
-                ! empty($m[3]) ? substr($m[3], 1, -1) : ($m[2] ?? ''),
+                ! empty($m[4]) ? substr($m[4], 1, -1) : (($m[2] ?? '') !== '' ? "'{$m[2]}'" : ($m[3] ?? '')),
             ),
             $value
         );
