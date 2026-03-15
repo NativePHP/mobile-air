@@ -375,6 +375,7 @@ trait PackagesIos
 
         if (! $result->successful() || ! file_exists($tempEntitlementsFile)) {
             @unlink($tempEntitlementsFile);
+
             return false;
         }
 
@@ -1434,12 +1435,14 @@ XML;
         if (! $unzip->successful()) {
             \Laravel\Prompts\error('Failed to unzip IPA for NFC entitlement verification');
             $this->line($unzip->errorOutput());
+
             return false;
         }
         $appDir = trim(shell_exec('find '.escapeshellarg($temp.'/Payload').' -maxdepth 1 -type d -name "*.app" -print -quit'));
         if (! $appDir) {
             \Laravel\Prompts\error('Could not find .app bundle in IPA Payload directory');
             Process::run(['rm', '-rf', $temp]);
+
             return false;
         }
         $exe = trim(shell_exec('/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" '.escapeshellarg($appDir.'/Info.plist')));
@@ -1451,6 +1454,7 @@ XML;
             \Laravel\Prompts\error('Failed to extract entitlements from IPA');
             $this->line($extractResult->errorOutput());
             Process::run(['rm', '-rf', $temp]);
+
             return false;
         }
 
@@ -1471,6 +1475,7 @@ XML;
         if (! $dump->successful()) {
             \Laravel\Prompts\error('Failed to parse entitlements from IPA');
             $this->line($dump->errorOutput());
+
             return false;
         }
         $out = $dump->output();

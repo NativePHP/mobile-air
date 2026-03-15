@@ -985,7 +985,7 @@ SECTION;
 
                 // If we're in the target and hit 'end', insert pods before it
                 if ($inNativePHPTarget && ! $inserted && preg_match('/^end\s*$/', $line)) {
-                    $result[] = "  # NativePHP Plugin Dependencies";
+                    $result[] = '  # NativePHP Plugin Dependencies';
                     $result[] = $newPodLines;
                     $inserted = true;
                     $inNativePHPTarget = false;

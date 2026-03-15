@@ -68,11 +68,11 @@ class Runtime
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
-            error_log("PerfTiming: Runtime::dispatch() kernel->handle() threw: " . $e->getMessage());
+            error_log('PerfTiming: Runtime::dispatch() kernel->handle() threw: '.$e->getMessage());
 
             // Build a plain error response instead of relying on the exception handler
             $response = new \Illuminate\Http\Response(
-                'Error: ' . $e->getMessage() . "\n" . $e->getTraceAsString(),
+                'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
                 500,
                 ['Content-Type' => 'text/plain']
             );
@@ -84,7 +84,7 @@ class Runtime
         try {
             static::$kernel->terminate($request, $response);
         } catch (\Throwable $e) {
-            error_log("PerfTiming: Runtime::dispatch() terminate threw: " . $e->getMessage());
+            error_log('PerfTiming: Runtime::dispatch() terminate threw: '.$e->getMessage());
         }
 
         $terminateTime = microtime(true);
@@ -129,7 +129,7 @@ class Runtime
             try {
                 static::$app->make('livewire')->flushState();
             } catch (\Throwable $e) {
-                error_log('Runtime::reset() Livewire flushState failed: ' . $e->getMessage());
+                error_log('Runtime::reset() Livewire flushState failed: '.$e->getMessage());
             }
         }
 
@@ -172,7 +172,7 @@ class Runtime
         foreach ($parts as $part) {
             if (str_starts_with($part, '--')) {
                 $kv = explode('=', substr($part, 2), 2);
-                $params['--' . $kv[0]] = $kv[1] ?? true;
+                $params['--'.$kv[0]] = $kv[1] ?? true;
             } else {
                 $params[] = $part;
             }

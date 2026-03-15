@@ -71,12 +71,13 @@ class PackageCommand extends Command
             $this->platform = 'android';
         } else {
             $platform = $this->argument('platform');
-            if (!$platform) {
+            if (! $platform) {
                 \Laravel\Prompts\error('Platform must be specified via argument or flags (--ios/--android)');
+
                 return;
             }
             // Support shorthands: 'a' for android, 'i' for ios
-            $this->platform = match(strtolower($platform)) {
+            $this->platform = match (strtolower($platform)) {
                 'android', 'a' => 'android',
                 'ios', 'i' => 'ios',
                 default => $platform,
