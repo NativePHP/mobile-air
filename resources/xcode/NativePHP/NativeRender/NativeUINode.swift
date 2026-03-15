@@ -28,6 +28,7 @@ enum EventType {
     static let tabChange      = 13
     static let sheetDismiss   = 14
     static let hotReload      = 15
+    static let native         = 20
 }
 
 // MARK: - Value Type Tags (must match nativephp_ui.h)

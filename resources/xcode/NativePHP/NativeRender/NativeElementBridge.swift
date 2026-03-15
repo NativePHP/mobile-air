@@ -321,12 +321,12 @@ final class NativeElementBridge {
     // MARK: - Event Sending
 
     /// Write event to PHP shared memory event ring buffer.
-    /// Event format: [magic:u32][type:u8][callback_id:u32][node_id:u32][data_size:u16][data...]
+    /// Event format: [magic:u32][type:u8][callback_id:u32][node_id:u32][timestamp:u64][data_size:u16][data...]
     static func nativeElementWriteEvent(_ type: Int32, _ callbackId: Int32, _ nodeId: Int32, _ data: UnsafePointer<UInt8>?, _ dataSize: Int32) {
         guard let ptr = regionPtr else { return }
 
-        // Event header: magic(4) + type(1) + callback_id(4) + node_id(4) + data_size(2) = 15 bytes
-        let headerSize = 15
+        // Event header: magic(4) + type(1) + callback_id(4) + node_id(4) + timestamp(8) + data_size(2) = 23 bytes
+        let headerSize = 23
         let totalSize = headerSize + Int(dataSize)
 
         // Get pointers to the mutex/cond via raw offsets
@@ -362,8 +362,13 @@ final class NativeElementBridge {
         base.storeBytes(of: UInt32(bitPattern: callbackId).littleEndian, toByteOffset: 5, as: UInt32.self)
         // Node ID (4 bytes)
         base.storeBytes(of: UInt32(bitPattern: nodeId).littleEndian, toByteOffset: 9, as: UInt32.self)
+        // Timestamp (8 bytes)
+        var tv = timeval()
+        gettimeofday(&tv, nil)
+        let timestampMs = UInt64(tv.tv_sec) * 1000 + UInt64(tv.tv_usec) / 1000
+        base.storeBytes(of: timestampMs.littleEndian, toByteOffset: 13, as: UInt64.self)
         // Data size (2 bytes)
-        base.storeBytes(of: UInt16(dataSize).littleEndian, toByteOffset: 13, as: UInt16.self)
+        base.storeBytes(of: UInt16(dataSize).littleEndian, toByteOffset: 21, as: UInt16.self)
         // Data payload
         if let data, dataSize > 0 {
             base.advanced(by: headerSize).copyMemory(from: data, byteCount: Int(dataSize))
@@ -469,6 +474,22 @@ final class NativeElementBridge {
 
     static func sendHotReloadEvent() {
         writeEvent(type: EventType.hotReload, callbackId: 0, nodeId: 0, data: nil)
+    }
+
+    /// Inject a native event into the element event queue.
+    /// Wakes up nativephp_element_wait_event() on the PHP side.
+    /// Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
+    static func sendNativeEvent(eventName: String, payloadJson: String) {
+        let nameBytes = Array(eventName.utf8)
+        let payloadBytes = Array(payloadJson.utf8)
+        var buf = Data(capacity: 2 + nameBytes.count + 2 + payloadBytes.count)
+        var nameLen = UInt16(nameBytes.count).littleEndian
+        buf.append(Data(bytes: &nameLen, count: 2))
+        buf.append(contentsOf: nameBytes)
+        var payloadLen = UInt16(payloadBytes.count).littleEndian
+        buf.append(Data(bytes: &payloadLen, count: 2))
+        buf.append(contentsOf: payloadBytes)
+        writeEvent(type: EventType.native, callbackId: 0, nodeId: 0, data: buf)
     }
 
     private static func writeEvent(type: Int, callbackId: Int, nodeId: Int, data: Data?) {

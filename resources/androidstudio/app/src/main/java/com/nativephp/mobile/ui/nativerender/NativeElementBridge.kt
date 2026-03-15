@@ -597,6 +597,23 @@ class NativeElementBridge private constructor() {
             nativeElementWriteEvent(EventType.SELECT_CHANGE, callbackId, nodeId, buf.array())
         }
 
+        /**
+         * Inject a native event into the element event queue.
+         * This wakes up nativephp_element_wait_event() on the PHP side.
+         * Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
+         */
+        fun sendNativeEvent(eventName: String, payloadJson: String) {
+            val nameBytes = eventName.toByteArray(Charsets.UTF_8)
+            val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8)
+            val buf = ByteBuffer.allocate(2 + nameBytes.size + 2 + payloadBytes.size)
+                .order(ByteOrder.LITTLE_ENDIAN)
+            buf.putShort(nameBytes.size.toShort())
+            buf.put(nameBytes)
+            buf.putShort(payloadBytes.size.toShort())
+            buf.put(payloadBytes)
+            nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+        }
+
         /* ── Tree Diff — reuse unchanged node references ── */
 
         class DiffStats(var reused: Int = 0, var replaced: Int = 0)
