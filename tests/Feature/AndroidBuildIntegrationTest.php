@@ -169,9 +169,23 @@ class AndroidBuildIntegrationTest extends TestCase
         {
             use \Native\Mobile\Traits\RunsAndroid;
 
+            public $components;
+
             public function __construct()
             {
                 $this->buildType = 'debug';
+
+                $this->components = new class
+                {
+                    public function task(string $title, callable $callback)
+                    {
+                        $callback();
+                    }
+
+                    public function twoColumnDetail(...$args) {}
+
+                    public function warn(...$args) {}
+                };
             }
 
             public function runMocked()
@@ -179,6 +193,8 @@ class AndroidBuildIntegrationTest extends TestCase
                 $this->cleanGradleCache();
                 $this->updateAndroidConfiguration();
             }
+
+            protected function logToFile(string $message): void {}
 
             protected function info($message) {}
 
@@ -192,7 +208,6 @@ class AndroidBuildIntegrationTest extends TestCase
 
             protected function runTheAndroidBuild($target) {}
 
-            // Abstract methods required by PreparesBuild trait
             protected function removeDirectory(string $path): void
             {
                 if (is_dir($path)) {
@@ -200,10 +215,7 @@ class AndroidBuildIntegrationTest extends TestCase
                 }
             }
 
-            protected function platformOptimizedCopy(string $source, string $destination, array $excludedDirs): void
-            {
-                // Simple copy implementation for testing
-            }
+            protected function platformOptimizedCopy(string $source, string $destination, array $excludedDirs = []): void {}
         };
 
         $runner->runMocked();

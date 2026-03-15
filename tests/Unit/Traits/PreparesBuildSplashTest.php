@@ -73,6 +73,8 @@ class PreparesBuildSplashTest extends TestCase
         imagedestroy($image);
     }
 
+    protected function logToFile(string $message): void {}
+
     protected function info($message): void
     {
         // Mock implementation

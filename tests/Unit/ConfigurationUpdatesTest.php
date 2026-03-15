@@ -21,6 +21,19 @@ class ConfigurationUpdatesTest extends TestCase
         $this->testProjectPath = sys_get_temp_dir().'/nativephp_config_test_'.uniqid();
         app()->setBasePath($this->testProjectPath);
 
+        // Mock $this->components for task() calls used by PreparesBuild
+        $this->components = new class
+        {
+            public function task(string $title, callable $callback)
+            {
+                $callback();
+            }
+
+            public function twoColumnDetail(...$args) {}
+
+            public function warn(...$args) {}
+        };
+
         // Create Android project structure
         $this->createAndroidProjectStructure();
     }
@@ -358,6 +371,10 @@ Java_com_nativephp_mobile_bridge_PHPBridge',
     /**
      * Mock methods - Required by PreparesBuild trait
      */
+    protected function logToFile(string $message): void {}
+
+    protected function updateOrientationConfiguration(): void {}
+
     protected function info($message) {}
 
     protected function warn($message) {}

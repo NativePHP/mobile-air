@@ -28,6 +28,19 @@ class EdgeCasesAndErrorHandlingTest extends TestCase
 
         $this->warnings = [];
         $this->errors = [];
+
+        // Mock $this->components for task() calls used by RunsAndroid/PreparesBuild
+        $this->components = new class
+        {
+            public function task(string $title, callable $callback)
+            {
+                $callback();
+            }
+
+            public function twoColumnDetail(...$args) {}
+
+            public function warn(...$args) {}
+        };
     }
 
     protected function tearDown(): void
@@ -301,6 +314,8 @@ class EdgeCasesAndErrorHandlingTest extends TestCase
             $this->assertStringContainsString('sdk.dir=', $contents);
         }
     }
+
+    protected function logToFile(string $message): void {}
 
     /**
      * Override output methods to capture warnings/errors

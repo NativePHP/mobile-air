@@ -324,6 +324,7 @@ class PluginCreateCommand extends Command
 
             // Android-specific configuration
             'android' => [
+                'min_version' => 21,
                 'permissions' => [],
                 'repositories' => [],
                 'dependencies' => [
@@ -337,6 +338,7 @@ class PluginCreateCommand extends Command
 
             // iOS-specific configuration
             'ios' => [
+                'min_version' => '15.0',
                 'permissions' => [],
                 'repositories' => [],
                 'dependencies' => [

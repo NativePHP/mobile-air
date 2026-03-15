@@ -17,6 +17,8 @@ class InstallsAndroidTest extends TestCase
 
     protected $mockOutput;
 
+    protected bool $forcing = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -30,6 +32,19 @@ class InstallsAndroidTest extends TestCase
         // Mock output for progress bar
         $this->mockOutput = Mockery::mock('Symfony\Component\Console\Output\OutputInterface');
         $this->output = $this->mockOutput;
+
+        // Mock $this->components for task() calls
+        $this->components = new class
+        {
+            public function task(string $title, callable $callback)
+            {
+                $callback();
+            }
+
+            public function twoColumnDetail(...$args) {}
+
+            public function warn(...$args) {}
+        };
     }
 
     protected function tearDown(): void
@@ -72,8 +87,8 @@ class InstallsAndroidTest extends TestCase
         File::makeDirectory($vendorPath, 0755, true);
         File::put($vendorPath.'/new.txt', 'new content');
 
-        // Mock option
-        $this->shouldReceiveOption('force', true);
+        // Set force flag
+        $this->forcing = true;
 
         // Execute
         $this->createAndroidStudioProject();

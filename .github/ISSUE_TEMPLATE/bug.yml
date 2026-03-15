@@ -1,0 +1,84 @@
+name: Bug Report
+description: |
+  Found a bug in NativePHP for Mobile? You're in the right place!
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We're sorry to hear you have a problem.
+
+        Please ensure that you have the latest version of NativePHP packages installed, and are using [supported versions](https://nativephp.com/docs/mobile/getting-started/support-policy) of PHP and Laravel.
+
+        Please provide as much useful context as you can here to help us help you.
+
+        Note that reams and reams of logs isn't helpful - please share only relevant errors.
+
+        If possible, please prepare a reproduction repo and link to it in the Notes field.
+  - type: textarea
+    id: what-doing
+    attributes:
+      label: What were you trying to do?
+      description: Some context about what you were trying to achieve
+      placeholder: Trying to build my app for production
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen?
+      placeholder: I cannot currently do X thing because when I do, it breaks X thing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: how-to-reproduce
+    attributes:
+      label: How to reproduce the bug
+      description: How did this occur, please add any config values used and provide a set of reliable steps if possible.
+      placeholder: When I do X I see Y.
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug
+    attributes:
+      label: Debug Output
+      description: Please provide output from the NativePHP Debug command. This will help us understand your environment and the issue you're facing. (`php artisan native:debug`)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-systems
+    attributes:
+      label: Which operating systems have you seen this occur on?
+      description: You may select more than one.
+      multiple: true
+      options:
+        - macOS
+        - Windows
+        - Linux
+
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Which platforms were you trying to build for?
+      description: You may select more than one.
+      multiple: true
+      options:
+        - iOS (Simulator)
+        - iOS (Device)
+        - Android (Emulator)
+        - Android (Device)
+        - Jump app (Android)
+        - Jump app (iOS)
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Use this field to provide any other notes that you feel might be relevant to the issue. Include links to any reproduction repos you've created here.
+    validations:
+      required: false
