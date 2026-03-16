@@ -13,7 +13,7 @@
 		9503806A2D92356B004D24B3 /* libphp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380612D92356B004D24B3 /* libphp.a */; };
 		9503806B2D92356B004D24B3 /* libxml2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380652D92356B004D24B3 /* libxml2.a */; };
 		9503806C2D92356B004D24B3 /* libzip.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380672D92356B004D24B3 /* libzip.a */; };
-		9503806D2D92356B004D24B3 /* libpng16.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380622D92356B004D24B3 /* libpng16.a */; };
+
 		9503806E2D92356B004D24B3 /* libsqlite3.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380632D92356B004D24B3 /* libsqlite3.a */; };
 		9503806F2D92356B004D24B3 /* libz.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380662D92356B004D24B3 /* libz.a */; };
 		950380702D92356B004D24B3 /* libiconv.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380602D92356B004D24B3 /* libiconv.a */; };
@@ -21,7 +21,7 @@
 		950380722D92356B004D24B3 /* libssl.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380642D92356B004D24B3 /* libssl.a */; };
 		9503807E2D923577004D24B3 /* libz.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9503807C2D923577004D24B3 /* libz.a */; };
 		9503807F2D923577004D24B3 /* libphp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380772D923577004D24B3 /* libphp.a */; };
-		950380802D923577004D24B3 /* libpng16.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380782D923577004D24B3 /* libpng16.a */; };
+
 		950380812D923577004D24B3 /* libsqlite3.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380792D923577004D24B3 /* libsqlite3.a */; };
 		950380822D923577004D24B3 /* libcharset.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 950380732D923577004D24B3 /* libcharset.a */; };
 		950380832D923577004D24B3 /* libxml2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9503807B2D923577004D24B3 /* libxml2.a */; };
@@ -78,9 +78,7 @@
 		95037E372D923555004D24B3 /* iconv.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = iconv.h; sourceTree = "<group>"; };
 		95037E382D923555004D24B3 /* libcharset.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = libcharset.h; sourceTree = "<group>"; };
 		95037E392D923555004D24B3 /* localcharset.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = localcharset.h; sourceTree = "<group>"; };
-		95037E3B2D923555004D24B3 /* png.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = png.h; sourceTree = "<group>"; };
-		95037E3C2D923555004D24B3 /* pngconf.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = pngconf.h; sourceTree = "<group>"; };
-		95037E3D2D923555004D24B3 /* pnglibconf.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = pnglibconf.h; sourceTree = "<group>"; };
+
 		95037E3F2D923555004D24B3 /* c14n.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = c14n.h; sourceTree = "<group>"; };
 		95037E402D923555004D24B3 /* catalog.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = catalog.h; sourceTree = "<group>"; };
 		95037E412D923555004D24B3 /* chvalid.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = chvalid.h; sourceTree = "<group>"; };
@@ -588,7 +586,7 @@
 		9503805F2D92356B004D24B3 /* libcurl.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libcurl.a; sourceTree = "<group>"; };
 		950380602D92356B004D24B3 /* libiconv.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libiconv.a; sourceTree = "<group>"; };
 		950380612D92356B004D24B3 /* libphp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libphp.a; sourceTree = "<group>"; };
-		950380622D92356B004D24B3 /* libpng16.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libpng16.a; sourceTree = "<group>"; };
+
 		950380632D92356B004D24B3 /* libsqlite3.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsqlite3.a; sourceTree = "<group>"; };
 		950380642D92356B004D24B3 /* libssl.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libssl.a; sourceTree = "<group>"; };
 		950380652D92356B004D24B3 /* libxml2.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libxml2.a; sourceTree = "<group>"; };
@@ -599,7 +597,7 @@
 		950380752D923577004D24B3 /* libcurl.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libcurl.a; sourceTree = "<group>"; };
 		950380762D923577004D24B3 /* libiconv.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libiconv.a; sourceTree = "<group>"; };
 		950380772D923577004D24B3 /* libphp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libphp.a; sourceTree = "<group>"; };
-		950380782D923577004D24B3 /* libpng16.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libpng16.a; sourceTree = "<group>"; };
+
 		950380792D923577004D24B3 /* libsqlite3.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libsqlite3.a; sourceTree = "<group>"; };
 		9503807A2D923577004D24B3 /* libssl.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libssl.a; sourceTree = "<group>"; };
 		9503807B2D923577004D24B3 /* libxml2.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libxml2.a; sourceTree = "<group>"; };
@@ -671,7 +669,7 @@
 			files = (
 				9503807E2D923577004D24B3 /* libz.a in Frameworks */,
 				9503807F2D923577004D24B3 /* libphp.a in Frameworks */,
-				950380802D923577004D24B3 /* libpng16.a in Frameworks */,
+
 				950380812D923577004D24B3 /* libsqlite3.a in Frameworks */,
 				950380822D923577004D24B3 /* libcharset.a in Frameworks */,
 				950380832D923577004D24B3 /* libxml2.a in Frameworks */,
@@ -696,7 +694,7 @@
 				9503806A2D92356B004D24B3 /* libphp.a in Frameworks */,
 				9503806B2D92356B004D24B3 /* libxml2.a in Frameworks */,
 				9503806C2D92356B004D24B3 /* libzip.a in Frameworks */,
-				9503806D2D92356B004D24B3 /* libpng16.a in Frameworks */,
+
 				9503806E2D92356B004D24B3 /* libsqlite3.a in Frameworks */,
 				956423092E31758C00F25A31 /* libonig.a in Frameworks */,
 				9564230D2E3B8A0100F25A31 /* libsodium.a in Frameworks */,
@@ -736,7 +734,7 @@
 				9503805F2D92356B004D24B3 /* libcurl.a */,
 				950380602D92356B004D24B3 /* libiconv.a */,
 				950380612D92356B004D24B3 /* libphp.a */,
-				950380622D92356B004D24B3 /* libpng16.a */,
+
 				950380632D92356B004D24B3 /* libsqlite3.a */,
 				950380642D92356B004D24B3 /* libssl.a */,
 				950380652D92356B004D24B3 /* libxml2.a */,
@@ -756,7 +754,7 @@
 				950380752D923577004D24B3 /* libcurl.a */,
 				950380762D923577004D24B3 /* libiconv.a */,
 				950380772D923577004D24B3 /* libphp.a */,
-				950380782D923577004D24B3 /* libpng16.a */,
+
 				950380792D923577004D24B3 /* libsqlite3.a */,
 				9503807A2D923577004D24B3 /* libssl.a */,
 				9503807B2D923577004D24B3 /* libxml2.a */,
@@ -793,16 +791,6 @@
 				95037E392D923555004D24B3 /* localcharset.h */,
 			);
 			path = iconv;
-			sourceTree = "<group>";
-		};
-		95037E3E2D923555004D24B3 /* libpng16 */ = {
-			isa = PBXGroup;
-			children = (
-				95037E3B2D923555004D24B3 /* png.h */,
-				95037E3C2D923555004D24B3 /* pngconf.h */,
-				95037E3D2D923555004D24B3 /* pnglibconf.h */,
-			);
-			path = libpng16;
 			sourceTree = "<group>";
 		};
 		95037E6D2D923555004D24B3 /* libxml */ = {
@@ -1652,7 +1640,7 @@
 			children = (
 				95037E362D923555004D24B3 /* curl */,
 				95037E3A2D923555004D24B3 /* iconv */,
-				95037E3E2D923555004D24B3 /* libpng16 */,
+
 				95037E6E2D923555004D24B3 /* libxml2 */,
 				95037EFC2D923555004D24B3 /* openssl */,
 				950380532D923555004D24B3 /* php */,
