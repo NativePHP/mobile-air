@@ -180,9 +180,12 @@ class Runtime
             }
         }
 
+        error_log("[Runtime::artisan] calling: {$commandName}");
         Artisan::call($commandName, array_slice($params, 1), $output);
+        $result = $output->fetch();
+        error_log("[Runtime::artisan] output length: " . strlen($result));
 
-        return $output->fetch();
+        return $result;
     }
 
     /**

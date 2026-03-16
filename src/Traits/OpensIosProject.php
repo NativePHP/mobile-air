@@ -8,10 +8,10 @@ trait OpensIosProject
 {
     public function openIosProject(): void
     {
-        $projectPath = base_path('nativephp/ios/NativePHP.xcodeproj');
+        $projectPath = base_path('nativephp/ios/NativePHP.xcworkspace');
 
         if (! is_dir($projectPath)) {
-            $this->error('Xcode project not found at '.$projectPath);
+            $this->error('Xcode workspace not found at '.$projectPath);
 
             return;
         }
