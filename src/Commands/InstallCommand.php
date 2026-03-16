@@ -142,7 +142,7 @@ class InstallCommand extends Command
 
         outro('NativePHP for Mobile installed successfully!');
 
-        if (confirm('Would you mind starring us on GitHub? It really helps!', default: false)) {
+        if (confirm('Would you mind starring us on GitHub? It really helps!', default: true)) {
             $url = 'https://github.com/NativePHP/mobile-air';
 
             match (PHP_OS_FAMILY) {
