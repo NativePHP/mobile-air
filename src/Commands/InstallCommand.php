@@ -93,6 +93,10 @@ class InstallCommand extends Command
             $this->promptAndroidOptions();
         }
 
+        if ($installIos) {
+            $this->promptIosOptions();
+        }
+
         // Now run all tasks
         $this->newLine();
 

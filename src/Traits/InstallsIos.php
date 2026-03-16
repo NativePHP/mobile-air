@@ -21,6 +21,17 @@ trait InstallsIos
 
     public string $iosPath;
 
+    protected ?bool $includeIcuIos = null;
+
+    public function promptIosOptions(): void
+    {
+        if ($this->option('skip-php') && ! $this->forcing) {
+            return;
+        }
+
+        $this->includeIcuIos = (bool) $this->option('with-icu');
+    }
+
     public function setupIos(): void
     {
         $this->iosPath = base_path('nativephp/ios');
@@ -51,6 +62,7 @@ trait InstallsIos
 
     private function installPHPIos(): void
     {
+        $includeIcu = $this->includeIcuIos ?? false;
         $phpVersion = $this->detectPhpVersion();
 
         $branch = $this->getIosBinaryBranch();
@@ -76,15 +88,28 @@ trait InstallsIos
         }
 
         $iosFiles = $versions['versions'][$phpVersion]['ios'] ?? [];
-        $url = $iosFiles[0] ?? null;
+
+        $url = null;
+        foreach ($iosFiles as $fileUrl) {
+            $isIcu = str_contains($fileUrl, '-icu.');
+            if ($includeIcu && $isIcu) {
+                $url = $fileUrl;
+                break;
+            } elseif (! $includeIcu && ! $isIcu) {
+                $url = $fileUrl;
+                break;
+            }
+        }
 
         if (! $url) {
-            error("No iOS binary found for PHP {$phpVersion}");
+            $variant = $includeIcu ? 'ICU' : 'non-ICU';
+            error("No {$variant} iOS binary found for PHP {$phpVersion}");
 
             return;
         }
 
         $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
+        $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
         $cacheDir = storage_path('nativephp');
         File::ensureDirectoryExists($cacheDir);
@@ -168,6 +193,14 @@ trait InstallsIos
         $bridgeDst = $this->iosPath.'/Include/Bridge';
         if (is_dir($bridgeSrc)) {
             File::copyDirectory($bridgeSrc, $bridgeDst);
+        }
+
+        // Store ICU preference for run command
+        $icuFlagFile = base_path('nativephp/ios/.icu-enabled');
+        if ($includeIcu) {
+            File::put($icuFlagFile, '1');
+        } elseif (File::exists($icuFlagFile)) {
+            File::delete($icuFlagFile);
         }
 
         try {
