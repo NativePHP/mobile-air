@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Traits\RunsAndroid;
 use Tests\TestCase;
 
 class AndroidBuildIntegrationTest extends TestCase
@@ -167,7 +168,7 @@ class AndroidBuildIntegrationTest extends TestCase
         // For now, we'll simulate its behavior
         $runner = new class
         {
-            use \Native\Mobile\Traits\RunsAndroid;
+            use RunsAndroid;
 
             public $components;
 
@@ -211,7 +212,7 @@ class AndroidBuildIntegrationTest extends TestCase
             protected function removeDirectory(string $path): void
             {
                 if (is_dir($path)) {
-                    \Illuminate\Support\Facades\File::deleteDirectory($path);
+                    File::deleteDirectory($path);
                 }
             }
 

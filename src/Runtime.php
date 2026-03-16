@@ -6,7 +6,9 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Foundation\Application;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Facade;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 class Runtime
 {
@@ -71,7 +73,7 @@ class Runtime
             error_log('PerfTiming: Runtime::dispatch() kernel->handle() threw: '.$e->getMessage());
 
             // Build a plain error response instead of relying on the exception handler
-            $response = new \Illuminate\Http\Response(
+            $response = new Response(
                 'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
                 500,
                 ['Content-Type' => 'text/plain']
@@ -162,7 +164,7 @@ class Runtime
             throw new \RuntimeException('Runtime not booted. Call Runtime::boot() first.');
         }
 
-        $output = new \Symfony\Component\Console\Output\BufferedOutput;
+        $output = new BufferedOutput;
 
         // Parse command and arguments
         $parts = str_getcsv($command, ' ');
@@ -178,7 +180,7 @@ class Runtime
             }
         }
 
-        \Illuminate\Support\Facades\Artisan::call($commandName, array_slice($params, 1), $output);
+        Artisan::call($commandName, array_slice($params, 1), $output);
 
         return $output->fetch();
     }

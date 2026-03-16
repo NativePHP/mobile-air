@@ -3,6 +3,7 @@
 namespace Native\Mobile;
 
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
@@ -28,6 +29,10 @@ use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
+use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
+use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
+use Native\Mobile\Plugins\PluginDiscovery;
+use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -84,31 +89,31 @@ class NativeServiceProvider extends PackageServiceProvider
 
     protected function registerPluginServices(): void
     {
-        $this->app->singleton(\Native\Mobile\Plugins\PluginDiscovery::class, function ($app) {
-            return new \Native\Mobile\Plugins\PluginDiscovery(
-                $app->make(\Illuminate\Filesystem\Filesystem::class),
+        $this->app->singleton(PluginDiscovery::class, function ($app) {
+            return new PluginDiscovery(
+                $app->make(Filesystem::class),
                 base_path()
             );
         });
 
-        $this->app->singleton(\Native\Mobile\Plugins\PluginRegistry::class, function ($app) {
-            return new \Native\Mobile\Plugins\PluginRegistry(
-                $app->make(\Native\Mobile\Plugins\PluginDiscovery::class)
+        $this->app->singleton(PluginRegistry::class, function ($app) {
+            return new PluginRegistry(
+                $app->make(PluginDiscovery::class)
             );
         });
 
-        $this->app->singleton(\Native\Mobile\Plugins\Compilers\AndroidPluginCompiler::class, function ($app) {
-            return new \Native\Mobile\Plugins\Compilers\AndroidPluginCompiler(
-                $app->make(\Illuminate\Filesystem\Filesystem::class),
-                $app->make(\Native\Mobile\Plugins\PluginRegistry::class),
+        $this->app->singleton(AndroidPluginCompiler::class, function ($app) {
+            return new AndroidPluginCompiler(
+                $app->make(Filesystem::class),
+                $app->make(PluginRegistry::class),
                 base_path('nativephp')
             );
         });
 
-        $this->app->singleton(\Native\Mobile\Plugins\Compilers\IOSPluginCompiler::class, function ($app) {
-            return new \Native\Mobile\Plugins\Compilers\IOSPluginCompiler(
-                $app->make(\Illuminate\Filesystem\Filesystem::class),
-                $app->make(\Native\Mobile\Plugins\PluginRegistry::class),
+        $this->app->singleton(IOSPluginCompiler::class, function ($app) {
+            return new IOSPluginCompiler(
+                $app->make(Filesystem::class),
+                $app->make(PluginRegistry::class),
                 base_path('nativephp')
             );
         });

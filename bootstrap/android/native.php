@@ -2,6 +2,7 @@
 
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 $_timing = ['start' => microtime(true)];
 
@@ -98,7 +99,7 @@ try {
 
     // Send headers and body manually (for your bridge)
     $code = $response->getStatusCode();
-    $status = \Symfony\Component\HttpFoundation\Response::$statusTexts[$code] ?? 'OK';
+    $status = Response::$statusTexts[$code] ?? 'OK';
     echo "HTTP/1.1 {$code} {$status}\r\n";
 
     // Add timing header
