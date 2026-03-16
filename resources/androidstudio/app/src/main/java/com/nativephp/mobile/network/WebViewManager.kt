@@ -208,7 +208,10 @@ class WebViewManager(
 
                 val inspectorResponse = requestInspector.shouldInterceptRequest(view, request)
 
-                if (url.contains("/_native/api/call") && inspectorResponse != null) {
+                if (request.url.encodedPath == "/_native/api/call" &&
+                    method.equals("POST", ignoreCase = true) &&
+                    inspectorResponse != null
+                ) {
                     Log.d(TAG, "Using inspector response for native bridge call to avoid duplicate handling: $url")
                     return inspectorResponse
                 }
