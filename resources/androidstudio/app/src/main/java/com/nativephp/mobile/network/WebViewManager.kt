@@ -30,6 +30,23 @@ class WebViewManager(
 
     companion object {
         var shared: WebViewManager? = null
+
+        // Bridge endpoint ownership contract: these requests are owned by request inspector.
+        private val INSPECTOR_OWNED_BRIDGE_ENDPOINTS = setOf("/_native/api/call")
+    }
+
+    private fun isInspectorOwnedBridgeRequest(
+        request: WebResourceRequest,
+        inspectorResponse: WebResourceResponse?
+    ): Boolean {
+        if (inspectorResponse == null) {
+            return false
+        }
+
+        val path = request.url.encodedPath
+        return path != null &&
+            INSPECTOR_OWNED_BRIDGE_ENDPOINTS.contains(path) &&
+            request.method.equals("POST", ignoreCase = true)
     }
 
     fun setup() {
@@ -208,8 +225,8 @@ class WebViewManager(
 
                 val inspectorResponse = requestInspector.shouldInterceptRequest(view, request)
 
-                if (url.contains("/_native/api/call") && inspectorResponse != null) {
-                    Log.d(TAG, "Using inspector response for native bridge call to avoid duplicate handling: $url")
+                if (isInspectorOwnedBridgeRequest(request, inspectorResponse)) {
+                    Log.d(TAG, "Using inspector response for inspector-owned bridge request to enforce single-path handling: $url")
                     return inspectorResponse
                 }
 
