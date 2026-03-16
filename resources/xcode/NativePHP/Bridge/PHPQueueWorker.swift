@@ -85,9 +85,15 @@ final class PHPQueueWorker {
         while running {
             let output = artisan(command: "queue:work --once --quiet")
 
+            // Log any output for diagnostics (errors from bridge calls, etc.)
+            if !output.isEmpty {
+                NSLog("PHPQueueWorker: output: %@", output)
+            }
+
             // Shorter sleep if we just processed a job, longer if idle
             let sleepMs: UInt64
             if output.localizedCaseInsensitiveContains("Processed") {
+                NSLog("PHPQueueWorker: job processed")
                 sleepMs = sleepIntervalMs
             } else {
                 sleepMs = sleepIdleMs

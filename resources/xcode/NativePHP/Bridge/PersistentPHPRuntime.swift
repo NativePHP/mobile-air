@@ -95,10 +95,28 @@ final class PersistentPHPRuntime {
         return isBooted
     }
 
+    /// Re-boot the persistent runtime (shutdown then boot).
+    func reboot() -> Bool {
+        shutdown()
+        return boot()
+    }
+
+
     /// Dispatch a web request through the persistent runtime.
     /// Returns the raw HTTP response (headers + body).
     /// Blocks until the C worker thread completes the request.
     func dispatch(request: RequestData) -> String {
+        // Detect stale state: Swift thinks we're booted but C layer disagrees
+        if isBooted && _persistent_php_is_booted() == 0 {
+            print("PersistentPHPRuntime: stale isBooted detected, attempting re-boot")
+            isBooted = false
+            let rebooted = boot()
+            if !rebooted {
+                print("PersistentPHPRuntime: re-boot failed, falling back to error response")
+                return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime re-boot failed."
+            }
+        }
+
         guard isBooted else {
             return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not booted."
         }
