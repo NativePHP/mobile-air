@@ -129,9 +129,10 @@ return [
         'storage/framework/cache',
         'storage/framework/testing',
         'storage/logs/laravel.log',
+        'storage/nativephp/*',
     ],
 
-    /*
+   /*
     |--------------------------------------------------------------------------
     | Runtime Configuration
     |--------------------------------------------------------------------------
