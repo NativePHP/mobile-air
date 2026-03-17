@@ -44,6 +44,7 @@ class AndroidBuildIntegrationTest extends TestCase
         $this->artisan('native:install', ['--force' => true])
             ->expectsQuestion('What should your app bundle ID be?', 'com.test.app')
             ->expectsConfirmation('➕ Include ICU-enabled PHP binary? (~30MB extra)', 'yes')
+            ->expectsConfirmation('Would you mind starring us on GitHub? It really helps!', 'no')
             ->assertSuccessful();
 
         // Assert initial structure was created
