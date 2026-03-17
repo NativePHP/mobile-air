@@ -273,7 +273,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
             // Use 'both' on macOS (supports iOS + Android), 'android' on other platforms
             $platform = PHP_OS_FAMILY === 'Darwin' ? 'both' : 'android';
-            $nativeInstallCommand = "@php artisan native:install {$platform} --force --without-icu";
+            $nativeInstallCommand = "@php artisan native:install {$platform} --force";
 
             // Check if post-update-cmd already contains our command
             if (isset($composerContent['scripts']['post-update-cmd'])) {
@@ -285,7 +285,7 @@ class NativeServiceProvider extends PackageServiceProvider
                         return; // Already exists
                     }
                     // Check if it's an old version with different platform and replace it
-                    if (preg_match('/@php artisan native:install (android|both|ios) --force --without-icu/', $postUpdateCmds)) {
+                    if (preg_match('/@php artisan native:install (android|both|ios) --force/', $postUpdateCmds)) {
                         $composerContent['scripts']['post-update-cmd'] = $nativeInstallCommand;
 
                         return;
@@ -300,7 +300,7 @@ class NativeServiceProvider extends PackageServiceProvider
                     // Check for existing native:install commands with different platforms and replace them
                     $foundExisting = false;
                     foreach ($postUpdateCmds as $index => $cmd) {
-                        if (preg_match('/@php artisan native:install (android|both|ios) --force --without-icu/', $cmd)) {
+                        if (preg_match('/@php artisan native:install (android|both|ios) --force/', $cmd)) {
                             $composerContent['scripts']['post-update-cmd'][$index] = $nativeInstallCommand;
                             $foundExisting = true;
                             break;
