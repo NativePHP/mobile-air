@@ -11,6 +11,7 @@ void initialize_php_with_request(const char *post_data,
 
 // Persistent PHP Runtime
 int  persistent_php_boot(const char *bootstrapPath);
+const char *persistent_php_boot_error(void);
 const char *persistent_php_dispatch(const char *method,
                                     const char *uri,
                                     const char *postData,

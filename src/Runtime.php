@@ -32,6 +32,13 @@ class Runtime
     public static function boot(Application $app): void
     {
         static::$app = $app;
+
+        // Bind a placeholder request so service providers that resolve 'request'
+        // during bootstrap don't fail (no real HTTP request exists yet in persistent mode)
+        if (! $app->bound('request')) {
+            $app->instance('request', Request::capture());
+        }
+
         static::$kernel = $app->make(Kernel::class);
         static::$kernel->bootstrap();
         static::$booted = true;

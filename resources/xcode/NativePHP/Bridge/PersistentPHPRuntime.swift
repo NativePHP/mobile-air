@@ -24,6 +24,9 @@ private func _persistent_php_shutdown()
 @_silgen_name("persistent_php_is_booted")
 private func _persistent_php_is_booted() -> Int32
 
+@_silgen_name("persistent_php_boot_error")
+private func _persistent_php_boot_error() -> UnsafePointer<CChar>
+
 /// Persistent PHP Runtime for iOS.
 /// Boots the PHP interpreter once and dispatches requests via zend_eval_string().
 /// Equivalent to Android's PHPBridge persistent mode.
@@ -89,7 +92,8 @@ final class PersistentPHPRuntime {
             isBooted = true
             print("PersistentPHPRuntime: boot succeeded")
         } else {
-            print("PersistentPHPRuntime: boot FAILED (\(result))")
+            let bootError = String(cString: _persistent_php_boot_error())
+            print("PersistentPHPRuntime: boot FAILED (\(result)) error: \(bootError)")
         }
 
         return isBooted

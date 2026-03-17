@@ -188,6 +188,7 @@ static char                *php_work_str_result  = NULL;
 
 static int persistent_initialized = 0;
 static int worker_thread_alive = 0;
+static char *persistent_boot_error = NULL;
 
 // Forward declarations
 static void do_dispatch(const dispatch_params_t *params);
@@ -248,6 +249,17 @@ static void *php_worker_main(void *arg) {
     fprintf(stderr, "PHP-WORKER: bootstrap script executed\n");
     fflush(stderr);
 
+    // Save bootstrap output BEFORE clearing (contains error messages if boot failed)
+    char *bootstrap_output = NULL;
+    {
+        char *raw = get_collected_output();
+        if (raw && raw[0] != '\0') {
+            bootstrap_output = strdup(raw);
+            fprintf(stderr, "PHP-WORKER: bootstrap output: %.500s\n", bootstrap_output);
+            fflush(stderr);
+        }
+    }
+
     // Verify PHP-level boot succeeded (Runtime::$booted must be true)
     clear_output_buffer();
     int boot_ok = 0;
@@ -263,14 +275,15 @@ static void *php_worker_main(void *arg) {
     if (boot_ok) {
         persistent_initialized = 1;
         php_work_int_result = 0;
+        free(bootstrap_output);
+        // Clear any previous boot error
+        if (persistent_boot_error) { free(persistent_boot_error); persistent_boot_error = NULL; }
         fprintf(stderr, "PHP-WORKER: bootstrap complete, Runtime::isBooted() confirmed\n");
         fflush(stderr);
     } else {
-        // Log what the bootstrap produced for debugging
-        char *boot_output = get_collected_output();
-        if (boot_output && boot_output[0] != '\0') {
-            fprintf(stderr, "PHP-WORKER: bootstrap output: %.500s\n", boot_output);
-        }
+        // Store bootstrap output as boot error for Swift to retrieve
+        if (persistent_boot_error) { free(persistent_boot_error); }
+        persistent_boot_error = bootstrap_output;  // transfer ownership
         fprintf(stderr, "PHP-WORKER: bootstrap ran but Runtime::isBooted() is false, shutting down\n");
         fflush(stderr);
         persistent_initialized = 0;
@@ -625,6 +638,10 @@ void persistent_php_shutdown(void) {
 
 int persistent_php_is_booted(void) {
     return persistent_initialized;
+}
+
+const char *persistent_php_boot_error(void) {
+    return persistent_boot_error ? persistent_boot_error : "";
 }
 
 // Legacy stubs — kept for header compatibility

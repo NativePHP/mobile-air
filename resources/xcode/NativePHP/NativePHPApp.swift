@@ -107,6 +107,8 @@ struct NativePHPApp: App {
         if booted {
             NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
+        } else {
+            NSLog("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
         }
 
         NSLog("[NativePHP] Deferred initialization completed")
