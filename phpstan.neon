@@ -8,3 +8,4 @@ parameters:
         - '#Function nativephp_call not found#'
         - '#Unsafe usage of new static#'
         - '#Access to an undefined property#'
+        - '#Attribute class Deprecated does not exist#'

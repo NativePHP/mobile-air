@@ -42,6 +42,7 @@ class AndroidBuildIntegrationTest extends TestCase
 
         // 1. Install Android project (on non-Darwin platforms)
         $this->artisan('native:install', ['--force' => true])
+            ->expectsQuestion('What should your app bundle ID be?', 'com.test.app')
             ->expectsConfirmation('➕ Include ICU-enabled PHP binary? (~30MB extra)', 'yes')
             ->assertSuccessful();
 
