@@ -132,7 +132,7 @@ trait InstallsAndroid
             return;
         }
 
-        $cacheDir = storage_path('nativephp');
+        $cacheDir = base_path('nativephp/binaries');
         File::ensureDirectoryExists($cacheDir);
 
         $zipFilename = basename(parse_url($url, PHP_URL_PATH));

@@ -22,7 +22,7 @@ class InstallCommand extends Command
     protected bool $forcing = true;
 
     protected $signature = 'native:install
-        {platform? : The platform to install (android, ios, or both)}
+        {platform? : The platform to install (android/a, ios/i, or both)}
         {--no-force : Keep existing files instead of overwriting}
         {--with-icu : Include ICU support for Android (adds ~30MB)}
         {--skip-php : Do not download the PHP binaries}
@@ -39,7 +39,7 @@ class InstallCommand extends Command
         $this->forcing = ! $this->option('no-force');
 
         if ($this->option('force')) {
-            $cacheDir = storage_path('nativephp');
+            $cacheDir = base_path('nativephp/binaries');
             if (is_dir($cacheDir)) {
                 $this->components->task('Clearing cached PHP binaries', function () use ($cacheDir) {
                     $files = glob($cacheDir.'/*.zip');
@@ -52,8 +52,16 @@ class InstallCommand extends Command
 
         $platform = $this->argument('platform');
 
+        if ($platform) {
+            $platform = match (strtolower($platform)) {
+                'a' => 'android',
+                'i' => 'ios',
+                default => $platform,
+            };
+        }
+
         if ($platform && ! in_array($platform, ['android', 'ios', 'both'])) {
-            error('Invalid platform. Please specify "android", "ios", or "both".');
+            error('Invalid platform. Please specify "android" (a), "ios" (i), or "both".');
 
             return;
         }

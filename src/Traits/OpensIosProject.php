@@ -27,7 +27,7 @@ trait OpensIosProject
                 return;
             }
 
-            $this->info('Opening Xcode project...');
+            $this->info('Opening Xcode workspace...');
         } catch (\Throwable $e) {
             $this->error('Failed to open Xcode: '.$e->getMessage());
         }

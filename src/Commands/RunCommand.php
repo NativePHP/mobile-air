@@ -24,8 +24,6 @@ class RunCommand extends Command
     protected $signature = 'native:run
         {os? : Platform to run (android/a or ios/i)}
         {udid?}
-        {--ios : Target iOS platform (shorthand for os=ios|i)}
-        {--android : Target Android platform (shorthand for os=android|a)}
         {--build=debug : debug|release|bundle}
         {--W|watch : Enable hot reloading during development}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
@@ -55,20 +53,13 @@ class RunCommand extends Command
             mkdir($nativephpDir, 0755, true);
         }
 
-        // Get platform (flags take priority over argument)
-        if ($this->option('ios')) {
-            $os = 'ios';
-        } elseif ($this->option('android')) {
-            $os = 'android';
-        } else {
-            $os = $this->argument('os');
-            // Support shorthands: 'a' for android, 'i' for ios
-            if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
-                $os = match (strtolower($os)) {
-                    'android', 'a' => 'android',
-                    'ios', 'i' => 'ios',
-                };
-            }
+        // Get platform from argument (android/a, ios/i)
+        $os = $this->argument('os');
+        if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
+            $os = match (strtolower($os)) {
+                'android', 'a' => 'android',
+                'ios', 'i' => 'ios',
+            };
         }
 
         // Check for WSL environment - Android is not supported in WSL

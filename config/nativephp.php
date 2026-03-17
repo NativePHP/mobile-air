@@ -128,8 +128,7 @@ return [
         'storage/framework/sessions',
         'storage/framework/cache',
         'storage/framework/testing',
-        'storage/logs/laravel.log',
-        'storage/nativephp/*',
+        'storage/logs/laravel.log'
     ],
 
     /*
@@ -169,9 +168,7 @@ return [
         | target_sdk:  The SDK version your app is designed and tested for
         |
         */
-        'compile_sdk' => env('NATIVEPHP_ANDROID_COMPILE_SDK', 36),
-        'min_sdk' => env('NATIVEPHP_ANDROID_MIN_SDK', 33),
-        'target_sdk' => env('NATIVEPHP_ANDROID_TARGET_SDK', 36),
+
 
         /*
         |--------------------------------------------------------------------------
@@ -184,7 +181,7 @@ return [
         |          'dark'  - Dark icons
         |
         */
-        'status_bar_style' => env('NATIVEPHP_ANDROID_STATUS_BAR_STYLE', 'auto'),
+        'status_bar_style' => 'auto',
 
         /*
         |--------------------------------------------------------------------------

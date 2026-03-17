@@ -111,7 +111,7 @@ trait InstallsIos
         $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
-        $cacheDir = storage_path('nativephp');
+        $cacheDir = base_path('nativephp/binaries');
         File::ensureDirectoryExists($cacheDir);
 
         $zipFilename = basename(parse_url($url, PHP_URL_PATH));

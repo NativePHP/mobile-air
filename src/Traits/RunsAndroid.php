@@ -637,7 +637,7 @@ XML;
 
         $descriptorSpec = [
             1 => ['pipe', 'w'], // stdout
-            2 => ['file', 'NUL', 'a'], // stderr (Windows)
+            2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'a'], // stderr
         ];
 
         $process = proc_open($cmd, $descriptorSpec, $pipes);
