@@ -46,8 +46,6 @@ class Runtime
         // Load runtime config if available
         $runtimeConfig = $app['config']->get('nativephp.runtime', []);
         static::$config = array_merge(static::$config, $runtimeConfig);
-
-        error_log('PerfTiming: Runtime::boot() — Laravel kernel booted and stored');
     }
 
     /**
@@ -60,26 +58,21 @@ class Runtime
             throw new \RuntimeException('Runtime not booted. Call Runtime::boot() first.');
         }
 
-        $start = microtime(true);
-
         // Reset state from previous dispatch
         static::reset();
-
-        $resetTime = microtime(true);
 
         // Bind fresh request into the container
         static::$app->instance('request', $request);
         Facade::clearResolvedInstance('request');
 
+        // Set originalRequest to current request — prevents stale Livewire
+        // PersistentMiddleware state from producing a Request with empty method
+        static::$app->instance('originalRequest', $request);
+
         // Handle the request through the kernel
-        // We wrap in try/catch because the kernel's own error handler may fail
-        // (e.g. Collision dev dependency missing in production bundle)
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
-            error_log('PerfTiming: Runtime::dispatch() kernel->handle() threw: '.$e->getMessage());
-
-            // Build a plain error response instead of relying on the exception handler
             $response = new Response(
                 'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
                 500,
@@ -87,23 +80,8 @@ class Runtime
             );
         }
 
-        $handleTime = microtime(true);
-
         // Terminate (fires terminable middleware)
-        try {
-            static::$kernel->terminate($request, $response);
-        } catch (\Throwable $e) {
-            error_log('PerfTiming: Runtime::dispatch() terminate threw: '.$e->getMessage());
-        }
-
-        $terminateTime = microtime(true);
-
-        $resetMs = round(($resetTime - $start) * 1000, 1);
-        $handleMs = round(($handleTime - $resetTime) * 1000, 1);
-        $terminateMs = round(($terminateTime - $handleTime) * 1000, 1);
-        $totalMs = round(($terminateTime - $start) * 1000, 1);
-
-        error_log("PerfTiming: Runtime::dispatch() reset={$resetMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
+        static::$kernel->terminate($request, $response);
 
         return $response;
     }
@@ -138,7 +116,7 @@ class Runtime
             try {
                 static::$app->make('livewire')->flushState();
             } catch (\Throwable $e) {
-                error_log('Runtime::reset() Livewire flushState failed: '.$e->getMessage());
+                // Livewire flushState can fail if not fully initialized
             }
         }
 
@@ -187,10 +165,8 @@ class Runtime
             }
         }
 
-        error_log("[Runtime::artisan] calling: {$commandName}");
         Artisan::call($commandName, array_slice($params, 1), $output);
         $result = $output->fetch();
-        error_log('[Runtime::artisan] output length: '.strlen($result));
 
         return $result;
     }
@@ -213,8 +189,6 @@ class Runtime
         static::$kernel = null;
         static::$booted = false;
         static::$resetCallbacks = [];
-
-        error_log('PerfTiming: Runtime::shutdown() — persistent runtime torn down');
     }
 
     public static function isBooted(): bool
