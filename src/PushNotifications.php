@@ -32,7 +32,13 @@ class PushNotifications
 
         $result = nativephp_call('PushNotification.CheckPermission', '{}');
 
-        return $result['status'] ?? null;
+        if ($result) {
+            $decoded = json_decode($result, true);
+
+            return $decoded['status'] ?? null;
+        }
+
+        return null;
     }
 
     /**
@@ -47,9 +53,15 @@ class PushNotifications
 
         $result = nativephp_call('PushNotification.GetToken', '{}');
 
-        $token = $result['token'] ?? null;
+        if ($result) {
+            $decoded = json_decode($result, true);
 
-        // Android returns empty string when no token is available, treat it as null
-        return $token === '' ? null : $token;
+            $token = $decoded['token'] ?? null;
+
+            // Android returns empty string when no token is available, treat it as null
+            return $token === '' ? null : $token;
+        }
+
+        return null;
     }
 }
