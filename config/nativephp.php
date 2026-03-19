@@ -302,6 +302,28 @@ return [
         //
     ],
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | iOS Entitlements
+    |--------------------------------------------------------------------------
+    |
+    | Additional entitlements to include in your iOS app's entitlements file.
+    | These are merged with plugin-provided entitlements during compilation.
+    | Use this for entitlements that require Apple approval before use, such
+    | as critical alerts.
+    |
+    | Example:
+    |   'com.apple.developer.usernotifications.critical-alerts' => true,
+    |
+    */
+
+    'ios' => [
+        'entitlements' => [
+            //
+        ],
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | iPad Support
@@ -316,6 +338,7 @@ return [
     | support you cannot revoke this action.
     |
     */
+
     'ipad' => false,
 
     /*

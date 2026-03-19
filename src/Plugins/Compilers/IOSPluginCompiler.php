@@ -489,6 +489,12 @@ class IOSPluginCompiler
             }
         }
 
+        // Also merge app-level entitlements from config
+        $appEntitlements = config('nativephp.ios.entitlements', []);
+        foreach ($appEntitlements as $key => $value) {
+            $allEntitlements[$key] = $value;
+        }
+
         if (empty($allEntitlements)) {
             return;
         }
