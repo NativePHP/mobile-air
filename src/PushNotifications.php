@@ -52,4 +52,64 @@ class PushNotifications
         // Android returns empty string when no token is available, treat it as null
         return $token === '' ? null : $token;
     }
+
+    /**
+     * Request critical alert permission
+     * iOS: Requests .criticalAlert authorization (requires entitlement)
+     * Android: Checks DND bypass access (user must grant in system settings)
+     * Returns: "granted", "denied", or "not_supported" (iOS only)
+     */
+    public function requestCriticalPermission(): ?string
+    {
+        if (! function_exists('nativephp_call')) {
+            return null;
+        }
+
+        $result = nativephp_call('PushNotification.RequestCriticalPermission', '{}');
+
+        if ($result) {
+            $decoded = json_decode($result, true);
+
+            return $decoded['status'] ?? null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Check critical alert permission status without prompting
+     * iOS: Reads criticalAlertSetting from notification settings
+     * Android: Checks isNotificationPolicyAccessGranted
+     * Returns: "granted", "denied", or "not_supported" (iOS only)
+     */
+    public function checkCriticalPermission(): ?string
+    {
+        if (! function_exists('nativephp_call')) {
+            return null;
+        }
+
+        $result = nativephp_call('PushNotification.CheckCriticalPermission', '{}');
+
+        if ($result) {
+            $decoded = json_decode($result, true);
+
+            return $decoded['status'] ?? null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Open system settings for critical alert / DND bypass configuration
+     * iOS: Opens app settings
+     * Android: Opens ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS
+     */
+    public function openCriticalSettings(): void
+    {
+        if (! function_exists('nativephp_call')) {
+            return;
+        }
+
+        nativephp_call('PushNotification.OpenCriticalSettings', '{}');
+    }
 }

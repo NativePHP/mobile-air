@@ -335,11 +335,17 @@ export const Browser: {
 export function PushNotificationsCheckPermission(): Promise<string | null>;
 export function PushNotificationsEnroll(): Promise<boolean>;
 export function PushNotificationsGetToken(): Promise<string | null>;
+export function PushNotificationsRequestCriticalPermission(): Promise<string | null>;
+export function PushNotificationsCheckCriticalPermission(): Promise<string | null>;
+export function PushNotificationsOpenCriticalSettings(): Promise<any>;
 
 export const PushNotifications: {
     checkPermission(): Promise<string | null>;
     enroll(): Promise<boolean>;
     getToken(): Promise<string | null>;
+    requestCriticalPermission(): Promise<string | null>;
+    checkCriticalPermission(): Promise<string | null>;
+    openCriticalSettings(): Promise<any>;
 };
 
 // ============================================================================

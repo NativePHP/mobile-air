@@ -823,10 +823,27 @@ export async function PushNotificationsGetToken() {
     return result?.token ?? null;
 }
 
+export async function PushNotificationsRequestCriticalPermission() {
+    const result = await BridgeCall('PushNotification.RequestCriticalPermission');
+    return result?.status ?? null;
+}
+
+export async function PushNotificationsCheckCriticalPermission() {
+    const result = await BridgeCall('PushNotification.CheckCriticalPermission');
+    return result?.status ?? null;
+}
+
+export async function PushNotificationsOpenCriticalSettings() {
+    return BridgeCall('PushNotification.OpenCriticalSettings');
+}
+
 export const PushNotifications = {
     checkPermission: PushNotificationsCheckPermission,
     enroll: PushNotificationsEnroll,
-    getToken: PushNotificationsGetToken
+    getToken: PushNotificationsGetToken,
+    requestCriticalPermission: PushNotificationsRequestCriticalPermission,
+    checkCriticalPermission: PushNotificationsCheckCriticalPermission,
+    openCriticalSettings: PushNotificationsOpenCriticalSettings
 };
 
 // ============================================================================
