@@ -920,6 +920,24 @@ class BuildIosAppCommand extends Command
 
         $versionFilePath = dirname($zipPath).'/bundled.version';
         file_put_contents($versionFilePath, $appVersion);
+
+        // Write bundle_meta.json for fast boot-time metadata reads (matches Android PreparesBuild)
+        $bifrostAppId = null;
+        $envPath = base_path('.env');
+        if (file_exists($envPath)) {
+            $envContent = file_get_contents($envPath);
+            if (preg_match('/BIFROST_APP_ID=(.+)/', $envContent, $matches)) {
+                $bifrostAppId = trim($matches[1]);
+            }
+        }
+
+        $bundleMeta = json_encode([
+            'version' => $appVersion,
+            'bifrost_app_id' => $bifrostAppId,
+            'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+        ], JSON_PRETTY_PRINT);
+
+        file_put_contents(dirname($zipPath).'/bundle_meta.json', $bundleMeta);
     }
 
     private function configureProvisioningProfile(): void

@@ -245,19 +245,27 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
             Log.d("LaravelInit", "Laravel environment ready")
 
-            // Boot persistent PHP runtime BEFORE WebView loads
-            // This boots Laravel once — all subsequent requests dispatch through the live interpreter
-            val bootStart = System.currentTimeMillis()
-            val booted = phpBridge.bootPersistentRuntime()
-            val bootTime = System.currentTimeMillis() - bootStart
+            // Check runtime mode from bundle_meta.json
+            val runtimeMode = LaravelEnvironment.getRuntimeMode(this)
+            Log.d("LaravelInit", "Runtime mode: $runtimeMode")
 
-            if (booted) {
-                Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
-
-                // Start background queue worker after persistent runtime is ready
-                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+            if (runtimeMode == "classic") {
+                Log.d("LaravelInit", "Classic mode configured — skipping persistent runtime boot")
             } else {
-                Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
+                // Boot persistent PHP runtime BEFORE WebView loads
+                // This boots Laravel once — all subsequent requests dispatch through the live interpreter
+                val bootStart = System.currentTimeMillis()
+                val booted = phpBridge.bootPersistentRuntime()
+                val bootTime = System.currentTimeMillis() - bootStart
+
+                if (booted) {
+                    Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
+
+                    // Start background queue worker after persistent runtime is ready
+                    queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                } else {
+                    Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
+                }
             }
 
             Handler(Looper.getMainLooper()).post {

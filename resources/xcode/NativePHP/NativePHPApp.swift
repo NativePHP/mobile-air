@@ -53,33 +53,43 @@ struct NativePHPApp: App {
         let didExtract = AppUpdateManager.shared.ensureAppExists()
         NSLog("[NativePHP] ensureAppExists DONE (didExtract=\(didExtract))")
 
-        // 3. Boot persistent PHP runtime (one-time Laravel boot)
-        NSLog("[NativePHP] PersistentPHPRuntime.boot() START")
-        let booted = PersistentPHPRuntime.shared.boot()
-        NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
+        // 3. Boot persistent PHP runtime (one-time Laravel boot) — unless classic mode
+        let runtimeMode = Self.getRuntimeMode()
+        NSLog("[NativePHP] Runtime mode: \(runtimeMode)")
 
-        if booted {
-            // Only run artisan commands when app was extracted or updated
-            if didExtract {
-                NSLog("[NativePHP] artisan migrate START (post-extraction)")
-                _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
-                NSLog("[NativePHP] artisan migrate DONE")
-
-                NSLog("[NativePHP] artisan storage:link START")
-                _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
-                NSLog("[NativePHP] artisan storage:link DONE")
-            } else {
-                NSLog("[NativePHP] Skipping artisan commands — no extraction needed")
-            }
-
-            // Schedule background task runners
-            NSLog("[NativePHP] PHPScheduler.scheduleNextRun()")
-            PHPScheduler.shared.scheduleNextRun()
-            NSLog("[NativePHP] PHPScheduler.scheduleNextRefresh()")
-            PHPScheduler.shared.scheduleNextRefresh()
-        } else {
-            NSLog("[NativePHP] persistent boot failed, falling back to classic mode")
+        let booted: Bool
+        if runtimeMode == "classic" {
+            NSLog("[NativePHP] Classic mode configured — skipping persistent runtime boot")
+            booted = false
             createStorageLink()
+        } else {
+            NSLog("[NativePHP] PersistentPHPRuntime.boot() START")
+            booted = PersistentPHPRuntime.shared.boot()
+            NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
+
+            if booted {
+                // Only run artisan commands when app was extracted or updated
+                if didExtract {
+                    NSLog("[NativePHP] artisan migrate START (post-extraction)")
+                    _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
+                    NSLog("[NativePHP] artisan migrate DONE")
+
+                    NSLog("[NativePHP] artisan storage:link START")
+                    _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
+                    NSLog("[NativePHP] artisan storage:link DONE")
+                } else {
+                    NSLog("[NativePHP] Skipping artisan commands — no extraction needed")
+                }
+
+                // Schedule background task runners
+                NSLog("[NativePHP] PHPScheduler.scheduleNextRun()")
+                PHPScheduler.shared.scheduleNextRun()
+                NSLog("[NativePHP] PHPScheduler.scheduleNextRefresh()")
+                PHPScheduler.shared.scheduleNextRefresh()
+            } else {
+                NSLog("[NativePHP] persistent boot failed, falling back to classic mode")
+                createStorageLink()
+            }
         }
 
         // 4. Now that PHP is booted, allow WebView to render
@@ -174,6 +184,17 @@ struct NativePHPApp: App {
 
         // If you need the path as a String
         return destination.path
+    }
+
+    /// Read runtime_mode from bundle_meta.json. Returns "persistent" (default) or "classic".
+    static func getRuntimeMode() -> String {
+        guard let path = Bundle.main.path(forResource: "bundle_meta", ofType: "json"),
+              let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let mode = json["runtime_mode"] as? String else {
+            return "persistent"
+        }
+        return mode
     }
 
     /// Read the NATIVEPHP_START_URL from the .env file

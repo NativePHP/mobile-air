@@ -307,9 +307,11 @@ trait PreparesBuild
             $bundleMeta = json_encode([
                 'version' => $version,
                 'bifrost_app_id' => $bifrostAppId,
+                'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
             ], JSON_PRETTY_PRINT);
             file_put_contents($assetsDir.DIRECTORY_SEPARATOR.'bundle_meta.json', $bundleMeta);
-            $this->logToFile("  Written bundle_meta.json: version=$version, bifrost=".($bifrostAppId ?? 'null'));
+            $runtimeMode = config('nativephp.runtime.mode', 'persistent');
+            $this->logToFile("  Written bundle_meta.json: version=$version, bifrost=".($bifrostAppId ?? 'null').", runtime_mode=$runtimeMode");
 
             $sizeMB = round(filesize($destinationZip) / 1024 / 1024, 2);
             $this->logToFile("  Bundle size: {$sizeMB} MB");
