@@ -35,16 +35,6 @@ class DebugCommand extends Command
 
     protected function gatherInfo(): array
     {
-        return [
-            'package' => $this->getPackageInfo(),
-            'embedded_php' => $this->getEmbeddedPhpVersion(),
-            'plugins' => $this->getInstalledPlugins(),
-            'tools' => $this->getToolVersions(),
-        ];
-    }
-
-    protected function getPackageInfo(): array
-    {
         $version = 'Unknown';
 
         try {
@@ -54,8 +44,13 @@ class DebugCommand extends Command
         }
 
         return [
-            'version' => $version,
+            'package_version' => $version,
             'php_version' => PHP_VERSION,
+            'os' => PHP_OS_FAMILY,
+            'os_version' => php_uname('r'),
+            'embedded_php' => $this->getEmbeddedPhpVersion(),
+            'plugins' => $this->getInstalledPlugins(),
+            'tools' => $this->getToolVersions(),
         ];
     }
 
@@ -90,7 +85,7 @@ class DebugCommand extends Command
         }
 
         $tools['Android Studio'] = $this->getAndroidStudioVersion();
-        $tools['Gradle'] = $this->getCommandVersion('gradle --version 2>/dev/null', fn ($output) => $this->extractGradleVersion($output));
+        $tools['Gradle'] = $this->getGradleVersion();
         $tools['Java'] = $this->getCommandVersion('java -version 2>&1', fn ($output) => $output[0] ?? null);
 
         if (PHP_OS_FAMILY === 'Darwin') {
@@ -154,7 +149,7 @@ class DebugCommand extends Command
 
         return match (PHP_OS_FAMILY) {
             'Darwin' => [
-                $home.'/Library/Application Support/Google/AndroidStudio*/product-info.json',
+                $home.'/Applications/Android Studio.app/Contents/Resources/product-info.json',
                 '/Applications/Android Studio.app/Contents/Resources/product-info.json',
             ],
             'Linux' => [
@@ -166,6 +161,25 @@ class DebugCommand extends Command
             ],
             default => [],
         };
+    }
+
+    protected function getGradleVersion(): string
+    {
+        // Check for the Gradle wrapper in the NativePHP android project first
+        $gradlew = base_path('nativephp/android/gradlew');
+
+        if (file_exists($gradlew)) {
+            return $this->getCommandVersion(
+                escapeshellarg($gradlew).' --version 2>/dev/null',
+                fn ($output) => $this->extractGradleVersion($output)
+            );
+        }
+
+        // Fall back to a globally installed gradle
+        return $this->getCommandVersion(
+            'gradle --version 2>/dev/null',
+            fn ($output) => $this->extractGradleVersion($output)
+        );
     }
 
     protected function extractGradleVersion(array $output): ?string
@@ -183,8 +197,10 @@ class DebugCommand extends Command
     {
         $this->components->info('NativePHP Mobile');
         $this->table([], [
-            ['Package Version', $info['package']['version']],
-            ['PHP Version (Host)', $info['package']['php_version']],
+            ['Package Version', $info['package_version']],
+            ['PHP Version (Host)', $info['php_version']],
+            ['OS', $info['os']],
+            ['OS Version', $info['os_version']],
             ['Embedded PHP', $info['embedded_php']],
         ]);
 
