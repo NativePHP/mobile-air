@@ -304,16 +304,31 @@ class InstallCommand extends Command
 
         $contents = file_get_contents($configPath);
 
-        // Replace the php config block
-        $contents = preg_replace(
-            "/('php'\s*=>\s*\[)\s*'version'\s*=>\s*[^,]+,\s*'icu'\s*=>\s*[^,]+,\s*(\])/s",
-            sprintf(
-                "$1\n        'version' => '%s',\n        'icu' => %s,\n    $2",
-                $version,
-                $icu ? 'true' : 'false'
-            ),
-            $contents
+        $phpBlock = sprintf(
+            "'php' => [\n        'version' => '%s',\n        'icu' => %s,\n    ]",
+            $version,
+            $icu ? 'true' : 'false'
         );
+
+        // Try to replace existing php config block
+        $updated = preg_replace(
+            "/'php'\s*=>\s*\[.*?\]/s",
+            $phpBlock,
+            $contents,
+            1,
+            $count
+        );
+
+        if ($count > 0) {
+            $contents = $updated;
+        } else {
+            // Block doesn't exist yet — insert before the closing ];
+            $contents = preg_replace(
+                '/(\n\];)\s*$/',
+                "\n\n    {$phpBlock},\n];",
+                $contents
+            );
+        }
 
         file_put_contents($configPath, $contents);
     }
