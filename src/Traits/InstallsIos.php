@@ -14,11 +14,6 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
-    private function getIosBinaryBranch(): string
-    {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
-    }
-
     public string $iosPath;
 
     protected ?bool $includeIcuIos = null;
@@ -63,26 +58,11 @@ trait InstallsIos
     private function installPHPIos(): void
     {
         $includeIcu = $this->includeIcuIos ?? false;
-        $phpVersion = $this->detectPhpVersion();
+        $phpVersion = $this->phpVersion;
+        $versions = $this->versionsManifest;
 
-        $branch = $this->getIosBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
-
-        $client = new Client;
-
-        try {
-            $versions = json_decode(
-                $client->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
-        } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
-
-            return;
-        }
-
-        if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries not available in {$branch} branch");
+        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available");
 
             return;
         }
@@ -202,11 +182,6 @@ trait InstallsIos
         } elseif (File::exists($icuFlagFile)) {
             File::delete($icuFlagFile);
         }
-
-        // Record the full PHP version that was installed
-        $cacheDir = base_path('nativephp/binaries');
-        $fullPhpVersion = $versions['versions'][$phpVersion]['php_version'] ?? $phpVersion;
-        File::put($cacheDir.DIRECTORY_SEPARATOR.'INSTALLED', $fullPhpVersion);
 
         try {
             File::deleteDirectory($extractPath);
