@@ -320,6 +320,25 @@ return [
     | support you cannot revoke this action.
     |
     */
+    /*
+    |--------------------------------------------------------------------------
+    | Embedded PHP Configuration
+    |--------------------------------------------------------------------------
+    |
+    | These values track which PHP binary is embedded in your mobile app.
+    | They are automatically set by the `native:install` command, but you
+    | can also set them manually (e.g. for CI environments).
+    |
+    | version: The full PHP version string (e.g. "8.4.7")
+    | icu:     Whether the binary was built with ICU support (adds ~30MB)
+    |
+    */
+
+    'php' => [
+        'version' => null,
+        'icu' => false,
+    ],
+
     'ipad' => false,
 
     /*

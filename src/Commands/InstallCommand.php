@@ -147,12 +147,11 @@ class InstallCommand extends Command
             $this->setupIos();
         }
 
-        // Record the installed PHP version once
+        // Record the installed PHP version and ICU preference in config
         if ($shouldInstallPhp && $this->versionsManifest) {
-            $cacheDir = base_path('nativephp/binaries');
-            File::ensureDirectoryExists($cacheDir);
             $fullPhpVersion = $this->versionsManifest['versions'][$this->phpVersion]['php_version'] ?? $this->phpVersion;
-            File::put($cacheDir.DIRECTORY_SEPARATOR.'INSTALLED', $fullPhpVersion);
+            $includeIcu = (bool) $this->option('with-icu');
+            $this->updateConfigPhpSettings($fullPhpVersion, $includeIcu);
         }
 
         file_put_contents($path.DIRECTORY_SEPARATOR.'.gitignore', '*'.PHP_EOL);
@@ -293,6 +292,30 @@ class InstallCommand extends Command
         }
 
         return '8.3';
+    }
+
+    protected function updateConfigPhpSettings(string $version, bool $icu): void
+    {
+        $configPath = config_path('nativephp.php');
+
+        if (! file_exists($configPath)) {
+            return;
+        }
+
+        $contents = file_get_contents($configPath);
+
+        // Replace the php config block
+        $contents = preg_replace(
+            "/('php'\s*=>\s*\[)\s*'version'\s*=>\s*[^,]+,\s*'icu'\s*=>\s*[^,]+,\s*(\])/s",
+            sprintf(
+                "$1\n        'version' => '%s',\n        'icu' => %s,\n    $2",
+                $version,
+                $icu ? 'true' : 'false'
+            ),
+            $contents
+        );
+
+        file_put_contents($configPath, $contents);
     }
 
     protected function setEnvValue(string $key, string $value): void

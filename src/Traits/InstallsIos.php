@@ -175,14 +175,6 @@ trait InstallsIos
             File::copyDirectory($bridgeSrc, $bridgeDst);
         }
 
-        // Store ICU preference for run command
-        $icuFlagFile = base_path('nativephp/ios/.icu-enabled');
-        if ($includeIcu) {
-            File::put($icuFlagFile, '1');
-        } elseif (File::exists($icuFlagFile)) {
-            File::delete($icuFlagFile);
-        }
-
         try {
             File::deleteDirectory($extractPath);
         } catch (\Exception $e) {
