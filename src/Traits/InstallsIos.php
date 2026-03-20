@@ -203,6 +203,11 @@ trait InstallsIos
             File::delete($icuFlagFile);
         }
 
+        // Record the full PHP version that was installed
+        $cacheDir = base_path('nativephp/binaries');
+        $fullPhpVersion = $versions['versions'][$phpVersion]['php_version'] ?? $phpVersion;
+        File::put($cacheDir.DIRECTORY_SEPARATOR.'INSTALLED', $fullPhpVersion);
+
         try {
             File::deleteDirectory($extractPath);
         } catch (\Exception $e) {
