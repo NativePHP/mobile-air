@@ -169,7 +169,7 @@ return [
         |
         */
         'compile_sdk' => env('NATIVEPHP_ANDROID_COMPILE_SDK', 36),
-        'min_sdk' => env('NATIVEPHP_ANDROID_MIN_SDK', 26),
+        'min_sdk' => env('NATIVEPHP_ANDROID_MIN_SDK', 33),
         'target_sdk' => env('NATIVEPHP_ANDROID_TARGET_SDK', 36),
 
         /*

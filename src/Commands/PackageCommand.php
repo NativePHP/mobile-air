@@ -139,6 +139,14 @@ class PackageCommand extends Command
 
     protected function buildAndroid(): void
     {
+        $minSdk = (int) config('nativephp.android.min_sdk', 26);
+        if ($minSdk < 26) {
+            \Laravel\Prompts\error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
+            \Laravel\Prompts\note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
+
+            return;
+        }
+
         $androidPath = base_path('nativephp/android');
 
         if (! is_dir($androidPath)) {

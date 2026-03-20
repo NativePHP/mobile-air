@@ -72,6 +72,15 @@ trait RunsAndroid
             return;
         }
 
+        $minSdk = (int) config('nativephp.android.min_sdk', 26);
+        if ($minSdk < 26) {
+            $this->logToFile("ERROR: NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26");
+            error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
+            note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
+
+            return;
+        }
+
         // Start Vite dev server early if watching, so hot file is present during build
         if ($this->option('watch')) {
             $this->startViteDevServer('android');
