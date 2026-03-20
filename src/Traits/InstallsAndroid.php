@@ -63,22 +63,19 @@ trait InstallsAndroid
 
     private function detectPhpVersion(): string
     {
-        $composerPath = base_path('composer.json');
+        $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+        $supported = ['8.5', '8.4', '8.3'];
 
-        if (! file_exists($composerPath)) {
-            return '8.3';
+        // Exact match with a supported version
+        if (in_array($minor, $supported)) {
+            return $minor;
         }
 
-        $composer = json_decode(file_get_contents($composerPath), true);
-        $constraint = $composer['require']['php'] ?? '';
-
-        // Check from highest to lowest — first match wins
-        if (preg_match('/(?:\^|>=|~)?8\.5/', $constraint)) {
-            return '8.5';
-        }
-
-        if (preg_match('/(?:\^|>=|~)?8\.4/', $constraint)) {
-            return '8.4';
+        // Find highest supported version <= running version
+        foreach ($supported as $version) {
+            if (version_compare($minor, $version, '>=')) {
+                return $version;
+            }
         }
 
         return '8.3';
@@ -248,6 +245,10 @@ trait InstallsAndroid
         } elseif (File::exists($icuFlagFile)) {
             File::delete($icuFlagFile);
         }
+
+        // Record the full PHP version that was installed
+        $fullPhpVersion = $versions['versions'][$phpVersion]['php_version'] ?? $phpVersion;
+        File::put($cacheDir.DIRECTORY_SEPARATOR.'INSTALLED', $fullPhpVersion);
 
         try {
             $this->removeDirectory($extractPath);
