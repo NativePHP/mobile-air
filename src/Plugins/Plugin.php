@@ -68,6 +68,13 @@ class Plugin
         return $this->manifest->ios['init_function'] ?? null;
     }
 
+    public function getAndroidMinVersion(): ?int
+    {
+        $value = $this->manifest->android['min_version'] ?? null;
+
+        return $value !== null ? (int) $value : null;
+    }
+
     public function getAndroidInitFunction(): ?string
     {
         return $this->manifest->android['init_function'] ?? null;

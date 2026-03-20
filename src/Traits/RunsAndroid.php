@@ -81,6 +81,18 @@ trait RunsAndroid
             return;
         }
 
+        $plugins = app(PluginRegistry::class)->all();
+        foreach ($plugins as $plugin) {
+            $pluginMinSdk = $plugin->getAndroidMinVersion();
+            if ($pluginMinSdk !== null && $minSdk < $pluginMinSdk) {
+                $this->logToFile("ERROR: Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk");
+                error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
+                note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
+
+                return;
+            }
+        }
+
         // Start Vite dev server early if watching, so hot file is present during build
         if ($this->option('watch')) {
             $this->startViteDevServer('android');
