@@ -56,4 +56,3 @@ test-keystore.jks
 .github/workflows/test-package-local.yml
 
 /composer.lock
-NativePHP-Mobile-v3.1.pptx
