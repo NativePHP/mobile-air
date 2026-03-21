@@ -890,69 +890,70 @@ int worker_php_is_booted(void) {
 }
 
 // ============================================================================
-// Scheduler Runtime — ephemeral TSRM context on its own pthread
+// Ephemeral PHP Runtime — generic TSRM context on its own pthread
 // ============================================================================
-// Mirrors the worker runtime but designed for ephemeral use: each invocation
-// boots, runs a single artisan command, and shuts down. Used by BGTaskScheduler
-// on iOS (equivalent to Android's WorkManager PHPSchedulerWorker).
+// Designed for ephemeral use: each invocation boots a dedicated PHP thread,
+// runs artisan commands, and shuts down. Used by plugins that need to execute
+// PHP in the background independently of the persistent runtime
+// (e.g. background tasks, scheduled jobs).
 
-static int scheduler_initialized = 0;
-static pthread_mutex_t g_scheduler_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int ephemeral_initialized = 0;
+static pthread_mutex_t g_ephemeral_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Scheduler thread synchronization
-static dispatch_semaphore_t scheduler_work_sem = NULL;
-static dispatch_semaphore_t scheduler_done_sem = NULL;
+// Ephemeral thread synchronization
+static dispatch_semaphore_t ephemeral_work_sem = NULL;
+static dispatch_semaphore_t ephemeral_done_sem = NULL;
 
 typedef enum {
-    SCHEDULER_WORK_ARTISAN,
-    SCHEDULER_WORK_SHUTDOWN
-} scheduler_work_type_t;
+    EPHEMERAL_WORK_ARTISAN,
+    EPHEMERAL_WORK_SHUTDOWN
+} ephemeral_work_type_t;
 
-static scheduler_work_type_t  scheduler_work_type;
-static const char            *scheduler_work_str_arg   = NULL;
-static int                    scheduler_work_int_result = 0;
-static char                  *scheduler_work_str_result = NULL;
+static ephemeral_work_type_t  ephemeral_work_type;
+static const char            *ephemeral_work_str_arg   = NULL;
+static int                    ephemeral_work_int_result = 0;
+static char                  *ephemeral_work_str_result = NULL;
 
-// ── Scheduler TSRM init/shutdown ────────────────────
+// ── Ephemeral TSRM init/shutdown ────────────────────
 
-static int scheduler_embed_init(void) {
-    fprintf(stderr, "SCHEDULER: allocating TSRM context\n");
+static int ephemeral_embed_init(void) {
+    fprintf(stderr, "EPHEMERAL: allocating TSRM context\n");
     fflush(stderr);
 
     ts_resource(0);
     setup_persistent_sapi();
 
     if (php_embed_module.startup(&php_embed_module) == FAILURE) {
-        fprintf(stderr, "SCHEDULER: module startup FAILED\n");
+        fprintf(stderr, "EPHEMERAL: module startup FAILED\n");
         fflush(stderr);
         return FAILURE;
     }
 
     if (php_request_startup() == FAILURE) {
-        fprintf(stderr, "SCHEDULER: request startup FAILED\n");
+        fprintf(stderr, "EPHEMERAL: request startup FAILED\n");
         fflush(stderr);
         return FAILURE;
     }
 
-    fprintf(stderr, "SCHEDULER: TSRM context ready\n");
+    fprintf(stderr, "EPHEMERAL: TSRM context ready\n");
     fflush(stderr);
     return SUCCESS;
 }
 
-static void scheduler_embed_shutdown(void) {
-    fprintf(stderr, "SCHEDULER: cleaning up TSRM context\n");
+static void ephemeral_embed_shutdown(void) {
+    fprintf(stderr, "EPHEMERAL: cleaning up TSRM context\n");
     fflush(stderr);
     php_request_shutdown(NULL);
     ts_free_thread();
-    fprintf(stderr, "SCHEDULER: TSRM context freed\n");
+    fprintf(stderr, "EPHEMERAL: TSRM context freed\n");
     fflush(stderr);
 }
 
-// ── Scheduler work handlers ─────────────────────────
+// ── Ephemeral work handlers ─────────────────────────
 
-static void do_scheduler_artisan(const char *command) {
-    if (!scheduler_initialized) {
-        scheduler_work_str_result = strdup("Scheduler runtime not initialized.");
+static void do_ephemeral_artisan(const char *command) {
+    if (!ephemeral_initialized) {
+        ephemeral_work_str_result = strdup("Ephemeral runtime not initialized.");
         return;
     }
 
@@ -968,41 +969,41 @@ static void do_scheduler_artisan(const char *command) {
         "    $_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n"
         "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
         "} catch (\\Throwable $e) {\n"
-        "    echo 'Scheduler artisan error: ' . $e->getMessage();\n"
+        "    echo 'Ephemeral artisan error: ' . $e->getMessage();\n"
         "}\n",
         command);
 
     zend_first_try {
-        zend_eval_string(eval_code, NULL, "scheduler_artisan");
+        zend_eval_string(eval_code, NULL, "ephemeral_artisan");
     } zend_end_try();
 
     setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
 
     char *out = get_collected_output();
-    scheduler_work_str_result = out ? strdup(out) : strdup("");
+    ephemeral_work_str_result = out ? strdup(out) : strdup("");
 }
 
-static void do_scheduler_shutdown(void) {
-    if (!scheduler_initialized) return;
+static void do_ephemeral_shutdown(void) {
+    if (!ephemeral_initialized) return;
 
     clear_output_buffer();
 
     zend_first_try {
         zend_eval_string(
             "\\Native\\Mobile\\Runtime::shutdown();",
-            NULL, "scheduler_shutdown");
+            NULL, "ephemeral_shutdown");
     } zend_end_try();
 
-    scheduler_embed_shutdown();
-    scheduler_initialized = 0;
+    ephemeral_embed_shutdown();
+    ephemeral_initialized = 0;
 }
 
-// ── Scheduler thread main ───────────────────────────
+// ── Ephemeral thread main ───────────────────────────
 
-static void *scheduler_thread_main(void *arg) {
+static void *ephemeral_thread_main(void *arg) {
     const char *bootstrapPath = (const char *)arg;
 
-    fprintf(stderr, "SCHEDULER: thread started tid=%p\n", (void *)pthread_self());
+    fprintf(stderr, "EPHEMERAL: thread started tid=%p\n", (void *)pthread_self());
     fflush(stderr);
 
     clear_output_buffer();
@@ -1010,15 +1011,15 @@ static void *scheduler_thread_main(void *arg) {
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
     setenv("PHP_SELF", "artisan.php", 1);
 
-    if (scheduler_embed_init() != SUCCESS) {
-        fprintf(stderr, "SCHEDULER: embed init FAILED\n");
+    if (ephemeral_embed_init() != SUCCESS) {
+        fprintf(stderr, "EPHEMERAL: embed init FAILED\n");
         fflush(stderr);
-        scheduler_work_int_result = -1;
-        dispatch_semaphore_signal(scheduler_done_sem);
+        ephemeral_work_int_result = -1;
+        dispatch_semaphore_signal(ephemeral_done_sem);
         return NULL;
     }
 
-    // Execute bootstrap script to boot Laravel on scheduler thread
+    // Execute bootstrap script to boot Laravel on ephemeral thread
     zend_first_try {
         zend_activate_modules();
         zend_file_handle fileHandle;
@@ -1028,47 +1029,47 @@ static void *scheduler_thread_main(void *arg) {
 
     char *boot_output = get_collected_output();
     if (boot_output && strstr(boot_output, "FATAL") != NULL) {
-        fprintf(stderr, "SCHEDULER: bootstrap errors: %.200s\n", boot_output);
+        fprintf(stderr, "EPHEMERAL: bootstrap errors: %.200s\n", boot_output);
         fflush(stderr);
     }
 
-    scheduler_initialized = 1;
-    scheduler_work_int_result = 0;
+    ephemeral_initialized = 1;
+    ephemeral_work_int_result = 0;
 
-    fprintf(stderr, "SCHEDULER: boot complete, entering work loop\n");
+    fprintf(stderr, "EPHEMERAL: boot complete, entering work loop\n");
     fflush(stderr);
 
     // Signal boot complete
-    dispatch_semaphore_signal(scheduler_done_sem);
+    dispatch_semaphore_signal(ephemeral_done_sem);
 
     // ── Work loop ──
     while (1) {
-        dispatch_semaphore_wait(scheduler_work_sem, DISPATCH_TIME_FOREVER);
+        dispatch_semaphore_wait(ephemeral_work_sem, DISPATCH_TIME_FOREVER);
 
-        switch (scheduler_work_type) {
-            case SCHEDULER_WORK_ARTISAN:
-                do_scheduler_artisan(scheduler_work_str_arg);
+        switch (ephemeral_work_type) {
+            case EPHEMERAL_WORK_ARTISAN:
+                do_ephemeral_artisan(ephemeral_work_str_arg);
                 break;
-            case SCHEDULER_WORK_SHUTDOWN:
-                do_scheduler_shutdown();
-                dispatch_semaphore_signal(scheduler_done_sem);
+            case EPHEMERAL_WORK_SHUTDOWN:
+                do_ephemeral_shutdown();
+                dispatch_semaphore_signal(ephemeral_done_sem);
                 return NULL;  // Exit thread after shutdown
         }
 
-        dispatch_semaphore_signal(scheduler_done_sem);
+        dispatch_semaphore_signal(ephemeral_done_sem);
     }
 
     return NULL;
 }
 
-// ── Scheduler public API (called from Swift) ────────
+// ── Ephemeral public API (called from Swift plugins) ────────
 
-int scheduler_php_boot(const char *bootstrapPath) {
-    fprintf(stderr, "scheduler_php_boot: creating scheduler thread\n");
+int ephemeral_php_boot(const char *bootstrapPath) {
+    fprintf(stderr, "ephemeral_php_boot: creating ephemeral thread\n");
     fflush(stderr);
 
-    scheduler_work_sem = dispatch_semaphore_create(0);
-    scheduler_done_sem = dispatch_semaphore_create(0);
+    ephemeral_work_sem = dispatch_semaphore_create(0);
+    ephemeral_done_sem = dispatch_semaphore_create(0);
 
     pthread_t thread;
     pthread_attr_t attr;
@@ -1077,47 +1078,47 @@ int scheduler_php_boot(const char *bootstrapPath) {
     pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
     pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INITIATED, 0);
 
-    int rc = pthread_create(&thread, &attr, scheduler_thread_main, (void *)bootstrapPath);
+    int rc = pthread_create(&thread, &attr, ephemeral_thread_main, (void *)bootstrapPath);
     pthread_attr_destroy(&attr);
 
     if (rc != 0) {
-        fprintf(stderr, "scheduler_php_boot: pthread_create FAILED: %d\n", rc);
+        fprintf(stderr, "ephemeral_php_boot: pthread_create FAILED: %d\n", rc);
         fflush(stderr);
         return -1;
     }
 
-    // Block until scheduler finishes booting
-    dispatch_semaphore_wait(scheduler_done_sem, DISPATCH_TIME_FOREVER);
+    // Block until ephemeral runtime finishes booting
+    dispatch_semaphore_wait(ephemeral_done_sem, DISPATCH_TIME_FOREVER);
 
-    fprintf(stderr, "scheduler_php_boot: done, result=%d\n", scheduler_work_int_result);
+    fprintf(stderr, "ephemeral_php_boot: done, result=%d\n", ephemeral_work_int_result);
     fflush(stderr);
 
-    return scheduler_work_int_result;
+    return ephemeral_work_int_result;
 }
 
-const char *scheduler_php_artisan(const char *command) {
-    if (!scheduler_initialized) {
-        return strdup("Scheduler not booted.");
+const char *ephemeral_php_artisan(const char *command) {
+    if (!ephemeral_initialized) {
+        return strdup("Ephemeral runtime not booted.");
     }
 
-    scheduler_work_type = SCHEDULER_WORK_ARTISAN;
-    scheduler_work_str_arg = command;
-    scheduler_work_str_result = NULL;
+    ephemeral_work_type = EPHEMERAL_WORK_ARTISAN;
+    ephemeral_work_str_arg = command;
+    ephemeral_work_str_result = NULL;
 
-    dispatch_semaphore_signal(scheduler_work_sem);
-    dispatch_semaphore_wait(scheduler_done_sem, DISPATCH_TIME_FOREVER);
+    dispatch_semaphore_signal(ephemeral_work_sem);
+    dispatch_semaphore_wait(ephemeral_done_sem, DISPATCH_TIME_FOREVER);
 
-    return scheduler_work_str_result;
+    return ephemeral_work_str_result;
 }
 
-void scheduler_php_shutdown(void) {
-    if (!scheduler_initialized) return;
+void ephemeral_php_shutdown(void) {
+    if (!ephemeral_initialized) return;
 
-    scheduler_work_type = SCHEDULER_WORK_SHUTDOWN;
-    dispatch_semaphore_signal(scheduler_work_sem);
-    dispatch_semaphore_wait(scheduler_done_sem, DISPATCH_TIME_FOREVER);
+    ephemeral_work_type = EPHEMERAL_WORK_SHUTDOWN;
+    dispatch_semaphore_signal(ephemeral_work_sem);
+    dispatch_semaphore_wait(ephemeral_done_sem, DISPATCH_TIME_FOREVER);
 }
 
-int scheduler_php_is_booted(void) {
-    return scheduler_initialized;
+int ephemeral_php_is_booted(void) {
+    return ephemeral_initialized;
 }

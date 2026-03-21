@@ -27,9 +27,6 @@ struct NativePHPApp: App {
 
         DebugLogger.shared.log("📱 NativePHPApp.init() starting (minimal)")
 
-        // Register BGTaskScheduler handlers before app finishes launching
-        PHPScheduler.shared.registerBackgroundTasks()
-
         // Only register bridge functions in init - this is fast and doesn't block
         // All heavy initialization is deferred to after the splash view is visible
         DebugLogger.shared.log("📱 NativePHPApp.init() registering bridge functions")
@@ -81,11 +78,8 @@ struct NativePHPApp: App {
                     NSLog("[NativePHP] Skipping artisan commands — no extraction needed")
                 }
 
-                // Schedule background task runners
-                NSLog("[NativePHP] PHPScheduler.scheduleNextRun()")
-                PHPScheduler.shared.scheduleNextRun()
-                NSLog("[NativePHP] PHPScheduler.scheduleNextRefresh()")
-                PHPScheduler.shared.scheduleNextRefresh()
+                // Execute plugin post-boot callbacks
+                NativePHPPluginRegistry.shared.executeOnAppReady()
             } else {
                 NSLog("[NativePHP] persistent boot failed, falling back to classic mode")
                 createStorageLink()

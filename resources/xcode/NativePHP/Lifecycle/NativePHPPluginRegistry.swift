@@ -4,13 +4,12 @@ import Foundation
 ///
 /// Plugins can register callbacks that run at specific lifecycle points:
 /// - `onAppLaunch`: Called during app initialization (before WebView loads)
-/// - `onAppReady`: Called after PHP environment is ready
+/// - `onAppReady`: Called after PHP runtime has booted successfully
 ///
 /// Example usage in a plugin:
 /// ```swift
-/// // In your plugin's initialization
-/// NativePHPPluginRegistry.shared.registerOnAppLaunch("Firebase") {
-///     FirebaseManager.shared.configureIfAvailable()
+/// NativePHPPluginRegistry.shared.registerOnAppReady("BackgroundTasks") {
+///     PHPScheduler.shared.scheduleNextRun()
 /// }
 /// ```
 ///
@@ -36,8 +35,7 @@ public class NativePHPPluginRegistry {
         print("NativePHPPluginRegistry: Registered '\(name)' for onAppLaunch")
     }
 
-    /// Register a callback to run after PHP environment is ready.
-    /// This runs on the main thread after WebView is loaded.
+    /// Register a callback to run after PHP runtime has booted successfully.
     ///
     /// - Parameters:
     ///   - name: Identifier for the plugin (for logging)
@@ -60,7 +58,7 @@ public class NativePHPPluginRegistry {
     }
 
     /// Execute all registered onAppReady callbacks.
-    /// Called by NativePHPApp after PHP is ready.
+    /// Called by NativePHPApp after PHP runtime has booted.
     internal func executeOnAppReady() {
         print("NativePHPPluginRegistry: Executing \(onAppReadyCallbacks.count) onAppReady callbacks")
         for (name, callback) in onAppReadyCallbacks {
