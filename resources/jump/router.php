@@ -9,11 +9,12 @@ use Endroid\QrCode\Builder\Builder;
  * to handle Jump server requests without requiring Workerman.
  *
  * Configuration is passed via environment variables:
- * - JUMP_ZIP_PATH: Path to the app.zip bundle
  * - JUMP_DISPLAY_HOST: The host IP to display in QR code
  * - JUMP_HTTP_PORT: The HTTP port the server is running on
  * - JUMP_LARAVEL_PORT: The Laravel dev server port to proxy to
  * - JUMP_BASE_PATH: The Laravel base path for autoloading
+ * - JUMP_WS_PORT: The WebSocket bridge port
+ * - JUMP_VITE_PORT: The Vite dev server port
  */
 
 // Suppress all error output to prevent corrupting binary responses
@@ -21,12 +22,10 @@ error_reporting(0);
 ini_set('display_errors', '0');
 
 // Get configuration from environment
-$zipPath = getenv('JUMP_ZIP_PATH');
 $displayHost = getenv('JUMP_DISPLAY_HOST');
 $httpPort = getenv('JUMP_HTTP_PORT');
 $laravelPort = getenv('JUMP_LARAVEL_PORT') ?: 8000;
 $basePath = getenv('JUMP_BASE_PATH');
-$offlineMode = getenv('JUMP_OFFLINE_MODE') === '1';
 
 // Parse request FIRST - before loading any autoloaders
 $uri = $_SERVER['REQUEST_URI'];
@@ -81,44 +80,26 @@ if ($path === '/favicon.ico' || str_ends_with($path, '.map')) {
     exit;
 }
 
-// Handle ZIP download endpoint
-if ($path === '/jump/download') {
-    if (! $zipPath || ! file_exists($zipPath)) {
-        http_response_code(500);
-        echo 'App bundle not available. Please restart the server.';
-        exit;
-    }
-
-    $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
-    $deviceName = parseDeviceName($userAgent);
-    $fileSizeBytes = filesize($zipPath);
-    $fileSize = formatBytes($fileSizeBytes);
-    jumpLog("{$deviceName} downloading ({$fileSize})");
-
-    // Clean ALL output buffers
-    while (ob_get_level()) {
-        ob_end_clean();
-    }
-
-    // Minimal headers - match what Workerman's withFile() sends
-    header('Content-Type: application/zip');
-    header('Content-Length: '.$fileSizeBytes);
-    header('Content-Disposition: attachment; filename="app.zip"');
-
-    // Use readfile - simplest approach
-    readfile($zipPath);
-    exit;
-}
-
 // Handle info endpoint
 if ($path === '/jump/info') {
     header('Content-Type: application/json');
-    echo json_encode([
+
+    // Get WebSocket port from environment (set by JumpCommand)
+    $wsPort = getenv('JUMP_WS_PORT') ?: null;
+
+    $info = [
         'name' => 'NativePHP Server',
         'app_name' => getenv('APP_NAME') ?: 'Laravel',
         'version' => '1.0.0',
         'type' => 'nativephp-server',
-    ]);
+    ];
+
+    // Include WebSocket port for hybrid mode
+    if ($wsPort) {
+        $info['ws_port'] = (string) $wsPort;
+    }
+
+    echo json_encode($info);
     exit;
 }
 
@@ -152,10 +133,8 @@ if ($path === '/jump/qr' || $path === '/jump') {
 
         $qrCodeDataUri = $result->getDataUri();
 
-        // Generate HTML - use offline version if flag is set
-        global $offlineMode;
-        $viewFile = $offlineMode ? 'qr-offline.blade.php' : 'qr.blade.php';
-        $viewPath = __DIR__.'/views/'.$viewFile;
+        // Generate HTML
+        $viewPath = __DIR__.'/views/qr.blade.php';
 
         if (file_exists($viewPath)) {
             // Read blade file and do simple variable substitution
@@ -175,6 +154,27 @@ if ($path === '/jump/qr' || $path === '/jump') {
     } catch (Exception $e) {
         http_response_code(500);
         echo 'Error generating QR code: '.$e->getMessage();
+        exit;
+    }
+}
+
+// Proxy Vite dev server requests (HMR, assets, websocket)
+// Vite paths: /@vite/, /@fs/, /@id/, /resources/ (dev assets), hot-update files
+$vitePort = getenv('JUMP_VITE_PORT') ?: 5173;
+// Check if Vite dev server is running (hot file exists)
+$hotFilePath = $basePath.'/public/hot';
+$viteRunning = file_exists($hotFilePath);
+
+if ($viteRunning) {
+    $isViteRequest = str_starts_with($path, '/@vite')
+        || str_starts_with($path, '/@fs')
+        || str_starts_with($path, '/@id')
+        || str_starts_with($path, '/resources/')
+        || str_starts_with($path, '/node_modules/')
+        || str_contains($path, '.hot-update.');
+
+    if ($isViteRequest) {
+        proxyToVite($vitePort);
         exit;
     }
 }
@@ -884,6 +884,68 @@ HTML;
 }
 
 /**
+ * Proxy request to Vite dev server
+ */
+function proxyToVite($vitePort)
+{
+    $method = $_SERVER['REQUEST_METHOD'];
+    $uri = $_SERVER['REQUEST_URI'];
+    $viteUrl = "http://127.0.0.1:{$vitePort}{$uri}";
+
+    $headers = [];
+    foreach ($_SERVER as $key => $value) {
+        if (strpos($key, 'HTTP_') === 0) {
+            $headerName = str_replace('_', '-', substr($key, 5));
+            if (in_array(strtolower($headerName), ['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'host'])) {
+                continue;
+            }
+            $headers[] = "{$headerName}: {$value}";
+        }
+    }
+    if (isset($_SERVER['CONTENT_TYPE'])) {
+        $headers[] = 'Content-Type: '.$_SERVER['CONTENT_TYPE'];
+    }
+
+    $ch = curl_init($viteUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HEADER, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    if ($response === false) {
+        http_response_code(502);
+        echo 'Vite dev server not reachable on port '.$vitePort;
+
+        return;
+    }
+
+    $responseHeaders = substr($response, 0, $headerSize);
+    $responseBody = substr($response, $headerSize);
+
+    http_response_code($httpCode);
+
+    $headerLines = explode("\r\n", $responseHeaders);
+    foreach ($headerLines as $headerLine) {
+        if (empty($headerLine) || strpos($headerLine, 'HTTP/') === 0) {
+            continue;
+        }
+        if (stripos($headerLine, 'transfer-encoding:') === 0) {
+            continue;
+        }
+        header($headerLine);
+    }
+
+    echo $responseBody;
+}
+
+/**
  * Proxy request to Laravel development server
  */
 function proxyToLaravel($laravelPort)
@@ -893,6 +955,7 @@ function proxyToLaravel($laravelPort)
     $laravelUrl = "http://127.0.0.1:{$laravelPort}{$uri}";
 
     // Build headers to forward
+    global $displayHost, $httpPort;
     $headers = [];
     foreach ($_SERVER as $key => $value) {
         if (strpos($key, 'HTTP_') === 0) {
@@ -907,6 +970,12 @@ function proxyToLaravel($laravelPort)
     if (isset($_SERVER['CONTENT_TYPE'])) {
         $headers[] = 'Content-Type: '.$_SERVER['CONTENT_TYPE'];
     }
+
+    // Tell Laravel the real host so it generates correct URLs (redirects, assets, etc.)
+    $headers[] = "Host: {$displayHost}:{$httpPort}";
+    $headers[] = "X-Forwarded-Host: {$displayHost}:{$httpPort}";
+    $headers[] = 'X-Forwarded-Proto: http';
+    $headers[] = 'X-Forwarded-Port: '.$httpPort;
 
     // Get request body for POST/PUT/PATCH
     $body = null;
@@ -948,7 +1017,10 @@ function proxyToLaravel($laravelPort)
     // Set response code
     http_response_code($httpCode);
 
-    // Forward response headers (skip some)
+    $laravelOrigin = "http://127.0.0.1:{$laravelPort}";
+    $jumpOrigin = "http://{$displayHost}:{$httpPort}";
+
+    // Forward response headers, rewriting any redirect URLs
     $headerLines = explode("\r\n", $responseHeaders);
     foreach ($headerLines as $headerLine) {
         if (empty($headerLine) || strpos($headerLine, 'HTTP/') === 0) {
@@ -958,9 +1030,30 @@ function proxyToLaravel($laravelPort)
         if (stripos($headerLine, 'transfer-encoding:') === 0) {
             continue;
         }
+        // Rewrite Location headers that still point to Laravel's internal address
+        if (stripos($headerLine, 'location:') === 0) {
+            $headerLine = str_replace($laravelOrigin, $jumpOrigin, $headerLine);
+        }
         header($headerLine);
     }
 
-    // Output response body
+    // Rewrite Vite dev server URLs so the phone routes them through the Jump proxy.
+    // Vite can generate URLs with localhost, 127.0.0.1, [::], or the network IP.
+    global $vitePort;
+    if ($vitePort) {
+        $viteOrigins = [
+            "http://localhost:{$vitePort}",
+            "http://127.0.0.1:{$vitePort}",
+            "http://[::1]:{$vitePort}",
+            "http://[::]:{$vitePort}",
+            "http://{$displayHost}:{$vitePort}",
+        ];
+        $responseBody = str_replace(
+            $viteOrigins,
+            "http://{$displayHost}:{$httpPort}",
+            $responseBody
+        );
+    }
+
     echo $responseBody;
 }
