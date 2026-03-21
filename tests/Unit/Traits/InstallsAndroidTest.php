@@ -98,7 +98,7 @@ class InstallsAndroidTest extends TestCase
         $this->assertFileExists($androidPath.'/new.txt');
     }
 
-    public function test_install_php_android_with_icu_config()
+    public function test_install_php_android_with_icu_json()
     {
         $this->mockConfirm('➕ Include ICU-enabled PHP binary? (~30MB extra)', true);
 
@@ -106,13 +106,15 @@ class InstallsAndroidTest extends TestCase
         $destination = $this->testProjectPath.'/nativephp/android/app/src/main';
         File::makeDirectory($destination, 0755, true);
 
-        // ICU preference is now stored in config/nativephp.php by InstallCommand
-        config(['nativephp.php.icu' => true]);
+        // ICU preference is now stored in nativephp.json by InstallCommand
+        $jsonPath = $this->testProjectPath.'/nativephp.json';
+        File::put($jsonPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
 
-        $this->assertTrue(config('nativephp.php.icu'));
+        $data = json_decode(File::get($jsonPath), true);
+        $this->assertTrue($data['php']['icu']);
     }
 
-    public function test_install_php_android_without_icu_config()
+    public function test_install_php_android_without_icu_json()
     {
         $this->mockConfirm('➕ Include ICU-enabled PHP binary? (~30MB extra)', false);
 
@@ -120,10 +122,12 @@ class InstallsAndroidTest extends TestCase
         $destination = $this->testProjectPath.'/nativephp/android/app/src/main';
         File::makeDirectory($destination, 0755, true);
 
-        // ICU preference is now stored in config/nativephp.php by InstallCommand
-        config(['nativephp.php.icu' => false]);
+        // ICU preference is now stored in nativephp.json by InstallCommand
+        $jsonPath = $this->testProjectPath.'/nativephp.json';
+        File::put($jsonPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => false]]));
 
-        $this->assertFalse(config('nativephp.php.icu'));
+        $data = json_decode(File::get($jsonPath), true);
+        $this->assertFalse($data['php']['icu']);
     }
 
     /**

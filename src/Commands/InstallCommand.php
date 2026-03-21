@@ -147,11 +147,11 @@ class InstallCommand extends Command
             $this->setupIos();
         }
 
-        // Record the installed PHP version and ICU preference in config
+        // Record the installed PHP version and ICU preference
         if ($shouldInstallPhp && $this->versionsManifest) {
             $fullPhpVersion = $this->versionsManifest['versions'][$this->phpVersion]['php_version'] ?? $this->phpVersion;
             $includeIcu = (bool) $this->option('with-icu');
-            $this->updateConfigPhpSettings($fullPhpVersion, $includeIcu);
+            $this->writeNativephpJson($fullPhpVersion, $includeIcu);
         }
 
         file_put_contents($path.DIRECTORY_SEPARATOR.'.gitignore', '*'.PHP_EOL);
@@ -294,43 +294,20 @@ class InstallCommand extends Command
         return '8.3';
     }
 
-    protected function updateConfigPhpSettings(string $version, bool $icu): void
+    protected function writeNativephpJson(string $version, bool $icu): void
     {
-        $configPath = config_path('nativephp.php');
+        $jsonPath = base_path('nativephp.json');
 
-        if (! file_exists($configPath)) {
-            return;
-        }
+        $data = file_exists($jsonPath)
+            ? json_decode(file_get_contents($jsonPath), true) ?? []
+            : [];
 
-        $contents = file_get_contents($configPath);
+        $data['php'] = [
+            'version' => $version,
+            'icu' => $icu,
+        ];
 
-        $phpBlock = sprintf(
-            "'php' => [\n        'version' => '%s',\n        'icu' => %s,\n    ]",
-            $version,
-            $icu ? 'true' : 'false'
-        );
-
-        // Try to replace existing php config block
-        $updated = preg_replace(
-            "/'php'\s*=>\s*\[.*?\]/s",
-            $phpBlock,
-            $contents,
-            1,
-            $count
-        );
-
-        if ($count > 0) {
-            $contents = $updated;
-        } else {
-            // Block doesn't exist yet — insert before the closing ];
-            $contents = preg_replace(
-                '/(\n\];)\s*$/',
-                "\n\n    {$phpBlock},\n];",
-                $contents
-            );
-        }
-
-        file_put_contents($configPath, $contents);
+        file_put_contents($jsonPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
     }
 
     protected function setEnvValue(string $key, string $value): void

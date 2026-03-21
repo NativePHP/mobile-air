@@ -370,7 +370,15 @@ XML;
 
     private function updateIcuConfiguration(): void
     {
-        if (! config('nativephp.php.icu')) {
+        $jsonPath = base_path('nativephp.json');
+
+        if (! file_exists($jsonPath)) {
+            return;
+        }
+
+        $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+
+        if (empty($nativephp['php']['icu'])) {
             return;
         }
 
