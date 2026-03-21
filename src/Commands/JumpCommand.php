@@ -93,9 +93,11 @@ class JumpCommand extends Command
             }
         }
 
-        // Start WebSocket bridge server for hybrid mode (fixed ports for reliability)
-        $wsPort = (int) ($this->option('ws-port') ?? 3001);
-        $bridgePort = (int) ($this->option('bridge-port') ?? 3002);
+        // Start WebSocket bridge server — find ports that don't collide with HTTP or Laravel
+        $usedPorts = [$httpPort, $this->laravelPort];
+        $wsPort = (int) ($this->option('ws-port') ?? $this->findAvailablePort(3001, 100, $usedPorts));
+        $usedPorts[] = $wsPort;
+        $bridgePort = (int) ($this->option('bridge-port') ?? $this->findAvailablePort(3002, 100, $usedPorts));
         $this->startBridgeServer($wsPort, $bridgePort);
         $this->components->twoColumnDetail('Bridge WebSocket', "ws://{$this->displayHost}:{$wsPort}/jump/ws");
         $this->components->twoColumnDetail('Bridge TCP', "tcp://127.0.0.1:{$bridgePort}");
