@@ -32,7 +32,16 @@ class JumpBridge
     public static function instance(): self
     {
         if (self::$instance === null) {
-            self::$instance = new self('127.0.0.1', 3002);
+            $port = 3002; // fallback
+
+            // Read dynamic port from bridge config written by JumpCommand
+            $configPath = storage_path('framework/jump_bridge.json');
+            if (file_exists($configPath)) {
+                $config = json_decode(file_get_contents($configPath), true);
+                $port = (int) ($config['bridge_port'] ?? 3002);
+            }
+
+            self::$instance = new self('127.0.0.1', $port);
         }
 
         return self::$instance;
