@@ -149,9 +149,8 @@ class InstallCommand extends Command
 
         // Record the installed PHP version and ICU preference
         if ($shouldInstallPhp && $this->versionsManifest) {
-            $fullPhpVersion = $this->versionsManifest['versions'][$this->phpVersion]['php_version'] ?? $this->phpVersion;
             $includeIcu = (bool) $this->option('with-icu');
-            $this->writeNativephpJson($fullPhpVersion, $includeIcu);
+            $this->writeNativephpJson($this->phpVersion, $includeIcu);
         }
 
         file_put_contents($path.DIRECTORY_SEPARATOR.'.gitignore', '*'.PHP_EOL);
@@ -276,10 +275,22 @@ class InstallCommand extends Command
 
     protected function detectPhpVersion(): string
     {
-        $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
         $supported = ['8.5', '8.4', '8.3'];
 
-        // Exact match with a supported version
+        // Check nativephp.json first (committed by the user or written by a previous install)
+        $jsonPath = base_path('nativephp.json');
+        if (file_exists($jsonPath)) {
+            $config = json_decode(file_get_contents($jsonPath), true);
+            $configVersion = $config['php']['version'] ?? null;
+
+            if ($configVersion && in_array($configVersion, $supported)) {
+                return $configVersion;
+            }
+        }
+
+        // Fall back to the running PHP version
+        $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+
         if (in_array($minor, $supported)) {
             return $minor;
         }
