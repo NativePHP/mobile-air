@@ -292,6 +292,102 @@ class PluginRegisterCommand extends Command
             }
         }
 
+        // Check native dependency version conflicts
+        foreach ($this->registry->all() as $existing) {
+            $conflicts = array_merge($conflicts, $this->detectDependencyConflictsBetween($newPlugin, $existing));
+        }
+
         return $conflicts;
+    }
+
+    /**
+     * Detect native dependency version conflicts between two plugins.
+     *
+     * @return array<string> Conflict messages
+     */
+    protected function detectDependencyConflictsBetween(Plugin $newPlugin, Plugin $existing): array
+    {
+        $conflicts = [];
+
+        // Android Gradle dependencies
+        $newAndroidDeps = $this->parseAndroidDeps($newPlugin);
+        $existingAndroidDeps = $this->parseAndroidDeps($existing);
+
+        foreach ($newAndroidDeps as $artifact => $version) {
+            if (isset($existingAndroidDeps[$artifact]) && $existingAndroidDeps[$artifact] !== $version) {
+                $conflicts[] = "Android dependency '{$artifact}' version conflict: {$version} vs {$existingAndroidDeps[$artifact]} (from '{$existing->name}')";
+            }
+        }
+
+        // CocoaPods
+        $newPods = $this->parsePodDeps($newPlugin);
+        $existingPods = $this->parsePodDeps($existing);
+
+        foreach ($newPods as $podName => $version) {
+            if ($version !== null && isset($existingPods[$podName]) && $existingPods[$podName] !== null && $existingPods[$podName] !== $version) {
+                $conflicts[] = "CocoaPods dependency '{$podName}' version conflict: {$version} vs {$existingPods[$podName]} (from '{$existing->name}')";
+            }
+        }
+
+        // Swift Packages
+        $newSwiftPkgs = $this->parseSwiftPackageDeps($newPlugin);
+        $existingSwiftPkgs = $this->parseSwiftPackageDeps($existing);
+
+        foreach ($newSwiftPkgs as $url => $version) {
+            if ($version !== null && isset($existingSwiftPkgs[$url]) && $existingSwiftPkgs[$url] !== null && $existingSwiftPkgs[$url] !== $version) {
+                $conflicts[] = "Swift Package '{$url}' version conflict: {$version} vs {$existingSwiftPkgs[$url]} (from '{$existing->name}')";
+            }
+        }
+
+        return $conflicts;
+    }
+
+    /**
+     * Parse Android Gradle dependencies into artifact => version map.
+     */
+    protected function parseAndroidDeps(Plugin $plugin): array
+    {
+        $deps = [];
+        foreach ($plugin->getAndroidDependencies() as $type => $libraries) {
+            foreach ($libraries as $library) {
+                $parts = explode(':', $library);
+                if (count($parts) >= 3) {
+                    $deps[$parts[0].':'.$parts[1]] = $parts[2];
+                }
+            }
+        }
+
+        return $deps;
+    }
+
+    /**
+     * Parse CocoaPods dependencies into name => version map.
+     */
+    protected function parsePodDeps(Plugin $plugin): array
+    {
+        $deps = [];
+        foreach ($plugin->getIosDependencies()['pods'] ?? [] as $pod) {
+            if (isset($pod['name'])) {
+                $deps[$pod['name']] = $pod['version'] ?? null;
+            }
+        }
+
+        return $deps;
+    }
+
+    /**
+     * Parse Swift Package dependencies into normalizedUrl => version map.
+     */
+    protected function parseSwiftPackageDeps(Plugin $plugin): array
+    {
+        $deps = [];
+        foreach ($plugin->getIosDependencies()['swift_packages'] ?? [] as $pkg) {
+            if (isset($pkg['url'])) {
+                $normalizedUrl = rtrim(preg_replace('/\.git$/', '', $pkg['url']), '/');
+                $deps[$normalizedUrl] = $pkg['version'] ?? null;
+            }
+        }
+
+        return $deps;
     }
 }

@@ -214,6 +214,110 @@ class PluginRegistry implements IteratorAggregate
             }
         }
 
+        return array_merge($conflicts, $this->detectDependencyConflicts($plugins));
+    }
+
+    /**
+     * Detect native dependency version conflicts between plugins.
+     *
+     * @return array<array{type: string, value: string, plugins: array<string>}>
+     */
+    protected function detectDependencyConflicts(Collection $plugins): array
+    {
+        $conflicts = [];
+
+        // Collect all dependencies grouped by artifact identifier
+        $androidDeps = [];  // keyed by "group:artifact"
+        $podDeps = [];      // keyed by pod name
+        $swiftPkgDeps = []; // keyed by normalized URL
+
+        foreach ($plugins as $plugin) {
+            // Android Gradle dependencies
+            foreach ($plugin->getAndroidDependencies() as $type => $libraries) {
+                foreach ($libraries as $library) {
+                    $parts = explode(':', $library);
+                    if (count($parts) >= 3) {
+                        $artifact = $parts[0].':'.$parts[1];
+                        $version = $parts[2];
+                        $androidDeps[$artifact][] = [
+                            'version' => $version,
+                            'plugin' => $plugin->name,
+                        ];
+                    }
+                }
+            }
+
+            // iOS dependencies
+            $iosDeps = $plugin->getIosDependencies();
+
+            // CocoaPods
+            foreach ($iosDeps['pods'] ?? [] as $pod) {
+                if (! isset($pod['name'])) {
+                    continue;
+                }
+                $podDeps[$pod['name']][] = [
+                    'version' => $pod['version'] ?? null,
+                    'plugin' => $plugin->name,
+                ];
+            }
+
+            // Swift Packages
+            foreach ($iosDeps['swift_packages'] ?? [] as $pkg) {
+                if (! isset($pkg['url'])) {
+                    continue;
+                }
+                $normalizedUrl = rtrim(preg_replace('/\.git$/', '', $pkg['url']), '/');
+                $swiftPkgDeps[$normalizedUrl][] = [
+                    'version' => $pkg['version'] ?? null,
+                    'plugin' => $plugin->name,
+                ];
+            }
+        }
+
+        // Check for Android dependency version conflicts
+        foreach ($androidDeps as $artifact => $entries) {
+            $versions = array_unique(array_column($entries, 'version'));
+            if (count($versions) > 1) {
+                $pluginNames = array_unique(array_column($entries, 'plugin'));
+                $versionList = implode(' vs ', $versions);
+                $conflicts[] = [
+                    'type' => 'android_dependency',
+                    'value' => "{$artifact} ({$versionList})",
+                    'plugins' => array_values($pluginNames),
+                ];
+            }
+        }
+
+        // Check for CocoaPods version conflicts
+        foreach ($podDeps as $podName => $entries) {
+            $versioned = array_filter($entries, fn ($e) => $e['version'] !== null);
+            $versions = array_unique(array_column($versioned, 'version'));
+            if (count($versions) > 1) {
+                $pluginNames = array_unique(array_column($entries, 'plugin'));
+                $versionList = implode(' vs ', $versions);
+                $conflicts[] = [
+                    'type' => 'ios_pod_dependency',
+                    'value' => "{$podName} ({$versionList})",
+                    'plugins' => array_values($pluginNames),
+                ];
+            }
+        }
+
+        // Check for Swift Package version conflicts
+        foreach ($swiftPkgDeps as $url => $entries) {
+            $versioned = array_filter($entries, fn ($e) => $e['version'] !== null);
+            $versions = array_unique(array_column($versioned, 'version'));
+            if (count($versions) > 1) {
+                $pluginNames = array_unique(array_column($entries, 'plugin'));
+                $versionList = implode(' vs ', $versions);
+                $conflicts[] = [
+                    'type' => 'ios_swift_package_dependency',
+                    'value' => "{$url} ({$versionList})",
+                    'plugins' => array_values($pluginNames),
+                ];
+            }
+        }
+
         return $conflicts;
     }
 

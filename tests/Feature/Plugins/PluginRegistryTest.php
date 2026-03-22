@@ -474,6 +474,200 @@ class PluginRegistryTest extends TestCase
     }
 
     /**
+     * @test
+     *
+     * Should detect Android dependency version conflicts between plugins.
+     */
+    public function it_detects_android_dependency_version_conflicts(): void
+    {
+        $pluginA = $this->createMockPlugin('vendor/plugin-a', [
+            'android' => [
+                'dependencies' => ['implementation' => ['com.google.firebase:firebase-messaging:23.1.0']],
+            ],
+        ]);
+        $pluginB = $this->createMockPlugin('vendor/plugin-b', [
+            'android' => [
+                'dependencies' => ['implementation' => ['com.google.firebase:firebase-messaging:24.0.0']],
+            ],
+        ]);
+
+        $this->mockDiscovery
+            ->shouldReceive('discover')
+            ->andReturn(collect([$pluginA, $pluginB]));
+
+        $conflicts = $this->registry->detectConflicts();
+
+        $this->assertNotEmpty($conflicts);
+        $depConflicts = array_filter($conflicts, fn ($c) => $c['type'] === 'android_dependency');
+        $this->assertCount(1, $depConflicts);
+
+        $conflict = array_values($depConflicts)[0];
+        $this->assertStringContainsString('com.google.firebase:firebase-messaging', $conflict['value']);
+        $this->assertContains('vendor/plugin-a', $conflict['plugins']);
+        $this->assertContains('vendor/plugin-b', $conflict['plugins']);
+    }
+
+    /**
+     * @test
+     *
+     * Should detect iOS CocoaPods version conflicts between plugins.
+     */
+    public function it_detects_ios_pod_version_conflicts(): void
+    {
+        $pluginA = $this->createMockPlugin('vendor/plugin-a', [
+            'ios' => [
+                'dependencies' => [
+                    'pods' => [['name' => 'FirebaseMessaging', 'version' => '10.0']],
+                ],
+            ],
+        ]);
+        $pluginB = $this->createMockPlugin('vendor/plugin-b', [
+            'ios' => [
+                'dependencies' => [
+                    'pods' => [['name' => 'FirebaseMessaging', 'version' => '11.0']],
+                ],
+            ],
+        ]);
+
+        $this->mockDiscovery
+            ->shouldReceive('discover')
+            ->andReturn(collect([$pluginA, $pluginB]));
+
+        $conflicts = $this->registry->detectConflicts();
+
+        $depConflicts = array_filter($conflicts, fn ($c) => $c['type'] === 'ios_pod_dependency');
+        $this->assertCount(1, $depConflicts);
+
+        $conflict = array_values($depConflicts)[0];
+        $this->assertStringContainsString('FirebaseMessaging', $conflict['value']);
+    }
+
+    /**
+     * @test
+     *
+     * Should detect iOS Swift Package version conflicts between plugins.
+     */
+    public function it_detects_ios_swift_package_version_conflicts(): void
+    {
+        $pluginA = $this->createMockPlugin('vendor/plugin-a', [
+            'ios' => [
+                'dependencies' => [
+                    'swift_packages' => [
+                        ['url' => 'https://github.com/example/package.git', 'version' => '1.0.0'],
+                    ],
+                ],
+            ],
+        ]);
+        $pluginB = $this->createMockPlugin('vendor/plugin-b', [
+            'ios' => [
+                'dependencies' => [
+                    'swift_packages' => [
+                        ['url' => 'https://github.com/example/package', 'version' => '2.0.0'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockDiscovery
+            ->shouldReceive('discover')
+            ->andReturn(collect([$pluginA, $pluginB]));
+
+        $conflicts = $this->registry->detectConflicts();
+
+        $depConflicts = array_filter($conflicts, fn ($c) => $c['type'] === 'ios_swift_package_dependency');
+        $this->assertCount(1, $depConflicts);
+
+        $conflict = array_values($depConflicts)[0];
+        $this->assertStringContainsString('github.com/example/package', $conflict['value']);
+    }
+
+    /**
+     * @test
+     *
+     * Should allow identical dependencies across plugins without conflict.
+     */
+    public function it_allows_identical_dependencies_across_plugins(): void
+    {
+        $pluginA = $this->createMockPlugin('vendor/plugin-a', [
+            'android' => [
+                'dependencies' => ['implementation' => ['com.google.firebase:firebase-core:21.0.0']],
+            ],
+            'ios' => [
+                'dependencies' => [
+                    'pods' => [['name' => 'FirebaseCore', 'version' => '10.0']],
+                    'swift_packages' => [
+                        ['url' => 'https://github.com/example/shared', 'version' => '1.0.0'],
+                    ],
+                ],
+            ],
+        ]);
+        $pluginB = $this->createMockPlugin('vendor/plugin-b', [
+            'android' => [
+                'dependencies' => ['implementation' => ['com.google.firebase:firebase-core:21.0.0']],
+            ],
+            'ios' => [
+                'dependencies' => [
+                    'pods' => [['name' => 'FirebaseCore', 'version' => '10.0']],
+                    'swift_packages' => [
+                        ['url' => 'https://github.com/example/shared', 'version' => '1.0.0'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockDiscovery
+            ->shouldReceive('discover')
+            ->andReturn(collect([$pluginA, $pluginB]));
+
+        $conflicts = $this->registry->detectConflicts();
+
+        $depConflicts = array_filter($conflicts, fn ($c) => in_array($c['type'], [
+            'android_dependency', 'ios_pod_dependency', 'ios_swift_package_dependency',
+        ]));
+        $this->assertEmpty($depConflicts);
+    }
+
+    /**
+     * @test
+     *
+     * Should not conflict when pods have no version constraints.
+     */
+    public function it_ignores_dependencies_without_versions(): void
+    {
+        $pluginA = $this->createMockPlugin('vendor/plugin-a', [
+            'ios' => [
+                'dependencies' => [
+                    'pods' => [['name' => 'SomePod']],
+                    'swift_packages' => [
+                        ['url' => 'https://github.com/example/pkg'],
+                    ],
+                ],
+            ],
+        ]);
+        $pluginB = $this->createMockPlugin('vendor/plugin-b', [
+            'ios' => [
+                'dependencies' => [
+                    'pods' => [['name' => 'SomePod']],
+                    'swift_packages' => [
+                        ['url' => 'https://github.com/example/pkg'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockDiscovery
+            ->shouldReceive('discover')
+            ->andReturn(collect([$pluginA, $pluginB]));
+
+        $conflicts = $this->registry->detectConflicts();
+
+        $depConflicts = array_filter($conflicts, fn ($c) => in_array($c['type'], [
+            'ios_pod_dependency', 'ios_swift_package_dependency',
+        ]));
+        $this->assertEmpty($depConflicts);
+    }
+
+    /**
      * Helper method to create a mock Plugin instance.
      */
     private function createMockPlugin(string $name, array $manifestData = []): Plugin
