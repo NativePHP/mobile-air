@@ -149,7 +149,25 @@ return [
         'storage/framework/sessions',
         'storage/framework/cache',
         'storage/framework/testing',
-        'storage/logs/laravel.log',
+        'storage/logs/laravel.log'
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Runtime Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Controls the persistent PHP runtime behavior. In 'persistent' mode,
+    | Laravel boots once and the kernel is reused across requests (~5-30ms
+    | per dispatch instead of ~200-300ms). Falls back to 'classic' mode
+    | (full init/shutdown per request) if persistent boot fails.
+    |
+    */
+
+    'runtime' => [
+        'mode' => 'persistent', // 'classic' or 'persistent'
+        'reset_instances' => true,
+        'gc_between_dispatches' => false,
     ],
 
     /*
@@ -204,7 +222,7 @@ return [
         |          'dark'  - Dark icons
         |
         */
-        'status_bar_style' => env('NATIVEPHP_ANDROID_STATUS_BAR_STYLE', 'auto'),
+        'status_bar_style' => 'auto',
 
         /*
         |--------------------------------------------------------------------------
@@ -325,37 +343,6 @@ return [
         'api_key_id' => env('APP_STORE_API_KEY_ID'),
         'api_issuer_id' => env('APP_STORE_API_ISSUER_ID'),
         'app_name' => env('APP_STORE_APP_NAME'),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Permissions
-    |--------------------------------------------------------------------------
-    |
-    | Here you may enable or disable specific native features for your app.
-    | Setting a permission to true allows NativePHP to request the necessary
-    | access from the operating system at runtime (e.g., for NFC, biometrics,
-    | or push notifications).
-    |
-    | For iOS, you can also provide a custom string that explains why your
-    | app needs this permission. This text will be shown to users when they
-    | are prompted to grant access. If you provide a string, the permission
-    | will be enabled automatically.
-    |
-    | Android will interpret any string value as 'true', but the custom text
-    | is only used on iOS (Android doesn't support permission reasons).
-    |
-    | Examples:
-    |   'camera' => true,  // Uses default message
-    |   'camera' => 'We need camera access to scan QR codes for login.',
-    |   'camera' => false, // Permission disabled
-    |
-    | Make sure you run `php artisan native:install --force` after changing.
-    |
-    */
-
-    'permissions' => [
-        //
     ],
 
     /*

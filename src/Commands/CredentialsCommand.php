@@ -16,7 +16,7 @@ class CredentialsCommand extends Command
         CreatesAndroidCredentials::addCredentialsToGitignore insteadof CreatesIosCredentials;
     }
 
-    protected $signature = 'native:credentials {platform? : The platform to generate credentials for (android, ios, or both)} {--reset : Generate new keystore and PEM certificate for Google Play Console reset}';
+    protected $signature = 'native:credentials {platform? : The platform to generate credentials for (android/a, ios/i, or both)} {--reset : Generate new keystore and PEM certificate for Google Play Console reset}';
 
     protected $description = 'Generate credentials for iOS and Android platforms';
 
@@ -26,8 +26,16 @@ class CredentialsCommand extends Command
 
         $platform = $this->argument('platform');
 
+        if ($platform) {
+            $platform = match (strtolower($platform)) {
+                'a' => 'android',
+                'i' => 'ios',
+                default => $platform,
+            };
+        }
+
         if ($platform && ! in_array($platform, ['android', 'ios', 'both'])) {
-            $this->error('Invalid platform. Please specify "android", "ios", or "both".');
+            $this->error('Invalid platform. Please specify "android" (a), "ios" (i), or "both".');
 
             return;
         }

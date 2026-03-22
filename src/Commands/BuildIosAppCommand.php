@@ -125,6 +125,8 @@ class BuildIosAppCommand extends Command
         $this->installIosSplashScreen();
         $this->installGoogleServicesPlist();
 
+        $this->updateIcuConfiguration();
+
         // Compile plugins AFTER core config so plugin entries (like info_plist)
         // aren't overwritten by updateInfoPlistFiles()
         if (! $this->compileIosPlugins()) {
@@ -138,6 +140,31 @@ class BuildIosAppCommand extends Command
         $this->resolveSwiftPackages();
 
         return true;
+    }
+
+    private function updateIcuConfiguration(): void
+    {
+        // Check if ICU libraries exist in the project
+        $libDir = $this->basePath.'/Libraries/iphoneos';
+        if (! file_exists($libDir.'/libicudata.a')) {
+            return;
+        }
+
+        $projectPath = $this->xcodeProjectPath.'/project.pbxproj';
+        $contents = file_get_contents($projectPath);
+
+        // Add ICU linker flags to OTHER_LDFLAGS if not already present
+        if (! str_contains($contents, '-licudata')) {
+            $contents = preg_replace(
+                '/OTHER_LDFLAGS = \(\s*"\$\(inherited\)",\s*"-lresolv",\s*\);/',
+                "OTHER_LDFLAGS = (\n\t\t\t\t\t\"\$(inherited)\",\n\t\t\t\t\t\"-lresolv\",\n\t\t\t\t\t\"-licui18n\",\n\t\t\t\t\t\"-licuuc\",\n\t\t\t\t\t\"-licudata\",\n\t\t\t\t\t\"-licuio\",\n\t\t\t\t);",
+                $contents
+            );
+
+            file_put_contents($projectPath, $contents);
+        }
+
+        $this->components->twoColumnDetail('ICU support', 'Enabled');
     }
 
     private function copyLaravelAppIntoIosApp()
@@ -893,6 +920,24 @@ class BuildIosAppCommand extends Command
 
         $versionFilePath = dirname($zipPath).'/bundled.version';
         file_put_contents($versionFilePath, $appVersion);
+
+        // Write bundle_meta.json for fast boot-time metadata reads (matches Android PreparesBuild)
+        $bifrostAppId = null;
+        $envPath = base_path('.env');
+        if (file_exists($envPath)) {
+            $envContent = file_get_contents($envPath);
+            if (preg_match('/BIFROST_APP_ID=(.+)/', $envContent, $matches)) {
+                $bifrostAppId = trim($matches[1]);
+            }
+        }
+
+        $bundleMeta = json_encode([
+            'version' => $appVersion,
+            'bifrost_app_id' => $bifrostAppId,
+            'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+        ], JSON_PRETTY_PRINT);
+
+        file_put_contents(dirname($zipPath).'/bundle_meta.json', $bundleMeta);
     }
 
     private function configureProvisioningProfile(): void

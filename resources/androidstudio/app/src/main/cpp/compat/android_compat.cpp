@@ -12,6 +12,7 @@
 #include <android/log.h>
 #include <string.h>
 #include <langinfo.h>
+#include <glob.h>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "Compat", __VA_ARGS__)
 
@@ -50,7 +51,7 @@ __attribute__((visibility("default")))
 extern "C" char* ctermid(char* s) {
     static char buf[] = "/dev/null";
     if (s) {
-        strcpy(s, buf);
+        snprintf(s, L_ctermid, "%s", buf);
         return s;
     }
     return buf;
@@ -61,11 +62,6 @@ extern "C" char* ctermid(char* s) {
 // implementations get compiled out. We provide them here since CMake
 // compiles against the app's minSdkVersion (API 24).
 #if __ANDROID_API__ < 28
-#include <glob.h>
-#include <dirent.h>
-#include <fnmatch.h>
-#include <errno.h>
-#include <stdlib.h>
 
 __attribute__((visibility("default")))
 extern "C" int glob(const char *pattern, int flags,
@@ -84,7 +80,7 @@ extern "C" int glob(const char *pattern, int flags,
 
     if (!(flags & GLOB_APPEND)) {
         pglob->gl_pathc = 0;
-        pglob->gl_pathv = nullptr;
+        pglob->gl_pathv = NULL;
     }
 
     dir_end = strrchr(pattern, '/');
@@ -112,7 +108,7 @@ extern "C" int glob(const char *pattern, int flags,
         return GLOB_NOSPACE;
     }
 
-    while ((entry = readdir(dir)) != nullptr) {
+    while ((entry = readdir(dir)) != NULL) {
         if (fnmatch(base_pattern, entry->d_name, 0) == 0) {
             if (count + 1 >= capacity) {
                 capacity *= 2;
@@ -142,11 +138,11 @@ extern "C" int glob(const char *pattern, int flags,
 
     closedir(dir);
     pglob->gl_pathc = count;
-    pglob->gl_pathv[count] = nullptr;
+    pglob->gl_pathv[count] = NULL;
 
     if (count == 0) {
         free(pglob->gl_pathv);
-        pglob->gl_pathv = nullptr;
+        pglob->gl_pathv = NULL;
         return GLOB_NOMATCH;
     }
 
@@ -156,12 +152,13 @@ extern "C" int glob(const char *pattern, int flags,
 __attribute__((visibility("default")))
 extern "C" void globfree(glob_t *pglob)
 {
+    size_t i;
     if (!pglob || !pglob->gl_pathv) return;
-    for (size_t i = 0; i < pglob->gl_pathc; i++) {
+    for (i = 0; i < pglob->gl_pathc; i++) {
         free(pglob->gl_pathv[i]);
     }
     free(pglob->gl_pathv);
-    pglob->gl_pathv = nullptr;
+    pglob->gl_pathv = NULL;
     pglob->gl_pathc = 0;
 }
 #endif /* __ANDROID_API__ < 28 */

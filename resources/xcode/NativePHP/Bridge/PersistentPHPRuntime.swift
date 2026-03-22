@@ -24,81 +24,24 @@ private func _persistent_php_shutdown()
 @_silgen_name("persistent_php_is_booted")
 private func _persistent_php_is_booted() -> Int32
 
-/// Persistent PHP Runtime for iOS.
-/// Boots the PHP interpreter once and dispatches requests via zend_eval_string().
-/// Equivalent to Android's PHPBridge persistent mode.
-///
-/// The C layer manages a dedicated pthread for all PHP work, guaranteeing
-/// TSRM thread-local storage is always valid. Swift callers can call from
-/// any thread — the C functions block until the PHP worker thread completes.
-final class PersistentPHPRuntime {
-    static let shared = PersistentPHPRuntime()
-
-    private(set) var isBooted = false
-
-    /// Serial queue for dispatch calls from WebView (prevents concurrent requests)
-    private let dispatchQueue = DispatchQueue(label: "com.nativephp.persistent-php", qos: .userInitiated)
-
-    private init() {}
-
-    /// Execute a block on the dispatch queue asynchronously.
-    /// The block will call dispatch() which internally routes to the C worker thread.
-    func executeOnPHPThreadAsync(_ block: @escaping () -> Void) {
-        dispatchQueue.async(execute: block)
-    }
-
-    /// Boot the persistent runtime. Call once during app initialization.
-    /// This boots PHP, loads Composer, and boots the Laravel kernel.
-    /// Blocks until boot is complete (work runs on dedicated C pthread).
-    func boot() -> Bool {
-        let appPath = AppUpdateManager.shared.getAppPath()
-
-        // Set environment variables before PHP boots (env vars are process-wide)
-        let storageDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let tempDir = FileManager.default.temporaryDirectory.path
-        let databaseDir = storageDir.appendingPathComponent("database").path
-
-        setenv("LARAVEL_STORAGE_PATH", storageDir.appendingPathComponent("storage").path, 1)
-        setenv("VIEW_COMPILED_PATH", storageDir.appendingPathComponent("storage/framework/views").path, 1)
-        setenv("DB_DATABASE", "\(databaseDir)/database.sqlite", 1)
-        setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
-        setenv("NATIVEPHP_PLATFORM", "ios", 1)
-        setenv("REMOTE_ADDR", "0.0.0.0", 1)
-
-        // Composer autoloader and bootstrap paths (used by persistent.php)
-        setenv("COMPOSER_AUTOLOADER_PATH", appPath + "/vendor/autoload.php", 1)
-        setenv("LARAVEL_BOOTSTRAP_PATH", appPath + "/bootstrap", 1)
-
-        // PHP INI
-        let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? ""
-        setenv("PHPRC", createPhpIni(caPath: caPath), 1)
-
-        // APP_KEY from Keychain
-        if let appKey = getAppKey() {
-            setenv("APP_KEY", appKey, 1)
-        }
-
-        let bootstrapPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
-
-        print("PersistentPHPRuntime: booting with \(bootstrapPath)")
-
-        // This blocks until the C worker thread completes boot
-        let result = _persistent_php_boot(bootstrapPath)
-
-        if result == 0 {
-            isBooted = true
-            print("PersistentPHPRuntime: boot succeeded")
-        } else {
-            print("PersistentPHPRuntime: boot FAILED (\(result))")
+            let bootError = String(cString: _persistent_php_boot_error())
+            print("PersistentPHPRuntime: boot FAILED (\(result)) error: \(bootError)")
         }
 
         return isBooted
     }
 
-    /// Dispatch a web request through the persistent runtime.
-    /// Returns the raw HTTP response (headers + body).
-    /// Blocks until the C worker thread completes the request.
-    func dispatch(request: RequestData) -> String {
+        // Detect stale state: Swift thinks we're booted but C layer disagrees
+        if isBooted && _persistent_php_is_booted() == 0 {
+            print("PersistentPHPRuntime: stale isBooted detected, attempting re-boot")
+            isBooted = false
+            let rebooted = boot()
+            if !rebooted {
+                print("PersistentPHPRuntime: re-boot failed, falling back to error response")
+                return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime re-boot failed."
+            }
+        }
+
         guard isBooted else {
             return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not booted."
         }

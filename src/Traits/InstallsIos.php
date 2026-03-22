@@ -21,6 +21,17 @@ trait InstallsIos
 
     public string $iosPath;
 
+    protected ?bool $includeIcuIos = null;
+
+    public function promptIosOptions(): void
+    {
+        if ($this->option('skip-php') && ! $this->forcing) {
+            return;
+        }
+
+        $this->includeIcuIos = (bool) $this->option('with-icu');
+    }
+
     public function setupIos(): void
     {
         $this->iosPath = base_path('nativephp/ios');
@@ -51,41 +62,41 @@ trait InstallsIos
 
     private function installPHPIos(): void
     {
-        $phpVersion = $this->detectPhpVersion();
+        $includeIcu = $this->includeIcuIos ?? false;
+        $phpVersion = $this->phpVersion;
+        $versions = $this->versionsManifest;
 
-        $branch = $this->getIosBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
-
-        $client = new Client;
-
-        try {
-            $versions = json_decode(
-                $client->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
-        } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
+        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available");
 
             return;
         }
 
-        if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries not available in {$branch} branch");
+        $iosFiles = $versions['versions'][$phpVersion]['ios'] ?? [];
 
-            return;
+        $url = null;
+        foreach ($iosFiles as $fileUrl) {
+            $isIcu = str_contains($fileUrl, '-icu.');
+            if ($includeIcu && $isIcu) {
+                $url = $fileUrl;
+                break;
+            } elseif (! $includeIcu && ! $isIcu) {
+                $url = $fileUrl;
+                break;
+            }
         }
-
-        $url = $versions['versions'][$phpVersion]['ios'][0] ?? null;
 
         if (! $url) {
-            error("No iOS binary found for PHP {$phpVersion}");
+            $variant = $includeIcu ? 'ICU' : 'non-ICU';
+            error("No {$variant} iOS binary found for PHP {$phpVersion}");
 
             return;
         }
 
         $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
+        $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
-        $cacheDir = storage_path('nativephp');
+        $cacheDir = base_path('nativephp/binaries');
         File::ensureDirectoryExists($cacheDir);
 
         $zipFilename = basename(parse_url($url, PHP_URL_PATH));
@@ -168,6 +179,22 @@ trait InstallsIos
                 File::copyDirectory($bridgeSrc, $bridgeDst);
             }
         });
+
+        // Re-copy our custom Bridge files (PHP.c, PHP.h) which contain the persistent
+        // runtime implementation — the binary ZIP ships older/template versions
+        $bridgeSrc = __DIR__.'/../../resources/xcode/Include/Bridge';
+        $bridgeDst = $this->iosPath.'/Include/Bridge';
+        if (is_dir($bridgeSrc)) {
+            File::copyDirectory($bridgeSrc, $bridgeDst);
+        }
+
+        // Store ICU preference for run command
+        $icuFlagFile = base_path('nativephp/ios/.icu-enabled');
+        if ($includeIcu) {
+            File::put($icuFlagFile, '1');
+        } elseif (File::exists($icuFlagFile)) {
+            File::delete($icuFlagFile);
+        }
 
         try {
             File::deleteDirectory($extractPath);

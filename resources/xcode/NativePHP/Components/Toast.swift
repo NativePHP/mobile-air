@@ -10,8 +10,18 @@ class ToastManager {
 
     func show(message: String, duration: TimeInterval? = nil) {
         let calculatedDuration = duration ?? calculateDuration(for: message)
-        toastQueue.append((message, calculatedDuration))
-        showNextToastIfPossible()
+
+        // UIKit operations must run on the main thread.
+        // Bridge calls from the queue worker arrive on a background pthread.
+        if Thread.isMainThread {
+            toastQueue.append((message, calculatedDuration))
+            showNextToastIfPossible()
+        } else {
+            DispatchQueue.main.async { [self] in
+                toastQueue.append((message, calculatedDuration))
+                showNextToastIfPossible()
+            }
+        }
     }
 
     private func calculateDuration(for message: String) -> TimeInterval {

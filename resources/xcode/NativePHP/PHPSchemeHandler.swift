@@ -590,9 +590,9 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                               completion: @escaping (Result<Data, Error>) -> Void) {
         // Execute on dedicated PHP thread (same thread as php_embed_init for ZTS compatibility)
         PersistentPHPRuntime.shared.executeOnPHPThreadAsync {
-            print()
-            print("\(request.method) \(request.uri)")
-            print()
+            let mode = PersistentPHPRuntime.shared.isBooted ? "PERSISTENT" : "CLASSIC"
+            let start = CFAbsoluteTimeGetCurrent()
+            NSLog("[NativePHP] [\(mode)] --> \(request.method) \(request.uri)")
 
             let response: String
             if PersistentPHPRuntime.shared.isBooted {
@@ -602,6 +602,11 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Fallback to legacy per-request mode
                 response = NativePHPApp.laravel(request: request) ?? "No response from Laravel"
             }
+
+            let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            // Extract status code from first line (e.g. "HTTP/1.1 200 OK")
+            let statusLine = response.prefix(while: { $0 != "\r" && $0 != "\n" })
+            NSLog("[NativePHP] [\(mode)] <-- \(statusLine) (\(String(format: "%.1f", elapsed))ms)")
 
             // Extract cookie headers
             let components = response.components(separatedBy: "\r\n\r\n")

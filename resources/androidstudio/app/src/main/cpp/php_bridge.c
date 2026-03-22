@@ -298,7 +298,7 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
     return response;
 }
 
-// Legacy wrapper for compatibility during transition
+// Legacy wrapper for compatibility
 char* run_php_script_once(const char* scriptPath, const char* method, const char* uri, const char* postData) {
     return run_php_request(scriptPath, method, uri, postData);
 }
@@ -331,7 +331,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     clear_collected_output();
 
     // Set env vars BEFORE php_embed_init so they're available when Laravel boots
-    // (registerFilesystems checks NATIVEPHP_RUNNING during packageBooted)
+
     setenv("NATIVEPHP_RUNNING", "true", 1);
     setenv("APP_URL", "http://127.0.0.1", 1);
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
@@ -415,11 +415,9 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
     }
 
     // Reset SAPI state from previous dispatch.
-    // We can't call php_request_startup() (it reinitializes too much),
-    // so we manually reset the flags that matter:
-    SG(headers_sent) = 0;           // Allow headers to be sent again
-    SG(post_read) = 0;              // Allow php://input to be read again
-    SG(read_post_bytes) = 0;        // Reset POST byte counter
+    SG(headers_sent) = 0;
+    SG(post_read) = 0;
+    SG(read_post_bytes) = 0;
     SG(request_info).request_method = method;
     SG(request_info).request_uri = (char *)uri;
     SG(request_info).proto_num = 1001; // HTTP/1.1
@@ -434,17 +432,15 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
         php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
         if (post_stream) {
             php_stream_write(post_stream, post, strlen(post));
-            // Rewind so PHP can read from the beginning
             php_stream_seek(post_stream, 0, SEEK_SET);
 
-            // Clean up any previous request body
             if (SG(request_info).request_body) {
                 php_stream_close(SG(request_info).request_body);
             }
             SG(request_info).request_body = post_stream;
             SG(request_info).content_length = strlen(post);
 
-            // Check both CONTENT_TYPE and HTTP_CONTENT_TYPE (Kotlin prefixes all headers with HTTP_)
+
             const char *content_type = getenv("CONTENT_TYPE");
             if (!content_type) content_type = getenv("HTTP_CONTENT_TYPE");
             if (content_type && strstr(content_type, "json")) {
@@ -462,7 +458,7 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
     }
 
     // Build the dispatch call — Runtime::dispatch() handles everything
-    // We must update $_SERVER directly since setenv() in C doesn't affect PHP's $_SERVER
+
     char eval_code[8192];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
@@ -481,13 +477,13 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
         "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
         "\n"
         "    // Sync ALL env vars into $_SERVER (C setenv() doesn't update PHP $_SERVER)\n"
-        "    // getenv() without args returns all current process env vars including those set by C\n"
+
         "    foreach (getenv() as $__k => $__v) {\n"
         "        $_SERVER[$__k] = $__v;\n"
         "    }\n"
         "\n"
         "    // Ensure CONTENT_TYPE is set without HTTP_ prefix (CGI convention)\n"
-        "    // Symfony/Laravel reads $_SERVER['CONTENT_TYPE'], not HTTP_CONTENT_TYPE\n"
+
         "    if (isset($_SERVER['HTTP_CONTENT_TYPE'])) {\n"
         "        $_SERVER['CONTENT_TYPE'] = $_SERVER['HTTP_CONTENT_TYPE'];\n"
         "    }\n"
@@ -817,7 +813,7 @@ JNIEXPORT jstring JNICALL native_handle_request(
     return result;
 }
 
-// JNI entry points for runtime lifecycle (kept for Kotlin compat)
+// JNI entry points for runtime lifecycle
 JNIEXPORT void JNICALL native_runtime_init(JNIEnv *env, jobject thiz) {
     if (g_bridge_instance) {
         (*env)->DeleteGlobalRef(env, g_bridge_instance);
@@ -933,7 +929,6 @@ static int worker_embed_init(void) {
         return FAILURE;
     }
 
-    // nativephp extension self-registers via static linking
 
     LOGI("worker_embed_init: worker PHP context ready");
     return SUCCESS;
@@ -1270,6 +1265,7 @@ static JNINativeMethod gMethods[] = {
         {"nativeWorkerBoot","(Ljava/lang/String;)I",(void *) native_worker_boot},
         {"nativeWorkerArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_worker_artisan},
         {"nativeWorkerShutdown","()V",(void *) native_worker_shutdown},
+
 
         // Scheduler (background tasks via WorkManager) methods
         {"nativeSchedulerBoot","(Ljava/lang/String;)I",(void *) native_scheduler_boot},

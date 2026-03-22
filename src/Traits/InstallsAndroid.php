@@ -15,11 +15,6 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
-    private function getBinaryBranch(): string
-    {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
-    }
-
     protected ?bool $includeIcu = null;
 
     public function promptAndroidOptions(): void
@@ -87,40 +82,28 @@ trait InstallsAndroid
     private function installPHPAndroid(): void
     {
         $includeIcu = $this->includeIcu ?? false;
-        $phpVersion = $this->detectPhpVersion();
+        $phpVersion = $this->phpVersion;
+        $versions = $this->versionsManifest;
 
-        $branch = $this->getBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
-
-        $client = new Client;
-
-        try {
-            $versions = json_decode(
-                $client->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
-        } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
-
-            return;
-        }
-
-        if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries not available in {$branch} branch");
+        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available");
 
             return;
         }
 
         $androidFiles = $versions['versions'][$phpVersion]['android'] ?? [];
 
-        // Filter by ICU preference
-        $candidates = array_filter($androidFiles, function ($fileUrl) use ($includeIcu) {
+        $url = null;
+        foreach ($androidFiles as $fileUrl) {
             $isIcu = str_contains($fileUrl, '-icu.');
-
-            return $includeIcu ? $isIcu : ! $isIcu;
-        });
-
-        $url = reset($candidates) ?: null;
+            if ($includeIcu && $isIcu) {
+                $url = $fileUrl;
+                break;
+            } elseif (! $includeIcu && ! $isIcu) {
+                $url = $fileUrl;
+                break;
+            }
+        }
 
         if (! $url) {
             $variant = $includeIcu ? 'ICU' : 'non-ICU';
@@ -129,7 +112,7 @@ trait InstallsAndroid
             return;
         }
 
-        $cacheDir = storage_path('nativephp');
+        $cacheDir = base_path('nativephp/binaries');
         File::ensureDirectoryExists($cacheDir);
 
         $zipFilename = basename(parse_url($url, PHP_URL_PATH));

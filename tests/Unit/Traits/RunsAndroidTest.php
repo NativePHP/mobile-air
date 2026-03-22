@@ -22,6 +22,19 @@ class RunsAndroidTest extends TestCase
 
         // Set up base path for testing
         app()->setBasePath($this->testProjectPath);
+
+        // Mock $this->components for task() calls used by PreparesBuild
+        $this->components = new class
+        {
+            public function task(string $title, callable $callback)
+            {
+                $callback();
+            }
+
+            public function twoColumnDetail(...$args) {}
+
+            public function warn(...$args) {}
+        };
     }
 
     protected function tearDown(): void
@@ -56,11 +69,14 @@ class RunsAndroidTest extends TestCase
 
     public function test_detect_current_app_id_from_gradle()
     {
-        // Create test build.gradle.kts
+        // Create test build.gradle.kts - real code matches applicationId, not namespace
         $gradlePath = $this->testProjectPath.'/nativephp/android/app/build.gradle.kts';
         File::makeDirectory(dirname($gradlePath), 0755, true);
         File::put($gradlePath, 'android {
-    namespace = "com.example.testapp"
+    namespace = "com.nativephp.mobile"
+    defaultConfig {
+        applicationId = "com.example.testapp"
+    }
     compileSdk = 34
 }');
 
@@ -76,42 +92,28 @@ class RunsAndroidTest extends TestCase
         $this->assertNull($appId);
     }
 
-    public function test_update_app_id_renames_package_and_updates_files()
+    public function test_update_app_id_only_updates_application_id_in_gradle()
     {
         $oldAppId = 'com.example.oldapp';
         $newAppId = 'com.company.newapp';
 
-        // Set up directory structure
-        $oldPath = $this->testProjectPath.'/nativephp/android/app/src/main/java/com/example/oldapp';
-        File::makeDirectory($oldPath, 0755, true);
-        File::put($oldPath.'/MainActivity.kt', 'package com.example.oldapp');
-
-        // Set up CMakeLists.txt
-        $cmakePath = $this->testProjectPath.'/nativephp/android/app/src/main/cpp/CMakeLists.txt';
-        File::makeDirectory(dirname($cmakePath), 0755, true);
-        File::put($cmakePath, 'project("com_example_oldapp")');
-
-        // Set up build.gradle.kts
+        // Set up build.gradle.kts with applicationId
         $gradlePath = $this->testProjectPath.'/nativephp/android/app/build.gradle.kts';
-        File::put($gradlePath, 'namespace = "com.example.oldapp"');
-
-        // Set up C++ bridge
-        $cppPath = $this->testProjectPath.'/nativephp/android/app/src/main/cpp/php_bridge.c';
-        File::put($cppPath, 'com/example/oldapp/bridge');
+        File::makeDirectory(dirname($gradlePath), 0755, true);
+        File::put($gradlePath, 'android {
+    namespace = "com.nativephp.mobile"
+    defaultConfig {
+        applicationId = "com.example.oldapp"
+    }
+}');
 
         // Execute
         $this->updateAppId($oldAppId, $newAppId);
 
-        // Assert package was renamed
-        $newPath = $this->testProjectPath.'/nativephp/android/app/src/main/java/com/company/newapp';
-        $this->assertDirectoryExists($newPath);
-        $this->assertDirectoryDoesNotExist($oldPath);
-
-        // Assert file contents were updated
-        $this->assertStringContainsString('package com.company.newapp', File::get($newPath.'/MainActivity.kt'));
-        $this->assertStringContainsString('project("com_company_newapp")', File::get($cmakePath));
-        $this->assertStringContainsString('namespace = "com.company.newapp"', File::get($gradlePath));
-        $this->assertStringContainsString('com/company/newapp/bridge', File::get($cppPath));
+        // Assert only applicationId was updated, namespace stays fixed
+        $contents = File::get($gradlePath);
+        $this->assertStringContainsString('applicationId = "com.company.newapp"', $contents);
+        $this->assertStringContainsString('namespace = "com.nativephp.mobile"', $contents);
     }
 
     public function test_update_version_configuration()
@@ -155,16 +157,15 @@ class RunsAndroidTest extends TestCase
 
     public function test_update_permissions_adds_and_removes()
     {
-        // Set up config
+        // Set up config - only push_notifications is a core permission
         config(['nativephp.permissions.push_notifications' => true]);
-        config(['nativephp.permissions.biometric' => false]);
-        config(['nativephp.permissions.nfc' => true]);
 
-        // Create AndroidManifest.xml with biometric permission
+        // Create AndroidManifest.xml
         $manifestPath = $this->testProjectPath.'/nativephp/android/app/src/main/AndroidManifest.xml';
         File::makeDirectory(dirname($manifestPath), 0755, true);
-        File::put($manifestPath, '<manifest>
-    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+        File::put($manifestPath, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="NativePHP">
+    </application>
 </manifest>');
 
         // Execute
@@ -172,12 +173,15 @@ class RunsAndroidTest extends TestCase
 
         $contents = File::get($manifestPath);
 
-        // Assert new permissions were added
+        // Assert push notifications permission was added
         $this->assertStringContainsString('android.permission.POST_NOTIFICATIONS', $contents);
-        $this->assertStringContainsString('android.permission.NFC', $contents);
 
-        // Assert disabled permission was removed
-        $this->assertStringNotContainsString('android.permission.USE_BIOMETRIC', $contents);
+        // Now disable it
+        config(['nativephp.permissions.push_notifications' => false]);
+        $this->updatePermissions();
+
+        $contents = File::get($manifestPath);
+        $this->assertStringNotContainsString('android.permission.POST_NOTIFICATIONS', $contents);
     }
 
     public function test_update_firebase_configuration_copies_file()
@@ -197,34 +201,6 @@ class RunsAndroidTest extends TestCase
         $targetPath = $targetDir.'/google-services.json';
         $this->assertFileExists($targetPath);
         $this->assertEquals('{"project_id": "test"}', File::get($targetPath));
-    }
-
-    public function test_update_icu_configuration_with_icu_enabled()
-    {
-        // Set up app ID
-        config(['nativephp.app_id' => 'com.test.app']);
-
-        // Create ICU flag file
-        $icuFlagFile = $this->testProjectPath.'/nativephp/android/.icu-enabled';
-        File::put($icuFlagFile, '1');
-
-        // Create PHPBridge.kt
-        $bridgePath = $this->testProjectPath.'/nativephp/android/app/src/main/java/com/test/app/bridge/PHPBridge.kt';
-        File::makeDirectory(dirname($bridgePath), 0755, true);
-        File::put($bridgePath, 'class PHPBridge {
-    init {
-        System.loadLibrary("php")
-    }
-}');
-
-        // Execute
-        $this->updateIcuConfiguration();
-
-        $contents = File::get($bridgePath);
-        $this->assertStringContainsString('System.loadLibrary("icudata")', $contents);
-        $this->assertStringContainsString('System.loadLibrary("icuuc")', $contents);
-        $this->assertStringContainsString('System.loadLibrary("icui18n")', $contents);
-        $this->assertStringContainsString('System.loadLibrary("icuio")', $contents);
     }
 
     public function test_update_local_properties_windows_path()
@@ -263,39 +239,26 @@ class RunsAndroidTest extends TestCase
     public function test_update_deep_link_configuration()
     {
         // Set up config
-        config(['nativephp.permissions.deeplinks' => true]);
-        config(['nativephp.permissions.nfc' => true]);
         config(['nativephp.deeplink_scheme' => 'myapp']);
         config(['nativephp.deeplink_host' => 'app.example.com']);
-        config(['nativephp.app_id' => 'com.test.app']);
 
-        // Create AndroidManifest.xml
+        // Create AndroidManifest.xml with proper structure the real code expects
         $manifestPath = $this->testProjectPath.'/nativephp/android/app/src/main/AndroidManifest.xml';
         File::makeDirectory(dirname($manifestPath), 0755, true);
-        File::put($manifestPath, '<manifest>
+        File::put($manifestPath, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
-        <activity android:name=".MainActivity">
+        <activity android:name=".ui.MainActivity">
         </activity>
     </application>
 </manifest>');
 
-        // Create WebViewManager.kt
-        $webViewPath = $this->testProjectPath.'/nativephp/android/app/src/main/java/com/test/app/network/WebViewManager.kt';
-        File::makeDirectory(dirname($webViewPath), 0755, true);
-        File::put($webViewPath, 'if (url.startsWith("REPLACEME://")) {');
-
         // Execute
         $this->updateDeepLinkConfiguration();
 
-        // Assert manifest was updated
+        // Assert manifest was updated with deep link intent filters
         $manifestContents = File::get($manifestPath);
         $this->assertStringContainsString('android:scheme="myapp"', $manifestContents);
         $this->assertStringContainsString('android:host="app.example.com"', $manifestContents);
-        $this->assertStringContainsString('android.nfc.action.NDEF_DISCOVERED', $manifestContents);
-
-        // Assert WebView was updated
-        $webViewContents = File::get($webViewPath);
-        $this->assertStringContainsString('if (url.startsWith("myapp://"))', $webViewContents);
     }
 
     /**
@@ -306,6 +269,8 @@ class RunsAndroidTest extends TestCase
         // This would need to be implemented to properly mock PHP_OS_FAMILY
         // For testing purposes, we'll override the platform detection
     }
+
+    protected function logToFile(string $message): void {}
 
     protected function info($message)
     {

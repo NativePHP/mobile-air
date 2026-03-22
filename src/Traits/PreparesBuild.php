@@ -307,23 +307,23 @@ trait PreparesBuild
                 exit(1);
             }
 
-            // Write bundle_meta.json so the app can read version/bifrost info
-            // without scanning the entire ZIP at boot time
-            $envPath = $tempDir.DIRECTORY_SEPARATOR.'.env';
+            // Write bundle_meta.json alongside the ZIP for fast boot-time metadata reads
+            $assetsDir = dirname($destinationZip);
             $bifrostAppId = null;
-            if (file_exists($envPath)) {
-                $envContent = file_get_contents($envPath);
-                if (preg_match('/^BIFROST_APP_ID=(.+)$/m', $envContent, $m)) {
-                    $bifrostAppId = trim($m[1], " \t\n\r\"'");
+            if (file_exists($source.DIRECTORY_SEPARATOR.'.env')) {
+                $envContent = file_get_contents($source.DIRECTORY_SEPARATOR.'.env');
+                if (preg_match('/BIFROST_APP_ID=(.+)/', $envContent, $matches)) {
+                    $bifrostAppId = trim($matches[1]);
                 }
             }
-
-            $metaPath = dirname($destinationZip).DIRECTORY_SEPARATOR.'bundle_meta.json';
-            file_put_contents($metaPath, json_encode([
+            $bundleMeta = json_encode([
                 'version' => $version,
-                'bifrost_app_id' => $bifrostAppId ?: null,
-            ]));
-            $this->logToFile("  Wrote bundle_meta.json: version=$version, bifrost_app_id=".($bifrostAppId ?: 'null'));
+                'bifrost_app_id' => $bifrostAppId,
+                'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+            ], JSON_PRETTY_PRINT);
+            file_put_contents($assetsDir.DIRECTORY_SEPARATOR.'bundle_meta.json', $bundleMeta);
+            $runtimeMode = config('nativephp.runtime.mode', 'persistent');
+            $this->logToFile("  Written bundle_meta.json: version=$version, bifrost=".($bifrostAppId ?? 'null').", runtime_mode=$runtimeMode");
 
             $sizeMB = round(filesize($destinationZip) / 1024 / 1024, 2);
             $this->logToFile("  Bundle size: {$sizeMB} MB");

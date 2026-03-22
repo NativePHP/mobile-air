@@ -16,7 +16,7 @@ class CheckBuildNumberCommand extends Command
     }
 
     protected $signature = 'native:check-build-number 
-        {platform : The platform to check (android|ios|both)}
+        {platform : The platform to check (android/a, ios/i, or both)}
         {--google-service-key= : Path to Google Service Account JSON key file (Android)}
         {--api-key= : Path to App Store Connect API key file (iOS)}
         {--update : Update local build number to store latest + 1}
@@ -26,10 +26,14 @@ class CheckBuildNumberCommand extends Command
 
     public function handle(): void
     {
-        $platform = $this->argument('platform');
+        $platform = match (strtolower($this->argument('platform'))) {
+            'a' => 'android',
+            'i' => 'ios',
+            default => $this->argument('platform'),
+        };
 
         if (! in_array($platform, ['android', 'ios', 'both'])) {
-            $this->error('❌ Platform must be android, ios, or both');
+            $this->error('❌ Platform must be android (a), ios (i), or both');
 
             return;
         }

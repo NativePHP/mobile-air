@@ -26,7 +26,8 @@ class LaravelEnvironment(private val context: Context) {
     // Data class to hold bundle metadata read from ZIP
     private data class BundleMetadata(
         val version: String?,
-        val bifrostAppId: String?
+        val bifrostAppId: String?,
+        val runtimeMode: String?
     )
 
     // Data class for version information with utility methods
@@ -82,6 +83,23 @@ class LaravelEnvironment(private val context: Context) {
 
         init {
             System.loadLibrary("php_wrapper")
+        }
+
+        /**
+         * Read runtime_mode from bundle_meta.json. Returns "persistent" (default) or "classic".
+         */
+        fun getRuntimeMode(context: Context): String {
+            return try {
+                val json = context.assets.open(BUNDLE_META).bufferedReader().use { it.readText() }
+                val obj = JSONObject(json)
+                if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) {
+                    obj.getString("runtime_mode")
+                } else {
+                    "persistent"
+                }
+            } catch (e: Exception) {
+                "persistent"
+            }
         }
 
         /**
@@ -302,8 +320,9 @@ class LaravelEnvironment(private val context: Context) {
             val obj = JSONObject(json)
             val version = if (obj.has("version")) obj.getString("version") else null
             val bifrostAppId = if (obj.has("bifrost_app_id") && !obj.isNull("bifrost_app_id")) obj.getString("bifrost_app_id") else null
-            Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, bifrost=$bifrostAppId")
-            val metadata = BundleMetadata(version, bifrostAppId)
+            val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
+            Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
+            val metadata = BundleMetadata(version, bifrostAppId, runtimeMode)
             bundleMetadataCache = metadata
             return metadata
         } catch (e: Exception) {
@@ -340,7 +359,7 @@ class LaravelEnvironment(private val context: Context) {
             Log.e(TAG, "Failed to read bundle metadata", e)
         }
 
-        val metadata = BundleMetadata(version, bifrostAppId)
+        val metadata = BundleMetadata(version, bifrostAppId, null)
         bundleMetadataCache = metadata
         return metadata
     }

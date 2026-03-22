@@ -1,6 +1,7 @@
 #include "php_embed.h"
 #include "PHP.h"
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <signal.h>
 #include <string.h>
 #include <stdlib.h>
@@ -186,6 +187,8 @@ static int                  php_work_int_result  = 0;
 static char                *php_work_str_result  = NULL;
 
 static int persistent_initialized = 0;
+static int worker_thread_alive = 0;
+static char *persistent_boot_error = NULL;
 
 // Forward declarations
 static void do_dispatch(const dispatch_params_t *params);
@@ -226,6 +229,7 @@ static void *php_worker_main(void *arg) {
         fprintf(stderr, "PHP-WORKER: php_embed_init FAILED\n");
         fflush(stderr);
         php_work_int_result = -1;
+        worker_thread_alive = 0;
         dispatch_semaphore_signal(php_done_sem);
         return NULL;
     }
@@ -242,11 +246,61 @@ static void *php_worker_main(void *arg) {
         php_execute_script(&fileHandle);
     } zend_end_try();
 
-    fprintf(stderr, "PHP-WORKER: bootstrap complete\n");
+
+    fprintf(stderr, "PHP-WORKER: bootstrap script executed\n");
     fflush(stderr);
 
-    persistent_initialized = 1;
-    php_work_int_result = 0;
+    // Save bootstrap output BEFORE clearing (contains error messages if boot failed)
+    char *bootstrap_output = NULL;
+    {
+        char *raw = get_collected_output();
+        if (raw && raw[0] != '\0') {
+            bootstrap_output = strdup(raw);
+            fprintf(stderr, "PHP-WORKER: bootstrap output: %.500s\n", bootstrap_output);
+            fflush(stderr);
+        }
+    }
+
+    // Verify PHP-level boot succeeded (Runtime::$booted must be true)
+    clear_output_buffer();
+    int boot_ok = 0;
+    zend_first_try {
+        zend_eval_string("echo \\Native\\Mobile\\Runtime::isBooted() ? '1' : '0';", NULL, "boot_check");
+    } zend_end_try();
+
+    char *check_output = get_collected_output();
+    if (check_output && check_output[0] == '1') {
+        boot_ok = 1;
+    }
+
+    if (boot_ok) {
+        persistent_initialized = 1;
+        php_work_int_result = 0;
+        free(bootstrap_output);
+        // Clear any previous boot error
+        if (persistent_boot_error) { free(persistent_boot_error); persistent_boot_error = NULL; }
+        fprintf(stderr, "PHP-WORKER: bootstrap complete, Runtime::isBooted() confirmed\n");
+        fflush(stderr);
+    } else {
+        // Store bootstrap output as boot error for Swift to retrieve
+        if (persistent_boot_error) { free(persistent_boot_error); }
+        persistent_boot_error = bootstrap_output;  // transfer ownership
+        fprintf(stderr, "PHP-WORKER: bootstrap ran but Runtime::isBooted() is false, shutting down\n");
+        fflush(stderr);
+        persistent_initialized = 0;
+        php_work_int_result = -2;
+
+        // Clean up PHP so a fresh boot can be attempted
+        sigset_t mask, oldmask;
+        sigfillset(&mask);
+        pthread_sigmask(SIG_BLOCK, &mask, &oldmask);
+        php_embed_shutdown();
+        pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+
+        worker_thread_alive = 0;
+        dispatch_semaphore_signal(php_done_sem);
+        return NULL;  // Exit thread — do NOT enter work loop
+    }
 
     // Signal boot complete
     dispatch_semaphore_signal(php_done_sem);
@@ -478,6 +532,7 @@ static void do_shutdown(void) {
     pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
 
     persistent_initialized = 0;
+    worker_thread_alive = 0;
 }
 
 // ── Public API (called from Swift, dispatches to PHP thread) ──
@@ -489,6 +544,18 @@ static void submit_and_wait(php_work_type_t type) {
 }
 
 int persistent_php_boot(const char *bootstrapPath) {
+    if (persistent_initialized) {
+        fprintf(stderr, "persistent_php_boot: already initialized, skipping\n");
+        fflush(stderr);
+        return 0;
+    }
+
+    if (worker_thread_alive) {
+        fprintf(stderr, "persistent_php_boot: worker thread still alive, cannot re-boot\n");
+        fflush(stderr);
+        return -3;
+    }
+
     fprintf(stderr, "persistent_php_boot: creating worker thread\n");
     fflush(stderr);
 
@@ -501,6 +568,7 @@ int persistent_php_boot(const char *bootstrapPath) {
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INITIATED, 0);
 
     int rc = pthread_create(&thread, &attr, php_worker_main, (void *)bootstrapPath);
     pthread_attr_destroy(&attr);
@@ -510,6 +578,8 @@ int persistent_php_boot(const char *bootstrapPath) {
         fflush(stderr);
         return -1;
     }
+
+    worker_thread_alive = 1;
 
     fprintf(stderr, "persistent_php_boot: waiting for boot to complete...\n");
     fflush(stderr);
@@ -569,6 +639,10 @@ void persistent_php_shutdown(void) {
 
 int persistent_php_is_booted(void) {
     return persistent_initialized;
+}
+
+const char *persistent_php_boot_error(void) {
+    return persistent_boot_error ? persistent_boot_error : "";
 }
 
 // Legacy stubs — kept for header compatibility
@@ -769,6 +843,7 @@ int worker_php_boot(const char *bootstrapPath) {
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_UTILITY, 0);
 
     int rc = pthread_create(&thread, &attr, worker_thread_main, (void *)bootstrapPath);
     pthread_attr_destroy(&attr);
@@ -1001,6 +1076,7 @@ int scheduler_php_boot(const char *bootstrapPath) {
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INITIATED, 0);
 
     int rc = pthread_create(&thread, &attr, scheduler_thread_main, (void *)bootstrapPath);
     pthread_attr_destroy(&attr);

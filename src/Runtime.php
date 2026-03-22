@@ -6,7 +6,9 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Foundation\Application;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Facade;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 class Runtime
 {
@@ -30,6 +32,13 @@ class Runtime
     public static function boot(Application $app): void
     {
         static::$app = $app;
+
+        // Bind a placeholder request so service providers that resolve 'request'
+        // during bootstrap don't fail (no real HTTP request exists yet in persistent mode)
+        if (! $app->bound('request')) {
+            $app->instance('request', Request::capture());
+        }
+
         static::$kernel = $app->make(Kernel::class);
         static::$kernel->bootstrap();
         static::$booted = true;
@@ -37,8 +46,6 @@ class Runtime
         // Load runtime config if available
         $runtimeConfig = $app['config']->get('nativephp.runtime', []);
         static::$config = array_merge(static::$config, $runtimeConfig);
-
-        error_log('PerfTiming: Runtime::boot() — Laravel kernel booted and stored');
     }
 
     /**
@@ -51,50 +58,30 @@ class Runtime
             throw new \RuntimeException('Runtime not booted. Call Runtime::boot() first.');
         }
 
-        $start = microtime(true);
-
         // Reset state from previous dispatch
         static::reset();
-
-        $resetTime = microtime(true);
 
         // Bind fresh request into the container
         static::$app->instance('request', $request);
         Facade::clearResolvedInstance('request');
 
+        // Set originalRequest to current request — prevents stale Livewire
+        // PersistentMiddleware state from producing a Request with empty method
+        static::$app->instance('originalRequest', $request);
+
         // Handle the request through the kernel
-        // We wrap in try/catch because the kernel's own error handler may fail
-        // (e.g. Collision dev dependency missing in production bundle)
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
-            error_log("PerfTiming: Runtime::dispatch() kernel->handle() threw: " . $e->getMessage());
-
-            // Build a plain error response instead of relying on the exception handler
-            $response = new \Illuminate\Http\Response(
-                'Error: ' . $e->getMessage() . "\n" . $e->getTraceAsString(),
+            $response = new Response(
+                'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
                 500,
                 ['Content-Type' => 'text/plain']
             );
         }
 
-        $handleTime = microtime(true);
-
         // Terminate (fires terminable middleware)
-        try {
-            static::$kernel->terminate($request, $response);
-        } catch (\Throwable $e) {
-            error_log("PerfTiming: Runtime::dispatch() terminate threw: " . $e->getMessage());
-        }
-
-        $terminateTime = microtime(true);
-
-        $resetMs = round(($resetTime - $start) * 1000, 1);
-        $handleMs = round(($handleTime - $resetTime) * 1000, 1);
-        $terminateMs = round(($terminateTime - $handleTime) * 1000, 1);
-        $totalMs = round(($terminateTime - $start) * 1000, 1);
-
-        error_log("PerfTiming: Runtime::dispatch() reset={$resetMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
+        static::$kernel->terminate($request, $response);
 
         return $response;
     }
@@ -129,7 +116,7 @@ class Runtime
             try {
                 static::$app->make('livewire')->flushState();
             } catch (\Throwable $e) {
-                error_log('Runtime::reset() Livewire flushState failed: ' . $e->getMessage());
+                // Livewire flushState can fail if not fully initialized
             }
         }
 
@@ -162,7 +149,7 @@ class Runtime
             throw new \RuntimeException('Runtime not booted. Call Runtime::boot() first.');
         }
 
-        $output = new \Symfony\Component\Console\Output\BufferedOutput;
+        $output = new BufferedOutput;
 
         // Parse command and arguments
         $parts = str_getcsv($command, ' ');
@@ -172,15 +159,16 @@ class Runtime
         foreach ($parts as $part) {
             if (str_starts_with($part, '--')) {
                 $kv = explode('=', substr($part, 2), 2);
-                $params['--' . $kv[0]] = $kv[1] ?? true;
+                $params['--'.$kv[0]] = $kv[1] ?? true;
             } else {
                 $params[] = $part;
             }
         }
 
-        \Illuminate\Support\Facades\Artisan::call($commandName, array_slice($params, 1), $output);
+        Artisan::call($commandName, array_slice($params, 1), $output);
+        $result = $output->fetch();
 
-        return $output->fetch();
+        return $result;
     }
 
     /**
@@ -201,8 +189,6 @@ class Runtime
         static::$kernel = null;
         static::$booted = false;
         static::$resetCallbacks = [];
-
-        error_log('PerfTiming: Runtime::shutdown() — persistent runtime torn down');
     }
 
     public static function isBooted(): bool

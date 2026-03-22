@@ -12,13 +12,20 @@ class OpenProjectCommand extends Command
 {
     use OpensAndroidProject, OpensIosProject;
 
-    protected $signature = 'native:open {os? : ios|android}';
+    protected $signature = 'native:open {os? : Platform to open (android/a or ios/i)}';
 
     protected $description = 'Open the Android Studio or Xcode project';
 
     public function handle(): void
     {
         $os = $this->argument('os');
+
+        if ($os && in_array(strtolower($os), ['a', 'i'])) {
+            $os = match (strtolower($os)) {
+                'a' => 'android',
+                'i' => 'ios',
+            };
+        }
 
         if (! $os) {
             // Check which platform folders exist

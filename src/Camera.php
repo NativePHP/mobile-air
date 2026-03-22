@@ -2,6 +2,12 @@
 
 namespace Native\Mobile;
 
+use Native\Mobile\Events\Camera\PhotoCancelled;
+use Native\Mobile\Events\Camera\PhotoTaken;
+use Native\Mobile\Events\Camera\VideoCancelled;
+use Native\Mobile\Events\Camera\VideoRecorded;
+use Native\Mobile\Events\Gallery\MediaSelected;
+
 class Camera
 {
     /**
@@ -12,8 +18,8 @@ class Camera
      *
      * @param  array  $options  Capture options
      *
-     * @see \Native\Mobile\Events\Camera\PhotoTaken
-     * @see \Native\Mobile\Events\Camera\PhotoCancelled
+     * @see PhotoTaken
+     * @see PhotoCancelled
      */
     public function getPhoto(array $options = []): PendingPhotoCapture
     {
@@ -30,7 +36,7 @@ class Camera
      * @param  bool  $multiple  Allow multiple selection (default: false)
      * @param  int  $max_items  Maximum items when multiple=true (default: 10)
      *
-     * @see \Native\Mobile\Events\Gallery\MediaSelected
+     * @see MediaSelected
      */
     public function pickImages(string $media_type = 'all', bool $multiple = false, int $max_items = 10): PendingMediaPicker
     {
@@ -52,8 +58,8 @@ class Camera
      *
      * @param  array  $options  Recording options
      *
-     * @see \Native\Mobile\Events\Camera\VideoRecorded
-     * @see \Native\Mobile\Events\Camera\VideoCancelled
+     * @see VideoRecorded
+     * @see VideoCancelled
      */
     public function recordVideo(array $options = []): PendingVideoRecorder
     {

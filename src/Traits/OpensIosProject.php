@@ -13,7 +13,7 @@ trait OpensIosProject
         $projectPath = is_dir($workspacePath) ? $workspacePath : base_path('nativephp/ios/NativePHP.xcodeproj');
 
         if (! is_dir($projectPath)) {
-            $this->error('Xcode project not found at '.$projectPath);
+            $this->error('Xcode workspace not found at '.$projectPath);
 
             return;
         }
@@ -29,7 +29,7 @@ trait OpensIosProject
                 return;
             }
 
-            $this->info('Opening Xcode project...');
+            $this->info('Opening Xcode workspace...');
         } catch (\Throwable $e) {
             $this->error('Failed to open Xcode: '.$e->getMessage());
         }

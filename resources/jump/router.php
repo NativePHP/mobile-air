@@ -1,5 +1,7 @@
 <?php
 
+use Endroid\QrCode\Builder\Builder;
+
 /**
  * NativePHP Jump Server Router
  *
@@ -129,7 +131,7 @@ if ($path === '/jump/qr' || $path === '/jump') {
 
     try {
         // Check if Endroid QR Code is available
-        if (! class_exists(\Endroid\QrCode\Builder\Builder::class)) {
+        if (! class_exists(Builder::class)) {
             throw new Exception('QR Code library not available. Make sure endroid/qr-code is installed.');
         }
 
@@ -142,7 +144,7 @@ if ($path === '/jump/qr' || $path === '/jump') {
         ]);
 
         // Generate QR code
-        $result = \Endroid\QrCode\Builder\Builder::create()
+        $result = Builder::create()
             ->data($qrData)
             ->size(300)
             ->margin(10)

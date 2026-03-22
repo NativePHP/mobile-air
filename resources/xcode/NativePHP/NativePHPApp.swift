@@ -21,6 +21,8 @@ struct NativePHPApp: App {
 
     static var shared: NativePHPApp?
 
+    @Environment(\.scenePhase) private var scenePhase
+
     init() {
         Self.shared = self
 
@@ -40,72 +42,89 @@ struct NativePHPApp: App {
     /// Performs heavy initialization work after the splash view is visible.
     /// This runs on a background thread to avoid blocking the main thread.
     private func performDeferredInitialization() {
-        NSLog("TRACE[1]: performDeferredInitialization START")
+        NSLog("[NativePHP] Deferred initialization starting")
 
         // 1. Initialize PHP environment (env vars, php.ini, database)
-        NSLog("TRACE[2]: preparePhpEnvironment START")
+        NSLog("[NativePHP] preparePhpEnvironment START")
         _ = preparePhpEnvironment()
-        NSLog("TRACE[3]: preparePhpEnvironment DONE")
+        NSLog("[NativePHP] preparePhpEnvironment DONE")
 
         // 2. Ensure app is extracted from bundle if needed
-        NSLog("TRACE[4]: ensureAppExists START")
-        AppUpdateManager.shared.ensureAppExists()
-        NSLog("TRACE[5]: ensureAppExists DONE")
+        NSLog("[NativePHP] ensureAppExists START")
+        let didExtract = AppUpdateManager.shared.ensureAppExists()
+        NSLog("[NativePHP] ensureAppExists DONE (didExtract=\(didExtract))")
 
-        // 3. Boot persistent PHP runtime (one-time Laravel boot)
-        NSLog("TRACE[6]: PersistentPHPRuntime.boot() START")
-        let booted = PersistentPHPRuntime.shared.boot()
-        NSLog("TRACE[7]: PersistentPHPRuntime.boot() DONE, booted=\(booted)")
+        // 3. Boot persistent PHP runtime (one-time Laravel boot) — unless classic mode
+        let runtimeMode = Self.getRuntimeMode()
+        NSLog("[NativePHP] Runtime mode: \(runtimeMode)")
 
-        if booted {
-            NSLog("TRACE[8]: artisan migrate START")
-            _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
-            NSLog("TRACE[9]: artisan migrate DONE")
-
-            NSLog("TRACE[10]: artisan storage:link START")
-            _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
-            NSLog("TRACE[11]: artisan storage:link DONE")
-
-            // 3b. Start background queue worker (separate TSRM context)
-            NSLog("TRACE[11b]: PHPQueueWorker.start()")
-            PHPQueueWorker.shared.start()
-
-            // 3c. Schedule background task runner
-            NSLog("TRACE[11c]: PHPScheduler.scheduleNextRun()")
-            PHPScheduler.shared.scheduleNextRun()
-        } else {
-            NSLog("TRACE[8b]: boot failed, legacy fallback")
+        let booted: Bool
+        if runtimeMode == "classic" {
+            NSLog("[NativePHP] Classic mode configured — skipping persistent runtime boot")
+            booted = false
             createStorageLink()
-            NSLog("TRACE[9b]: legacy fallback DONE")
+        } else {
+            NSLog("[NativePHP] PersistentPHPRuntime.boot() START")
+            booted = PersistentPHPRuntime.shared.boot()
+            NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
+
+            if booted {
+                // Only run artisan commands when app was extracted or updated
+                if didExtract {
+                    NSLog("[NativePHP] artisan migrate START (post-extraction)")
+                    _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
+                    NSLog("[NativePHP] artisan migrate DONE")
+
+                    NSLog("[NativePHP] artisan storage:link START")
+                    _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
+                    NSLog("[NativePHP] artisan storage:link DONE")
+                } else {
+                    NSLog("[NativePHP] Skipping artisan commands — no extraction needed")
+                }
+
+                // Schedule background task runners
+                NSLog("[NativePHP] PHPScheduler.scheduleNextRun()")
+                PHPScheduler.shared.scheduleNextRun()
+                NSLog("[NativePHP] PHPScheduler.scheduleNextRefresh()")
+                PHPScheduler.shared.scheduleNextRefresh()
+            } else {
+                NSLog("[NativePHP] persistent boot failed, falling back to classic mode")
+                createStorageLink()
+            }
         }
 
-        // 4. Execute plugin initialization callbacks (on main thread)
-        DispatchQueue.main.async {
-            NativePHPPluginRegistry.shared.executeOnAppLaunch()
-        }
-
-        // 5. Start hot reload server for development
-        #if DEBUG
-        HotReloadServer.shared.start()
-        #endif
-
-        // 6. Check for OTA updates (after everything is set up)
-        NSLog("TRACE[12]: checkForUpdates START")
-        AppUpdateManager.shared.checkForUpdates()
-        NSLog("TRACE[13]: checkForUpdates DONE")
-
-        NSLog("TRACE[14]: marking ready to load")
-
-        // Notify that PHP is ready, render WebView, and dismiss splash.
-        // We dismiss splash on boot completion rather than waiting for the WebView's
-        // first page load, because Route::native() blocks the dispatch thread
-        // indefinitely (the native UI renders separately via shared memory).
+        // 4. Now that PHP is booted, allow WebView to render
         DispatchQueue.main.async {
             NSLog("TRACE[15]: markPhpReady + markReadyToLoad + markInitialized on main thread")
             DeepLinkRouter.shared.markPhpReady()
             AppState.shared.markReadyToLoad()
             AppState.shared.markInitialized()
         }
+
+        // 5. Execute plugin initialization callbacks (on main thread)
+        DispatchQueue.main.async {
+            NativePHPPluginRegistry.shared.executeOnAppLaunch()
+        }
+
+        // 6. Start hot reload server for development
+        #if DEBUG
+        HotReloadServer.shared.start()
+        #endif
+
+        // 7. Check for OTA updates (after everything is set up)
+        NSLog("[NativePHP] checkForUpdates START")
+        AppUpdateManager.shared.checkForUpdates()
+
+        // 8. Defer queue worker boot — start AFTER critical path completes
+        //    so it doesn't compete for CPU/memory during first page render
+        if booted {
+            NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
+            PHPQueueWorker.shared.start()
+        } else {
+            NSLog("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
+        }
+
+        NSLog("[NativePHP] Deferred initialization completed")
     }
 
     var body: some Scene {
@@ -174,6 +193,17 @@ struct NativePHPApp: App {
 
         // If you need the path as a String
         return destination.path
+    }
+
+    /// Read runtime_mode from bundle_meta.json. Returns "persistent" (default) or "classic".
+    static func getRuntimeMode() -> String {
+        guard let path = Bundle.main.path(forResource: "bundle_meta", ofType: "json"),
+              let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let mode = json["runtime_mode"] as? String else {
+            return "persistent"
+        }
+        return mode
     }
 
     /// Read the NATIVEPHP_START_URL from the .env file
