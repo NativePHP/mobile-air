@@ -49,12 +49,6 @@ trait WatchesIos
         $viteHotFile = $this->getHotFilePath('ios');
         $viteRunning = file_exists($viteHotFile);
 
-        if ($viteRunning) {
-            $this->info('Vite hot reloading detected - skipping full page reloads');
-        } else {
-            $this->info('No Vite hot reloading detected - will trigger full page reloads');
-        }
-
         // Get the derived data path / data container path
         $derivedDataPath = Process::run("xcrun simctl get_app_container {$target} {$appId} data")
             ->output();
@@ -65,6 +59,17 @@ trait WatchesIos
             $this->error('Could not find app container path. Make sure the app is installed and running.');
 
             return;
+        }
+
+        $destinationPath = $derivedDataPath.'/Documents/app/';
+
+        // Sync the hot file to the simulator if Vite is running
+        if ($viteRunning) {
+            $this->info('Vite dev server detected - syncing hot file to simulator');
+            $hotFileDestination = $destinationPath.'public/ios-hot';
+            @mkdir(dirname($hotFileDestination), 0755, true);
+            copy($viteHotFile, $hotFileDestination);
+            $this->triggerIosReload();
         }
 
         $this->line('Watching iOS paths: '.implode(', ', $this->getIosWatchPaths()));
@@ -108,10 +113,12 @@ trait WatchesIos
             $this->line("<fg=green>Synced to iOS:</fg=green> {$relativePath}");
         }
 
-        // Trigger reload only if Vite hot reloading is not active
-        if (! file_exists($viteHotFile)) {
-            $this->triggerIosReload();
+        // Skip reload for files that Vite handles via HMR
+        if (file_exists($viteHotFile) && $this->isViteHandledIosFile($relativePath)) {
+            return;
         }
+
+        $this->triggerIosReload();
     }
 
     private function triggerIosReload(): void
@@ -203,6 +210,22 @@ trait WatchesIos
 
             return $path;
         }, $paths);
+    }
+
+    private function isViteHandledIosFile(string $relativePath): bool
+    {
+        $vitePatterns = [
+            '/^resources\/js\/.*\.(vue|js|ts|jsx|tsx)$/i',
+            '/^resources\/css\/.*\.(css|scss|sass|less)$/i',
+        ];
+
+        foreach ($vitePatterns as $pattern) {
+            if (preg_match($pattern, $relativePath)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function getIosExcludePatterns(): array

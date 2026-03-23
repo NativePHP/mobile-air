@@ -335,8 +335,7 @@ struct WebView: UIViewRepresentable {
         }
 
         @objc func reloadWebView() {
-            _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
-
+            // Views are already cleared during persistent runtime reboot — just reload
             self.webView?.reload()
         }
 

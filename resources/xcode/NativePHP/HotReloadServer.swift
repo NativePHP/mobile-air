@@ -34,15 +34,28 @@ class HotReloadServer {
     
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
-        
-        // Any connection triggers a reload
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .reloadWebViewNotification, object: nil)
+
+        print("🔥 Hot reload connection received")
+
+        // Reboot the persistent runtime on a background thread (blocks until done)
+        DispatchQueue.global(qos: .userInitiated).async {
+            if PersistentPHPRuntime.shared.isBooted {
+                print("🔄 Rebooting persistent runtime...")
+                let success = PersistentPHPRuntime.shared.reboot()
+                print("🔄 Persistent runtime reboot: \(success ? "success" : "failed")")
+            } else {
+                print("🔄 Persistent runtime not booted, skipping reboot")
+            }
+
+            // Then trigger WebView reload on main thread
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .reloadWebViewNotification, object: nil)
+                print("🔄 WebView reload notification posted")
+            }
         }
-        
+
         // Immediately close the connection
         connection.cancel()
-        print("🔄 Hot reload triggered")
     }
 }
 
