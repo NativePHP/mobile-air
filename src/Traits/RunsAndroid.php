@@ -81,6 +81,18 @@ trait RunsAndroid
             return;
         }
 
+        $plugins = app(PluginRegistry::class)->all();
+        foreach ($plugins as $plugin) {
+            $pluginMinSdk = $plugin->getAndroidMinVersion();
+            if ($pluginMinSdk !== null && $minSdk < $pluginMinSdk) {
+                $this->logToFile("ERROR: Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk");
+                error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
+                note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
+
+                return;
+            }
+        }
+
         // Start Vite dev server early if watching, so hot file is present during build
         if ($this->option('watch') && ! $this->option('no-vite')) {
             $this->startViteDevServer('android');
@@ -372,7 +384,36 @@ XML;
 
     private function updateIcuConfiguration(): void
     {
-        // ICU configuration is handled during installation
+        $jsonPath = base_path('nativephp.json');
+
+        if (! file_exists($jsonPath)) {
+            return;
+        }
+
+        $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+
+        if (empty($nativephp['php']['icu'])) {
+            return;
+        }
+
+        $appId = config('nativephp.app_id');
+        $packagePath = str_replace('.', '/', $appId);
+        $bridgePath = base_path("nativephp/android/app/src/main/java/{$packagePath}/bridge/PHPBridge.kt");
+
+        if (! File::exists($bridgePath)) {
+            return;
+        }
+
+        $contents = File::get($bridgePath);
+
+        if (! str_contains($contents, 'System.loadLibrary("icudata")')) {
+            $contents = str_replace(
+                'System.loadLibrary("php")',
+                'System.loadLibrary("icudata")'.PHP_EOL.'        System.loadLibrary("php")',
+                $contents
+            );
+            File::put($bridgePath, $contents);
+        }
     }
 
     private function updateLocalProperties(): void

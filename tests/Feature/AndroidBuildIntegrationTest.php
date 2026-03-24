@@ -131,8 +131,8 @@ class AndroidBuildIntegrationTest extends TestCase
 
         File::copyDirectory($source, $dest);
 
-        // Create ICU flag
-        File::put($dest.'/.icu-enabled', '1');
+        // Enable ICU via nativephp.json
+        File::put($this->testProjectPath.'/nativephp.json', json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
     }
 
     protected function mockRunCommand(): void

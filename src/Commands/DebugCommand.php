@@ -56,13 +56,15 @@ class DebugCommand extends Command
 
     protected function getEmbeddedPhpVersion(): string
     {
-        $installedFile = base_path('nativephp/binaries/INSTALLED');
+        $jsonPath = base_path('nativephp.json');
 
-        if (! file_exists($installedFile)) {
+        if (! file_exists($jsonPath)) {
             return 'Not installed';
         }
 
-        return trim(file_get_contents($installedFile)) ?: 'Unknown';
+        $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+
+        return $nativephp['php']['version'] ?? 'Not installed';
     }
 
     protected function getInstalledPlugins(): array
