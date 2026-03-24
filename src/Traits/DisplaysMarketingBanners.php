@@ -20,7 +20,7 @@ trait DisplaysMarketingBanners
         $this->line('<fg=#AA55FF>  ██╔██╗ ██║███████║   ██║   ██║██║   ██║█████╗  ██████╔╝███████║██████╔╝</>');
         $this->line('<fg=#7788FF>  ██║╚██╗██║██╔══██║   ██║   ██║╚██╗ ██╔╝██╔══╝  ██╔═══╝ ██╔══██║██╔═══╝</>');
         $this->line('<fg=#44BBFF>  ██║ ╚████║██║  ██║   ██║   ██║ ╚████╔╝ ███████╗██║     ██║  ██║██║</>');
-        $this->line('<fg=#00FFFF>  ╚═╝  ╚═══╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝  ╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝</>');
+        $this->line('<fg=#00FFFF>  ╚═╝  ╚═══╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝  ╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝</> <fg=yellow;options=bold>v3</>');
         $this->newLine();
         $this->line('  <fg=white;options=bold>From</> <fg=green>laravel new</> <fg=white;options=bold>to App Store...</>');
         $this->newLine();

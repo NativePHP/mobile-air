@@ -11,12 +11,12 @@ if (googleServicesJson.exists()) {
 
 android {
     namespace = "com.nativephp.mobile"
-    compileSdk = 36
+    compileSdk = REPLACE_COMPILE_SDK
 
     defaultConfig {
         applicationId = "REPLACE_APP_ID"
-        minSdk = 33
-        targetSdk = 36
+        minSdk = REPLACE_MIN_SDK
+        targetSdk = REPLACE_TARGET_SDK
         versionCode = REPLACEMECODE
         versionName = "REPLACEME"
 
@@ -30,7 +30,7 @@ android {
                     "-DANDROID_ARM_NEON=TRUE"
                 )
                 cppFlags("-std=c++17", "-fexceptions", "-frtti")
-                targets("php_wrapper", "compat")
+                targets("php_wrapper")
                 arguments("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384")
             }
         }

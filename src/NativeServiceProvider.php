@@ -3,12 +3,15 @@
 namespace Native\Mobile;
 
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
 use Native\Mobile\Commands\CredentialsCommand;
+use Native\Mobile\Commands\DebugCommand;
 use Native\Mobile\Commands\InstallCommand;
+use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\LaunchEmulatorCommand;
 use Native\Mobile\Commands\OpenProjectCommand;
 use Native\Mobile\Commands\PackageCommand;
@@ -24,10 +27,13 @@ use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\VersionCommand;
-use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
+use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
+use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
+use Native\Mobile\Plugins\PluginDiscovery;
+use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -46,6 +52,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 BuildIosAppCommand::class,
                 CheckBuildNumberCommand::class,
                 CredentialsCommand::class,
+                DebugCommand::class,
                 InstallCommand::class,
                 RunCommand::class,
                 OpenProjectCommand::class,
@@ -84,31 +91,31 @@ class NativeServiceProvider extends PackageServiceProvider
 
     protected function registerPluginServices(): void
     {
-        $this->app->singleton(\Native\Mobile\Plugins\PluginDiscovery::class, function ($app) {
-            return new \Native\Mobile\Plugins\PluginDiscovery(
-                $app->make(\Illuminate\Filesystem\Filesystem::class),
+        $this->app->singleton(PluginDiscovery::class, function ($app) {
+            return new PluginDiscovery(
+                $app->make(Filesystem::class),
                 base_path()
             );
         });
 
-        $this->app->singleton(\Native\Mobile\Plugins\PluginRegistry::class, function ($app) {
-            return new \Native\Mobile\Plugins\PluginRegistry(
-                $app->make(\Native\Mobile\Plugins\PluginDiscovery::class)
+        $this->app->singleton(PluginRegistry::class, function ($app) {
+            return new PluginRegistry(
+                $app->make(PluginDiscovery::class)
             );
         });
 
-        $this->app->singleton(\Native\Mobile\Plugins\Compilers\AndroidPluginCompiler::class, function ($app) {
-            return new \Native\Mobile\Plugins\Compilers\AndroidPluginCompiler(
-                $app->make(\Illuminate\Filesystem\Filesystem::class),
-                $app->make(\Native\Mobile\Plugins\PluginRegistry::class),
+        $this->app->singleton(AndroidPluginCompiler::class, function ($app) {
+            return new AndroidPluginCompiler(
+                $app->make(Filesystem::class),
+                $app->make(PluginRegistry::class),
                 base_path('nativephp')
             );
         });
 
-        $this->app->singleton(\Native\Mobile\Plugins\Compilers\IOSPluginCompiler::class, function ($app) {
-            return new \Native\Mobile\Plugins\Compilers\IOSPluginCompiler(
-                $app->make(\Illuminate\Filesystem\Filesystem::class),
-                $app->make(\Native\Mobile\Plugins\PluginRegistry::class),
+        $this->app->singleton(IOSPluginCompiler::class, function ($app) {
+            return new IOSPluginCompiler(
+                $app->make(Filesystem::class),
+                $app->make(PluginRegistry::class),
                 base_path('nativephp')
             );
         });
@@ -283,7 +290,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
             // Use 'both' on macOS (supports iOS + Android), 'android' on other platforms
             $platform = PHP_OS_FAMILY === 'Darwin' ? 'both' : 'android';
-            $nativeInstallCommand = "@php artisan native:install {$platform} --force --without-icu";
+            $nativeInstallCommand = "@php artisan native:install {$platform} --force";
 
             // Check if post-update-cmd already contains our command
             if (isset($composerContent['scripts']['post-update-cmd'])) {
@@ -295,7 +302,7 @@ class NativeServiceProvider extends PackageServiceProvider
                         return; // Already exists
                     }
                     // Check if it's an old version with different platform and replace it
-                    if (preg_match('/@php artisan native:install (android|both|ios) --force --without-icu/', $postUpdateCmds)) {
+                    if (preg_match('/@php artisan native:install (android|both|ios) --force/', $postUpdateCmds)) {
                         $composerContent['scripts']['post-update-cmd'] = $nativeInstallCommand;
 
                         return;
@@ -310,7 +317,7 @@ class NativeServiceProvider extends PackageServiceProvider
                     // Check for existing native:install commands with different platforms and replace them
                     $foundExisting = false;
                     foreach ($postUpdateCmds as $index => $cmd) {
-                        if (preg_match('/@php artisan native:install (android|both|ios) --force --without-icu/', $cmd)) {
+                        if (preg_match('/@php artisan native:install (android|both|ios) --force/', $cmd)) {
                             $composerContent['scripts']['post-update-cmd'][$index] = $nativeInstallCommand;
                             $foundExisting = true;
                             break;

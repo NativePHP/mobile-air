@@ -72,6 +72,27 @@ trait RunsAndroid
             return;
         }
 
+        $minSdk = (int) config('nativephp.android.min_sdk', 26);
+        if ($minSdk < 26) {
+            $this->logToFile("ERROR: NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26");
+            error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
+            note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
+
+            return;
+        }
+
+        $plugins = app(PluginRegistry::class)->all();
+        foreach ($plugins as $plugin) {
+            $pluginMinSdk = $plugin->getAndroidMinVersion();
+            if ($pluginMinSdk !== null && $minSdk < $pluginMinSdk) {
+                $this->logToFile("ERROR: Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk");
+                error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
+                note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
+
+                return;
+            }
+        }
+
         // Start Vite dev server early if watching, so hot file is present during build
         if ($this->option('watch')) {
             $this->startViteDevServer('android');
@@ -361,7 +382,36 @@ XML;
 
     private function updateIcuConfiguration(): void
     {
-        // ICU configuration is handled during installation
+        $jsonPath = base_path('nativephp.json');
+
+        if (! file_exists($jsonPath)) {
+            return;
+        }
+
+        $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+
+        if (empty($nativephp['php']['icu'])) {
+            return;
+        }
+
+        $appId = config('nativephp.app_id');
+        $packagePath = str_replace('.', '/', $appId);
+        $bridgePath = base_path("nativephp/android/app/src/main/java/{$packagePath}/bridge/PHPBridge.kt");
+
+        if (! File::exists($bridgePath)) {
+            return;
+        }
+
+        $contents = File::get($bridgePath);
+
+        if (! str_contains($contents, 'System.loadLibrary("icudata")')) {
+            $contents = str_replace(
+                'System.loadLibrary("php")',
+                'System.loadLibrary("icudata")'.PHP_EOL.'        System.loadLibrary("php")',
+                $contents
+            );
+            File::put($bridgePath, $contents);
+        }
     }
 
     private function updateLocalProperties(): void
@@ -637,7 +687,7 @@ XML;
 
         $descriptorSpec = [
             1 => ['pipe', 'w'], // stdout
-            2 => ['file', 'NUL', 'a'], // stderr (Windows)
+            2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'a'], // stderr
         ];
 
         $process = proc_open($cmd, $descriptorSpec, $pipes);

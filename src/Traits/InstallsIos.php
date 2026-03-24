@@ -16,7 +16,16 @@ trait InstallsIos
 {
     public string $iosPath;
 
-    public string $zipUrl = 'https://bin.nativephp.com/nativephp-ios-2.0.0-php8.4.zip';
+    protected ?bool $includeIcuIos = null;
+
+    public function promptIosOptions(): void
+    {
+        if ($this->option('skip-php') && ! $this->forcing) {
+            return;
+        }
+
+        $this->includeIcuIos = (bool) $this->option('with-icu');
+    }
 
     public function setupIos(): void
     {
@@ -48,37 +57,93 @@ trait InstallsIos
 
     private function installPHPIos(): void
     {
-        $url = $this->zipUrl;
-        $zipFile = storage_path('ios-temp.zip');
-        $extractPath = storage_path('ios-temp');
+        $includeIcu = $this->includeIcuIos ?? false;
+        $phpVersion = $this->phpVersion;
+        $versions = $this->versionsManifest;
 
-        $client = new Client;
-        $downloadFailed = false;
-
-        $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
-            try {
-                $client->request('GET', $url, [
-                    'sink' => $zipFile,
-                    'connect_timeout' => 60,
-                    'timeout' => 600,
-                ]);
-
-                return true;
-            } catch (RequestException) {
-                $downloadFailed = true;
-
-                return false;
-            }
-        });
-
-        if ($downloadFailed) {
-            error('Failed to download PHP binaries.');
+        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available");
 
             return;
         }
 
-        $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
-        $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
+        $iosFiles = $versions['versions'][$phpVersion]['ios'] ?? [];
+
+        $url = null;
+        foreach ($iosFiles as $fileUrl) {
+            $isIcu = str_contains($fileUrl, '-icu.');
+            if ($includeIcu && $isIcu) {
+                $url = $fileUrl;
+                break;
+            } elseif (! $includeIcu && ! $isIcu) {
+                $url = $fileUrl;
+                break;
+            }
+        }
+
+        if (! $url) {
+            $variant = $includeIcu ? 'ICU' : 'non-ICU';
+            error("No {$variant} iOS binary found for PHP {$phpVersion}");
+
+            return;
+        }
+
+        $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
+        $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
+
+        $cacheDir = base_path('nativephp/binaries');
+        File::ensureDirectoryExists($cacheDir);
+
+        $zipFilename = basename(parse_url($url, PHP_URL_PATH));
+        $zipFile = $cacheDir.DIRECTORY_SEPARATOR.$zipFilename;
+        $extractPath = storage_path('ios-temp');
+
+        if (file_exists($zipFile)) {
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
+        } else {
+            $client = new Client;
+            $downloadFailed = false;
+
+            $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
+                try {
+                    $client->request('GET', $url, [
+                        'sink' => $zipFile,
+                        'connect_timeout' => 60,
+                        'timeout' => 600,
+                    ]);
+
+                    return true;
+                } catch (RequestException) {
+                    // Remove any partial/error response written to disk
+                    if (file_exists($zipFile)) {
+                        unlink($zipFile);
+                    }
+                    $downloadFailed = true;
+
+                    return false;
+                }
+            });
+
+            if ($downloadFailed) {
+                error("Failed to download PHP binaries from: $url");
+
+                return;
+            }
+
+            // Verify the downloaded file is actually a ZIP
+            $zip = new ZipArchive;
+            if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
+                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                unlink($zipFile);
+
+                return;
+            }
+            $zip->close();
+
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
+        }
 
         File::ensureDirectoryExists($extractPath);
 
@@ -102,8 +167,15 @@ trait InstallsIos
             File::copyDirectory($extractPath.'/Include', $this->iosPath.'/Include');
         });
 
+        // Re-copy our custom Bridge files (PHP.c, PHP.h) which contain the persistent
+        // runtime implementation — the binary ZIP ships older/template versions
+        $bridgeSrc = __DIR__.'/../../resources/xcode/Include/Bridge';
+        $bridgeDst = $this->iosPath.'/Include/Bridge';
+        if (is_dir($bridgeSrc)) {
+            File::copyDirectory($bridgeSrc, $bridgeDst);
+        }
+
         try {
-            File::delete($zipFile);
             File::deleteDirectory($extractPath);
         } catch (\Exception $e) {
             warning('Could not remove temporary files: '.$e->getMessage());

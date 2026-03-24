@@ -2,32 +2,38 @@
 
 namespace Native\Mobile\Commands;
 
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\File;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\InstallsAndroid;
 use Native\Mobile\Traits\InstallsIos;
 use Native\Mobile\Traits\PlatformFileOperations;
 
+use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\outro;
-use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
 
 class InstallCommand extends Command
 {
     use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations;
 
-    protected bool $forcing = false;
+    protected bool $forcing = true;
+
+    protected string $phpVersion;
+
+    protected ?array $versionsManifest = null;
 
     protected $signature = 'native:install
-        {platform? : The platform to install (android, ios, or both)}
-        {--force : Overwrite existing files}
-        {--F|fresh : Overwrite existing files (alias for --force)}
+        {platform? : The platform to install (android/a, ios/i, or both)}
+        {--no-force : Keep existing files instead of overwriting}
         {--with-icu : Include ICU support for Android (adds ~30MB)}
-        {--without-icu : Exclude ICU support for Android}
-        {--skip-php : Do not download the PHP binaries}';
+        {--skip-php : Do not download the PHP binaries}
+        {--F|force : Force re-download of PHP binaries by clearing the cache}';
 
     protected $description = 'Install all of the NativePHP resources';
 
@@ -37,12 +43,32 @@ class InstallCommand extends Command
 
         $this->ensureAppIdIsSet();
 
-        $this->forcing = $this->option('force') || $this->option('fresh');
+        $this->forcing = ! $this->option('no-force');
+
+        if ($this->option('force')) {
+            $cacheDir = base_path('nativephp/binaries');
+            if (is_dir($cacheDir)) {
+                $this->components->task('Clearing cached PHP binaries', function () use ($cacheDir) {
+                    $files = glob($cacheDir.'/*.zip');
+                    foreach ($files as $file) {
+                        unlink($file);
+                    }
+                });
+            }
+        }
 
         $platform = $this->argument('platform');
 
+        if ($platform) {
+            $platform = match (strtolower($platform)) {
+                'a' => 'android',
+                'i' => 'ios',
+                default => $platform,
+            };
+        }
+
         if ($platform && ! in_array($platform, ['android', 'ios', 'both'])) {
-            error('Invalid platform. Please specify "android", "ios", or "both".');
+            error('Invalid platform. Please specify "android" (a), "ios" (i), or "both".');
 
             return;
         }
@@ -64,15 +90,7 @@ class InstallCommand extends Command
         $installIos = false;
 
         if (PHP_OS_FAMILY === 'Darwin') {
-            $choice = $platform ?: select(
-                label: 'Which platforms do you want to install?',
-                options: [
-                    'android' => 'Android',
-                    'ios' => 'iOS',
-                    'both' => 'Both',
-                ],
-                default: 'both'
-            );
+            $choice = $platform ?: 'both';
 
             $installAndroid = $choice === 'android' || $choice === 'both';
             $installIos = $choice === 'ios' || $choice === 'both';
@@ -88,6 +106,10 @@ class InstallCommand extends Command
         // Collect all prompts first
         if ($installAndroid) {
             $this->promptAndroidOptions();
+        }
+
+        if ($installIos) {
+            $this->promptIosOptions();
         }
 
         // Now run all tasks
@@ -109,12 +131,26 @@ class InstallCommand extends Command
 
         $this->callSilently('vendor:publish', ['--tag' => 'nativephp-mobile-config']);
 
+        // Fetch PHP binary manifest once for all platforms
+        $shouldInstallPhp = ! ($this->option('skip-php') && ! $this->forcing);
+
+        if ($shouldInstallPhp) {
+            $this->phpVersion = $this->detectPhpVersion();
+            $this->fetchVersionsManifest();
+        }
+
         if ($installAndroid) {
             $this->setupAndroid();
         }
 
         if ($installIos) {
             $this->setupIos();
+        }
+
+        // Record the installed PHP version and ICU preference
+        if ($shouldInstallPhp && $this->versionsManifest) {
+            $includeIcu = (bool) $this->option('with-icu');
+            $this->writeNativephpJson($this->phpVersion, $includeIcu);
         }
 
         file_put_contents($path.DIRECTORY_SEPARATOR.'.gitignore', '*'.PHP_EOL);
@@ -134,6 +170,21 @@ class InstallCommand extends Command
         }
 
         outro('NativePHP for Mobile installed successfully!');
+
+        if (confirm(
+            label: 'Would you mind starring us on GitHub? It really helps!',
+            yes: 'Hell Yeah! 🔥',
+            no: 'Already Did',
+            default: true,
+        )) {
+            $url = 'https://github.com/NativePHP/mobile-air';
+
+            match (PHP_OS_FAMILY) {
+                'Darwin' => exec("open {$url}"),
+                'Windows' => exec("start {$url}"),
+                default => exec("xdg-open {$url}"),
+            };
+        }
 
         $this->showProBanner();
     }
@@ -200,6 +251,74 @@ class InstallCommand extends Command
         $selected = array_rand(array_flip($words), $count);
 
         return implode('', $selected);
+    }
+
+    protected function getBinaryBranch(): string
+    {
+        return env('NATIVEPHP_BIN_BRANCH', 'main');
+    }
+
+    protected function fetchVersionsManifest(): void
+    {
+        $branch = $this->getBinaryBranch();
+        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
+
+        try {
+            $this->versionsManifest = json_decode(
+                (new Client)->get($versionsUrl)->getBody()->getContents(),
+                true
+            );
+        } catch (RequestException $e) {
+            error("Failed to fetch versions manifest from: {$versionsUrl}");
+        }
+    }
+
+    protected function detectPhpVersion(): string
+    {
+        $supported = ['8.5', '8.4', '8.3'];
+
+        // Check nativephp.json first (committed by the user or written by a previous install)
+        $jsonPath = base_path('nativephp.json');
+        if (file_exists($jsonPath)) {
+            $config = json_decode(file_get_contents($jsonPath), true);
+            $configVersion = $config['php']['version'] ?? null;
+
+            if ($configVersion && in_array($configVersion, $supported)) {
+                return $configVersion;
+            }
+        }
+
+        // Fall back to the running PHP version
+        $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+
+        if (in_array($minor, $supported)) {
+            return $minor;
+        }
+
+        // Find highest supported version <= running version
+        foreach ($supported as $version) {
+            if (version_compare($minor, $version, '>=')) {
+                return $version;
+            }
+        }
+
+        return '8.3';
+    }
+
+    protected function writeNativephpJson(string $version, bool $icu): void
+    {
+        $jsonPath = base_path('nativephp.json');
+
+        $data = file_exists($jsonPath)
+            ? json_decode(file_get_contents($jsonPath), true) ?? []
+            : [];
+
+        $data['php'] = [
+            'version' => $version,
+            'icu' => $icu,
+        ];
+
+        file_put_contents($jsonPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
     }
 
     protected function setEnvValue(string $key, string $value): void

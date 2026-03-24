@@ -26,7 +26,8 @@ class LaravelEnvironment(private val context: Context) {
     // Data class to hold bundle metadata read from ZIP
     private data class BundleMetadata(
         val version: String?,
-        val bifrostAppId: String?
+        val bifrostAppId: String?,
+        val runtimeMode: String?
     )
 
     // Data class for version information with utility methods
@@ -47,6 +48,7 @@ class LaravelEnvironment(private val context: Context) {
 
         // File and directory names
         private const val BUNDLE_ZIP = "laravel_bundle.zip"
+        private const val BUNDLE_META = "bundle_meta.json"
         private const val OTA_MARKER = ".ota_applied"
         private const val VERSION_FILE = ".version"
         private const val ENV_FILE = ".env"
@@ -81,6 +83,23 @@ class LaravelEnvironment(private val context: Context) {
 
         init {
             System.loadLibrary("php_wrapper")
+        }
+
+        /**
+         * Read runtime_mode from bundle_meta.json. Returns "persistent" (default) or "classic".
+         */
+        fun getRuntimeMode(context: Context): String {
+            return try {
+                val json = context.assets.open(BUNDLE_META).bufferedReader().use { it.readText() }
+                val obj = JSONObject(json)
+                if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) {
+                    obj.getString("runtime_mode")
+                } else {
+                    "persistent"
+                }
+            } catch (e: Exception) {
+                "persistent"
+            }
         }
 
         /**
@@ -126,37 +145,37 @@ class LaravelEnvironment(private val context: Context) {
 
     fun initialize() {
         try {
-            val persistedPublic = File(appStorageDir, "persisted_data/storage/app/public")
-
-            Log.d(TAG, "🔍 CHECKPOINT 1 - BEFORE setupDirectories: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
             setupDirectories()
-            Log.d(TAG, "🔍 CHECKPOINT 2 - AFTER setupDirectories: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
 
-            // Check for OTA updates first (reads BIFROST_APP_ID from bundled .env)
-            if (checkAndApplyOTAUpdate()) {
-                Log.d(TAG, "✅ OTA update applied successfully")
-                Log.d(TAG, "🔍 CHECKPOINT 3 - AFTER OTA: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
-            } else {
-                // No OTA update - extract bundled version if needed
-                Log.d(TAG, "🔍 CHECKPOINT 3a - BEFORE extractLaravelBundle: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
-                extractLaravelBundle()
-                Log.d(TAG, "🔍 CHECKPOINT 3b - AFTER extractLaravelBundle: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
-            }
+            // OTA check commented out — adds ~300ms network latency on every cold boot
+            // TODO: Re-enable when OTA is ready for production
+            // val didExtract = if (checkAndApplyOTAUpdate()) {
+            //     Log.d(TAG, "✅ OTA update applied successfully")
+            //     true
+            // } else {
+            //     extractLaravelBundle()
+            // }
+            val didExtract = extractLaravelBundle()
 
-            Log.d(TAG, "🔍 CHECKPOINT 4 - BEFORE setupEnvironment: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
             setupEnvironment()
-            Log.d(TAG, "🔍 CHECKPOINT 5 - AFTER setupEnvironment: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
 
-            Log.d(TAG, "🔍 CHECKPOINT 6 - BEFORE runBaseArtisanCommands: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
-            runBaseArtisanCommands()
-            Log.d(TAG, "🔍 CHECKPOINT 7 - AFTER runBaseArtisanCommands: exists=${persistedPublic.exists()}, files=${persistedPublic.listFiles()?.joinToString { it.name } ?: "none"}")
+            // Only run artisan commands when files were actually extracted/changed
+            if (didExtract) {
+                Log.d(TAG, "📦 Running post-extraction artisan commands...")
+                runBaseArtisanCommands()
+            } else {
+                Log.d(TAG, "⚡ Skipping artisan commands — no extraction needed")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing Laravel environment", e)
             throw RuntimeException("Failed to initialize Laravel environment", e)
         }
     }
 
-    private fun extractLaravelBundle() {
+    /**
+     * Extract Laravel bundle if needed. Returns true if extraction was performed.
+     */
+    private fun extractLaravelBundle(): Boolean {
         val laravelDir = File(appStorageDir, DIR_LARAVEL)
         val otaMarkerFile = File(laravelDir, OTA_MARKER)
 
@@ -178,7 +197,7 @@ class LaravelEnvironment(private val context: Context) {
         else if (otaMarkerFile.exists() && isBundledOtaConfigured) {
             val otaVersion = otaMarkerFile.readText().trim()
             Log.d(TAG, "✅ OTA update version $otaVersion is active, skipping bundle extraction")
-            return
+            return false
         }
 
         // Get embedded version using VersionInfo wrapper
@@ -187,7 +206,7 @@ class LaravelEnvironment(private val context: Context) {
 
         if (embeddedVersion == null) {
             Log.e(TAG, "❌ Couldn't read version from laravel_bundle.zip")
-            return
+            return false
         }
 
         Log.d(TAG, "🔍 DEBUG: embeddedVersion from bundle = '${embeddedVersion.raw}'")
@@ -218,7 +237,7 @@ class LaravelEnvironment(private val context: Context) {
 
         if (!shouldExtract) {
             Log.d(TAG, "✅ Laravel already up to date (version ${embeddedVersion.clean})")
-            return
+            return false
         }
 
         Log.d(TAG, "📦 Extracting Laravel bundle (new version: ${embeddedVersion.raw})")
@@ -278,6 +297,8 @@ class LaravelEnvironment(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to extract Laravel zip", e)
         }
+
+        return true
     }
 
     private fun isDebugVersion(version: String?): Boolean {
@@ -286,13 +307,29 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     /**
-     * Read bundle metadata (version and bifrost ID) from ZIP in a single pass
-     * Results are cached to avoid redundant ZIP reads
+     * Read bundle metadata from bundle_meta.json (fast path) or ZIP scan (fallback).
+     * Results are cached to avoid redundant reads.
      */
     private fun readBundleMetadata(): BundleMetadata {
         // Return cached value if available
         bundleMetadataCache?.let { return it }
 
+        // Fast path: read pre-built metadata file (written at build time)
+        try {
+            val json = context.assets.open(BUNDLE_META).bufferedReader().use { it.readText() }
+            val obj = JSONObject(json)
+            val version = if (obj.has("version")) obj.getString("version") else null
+            val bifrostAppId = if (obj.has("bifrost_app_id") && !obj.isNull("bifrost_app_id")) obj.getString("bifrost_app_id") else null
+            val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
+            Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
+            val metadata = BundleMetadata(version, bifrostAppId, runtimeMode)
+            bundleMetadataCache = metadata
+            return metadata
+        } catch (e: Exception) {
+            Log.d(TAG, "bundle_meta.json not found, falling back to ZIP scan")
+        }
+
+        // Slow fallback: scan ZIP for .env and .version
         var version: String? = null
         var bifrostAppId: String? = null
 
@@ -300,39 +337,29 @@ class LaravelEnvironment(private val context: Context) {
             val zis = ZipInputStream(context.assets.open(BUNDLE_ZIP) as java.io.InputStream)
             var entry: ZipEntry?
 
-            // Single pass through ZIP - read both .env and .version
             while (zis.nextEntry.also { entry = it } != null) {
                 when (entry?.name) {
                     ENV_FILE -> {
                         val envContent = zis.bufferedReader().readText()
-
-                        // Extract version
                         val versionMatch = Regex(REGEX_APP_VERSION).find(envContent)
                         version = versionMatch?.groupValues?.get(1)?.trim()
-
-                        // Extract bifrost ID
                         val bifrostIdMatch = Regex(REGEX_BIFROST_ID).find(envContent)
                         bifrostAppId = bifrostIdMatch?.groupValues?.get(1)?.trim()
                     }
                     VERSION_FILE -> {
-                        // Fallback: use .version file if NATIVEPHP_APP_VERSION not in .env
                         if (version == null) {
                             version = zis.bufferedReader().readText().trim()
                         }
                     }
                 }
-
-                // Early exit if we have both values
-                if (version != null && bifrostAppId != null) {
-                    break
-                }
+                if (version != null && bifrostAppId != null) break
             }
             zis.close()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read bundle metadata", e)
         }
 
-        val metadata = BundleMetadata(version, bifrostAppId)
+        val metadata = BundleMetadata(version, bifrostAppId, null)
         bundleMetadataCache = metadata
         return metadata
     }
@@ -739,7 +766,7 @@ class LaravelEnvironment(private val context: Context) {
                 "DB_DATABASE" to "${appStorageDir.absolutePath}/persisted_data/database/database.sqlite",
                 "CACHE_DRIVER" to "file",
                 "CACHE_STORE" to "file",
-                "QUEUE_CONNECTION" to "sync",
+                "QUEUE_CONNECTION" to "database",
                 "NATIVEPHP_PLATFORM" to "android",
                 "NATIVEPHP_TEMPDIR" to context.cacheDir.absolutePath
             )
@@ -860,6 +887,22 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             dir.setReadable(true, true)
             dir.setWritable(true, true)
             dir.setExecutable(true, true)
+        }
+    }
+
+    /**
+     * Lightweight initialization for background execution (WorkManager).
+     * Sets environment variables and ensures directories exist.
+     * Skips bundle extraction and artisan commands — those are done at install time.
+     */
+    fun initializeForBackground() {
+        try {
+            setupDirectories()
+            setupEnvironment()
+            Log.d(TAG, "Background environment initialized")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing background environment", e)
+            throw RuntimeException("Failed to initialize background environment", e)
         }
     }
 

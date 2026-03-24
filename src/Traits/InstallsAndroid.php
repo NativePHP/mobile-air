@@ -7,7 +7,6 @@ use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\File;
 use ZipArchive;
 
-use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\warning;
@@ -15,8 +14,6 @@ use function Laravel\Prompts\warning;
 trait InstallsAndroid
 {
     use PlatformFileOperations;
-
-    public string $codename = 'android';
 
     protected ?bool $includeIcu = null;
 
@@ -27,17 +24,7 @@ trait InstallsAndroid
             return;
         }
 
-        if ($this->option('with-icu')) {
-            $this->includeIcu = true;
-        } elseif ($this->option('without-icu')) {
-            $this->includeIcu = false;
-        } else {
-            $this->includeIcu = confirm(
-                label: 'Include ICU-enabled PHP binary for Filament/intl support?',
-                default: false,
-                hint: 'Adds ~30MB to your app size'
-            );
-        }
+        $this->includeIcu = (bool) $this->option('with-icu');
     }
 
     public function setupAndroid(): void
@@ -72,43 +59,92 @@ trait InstallsAndroid
     private function installPHPAndroid(): void
     {
         $includeIcu = $this->includeIcu ?? false;
+        $phpVersion = $this->phpVersion;
+        $versions = $this->versionsManifest;
 
-        $url = $includeIcu
-            ? "https://d23y5k23b3lz91.cloudfront.net/android/$this->codename/jniLibsF.zip"
-            : "https://d23y5k23b3lz91.cloudfront.net/android/$this->codename/jniLibs.zip";
-
-        $zipFile = storage_path('android-temp.zip');
-        $extractPath = storage_path('android-temp');
-
-        $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
-
-        $client = new Client;
-        $downloadFailed = false;
-
-        $this->components->task('Downloading Android PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
-            try {
-                $client->request('GET', $url, [
-                    'sink' => $zipFile,
-                    'connect_timeout' => 60,
-                    'timeout' => 600,
-                ]);
-
-                return true;
-            } catch (RequestException) {
-                $downloadFailed = true;
-
-                return false;
-            }
-        });
-
-        if ($downloadFailed) {
-            error('Failed to download PHP binaries.');
+        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available");
 
             return;
         }
 
-        $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
-        $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
+        $androidFiles = $versions['versions'][$phpVersion]['android'] ?? [];
+
+        $url = null;
+        foreach ($androidFiles as $fileUrl) {
+            $isIcu = str_contains($fileUrl, '-icu.');
+            if ($includeIcu && $isIcu) {
+                $url = $fileUrl;
+                break;
+            } elseif (! $includeIcu && ! $isIcu) {
+                $url = $fileUrl;
+                break;
+            }
+        }
+
+        if (! $url) {
+            $variant = $includeIcu ? 'ICU' : 'non-ICU';
+            error("No {$variant} Android binary found for PHP {$phpVersion}");
+
+            return;
+        }
+
+        $cacheDir = base_path('nativephp/binaries');
+        File::ensureDirectoryExists($cacheDir);
+
+        $zipFilename = basename(parse_url($url, PHP_URL_PATH));
+        $zipFile = $cacheDir.DIRECTORY_SEPARATOR.$zipFilename;
+        $extractPath = storage_path('android-temp');
+
+        $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
+        $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
+
+        if (file_exists($zipFile)) {
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
+        } else {
+            $client = new Client;
+            $downloadFailed = false;
+
+            $this->components->task('Downloading Android PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
+                try {
+                    $client->request('GET', $url, [
+                        'sink' => $zipFile,
+                        'connect_timeout' => 60,
+                        'timeout' => 600,
+                    ]);
+
+                    return true;
+                } catch (RequestException) {
+                    // Remove any partial/error response written to disk
+                    if (file_exists($zipFile)) {
+                        unlink($zipFile);
+                    }
+                    $downloadFailed = true;
+
+                    return false;
+                }
+            });
+
+            if ($downloadFailed) {
+                error("Failed to download PHP binaries from: $url");
+
+                return;
+            }
+
+            // Verify the downloaded file is actually a ZIP
+            $zip = new ZipArchive;
+            if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
+                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                unlink($zipFile);
+
+                return;
+            }
+            $zip->close();
+
+            $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
+            $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
+        }
 
         File::ensureDirectoryExists($extractPath);
 
@@ -162,16 +198,7 @@ trait InstallsAndroid
 
         $this->components->task('Installing Android libraries', fn () => $this->platformOptimizedCopy($extractPath, $destination));
 
-        // Store ICU preference for run command
-        $icuFlagFile = base_path('nativephp/android/.icu-enabled');
-        if ($includeIcu) {
-            File::put($icuFlagFile, '1');
-        } elseif (File::exists($icuFlagFile)) {
-            File::delete($icuFlagFile);
-        }
-
         try {
-            File::delete($zipFile);
             $this->removeDirectory($extractPath);
         } catch (\Exception $e) {
             warning('Could not remove temporary files: '.$e->getMessage());

@@ -47,7 +47,7 @@ class WatchCommand extends Command
                 );
             } else {
                 // Support shorthands: 'a' for android, 'i' for ios
-                $platform = match(strtolower($platform)) {
+                $platform = match (strtolower($platform)) {
                     'android', 'a' => 'android',
                     'ios', 'i' => 'ios',
                     default => $platform,

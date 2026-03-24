@@ -2,6 +2,7 @@
 
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 if (isset($_SERVER['HTTP_COOKIE'])) {
     parse_str(str_replace('; ', '&', $_SERVER['HTTP_COOKIE']), $cookies);
@@ -41,7 +42,7 @@ try {
         $kernel->terminate($request, $response);
 
         $code = $response->getStatusCode();
-        $status = \Symfony\Component\HttpFoundation\Response::$statusTexts[$code];
+        $status = Response::$statusTexts[$code];
         echo "HTTP/1.1 {$code} {$status}\r\n";
 
         foreach ($response->headers->all() as $name => $values) {

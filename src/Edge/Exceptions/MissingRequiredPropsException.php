@@ -16,7 +16,7 @@ class MissingRequiredPropsException extends Exception
         $bladeTag = $this->toBladeTag($componentName);
 
         $message = "EDGE Component <native:{$bladeTag}> is missing required properties: {$propsFormatted}. ";
-        $message .= "Add these attributes to your component: ";
+        $message .= 'Add these attributes to your component: ';
         $message .= implode(' ', array_map(fn ($p) => "{$p}=\"...\"", $missingProps));
 
         parent::__construct($message);

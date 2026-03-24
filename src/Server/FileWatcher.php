@@ -7,10 +7,15 @@ use React\EventLoop\LoopInterface;
 class FileWatcher
 {
     private LoopInterface $loop;
+
     private array $watchPaths;
+
     private array $watchExtensions;
+
     private array $fileHashes = [];
+
     private $onChange;
+
     private $output;
 
     public function __construct(LoopInterface $loop, array $watchPaths, array $watchExtensions, callable $onChange, $output = null)
@@ -32,14 +37,14 @@ class FileWatcher
             $this->checkForChanges();
         });
 
-        $this->log("File watcher started for: " . implode(', ', $this->watchPaths));
+        $this->log('File watcher started for: '.implode(', ', $this->watchPaths));
     }
 
     private function scanFiles()
     {
         foreach ($this->watchPaths as $path) {
             $fullPath = base_path($path);
-            if (!is_dir($fullPath)) {
+            if (! is_dir($fullPath)) {
                 continue;
             }
 
@@ -55,7 +60,7 @@ class FileWatcher
                 continue;
             }
 
-            $filePath = $dir . DIRECTORY_SEPARATOR . $file;
+            $filePath = $dir.DIRECTORY_SEPARATOR.$file;
 
             if (is_dir($filePath)) {
                 $this->scanDirectory($filePath);
@@ -68,10 +73,11 @@ class FileWatcher
     private function shouldWatch($filePath)
     {
         foreach ($this->watchExtensions as $ext) {
-            if (str_ends_with($filePath, '.' . $ext)) {
+            if (str_ends_with($filePath, '.'.$ext)) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -81,15 +87,15 @@ class FileWatcher
 
         foreach ($this->watchPaths as $path) {
             $fullPath = base_path($path);
-            if (!is_dir($fullPath)) {
+            if (! is_dir($fullPath)) {
                 continue;
             }
 
             $this->checkDirectory($fullPath, $changedFiles);
         }
 
-        if (!empty($changedFiles)) {
-            $this->log("Files changed: " . count($changedFiles));
+        if (! empty($changedFiles)) {
+            $this->log('Files changed: '.count($changedFiles));
             ($this->onChange)($changedFiles);
         }
     }
@@ -102,14 +108,14 @@ class FileWatcher
                 continue;
             }
 
-            $filePath = $dir . DIRECTORY_SEPARATOR . $file;
+            $filePath = $dir.DIRECTORY_SEPARATOR.$file;
 
             if (is_dir($filePath)) {
                 $this->checkDirectory($filePath, $changedFiles);
             } elseif (is_file($filePath) && $this->shouldWatch($filePath)) {
                 $currentHash = md5_file($filePath);
 
-                if (!isset($this->fileHashes[$filePath])) {
+                if (! isset($this->fileHashes[$filePath])) {
                     // New file
                     $this->fileHashes[$filePath] = $currentHash;
                     $changedFiles[] = $filePath;

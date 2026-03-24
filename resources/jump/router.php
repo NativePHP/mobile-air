@@ -1,5 +1,7 @@
 <?php
 
+use Endroid\QrCode\Builder\Builder;
+
 /**
  * NativePHP Jump Server Router
  *
@@ -32,32 +34,38 @@ $path = parse_url($uri, PHP_URL_PATH);
 $path = rtrim($path, '/');
 
 // Helper function to format bytes
-function formatBytes($bytes) {
+function formatBytes($bytes)
+{
     $units = ['B', 'KB', 'MB', 'GB'];
     $bytes = max($bytes, 0);
     $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
     $pow = min($pow, count($units) - 1);
     $bytes /= (1 << (10 * $pow));
-    return round($bytes, 2) . ' ' . $units[$pow];
+
+    return round($bytes, 2).' '.$units[$pow];
 }
 
 // Helper function to parse device name from user agent
-function parseDeviceName($userAgent) {
+function parseDeviceName($userAgent)
+{
     if (str_contains($userAgent, 'Android')) {
         if (preg_match('/;\s*([^;]+)\s+Build\//', $userAgent, $matches)) {
             return trim($matches[1]);
         }
+
         return 'Android device';
     } elseif (str_contains($userAgent, 'iPhone')) {
         return 'iPhone';
     } elseif (str_contains($userAgent, 'iPad')) {
         return 'iPad';
     }
+
     return 'Unknown device';
 }
 
 // Helper function to log to parent process
-function jumpLog($message) {
+function jumpLog($message)
+{
     // Write to stderr so parent process can capture it
     // Note: STDERR constant is not available in PHP's built-in server
     $stderr = @fopen('php://stderr', 'w');
@@ -75,7 +83,7 @@ if ($path === '/favicon.ico' || str_ends_with($path, '.map')) {
 
 // Handle ZIP download endpoint
 if ($path === '/jump/download') {
-    if (!$zipPath || !file_exists($zipPath)) {
+    if (! $zipPath || ! file_exists($zipPath)) {
         http_response_code(500);
         echo 'App bundle not available. Please restart the server.';
         exit;
@@ -94,7 +102,7 @@ if ($path === '/jump/download') {
 
     // Minimal headers - match what Workerman's withFile() sends
     header('Content-Type: application/zip');
-    header('Content-Length: ' . $fileSizeBytes);
+    header('Content-Length: '.$fileSizeBytes);
     header('Content-Disposition: attachment; filename="app.zip"');
 
     // Use readfile - simplest approach
@@ -117,13 +125,13 @@ if ($path === '/jump/info') {
 // Handle QR code page
 if ($path === '/jump/qr' || $path === '/jump') {
     // Load Laravel's autoloader only for QR page (needs Endroid library)
-    if ($basePath && file_exists($basePath . '/vendor/autoload.php')) {
-        require_once $basePath . '/vendor/autoload.php';
+    if ($basePath && file_exists($basePath.'/vendor/autoload.php')) {
+        require_once $basePath.'/vendor/autoload.php';
     }
 
     try {
         // Check if Endroid QR Code is available
-        if (!class_exists(\Endroid\QrCode\Builder\Builder::class)) {
+        if (! class_exists(Builder::class)) {
             throw new Exception('QR Code library not available. Make sure endroid/qr-code is installed.');
         }
 
@@ -132,11 +140,11 @@ if ($path === '/jump/qr' || $path === '/jump') {
         // Create JSON data for the QR code
         $qrData = json_encode([
             'host' => $displayHost,
-            'port' => (string)$httpPort,
+            'port' => (string) $httpPort,
         ]);
 
         // Generate QR code
-        $result = \Endroid\QrCode\Builder\Builder::create()
+        $result = Builder::create()
             ->data($qrData)
             ->size(300)
             ->margin(10)
@@ -147,7 +155,7 @@ if ($path === '/jump/qr' || $path === '/jump') {
         // Generate HTML - use offline version if flag is set
         global $offlineMode;
         $viewFile = $offlineMode ? 'qr-offline.blade.php' : 'qr.blade.php';
-        $viewPath = __DIR__ . '/views/' . $viewFile;
+        $viewPath = __DIR__.'/views/'.$viewFile;
 
         if (file_exists($viewPath)) {
             // Read blade file and do simple variable substitution
@@ -166,7 +174,7 @@ if ($path === '/jump/qr' || $path === '/jump') {
 
     } catch (Exception $e) {
         http_response_code(500);
-        echo 'Error generating QR code: ' . $e->getMessage();
+        echo 'Error generating QR code: '.$e->getMessage();
         exit;
     }
 }
@@ -177,7 +185,8 @@ proxyToLaravel($laravelPort);
 /**
  * Generate QR code HTML page - matches the exact design from qr.blade.php
  */
-function generateQrHtml($appName, $qrCodeDataUri, $displayHost, $port) {
+function generateQrHtml($appName, $qrCodeDataUri, $displayHost, $port)
+{
     return <<<HTML
 <!DOCTYPE html>
 <html lang="en">
@@ -877,7 +886,8 @@ HTML;
 /**
  * Proxy request to Laravel development server
  */
-function proxyToLaravel($laravelPort) {
+function proxyToLaravel($laravelPort)
+{
     $method = $_SERVER['REQUEST_METHOD'];
     $uri = $_SERVER['REQUEST_URI'];
     $laravelUrl = "http://127.0.0.1:{$laravelPort}{$uri}";
@@ -895,7 +905,7 @@ function proxyToLaravel($laravelPort) {
         }
     }
     if (isset($_SERVER['CONTENT_TYPE'])) {
-        $headers[] = "Content-Type: " . $_SERVER['CONTENT_TYPE'];
+        $headers[] = 'Content-Type: '.$_SERVER['CONTENT_TYPE'];
     }
 
     // Get request body for POST/PUT/PATCH
@@ -927,6 +937,7 @@ function proxyToLaravel($laravelPort) {
     if ($response === false) {
         http_response_code(502);
         echo "Bad Gateway: Could not connect to Laravel on port {$laravelPort}. Error: {$error}";
+
         return;
     }
 

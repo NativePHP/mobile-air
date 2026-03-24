@@ -146,7 +146,7 @@ jobs:
         cd /tmp/test-app
         
         echo "=== Testing native:install android ==="
-        php artisan native:install android --force --without-icu --no-interaction
+        php artisan native:install android --force --no-interaction
         
         echo "=== Verifying Android project structure ==="
         ls -la nativephp/

@@ -2,7 +2,6 @@
 
 namespace Native\Mobile\Commands;
 
-use Endroid\QrCode\Builder\Builder;
 use Illuminate\Console\Command;
 
 use function Laravel\Prompts\intro;
@@ -12,9 +11,6 @@ class JumpCommand extends Command
 {
     protected $signature = 'native:jump
                             {platform? : Target platform (android/a or ios/i)}
-                            {--platform= : Target platform (android/a or ios/i)}
-                            {--ios : Target iOS platform (shorthand for --platform=ios)}
-                            {--android : Target Android platform (shorthand for --platform=android)}
                             {--host=0.0.0.0 : The host address to serve the application on}
                             {--ip= : The IP address to display in the QR code (overrides auto-detection)}
                             {--http-port= : The HTTP port to serve on}
@@ -25,32 +21,28 @@ class JumpCommand extends Command
     protected $description = 'Start the NativePHP development server for testing mobile apps';
 
     private int $laravelPort;
+
     private string $displayHost;
+
     private string $platform;
 
     public function handle()
     {
         intro('NativePHP Jump Server');
 
-        // Get platform (flags take priority, then argument, then option, then prompt)
-        if ($this->option('ios')) {
-            $this->platform = 'ios';
-        } elseif ($this->option('android')) {
-            $this->platform = 'android';
+        // Get platform from argument (android/a, ios/i) or prompt
+        $platform = $this->argument('platform');
+
+        if ($platform && in_array(strtolower($platform), ['android', 'a', 'ios', 'i'])) {
+            $this->platform = match (strtolower($platform)) {
+                'android', 'a' => 'android',
+                'ios', 'i' => 'ios',
+            };
         } else {
-            $platform = $this->argument('platform') ?? $this->option('platform');
-            
-            if ($platform && in_array(strtolower($platform), ['android', 'ios', 'a', 'i'])) {
-                $this->platform = match(strtolower($platform)) {
-                    'android', 'a' => 'android',
-                    'ios', 'i' => 'ios',
-                };
-            } else {
-                $this->platform = select(
-                    label: 'Select target platform',
-                    options: ['android' => 'Android', 'ios' => 'iOS'],
-                );
-            }
+            $this->platform = select(
+                label: 'Select target platform',
+                options: ['android' => 'Android', 'ios' => 'iOS'],
+            );
         }
 
         // Run npm build for the selected platform
@@ -68,6 +60,7 @@ class JumpCommand extends Command
         $httpPort = $this->findAvailablePort($httpPort);
         if ($httpPort === null) {
             $this->error('Cannot start server: No available HTTP port found.');
+
             return self::FAILURE;
         }
 
@@ -76,9 +69,9 @@ class JumpCommand extends Command
 
         // Pre-build the Laravel bundle ZIP
         $buildPath = storage_path('app/native-build');
-        $zipPath = $buildPath . '/app.zip';
+        $zipPath = $buildPath.'/app.zip';
 
-        if (!is_dir($buildPath)) {
+        if (! is_dir($buildPath)) {
             mkdir($buildPath, 0755, true);
         }
 
@@ -118,8 +111,9 @@ class JumpCommand extends Command
             }
             $bundleResult = $this->createZipWithProgress($zipPath, $this->displayHost);
 
-            if (!$bundleResult) {
+            if (! $bundleResult) {
                 $this->error('Failed to create Laravel bundle. Cannot start server.');
+
                 return self::FAILURE;
             }
 
@@ -138,10 +132,11 @@ class JumpCommand extends Command
      */
     private function startPhpServer(string $host, int $httpPort, string $zipPath, bool $openQr): void
     {
-        $routerPath = __DIR__ . '/../../resources/jump/router.php';
+        $routerPath = __DIR__.'/../../resources/jump/router.php';
 
-        if (!file_exists($routerPath)) {
+        if (! file_exists($routerPath)) {
             $this->error("Router script not found at: {$routerPath}");
+
             return;
         }
 
@@ -159,7 +154,7 @@ class JumpCommand extends Command
         $fullEnv = array_merge($_ENV, $_SERVER, $env);
 
         // Filter to only string values
-        $fullEnv = array_filter($fullEnv, fn($v) => is_string($v) || is_numeric($v));
+        $fullEnv = array_filter($fullEnv, fn ($v) => is_string($v) || is_numeric($v));
 
         $this->displayServerInfo($host, $httpPort, $this->laravelPort);
 
@@ -188,8 +183,9 @@ class JumpCommand extends Command
 
         $process = proc_open($cmd, $descriptorSpec, $pipes, base_path(), $fullEnv);
 
-        if (!is_resource($process)) {
+        if (! is_resource($process)) {
             $this->error('Failed to start PHP server');
+
             return;
         }
 
@@ -205,14 +201,22 @@ class JumpCommand extends Command
             pcntl_signal(SIGINT, function () use ($process, &$pipes) {
                 $this->newLine();
                 $this->components->info('Shutting down server...');
-                if (is_resource($pipes[1])) fclose($pipes[1]);
-                if (is_resource($pipes[2])) fclose($pipes[2]);
+                if (is_resource($pipes[1])) {
+                    fclose($pipes[1]);
+                }
+                if (is_resource($pipes[2])) {
+                    fclose($pipes[2]);
+                }
                 proc_terminate($process);
                 exit(0);
             });
             pcntl_signal(SIGTERM, function () use ($process, &$pipes) {
-                if (is_resource($pipes[1])) fclose($pipes[1]);
-                if (is_resource($pipes[2])) fclose($pipes[2]);
+                if (is_resource($pipes[1])) {
+                    fclose($pipes[1]);
+                }
+                if (is_resource($pipes[2])) {
+                    fclose($pipes[2]);
+                }
                 proc_terminate($process);
                 exit(0);
             });
@@ -222,7 +226,7 @@ class JumpCommand extends Command
         while (true) {
             // Check if process is still running
             $status = proc_get_status($process);
-            if (!$status['running']) {
+            if (! $status['running']) {
                 break;
             }
 
@@ -230,7 +234,7 @@ class JumpCommand extends Command
             $stdout = fgets($pipes[1]);
             if ($stdout) {
                 // Filter out noisy requests
-                if (!str_contains($stdout, 'favicon.ico') && !str_contains($stdout, '.map')) {
+                if (! str_contains($stdout, 'favicon.ico') && ! str_contains($stdout, '.map')) {
                     // Parse and format the output
                     $this->formatServerOutput($stdout);
                 }
@@ -297,7 +301,7 @@ class JumpCommand extends Command
         $mode = $this->platform;
 
         // Check if package.json exists
-        if (!file_exists(base_path('package.json'))) {
+        if (! file_exists(base_path('package.json'))) {
             return;
         }
 
@@ -306,11 +310,12 @@ class JumpCommand extends Command
 
         $this->components->task("Building assets for {$mode}", function () use ($mode, &$buildOutput, &$buildExitCode) {
             $command = "npm run build -- --mode={$mode}";
-            exec("cd " . escapeshellarg(base_path()) . " && {$command} 2>&1", $buildOutput, $buildExitCode);
+            exec('cd '.escapeshellarg(base_path())." && {$command} 2>&1", $buildOutput, $buildExitCode);
+
             return $buildExitCode === 0;
         });
 
-        if ($buildExitCode !== 0 && !empty($buildOutput)) {
+        if ($buildExitCode !== 0 && ! empty($buildOutput)) {
             $this->line(implode("\n", array_slice($buildOutput, -5)));
         }
     }
@@ -320,11 +325,11 @@ class JumpCommand extends Command
         $source = realpath(base_path());
         $buildPath = storage_path('app/native-build');
 
-        if (!is_dir($buildPath)) {
+        if (! is_dir($buildPath)) {
             mkdir($buildPath, 0755, true);
         }
 
-        $tempDir = $buildPath . DIRECTORY_SEPARATOR . 'temp-' . uniqid();
+        $tempDir = $buildPath.DIRECTORY_SEPARATOR.'temp-'.uniqid();
 
         // Exclude directories - match run command's pattern
         $excludedDirs = [
@@ -346,22 +351,22 @@ class JumpCommand extends Command
             $this->copyFilesWithProgress($source, $tempDir, $excludedDirs);
 
             // Copy and clean .env file
-            if (file_exists($source . DIRECTORY_SEPARATOR . '.env')) {
-                $envPath = $tempDir . DIRECTORY_SEPARATOR . '.env';
-                copy($source . DIRECTORY_SEPARATOR . '.env', $envPath);
+            if (file_exists($source.DIRECTORY_SEPARATOR.'.env')) {
+                $envPath = $tempDir.DIRECTORY_SEPARATOR.'.env';
+                copy($source.DIRECTORY_SEPARATOR.'.env', $envPath);
                 $this->cleanEnvFile($envPath);
             }
 
             // Copy native.php bootstrap file
-            $nativePhpSource = __DIR__ . '/../../resources/jump/native/native.php';
-            $nativePhpDest = $tempDir . '/native.php';
+            $nativePhpSource = __DIR__.'/../../resources/jump/native/native.php';
+            $nativePhpDest = $tempDir.'/native.php';
             if (file_exists($nativePhpSource)) {
                 copy($nativePhpSource, $nativePhpDest);
             }
 
             // Copy artisan.php wrapper
-            $artisanPhpSource = __DIR__ . '/../../resources/jump/native/artisan.php';
-            $artisanPhpDest = $tempDir . '/artisan.php';
+            $artisanPhpSource = __DIR__.'/../../resources/jump/native/artisan.php';
+            $artisanPhpDest = $tempDir.'/artisan.php';
             if (file_exists($artisanPhpSource)) {
                 copy($artisanPhpSource, $artisanPhpDest);
             }
@@ -375,11 +380,11 @@ class JumpCommand extends Command
                 'storage/logs',
             ];
             foreach ($requiredDirs as $dir) {
-                $dirPath = $tempDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $dir);
-                if (!is_dir($dirPath)) {
+                $dirPath = $tempDir.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $dir);
+                if (! is_dir($dirPath)) {
                     mkdir($dirPath, 0755, true);
                 }
-                file_put_contents($dirPath . DIRECTORY_SEPARATOR . '.gitkeep', '');
+                file_put_contents($dirPath.DIRECTORY_SEPARATOR.'.gitkeep', '');
             }
 
             // Add dev server config
@@ -390,7 +395,7 @@ class JumpCommand extends Command
                     'connectedAt' => date('c'),
                 ];
                 file_put_contents(
-                    $tempDir . '/storage/framework/native_dev_server.json',
+                    $tempDir.'/storage/framework/native_dev_server.json',
                     json_encode($devServerConfig, JSON_PRETTY_PRINT)
                 );
             }
@@ -401,23 +406,24 @@ class JumpCommand extends Command
             // Phase 3: Cleanup
             $this->cleanupTempDir($tempDir);
 
-            if (!file_exists($zipPath) || filesize($zipPath) === 0) {
-                throw new \Exception("ZIP file was not created or is empty");
+            if (! file_exists($zipPath) || filesize($zipPath) === 0) {
+                throw new \Exception('ZIP file was not created or is empty');
             }
 
             return true;
         } catch (\Exception $e) {
-            $this->error("Failed to create bundle: " . $e->getMessage());
+            $this->error('Failed to create bundle: '.$e->getMessage());
             if (is_dir($tempDir)) {
                 $this->cleanupTempDir($tempDir);
             }
+
             return false;
         }
     }
 
     private function copyFilesWithProgress($source, $destination, $excludedDirs = []): void
     {
-        if (!is_dir($destination)) {
+        if (! is_dir($destination)) {
             mkdir($destination, 0755, true);
         }
 
@@ -441,6 +447,7 @@ class JumpCommand extends Command
         $this->components->task('Copying files', function () use ($source, $destination, $excludeArgs, &$exitCode) {
             $cmd = "robocopy \"{$source}\" \"{$destination}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}";
             exec($cmd, $output, $exitCode);
+
             return $exitCode < 8;
         });
 
@@ -453,12 +460,13 @@ class JumpCommand extends Command
     {
         $excludedDirs[] = 'vendor/*/vendor';
         $excludedDirs[] = 'vendor/nativephp/mobile/vendor';
-        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='" . ltrim($d, '/\\') . "'", $excludedDirs));
+        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".ltrim($d, '/\\')."'", $excludedDirs));
 
         $exitCode = 0;
         $this->components->task('Copying files', function () use ($source, $destination, $excludeFlags, &$exitCode) {
             $cmd = "rsync -aL {$excludeFlags} \"{$source}/\" \"{$destination}/\"";
             exec($cmd, $output, $exitCode);
+
             return $exitCode === 0;
         });
 
@@ -499,7 +507,7 @@ class JumpCommand extends Command
 
                 $shouldSkip = false;
                 foreach ($excludedDirs as $excluded) {
-                    if (strpos($relativePath, $excluded . DIRECTORY_SEPARATOR) === 0 || $relativePath === $excluded) {
+                    if (strpos($relativePath, $excluded.DIRECTORY_SEPARATOR) === 0 || $relativePath === $excluded) {
                         $shouldSkip = true;
                         break;
                     }
@@ -526,12 +534,13 @@ class JumpCommand extends Command
             ];
 
             foreach ($requiredDirs as $dir) {
-                if (!$zip->statName($dir)) {
+                if (! $zip->statName($dir)) {
                     $zip->addEmptyDir($dir);
                 }
             }
 
             $zip->close();
+
             return true;
         });
     }
@@ -540,10 +549,10 @@ class JumpCommand extends Command
     {
         $sevenZip = config('nativephp.android.7zip-location', 'C:\\Program Files\\7-Zip\\7z.exe');
 
-        if (!file_exists($sevenZip)) {
+        if (! file_exists($sevenZip)) {
             $this->error("7-Zip not found at: {$sevenZip}");
-            $this->line("Install 7-Zip from https://7-zip.org or set NATIVEPHP_7ZIP_LOCATION in your .env");
-            throw new \Exception("7-Zip not found");
+            $this->line('Install 7-Zip from https://7-zip.org or set NATIVEPHP_7ZIP_LOCATION in your .env');
+            throw new \Exception('7-Zip not found');
         }
 
         if (file_exists($destination)) {
@@ -554,6 +563,7 @@ class JumpCommand extends Command
         $this->components->task('Creating zip archive', function () use ($sevenZip, $source, $destination, &$exitCode) {
             $cmd = "\"{$sevenZip}\" a -tzip \"{$destination}\" \"{$source}\\*\" -xr!node_modules";
             exec($cmd, $output, $exitCode);
+
             return $exitCode === 0;
         });
 
@@ -561,14 +571,14 @@ class JumpCommand extends Command
             throw new \Exception("7-Zip failed with exit code {$exitCode}");
         }
 
-        if (!file_exists($destination) || filesize($destination) === 0) {
-            throw new \Exception("7-Zip failed to create the archive");
+        if (! file_exists($destination) || filesize($destination) === 0) {
+            throw new \Exception('7-Zip failed to create the archive');
         }
     }
 
     private function cleanEnvFile($envPath)
     {
-        if (!file_exists($envPath)) {
+        if (! file_exists($envPath)) {
             return;
         }
 
@@ -588,7 +598,7 @@ class JumpCommand extends Command
 
     private function cleanupTempDir($tempDir)
     {
-        if (!is_dir($tempDir)) {
+        if (! is_dir($tempDir)) {
             return;
         }
 
@@ -598,7 +608,8 @@ class JumpCommand extends Command
                 return;
             }
         } else {
-            exec("rm -rf " . escapeshellarg($tempDir));
+            exec('rm -rf '.escapeshellarg($tempDir));
+
             return;
         }
 
@@ -607,7 +618,7 @@ class JumpCommand extends Command
 
     private function recursiveDelete($dir)
     {
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             return;
         }
 
@@ -635,7 +646,7 @@ class JumpCommand extends Command
         $pow = min($pow, count($units) - 1);
         $bytes /= (1 << (10 * $pow));
 
-        return round($bytes, 2) . ' ' . $units[$pow];
+        return round($bytes, 2).' '.$units[$pow];
     }
 
     private function displayServerInfo($host, $httpPort, $laravelPort)
@@ -658,7 +669,7 @@ class JumpCommand extends Command
                 $ips = array_filter(array_map('trim', explode("\n", $output)));
             }
             if (empty($ips)) {
-                $output = shell_exec("hostname -I 2>/dev/null");
+                $output = shell_exec('hostname -I 2>/dev/null');
                 if ($output) {
                     $ips = array_filter(array_map('trim', explode(' ', $output)));
                 }
@@ -669,7 +680,7 @@ class JumpCommand extends Command
                 $ips = array_filter(array_map('trim', explode("\n", $output)));
             }
             if (empty($ips)) {
-                $output = shell_exec("ipconfig 2>NUL");
+                $output = shell_exec('ipconfig 2>NUL');
                 if ($output && preg_match_all('/IPv4 Address[.\s]*:\s*(\d+\.\d+\.\d+\.\d+)/', $output, $matches)) {
                     $ips = $matches[1];
                 }
@@ -684,6 +695,7 @@ class JumpCommand extends Command
             if (str_starts_with($ip, '169.254.')) {
                 return false;
             }
+
             return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
         }));
     }
@@ -691,6 +703,7 @@ class JumpCommand extends Command
     private function getLocalIpAddress()
     {
         $ips = $this->getAllLocalIpAddresses();
+
         return $ips[0] ?? null;
     }
 
@@ -703,9 +716,9 @@ class JumpCommand extends Command
             $this->openOrRefreshMacOS($url);
         } elseif (PHP_OS_FAMILY === 'Linux') {
             $commands = [
-                "xdg-open " . escapeshellarg($url) . " > /dev/null 2>&1 &",
-                "sensible-browser " . escapeshellarg($url) . " > /dev/null 2>&1 &",
-                "x-www-browser " . escapeshellarg($url) . " > /dev/null 2>&1 &",
+                'xdg-open '.escapeshellarg($url).' > /dev/null 2>&1 &',
+                'sensible-browser '.escapeshellarg($url).' > /dev/null 2>&1 &',
+                'x-www-browser '.escapeshellarg($url).' > /dev/null 2>&1 &',
             ];
             foreach ($commands as $command) {
                 exec($command, $output, $returnCode);
@@ -714,13 +727,13 @@ class JumpCommand extends Command
                 }
             }
         } elseif (PHP_OS_FAMILY === 'Windows') {
-            exec('start "" ' . escapeshellarg($url));
+            exec('start "" '.escapeshellarg($url));
         }
     }
 
     private function openOrRefreshMacOS($url)
     {
-        $script = <<<APPLESCRIPT
+        $script = <<<'APPLESCRIPT'
 tell application "System Events"
     set browserList to {"Google Chrome", "Safari", "Arc", "Brave Browser", "Microsoft Edge"}
     set foundTab to false
@@ -774,7 +787,7 @@ tell application "System Events"
 end tell
 APPLESCRIPT;
 
-        $result = trim(shell_exec("osascript -e " . escapeshellarg($script) . " 2>/dev/null") ?? '');
+        $result = trim(shell_exec('osascript -e '.escapeshellarg($script).' 2>/dev/null') ?? '');
 
         if ($result !== 'true') {
             exec("open '{$url}' > /dev/null 2>&1 &");
@@ -788,21 +801,22 @@ APPLESCRIPT;
         if (PHP_OS_FAMILY === 'Windows') {
             // Kill PHP servers running the jump router
             $output = shell_exec('wmic process where "commandline like \'%router.php%\'" get processid 2>NUL');
-            if (!$output) {
+            if (! $output) {
                 $output = shell_exec('powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like \'*router.php*\' } | Select-Object -ExpandProperty ProcessId" 2>NUL');
             }
 
             if ($output) {
-                $pids = array_filter(preg_split('/\s+/', trim($output)), function($pid) use ($currentPid) {
-                    return is_numeric($pid) && $pid != $currentPid && !empty($pid);
+                $pids = array_filter(preg_split('/\s+/', trim($output)), function ($pid) use ($currentPid) {
+                    return is_numeric($pid) && $pid != $currentPid && ! empty($pid);
                 });
 
                 if (count($pids) > 0) {
-                    $this->components->task('Cleaning up ' . count($pids) . ' existing server(s)', function () use ($pids) {
+                    $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
                         foreach ($pids as $pid) {
                             exec("taskkill /F /PID {$pid} 2>NUL");
                         }
                         usleep(500000);
+
                         return true;
                     });
                 }
@@ -813,16 +827,17 @@ APPLESCRIPT;
 
             if ($output) {
                 $pids = array_filter(explode("\n", trim($output)));
-                $pids = array_filter($pids, function($pid) use ($currentPid) {
-                    return $pid != $currentPid && !empty($pid);
+                $pids = array_filter($pids, function ($pid) use ($currentPid) {
+                    return $pid != $currentPid && ! empty($pid);
                 });
 
                 if (count($pids) > 0) {
-                    $this->components->task('Cleaning up ' . count($pids) . ' existing server(s)', function () use ($pids) {
+                    $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
                         foreach ($pids as $pid) {
                             exec("kill -9 {$pid} 2>/dev/null");
                         }
                         usleep(500000);
+
                         return true;
                     });
                 }
@@ -835,8 +850,10 @@ APPLESCRIPT;
         $connection = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
         if ($connection) {
             fclose($connection);
+
             return true;
         }
+
         return false;
     }
 
@@ -844,14 +861,16 @@ APPLESCRIPT;
     {
         $port = $startPort;
         for ($i = 0; $i < $maxAttempts; $i++) {
-            if (!$this->isPortInUse($port) && !in_array($port, $excludePorts)) {
+            if (! $this->isPortInUse($port) && ! in_array($port, $excludePorts)) {
                 if ($port !== $startPort) {
                     $this->line("  Port {$startPort} in use, using {$port}");
                 }
+
                 return $port;
             }
             $port++;
         }
+
         return null;
     }
 }

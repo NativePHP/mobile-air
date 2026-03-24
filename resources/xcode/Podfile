@@ -5,7 +5,8 @@ project 'NativePHP.xcodeproj'
 def shared_pods
   use_frameworks! :linkage => :static
 
-  # NATIVEPHP_PLUGIN_PODS
+  # NATIVEPHP_PLUGIN_PODS_START
+  # NATIVEPHP_PLUGIN_PODS_END
 end
 
 target 'NativePHP' do

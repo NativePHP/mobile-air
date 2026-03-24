@@ -2,6 +2,7 @@
 
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 $_timing = ['start' => microtime(true)];
 
@@ -10,8 +11,8 @@ $_opcacheInfo = 'unknown';
 if (function_exists('opcache_get_status')) {
     $opcacheStatus = @opcache_get_status(false);
     if ($opcacheStatus) {
-        $_opcacheInfo = 'enabled=' . ($opcacheStatus['opcache_enabled'] ? 'YES' : 'NO');
-        $_opcacheInfo .= ',cached=' . ($opcacheStatus['opcache_statistics']['num_cached_scripts'] ?? 0);
+        $_opcacheInfo = 'enabled='.($opcacheStatus['opcache_enabled'] ? 'YES' : 'NO');
+        $_opcacheInfo .= ',cached='.($opcacheStatus['opcache_statistics']['num_cached_scripts'] ?? 0);
     } else {
         $_opcacheInfo = 'disabled';
     }
@@ -74,8 +75,16 @@ try {
     $request = Request::capture();
     $_timing['capture'] = microtime(true);
 
+    // Bind request so service providers can resolve it during bootstrap
+    $app->instance('request', $request);
+
     $kernel->bootstrap();
     $_timing['kernel_bootstrap'] = microtime(true);
+
+    // Bind originalRequest AFTER bootstrap — Filament's SupportServiceProvider
+    // registers a scoped('originalRequest') during boot that would overwrite
+    // an earlier instance() call. This must come after to take precedence.
+    $app->instance('originalRequest', $request);
 
     $response = $kernel->handle($request);
     $_timing['handle'] = microtime(true);
@@ -98,7 +107,7 @@ try {
 
     // Send headers and body manually (for your bridge)
     $code = $response->getStatusCode();
-    $status = \Symfony\Component\HttpFoundation\Response::$statusTexts[$code] ?? 'OK';
+    $status = Response::$statusTexts[$code] ?? 'OK';
     echo "HTTP/1.1 {$code} {$status}\r\n";
 
     // Add timing header

@@ -26,19 +26,27 @@ class AppUpdateManager {
         return appPath
     }
 
-    func ensureAppExists() {
+    /// Returns true if extraction or update was applied (artisan commands needed).
+    @discardableResult
+    func ensureAppExists() -> Bool {
         print("📦 AppUpdateManager.ensureAppExists() starting")
+
+        var didExtract = false
 
         // Check if app exists in documents directory and if bundled version should be extracted
         if !hasApp() || shouldUpdateFromBundle() {
             copyBundledApp()
+            didExtract = true
         }
 
         // Check for and apply any pending updates
-        applyPendingUpdates()
+        if applyPendingUpdates() {
+            didExtract = true
+        }
 
         appReady = true
-        print("✅ App is ready")
+        print("✅ App is ready (didExtract=\(didExtract))")
+        return didExtract
     }
 
     private func hasApp() -> Bool {
@@ -224,7 +232,8 @@ class AppUpdateManager {
                FileManager.default.fileExists(atPath: bootstrapFile)
     }
 
-    private func applyPendingUpdates() {
+    @discardableResult
+    private func applyPendingUpdates() -> Bool {
         let updateFiles = (try? FileManager.default.contentsOfDirectory(atPath: updatesPath)) ?? []
         let zipFiles = updateFiles.filter { $0.hasSuffix(".zip") }
 
@@ -232,9 +241,10 @@ class AppUpdateManager {
             let zipPath = updatesPath + "/" + zipFile
             if installUpdate(from: zipPath) {
                 // Only install one update at a time
-                break
+                return true
             }
         }
+        return false
     }
 
     private func cleanupOldBackups() {

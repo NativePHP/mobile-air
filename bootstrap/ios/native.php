@@ -37,6 +37,16 @@ $_timing['kernel'] = microtime(true);
 $request = Request::capture();
 $_timing['capture'] = microtime(true);
 
+// Bind request so service providers can resolve it during bootstrap
+$app->instance('request', $request);
+
+$kernel->bootstrap();
+
+// Bind originalRequest AFTER bootstrap — Filament's SupportServiceProvider
+// registers a scoped('originalRequest') during boot that would overwrite
+// an earlier instance() call. This must come after to take precedence.
+$app->instance('originalRequest', $request);
+
 /** @var Response $response */
 $response = $kernel->handle($request);
 $_timing['handle'] = microtime(true);

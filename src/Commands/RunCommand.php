@@ -2,7 +2,9 @@
 
 namespace Native\Mobile\Commands;
 
+use GuzzleHttp\Client;
 use Illuminate\Console\Command;
+use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\ManagesViteDevServer;
 use Native\Mobile\Traits\ManagesWatchman;
@@ -10,6 +12,7 @@ use Native\Mobile\Traits\PlatformFileOperations;
 use Native\Mobile\Traits\RunsAndroid;
 use Native\Mobile\Traits\RunsIos;
 
+use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
@@ -23,8 +26,6 @@ class RunCommand extends Command
     protected $signature = 'native:run
         {os? : Platform to run (android/a or ios/i)}
         {udid?}
-        {--ios : Target iOS platform (shorthand for os=ios|i)}
-        {--android : Target Android platform (shorthand for os=android|a)}
         {--build=debug : debug|release|bundle}
         {--W|watch : Enable hot reloading during development}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
@@ -54,20 +55,13 @@ class RunCommand extends Command
             mkdir($nativephpDir, 0755, true);
         }
 
-        // Get platform (flags take priority over argument)
-        if ($this->option('ios')) {
-            $os = 'ios';
-        } elseif ($this->option('android')) {
-            $os = 'android';
-        } else {
-            $os = $this->argument('os');
-            // Support shorthands: 'a' for android, 'i' for ios
-            if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
-                $os = match(strtolower($os)) {
-                    'android', 'a' => 'android',
-                    'ios', 'i' => 'ios',
-                };
-            }
+        // Get platform from argument (android/a, ios/i)
+        $os = $this->argument('os');
+        if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
+            $os = match (strtolower($os)) {
+                'android', 'a' => 'android',
+                'ios', 'i' => 'ios',
+            };
         }
 
         // Check for WSL environment - Android is not supported in WSL
@@ -84,13 +78,22 @@ class RunCommand extends Command
 
         if (! $os) {
             if (PHP_OS_FAMILY === 'Darwin') {
-                $os = select(
-                    label: 'Which platform would you like to run?',
-                    options: [
-                        'android' => 'Android',
-                        'ios' => 'iOS',
-                    ]
-                );
+                $hasAndroid = is_dir(base_path('nativephp/android'));
+                $hasIos = is_dir(base_path('nativephp/ios'));
+
+                if ($hasAndroid && ! $hasIos) {
+                    $os = 'android';
+                } elseif ($hasIos && ! $hasAndroid) {
+                    $os = 'ios';
+                } else {
+                    $os = select(
+                        label: 'Which platform would you like to run?',
+                        options: [
+                            'android' => 'Android',
+                            'ios' => 'iOS',
+                        ]
+                    );
+                }
             } else {
                 $os = 'android';
             }
@@ -119,6 +122,11 @@ class RunCommand extends Command
 
         intro('Running NativePHP for '.$osName);
 
+        if (! $this->checkForPhpBinaryUpdates()) {
+            return self::FAILURE;
+        }
+        $this->checkForUnregisteredPlugins();
+
         match ($os) {
             'android' => $this->runAndroid(),
             'ios' => $this->runIos(),
@@ -127,6 +135,79 @@ class RunCommand extends Command
         $this->showBifrostBanner();
 
         return self::SUCCESS;
+    }
+
+    protected function checkForPhpBinaryUpdates(): bool
+    {
+        try {
+            $jsonPath = base_path('nativephp.json');
+
+            if (! file_exists($jsonPath)) {
+                return true;
+            }
+
+            $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+            $installedVersion = $nativephp['php']['version'] ?? null;
+
+            if (! $installedVersion) {
+                return true;
+            }
+
+            $parts = explode('.', $installedVersion);
+            $installedMinor = $parts[0].'.'.$parts[1];
+            $runningMinor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+
+            // If the installed binary minor version doesn't match the running PHP, offer to reinstall
+            if ($installedMinor !== $runningMinor) {
+                warning("PHP version mismatch:\n  • Mobile PHP version: {$installedMinor}\n  • CLI PHP version: {$runningMinor}\n\nYour app will not run.");
+
+                if (confirm('Run native:install again to fix this?', default: true)) {
+                    $this->call('native:install', ['--force' => true]);
+
+                    return true;
+                }
+
+                return false;
+            }
+
+            // Check for newer patch version
+            $branch = env('NATIVEPHP_BIN_BRANCH', 'main');
+            $client = new Client;
+            $response = $client->get("https://bin.nativephp.com/{$branch}/versions.json", [
+                'connect_timeout' => 3,
+                'timeout' => 3,
+            ]);
+
+            $versions = json_decode($response->getBody()->getContents(), true);
+            $latestVersion = $versions['versions'][$installedMinor]['php_version'] ?? null;
+
+            if ($latestVersion && version_compare($latestVersion, $installedVersion, '>')) {
+                note("PHP {$latestVersion} is available (installed: {$installedVersion}). Run <comment>php artisan native:install --force</comment> to update.");
+            }
+        } catch (\Throwable) {
+            // Fail silently — this is a non-critical check
+        }
+
+        return true;
+    }
+
+    protected function checkForUnregisteredPlugins(): void
+    {
+        $registry = app(PluginRegistry::class);
+        $unregistered = $registry->unregistered();
+
+        if ($unregistered->isEmpty()) {
+            return;
+        }
+
+        warning('The following plugins are installed but not registered:');
+
+        $unregistered->each(function ($plugin) {
+            $this->components->twoColumnDetail($plugin->name, '<fg=yellow>not registered</>');
+        });
+
+        note('Register them in your NativeServiceProvider or run: php artisan native:plugin:register');
+        $this->newLine();
     }
 
     protected function ensureValidAppId(): void

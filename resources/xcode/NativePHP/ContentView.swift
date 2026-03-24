@@ -182,9 +182,29 @@ struct WebView: UIViewRepresentable {
                 return
             }
 
-            // Handle system URL schemes (tel:, mailto:, sms:) - open with system handler
-            if let scheme = url.scheme?.lowercased(),
-               ["http", "https", "tel", "mailto", "sms", "facetime", "facetime-audio"].contains(scheme) {
+            let scheme = url.scheme?.lowercased() ?? ""
+
+            // Rewrite http(s)://127.0.0.1 to php:// scheme — PHP/Symfony only understands
+            // http/https so redirect()->intended() and $request->fullUrl() will always
+            // produce http:// URLs for the local server. Route through the scheme handler's
+            // redirect path which handles cookie injection from WKHTTPCookieStore.
+            if (scheme == "http" || scheme == "https"),
+               url.host == "127.0.0.1" {
+                var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                components?.scheme = "php"
+                if let phpURL = components?.url {
+                    NotificationCenter.default.post(
+                        name: .redirectToURLNotification,
+                        object: nil,
+                        userInfo: ["url": phpURL.absoluteString]
+                    )
+                }
+                decisionHandler(.cancel)
+                return
+            }
+
+            // Open external URLs and system schemes with the system handler
+            if ["http", "https", "tel", "mailto", "sms", "facetime", "facetime-audio"].contains(scheme) {
                 UIApplication.shared.open(url)
                 decisionHandler(.cancel)
             } else {

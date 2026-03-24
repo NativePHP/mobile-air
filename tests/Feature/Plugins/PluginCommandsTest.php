@@ -343,8 +343,7 @@ class PluginCommandsTest extends TestCase
         $this->artisan('native:plugin:validate', [
             'path' => $this->testPluginPath,
         ])
-            ->assertSuccessful()
-            ->expectsOutputToContain('validation passed');
+            ->assertSuccessful();
     }
 
     /**

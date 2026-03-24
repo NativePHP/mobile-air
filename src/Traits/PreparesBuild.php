@@ -295,6 +295,24 @@ trait PreparesBuild
                 exit(1);
             }
 
+            // Write bundle_meta.json alongside the ZIP for fast boot-time metadata reads
+            $assetsDir = dirname($destinationZip);
+            $bifrostAppId = null;
+            if (file_exists($source.DIRECTORY_SEPARATOR.'.env')) {
+                $envContent = file_get_contents($source.DIRECTORY_SEPARATOR.'.env');
+                if (preg_match('/BIFROST_APP_ID=(.+)/', $envContent, $matches)) {
+                    $bifrostAppId = trim($matches[1]);
+                }
+            }
+            $bundleMeta = json_encode([
+                'version' => $version,
+                'bifrost_app_id' => $bifrostAppId,
+                'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+            ], JSON_PRETTY_PRINT);
+            file_put_contents($assetsDir.DIRECTORY_SEPARATOR.'bundle_meta.json', $bundleMeta);
+            $runtimeMode = config('nativephp.runtime.mode', 'persistent');
+            $this->logToFile("  Written bundle_meta.json: version=$version, bifrost=".($bifrostAppId ?? 'null').", runtime_mode=$runtimeMode");
+
             $sizeMB = round(filesize($destinationZip) / 1024 / 1024, 2);
             $this->logToFile("  Bundle size: {$sizeMB} MB");
             $this->components->twoColumnDetail('Bundle size', "{$sizeMB} MB");
@@ -773,6 +791,19 @@ trait PreparesBuild
         $minifyEnabled = $buildConfig['minify_enabled'] ?? false ? 'true' : 'false';
         $shrinkResources = $buildConfig['shrink_resources'] ?? false ? 'true' : 'false';
         $debugSymbols = $buildConfig['debug_symbols'] ?? 'FULL';
+
+        // SDK version configuration
+        $compileSdk = (int) config('nativephp.android.compile_sdk', 36);
+        $minSdk = (int) config('nativephp.android.min_sdk', 33);
+        $targetSdk = (int) config('nativephp.android.target_sdk', 36);
+
+        $gradleContent = str_replace('REPLACE_COMPILE_SDK', (string) $compileSdk, $gradleContent);
+        $gradleContent = str_replace('REPLACE_MIN_SDK', (string) $minSdk, $gradleContent);
+        $gradleContent = str_replace('REPLACE_TARGET_SDK', (string) $targetSdk, $gradleContent);
+
+        $gradleContent = preg_replace('/compileSdk\s*=\s*\d+/', "compileSdk = $compileSdk", $gradleContent);
+        $gradleContent = preg_replace('/minSdk\s*=\s*\d+/', "minSdk = $minSdk", $gradleContent);
+        $gradleContent = preg_replace('/targetSdk\s*=\s*\d+/', "targetSdk = $targetSdk", $gradleContent);
 
         $gradleContent = str_replace('REPLACE_MINIFY_ENABLED', $minifyEnabled, $gradleContent);
         $gradleContent = str_replace('REPLACE_SHRINK_RESOURCES', $shrinkResources, $gradleContent);

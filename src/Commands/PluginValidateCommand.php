@@ -8,7 +8,6 @@ use Native\Mobile\Plugins\PluginManifest;
 
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\info;
-use function Laravel\Prompts\warning;
 
 class PluginValidateCommand extends Command
 {

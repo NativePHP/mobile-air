@@ -256,3 +256,49 @@ public func NativePHPCall(
         return nil
     }
 }
+
+// MARK: - NativeUI Bridge Functions
+
+/// Called by PHP's nativephp_ui_init() to register the shared memory region
+/// used for native UI rendering. The region pointer can be stored for later use.
+@_cdecl("NativeUI_RegisterRegion")
+public func NativeUI_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
+    guard let region = region else {
+        print("⚠️ NativeUI_RegisterRegion called with nil region")
+        return
+    }
+    print("🖼️ NativeUI_RegisterRegion: region at \(region)")
+    // TODO: Store region pointer for native UI rendering
+}
+
+/// Called by PHP's nativephp_ui_shutdown() to unregister the shared memory region.
+@_cdecl("NativeUI_UnregisterRegion")
+public func NativeUI_UnregisterRegion() {
+    print("🖼️ NativeUI_UnregisterRegion: region released")
+    // TODO: Clear stored region pointer
+}
+
+// MARK: - NativeElement Bridge Functions (stubs)
+
+/// Called by nphp_element_init() to register the element shared memory region.
+/// Stub — full implementation lives on element-yoga branch.
+@_cdecl("NativeElement_RegisterRegion")
+public func NativeElement_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
+    guard let region = region else {
+        print("NativeElement_RegisterRegion called with nil region")
+        return
+    }
+    print("NativeElement_RegisterRegion: region at \(region)")
+}
+
+/// Called by nphp_element_shutdown() to unregister the element region.
+@_cdecl("NativeElement_UnregisterRegion")
+public func NativeElement_UnregisterRegion() {
+    print("NativeElement_UnregisterRegion: region released")
+}
+
+/// Called by nphp_element_publish() / nphp_frame_end() after flat buffer write.
+@_cdecl("NativeElement_PostTreeUpdate")
+public func NativeElement_PostTreeUpdate() {
+    // No-op on v3.1 — element rendering not yet available
+}

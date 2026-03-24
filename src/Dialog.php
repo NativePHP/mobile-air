@@ -2,6 +2,8 @@
 
 namespace Native\Mobile;
 
+use Native\Mobile\Facades\Share;
+
 class Dialog
 {
     /**
@@ -13,7 +15,7 @@ class Dialog
     public function share(string $title, string $text, string $url): void
     {
         // Delegate to Share::url() which uses the god method
-        \Native\Mobile\Facades\Share::url($title, $text, $url);
+        Share::url($title, $text, $url);
     }
 
     public function alert(string $title, string $message, array $buttons = []): PendingAlert

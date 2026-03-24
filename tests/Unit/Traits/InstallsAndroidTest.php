@@ -17,6 +17,8 @@ class InstallsAndroidTest extends TestCase
 
     protected $mockOutput;
 
+    protected bool $forcing = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -30,6 +32,19 @@ class InstallsAndroidTest extends TestCase
         // Mock output for progress bar
         $this->mockOutput = Mockery::mock('Symfony\Component\Console\Output\OutputInterface');
         $this->output = $this->mockOutput;
+
+        // Mock $this->components for task() calls
+        $this->components = new class
+        {
+            public function task(string $title, callable $callback)
+            {
+                $callback();
+            }
+
+            public function twoColumnDetail(...$args) {}
+
+            public function warn(...$args) {}
+        };
     }
 
     protected function tearDown(): void
@@ -72,8 +87,8 @@ class InstallsAndroidTest extends TestCase
         File::makeDirectory($vendorPath, 0755, true);
         File::put($vendorPath.'/new.txt', 'new content');
 
-        // Mock option
-        $this->shouldReceiveOption('force', true);
+        // Set force flag
+        $this->forcing = true;
 
         // Execute
         $this->createAndroidStudioProject();
@@ -83,7 +98,7 @@ class InstallsAndroidTest extends TestCase
         $this->assertFileExists($androidPath.'/new.txt');
     }
 
-    public function test_install_php_android_downloads_and_extracts()
+    public function test_install_php_android_with_icu_json()
     {
         $this->mockConfirm('➕ Include ICU-enabled PHP binary? (~30MB extra)', true);
 
@@ -91,18 +106,15 @@ class InstallsAndroidTest extends TestCase
         $destination = $this->testProjectPath.'/nativephp/android/app/src/main';
         File::makeDirectory($destination, 0755, true);
 
-        // Test ICU flag file creation
-        $icuFlagFile = $this->testProjectPath.'/nativephp/android/.icu-enabled';
+        // ICU preference is now stored in nativephp.json by InstallCommand
+        $jsonPath = $this->testProjectPath.'/nativephp.json';
+        File::put($jsonPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
 
-        // Execute (simplified version for testing)
-        $this->installPHPAndroidSimplified(true);
-
-        // Assert ICU flag file was created
-        $this->assertFileExists($icuFlagFile);
-        $this->assertEquals('1', File::get($icuFlagFile));
+        $data = json_decode(File::get($jsonPath), true);
+        $this->assertTrue($data['php']['icu']);
     }
 
-    public function test_install_php_android_without_icu()
+    public function test_install_php_android_without_icu_json()
     {
         $this->mockConfirm('➕ Include ICU-enabled PHP binary? (~30MB extra)', false);
 
@@ -110,26 +122,12 @@ class InstallsAndroidTest extends TestCase
         $destination = $this->testProjectPath.'/nativephp/android/app/src/main';
         File::makeDirectory($destination, 0755, true);
 
-        // Execute
-        $this->installPHPAndroidSimplified(false);
+        // ICU preference is now stored in nativephp.json by InstallCommand
+        $jsonPath = $this->testProjectPath.'/nativephp.json';
+        File::put($jsonPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => false]]));
 
-        // Assert ICU flag file was not created
-        $icuFlagFile = $this->testProjectPath.'/nativephp/android/.icu-enabled';
-        $this->assertFileDoesNotExist($icuFlagFile);
-    }
-
-    /**
-     * Simplified version of installPHPAndroid for testing
-     */
-    protected function installPHPAndroidSimplified(bool $includeIcu): void
-    {
-        // Store ICU preference for run command
-        $icuFlagFile = base_path('nativephp/android/.icu-enabled');
-        if ($includeIcu) {
-            File::put($icuFlagFile, '1');
-        } elseif (File::exists($icuFlagFile)) {
-            File::delete($icuFlagFile);
-        }
+        $data = json_decode(File::get($jsonPath), true);
+        $this->assertFalse($data['php']['icu']);
     }
 
     /**

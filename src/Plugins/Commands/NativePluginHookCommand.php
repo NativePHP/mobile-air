@@ -5,6 +5,7 @@ namespace Native\Mobile\Plugins\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Http;
+use Symfony\Component\Console\Input\InputOption;
 use ZipArchive;
 
 /**
@@ -32,12 +33,12 @@ abstract class NativePluginHookCommand extends Command
      */
     protected function configure(): void
     {
-        $this->addOption('platform', null, \Symfony\Component\Console\Input\InputOption::VALUE_REQUIRED, 'Target platform (ios/android)');
-        $this->addOption('build-path', null, \Symfony\Component\Console\Input\InputOption::VALUE_REQUIRED, 'Path to native project');
-        $this->addOption('plugin-path', null, \Symfony\Component\Console\Input\InputOption::VALUE_REQUIRED, 'Path to plugin package');
-        $this->addOption('app-id', null, \Symfony\Component\Console\Input\InputOption::VALUE_REQUIRED, 'Application ID');
-        $this->addOption('config', null, \Symfony\Component\Console\Input\InputOption::VALUE_REQUIRED, 'Build configuration (JSON)');
-        $this->addOption('plugins', null, \Symfony\Component\Console\Input\InputOption::VALUE_REQUIRED, 'All registered plugins (JSON)');
+        $this->addOption('platform', null, InputOption::VALUE_REQUIRED, 'Target platform (ios/android)');
+        $this->addOption('build-path', null, InputOption::VALUE_REQUIRED, 'Path to native project');
+        $this->addOption('plugin-path', null, InputOption::VALUE_REQUIRED, 'Path to plugin package');
+        $this->addOption('app-id', null, InputOption::VALUE_REQUIRED, 'Application ID');
+        $this->addOption('config', null, InputOption::VALUE_REQUIRED, 'Build configuration (JSON)');
+        $this->addOption('plugins', null, InputOption::VALUE_REQUIRED, 'All registered plugins (JSON)');
     }
 
     // =========================================================================

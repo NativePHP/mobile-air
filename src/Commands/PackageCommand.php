@@ -4,6 +4,7 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Traits\ChecksLatestBuildNumber;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\PackagesIos;
@@ -71,12 +72,13 @@ class PackageCommand extends Command
             $this->platform = 'android';
         } else {
             $platform = $this->argument('platform');
-            if (!$platform) {
+            if (! $platform) {
                 \Laravel\Prompts\error('Platform must be specified via argument or flags (--ios/--android)');
+
                 return;
             }
             // Support shorthands: 'a' for android, 'i' for ios
-            $this->platform = match(strtolower($platform)) {
+            $this->platform = match (strtolower($platform)) {
                 'android', 'a' => 'android',
                 'ios', 'i' => 'ios',
                 default => $platform,
@@ -138,6 +140,25 @@ class PackageCommand extends Command
 
     protected function buildAndroid(): void
     {
+        $minSdk = (int) config('nativephp.android.min_sdk', 26);
+        if ($minSdk < 26) {
+            \Laravel\Prompts\error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
+            \Laravel\Prompts\note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
+
+            return;
+        }
+
+        $plugins = app(PluginRegistry::class)->all();
+        foreach ($plugins as $plugin) {
+            $pluginMinSdk = $plugin->getAndroidMinVersion();
+            if ($pluginMinSdk !== null && $minSdk < $pluginMinSdk) {
+                \Laravel\Prompts\error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
+                \Laravel\Prompts\note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
+
+                return;
+            }
+        }
+
         $androidPath = base_path('nativephp/android');
 
         if (! is_dir($androidPath)) {

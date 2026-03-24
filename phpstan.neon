@@ -1,0 +1,11 @@
+parameters:
+    paths:
+        - src/
+    excludePaths:
+        - src/Attributes/OnNative.php
+    level: 0
+    ignoreErrors:
+        - '#Function nativephp_call not found#'
+        - '#Unsafe usage of new static#'
+        - '#Access to an undefined property#'
+        - '#Attribute class Deprecated does not exist#'

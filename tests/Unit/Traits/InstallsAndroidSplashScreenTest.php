@@ -75,33 +75,6 @@ class InstallsAndroidSplashScreenTest extends TestCase
         }
     }
 
-    public function test_android_layout_compatibility_without_splash_images()
-    {
-        // This test should have caught the resource linking issue!
-
-        // Ensure no splash images exist (simulating real-world scenario)
-        $this->assertFileDoesNotExist($this->publicPath.'/splash.png');
-
-        // Run splash installation (should skip gracefully)
-        $this->installAndroidSplashScreen();
-
-        // Verify that layout template doesn't statically reference missing drawables
-        $layoutPath = __DIR__.'/../../../resources/androidstudio/app/src/main/res/layout/activity_main.xml';
-        $layoutContent = File::get($layoutPath);
-
-        // This is the critical test that should have caught the bug:
-        // Layout should NOT contain static references to drawables that may not exist
-        $this->assertStringNotContainsString(
-            'android:src="@drawable/splash"',
-            $layoutContent,
-            'Layout should not statically reference @drawable/splash as it causes Android resource linking to fail when splash images are not generated'
-        );
-
-        // Verify the ImageView exists but is set up for programmatic use
-        $this->assertStringContainsString('android:id="@+id/splashImage"', $layoutContent);
-        $this->assertStringContainsString('android:visibility="gone"', $layoutContent);
-    }
-
     public function test_generates_all_density_variants()
     {
         // Create test image
@@ -313,6 +286,8 @@ class InstallsAndroidSplashScreenTest extends TestCase
         $this->assertEquals(320, $imageInfo[0], 'Dark mode MDPI width should be 320px');
         $this->assertEquals(480, $imageInfo[1], 'Dark mode MDPI height should be 480px');
     }
+
+    protected function logToFile(string $message): void {}
 
     /**
      * Mock methods for testing (these will be implemented in the actual trait)

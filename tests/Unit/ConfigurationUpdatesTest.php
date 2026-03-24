@@ -21,6 +21,19 @@ class ConfigurationUpdatesTest extends TestCase
         $this->testProjectPath = sys_get_temp_dir().'/nativephp_config_test_'.uniqid();
         app()->setBasePath($this->testProjectPath);
 
+        // Mock $this->components for task() calls used by PreparesBuild
+        $this->components = new class
+        {
+            public function task(string $title, callable $callback)
+            {
+                $callback();
+            }
+
+            public function twoColumnDetail(...$args) {}
+
+            public function warn(...$args) {}
+        };
+
         // Create Android project structure
         $this->createAndroidProjectStructure();
     }
@@ -56,8 +69,8 @@ class ConfigurationUpdatesTest extends TestCase
         // Create google-services.json
         File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
 
-        // Create ICU flag file
-        File::put($this->testProjectPath.'/nativephp/android/.icu-enabled', '1');
+        // Enable ICU via nativephp.json
+        File::put($this->testProjectPath.'/nativephp.json', json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
 
         // Execute configuration update
         $this->testUpdateAndroidConfiguration();
@@ -358,6 +371,10 @@ Java_com_nativephp_mobile_bridge_PHPBridge',
     /**
      * Mock methods - Required by PreparesBuild trait
      */
+    protected function logToFile(string $message): void {}
+
+    protected function updateOrientationConfiguration(): void {}
+
     protected function info($message) {}
 
     protected function warn($message) {}
@@ -547,14 +564,24 @@ Java_com_nativephp_mobile_bridge_PHPBridge',
 
     protected function updateIcuConfiguration(): void
     {
+        $jsonPath = $this->testProjectPath.'/nativephp.json';
+
+        if (! file_exists($jsonPath)) {
+            return;
+        }
+
+        $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+
+        if (empty($nativephp['php']['icu'])) {
+            return;
+        }
+
         // ICU is configured in the fixed path since namespace doesn't change
         $bridgePath = $this->testProjectPath.'/nativephp/android/app/src/main/java/com/nativephp/mobile/bridge/PHPBridge.kt';
         if (File::exists($bridgePath)) {
             $contents = File::get($bridgePath);
-            if (File::exists($this->testProjectPath.'/nativephp/android/.icu-enabled')) {
-                if (! str_contains($contents, 'System.loadLibrary("icudata")')) {
-                    $contents = str_replace('System.loadLibrary("php")', 'System.loadLibrary("icudata")'.PHP_EOL.'        System.loadLibrary("php")', $contents);
-                }
+            if (! str_contains($contents, 'System.loadLibrary("icudata")')) {
+                $contents = str_replace('System.loadLibrary("php")', 'System.loadLibrary("icudata")'.PHP_EOL.'        System.loadLibrary("php")', $contents);
             }
             File::put($bridgePath, $contents);
         }

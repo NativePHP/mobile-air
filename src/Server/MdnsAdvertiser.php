@@ -9,8 +9,11 @@ use React\EventLoop\LoopInterface;
 class MdnsAdvertiser
 {
     private ?Socket $socket = null;
+
     private string $serviceName;
+
     private int $port;
+
     private LoopInterface $loop;
 
     public function __construct(LoopInterface $loop, string $serviceName, int $port)
@@ -44,7 +47,7 @@ class MdnsAdvertiser
 
     private function announce(): void
     {
-        if (!$this->socket) {
+        if (! $this->socket) {
             return;
         }
 

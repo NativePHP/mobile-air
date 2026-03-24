@@ -2,6 +2,8 @@
 
 namespace Native\Mobile;
 
+use Native\Mobile\Facades\Device;
+
 class System
 {
     /**
@@ -20,7 +22,7 @@ class System
 
     public function isIos(): bool
     {
-        $info = \Native\Mobile\Facades\Device::getInfo();
+        $info = Device::getInfo();
         if ($info) {
             return json_decode($info)->platform === 'ios';
         }
@@ -30,7 +32,7 @@ class System
 
     public function isAndroid(): bool
     {
-        $info = \Native\Mobile\Facades\Device::getInfo();
+        $info = Device::getInfo();
         if ($info) {
             return json_decode($info)->platform === 'android';
         }
@@ -40,7 +42,7 @@ class System
 
     public function isMobile(): bool
     {
-        $info = \Native\Mobile\Facades\Device::getInfo();
+        $info = Device::getInfo();
         if ($info) {
             $platform = json_decode($info)->platform ?? null;
 
