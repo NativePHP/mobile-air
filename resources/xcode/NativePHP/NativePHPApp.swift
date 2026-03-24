@@ -17,11 +17,8 @@ public func pipe_php_output(_ cString: UnsafePointer<CChar>?) {
 struct NativePHPApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.shared
-    @Environment(\.scenePhase) private var scenePhase
 
     static var shared: NativePHPApp?
-
-    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         Self.shared = self
@@ -157,12 +154,6 @@ struct NativePHPApp: App {
                     if !DeepLinkRouter.shared.hasPendingURL() {
                         DeepLinkRouter.shared.handle(url: url)   // Universal Links
                     }
-                }
-            }
-            .onChange(of: scenePhase) { newPhase in
-                if newPhase == .background {
-                    // Re-schedule background tasks when entering background
-                    PHPScheduler.shared.scheduleNextRun()
                 }
             }
         }

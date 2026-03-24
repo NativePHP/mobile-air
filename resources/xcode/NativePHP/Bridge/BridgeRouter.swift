@@ -289,3 +289,16 @@ public func NativeElement_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
     print("NativeElement_RegisterRegion: region at \(region)")
     NativeElementBridge.registerRegion(region)
 }
+
+/// Called by nphp_element_shutdown() to unregister the element region.
+@_cdecl("NativeElement_UnregisterRegion")
+public func NativeElement_UnregisterRegion() {
+    print("NativeElement_UnregisterRegion: region released")
+    NativeElementBridge.unregisterRegion()
+}
+
+/// Called by nphp_element_publish() / zif_nphp_frame_end() after PHP writes the flat buffer.
+@_cdecl("NativeElement_PostTreeUpdate")
+public func NativeElement_PostTreeUpdate() {
+    NativeElementBridge.postTreeUpdateFromRegion()
+}
