@@ -278,6 +278,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         super.onNewIntent(intent)
         handleDeepLinkIntent(intent)
 
+        // If deep link didn't fire but we have a notification URL, navigate via Inertia
+        if (intent.data == null) {
+            val notificationUrl = intent.getStringExtra("notification_url")
+            if (!notificationUrl.isNullOrEmpty()) {
+                navigateWithInertia(notificationUrl)
+            }
+        }
+
         // Post lifecycle event for plugins
         intent.data?.let { uri ->
             NativePHPLifecycle.post(

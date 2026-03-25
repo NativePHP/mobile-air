@@ -285,7 +285,9 @@ class PHPBridge(private val context: Context) {
     }
 
     fun getLastPostData(): String? {
-        return lastPostData
+        val data = lastPostData
+        lastPostData = null  // Clear after consumption to prevent stale data
+        return data
     }
 
     fun getLaravelPath(): String {
