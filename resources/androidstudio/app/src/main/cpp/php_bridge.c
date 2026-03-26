@@ -18,6 +18,7 @@ jobject g_bridge_instance = NULL;
 extern jint InitializeBridgeJNI(JNIEnv* env);
 static void safe_php_embed_shutdown(void);
 static void worker_embed_shutdown(void);
+static void ephemeral_embed_shutdown(void);
 int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers);
 
 // Global state
@@ -68,6 +69,11 @@ static void (*jni_output_callback_ptr)(const char *) = NULL;
 // Worker state
 static int worker_initialized = 0;
 static pthread_mutex_t g_worker_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Ephemeral state — generic background TSRM context for plugin use
+static int ephemeral_initialized = 0;
+static int ephemeral_cold_booted = 0;
+static pthread_mutex_t g_ephemeral_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * Configure the embed SAPI module with host-registered functions.
@@ -1050,6 +1056,174 @@ JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_unlock(&g_worker_mutex);
 }
 
+// ============================================================================
+// Ephemeral PHP Runtime — separate TSRM context for plugin background work
+// ============================================================================
+// Generic background PHP context that any plugin can use (e.g. background tasks,
+// scheduled jobs). Supports both hot path (app alive) and cold path (WorkManager
+// cold start after app killed).
+
+static int ephemeral_embed_init(void) {
+    if (php_initialized) {
+        // Hot path: persistent runtime is alive, allocate a TSRM thread context
+        LOGI("ephemeral_embed_init: hot path — using existing TSRM");
+
+        ts_resource(0);
+        setup_embed_module();
+
+        if (php_embed_module.startup(&php_embed_module) == FAILURE) {
+            LOGE("ephemeral_embed_init: module startup failed");
+            return FAILURE;
+        }
+
+        if (php_request_startup() == FAILURE) {
+            LOGE("ephemeral_embed_init: request startup failed");
+            return FAILURE;
+        }
+
+        ephemeral_cold_booted = 0;
+
+        LOGI("ephemeral_embed_init: hot path ready");
+        return SUCCESS;
+    }
+
+    // Cold path: WorkManager started the process after app was killed.
+    // No persistent runtime exists — do a full php_embed_init().
+    LOGI("ephemeral_embed_init: cold path — full PHP bootstrap");
+
+    setenv("NATIVEPHP_RUNNING", "true", 1);
+    setenv("APP_URL", "http://127.0.0.1", 1);
+    setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+    setenv("PHP_SELF", "/ephemeral", 1);
+    setenv("HTTP_HOST", "127.0.0.1", 1);
+
+    setup_embed_module();
+    if (php_embed_init(0, NULL) != SUCCESS) {
+        LOGE("ephemeral_embed_init: cold path php_embed_init() FAILED");
+        return FAILURE;
+    }
+    sapi_module.header_handler = android_header_handler;
+    ephemeral_cold_booted = 1;
+
+    LOGI("ephemeral_embed_init: cold path ready");
+    return SUCCESS;
+}
+
+static void ephemeral_embed_shutdown(void) {
+    if (ephemeral_cold_booted) {
+        LOGI("ephemeral_embed_shutdown: cold path — full php_embed_shutdown");
+        safe_php_embed_shutdown();
+    } else {
+        LOGI("ephemeral_embed_shutdown: hot path — thread cleanup only");
+        php_request_shutdown(NULL);
+        ts_free_thread();
+    }
+    LOGI("ephemeral_embed_shutdown: done");
+}
+
+JNIEXPORT jint JNICALL native_ephemeral_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
+    if (ephemeral_initialized) {
+        LOGI("ephemeral_boot: already initialized, skipping");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return 0;
+    }
+
+    const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
+    LOGI("ephemeral_boot: initializing with bootstrap=%s", bootstrapPath);
+
+    clear_collected_output();
+
+    if (ephemeral_embed_init() != SUCCESS) {
+        LOGE("ephemeral_boot: ephemeral_embed_init() FAILED");
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return -1;
+    }
+
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, bootstrapPath);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    char *ephemeral_boot_output = get_collected_output();
+    if (ephemeral_boot_output && strstr(ephemeral_boot_output, "FATAL") != NULL) {
+        LOGE("ephemeral_boot: bootstrap produced errors: %.200s", ephemeral_boot_output);
+    }
+
+    ephemeral_initialized = 1;
+    LOGI("ephemeral_boot: ephemeral PHP interpreter ready");
+
+    (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+    return 0;
+}
+
+JNIEXPORT jstring JNICALL native_ephemeral_artisan(JNIEnv *env, jobject thiz, jstring jCommand) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
+    if (!ephemeral_initialized) {
+        LOGE("ephemeral_artisan: ephemeral runtime not initialized!");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return (*env)->NewStringUTF(env, "Ephemeral runtime not initialized.");
+    }
+
+    const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
+    LOGI("ephemeral_artisan: %s", command);
+
+    clear_collected_output();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+
+    char eval_code[4096];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    echo 'Ephemeral artisan error: ' . $e->getMessage();\n"
+        "}\n",
+        command);
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "ephemeral_artisan");
+    } zend_end_try();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
+
+    (*env)->ReleaseStringUTFChars(env, jCommand, command);
+
+    char *ephemeral_output = get_collected_output();
+    jstring result = (*env)->NewStringUTF(env, ephemeral_output ? ephemeral_output : "");
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+    return result;
+}
+
+JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
+    if (!ephemeral_initialized) {
+        LOGI("ephemeral_shutdown: not initialized, nothing to do");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return;
+    }
+
+    LOGI("ephemeral_shutdown: shutting down ephemeral interpreter");
+
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "ephemeral_shutdown");
+    } zend_end_try();
+
+    ephemeral_embed_shutdown();
+    ephemeral_initialized = 0;
+
+    LOGI("ephemeral_shutdown: done");
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+}
+
 static JNINativeMethod gMethods[] = {
         // PHPBridge
         {"nativeExecuteScript", "(Ljava/lang/String;)Ljava/lang/String;", (void *) native_execute_script},
@@ -1078,6 +1252,11 @@ static JNINativeMethod gMethods[] = {
         {"nativeWorkerBoot","(Ljava/lang/String;)I",(void *) native_worker_boot},
         {"nativeWorkerArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_worker_artisan},
         {"nativeWorkerShutdown","()V",(void *) native_worker_shutdown},
+
+        // Ephemeral runtime (background tasks via WorkManager) methods
+        {"nativeEphemeralBoot","(Ljava/lang/String;)I",(void *) native_ephemeral_boot},
+        {"nativeEphemeralArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_ephemeral_artisan},
+        {"nativeEphemeralShutdown","()V",(void *) native_ephemeral_shutdown},
 };
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
