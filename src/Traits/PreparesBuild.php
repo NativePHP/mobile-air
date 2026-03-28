@@ -794,7 +794,7 @@ trait PreparesBuild
 
         // SDK version configuration
         $compileSdk = (int) config('nativephp.android.compile_sdk', 36);
-        $minSdk = (int) config('nativephp.android.min_sdk', 33);
+        $minSdk = (int) config('nativephp.android.min_sdk', 26);
         $targetSdk = (int) config('nativephp.android.target_sdk', 36);
 
         $gradleContent = str_replace('REPLACE_COMPILE_SDK', (string) $compileSdk, $gradleContent);
