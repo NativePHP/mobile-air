@@ -1004,7 +1004,7 @@ class BuildIosAppCommand extends Command
             // Add verbose output to help debug build failures
             '-verbose',
             ...($this->target ? [
-                '-destination', 'id='.$this->target.($simulated ? '' : ',platform=iOS'),
+                '-destination', ($simulated ? 'platform=iOS Simulator,id=' : 'platform=iOS,id=').$this->target,
                 'build',
             ] : [
                 '-archivePath', $this->basePath.'/build/NativePHP.xcarchive',
