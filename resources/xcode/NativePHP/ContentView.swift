@@ -12,17 +12,17 @@ struct ContentView: View {
     @StateObject private var uiState = NativeUIState.shared
 
     var body: some View {
-        ZStack {
-            NativeSideNavigation(onNavigate: handleNavigation) {
+        NativeSideNavigation(onNavigate: handleNavigation) {
+            ZStack(alignment: .top) {
                 WebViewLayoutContainer(onTabSelected: handleNavigation)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
 
-            // Top bar overlay — sits on top of webview so web content extends edge-to-edge behind it
-            if uiState.hasTopBar() {
-                VStack(spacing: 0) {
-                    NativeTopBar(onNavigate: handleNavigation)
-                    Spacer()
+                // Top bar overlay — inside side nav so it doesn't cover the drawer
+                if uiState.hasTopBar() {
+                    VStack(spacing: 0) {
+                        NativeTopBar(onNavigate: handleNavigation)
+                        Spacer()
+                    }
                 }
             }
         }
