@@ -63,6 +63,11 @@ class PHPBridge(private val context: Context) {
     external fun nativeWorkerArtisan(command: String): String
     external fun nativeWorkerShutdown()
 
+    // Ephemeral runtime JNI methods — generic background TSRM context for plugin use
+    external fun nativeEphemeralBoot(bootstrapPath: String): Int
+    external fun nativeEphemeralArtisan(command: String): String
+    external fun nativeEphemeralShutdown()
+
     @Volatile
     private var runtimeInitialized = false
 

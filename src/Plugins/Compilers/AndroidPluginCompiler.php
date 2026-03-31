@@ -146,7 +146,7 @@ class AndroidPluginCompiler
             return;
         }
 
-        // Check if there are any plugins with Android bridge functions
+        // Check if there are any plugins with Android bridge functions or init functions
         $hasAndroidFunctions = $allPlugins->filter(function (Plugin $p) {
             foreach ($p->getBridgeFunctions() as $function) {
                 if (! empty($function['android'])) {
@@ -157,6 +157,10 @@ class AndroidPluginCompiler
             return false;
         })->isNotEmpty();
 
+        $hasInitFunctions = $allPlugins->filter(function (Plugin $p) {
+            return $p->getAndroidInitFunction() !== null;
+        })->isNotEmpty();
+
         // Ensure generated directory exists
         $this->files->ensureDirectoryExists($this->generatedPath);
 
@@ -164,8 +168,8 @@ class AndroidPluginCompiler
         $allPlugins->filter(fn (Plugin $p) => $p->hasAndroidCode())
             ->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));
 
-        // Generate the registration file
-        if ($hasAndroidFunctions) {
+        // Generate the bridge function registration file
+        if ($hasAndroidFunctions || $hasInitFunctions) {
             $this->generateBridgeFunctionRegistration($allPlugins);
         } else {
             $this->generateEmptyRegistration();
@@ -265,8 +269,10 @@ class AndroidPluginCompiler
     protected function generateBridgeFunctionRegistration(Collection $plugins): void
     {
         $registrations = [];
+        $initFunctions = [];
 
         foreach ($plugins as $plugin) {
+            // Collect bridge function registrations
             foreach ($plugin->getBridgeFunctions() as $function) {
                 if (empty($function['android'])) {
                     continue;
@@ -279,9 +285,18 @@ class AndroidPluginCompiler
                     'params' => $function['android_params'] ?? ['activity'],
                 ];
             }
+
+            // Collect init functions
+            $initFunction = $plugin->getAndroidInitFunction();
+            if ($initFunction) {
+                $initFunctions[] = [
+                    'function' => $initFunction,
+                    'plugin' => $plugin->name,
+                ];
+            }
         }
 
-        $content = $this->renderRegistrationTemplate($registrations);
+        $content = $this->renderRegistrationTemplate($registrations, $initFunctions);
         $path = $this->generatedPath.'/PluginBridgeFunctionRegistration.kt';
 
         $this->files->put($path, $content);
@@ -291,7 +306,7 @@ class AndroidPluginCompiler
     /**
      * Render the Kotlin registration file
      */
-    protected function renderRegistrationTemplate(array $registrations): string
+    protected function renderRegistrationTemplate(array $registrations, array $initFunctions = []): string
     {
         // Build imports from the android class paths in nativephp.json
         $imports = collect($registrations)
@@ -301,6 +316,18 @@ class AndroidPluginCompiler
             ->sort()
             ->map(fn ($package) => "import {$package}")
             ->implode("\n");
+
+        // Add imports for init functions (top-level Kotlin functions need full path import)
+        $initImports = collect($initFunctions)
+            ->pluck('function')
+            ->unique()
+            ->sort()
+            ->map(fn ($func) => "import {$func}")
+            ->implode("\n");
+
+        if ($initImports) {
+            $imports = $imports ? $imports."\n".$initImports : $initImports;
+        }
 
         $registerCalls = collect($registrations)
             ->map(function ($reg) {
@@ -312,9 +339,20 @@ class AndroidPluginCompiler
             })
             ->implode("\n\n");
 
+        $initCalls = collect($initFunctions)
+            ->map(function ($init) {
+                // Extract just the function name from the full path
+                $parts = explode('.', $init['function']);
+                $funcName = end($parts);
+
+                return "    // Plugin: {$init['plugin']}\n    {$funcName}(context)";
+            })
+            ->implode("\n\n");
+
         return Stub::make('android/PluginBridgeFunctionRegistration.kt.stub')
             ->replaceAll([
                 'IMPORTS' => $imports,
+                'INIT_FUNCTIONS' => $initCalls,
                 'REGISTRATIONS' => $registerCalls,
             ])
             ->render();

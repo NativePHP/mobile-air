@@ -367,6 +367,10 @@ class IOSPluginCompiler
                     $arrayContent .= "\n\t\t<string>{$item}</string>";
                 }
                 $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
+            } elseif (is_bool($value)) {
+                // Handle boolean values
+                $boolTag = $value ? '<true/>' : '<false/>';
+                $entry = "\n\t<key>{$key}</key>\n\t{$boolTag}";
             } else {
                 // Handle string values - substitute placeholders
                 $value = $this->substituteEnvPlaceholders($value);
