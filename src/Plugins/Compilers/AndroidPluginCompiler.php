@@ -890,14 +890,25 @@ class AndroidPluginCompiler
     {
         $url = $repo['url'];
         $credentials = $repo['credentials'] ?? null;
+        $authentication = $repo['authentication'] ?? null;
 
         if ($credentials) {
             $username = $this->substituteEnvPlaceholders($credentials['username'] ?? 'mapbox');
             $password = $this->substituteEnvPlaceholders($credentials['password'] ?? '');
 
+            $authBlock = '';
+            if ($authentication === 'basic') {
+                $authBlock = <<<KOTLIN
+
+                authentication {
+                    create<BasicAuthentication>("basic")
+                }
+KOTLIN;
+            }
+
             return <<<KOTLIN
         maven {
-            url = uri("{$url}")
+            url = uri("{$url}"){$authBlock}
             credentials {
                 username = "{$username}"
                 password = "{$password}"
