@@ -1704,6 +1704,7 @@
 				1EE65C2F2D42A0C100F2812B /* Sources */,
 				1EE65C322D42A0C100F2812B /* Frameworks */,
 				1EE65C3E2D42A0C100F2812B /* Resources */,
+				A1B2C3D4E5F6A7B8C9D0E1F3 /* Patch CFBundleName */,
 			);
 			buildRules = (
 			);
@@ -1729,6 +1730,7 @@
 				95BD5DBD2D178E9D00C72704 /* Sources */,
 				95BD5DBE2D178E9D00C72704 /* Frameworks */,
 				95BD5DBF2D178E9D00C72704 /* Resources */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* Patch CFBundleName */,
 			);
 			buildRules = (
 			);
@@ -1948,6 +1950,42 @@
 			shellPath = /bin/sh;
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
+		};
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* Patch CFBundleName */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Patch CFBundleName";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/usr/libexec/PlistBuddy -c \"Set :CFBundleName ${INFOPLIST_KEY_CFBundleDisplayName}\" \"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n";
+		};
+		A1B2C3D4E5F6A7B8C9D0E1F3 /* Patch CFBundleName */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Patch CFBundleName";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/usr/libexec/PlistBuddy -c \"Set :CFBundleName ${INFOPLIST_KEY_CFBundleDisplayName}\" \"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
