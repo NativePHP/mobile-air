@@ -306,7 +306,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     private fun handleDeepLinkIntent(intent: Intent?) {
-        // Check for notification URL extra (from local notification taps)
+        // Check for notification URL extra (from local notification taps or foreground push)
         val notificationUrl = intent?.getStringExtra("notification_url")
         if (!notificationUrl.isNullOrEmpty()) {
             Log.d("DeepLink", "🔔 Notification URL: $notificationUrl")
@@ -314,6 +314,30 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
                 val fullUrl = "http://127.0.0.1$notificationUrl"
                 Log.d("DeepLink", "🚀 Loading notification URL immediately: $fullUrl")
+                webView.loadUrl(fullUrl)
+                pendingDeepLink = null
+            }
+            return
+        }
+
+        // Check for deep link URL from FCM data payload (background/killed push notifications)
+        val fcmUrl = intent?.getStringExtra("url") ?: intent?.getStringExtra("link")
+        if (!fcmUrl.isNullOrEmpty()) {
+            Log.d("DeepLink", "🔔 FCM deep link URL: $fcmUrl")
+            val uri = android.net.Uri.parse(fcmUrl)
+            val scheme = uri.scheme
+            val route = if (scheme != null && scheme != "http" && scheme != "https") {
+                val host = uri.host ?: ""
+                val path = uri.path ?: ""
+                val query = uri.query?.let { "?$it" } ?: ""
+                if (host.isNotEmpty()) "/$host$path$query" else "$path$query"
+            } else {
+                fcmUrl
+            }
+            pendingDeepLink = route
+            if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
+                val fullUrl = "http://127.0.0.1$route"
+                Log.d("DeepLink", "🚀 Loading FCM deep link immediately: $fullUrl")
                 webView.loadUrl(fullUrl)
                 pendingDeepLink = null
             }
