@@ -702,7 +702,6 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
     setenv("PHP_SELF", "artisan.php", 1);
-    setenv("APP_ENV", "local", 1);
 
     // Set $argv/$argc via PHP
     {
