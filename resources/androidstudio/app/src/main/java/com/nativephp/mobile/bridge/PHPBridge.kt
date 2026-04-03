@@ -11,7 +11,7 @@ import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
 
 class PHPBridge(private val context: Context) {
-    private var lastPostData: String? = null
+    private val postDataByPath = ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedQueue<String>>()
     private val requestDataMap = ConcurrentHashMap<String, String>()
     private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
@@ -248,50 +248,37 @@ class PHPBridge(private val context: Context) {
         return result
     }
 
-    // New function to store request data with a key
-    fun storeRequestData(key: String, data: String) {
-        requestDataMap[key] = data
-        Log.d(TAG, "Stored request data with key: $key (length=${data.length})")
-
-        // Also update last post data for backward compatibility
-        lastPostData = data
-
-        // Clean up old requests occasionally
-        if (requestDataMap.size > 10) {
-            cleanupOldRequests()
-        }
+    fun storePostData(url: String, data: String) {
+        val path = android.net.Uri.parse(url).path ?: url
+        val queue = postDataByPath.getOrPut(path) { java.util.concurrent.ConcurrentLinkedQueue() }
+        queue.add(data)
+        Log.d(TAG, "Queued POST data for $path (length=${data.length}, queue size=${queue.size})")
     }
 
-    // Clean up old request data
-    private fun cleanupOldRequests() {
-        val now = System.currentTimeMillis()
-        val keysToRemove = mutableListOf<String>()
+    fun consumePostData(url: String): String? {
+        val path = android.net.Uri.parse(url).path ?: url
+        val queue = postDataByPath[path]
 
-        // Find keys with timestamps older than MAX_REQUEST_AGE
-        requestDataMap.keys.forEach { key ->
-            if (key.contains("-")) {
-                val timestampStr = key.substringAfterLast("-")
-                try {
-                    val timestamp = timestampStr.toLong()
-                    if (now - timestamp > MAX_REQUEST_AGE) {
-                        keysToRemove.add(key)
-                    }
-                } catch (e: NumberFormatException) {
-                    // Key doesn't have a valid timestamp format, ignore
+        // Try immediate poll
+        var data = queue?.poll()
+
+        // If empty, the JS bridge may not have fired yet — wait briefly
+        if (data == null) {
+            for (i in 1..10) {
+                Thread.sleep(5)
+                data = (postDataByPath[path] ?: queue)?.poll()
+                if (data != null) {
+                    Log.d(TAG, "POST data for $path arrived after ${i * 5}ms wait")
+                    break
                 }
             }
         }
 
-        // Remove old entries
-        keysToRemove.forEach { requestDataMap.remove(it) }
-        if (keysToRemove.isNotEmpty()) {
-            Log.d(TAG, "Cleaned up ${keysToRemove.size} old request entries")
+        if (data != null) {
+            Log.d(TAG, "Consumed POST data for $path (length=${data.length})")
+        } else {
+            Log.w(TAG, "No POST data for $path after 50ms — request may have no body")
         }
-    }
-
-    fun getLastPostData(): String? {
-        val data = lastPostData
-        lastPostData = null  // Clear after consumption to prevent stale data
         return data
     }
 

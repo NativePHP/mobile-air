@@ -255,7 +255,12 @@ class WebViewManager(
                     // Regular PHP requests
                     url.contains("127.0.0.1") -> {
                         Log.d(TAG, "🌐 Handling PHP request")
-                        phpHandler.handlePHPRequest(request, phpBridge.getLastPostData())
+                        val postData = if (request.method.equals("POST", ignoreCase = true) ||
+                            request.method.equals("PUT", ignoreCase = true) ||
+                            request.method.equals("PATCH", ignoreCase = true)) {
+                            phpBridge.consumePostData(url)
+                        } else null
+                        phpHandler.handlePHPRequest(request, postData)
                     }
                     else -> {
                         Log.d(TAG, "↪️ Delegating to system handler: $url")
@@ -492,16 +497,10 @@ class WebViewManager(
 class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
     @JavascriptInterface
     fun logPostData(data: String, url: String, headers: String) {
+        Log.d("$TAG-JS", "📦 POST data captured for: $url (length=${data.length})")
 
-        // Create a unique key for this request
-        val requestKey = "$url-${System.currentTimeMillis()}"
-        Log.d("$TAG-JS", "📦 RequestKey: $data")
-
-        // Store in phpBridge with the key
-        phpBridge.storeRequestData(requestKey, data)
-
-        // Set as current request
-//        phpBridge.storeCurrentRequestKey(requestKey)
+        // Queue the POST data keyed by URL path for consumption by shouldInterceptRequest
+        phpBridge.storePostData(url, data)
 
         // Try to extract CSRF token
         LaravelSecurity.extractFromPostBody(data)
