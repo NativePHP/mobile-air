@@ -666,6 +666,12 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     const char *command = (*env)->GetStringUTFChars(env, jcommand, NULL);
     LOGI("runArtisanCommand: %s", command);
 
+    // Lock ephemeral mutex to prevent background workers from starting
+    // ephemeral runtime while artisan commands are running (and vice versa).
+    // runArtisanCommand does php_embed_init/shutdown which destroys global
+    // state that ephemeral hot path would be using.
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
     clear_collected_output();
 
     // Get Laravel path
@@ -679,6 +685,7 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
     if (php_embed_init(0, NULL) != SUCCESS) {
         LOGE("Failed to initialize PHP for artisan");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         (*env)->ReleaseStringUTFChars(env, jcommand, command);
         (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
         (*env)->DeleteLocalRef(env, jLaravelPath);
@@ -735,6 +742,8 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     safe_php_embed_shutdown();
     php_initialized = 0;
+
+    pthread_mutex_unlock(&g_ephemeral_mutex);
 
     (*env)->ReleaseStringUTFChars(env, jcommand, command);
     (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);

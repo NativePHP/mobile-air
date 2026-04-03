@@ -674,6 +674,7 @@ class LaravelEnvironment(private val context: Context) {
         return outFile
     }
 
+    @Synchronized
     private fun copyAssetFile(assetName: String, outFile: File) {
         try {
             context.assets.open(assetName).use { input ->

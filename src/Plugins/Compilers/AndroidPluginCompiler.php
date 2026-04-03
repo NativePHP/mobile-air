@@ -339,6 +339,20 @@ class AndroidPluginCompiler
             })
             ->implode("\n\n");
 
+        // Generate context-only registrations for cold-boot WorkManager execution
+        $contextRegisterCalls = collect($registrations)
+            ->filter(function ($reg) {
+                $params = $reg['params'] ?? ['activity'];
+
+                return ! in_array('activity', $params) && in_array('context', $params);
+            })
+            ->map(function ($reg) {
+                $className = $this->extractClassName($reg['class']);
+
+                return "    // Plugin: {$reg['plugin']}\n    registry.register(\"{$reg['name']}\", {$className}(context))";
+            })
+            ->implode("\n\n");
+
         $initCalls = collect($initFunctions)
             ->map(function ($init) {
                 // Extract just the function name from the full path
@@ -354,6 +368,7 @@ class AndroidPluginCompiler
                 'IMPORTS' => $imports,
                 'INIT_FUNCTIONS' => $initCalls,
                 'REGISTRATIONS' => $registerCalls,
+                'CONTEXT_REGISTRATIONS' => $contextRegisterCalls ?: '    // No context-only bridge functions registered',
             ])
             ->render();
     }
