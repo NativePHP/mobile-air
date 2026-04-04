@@ -11,8 +11,7 @@ import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
 
 class PHPBridge(private val context: Context) {
-    private val postDataByPath = ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedQueue<String>>()
-    private val requestDataMap = ConcurrentHashMap<String, String>()
+    private val postDataByKey = ConcurrentHashMap<String, String>()
     private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private val nativePhpScript: String
@@ -248,36 +247,31 @@ class PHPBridge(private val context: Context) {
         return result
     }
 
-    fun storePostData(url: String, data: String) {
-        val path = android.net.Uri.parse(url).path ?: url
-        val queue = postDataByPath.getOrPut(path) { java.util.concurrent.ConcurrentLinkedQueue() }
-        queue.add(data)
-        Log.d(TAG, "Queued POST data for $path (length=${data.length}, queue size=${queue.size})")
+    fun storePostData(key: String, data: String) {
+        postDataByKey[key] = data
+        Log.d(TAG, "Stored POST data for key=$key (length=${data.length})")
     }
 
-    fun consumePostData(url: String): String? {
-        val path = android.net.Uri.parse(url).path ?: url
-        val queue = postDataByPath[path]
+    fun consumePostData(key: String): String? {
+        // Try immediate lookup
+        var data = postDataByKey.remove(key)
 
-        // Try immediate poll
-        var data = queue?.poll()
-
-        // If empty, the JS bridge may not have fired yet — wait briefly
+        // If not found, the JS bridge may not have fired yet — wait briefly
         if (data == null) {
             for (i in 1..10) {
                 Thread.sleep(5)
-                data = (postDataByPath[path] ?: queue)?.poll()
+                data = postDataByKey.remove(key)
                 if (data != null) {
-                    Log.d(TAG, "POST data for $path arrived after ${i * 5}ms wait")
+                    Log.d(TAG, "POST data for key=$key arrived after ${i * 5}ms wait")
                     break
                 }
             }
         }
 
         if (data != null) {
-            Log.d(TAG, "Consumed POST data for $path (length=${data.length})")
+            Log.d(TAG, "Consumed POST data for key=$key (length=${data.length})")
         } else {
-            Log.w(TAG, "No POST data for $path after 50ms — request may have no body")
+            Log.w(TAG, "No POST data for key=$key after 50ms — request may have no body")
         }
         return data
     }
