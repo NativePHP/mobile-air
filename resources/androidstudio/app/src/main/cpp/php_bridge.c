@@ -18,7 +18,7 @@ jobject g_bridge_instance = NULL;
 extern jint InitializeBridgeJNI(JNIEnv* env);
 static void safe_php_embed_shutdown(void);
 static void worker_embed_shutdown(void);
-static void scheduler_embed_shutdown(void);
+static void ephemeral_embed_shutdown(void);
 int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers);
 
 // Global state
@@ -70,10 +70,10 @@ static void (*jni_output_callback_ptr)(const char *) = NULL;
 static int worker_initialized = 0;
 static pthread_mutex_t g_worker_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Scheduler state
-static int scheduler_initialized = 0;
-static int scheduler_cold_booted = 0;
-static pthread_mutex_t g_scheduler_mutex = PTHREAD_MUTEX_INITIALIZER;
+// Ephemeral state — generic background TSRM context for plugin use
+static int ephemeral_initialized = 0;
+static int ephemeral_cold_booted = 0;
+static pthread_mutex_t g_ephemeral_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * Configure the embed SAPI module with host-registered functions.
@@ -676,6 +676,12 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     const char *command = (*env)->GetStringUTFChars(env, jcommand, NULL);
     LOGI("runArtisanCommand: %s", command);
 
+    // Lock ephemeral mutex to prevent background workers from starting
+    // ephemeral runtime while artisan commands are running (and vice versa).
+    // runArtisanCommand does php_embed_init/shutdown which destroys global
+    // state that ephemeral hot path would be using.
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
     clear_collected_output();
 
     // Get Laravel path
@@ -689,6 +695,7 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
     if (php_embed_init(0, NULL) != SUCCESS) {
         LOGE("Failed to initialize PHP for artisan");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         (*env)->ReleaseStringUTFChars(env, jcommand, command);
         (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
         (*env)->DeleteLocalRef(env, jLaravelPath);
@@ -719,7 +726,6 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
     setenv("PHP_SELF", "artisan.php", 1);
-    setenv("APP_ENV", "local", 1);
 
     // Set $argv/$argc via PHP
     {
@@ -747,6 +753,8 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     safe_php_embed_shutdown();
     php_initialized = 0;
+
+    pthread_mutex_unlock(&g_ephemeral_mutex);
 
     (*env)->ReleaseStringUTFChars(env, jcommand, command);
     (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
@@ -1069,90 +1077,89 @@ JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
 }
 
 // ============================================================================
-// Background Scheduler — separate TSRM context
+// Ephemeral PHP Runtime — separate TSRM context for plugin background work
 // ============================================================================
-// Runs via WorkManager in a separate process/thread with its own PHP context.
-// Same pattern as the queue worker but with its own mutex for isolation.
+// Generic background PHP context that any plugin can use (e.g. background tasks,
+// scheduled jobs). Supports both hot path (app alive) and cold path (WorkManager
+// cold start after app killed).
 
-static int scheduler_embed_init(void) {
+static int ephemeral_embed_init(void) {
     if (php_initialized) {
         // Hot path: persistent runtime is alive, allocate a TSRM thread context
-        LOGI("scheduler_embed_init: hot path — using existing TSRM");
+        LOGI("ephemeral_embed_init: hot path — using existing TSRM");
 
         ts_resource(0);
         setup_embed_module();
 
         if (php_embed_module.startup(&php_embed_module) == FAILURE) {
-            LOGE("scheduler_embed_init: module startup failed");
+            LOGE("ephemeral_embed_init: module startup failed");
             return FAILURE;
         }
 
         if (php_request_startup() == FAILURE) {
-            LOGE("scheduler_embed_init: request startup failed");
+            LOGE("ephemeral_embed_init: request startup failed");
             return FAILURE;
         }
 
-        // nativephp extension self-registers via static linking
-        scheduler_cold_booted = 0;
+        ephemeral_cold_booted = 0;
 
-        LOGI("scheduler_embed_init: hot path ready");
+        LOGI("ephemeral_embed_init: hot path ready");
         return SUCCESS;
     }
 
     // Cold path: WorkManager started the process after app was killed.
     // No persistent runtime exists — do a full php_embed_init().
-    LOGI("scheduler_embed_init: cold path — full PHP bootstrap");
+    LOGI("ephemeral_embed_init: cold path — full PHP bootstrap");
 
     setenv("NATIVEPHP_RUNNING", "true", 1);
     setenv("APP_URL", "http://127.0.0.1", 1);
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
-    setenv("PHP_SELF", "/scheduler", 1);
+    setenv("PHP_SELF", "/ephemeral", 1);
     setenv("HTTP_HOST", "127.0.0.1", 1);
 
     setup_embed_module();
     if (php_embed_init(0, NULL) != SUCCESS) {
-        LOGE("scheduler_embed_init: cold path php_embed_init() FAILED");
+        LOGE("ephemeral_embed_init: cold path php_embed_init() FAILED");
         return FAILURE;
     }
     sapi_module.header_handler = android_header_handler;
-    // nativephp extension self-registers via static linking
-    scheduler_cold_booted = 1;
+    ephemeral_cold_booted = 1;
 
-    LOGI("scheduler_embed_init: cold path ready");
+    LOGI("ephemeral_embed_init: cold path ready");
     return SUCCESS;
 }
 
-static void scheduler_embed_shutdown(void) {
-    if (scheduler_cold_booted) {
-        LOGI("scheduler_embed_shutdown: cold path — full php_embed_shutdown");
+static void ephemeral_embed_shutdown(void) {
+    if (ephemeral_cold_booted) {
+        LOGI("ephemeral_embed_shutdown: cold path — full php_embed_shutdown");
         safe_php_embed_shutdown();
     } else {
-        LOGI("scheduler_embed_shutdown: hot path — thread cleanup only");
+        LOGI("ephemeral_embed_shutdown: hot path — thread cleanup only");
         php_request_shutdown(NULL);
         ts_free_thread();
     }
-    LOGI("scheduler_embed_shutdown: done");
+    LOGI("ephemeral_embed_shutdown: done");
 }
 
-JNIEXPORT jint JNICALL native_scheduler_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
-    pthread_mutex_lock(&g_scheduler_mutex);
+JNIEXPORT jint JNICALL native_ephemeral_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
 
-    if (scheduler_initialized) {
-        LOGI("scheduler_boot: already initialized, skipping");
-        pthread_mutex_unlock(&g_scheduler_mutex);
+    if (ephemeral_initialized) {
+        LOGI("ephemeral_boot: already initialized, skipping");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         return 0;
     }
 
     const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
-    LOGI("scheduler_boot: initializing with bootstrap=%s", bootstrapPath);
+    LOGI("ephemeral_boot: initializing with bootstrap=%s", bootstrapPath);
 
     clear_collected_output();
 
-    if (scheduler_embed_init() != SUCCESS) {
-        LOGE("scheduler_boot: scheduler_embed_init() FAILED");
+    if (ephemeral_embed_init() != SUCCESS) {
+        LOGE("ephemeral_boot: ephemeral_embed_init() FAILED");
         (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
-        pthread_mutex_unlock(&g_scheduler_mutex);
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         return -1;
     }
 
@@ -1163,30 +1170,30 @@ JNIEXPORT jint JNICALL native_scheduler_boot(JNIEnv *env, jobject thiz, jstring 
         php_execute_script(&fileHandle);
     } zend_end_try();
 
-    char *scheduler_boot_output = get_collected_output();
-    if (scheduler_boot_output && strstr(scheduler_boot_output, "FATAL") != NULL) {
-        LOGE("scheduler_boot: bootstrap produced errors: %.200s", scheduler_boot_output);
+    char *ephemeral_boot_output = get_collected_output();
+    if (ephemeral_boot_output && strstr(ephemeral_boot_output, "FATAL") != NULL) {
+        LOGE("ephemeral_boot: bootstrap produced errors: %.200s", ephemeral_boot_output);
     }
 
-    scheduler_initialized = 1;
-    LOGI("scheduler_boot: scheduler PHP interpreter ready");
+    ephemeral_initialized = 1;
+    LOGI("ephemeral_boot: ephemeral PHP interpreter ready");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
-    pthread_mutex_unlock(&g_scheduler_mutex);
+    pthread_mutex_unlock(&g_ephemeral_mutex);
     return 0;
 }
 
-JNIEXPORT jstring JNICALL native_scheduler_artisan(JNIEnv *env, jobject thiz, jstring jCommand) {
-    pthread_mutex_lock(&g_scheduler_mutex);
+JNIEXPORT jstring JNICALL native_ephemeral_artisan(JNIEnv *env, jobject thiz, jstring jCommand) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
 
-    if (!scheduler_initialized) {
-        LOGE("scheduler_artisan: scheduler not initialized!");
-        pthread_mutex_unlock(&g_scheduler_mutex);
-        return (*env)->NewStringUTF(env, "Scheduler runtime not initialized.");
+    if (!ephemeral_initialized) {
+        LOGE("ephemeral_artisan: ephemeral runtime not initialized!");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return (*env)->NewStringUTF(env, "Ephemeral runtime not initialized.");
     }
 
     const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
-    LOGI("scheduler_artisan: %s", command);
+    LOGI("ephemeral_artisan: %s", command);
 
     clear_collected_output();
 
@@ -1197,44 +1204,44 @@ JNIEXPORT jstring JNICALL native_scheduler_artisan(JNIEnv *env, jobject thiz, js
         "try {\n"
         "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
         "} catch (\\Throwable $e) {\n"
-        "    echo 'Scheduler artisan error: ' . $e->getMessage();\n"
+        "    echo 'Ephemeral artisan error: ' . $e->getMessage();\n"
         "}\n",
         command);
 
     zend_first_try {
-        zend_eval_string(eval_code, NULL, "scheduler_artisan");
+        zend_eval_string(eval_code, NULL, "ephemeral_artisan");
     } zend_end_try();
 
     setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
 
     (*env)->ReleaseStringUTFChars(env, jCommand, command);
 
-    char *scheduler_output = get_collected_output();
-    jstring result = (*env)->NewStringUTF(env, scheduler_output ? scheduler_output : "");
-    pthread_mutex_unlock(&g_scheduler_mutex);
+    char *ephemeral_output = get_collected_output();
+    jstring result = (*env)->NewStringUTF(env, ephemeral_output ? ephemeral_output : "");
+    pthread_mutex_unlock(&g_ephemeral_mutex);
     return result;
 }
 
-JNIEXPORT void JNICALL native_scheduler_shutdown(JNIEnv *env, jobject thiz) {
-    pthread_mutex_lock(&g_scheduler_mutex);
+JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
 
-    if (!scheduler_initialized) {
-        LOGI("scheduler_shutdown: not initialized, nothing to do");
-        pthread_mutex_unlock(&g_scheduler_mutex);
+    if (!ephemeral_initialized) {
+        LOGI("ephemeral_shutdown: not initialized, nothing to do");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         return;
     }
 
-    LOGI("scheduler_shutdown: shutting down scheduler interpreter");
+    LOGI("ephemeral_shutdown: shutting down ephemeral interpreter");
 
     zend_first_try {
-        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "scheduler_shutdown");
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "ephemeral_shutdown");
     } zend_end_try();
 
-    scheduler_embed_shutdown();
-    scheduler_initialized = 0;
+    ephemeral_embed_shutdown();
+    ephemeral_initialized = 0;
 
-    LOGI("scheduler_shutdown: done");
-    pthread_mutex_unlock(&g_scheduler_mutex);
+    LOGI("ephemeral_shutdown: done");
+    pthread_mutex_unlock(&g_ephemeral_mutex);
 }
 
 static JNINativeMethod gMethods[] = {
@@ -1266,11 +1273,10 @@ static JNINativeMethod gMethods[] = {
         {"nativeWorkerArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_worker_artisan},
         {"nativeWorkerShutdown","()V",(void *) native_worker_shutdown},
 
-
-        // Scheduler (background tasks via WorkManager) methods
-        {"nativeSchedulerBoot","(Ljava/lang/String;)I",(void *) native_scheduler_boot},
-        {"nativeSchedulerArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_scheduler_artisan},
-        {"nativeSchedulerShutdown","()V",(void *) native_scheduler_shutdown}
+        // Ephemeral runtime (background tasks via WorkManager) methods
+        {"nativeEphemeralBoot","(Ljava/lang/String;)I",(void *) native_ephemeral_boot},
+        {"nativeEphemeralArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_ephemeral_artisan},
+        {"nativeEphemeralShutdown","()V",(void *) native_ephemeral_shutdown},
 };
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {

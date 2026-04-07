@@ -11,7 +11,7 @@ import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
 
 class PHPBridge(private val context: Context) {
-    private var lastPostData: String? = null
+    private val postDataByPath = ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedQueue<String>>()
     private val requestDataMap = ConcurrentHashMap<String, String>()
     private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
@@ -63,10 +63,123 @@ class PHPBridge(private val context: Context) {
     external fun nativeWorkerArtisan(command: String): String
     external fun nativeWorkerShutdown()
 
-    // Scheduler (WorkManager background tasks) JNI methods — runs on its own TSRM context
-    external fun nativeSchedulerBoot(bootstrapPath: String): Int
-    external fun nativeSchedulerArtisan(command: String): String
-    external fun nativeSchedulerShutdown()
+    // Ephemeral runtime JNI methods — generic background TSRM context for plugin use
+    external fun nativeEphemeralBoot(bootstrapPath: String): Int
+    external fun nativeEphemeralArtisan(command: String): String
+    external fun nativeEphemeralShutdown()
+
+    @Volatile
+    private var runtimeInitialized = false
+
+    @Volatile
+    private var persistentMode = false
+
+    @Volatile
+    private var persistentBooted = false
+
+    fun ensureRuntimeInitialized() {
+        if (!runtimeInitialized) {
+            nativeRuntimeInit()
+            runtimeInitialized = true
+            Log.i(TAG, "PHP runtime initialized (persistent)")
+        }
+    }
+
+    companion object {
+        private const val TAG = "PHPBridge"
+        private const val MAX_REQUEST_AGE = 5 * 60 * 1000L
+
+        init {
+            System.loadLibrary("php_wrapper")
+        }
+    }
+
+    /**
+     * Boot the persistent PHP runtime. Call once during app startup.
+     * PHP interpreter stays alive — no init/shutdown per request.
+     */
+    fun bootPersistentRuntime(): Boolean {
+        val future = phpExecutor.submit<Boolean> {
+            val start = System.currentTimeMillis()
+
+            // Set up env vars needed for bootstrap
+            ensureRuntimeInitialized()
+
+            val result = nativePersistentBoot(persistentBootstrapScript)
+            val elapsed = System.currentTimeMillis() - start
+
+            if (result == 0) {
+                persistentBooted = true
+                persistentMode = true
+                Log.i(TAG, "Persistent runtime booted in ${elapsed}ms")
+                true
+            } else {
+                Log.e(TAG, "Persistent runtime boot FAILED (code=$result) after ${elapsed}ms")
+                false
+            }
+        }
+        return future.get()
+    }
+
+    /**
+     * Shut down the persistent runtime. Called before hot reload reboot or app destroy.
+     */
+    fun shutdownPersistentRuntime() {
+        if (!persistentBooted) return
+        val future = phpExecutor.submit<Unit> {
+            nativePersistentShutdown()
+            persistentBooted = false
+            Log.i(TAG, "Persistent runtime shut down")
+        }
+        future.get()
+    }
+
+    /**
+     * Run an artisan command through the persistent interpreter (no boot/shutdown per command).
+     */
+    fun runPersistentArtisan(command: String): String {
+        if (!persistentBooted) {
+            Log.w(TAG, "Persistent runtime not booted, falling back to classic artisan")
+            return runArtisanCommand(command)
+        }
+        val future = phpExecutor.submit<String> {
+            nativePersistentArtisan(command)
+        }
+        return future.get()
+    }
+
+    fun isPersistentMode(): Boolean = persistentMode && persistentBooted
+
+    /**
+     * Boot the worker PHP runtime on a dedicated TSRM context.
+     * Does NOT use phpExecutor — no contention with UI requests.
+     */
+    fun bootWorkerRuntime(): Boolean {
+        ensureRuntimeInitialized()
+        val result = nativeWorkerBoot(workerBootstrapScript)
+        if (result == 0) {
+            Log.i(TAG, "Worker runtime booted")
+        } else {
+            Log.e(TAG, "Worker runtime boot FAILED (code=$result)")
+        }
+        return result == 0
+    }
+
+    /**
+     * Run an artisan command through the worker interpreter.
+     * Runs on the caller's thread — no phpExecutor involvement.
+     */
+    fun runWorkerArtisan(command: String): String {
+        return nativeWorkerArtisan(command)
+    }
+
+    /**
+     * Shut down the worker runtime.
+     */
+    fun shutdownWorkerRuntime() {
+        nativeWorkerShutdown()
+        Log.i(TAG, "Worker runtime shut down")
+    }
 
     fun handleLaravelRequest(request: PHPRequest): String {
         val requestStart = System.currentTimeMillis()
@@ -135,49 +248,38 @@ class PHPBridge(private val context: Context) {
         return result
     }
 
-    // New function to store request data with a key
-    fun storeRequestData(key: String, data: String) {
-        requestDataMap[key] = data
-        Log.d(TAG, "Stored request data with key: $key (length=${data.length})")
-
-        // Also update last post data for backward compatibility
-        lastPostData = data
-
-        // Clean up old requests occasionally
-        if (requestDataMap.size > 10) {
-            cleanupOldRequests()
-        }
+    fun storePostData(url: String, data: String) {
+        val path = android.net.Uri.parse(url).path ?: url
+        val queue = postDataByPath.getOrPut(path) { java.util.concurrent.ConcurrentLinkedQueue() }
+        queue.add(data)
+        Log.d(TAG, "Queued POST data for $path (length=${data.length}, queue size=${queue.size})")
     }
 
-    // Clean up old request data
-    private fun cleanupOldRequests() {
-        val now = System.currentTimeMillis()
-        val keysToRemove = mutableListOf<String>()
+    fun consumePostData(url: String): String? {
+        val path = android.net.Uri.parse(url).path ?: url
+        val queue = postDataByPath[path]
 
-        // Find keys with timestamps older than MAX_REQUEST_AGE
-        requestDataMap.keys.forEach { key ->
-            if (key.contains("-")) {
-                val timestampStr = key.substringAfterLast("-")
-                try {
-                    val timestamp = timestampStr.toLong()
-                    if (now - timestamp > MAX_REQUEST_AGE) {
-                        keysToRemove.add(key)
-                    }
-                } catch (e: NumberFormatException) {
-                    // Key doesn't have a valid timestamp format, ignore
+        // Try immediate poll
+        var data = queue?.poll()
+
+        // If empty, the JS bridge may not have fired yet — wait briefly
+        if (data == null) {
+            for (i in 1..10) {
+                Thread.sleep(5)
+                data = (postDataByPath[path] ?: queue)?.poll()
+                if (data != null) {
+                    Log.d(TAG, "POST data for $path arrived after ${i * 5}ms wait")
+                    break
                 }
             }
         }
 
-        // Remove old entries
-        keysToRemove.forEach { requestDataMap.remove(it) }
-        if (keysToRemove.isNotEmpty()) {
-            Log.d(TAG, "Cleaned up ${keysToRemove.size} old request entries")
+        if (data != null) {
+            Log.d(TAG, "Consumed POST data for $path (length=${data.length})")
+        } else {
+            Log.w(TAG, "No POST data for $path after 50ms — request may have no body")
         }
-    }
-
-    fun getLastPostData(): String? {
-        return lastPostData
+        return data
     }
 
     /**

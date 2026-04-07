@@ -674,6 +674,7 @@ class LaravelEnvironment(private val context: Context) {
         return outFile
     }
 
+    @Synchronized
     private fun copyAssetFile(assetName: String, outFile: File) {
         try {
             context.assets.open(assetName).use { input ->
@@ -759,7 +760,6 @@ class LaravelEnvironment(private val context: Context) {
 
             setEnvironmentVariables(
                 // Laravel environment settings
-                "APP_ENV" to "local",
                 "APP_URL" to "http://127.0.0.1",
                 "ASSET_URL" to "http://127.0.0.1/_assets",
                 "DB_CONNECTION" to "sqlite",

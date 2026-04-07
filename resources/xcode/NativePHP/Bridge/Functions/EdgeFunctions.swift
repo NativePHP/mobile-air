@@ -27,7 +27,6 @@ enum EdgeFunctions {
             }
 
             print("🎨 Edge.Set called with \(components.count) component(s)")
-            print("🎨 Edge.Set components: \(components)")
 
             // Convert components back to JSON string for NativeUIState
             do {
