@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Traits;
 
+use Native\Mobile\Support\AppIdValidator;
+
 trait ValidatesAppConfig
 {
     private function validateAppVersion(string $buildType): void
@@ -40,6 +42,22 @@ trait ValidatesAppConfig
 
         if (str($appId)->startsWith('com.nativephp.')) {
             \Laravel\Prompts\warning('Please change your NATIVEPHP_APP_ID. Must not contain "nativephp"');
+        }
+
+        $errors = AppIdValidator::validate($appId);
+
+        if ($errors['android']) {
+            \Laravel\Prompts\error('Invalid app ID for Android: '.$errors['android']);
+        }
+
+        if ($errors['ios']) {
+            \Laravel\Prompts\error('Invalid app ID for iOS: '.$errors['ios']);
+        }
+
+        if ($errors['android'] || $errors['ios']) {
+            $this->line('Please fix NATIVEPHP_APP_ID in your .env file.');
+            $this->line('A valid app ID looks like: com.yourcompany.yourapp');
+            exit(1);
         }
     }
 }
