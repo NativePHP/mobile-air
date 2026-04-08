@@ -58,7 +58,7 @@ trait WatchesIos
 
         if ($viteRunning) {
             $this->info('Vite hot reloading detected - skipping full page reloads');
-        } else {
+        } elseif (! $this->option('no-vite')) {
             $this->info('No Vite hot reloading detected - will trigger full page reloads');
         }
 
