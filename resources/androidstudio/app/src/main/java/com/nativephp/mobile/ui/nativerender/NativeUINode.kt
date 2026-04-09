@@ -279,8 +279,7 @@ data class NativeUINode(
     val props: GenericProps,
     val onPress: Int,
     val onLongPress: Int,
-    val children: List<NativeUINode>,
-    val computed: ComputedLayout? = null
+    val children: List<NativeUINode>
 )
 
 /**
@@ -326,16 +325,6 @@ data class NodeLayout(
     val direction: Int = 0,
     val aspectRatio: Float = 0f,
     val rowGap: Float = 0f
-)
-
-/**
- * Yoga-computed layout result for a node.
- */
-data class ComputedLayout(
-    val x: Float,
-    val y: Float,
-    val width: Float,
-    val height: Float
 )
 
 /**

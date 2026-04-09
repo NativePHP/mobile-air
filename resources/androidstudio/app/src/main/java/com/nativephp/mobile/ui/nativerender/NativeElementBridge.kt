@@ -9,7 +9,6 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
-import android.content.res.Resources
 
 /**
  * Element Runtime bridge — direct JNI push architecture.
@@ -142,7 +141,7 @@ class NativeElementBridge private constructor() {
                 }
 
                 // Hand off to shadow thread — overwrites any pending update (coalescing)
-                val update = ShadowUpdate(flatBuf, propBuf, flatBytes, typeTable, nodeCount, isNav, t0, t1)
+                val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, t0, t1)
                 pendingUpdate.set(update)
                 shadowThread?.let { LockSupport.unpark(it) }
             } catch (e: Throwable) {
@@ -170,15 +169,7 @@ class NativeElementBridge private constructor() {
                     val tParseEnd = System.nanoTime()
 
                     if (tree != null) {
-                        // Yoga layout computation (if enabled)
-                        val yogaTree = if (YogaBridge.yogaEnabled) {
-                            YogaBridge.computeLayout(
-                                tree, update.flatBytes, update.nodeCount,
-                                update.typeTable, Resources.getSystem().displayMetrics
-                            )
-                        } else tree
-
-                        val nc = countNodes(yogaTree.root)
+                        val nc = countNodes(tree.root)
                         val prev = previousTree
                         val isDiffOn = diffEnabled
                         val diffedTree: NativeUITree
@@ -186,13 +177,13 @@ class NativeElementBridge private constructor() {
                         if (prev != null && !update.isNav && isDiffOn) {
                             val stats = DiffStats()
                             val tDiffStart = System.nanoTime()
-                            val diffedRoot = diffNodeWithStats(prev.root, yogaTree.root, stats)
+                            val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
                             val tDiffEnd = System.nanoTime()
-                            diffedTree = yogaTree.copy(root = diffedRoot)
+                            diffedTree = tree.copy(root = diffedRoot)
                             PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
                             PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
                         } else {
-                            diffedTree = yogaTree
+                            diffedTree = tree
                             PerformanceTracker.onTreeDiffed(0, 0, nc, false)
                             PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, 0)
                         }
@@ -649,8 +640,7 @@ class NativeElementBridge private constructor() {
                     old.style == new.style &&
                     old.onPress == new.onPress &&
                     old.onLongPress == new.onLongPress &&
-                    old.props == new.props &&
-                    old.computed == new.computed
+                    old.props == new.props
 
             // Entire subtree identical — reuse old reference
             if (fieldsMatch && allChildrenReused) {
@@ -685,7 +675,6 @@ class NativeElementBridge private constructor() {
 private data class ShadowUpdate(
     val flatBuf: ByteBuffer,
     val propBuf: ByteBuffer?,
-    val flatBytes: ByteArray,   // raw bytes for Yoga bridge
     val typeTable: Array<String>,
     val nodeCount: Int,
     val isNav: Boolean,

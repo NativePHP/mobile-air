@@ -91,6 +91,10 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "line.3.horizontal.decrease.circle"
     case "refresh":
         return "arrow.clockwise"
+    case "repeat":
+        return "arrow.2.squarepath"
+    case "arrow_back":
+        return "arrow.left"
     case "share":
         return "square.and.arrow.up"
     case "download":
@@ -107,6 +111,8 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "envelope.fill"
     case "chat":
         return "bubble.left.and.bubble.right.fill"
+    case "chat_bubble", "chat_bubble_outline":
+        return "bubble.left"
     case "phone":
         return "phone.fill"
 
@@ -121,6 +127,8 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "chevron.down"
 
     // Status
+    case "verified":
+        return "checkmark.seal.fill"
     case "check", "done":
         return "checkmark.circle.fill"
     case "close":
@@ -145,6 +153,8 @@ private func getManualMapping(_ iconName: String) -> String? {
     // Content
     case "favorite", "heart":
         return "heart.fill"
+    case "favorite_border", "heart_outline":
+        return "heart"
     case "star":
         return "star.fill"
     case "bookmark":

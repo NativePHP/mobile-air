@@ -178,7 +178,6 @@ final class NativeUINode: Identifiable, Equatable {
     let onPress: Int
     let onLongPress: Int
     let children: [NativeUINode]
-    let computed: ComputedLayout?
 
     init(
         id: Int,
@@ -188,8 +187,7 @@ final class NativeUINode: Identifiable, Equatable {
         props: GenericProps,
         onPress: Int,
         onLongPress: Int,
-        children: [NativeUINode],
-        computed: ComputedLayout? = nil
+        children: [NativeUINode]
     ) {
         self.id = id
         self.type = type
@@ -199,15 +197,13 @@ final class NativeUINode: Identifiable, Equatable {
         self.onPress = onPress
         self.onLongPress = onLongPress
         self.children = children
-        self.computed = computed
     }
 
-    func copy(children: [NativeUINode]? = nil, computed: ComputedLayout? = nil) -> NativeUINode {
+    func copy(children: [NativeUINode]? = nil) -> NativeUINode {
         NativeUINode(
             id: id, type: type, layout: layout, style: style,
             props: props, onPress: onPress, onLongPress: onLongPress,
-            children: children ?? self.children,
-            computed: computed ?? self.computed
+            children: children ?? self.children
         )
     }
 
@@ -258,15 +254,6 @@ struct NodeLayout: Equatable {
     let direction: Int
     let aspectRatio: Float
     let rowGap: Float
-}
-
-// MARK: - Computed Layout (Yoga output)
-
-struct ComputedLayout: Equatable {
-    let x: Float
-    let y: Float
-    let width: Float
-    let height: Float
 }
 
 // MARK: - Style

@@ -58,19 +58,12 @@ set_target_properties(php PROPERTIES
     IMPORTED_LOCATION ${PHP_LIB_DIR}/libphp.a
 )
 
-# Yoga layout engine (vendored sources)
-file(GLOB_RECURSE YOGA_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/yoga/*.cpp
-)
-
 # Single .so output — everything linked in
 add_library(php_wrapper SHARED
         PHP.c
         php_bridge.c
         bridge_jni.cpp
-        yoga_bridge.cpp
         compat/android_compat.cpp
-        ${YOGA_SOURCES}
 )
 
 # Link libphp.a with --whole-archive to preserve PHP module registration constructors

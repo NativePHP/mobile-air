@@ -1,18 +1,8 @@
 package com.nativephp.mobile.ui.nativerender
 
-import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
-import android.graphics.Color
-import android.graphics.Typeface
 import android.net.Uri
 import android.util.Log
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -33,176 +23,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 private const val TAG = "NativeNavRenderers"
-
-// ── Top Bar (View-based) ──
-
-class TopBarViewRenderer : NativeViewRenderer {
-    override fun createView(context: Context, node: NativeUINode): View {
-        val container = LinearLayout(context)
-        container.orientation = LinearLayout.HORIZONTAL
-        container.gravity = Gravity.CENTER_VERTICAL
-        applyProps(container, context, node)
-        return container
-    }
-
-    override fun updateView(view: View, node: NativeUINode) {
-        val container = view as? LinearLayout ?: return
-        container.removeAllViews()
-        applyProps(container, view.context, node)
-    }
-
-    private fun applyProps(container: LinearLayout, context: Context, node: NativeUINode) {
-        val props = node.props
-        val title = props.getString("title", "")
-        val textColorStr = props.getString("text_color")
-        val textColor = parseHexColorInt(textColorStr)
-
-        val density = context.resources.displayMetrics.density
-
-        container.setPadding(
-            (16 * density).toInt(),
-            (8 * density).toInt(),
-            (16 * density).toInt(),
-            (8 * density).toInt()
-        )
-
-        // Nav icon (hamburger menu)
-        val showNavIcon = props.getBool("show_navigation_icon", true)
-        if (showNavIcon) {
-            val navIcon = createIconTextView(context, "menu", 24f, textColor ?: Color.BLACK)
-            navIcon.setPadding((8 * density).toInt(), (8 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
-            navIcon.setOnClickListener {
-                Log.d(TAG, "Navigation icon clicked — opening drawer")
-                NativeUIState.drawerScope?.launch {
-                    NativeUIState.drawerState?.open()
-                }
-            }
-            container.addView(navIcon)
-        }
-
-        // Title
-        val titleView = TextView(context)
-        titleView.text = title
-        titleView.textSize = 20f
-        titleView.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        titleView.setTextColor(textColor ?: Color.BLACK)
-        titleView.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        container.addView(titleView)
-
-        // Action buttons
-        val actions = node.children.filter { it.type == "top_bar_action" }
-        for (action in actions.take(3)) {
-            val aProps = action.props
-            val icon = aProps.getString("icon", "more_vert")
-            val url = aProps.getString("url")
-
-            val iconView = createIconTextView(context, icon, 24f, textColor ?: Color.BLACK)
-            iconView.setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
-            iconView.setOnClickListener {
-                if (url.isNotEmpty() && isExternalUrl(url)) {
-                    try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to open URL: $url", e)
-                    }
-                } else if (action.onPress != 0) {
-                    NativeElementBridge.sendPressEvent(action.onPress, action.id)
-                }
-            }
-            container.addView(iconView)
-        }
-    }
-}
-
-// ── Bottom Nav (View-based) ──
-
-class BottomNavViewRenderer : NativeViewRenderer {
-    override fun createView(context: Context, node: NativeUINode): View {
-        val container = LinearLayout(context)
-        container.orientation = LinearLayout.HORIZONTAL
-        val dark = (context.resources.configuration.uiMode and
-            Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        container.setBackgroundColor(if (dark) Color.parseColor("#1C1C1E") else Color.WHITE)
-        applyProps(container, context, node)
-        return container
-    }
-
-    override fun updateView(view: View, node: NativeUINode) {
-        val container = view as? LinearLayout ?: return
-        container.removeAllViews()
-        applyProps(container, view.context, node)
-    }
-
-    private fun applyProps(container: LinearLayout, context: Context, node: NativeUINode) {
-        val items = node.children.filter { it.type == "bottom_nav_item" }
-        if (items.isEmpty()) return
-
-        val density = context.resources.displayMetrics.density
-        container.elevation = 8 * density
-
-        for (item in items) {
-            val iProps = item.props
-            val label = iProps.getString("label", "")
-            val icon = iProps.getString("icon", "circle")
-            val active = iProps.getBool("active")
-
-            val itemLayout = LinearLayout(context)
-            itemLayout.orientation = LinearLayout.VERTICAL
-            itemLayout.gravity = Gravity.CENTER
-            itemLayout.setPadding(0, (8 * density).toInt(), 0, (8 * density).toInt())
-            itemLayout.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-
-            val activeColor = if (active) Color.parseColor("#1976D2") else Color.parseColor("#757575")
-
-            val iconView = createIconTextView(context, icon, 24f, activeColor)
-            itemLayout.addView(iconView)
-
-            if (label.isNotEmpty()) {
-                val labelView = TextView(context)
-                labelView.text = label
-                labelView.textSize = 12f
-                labelView.setTextColor(activeColor)
-                labelView.gravity = Gravity.CENTER
-                itemLayout.addView(labelView)
-            }
-
-            itemLayout.setOnClickListener {
-                if (item.onPress != 0) {
-                    NativeElementBridge.sendPressEvent(item.onPress, item.id)
-                }
-            }
-
-            container.addView(itemLayout)
-        }
-    }
-}
-
-// ── Side Nav (View-based — renders nothing, stores node for drawer) ──
-
-class SideNavViewRenderer : NativeViewRenderer {
-    override fun createView(context: Context, node: NativeUINode): View {
-        NativeEdgeDrawerState.sideNavNode.value = node
-        val v = View(context)
-        v.visibility = View.GONE
-        return v
-    }
-
-    override fun updateView(view: View, node: NativeUINode) {
-        NativeEdgeDrawerState.sideNavNode.value = node
-    }
-}
-
-// ── Empty Renderer ──
-
-class EmptyViewRenderer : NativeViewRenderer {
-    override fun createView(context: Context, node: NativeUINode): View {
-        val v = View(context)
-        v.visibility = View.GONE
-        return v
-    }
-
-    override fun updateView(view: View, node: NativeUINode) {}
-}
 
 // ── Side Nav Drawer State (Compose bridge) ──
 
@@ -461,16 +281,6 @@ private fun RenderSideNavGroupContent(
 
 // ── Utility ──
 
-private fun createIconTextView(context: Context, iconName: String, size: Float, color: Int): TextView {
-    val tv = TextView(context)
-    tv.text = getIconName(iconName)
-    tv.typeface = IconViewRenderer.getMaterialIconsTypeface(context)
-    tv.textSize = size
-    tv.setTextColor(color)
-    tv.gravity = Gravity.CENTER
-    return tv
-}
-
 private fun parseHexColor(hex: String): androidx.compose.ui.graphics.Color? {
     if (hex.isEmpty()) return null
     return try {
@@ -478,20 +288,6 @@ private fun parseHexColor(hex: String): androidx.compose.ui.graphics.Color? {
         when (sanitized.length) {
             6 -> androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor("#$sanitized"))
             8 -> androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor("#$sanitized"))
-            else -> null
-        }
-    } catch (e: Exception) {
-        null
-    }
-}
-
-private fun parseHexColorInt(hex: String): Int? {
-    if (hex.isEmpty()) return null
-    return try {
-        val sanitized = hex.removePrefix("#")
-        when (sanitized.length) {
-            6 -> android.graphics.Color.parseColor("#$sanitized")
-            8 -> android.graphics.Color.parseColor("#$sanitized")
             else -> null
         }
     } catch (e: Exception) {

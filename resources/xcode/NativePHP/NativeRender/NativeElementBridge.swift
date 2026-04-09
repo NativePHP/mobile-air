@@ -1,5 +1,5 @@
 import Foundation
-import UIKit
+import UIKit // needed for UIScreen.main, UIApplication
 import os
 
 /// Element Runtime bridge — reads flat buffer from PHP shared memory, posts tree to main thread.
@@ -87,9 +87,6 @@ final class NativeElementBridge {
     /// Shadow thread reference and run flag
     private static var shadowThread: pthread_t?
     private static var shadowRunning = false
-
-    /// Viewport size cached from main thread (UIScreen.main is not thread-safe)
-    private static var cachedViewportSize = CGSize(width: 393, height: 852) // default iPhone 15
 
     // MARK: - Region Management
 
@@ -195,21 +192,6 @@ final class NativeElementBridge {
 
         cachedTypeTable = typeTable
 
-        // Capture viewport size and safe area insets from main thread (UIScreen.main is not thread-safe)
-        let captureOnMain = {
-            cachedViewportSize = UIScreen.main.bounds.size
-            if let window = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene }).first?.windows.first {
-                YogaBridge.safeAreaTop = window.safeAreaInsets.top
-                YogaBridge.safeAreaBottom = window.safeAreaInsets.bottom
-            }
-        }
-        if Thread.isMainThread {
-            captureOnMain()
-        } else {
-            DispatchQueue.main.sync { captureOnMain() }
-        }
-
         let update = ShadowUpdate(
             flatData: flatData, propData: propData,
             typeTable: typeTable, nodeCount: nodeCount, isNav: isNav
@@ -288,23 +270,13 @@ final class NativeElementBridge {
                 continue
             }
 
-            // Yoga layout computation
-            let viewport = cachedViewportSize
-            let yogaTree = YogaBridge.computeLayout(
-                tree: tree,
-                flatData: update.flatData,
-                nodeCount: update.nodeCount,
-                typeTable: update.typeTable,
-                viewportSize: viewport
-            )
-
-            // Diff against previous tree (reuse unchanged subtrees)
+            // Diff against previous tree (reuse unchanged subtrees for SwiftUI Equatable optimization)
             let finalTree: NativeUITree
             if let prev = previousTree, !update.isNav {
-                let diffedRoot = diffNode(old: prev.root, new: yogaTree.root)
-                finalTree = NativeUITree(version: yogaTree.version, callbackCount: yogaTree.callbackCount, root: diffedRoot)
+                let diffedRoot = diffNode(old: prev.root, new: tree.root)
+                finalTree = NativeUITree(version: tree.version, callbackCount: tree.callbackCount, root: diffedRoot)
             } else {
-                finalTree = yogaTree
+                finalTree = tree
             }
             previousTree = finalTree
 
@@ -675,9 +647,6 @@ final class NativeElementBridge {
                     let (s, newPos) = readString(base, pos: pos, limit: offset + size)
                     key = s
                     pos = newPos
-                    if key.hasPrefix("dark_") {
-                        print("DARK PROP READ: fallback key='\(key)' at pos=\(pos)")
-                    }
                 }
 
                 let typeTag = Int(base.load(fromByteOffset: pos, as: UInt8.self))
@@ -766,8 +735,7 @@ final class NativeElementBridge {
             old.style == new.style &&
             old.onPress == new.onPress &&
             old.onLongPress == new.onLongPress &&
-            old.props == new.props &&
-            old.computed == new.computed
+            old.props == new.props
 
         if fieldsMatch && allChildrenReused {
             return old

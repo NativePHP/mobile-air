@@ -22,7 +22,6 @@ import androidx.activity.addCallback
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
-import com.nativephp.mobile.ui.nativerender.NativeRendererRegistry
 import com.nativephp.mobile.ui.nativerender.PerformanceTracker
 import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.nativephp.mobile.utils.WebViewProvider
@@ -70,6 +69,194 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
     @Volatile private var nativeUIThread: Thread? = null
+    private var shouldStopWatcher = false
+    private var pendingInsets: Insets? = null
+    private var showSplash by mutableStateOf(true)
+
+    // Status bar style configuration - replaced during build
+    private val statusBarStyle = "REPLACE_STATUS_BAR_STYLE"
+
+    companion object {
+        // Static instance holder for accessing MainActivity from other activities
+        var instance: MainActivity? = null
+            private set
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        instance = this
+
+        // Android 15 edge-to-edge compatibility fix
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        // Configure status bar icon colors
+        configureStatusBar()
+
+        // Apply window insets - inject as CSS variables for web content
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            pendingInsets = systemBars
+
+            // Inject CSS custom properties into WebView if ready
+            if (::webViewManager.isInitialized) {
+                injectSafeAreaInsets(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            }
+
+            // Detect keyboard visibility and inject class into WebView
+            val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            if (::webViewManager.isInitialized) {
+                injectKeyboardVisibility(imeVisible)
+            }
+
+            insets
+        }
+
+        // Initialize WebView before setContent so it's available for composition
+        webView = WebView(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            settings.mediaPlaybackRequiresUserGesture = false
+        }
+
+        LaravelCookieStore.init(applicationContext)
+
+        // Register bridge functions early, before PHP code can execute
+        Log.d("MainActivity", "🔌 Registering bridge functions...")
+        registerBridgeFunctions(this, applicationContext)
+        registerPluginRenderers()
+        Log.d("MainActivity", "✅ Bridge functions registered")
+
+        handleDeepLinkIntent(intent)
+
+        // Set up Compose UI
+        setContent {
+            MainScreen()
+        }
+
+        initializeEnvironmentAsync {
+            // Setup WebView and managers FIRST
+            webViewManager = WebViewManager(this, webView, phpBridge)
+            webViewManager.setup()
+            coord = NativeActionCoordinator.install(this)
+
+            // Add JavaScript interface for drawer control
+            webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+
+            // Inject safe area insets BEFORE loading any URL to prevent content shift
+            pendingInsets?.let {
+                injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
+            }
+
+            // NOW load the URL after WebView is fully configured
+            val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
+            val fullUrl = "http://127.0.0.1$target"
+            Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
+            webView.loadUrl(fullUrl)
+
+            pendingDeepLink = null
+
+            // Hide splash screen after URL is loaded
+            showSplash = false
+
+            // Start hot reload watcher AFTER Laravel environment is initialized
+            startHotReloadWatcher()
+            injectJavaScript(webView)
+        }
+
+        onBackPressedDispatcher.addCallback(this) {
+            if (webView.canGoBack()) {
+                webView.goBack()
+            } else {
+                finish()
+            }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.d("MainActivity", "🌀 Config changed: orientation = ${newConfig.orientation}")
+
+        // Re-inject safe area insets on orientation change
+        pendingInsets?.let {
+            injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
+        }
+
+        // Reconfigure status bar on theme change
+        if ((newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) != 0) {
+            configureStatusBar()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun configureStatusBar() {
+        val windowInsetsController = WindowInsetsControllerCompat(window, window.decorView)
+
+        // Make status bar and navigation bar transparent for edge-to-edge
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+
+        when (statusBarStyle) {
+            "auto" -> {
+                val isSystemDarkMode = (resources.configuration.uiMode and
+                    Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+                windowInsetsController.isAppearanceLightStatusBars = !isSystemDarkMode
+                windowInsetsController.isAppearanceLightNavigationBars = !isSystemDarkMode
+
+                Log.d("StatusBar", "🎨 System bars style: auto (system ${if (isSystemDarkMode) "dark" else "light"} mode)")
+                Log.d("StatusBar", "🎨 Using ${if (!isSystemDarkMode) "dark" else "light"} icons with transparent background")
+            }
+            "light" -> {
+                windowInsetsController.isAppearanceLightStatusBars = false
+                windowInsetsController.isAppearanceLightNavigationBars = false
+
+                Log.d("StatusBar", "🎨 System bars style: light (white icons with transparent background)")
+            }
+            "dark" -> {
+                windowInsetsController.isAppearanceLightStatusBars = true
+                windowInsetsController.isAppearanceLightNavigationBars = true
+
+                Log.d("StatusBar", "🎨 System bars style: dark (dark icons with transparent background)")
+            }
+            else -> {
+                Log.w("StatusBar", "⚠️ Unknown status bar style: $statusBarStyle, defaulting to auto")
+                val isSystemDarkMode = (resources.configuration.uiMode and
+                    Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+                windowInsetsController.isAppearanceLightStatusBars = !isSystemDarkMode
+                windowInsetsController.isAppearanceLightNavigationBars = !isSystemDarkMode
+            }
+        }
+    }
+
+    private fun initializeEnvironmentAsync(onReady: () -> Unit) {
+        Thread {
+            Log.d("LaravelInit", "Starting async Laravel extraction...")
+            laravelEnv = LaravelEnvironment(this)
+            laravelEnv.initialize()
+
+            Log.d("LaravelInit", "Laravel environment ready")
+
+            // Check runtime mode from bundle_meta.json
+            val runtimeMode = LaravelEnvironment.getRuntimeMode(this)
+            Log.d("LaravelInit", "Runtime mode: $runtimeMode")
+
+            if (runtimeMode == "classic") {
+                Log.d("LaravelInit", "Classic mode configured — skipping persistent runtime boot")
+            } else {
+                // Boot persistent PHP runtime BEFORE WebView loads
+                val bootStart = System.currentTimeMillis()
+                val booted = phpBridge.bootPersistentRuntime()
+                val bootTime = System.currentTimeMillis() - bootStart
+
+                if (booted) {
+                    Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
+
+                    // Start background queue worker after persistent runtime is ready
+                    queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                } else {
+                    Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
+                }
             }
 
             Handler(Looper.getMainLooper()).post {

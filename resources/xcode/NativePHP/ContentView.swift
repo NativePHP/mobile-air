@@ -25,10 +25,9 @@ struct ContentView: View {
             }
 
             // Native Element UI overlay — shown when Route::native() publishes a UI tree
-            if nativeUIBridge.isActive {
-                NativeUIContent()
+            if nativeUIBridge.isActive, let tree = nativeUIBridge.currentTree {
+                NativeTreeRenderer(tree: tree)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea()
                     .background(Color(.systemBackground))
                     .transition(.opacity)
             }

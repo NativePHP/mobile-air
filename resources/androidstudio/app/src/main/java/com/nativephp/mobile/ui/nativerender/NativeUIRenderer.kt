@@ -1,35 +1,28 @@
 package com.nativephp.mobile.ui.nativerender
 
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
 /**
- * Thin Composable wrapper that hosts NativeUIViewRenderer via AndroidView.
- * All rendering logic lives in NativeUIViewRenderer (imperative android.view.View tree).
+ * Pure Compose entry point for native element rendering.
+ * Captures safe area insets and viewport size, provides them
+ * via CompositionLocals, and renders the tree via NodeView.
  */
 @Composable
 fun NativeUIContent() {
     val tree by NativeUIBridge.currentTree
 
-    // Cache safe area insets for the Yoga bridge (runs on shadow thread)
-    val rootView = LocalView.current
-    LaunchedEffect(Unit) {
-        val insets = ViewCompat.getRootWindowInsets(rootView)
-            ?.getInsets(WindowInsetsCompat.Type.systemBars())
-        if (insets != null) {
-            YogaBridge.safeAreaTopPx = insets.top
-            YogaBridge.safeAreaBottomPx = insets.bottom
-        }
-    }
-
+    // Performance tracking — measure frame draw latency
     LaunchedEffect(tree) {
         if (tree != null && PerformanceTracker.enabled) {
             withFrameNanos { _ ->
@@ -38,32 +31,31 @@ fun NativeUIContent() {
         }
     }
 
-    AndroidView(
-        factory = { context ->
-            NativeUIViewRenderer(context).also { view ->
-                // Update safe area insets when they change (e.g., rotation)
-                ViewCompat.setOnApplyWindowInsetsListener(view) { _, windowInsets ->
-                    val bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-                    YogaBridge.safeAreaTopPx = bars.top
-                    YogaBridge.safeAreaBottomPx = bars.bottom
-                    windowInsets
-                }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // Read safe area insets
+        val rootView = LocalView.current
+        val density = LocalDensity.current
+        val insets = ViewCompat.getRootWindowInsets(rootView)
+            ?.getInsets(WindowInsetsCompat.Type.systemBars())
+
+        val safeAreaTopDp = if (insets != null) insets.top / density.density else 0f
+        val safeAreaBottomDp = if (insets != null) insets.bottom / density.density else 0f
+
+        CompositionLocalProvider(
+            LocalSafeAreaTop provides safeAreaTopDp,
+            LocalSafeAreaBottom provides safeAreaBottomDp,
+            LocalAvailableWidth provides maxWidth.value,
+            LocalAvailableHeight provides maxHeight.value
+        ) {
+            tree?.let { t ->
+                NodeView(node = t.root)
             }
-        },
-        update = { renderer ->
-            val t = tree
-            if (t != null) {
-                renderer.applyTree(t)
-            } else {
-                renderer.clear()
-            }
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+        }
+    }
 }
 
 /* ── Color Helpers (kept for NativeNavRenderers backward compat) ── */
 
 internal fun argbToColor(argb: Int): androidx.compose.ui.graphics.Color {
-    return androidx.compose.ui.graphics.Color(argb)
+    return argbToComposeColor(argb)
 }
