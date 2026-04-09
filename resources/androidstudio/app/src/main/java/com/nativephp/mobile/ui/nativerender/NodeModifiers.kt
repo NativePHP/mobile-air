@@ -49,25 +49,26 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
     var mod = this
     val radius = style.borderRadius
 
-    // Shadow — uses platform elevation for proper shadow rendering
-    if (style.elevation > 0f) {
-        val shape = if (radius > 0f) RoundedCornerShape(radius.dp) else RoundedCornerShape(0.dp)
-        mod = mod.shadow(
-            elevation = style.elevation.dp,
-            shape = shape,
-            clip = false
-        )
-    }
-
     // Background color (with dark mode override)
     val darkBg = if (isDarkMode) props.getColor("dark_bg_color", 0) else 0
     val bgArgb = if (darkBg != 0) darkBg else style.bgColor
+    val shape = if (radius > 0f) RoundedCornerShape(radius.dp) else RoundedCornerShape(0.dp)
+
+    // Shadow — must come before background. Compose shadow requires a shape
+    // to cast from; the background provides the visual fill.
+    if (style.elevation > 0f) {
+        mod = mod.shadow(elevation = style.elevation.dp, shape = shape)
+    }
+
+    // Background
     if (bgArgb != 0) {
         val bgColor = argbToComposeColor(bgArgb)
         if (bgColor != Color.Transparent) {
-            val shape = if (radius > 0f) RoundedCornerShape(radius.dp) else RoundedCornerShape(0.dp)
             mod = mod.background(bgColor, shape)
         }
+    } else if (style.elevation > 0f) {
+        // Shadow needs a background to be visible — add white if none specified
+        mod = mod.background(Color.White, shape)
     }
 
     // Clip (only when radius > 0 — zero-radius clip cuts off overflowing content like toggles)

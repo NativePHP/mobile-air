@@ -136,7 +136,7 @@ private fun FlexColumn(
             if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
             if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEachIndexed
 
-            val childMod = buildChildModifier(node, isRow = false, align = align, scope = this)
+            val childMod = buildChildModifier(node, isRow = false, align = align, scope = this, childNodes = childNodes)
             NodeView(node = node, overrideModifier = childMod)
         }
     }
@@ -175,7 +175,7 @@ private fun FlexRow(
             if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
             if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEachIndexed
 
-            val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
+            val childMod = buildChildModifier(node, isRow = true, align = align, scope = this, childNodes = childNodes)
             NodeView(node = node, overrideModifier = childMod)
         }
     }
@@ -189,7 +189,8 @@ private fun buildChildModifier(
     node: NativeUINode,
     isRow: Boolean,
     align: Int,
-    scope: Any // ColumnScope or RowScope
+    scope: Any, // ColumnScope or RowScope
+    childNodes: List<NativeUINode> = emptyList()
 ): Modifier {
     val layout = node.layout
     var mod: Modifier = Modifier
@@ -205,12 +206,18 @@ private fun buildChildModifier(
         )
     }
 
-    // Main axis: flex_grow → weight
+    // Main axis: flex_grow or fill → weight
     val flexGrow = layout?.flexGrow ?: 0f
+    val flexShrink = layout?.flexShrink ?: 0f
     val mainFill = if (isRow) {
         layout?.widthMode == SizeMode.FILL
     } else {
         layout?.heightMode == SizeMode.FILL
+    }
+    val hasFixedMainSize = if (isRow) {
+        layout?.widthMode == SizeMode.FIXED && (layout.width) > 0f
+    } else {
+        layout?.heightMode == SizeMode.FIXED && (layout.height) > 0f
     }
 
     if (flexGrow > 0f || mainFill == true) {
@@ -220,14 +227,23 @@ private fun buildChildModifier(
         } else if (!isRow && scope is ColumnScope) {
             with(scope) { mod.weight(weight) }
         } else mod
-    }
-
-    // Main axis: fixed size
-    if (isRow && layout?.widthMode == SizeMode.FIXED && (layout.width) > 0f) {
-        mod = mod.width(layout.width.dp)
-    }
-    if (!isRow && layout?.heightMode == SizeMode.FIXED && (layout.height) > 0f) {
-        mod = mod.height(layout.height.dp)
+    } else if (hasFixedMainSize == true) {
+        // Fixed size on main axis
+        if (isRow) mod = mod.width(layout!!.width.dp)
+        else mod = mod.height(layout!!.height.dp)
+    } else if (isRow && scope is RowScope) {
+        // In a Row, children without explicit size or flex_grow should share space equally
+        // to prevent overflow. CSS flex-shrink defaults to 1.
+        // Use weight(1f, fill=false) so they share space but don't grow beyond natural size.
+        // Actually, just constrain with weight to prevent overflow.
+        val siblingCount = childNodes.count { n ->
+            (n.layout?.display ?: 0) != Display.NONE &&
+            (n.layout?.positionType ?: 0) != PositionType.ABSOLUTE
+        }
+        if (siblingCount > 1 && flexShrink != 0f) {
+            // Only apply shrink behavior if there are multiple siblings
+            with(scope) { mod = mod.weight(1f, fill = false) }
+        }
     }
 
     // Cross axis: stretch or fixed
