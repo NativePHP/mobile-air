@@ -16,6 +16,8 @@ abstract class Element
 
     protected ?string $longPressMethod = null;
 
+    protected ?string $swipeDeleteMethod = null;
+
     protected ?array $navigateConfig = null;
 
     protected array $children = [];
@@ -338,6 +340,13 @@ abstract class Element
         return $this;
     }
 
+    public function onSwipeDelete(string $method): static
+    {
+        $this->swipeDeleteMethod = $method;
+
+        return $this;
+    }
+
     public function onLongPress(string $method): static
     {
         $this->longPressMethod = $method;
@@ -420,6 +429,10 @@ abstract class Element
     public function getResolvedProps(CallbackRegistry $registry): array
     {
         $props = array_merge($this->defaults(), $this->resolveProps($registry));
+
+        if ($this->swipeDeleteMethod !== null) {
+            $props['on_swipe_delete'] = $registry->register($this->swipeDeleteMethod);
+        }
 
         if (! empty($this->darkProps)) {
             $props = array_merge($props, $this->darkProps);

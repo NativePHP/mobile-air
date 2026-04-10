@@ -322,12 +322,14 @@ struct FlexContainer: Layout {
             }
         }
 
-        // Phase 3: Re-measure children with the full container cross size proposed.
-        // This ensures children with flex_grow or fill mode get the correct width,
-        // and that text wrapping is accounted for (a narrower width means more height).
+        // Phase 3: Re-measure children with cross-axis constraint.
+        // Children with FILL mode (w-full) get the full container cross size.
+        // Others measure at natural size for proper content wrapping.
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
-            let crossAvail = containerCross - crossMargin(info)
+            let childLayout = i < childNodes.count ? childNodes[i].layout : nil
+            let crossIsFill = isRow ? (childLayout?.heightMode == 2) : (childLayout?.widthMode == 2)
+            let crossAvail = crossIsFill ? containerCross - crossMargin(info) : nil
             let proposedChild: ProposedViewSize
             if isRow {
                 proposedChild = ProposedViewSize(width: childMains[i], height: crossAvail)
@@ -364,10 +366,22 @@ struct FlexContainer: Layout {
             let finalCross: CGFloat
             let crossPos: CGFloat
 
+            // Check if child explicitly wants to fill the cross axis (widthMode/heightMode == 2 = FILL)
+            let childLayout = i < childNodes.count ? childNodes[i].layout : nil
+            let crossFill: Bool = isRow
+                ? (childLayout?.heightMode == 2)
+                : (childLayout?.widthMode == 2)
+
             switch effectiveAlign {
-            case AlignItems.stretch:
-                // Stretch: fill the container cross axis
+            case AlignItems.stretch where crossFill:
+                // Stretch only when child has FILL mode (w-full / h-full)
                 finalCross = containerCross - crossMargin(info)
+                crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
+
+            case AlignItems.stretch:
+                // No FILL: use natural size, align to start (like Android)
+                let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                finalCross = min(natural, containerCross - crossMargin(info))
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
             case AlignItems.center:

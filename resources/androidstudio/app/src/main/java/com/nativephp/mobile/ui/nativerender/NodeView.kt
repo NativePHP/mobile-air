@@ -2,9 +2,14 @@ package com.nativephp.mobile.ui.nativerender
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 
 /**
  * Recursive composable that renders a NativeUINode and its children.
@@ -28,7 +33,22 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         // Start with flex modifier from parent (weight, margin), then add own modifiers.
         // Order: margin/weight → style (background/border) → layout (padding) → gestures
         // Background must come BEFORE padding so it covers the padded area (CSS box model).
-        val base = overrideModifier ?: Modifier
+        val base = overrideModifier ?: run {
+            // No parent FlexContainer — apply size from node layout directly
+            var mod: Modifier = Modifier
+            val layout = node.layout
+            if (layout != null) {
+                when (layout.widthMode) {
+                    SizeMode.FILL -> mod = mod.fillMaxWidth()
+                    SizeMode.FIXED -> if (layout.width > 0f) mod = mod.width(layout.width.dp)
+                }
+                when (layout.heightMode) {
+                    SizeMode.FILL -> mod = mod.fillMaxHeight()
+                    SizeMode.FIXED -> if (layout.height > 0f) mod = mod.height(layout.height.dp)
+                }
+            }
+            mod
+        }
         val modifier = base
             .nodeStyle(node.style, node.props, isDarkMode)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)

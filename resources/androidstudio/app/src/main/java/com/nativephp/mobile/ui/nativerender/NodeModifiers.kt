@@ -71,10 +71,10 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         mod = mod.background(Color.White, shape)
     }
 
-    // Clip (only when radius > 0 — zero-radius clip cuts off overflowing content like toggles)
-    if (radius > 0f) {
-        mod = mod.clip(RoundedCornerShape(radius.dp))
-    }
+    // Note: clip is NOT applied automatically for border-radius.
+    // background(shape) and border(shape) already render rounded visuals.
+    // Clipping would cut off children near rounded corners (e.g. icons in cards).
+    // Only apply clip when overflow == hidden (scroll containers handle their own).
 
     // Border
     if (style.borderWidth > 0f) {

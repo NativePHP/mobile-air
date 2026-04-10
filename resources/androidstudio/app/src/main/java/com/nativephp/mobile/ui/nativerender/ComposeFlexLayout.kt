@@ -136,7 +136,7 @@ private fun FlexColumn(
             if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
             if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEachIndexed
 
-            val childMod = buildChildModifier(node, isRow = false, align = align, scope = this, childNodes = childNodes)
+            val childMod = buildChildModifier(node, isRow = false, align = align, scope = this)
             NodeView(node = node, overrideModifier = childMod)
         }
     }
@@ -175,7 +175,7 @@ private fun FlexRow(
             if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
             if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEachIndexed
 
-            val childMod = buildChildModifier(node, isRow = true, align = align, scope = this, childNodes = childNodes)
+            val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
             NodeView(node = node, overrideModifier = childMod)
         }
     }
@@ -189,8 +189,7 @@ private fun buildChildModifier(
     node: NativeUINode,
     isRow: Boolean,
     align: Int,
-    scope: Any, // ColumnScope or RowScope
-    childNodes: List<NativeUINode> = emptyList()
+    scope: Any // ColumnScope or RowScope
 ): Modifier {
     val layout = node.layout
     var mod: Modifier = Modifier
@@ -208,16 +207,10 @@ private fun buildChildModifier(
 
     // Main axis: flex_grow or fill → weight
     val flexGrow = layout?.flexGrow ?: 0f
-    val flexShrink = layout?.flexShrink ?: 0f
     val mainFill = if (isRow) {
         layout?.widthMode == SizeMode.FILL
     } else {
         layout?.heightMode == SizeMode.FILL
-    }
-    val hasFixedMainSize = if (isRow) {
-        layout?.widthMode == SizeMode.FIXED && (layout.width) > 0f
-    } else {
-        layout?.heightMode == SizeMode.FIXED && (layout.height) > 0f
     }
 
     if (flexGrow > 0f || mainFill == true) {
@@ -227,31 +220,29 @@ private fun buildChildModifier(
         } else if (!isRow && scope is ColumnScope) {
             with(scope) { mod.weight(weight) }
         } else mod
-    } else if (hasFixedMainSize == true) {
-        // Fixed size on main axis
-        if (isRow) mod = mod.width(layout!!.width.dp)
-        else mod = mod.height(layout!!.height.dp)
-    } else if (isRow && scope is RowScope) {
-        // In a Row, children without explicit size or flex_grow should share space equally
-        // to prevent overflow. CSS flex-shrink defaults to 1.
-        // Use weight(1f, fill=false) so they share space but don't grow beyond natural size.
-        // Actually, just constrain with weight to prevent overflow.
-        val siblingCount = childNodes.count { n ->
-            (n.layout?.display ?: 0) != Display.NONE &&
-            (n.layout?.positionType ?: 0) != PositionType.ABSOLUTE
-        }
-        if (siblingCount > 1 && flexShrink != 0f) {
-            // Only apply shrink behavior if there are multiple siblings
-            with(scope) { mod = mod.weight(1f, fill = false) }
-        }
     }
 
-    // Cross axis: stretch or fixed
+    // Main axis: fixed size
+    if (isRow && layout?.widthMode == SizeMode.FIXED && (layout.width) > 0f) {
+        mod = mod.width(layout.width.dp)
+    }
+    if (!isRow && layout?.heightMode == SizeMode.FIXED && (layout.height) > 0f) {
+        mod = mod.height(layout.height.dp)
+    }
+
+    // Cross axis: fixed or fill
+    // Note: STRETCH alignment does NOT apply fillMaxWidth/fillMaxHeight.
+    // In Compose, fillMaxHeight() in a Row creates a circular dependency —
+    // the Row's height is determined by children, but a stretched child
+    // wants the Row's height, causing the tallest fixed-size child (e.g. avatar)
+    // to set the height and clip taller content. Instead, children render at
+    // natural size and the Row/Column expands to fit the tallest/widest child.
+    // STRETCH only matters for explicit FILL mode.
     val effectiveAlign = if ((layout?.alignSelf ?: 0) > 0) layout!!.alignSelf else align
     if (isRow) {
         when {
             layout?.heightMode == SizeMode.FIXED && (layout.height) > 0f -> mod = mod.height(layout.height.dp)
-            layout?.heightMode == SizeMode.FILL || effectiveAlign == AlignItems.STRETCH -> mod = mod.fillMaxHeight()
+            layout?.heightMode == SizeMode.FILL -> mod = mod.fillMaxHeight()
         }
     } else {
         when {

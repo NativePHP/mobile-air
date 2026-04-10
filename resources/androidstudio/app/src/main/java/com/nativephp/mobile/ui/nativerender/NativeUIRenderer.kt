@@ -1,14 +1,19 @@
 package com.nativephp.mobile.ui.nativerender
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -31,7 +36,20 @@ fun NativeUIContent() {
         }
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    val focusManager = LocalFocusManager.current
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() }
+            ) {
+                // Tap outside any input dismisses keyboard
+                focusManager.clearFocus()
+            }
+    ) {
         // Read safe area insets
         val rootView = LocalView.current
         val density = LocalDensity.current

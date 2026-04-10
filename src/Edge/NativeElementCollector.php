@@ -584,6 +584,15 @@ class NativeElementCollector
         if (isset($attrs['_dismiss']) && method_exists($element, 'onDismiss')) {
             $element->onDismiss($attrs['_dismiss']);
         }
+        if (isset($attrs['_refresh']) && method_exists($element, 'onRefresh')) {
+            $element->onRefresh($attrs['_refresh']);
+        }
+        if (isset($attrs['_endReached']) && method_exists($element, 'onEndReached')) {
+            $element->onEndReached($attrs['_endReached']);
+        }
+        if (isset($attrs['_swipeDelete']) && method_exists($element, 'onSwipeDelete')) {
+            $element->onSwipeDelete($attrs['_swipeDelete']);
+        }
         if (isset($attrs['_navigate'])) {
             $element->setNavigateConfig($attrs['_navigate']);
         }

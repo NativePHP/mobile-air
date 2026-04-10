@@ -150,6 +150,13 @@ class NativeComponentAnalyzer
         try {
             $reflection = new \ReflectionClass($className);
             $method = $reflection->getMethod('render');
+
+            // If render() is not overridden (uses the default convention-based view),
+            // infer the view name from the class name
+            if ($method->getDeclaringClass()->getName() === NativeComponent::class) {
+                return $className::inferViewName();
+            }
+
             $source = $this->files->get($method->getFileName());
 
             // Extract the render() method body

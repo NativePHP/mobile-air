@@ -54,9 +54,9 @@ class NativeTagPrecompiler
             $value
         );
 
-        // Convert @press, @longPress, @change, @submit, @dismiss to underscored versions
-        // before Blade interprets @ as a directive
-        $value = preg_replace('/@(press|longPress|change|submit|dismiss)=/', '_$1=', $value);
+        // Convert @press, @longPress, @change, @submit, @dismiss, @refresh,
+        // @endReached, @swipeDelete to underscored versions before Blade interprets @ as a directive
+        $value = preg_replace('/@(press|longPress|change|submit|dismiss|refresh|endReached|swipeDelete)=/', '_$1=', $value);
 
         // 1. Self-closing tags: <native:type attrs />
         $value = preg_replace_callback(

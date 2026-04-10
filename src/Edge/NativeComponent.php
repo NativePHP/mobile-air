@@ -38,7 +38,19 @@ abstract class NativeComponent
 
     protected array $navigationData = [];
 
-    abstract public function render(): Element;
+    public function render(): Element
+    {
+        return $this->view(static::inferViewName());
+    }
+
+    /**
+     * Infer the Blade view name from the class name, Livewire-style.
+     * e.g. Explore → explore, UserProfile → user-profile
+     */
+    public static function inferViewName(): string
+    {
+        return \Illuminate\Support\Str::kebab(class_basename(static::class));
+    }
 
     /**
      * Override to render directly into the C flat buffer via streaming.

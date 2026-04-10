@@ -53,6 +53,10 @@ struct NativeTreeRenderer: View {
                 .environment(\.availableHeight, geo.size.height)
         }
         .ignoresSafeArea()
+        // Tap outside any input dismisses keyboard
+        .onTapGesture {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
     }
 
     private static var windowSafeAreaInsets: (top: CGFloat, bottom: CGFloat) {
@@ -94,61 +98,23 @@ struct NodeView: View, Equatable {
             .modifier(NodeGestureModifier(node: node))
     }
 
-    // MARK: - Content Dispatch
+    // MARK: - Content Dispatch (via plugin registry)
 
     @ViewBuilder
     private var content: some View {
-        switch node.type {
-        case "column":
-            containerView
-        case "row":
-            containerView
-        case "stack":
-            stackView
-        case "scroll_view":
-            scrollView
-        case "pressable":
-            containerView
-        case "canvas":
-            containerView
-        case "text":
-            textView
-        case "button":
-            buttonView
-        case "text_input":
-            textInputView
-        case "toggle":
-            toggleView
-        case "image":
-            imageView
-        case "icon":
-            iconView
-        case "spacer":
-            Spacer()
-        case "divider":
-            dividerView
-        case "activity_indicator":
-            activityIndicatorView
-        case "bottom_sheet":
-            sheetView
-        case "rect":
-            Rectangle().fill(.clear)
-        case "circle":
-            Circle().fill(.clear)
-        case "line":
-            lineView
-        default:
+        if let renderer = SwiftUIRendererRegistry.shared.get(node.type) {
+            renderer(node)
+        } else {
+            // Fallback for unregistered types — render as column container
             containerView
         }
     }
 
-    // MARK: - Container (column / row / pressable / canvas / default)
+    // MARK: - Fallback Container
 
     @ViewBuilder
     private var containerView: some View {
         if node.children.isEmpty {
-            // Empty container (e.g. colored rectangle) — Color.clear accepts
-            // frame + background modifiers. An empty FlexContainer gets optimized away.
             Color.clear
         } else {
             let dir = node.type == "row" ? FlexDirection.row : (node.layout?.flexDirection ?? FlexDirection.column)
@@ -166,222 +132,6 @@ struct NodeView: View, Equatable {
                 }
             }
         }
-    }
-
-    // MARK: - Stack (ZStack equivalent)
-
-    private var stackView: some View {
-        ZStack {
-            ForEach(node.children) { child in
-                NodeView(node: child)
-                    .equatable()
-            }
-        }
-    }
-
-    // MARK: - ScrollView (virtualized)
-
-    private var scrollView: some View {
-        let horizontal = node.props.getBool("horizontal")
-        let showsIndicators = node.props.getBool("shows_indicators", default: true)
-        let spacing = CGFloat(node.layout?.gap ?? 0)
-
-        return Group {
-            if horizontal {
-                ScrollView(.horizontal, showsIndicators: showsIndicators) {
-                    LazyHStack(alignment: .top, spacing: spacing) {
-                        ForEach(node.children) { child in
-                            NodeView(node: child)
-                                .equatable()
-                        }
-                    }
-                }
-            } else {
-                ScrollView(.vertical, showsIndicators: showsIndicators) {
-                    LazyVStack(alignment: .leading, spacing: spacing) {
-                        ForEach(node.children) { child in
-                            NodeView(node: child)
-                                .equatable()
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-            }
-        }
-    }
-
-    // MARK: - Text
-
-    private var textView: some View {
-        let p = node.props
-        let text = p.getString("text")
-        let fontSize = CGFloat(p.getFloat("font_size", default: 16))
-        let fontWeight = resolveSwiftUIWeight(p.getInt("font_weight"))
-        let maxLines = p.getInt("max_lines")
-        let textAlign = resolveTextAlignment(p.getInt("text_align"))
-
-        let dark = colorScheme == .dark
-        let darkColor = dark ? p.getColor("dark_color", default: 0) : 0
-        let textArgb = darkColor != 0 ? darkColor : p.getColor("color", default: 0xFF000000)
-
-        return Text(text)
-            .font(.system(size: fontSize, weight: fontWeight))
-            .foregroundStyle(colorFromARGB(textArgb))
-            .multilineTextAlignment(textAlign)
-            .lineLimit(maxLines > 0 ? maxLines : nil)
-    }
-
-    // MARK: - Button
-
-    private var buttonView: some View {
-        let p = node.props
-        let label = p.getString("label")
-        let fontSize = CGFloat(p.getFloat("font_size", default: 16))
-        let disabled = p.getBool("disabled")
-
-        let labelColor = p.getColor("label_color", default: 0)
-        let propColor = p.getColor("color", default: 0)
-        let effectiveColor = labelColor != 0 ? labelColor : (propColor != 0 ? propColor : 0)
-
-        return Text(label)
-            .font(.system(size: fontSize, weight: .medium))
-            .foregroundStyle(effectiveColor != 0 ? colorFromARGB(effectiveColor) : Color.primary)
-            .frame(maxWidth: .infinity)
-            .multilineTextAlignment(.center)
-            .opacity(disabled ? 0.5 : 1.0)
-    }
-
-    // MARK: - Text Input
-
-    private var textInputView: some View {
-        let p = node.props
-        let placeholder = p.getString("placeholder")
-        let secure = p.getBool("secure")
-        let onChangeCb = p.getCallbackId("on_change")
-        let onSubmitCb = p.getCallbackId("on_submit")
-        let nodeId = node.id
-        let initialValue = p.getString("value")
-
-        return NativeTextFieldWrapper(
-            initialValue: initialValue,
-            placeholder: placeholder,
-            isSecure: secure,
-            nodeId: nodeId,
-            onChangeCb: onChangeCb,
-            onSubmitCb: onSubmitCb
-        )
-    }
-
-    // MARK: - Toggle
-
-    private var toggleView: some View {
-        let p = node.props
-        let label = p.getString("label")
-        let isOn = p.getBool("value")
-        let disabled = p.getBool("disabled")
-        let onChangeCb = p.getCallbackId("on_change")
-        let nodeId = node.id
-
-        let tintArgb = node.style?.bgColor ?? 0
-        let tintAlpha = (tintArgb >> 24) & 0xFF
-        let tintColor: Color? = (tintArgb != 0 && tintAlpha != 0) ? colorFromARGB(tintArgb) : nil
-
-        return NativeToggleWrapper(
-            label: label,
-            isOn: isOn,
-            disabled: disabled,
-            nodeId: nodeId,
-            onChangeCb: onChangeCb,
-            tintColor: tintColor
-        )
-    }
-
-    // MARK: - Image
-
-    private var imageView: some View {
-        let p = node.props
-        let src = p.getString("src")
-        let fit = p.getInt("fit")
-        let tintArgb = p.getColor("tint_color", default: 0)
-        let contentMode = resolveContentMode(fit)
-
-        return NativeAsyncImage(src: src, contentMode: contentMode, tintArgb: tintArgb)
-    }
-
-    // MARK: - Icon (SF Symbols)
-
-    private var iconView: some View {
-        let p = node.props
-        let name = p.getString("name")
-        let size = CGFloat(p.getFloat("size", default: 24))
-        let colorArgb = p.getColor("color", default: 0)
-        let sfName = getIconForName(name)
-
-        return Image(systemName: sfName)
-            .font(.system(size: size))
-            .foregroundStyle(colorArgb != 0 ? colorFromARGB(colorArgb) : Color.primary)
-    }
-
-    // MARK: - Divider
-
-    private var dividerView: some View {
-        let borderArgb = node.style?.borderColor ?? 0
-        let color: Color = borderArgb != 0 ? colorFromARGB(borderArgb) : Color(uiColor: .separator)
-        return Rectangle().fill(color).frame(height: 1)
-    }
-
-    // MARK: - Activity Indicator
-
-    private var activityIndicatorView: some View {
-        let sizeVal = node.props.getInt("size")
-        let colorArgb = node.props.getColor("color", default: 0)
-        let scale: ControlSize = sizeVal == 1 ? .large : (sizeVal == 2 ? .small : .regular)
-
-        return ProgressView()
-            .controlSize(scale)
-            .tint(colorArgb != 0 ? colorFromARGB(colorArgb) : nil)
-    }
-
-    // MARK: - Bottom Sheet
-
-    @ViewBuilder
-    private var sheetView: some View {
-        let visible = node.props.getBool("visible")
-        let onDismissCb = node.props.getCallbackId("on_dismiss")
-        let nodeId = node.id
-
-        Color.clear
-            .frame(width: 0, height: 0)
-            .sheet(isPresented: .constant(visible)) {
-                VStack(spacing: 0) {
-                    ForEach(node.children) { child in
-                        NodeView(node: child)
-                            .equatable()
-                    }
-                }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .onDisappear {
-                    if onDismissCb != 0 {
-                        NativeElementBridge.sendSheetDismissEvent(onDismissCb, nodeId: nodeId)
-                    }
-                }
-            }
-    }
-
-    // MARK: - Line
-
-    private var lineView: some View {
-        let borderArgb = node.style?.borderColor ?? 0
-        let color: Color = borderArgb != 0 ? colorFromARGB(borderArgb) : Color(uiColor: .separator)
-        let width = CGFloat(node.style?.borderWidth ?? 1)
-
-        return Path { path in
-            path.move(to: .zero)
-            path.addLine(to: CGPoint(x: 100, y: 0))
-        }
-        .stroke(color, lineWidth: width)
     }
 }
 
