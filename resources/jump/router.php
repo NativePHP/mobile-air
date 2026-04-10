@@ -160,10 +160,16 @@ if ($path === '/jump/qr' || $path === '/jump') {
 
 // Proxy Vite dev server requests (HMR, assets, websocket)
 // Vite paths: /@vite/, /@fs/, /@id/, /resources/ (dev assets), hot-update files
-$vitePort = getenv('JUMP_VITE_PORT') ?: 5173;
-// Check if Vite dev server is running (hot file exists)
 $hotFilePath = $basePath.'/public/hot';
 $viteRunning = file_exists($hotFilePath);
+// Read the actual Vite dev server URL from the hot file (e.g. "http://[::1]:5174")
+$vitePort = 5173;
+if ($viteRunning) {
+    $hotContent = trim(file_get_contents($hotFilePath));
+    if (preg_match('/:(\d+)\/?$/', $hotContent, $m)) {
+        $vitePort = (int) $m[1];
+    }
+}
 
 if ($viteRunning) {
     $isViteRequest = str_starts_with($path, '/@vite')
@@ -890,7 +896,14 @@ function proxyToVite($vitePort)
 {
     $method = $_SERVER['REQUEST_METHOD'];
     $uri = $_SERVER['REQUEST_URI'];
-    $viteUrl = "http://127.0.0.1:{$vitePort}{$uri}";
+
+    // Try the hot file origin first (may be IPv6 [::1]), fall back to 127.0.0.1
+    global $hotFilePath;
+    $viteHost = "http://127.0.0.1:{$vitePort}";
+    if (isset($hotFilePath) && file_exists($hotFilePath)) {
+        $viteHost = rtrim(trim(file_get_contents($hotFilePath)), '/');
+    }
+    $viteUrl = "{$viteHost}{$uri}";
 
     $headers = [];
     foreach ($_SERVER as $key => $value) {
