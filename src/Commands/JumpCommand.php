@@ -102,15 +102,6 @@ class JumpCommand extends Command
         $this->components->twoColumnDetail('Bridge WebSocket', "ws://{$this->displayHost}:{$wsPort}/jump/ws");
         $this->components->twoColumnDetail('Bridge TCP', "tcp://127.0.0.1:{$bridgePort}");
 
-        // Write bridge config for Laravel process to discover
-        $bridgeConfig = storage_path('framework/jump_bridge.json');
-        file_put_contents($bridgeConfig, json_encode([
-            'bridge_port' => $bridgePort,
-            'ws_port' => $wsPort,
-            'host' => $this->displayHost,
-            'started_at' => date('c'),
-        ], JSON_PRETTY_PRINT));
-
         // Start PHP built-in server (serves QR page + proxies to Laravel)
         $this->startPhpServer($host, $httpPort, $openQr, $bridgePort, $wsPort);
 
