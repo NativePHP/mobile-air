@@ -144,11 +144,11 @@ if ($path === '/jump/qr' || $path === '/jump') {
         ]);
 
         // Generate QR code
-        $result = Builder::create()
-            ->data($qrData)
-            ->size(300)
-            ->margin(10)
-            ->build();
+        $result = (new Builder(
+            data: $qrData,
+            size: 300,
+            margin: 10,
+        ))->build();
 
         $qrCodeDataUri = $result->getDataUri();
 

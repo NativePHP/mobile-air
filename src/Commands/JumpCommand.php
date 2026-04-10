@@ -341,6 +341,7 @@ class JumpCommand extends Command
             'nativephp/ios',
             'nativephp/android',
             'vendor/nativephp/mobile/resources',
+            'vendor/endroid',
             'output',
             'tests',
             '.github',

@@ -209,6 +209,7 @@ class BuildIosAppCommand extends Command
 
             if (Str::startsWith($relativePath, 'vendor/nativephp/mobile/resources') ||
                 Str::startsWith($relativePath, 'vendor/nativephp/mobile/vendor') ||
+                Str::startsWith($relativePath, 'vendor/endroid') ||
                 Str::startsWith($relativePath, 'nativephp') ||
                 Str::startsWith($relativePath, 'output/') ||
                 Str::startsWith($relativePath, 'build/') ||
