@@ -39,18 +39,18 @@ use Workerman\Worker;
 $GLOBALS['basePath'] = $basePath;
 
 // Single WebSocket worker — the TCP server is created inside onWorkerStart
-// so both run in the SAME process and can share $deviceConnection
+// so both run in the SAME process and can share $deviceConnections
 $wsWorker = new Worker("websocket://0.0.0.0:{$wsPort}");
 $wsWorker->count = 1;
 $wsWorker->name = 'JumpBridge';
 
 // Shared state (same process)
-$deviceConnection = null;
+$deviceConnections = [];
 $pendingCalls = [];
 
-$wsWorker->onConnect = function (TcpConnection $connection) use (&$deviceConnection) {
-    $deviceConnection = $connection;
-    jumpLog('Device connected via WebSocket');
+$wsWorker->onConnect = function (TcpConnection $connection) use (&$deviceConnections) {
+    $deviceConnections[$connection->id] = $connection;
+    jumpLog('Device connected via WebSocket (total: '.count($deviceConnections).')');
 };
 
 $wsWorker->onMessage = function (TcpConnection $connection, $data) use (&$pendingCalls) {
@@ -86,11 +86,11 @@ $wsWorker->onMessage = function (TcpConnection $connection, $data) use (&$pendin
     }
 };
 
-$wsWorker->onClose = function (TcpConnection $connection) use (&$deviceConnection, &$pendingCalls) {
-    if ($connection === $deviceConnection) {
-        $deviceConnection = null;
-        jumpLog('Device disconnected');
+$wsWorker->onClose = function (TcpConnection $connection) use (&$deviceConnections, &$pendingCalls) {
+    unset($deviceConnections[$connection->id]);
+    jumpLog('Device disconnected (remaining: '.count($deviceConnections).')');
 
+    if (empty($deviceConnections)) {
         foreach ($pendingCalls as $requestId => $tcpConnection) {
             $error = json_encode([
                 'id' => $requestId,
@@ -104,7 +104,7 @@ $wsWorker->onClose = function (TcpConnection $connection) use (&$deviceConnectio
 };
 
 // Create the TCP server inside onWorkerStart so it runs in the SAME process
-$wsWorker->onWorkerStart = function () use (&$deviceConnection, &$pendingCalls, $bridgePort) {
+$wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls, $bridgePort) {
     $tcpBuffers = [];
 
     // Internal TCP server for PHP bridge calls
@@ -114,7 +114,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnection, &$pendingCalls, 
         $tcpBuffers[$connection->id] = '';
     };
 
-    $tcpServer->onMessage = function (TcpConnection $connection, $data) use (&$deviceConnection, &$pendingCalls, &$tcpBuffers) {
+    $tcpServer->onMessage = function (TcpConnection $connection, $data) use (&$deviceConnections, &$pendingCalls, &$tcpBuffers) {
         $tcpBuffers[$connection->id] = ($tcpBuffers[$connection->id] ?? '').$data;
         $buffer = &$tcpBuffers[$connection->id];
 
@@ -135,7 +135,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnection, &$pendingCalls, 
             }
 
             if ($message['type'] === 'bridge_call') {
-                if ($deviceConnection === null) {
+                if (empty($deviceConnections)) {
                     $error = json_encode([
                         'id' => $message['id'] ?? 'unknown',
                         'error' => 'No device connected',
@@ -147,7 +147,10 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnection, &$pendingCalls, 
                 }
 
                 $pendingCalls[$message['id']] = $connection;
-                $deviceConnection->send(json_encode($message));
+                $encoded = json_encode($message);
+                foreach ($deviceConnections as $deviceConnection) {
+                    $deviceConnection->send($encoded);
+                }
             }
         }
     };
@@ -165,9 +168,10 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnection, &$pendingCalls, 
     jumpLog("TCP bridge listening on 127.0.0.1:{$bridgePort}");
 
     // Keepalive ping
-    \Workerman\Timer::add(15, function () use (&$deviceConnection) {
-        if ($deviceConnection) {
-            $deviceConnection->send(json_encode(['type' => 'ping']));
+    \Workerman\Timer::add(15, function () use (&$deviceConnections) {
+        $ping = json_encode(['type' => 'ping']);
+        foreach ($deviceConnections as $connection) {
+            $connection->send($ping);
         }
     });
 
@@ -176,9 +180,9 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnection, &$pendingCalls, 
     $watchPaths = ['app', 'resources', 'routes', 'config'];
     $watchExtensions = ['php', 'blade.php', 'js', 'css', 'ts', 'vue'];
 
-    \Workerman\Timer::add(1, function () use (&$deviceConnection, &$lastModTimes, $watchPaths, $watchExtensions) {
+    \Workerman\Timer::add(1, function () use (&$deviceConnections, &$lastModTimes, $watchPaths, $watchExtensions) {
         global $basePath;
-        if (! $deviceConnection) {
+        if (empty($deviceConnections)) {
             return;
         }
 
@@ -218,8 +222,11 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnection, &$pendingCalls, 
         }
 
         if ($changed) {
-            $deviceConnection->send(json_encode(['type' => 'reload']));
-            jumpLog('Sent reload to device');
+            $reload = json_encode(['type' => 'reload']);
+            foreach ($deviceConnections as $connection) {
+                $connection->send($reload);
+            }
+            jumpLog('Sent reload to '.count($deviceConnections).' device(s)');
         }
     });
 };
