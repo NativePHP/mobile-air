@@ -9,13 +9,15 @@ struct NativeTopBar: UIViewRepresentable {
     func makeUIView(context: Context) -> UINavigationBar {
         let navigationBar = UINavigationBar()
 
-        // Configure appearance
+        // Transparent by default — PHP config can override via backgroundColor
         let appearance = UINavigationBarAppearance()
-        appearance.configureWithOpaqueBackground()
+        appearance.configureWithTransparentBackground()
 
         navigationBar.standardAppearance = appearance
         navigationBar.scrollEdgeAppearance = appearance
         navigationBar.compactAppearance = appearance
+        navigationBar.isTranslucent = true
+        navigationBar.backgroundColor = .clear
 
         // Create navigation item
         let navItem = UINavigationItem()
@@ -25,10 +27,7 @@ struct NativeTopBar: UIViewRepresentable {
         navigationBar.delegate = context.coordinator
 
         // Ensure layout margins respect safe area for button positioning
-        // The bar background will extend full width, but buttons will be inset
-        if #available(iOS 11.0, *) {
-            navigationBar.insetsLayoutMarginsFromSafeArea = true
-        }
+        navigationBar.insetsLayoutMarginsFromSafeArea = true
 
         return navigationBar
     }
@@ -113,26 +112,25 @@ struct NativeTopBar: UIViewRepresentable {
         // Update appearance with custom colors
         let appearance = UINavigationBarAppearance()
 
-        // iOS 26+: Use transparent background for modern blur effect
-        if #available(iOS 26.0, *) {
-            appearance.configureWithDefaultBackground()
-        } else {
-            appearance.configureWithOpaqueBackground()
-        }
-
         if let bgColorHex = topBarData.backgroundColor,
            let bgColor = UIColor(hex: bgColorHex) {
+            if bgColor.cgColor.alpha < 1.0 {
+                appearance.configureWithTransparentBackground()
+            } else {
+                appearance.configureWithOpaqueBackground()
+            }
             appearance.backgroundColor = bgColor
+        } else {
+            // Default: transparent
+            appearance.configureWithTransparentBackground()
         }
 
         if let textColorHex = topBarData.textColor,
            let textColor = UIColor(hex: textColorHex) {
             appearance.titleTextAttributes = [.foregroundColor: textColor]
             appearance.largeTitleTextAttributes = [.foregroundColor: textColor]
-            // Also set the button tint color to match
             navigationBar.tintColor = textColor
         } else {
-            // Reset to default if no color specified
             navigationBar.tintColor = nil
         }
 
@@ -140,6 +138,8 @@ struct NativeTopBar: UIViewRepresentable {
         navigationBar.standardAppearance = appearance
         navigationBar.scrollEdgeAppearance = appearance
         navigationBar.compactAppearance = appearance
+        navigationBar.isTranslucent = true
+        navigationBar.backgroundColor = .clear
     }
 
     func makeCoordinator() -> Coordinator {

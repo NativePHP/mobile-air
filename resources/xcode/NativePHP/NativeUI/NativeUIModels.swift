@@ -198,11 +198,10 @@ struct TopBarData: Codable, Equatable {
     let showNavigationIcon: Bool?
     let backgroundColor: String?
     let textColor: String?
-    let elevation: Int?
     let children: [TopBarActionComponent]?
 
     enum CodingKeys: String, CodingKey {
-        case title, subtitle, elevation, children
+        case title, subtitle, children
         case showNavigationIcon = "show_navigation_icon"
         case backgroundColor = "background_color"
         case textColor = "text_color"
