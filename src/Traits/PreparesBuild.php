@@ -425,6 +425,7 @@ trait PreparesBuild
             if ($shouldExclude ||
                 Str::startsWith($relativePath, 'vendor/nativephp/mobile/resources') ||
                 Str::startsWith($relativePath, 'vendor/nativephp/mobile/vendor') ||
+                Str::startsWith($relativePath, 'vendor/endroid') ||
                 Str::startsWith($relativePath, '.idea') ||
                 Str::startsWith($relativePath, 'output') ||
                 Str::startsWith($relativePath, 'storage/framework/views/') ||

@@ -258,7 +258,18 @@ class WebViewManager(
                         val postData = if (request.method.equals("POST", ignoreCase = true) ||
                             request.method.equals("PUT", ignoreCase = true) ||
                             request.method.equals("PATCH", ignoreCase = true)) {
-                            phpBridge.consumePostData(url)
+                            val reqId = request.requestHeaders?.get("X-NativePHP-Req-Id")
+                            if (reqId != null) {
+                                phpBridge.consumePostData(reqId)
+                            } else {
+                                // Native form submission — try full URL first, then path only
+                                var data = phpBridge.consumePostData(url)
+                                if (data == null) {
+                                    val path = request.url.path ?: "/"
+                                    data = phpBridge.consumePostData(path)
+                                }
+                                data
+                            }
                         } else null
                         phpHandler.handlePHPRequest(request, postData)
                     }
@@ -373,7 +384,11 @@ class WebViewManager(
 
             });
 
-            // Capture form submissions
+            // Unique request ID counter
+            var _nphpReqId = 0;
+
+            // Capture form submissions — native form POSTs can't carry custom headers,
+            // so we store by URL for the fallback lookup in shouldInterceptRequest
             document.addEventListener('submit', function(e) {
                 var form = e.target;
                 var method = form.method.toLowerCase();
@@ -384,13 +399,16 @@ class WebViewManager(
                         urlEncodedData.append(pair[0], pair[1]);
                     }
 
-                    AndroidPOST.logPostData(urlEncodedData.toString(), form.action, "Content-Type: application/x-www-form-urlencoded");
+                    var bodyStr = urlEncodedData.toString();
+                    // Store by URL — native form submissions don't support custom headers
+                    AndroidPOST.logFormPostData(bodyStr, form.action);
                 }
             });
 
             // Capture XHR/AJAX requests
             var originalXHROpen = XMLHttpRequest.prototype.open;
             var originalXHRSend = XMLHttpRequest.prototype.send;
+            var originalXHRSetHeader = XMLHttpRequest.prototype.setRequestHeader;
 
             XMLHttpRequest.prototype.open = function(method, url) {
                 this._method = method;
@@ -400,13 +418,9 @@ class WebViewManager(
 
             XMLHttpRequest.prototype.send = function(data) {
                 if (["post", "patch", "put"].includes(this._method.toLowerCase()) && data) {
-                    var headers = "";
-
-                    if (this.getAllResponseHeaders) {
-                        headers = this.getAllResponseHeaders();
-                    }
-
-                    AndroidPOST.logPostData(data, this._url, headers);
+                    var reqId = 'nphp_' + (++_nphpReqId) + '_' + Date.now();
+                    AndroidPOST.logPostData(String(data), this._url, "", reqId);
+                    originalXHRSetHeader.call(this, 'X-NativePHP-Req-Id', reqId);
                 }
                 return originalXHRSend.apply(this, arguments);
             };
@@ -416,32 +430,31 @@ class WebViewManager(
 
             window.fetch = function(url, options) {
                 if (options && options.method && ["post", "patch", "put"].includes(options.method.toLowerCase()) && options.body) {
-                    var headerString = "";
-
-                    if (options.headers) {
-                        if (options.headers instanceof Headers) {
-                            options.headers.forEach(function(value, key) {
-                                headerString += key + ": " + value + "\\n";
-                            });
-                        } else if (typeof options.headers === 'object') {
-                            Object.keys(options.headers).forEach(function(key) {
-                                headerString += key + ": " + options.headers[key] + "\\n";
-                            });
-                        }
-                    }
+                    var reqId = 'nphp_' + (++_nphpReqId) + '_' + Date.now();
 
                     var bodyStr = options.body;
                     if (options.body instanceof FormData) {
-                        var formObj = {};
+                        // Convert FormData to URLSearchParams for PHP form parsing
+                        var urlParams = new URLSearchParams();
                         options.body.forEach(function(value, key) {
-                            formObj[key] = value;
+                            urlParams.append(key, value);
                         });
-                        bodyStr = JSON.stringify(formObj);
-                    } else if (typeof options.body === 'object') {
+                        bodyStr = urlParams.toString();
+                    } else if (typeof options.body === 'object' && !(options.body instanceof Blob) && !(options.body instanceof ArrayBuffer)) {
                         bodyStr = JSON.stringify(options.body);
                     }
 
-                    AndroidPOST.logPostData(bodyStr, url, headerString);
+                    AndroidPOST.logPostData(String(bodyStr), url, "", reqId);
+
+                    // Add request ID header to the actual fetch request
+                    if (!options.headers) {
+                        options.headers = {};
+                    }
+                    if (options.headers instanceof Headers) {
+                        options.headers.set('X-NativePHP-Req-Id', reqId);
+                    } else {
+                        options.headers['X-NativePHP-Req-Id'] = reqId;
+                    }
                 }
                 return originalFetch.apply(this, arguments);
             };
@@ -496,11 +509,28 @@ class WebViewManager(
 
 class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
     @JavascriptInterface
-    fun logPostData(data: String, url: String, headers: String) {
-        Log.d("$TAG-JS", "📦 POST data captured for: $url (length=${data.length})")
+    fun logPostData(data: String, url: String, headers: String, requestId: String) {
+        Log.d("$TAG-JS", "📦 POST data captured (fetch/XHR) for: $url reqId=$requestId (length=${data.length})")
 
-        // Queue the POST data keyed by URL path for consumption by shouldInterceptRequest
+        // Store by unique request ID — fetch/XHR requests carry the ID as a header
+        phpBridge.storePostData(requestId, data)
+
+        // Try to extract CSRF token
+        LaravelSecurity.extractFromPostBody(data)
+    }
+
+    @JavascriptInterface
+    fun logFormPostData(data: String, url: String) {
+        // Native form submissions can't carry custom headers, so store by URL
+        // shouldInterceptRequest will look up by URL in the fallback path
+        val path = android.net.Uri.parse(url).path ?: url
+        Log.d("$TAG-JS", "📦 POST data captured (form) for: $url path=$path (length=${data.length})")
+
         phpBridge.storePostData(url, data)
+        // Also store by path in case shouldInterceptRequest receives the full URL
+        if (path != url) {
+            phpBridge.storePostData(path, data)
+        }
 
         // Try to extract CSRF token
         LaravelSecurity.extractFromPostBody(data)
