@@ -437,6 +437,9 @@ class JumpCommand extends Command
             $this->newLine();
             $this->line("  <fg=gray>{$qrData}</>");
             $this->newLine();
+            $this->line('  <fg=green>iOS</>  Scan with Camera app or Jump app');
+            $this->line('  <fg=blue>Android</>  Scan from within the Jump app');
+            $this->newLine();
         } catch (\Throwable $e) {
             // QR display is optional — don't break the server
         }
