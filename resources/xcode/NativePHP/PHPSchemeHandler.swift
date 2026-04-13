@@ -295,8 +295,16 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             }
         }
 
-        // Define the URI
-        let uri = request.url?.path ?? "/"
+        // Define the URI — use percentEncodedPath to preserve percent-encoded
+        // characters (e.g. %3A, %2B, %25) so PHP receives the same encoding
+        // a real browser would send. URL.path silently decodes these sequences.
+        let uri: String
+        if let url = request.url,
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            uri = components.percentEncodedPath
+        } else {
+            uri = request.url?.path ?? "/"
+        }
 
         // Create a RequestData object
         let requestData = RequestData(
