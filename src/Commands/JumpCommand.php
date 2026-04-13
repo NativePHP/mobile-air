@@ -140,11 +140,7 @@ class JumpCommand extends Command
         $fullEnv = array_filter($fullEnv, fn ($v) => is_string($v) || is_numeric($v));
 
         $this->displayServerInfo($host, $httpPort, $this->laravelPort);
-
-        // Auto-open browser with QR code
-        if ($openQr) {
-            $this->openBrowser($host, $httpPort);
-        }
+        $this->displayTerminalQrCode($this->displayHost, $httpPort);
 
         // Build the PHP server command
         $phpBinary = PHP_BINARY;
@@ -386,6 +382,64 @@ class JumpCommand extends Command
     private function displayServerInfo($host, $httpPort, $laravelPort)
     {
         $this->components->twoColumnDetail('Server running', 'Press Ctrl+C to stop');
+    }
+
+    /**
+     * Display a QR code in the terminal using Unicode block characters.
+     * Scannable with the phone's native camera — opens the Jump app via deep link.
+     */
+    private function displayTerminalQrCode(string $host, int $port): void
+    {
+        try {
+            if (! class_exists(\Endroid\QrCode\Builder\Builder::class)) {
+                return;
+            }
+
+            $qrData = "jump://connect?host={$host}&port={$port}";
+
+            $result = (new \Endroid\QrCode\Builder\Builder(
+                data: $qrData,
+                size: 300,
+                margin: 2,
+            ))->build();
+
+            $matrix = $result->getMatrix();
+            $size = $matrix->getBlockCount();
+
+            $this->newLine();
+            $this->line('  <fg=white;bg=black>Scan with your camera to open in Jump</>');
+            $this->newLine();
+
+            // Render two rows at a time using Unicode half-block characters:
+            // ▀ (upper half) = top black, bottom white
+            // ▄ (lower half) = top white, bottom black
+            // █ (full block) = both black
+            //   (space)      = both white
+            for ($y = 0; $y < $size; $y += 2) {
+                $line = '  '; // left margin
+                for ($x = 0; $x < $size; $x++) {
+                    $top = $matrix->getBlockValue($x, $y);
+                    $bottom = ($y + 1 < $size) ? $matrix->getBlockValue($x, $y + 1) : 0;
+
+                    if ($top && $bottom) {
+                        $line .= '█';
+                    } elseif ($top && ! $bottom) {
+                        $line .= '▀';
+                    } elseif (! $top && $bottom) {
+                        $line .= '▄';
+                    } else {
+                        $line .= ' ';
+                    }
+                }
+                $this->line($line);
+            }
+
+            $this->newLine();
+            $this->line("  <fg=gray>{$qrData}</>");
+            $this->newLine();
+        } catch (\Throwable $e) {
+            // QR display is optional — don't break the server
+        }
     }
 
     private function getAllLocalIpAddresses(): array

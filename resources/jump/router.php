@@ -118,11 +118,9 @@ if ($path === '/jump/qr' || $path === '/jump') {
 
         $appName = getenv('APP_NAME') ?: 'Laravel';
 
-        // Create JSON data for the QR code
-        $qrData = json_encode([
-            'host' => $displayHost,
-            'port' => (string) $httpPort,
-        ]);
+        // Create deep link URL for the QR code
+        // jump:// scheme opens the Jump app directly when scanned with the camera
+        $qrData = "jump://connect?host={$displayHost}&port={$httpPort}";
 
         // Generate QR code
         $result = (new Builder(
