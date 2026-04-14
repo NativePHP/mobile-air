@@ -501,9 +501,6 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
                 var request = requestData
                 if let location = headers["location"] {
-                    // Location headers come directly from PHP's HTTP response — they are
-                    // raw strings that never pass through WebKit's URL normalization, so
-                    // they do NOT need re-encoding (unlike initial requests in extractRequestData).
                     request.uri = location.trimmingCharacters(in: .whitespaces)
                     request.method = "GET"
 
