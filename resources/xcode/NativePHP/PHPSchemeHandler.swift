@@ -295,16 +295,35 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             }
         }
 
-        // Define the URI — use percentEncodedPath to preserve percent-encoded
-        // characters (e.g. %3A, %2B, %25) so PHP receives the same encoding
-        // a real browser would send. URL.path silently decodes these sequences.
-        let uri: String
-        if let url = request.url,
-           let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            uri = components.percentEncodedPath
+        // WKWebView normalizes URLs for custom scheme handlers by decoding
+        // percent-encoded characters before passing them to the handler.
+        // For example, %253A in HTML becomes %3A in request.url.absoluteString.
+        // To match browser behavior (where URLs are sent as-is), we re-encode
+        // each path segment so PHP receives the same encoding it would from
+        // a real browser. rawurldecode() in PHP then produces the correct result.
+        let unreserved = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+        let rawPath: String
+        if let absoluteString = request.url?.absoluteString,
+           let hostRange = absoluteString.range(of: "://\(domain)") {
+            let afterHost = String(absoluteString[hostRange.upperBound...])
+            if let queryIndex = afterHost.firstIndex(of: "?") {
+                rawPath = String(afterHost[..<queryIndex])
+            } else if let fragmentIndex = afterHost.firstIndex(of: "#") {
+                rawPath = String(afterHost[..<fragmentIndex])
+            } else {
+                rawPath = afterHost
+            }
         } else {
-            uri = request.url?.path ?? "/"
+            rawPath = request.url?.path ?? "/"
         }
+
+        // Re-encode each path segment to undo WebKit's normalization
+        let segments = rawPath.split(separator: "/", omittingEmptySubsequences: false)
+        let uri = segments.map { segment in
+            return segment.addingPercentEncoding(withAllowedCharacters: unreserved) ?? String(segment)
+        }.joined(separator: "/")
 
         // Create a RequestData object
         let requestData = RequestData(
@@ -498,8 +517,57 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
                 var request = requestData
                 if let location = headers["location"] {
-                    request.uri = location.trimmingCharacters(in: .whitespaces)
+                    let trimmedLocation = location.trimmingCharacters(in: .whitespaces)
                     request.method = "GET"
+
+                    // Re-encode the path in the Location URL to match extractRequestData behavior.
+                    // WKWebView decodes percent-encoded characters in custom scheme URLs, so
+                    // redirect Location headers also need re-encoding for PHP/Laravel parity.
+                    let unreserved = CharacterSet(charactersIn:
+                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+                    let locationPath: String
+                    let locationPrefix: String
+                    let locationSuffix: String
+
+                    if let hostRange = trimmedLocation.range(of: "://\(self.domain)") {
+                        locationPrefix = String(trimmedLocation[...trimmedLocation.index(before: hostRange.upperBound)])
+                        let afterHost = String(trimmedLocation[hostRange.upperBound...])
+                        if let queryIndex = afterHost.firstIndex(of: "?") {
+                            locationPath = String(afterHost[..<queryIndex])
+                            locationSuffix = String(afterHost[queryIndex...])
+                        } else if let fragmentIndex = afterHost.firstIndex(of: "#") {
+                            locationPath = String(afterHost[..<fragmentIndex])
+                            locationSuffix = String(afterHost[fragmentIndex...])
+                        } else {
+                            locationPath = afterHost
+                            locationSuffix = ""
+                        }
+                    } else if trimmedLocation.hasPrefix("/") {
+                        locationPrefix = ""
+                        if let queryIndex = trimmedLocation.firstIndex(of: "?") {
+                            locationPath = String(trimmedLocation[..<queryIndex])
+                            locationSuffix = String(trimmedLocation[queryIndex...])
+                        } else {
+                            locationPath = trimmedLocation
+                            locationSuffix = ""
+                        }
+                    } else {
+                        locationPath = trimmedLocation
+                        locationPrefix = ""
+                        locationSuffix = ""
+                    }
+
+                    let segments = locationPath.split(separator: "/", omittingEmptySubsequences: false)
+                    let reencodedPath = segments.map { segment in
+                        return segment.addingPercentEncoding(withAllowedCharacters: unreserved) ?? String(segment)
+                    }.joined(separator: "/")
+
+                    if !locationPrefix.isEmpty {
+                        request.uri = locationPrefix + reencodedPath + locationSuffix
+                    } else {
+                        request.uri = reencodedPath + locationSuffix
+                    }
 
                     // Fix root URL redirects: ensure php://127.0.0.1 has trailing slash
                     if request.uri == "php://127.0.0.1" {
