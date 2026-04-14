@@ -299,37 +299,26 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         // percent-encoded characters before passing them to the handler.
         // For example, %253A in HTML becomes %3A in request.url.absoluteString.
         // To match browser behavior (where URLs are sent as-is), we re-encode
-        // each path segment so PHP receives the same encoding it would from
-        // a real browser. rawurldecode() in PHP then produces the correct result.
-        let unreserved = CharacterSet(charactersIn:
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-
+        // the path so PHP receives the same encoding it would from a real browser.
+        // rawurldecode() in PHP then produces the correct result.
         let rawPath: String
-        if let absoluteString = request.url?.absoluteString,
-           let hostRange = absoluteString.range(of: "://\(domain)") {
-            let afterHost = String(absoluteString[hostRange.upperBound...])
-            if let queryIndex = afterHost.firstIndex(of: "?") {
-                rawPath = String(afterHost[..<queryIndex])
-            } else if let fragmentIndex = afterHost.firstIndex(of: "#") {
-                rawPath = String(afterHost[..<fragmentIndex])
-            } else {
-                rawPath = afterHost
-            }
+        if let url = request.url,
+           let components = URLComponents(string: url.absoluteString) {
+            rawPath = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
         } else {
             rawPath = request.url?.path ?? "/"
         }
 
-        // Re-encode each path segment to undo WebKit's normalization
-        let segments = rawPath.split(separator: "/", omittingEmptySubsequences: false)
-        let uri = segments.map { segment in
-            return segment.addingPercentEncoding(withAllowedCharacters: unreserved) ?? String(segment)
-        }.joined(separator: "/")
+        // Re-encode to restore any encoding levels stripped by WebKit's normalization.
+        // .urlPathAllowed does NOT include %, so percent-encoded sequences like %3A
+        // are properly re-encoded to %253A, preserving the encoding depth PHP expects.
+        let uri = rawPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? rawPath
 
         // Create a RequestData object
         let requestData = RequestData(
             method: method,
             uri: uri,
-            data: data ?? nil,
+            data: data,
             query: query ?? "",
             headers: headers
         )
