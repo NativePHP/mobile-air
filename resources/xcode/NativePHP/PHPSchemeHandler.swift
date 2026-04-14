@@ -301,13 +301,8 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         // To match browser behavior (where URLs are sent as-is), we re-encode
         // the path so PHP receives the same encoding it would from a real browser.
         // rawurldecode() in PHP then produces the correct result.
-        let rawPath: String
-        if let url = request.url,
-           let components = URLComponents(string: url.absoluteString) {
-            rawPath = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
-        } else {
-            rawPath = request.url?.path ?? "/"
-        }
+        let components = URLComponents(string: request.url!.absoluteString)
+        let rawPath = components?.percentEncodedPath ?? "/"
 
         // Re-encode to restore any encoding levels stripped by WebKit's normalization.
         // .urlPathAllowed does NOT include %, so percent-encoded sequences like %3A
