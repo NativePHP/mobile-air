@@ -80,6 +80,29 @@ if ($path === '/favicon.ico' || str_ends_with($path, '.map')) {
     exit;
 }
 
+// Handle deep link redirect — camera scans HTTP URL, browser redirects to jump:// app
+if ($path === '/jump/open') {
+    $deepLink = "jump://connect?host={$displayHost}&port={$httpPort}";
+    $appName = getenv('APP_NAME') ?: 'Laravel';
+    header('Content-Type: text/html; charset=UTF-8');
+    echo <<<HTML
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Opening {$appName} in Jump...</title>
+<script>window.location.href = "{$deepLink}";</script>
+</head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#111;color:#fff;text-align:center">
+<div>
+<h2>Opening in Jump...</h2>
+<p style="color:#888">If the app doesn't open, <a href="{$deepLink}" style="color:#8B5CF6">tap here</a>.</p>
+<p style="color:#666;font-size:14px;margin-top:24px">Don't have Jump? <a href="https://apps.apple.com/app/jump/id6738194400" style="color:#8B5CF6">Download for iOS</a></p>
+</div>
+</body></html>
+HTML;
+    exit;
+}
+
 // Handle info endpoint
 if ($path === '/jump/info') {
     header('Content-Type: application/json');
@@ -118,11 +141,9 @@ if ($path === '/jump/qr' || $path === '/jump') {
 
         $appName = getenv('APP_NAME') ?: 'Laravel';
 
-        // Create JSON data for the QR code
-        $qrData = json_encode([
-            'host' => $displayHost,
-            'port' => (string) $httpPort,
-        ]);
+        // Create deep link URL for the QR code
+        // jump:// scheme opens the Jump app directly when scanned with the camera
+        $qrData = "jump://connect?host={$displayHost}&port={$httpPort}";
 
         // Generate QR code
         $result = (new Builder(
