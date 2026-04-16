@@ -22,11 +22,20 @@ class JumpBridge
 
     private float $timeout;
 
-    public function __construct(string $host = '127.0.0.1', int $port = 3001, float $timeout = 30.0)
+    public function __construct(string $host = '127.0.0.1', int $port = 3001, float $timeout = 600.0)
     {
         $this->host = $host;
         $this->port = $port;
         $this->timeout = $timeout;
+    }
+
+    public function setTimeout(float $timeout): void
+    {
+        $this->timeout = $timeout;
+
+        if ($this->socket !== null && ! feof($this->socket)) {
+            stream_set_timeout($this->socket, (int) $timeout);
+        }
     }
 
     public static function instance(): self
@@ -158,7 +167,8 @@ class JumpBridge
             if ($chunk === false || $chunk === '') {
                 $info = stream_get_meta_data($this->socket);
                 if ($info['timed_out']) {
-                    return null;
+                    // Force reconnect next call so the stream isn't stuck
+                    $this->disconnect();
                 }
 
                 return null;

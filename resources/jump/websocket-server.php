@@ -135,9 +135,13 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
             }
 
             if ($message['type'] === 'bridge_call') {
+                $callId = $message['id'] ?? 'unknown';
+                $method = $message['method'] ?? 'unknown';
+
                 if (empty($deviceConnections)) {
+                    jumpLog("bridge_call method={$method} rejected: no device connected");
                     $error = json_encode([
-                        'id' => $message['id'] ?? 'unknown',
+                        'id' => $callId,
                         'error' => 'No device connected',
                     ]);
                     $packed = pack('N', strlen($error)).$error;
@@ -146,7 +150,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
                     continue;
                 }
 
-                $pendingCalls[$message['id']] = $connection;
+                $pendingCalls[$callId] = $connection;
                 $encoded = json_encode($message);
                 foreach ($deviceConnections as $deviceConnection) {
                     $deviceConnection->send($encoded);
@@ -177,10 +181,11 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
 
     // File watcher for live reload
     $lastModTimes = [];
+    $lastReloadTime = 0;
     $watchPaths = ['app', 'resources', 'routes', 'config'];
     $watchExtensions = ['php', 'blade.php', 'js', 'css', 'ts', 'vue'];
 
-    \Workerman\Timer::add(1, function () use (&$deviceConnections, &$lastModTimes, $watchPaths, $watchExtensions) {
+    \Workerman\Timer::add(1, function () use (&$deviceConnections, &$lastModTimes, &$lastReloadTime, $watchPaths, $watchExtensions) {
         global $basePath;
         if (empty($deviceConnections)) {
             return;
@@ -212,7 +217,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
                 }
 
                 $mtime = $file->getMTime();
-                if (isset($lastModTimes[$path]) && $lastModTimes[$path] < $mtime) {
+                if (isset($lastModTimes[$path]) && $mtime - $lastModTimes[$path] >= 1) {
                     $changed = true;
                     $relativePath = str_replace($basePath.'/', '', $path);
                     jumpLog("Changed: {$relativePath}");
@@ -233,7 +238,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
 
 function jumpLog($message)
 {
-    fwrite(STDERR, "[Jump] {$message}\n");
+    fwrite(STDERR, '['.date('H:i:s').'] [Jump] '.$message."\n");
 }
 
 Worker::runAll();

@@ -49,33 +49,35 @@ if (! function_exists('nativephp_element_init')) {
 if (! function_exists('nativephp_element_publish')) {
     function nativephp_element_publish(array $tree): void
     {
-        \Native\Mobile\JumpBridge::instance()->call('Element.Publish', json_encode($tree));
+        $json = json_encode($tree);
+        $hash = substr(md5($json), 0, 8);
+        @file_put_contents(
+            storage_path('logs/jump-publish.log'),
+            date('[H:i:s] ')."Publish: hash={$hash} size=".strlen($json)."\n",
+            FILE_APPEND
+        );
+        \Native\Mobile\JumpBridge::instance()->call('Element.Publish', $json);
     }
 }
 
 if (! function_exists('nativephp_element_wait_event')) {
     function nativephp_element_wait_event(int $timeoutMs): ?array
     {
-        static $consecutiveFailures = 0;
+        static $consecutiveErrors = 0;
 
         $result = \Native\Mobile\JumpBridge::instance()->call('Element.WaitEvent', json_encode(['timeout' => $timeoutMs]));
 
         if ($result === null) {
-            $consecutiveFailures++;
-            if ($consecutiveFailures >= 2) {
-                // Device is gone — return system back event (type 8)
-                // so the component exits its loop cleanly
-                return ['type' => 8, 'callback_id' => 0, 'node_id' => 0];
-            }
-
+            // TCP timeout — not an error, just no interaction yet. Retry.
             return null;
         }
 
         $decoded = json_decode($result, true);
 
         if (! is_array($decoded) || isset($decoded['status']) && $decoded['status'] === 'error') {
-            $consecutiveFailures++;
-            if ($consecutiveFailures >= 2) {
+            // Actual error (device disconnected, bridge failed)
+            $consecutiveErrors++;
+            if ($consecutiveErrors >= 2) {
                 return ['type' => 8, 'callback_id' => 0, 'node_id' => 0];
             }
 
@@ -83,11 +85,20 @@ if (! function_exists('nativephp_element_wait_event')) {
         }
 
         // Reset on success
-        $consecutiveFailures = 0;
+        $consecutiveErrors = 0;
 
         // In Jump mode, handle hot reload in-place: flush compiled views
         // and return null so the component re-renders without stopping.
         if (($decoded['type'] ?? -1) === 15) { // EVENT_HOT_RELOAD
+            static $lastHotReload = 0;
+            $now = time();
+
+            // Debounce: ignore rapid-fire hot reload events (within 2 seconds)
+            if ($now - $lastHotReload < 2) {
+                return null;
+            }
+            $lastHotReload = $now;
+
             $compiledDir = storage_path('framework/views');
             if (is_dir($compiledDir)) {
                 foreach (glob("{$compiledDir}/*.php") as $file) {
