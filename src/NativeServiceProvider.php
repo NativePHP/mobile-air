@@ -4,6 +4,7 @@ namespace Native\Mobile;
 
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
@@ -81,6 +82,17 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerPluginServices();
         $this->prepForIos();
         $this->registerJumpBridgeFallback();
+
+        // Laravel's ServeCommand only forwards a whitelisted set of env vars to
+        // its PHP built-in server children. Without this, JUMP_BRIDGE_PORT/JUMP_WS_PORT
+        // set by `native:jump` are stripped before reaching the Livewire request
+        // handler, so JumpBridge falls back to port 3002 blindly.
+        if (class_exists(ServeCommand::class)) {
+            ServeCommand::$passthroughVariables = array_values(array_unique(array_merge(
+                ServeCommand::$passthroughVariables,
+                ['JUMP_BRIDGE_PORT', 'JUMP_WS_PORT']
+            )));
+        }
     }
 
     protected function publishPluginsServiceProvider(): void

@@ -48,15 +48,10 @@ class JumpCommand extends Command
             return self::FAILURE;
         }
 
-        // Start or detect the Laravel dev server
+        // Resolve the Laravel port first (we need it so bridge ports don't collide)
         if ($this->option('no-serve')) {
-            // User is running their own artisan serve
             $this->laravelPort = (int) ($this->option('laravel-port') ?? 8000);
-            if (! $this->isPortInUse($this->laravelPort)) {
-                $this->warn("No server detected on port {$this->laravelPort}. Start one with: php artisan serve --port={$this->laravelPort}");
-            }
         } else {
-            // Auto-start artisan serve on an available port
             $desiredLaravelPort = (int) ($this->option('laravel-port') ?? 8000);
             $this->laravelPort = $this->findAvailablePort($desiredLaravelPort, 100, [$httpPort]);
             if ($this->laravelPort === null) {
@@ -64,7 +59,23 @@ class JumpCommand extends Command
 
                 return self::FAILURE;
             }
-            $this->startLaravelServer($this->laravelPort);
+        }
+
+        // Pick WS + bridge ports BEFORE starting artisan serve so nativephp_call
+        // in the Laravel process can dial the correct JUMP_BRIDGE_PORT (not the default 3002).
+        $usedPorts = [$httpPort, $this->laravelPort];
+        $wsPort = (int) ($this->option('ws-port') ?? $this->findAvailablePort(3001, 100, $usedPorts));
+        $usedPorts[] = $wsPort;
+        $bridgePort = (int) ($this->option('bridge-port') ?? $this->findAvailablePort(3002, 100, $usedPorts));
+
+        // Start or detect the Laravel dev server
+        if ($this->option('no-serve')) {
+            // User is running their own artisan serve — tell them what to export
+            if (! $this->isPortInUse($this->laravelPort)) {
+                $this->warn("No server detected on port {$this->laravelPort}. Start one with: JUMP_BRIDGE_PORT={$bridgePort} php artisan serve --port={$this->laravelPort}");
+            }
+        } else {
+            $this->startLaravelServer($this->laravelPort, $bridgePort, $wsPort);
         }
 
         // Check if we should open browser
@@ -93,11 +104,6 @@ class JumpCommand extends Command
             }
         }
 
-        // Start WebSocket bridge server — find ports that don't collide with HTTP or Laravel
-        $usedPorts = [$httpPort, $this->laravelPort];
-        $wsPort = (int) ($this->option('ws-port') ?? $this->findAvailablePort(3001, 100, $usedPorts));
-        $usedPorts[] = $wsPort;
-        $bridgePort = (int) ($this->option('bridge-port') ?? $this->findAvailablePort(3002, 100, $usedPorts));
         $this->startBridgeServer($wsPort, $bridgePort);
         $this->components->twoColumnDetail('Bridge WebSocket', "ws://{$this->displayHost}:{$wsPort}/jump/ws");
         $this->components->twoColumnDetail('Bridge TCP', "tcp://127.0.0.1:{$bridgePort}");
@@ -264,26 +270,39 @@ class JumpCommand extends Command
 
         $phpBinary = PHP_BINARY;
 
+        // Write bridge logs to a file the user can tail. Prior versions sent
+        // stderr to /dev/null, which made it impossible to see bridge_call
+        // traffic, device connects, or errors.
+        $logDir = base_path('storage/logs');
+        if (! is_dir($logDir)) {
+            @mkdir($logDir, 0755, true);
+        }
+        $logFile = $logDir.'/jump-bridge.log';
+        @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort}) ===\n", FILE_APPEND);
+
         // Run in background (not Workerman daemon mode — it breaks the event loop)
         $cmd = sprintf(
-            '%s %s %s %d %d start > /dev/null 2>&1 &',
+            '%s %s %s %d %d start >> %s 2>&1 &',
             escapeshellarg($phpBinary),
             escapeshellarg($serverPath),
             escapeshellarg(base_path()),
             $wsPort,
-            $bridgePort
+            $bridgePort,
+            escapeshellarg($logFile)
         );
 
         exec($cmd);
 
         // Give it a moment to start
         usleep(500000);
+
+        $this->components->twoColumnDetail('Bridge log', "tail -f {$logFile}");
     }
 
     /**
      * Start Laravel's artisan serve as a background process.
      */
-    private function startLaravelServer(int $port): void
+    private function startLaravelServer(int $port, int $bridgePort = 3002, int $wsPort = 3001): void
     {
         $phpBinary = PHP_BINARY;
         $artisan = base_path('artisan');
@@ -301,7 +320,14 @@ class JumpCommand extends Command
             $port
         );
 
-        $this->laravelProcess = proc_open($cmd, $descriptorSpec, $this->laravelPipes, base_path());
+        // Pass bridge ports so nativephp_call() (JumpBridge) in Laravel dials the right TCP port.
+        $env = array_merge($_ENV, $_SERVER, [
+            'JUMP_BRIDGE_PORT' => (string) $bridgePort,
+            'JUMP_WS_PORT' => (string) $wsPort,
+        ]);
+        $env = array_filter($env, fn ($v) => is_string($v) || is_numeric($v));
+
+        $this->laravelProcess = proc_open($cmd, $descriptorSpec, $this->laravelPipes, base_path(), $env);
 
         if (! is_resource($this->laravelProcess)) {
             $this->error('Failed to start artisan serve');
@@ -374,8 +400,12 @@ class JumpCommand extends Command
                 $this->line("<fg=red>{$method} {$path} [{$status}]</>");
             } elseif ($status >= 300) {
                 $this->line("<fg=yellow>{$method} {$path} [{$status}]</>");
+            } elseif ($method !== 'GET') {
+                // Surface non-GET traffic (Livewire POSTs, form submits) so
+                // you can correlate UI actions with server handlers.
+                $this->line("<fg=cyan>{$method} {$path} [{$status}]</>");
             }
-            // Don't log successful requests to reduce noise
+            // GET 2xx still silent to reduce noise from asset loads.
         }
     }
 

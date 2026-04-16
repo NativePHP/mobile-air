@@ -32,6 +32,19 @@ $uri = $_SERVER['REQUEST_URI'];
 $path = parse_url($uri, PHP_URL_PATH);
 $path = rtrim($path, '/');
 
+// Append a request-log line to the bridge log file. We use a file (not stderr)
+// because PHP 8.5's built-in server treats stderr writes from request scripts
+// as response body output and commits headers prematurely.
+function jumpRequestLog($message)
+{
+    global $basePath;
+    if (! $basePath) {
+        return;
+    }
+    $logFile = $basePath.'/storage/logs/jump-bridge.log';
+    @file_put_contents($logFile, '['.date('H:i:s').'] [Jump] '.$message."\n", FILE_APPEND);
+}
+
 // Helper function to format bytes
 function formatBytes($bytes)
 {
@@ -77,6 +90,15 @@ function jumpLog($message)
 // Ignore favicon and sourcemap requests
 if ($path === '/favicon.ico' || str_ends_with($path, '.map')) {
     http_response_code(204);
+    exit;
+}
+
+// Short-circuit WebSocket upgrade requests — PHP's built-in server can't
+// handle them. If we forward to Laravel, the `/` route runs `Auth::login`
+// which rotates the CSRF token and breaks every subsequent Livewire POST
+// with a 419. Most notably: Vite HMR upgrades hit us as `GET /?token=<ws-token>`.
+if (($_SERVER['HTTP_UPGRADE'] ?? '') === 'websocket') {
+    http_response_code(404);
     exit;
 }
 
@@ -1017,6 +1039,7 @@ function proxyToLaravel($laravelPort)
     if ($response === false) {
         http_response_code(502);
         echo "Bad Gateway: Could not connect to Laravel on port {$laravelPort}. Error: {$error}";
+        jumpRequestLog("{$method} {$uri} [502]");
 
         return;
     }
@@ -1027,6 +1050,13 @@ function proxyToLaravel($laravelPort)
 
     // Set response code
     http_response_code($httpCode);
+
+    // Log request to the bridge log file. Do NOT use fwrite(STDERR) here —
+    // PHP 8.5's built-in server treats stderr writes as response body output
+    // and silently commits headers, wiping Location/Set-Cookie.
+    if (! str_contains($uri, 'favicon.ico') && ! str_contains($uri, '.map')) {
+        jumpRequestLog("{$method} {$uri} [{$httpCode}]");
+    }
 
     $laravelOrigin = "http://127.0.0.1:{$laravelPort}";
     $jumpOrigin = "http://{$displayHost}:{$httpPort}";
@@ -1045,7 +1075,16 @@ function proxyToLaravel($laravelPort)
         if (stripos($headerLine, 'location:') === 0) {
             $headerLine = str_replace($laravelOrigin, $jumpOrigin, $headerLine);
         }
-        header($headerLine);
+
+        // Set-Cookie must be forwarded WITHOUT replacing — Laravel sends
+        // multiple cookies (XSRF-TOKEN + session) and PHP's header() defaults
+        // to replace=true, which would silently drop all but the last one.
+        // Without the session cookie the WebView can't do Livewire POSTs.
+        if (stripos($headerLine, 'set-cookie:') === 0) {
+            header($headerLine, false);
+        } else {
+            header($headerLine);
+        }
     }
 
     // Rewrite Vite dev server URLs so the phone routes them through the Jump proxy.
