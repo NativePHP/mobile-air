@@ -42,6 +42,11 @@ trait WatchesIos
             return;
         }
 
+        // Populate $this->simulators and $this->devices so we can classify the target
+        $this->getAvailableIosDevices();
+
+        $isDevice = array_key_exists($target, $this->devices);
+
         // Start Vite dev server if the nativephpMobile plugin is installed
         $this->startViteDevServer('ios');
 
@@ -53,6 +58,13 @@ trait WatchesIos
             $this->info('Vite hot reloading detected - skipping full page reloads');
         } else {
             $this->info('No Vite hot reloading detected - will trigger full page reloads');
+        }
+
+        if ($isDevice) {
+            $this->line('Watching iOS paths: '.implode(', ', $this->getIosWatchPaths()));
+            $this->startIosDeviceWatching($target, $appId, $viteHotFile);
+
+            return;
         }
 
         // Get the derived data path / data container path
@@ -122,6 +134,60 @@ trait WatchesIos
             fclose($socket);
             $this->line('<fg=green>Reload triggered</fg=green>');
         }
+    }
+
+    private function startIosDeviceWatching(string $udid, string $appId, string $viteHotFile): void
+    {
+        $this->info('iOS hot reload active (real device) - watching for changes...');
+        $this->line('<fg=yellow>Press Ctrl+C to stop</fg=yellow>');
+
+        $basePath = base_path();
+
+        $this->startWatchman(
+            $this->getIosWatchPaths(),
+            $this->getIosExcludePatterns(),
+            function (string $changedFile) use ($udid, $appId, $basePath, $viteHotFile) {
+                $this->handleIosDeviceFileChange($changedFile, $udid, $appId, $basePath, $viteHotFile);
+            }
+        );
+    }
+
+    private function handleIosDeviceFileChange(string $changedFile, string $udid, string $appId, string $basePath, string $viteHotFile): void
+    {
+        $relativePath = str_replace($basePath.'/', '', $changedFile);
+
+        $this->line("<fg=blue>File changed:</fg=blue> {$relativePath}");
+
+        if (! file_exists($changedFile) || is_dir($changedFile)) {
+            return;
+        }
+
+        $destination = 'Documents/app/'.$relativePath;
+
+        $result = Process::run([
+            'xcrun', 'devicectl', 'device', 'copy', 'to',
+            '--device', $udid,
+            '--source', $changedFile,
+            '--destination', $destination,
+            '--domain-type', 'appDataContainer',
+            '--domain-identifier', $appId,
+            '--quiet',
+        ]);
+
+        if ($result->successful()) {
+            $this->line("<fg=green>Synced to device:</fg=green> {$relativePath}");
+        } else {
+            $this->line("<fg=red>Sync failed:</fg=red> {$relativePath}");
+            $errorMessage = trim($result->errorOutput() ?: $result->output());
+            if ($errorMessage !== '') {
+                $this->line('<fg=gray>'.$errorMessage.'</fg=gray>');
+            }
+        }
+
+        // Vite HMR handles JS/CSS reloads over the LAN for the device's WebView.
+        // The loopback-based triggerIosReload() is simulator-only, so we skip it here.
+        // PHP/blade changes are synced to the device container but won't live-reload
+        // until an app-side listener exists; for now the next navigation picks them up.
     }
 
     private function promptForRunningSimulator(): ?string
