@@ -323,13 +323,17 @@ struct FlexContainer: Layout {
         }
 
         // Phase 3: Re-measure children with cross-axis constraint.
-        // Children with FILL mode (w-full) get the full container cross size.
-        // Others measure at natural size for proper content wrapping.
+        //
+        // CSS flexbox default is `align-items: stretch` — children get the
+        // cross-axis size proposed to them. We now propose crossAvail always
+        // (was previously only when widthMode/heightMode == FILL), so Text
+        // and other naturally-wide views receive a finite width and wrap
+        // instead of claiming intrinsic (single-line) width. Views that
+        // prefer less still get what they want via sizeThatFits — the
+        // proposed size is only a suggestion.
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
-            let childLayout = i < childNodes.count ? childNodes[i].layout : nil
-            let crossIsFill = isRow ? (childLayout?.heightMode == 2) : (childLayout?.widthMode == 2)
-            let crossAvail = crossIsFill ? containerCross - crossMargin(info) : nil
+            let crossAvail = containerCross - crossMargin(info)
             let proposedChild: ProposedViewSize
             if isRow {
                 proposedChild = ProposedViewSize(width: childMains[i], height: crossAvail)

@@ -1,23 +1,19 @@
 import SwiftUI
 
-/// A SwiftUI view that recursively renders a NativeUINode tree.
-/// Plugin renderers (e.g. ComposeUI) use this to render child nodes.
-/// Dispatches to SwiftUI renderers registered via SwiftUIRendererRegistry,
-/// falling back to a generic VStack container for unknown types.
+/// A SwiftUI view that recursively renders a NativeUINode tree. Plugin
+/// renderers use this to draw child nodes inside their own chrome.
+///
+/// Delegates to `NodeView` so that every rendered child gets the same
+/// layout / style / gesture modifier stack the root tree gets — in
+/// particular, `NodeLayoutModifier` is what applies `paddingTop/Right/
+/// Bottom/Left` from PHP's `p-4` etc. Rendering children by calling the
+/// plugin renderer directly skips those modifiers, silently dropping the
+/// child's padding / size constraints / click handlers.
 struct RenderNode: View {
     let node: NativeUINode
 
     var body: some View {
-        if let renderer = SwiftUIRendererRegistry.shared.get(node.type) {
-            renderer(node)
-        } else {
-            // Generic container fallback: render children vertically
-            VStack(spacing: 0) {
-                ForEach(node.children) { child in
-                    RenderNode(node: child)
-                }
-            }
-        }
+        NodeView(node: node).equatable()
     }
 }
 

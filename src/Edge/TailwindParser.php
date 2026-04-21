@@ -6,6 +6,25 @@ class TailwindParser
 {
     private static array $cache = [];
 
+    /**
+     * Plugin-provided resolver for `bg-theme-*` / `text-theme-*` classes.
+     * Takes a token name (e.g. "primary", "on-surface") and returns a hex
+     * color string, or null if the token is unknown.
+     *
+     * Set by plugins (e.g. nativephp/native-ui's service provider) so this
+     * parser remains dependency-free from specific plugin namespaces.
+     *
+     * @var callable(string): (?string)|null
+     */
+    private static $themeResolver = null;
+
+    public static function setThemeResolver(?callable $resolver): void
+    {
+        static::$themeResolver = $resolver;
+        // Bust cache — existing entries may reference stale theme values.
+        static::$cache = [];
+    }
+
     private const COLORS = [
         'slate' => [
             50 => '#F8FAFC', 100 => '#F1F5F9', 200 => '#E2E8F0', 300 => '#CBD5E1',
@@ -245,6 +264,12 @@ class TailwindParser
             str_starts_with($class, 'top-') => self::parseSpacingUniform('top', substr($class, 4)),
 
             // Colors and text
+            // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
+            // Checked BEFORE the generic bg-/text- branches so e.g. `bg-theme-*`
+            // doesn't fall into the color-palette parser as `theme-primary`.
+            str_starts_with($class, 'bg-theme-')   => self::parseThemeBg(substr($class, 9)),
+            str_starts_with($class, 'text-theme-') => self::parseThemeText(substr($class, 11)),
+
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
             str_starts_with($class, 'font-') => self::parseFontWeight(substr($class, 5)),
@@ -332,6 +357,38 @@ class TailwindParser
         }
 
         return self::resolveColor($value, 'bg');
+    }
+
+    /**
+     * `bg-theme-<token>` — resolve a theme color via the registered resolver.
+     *
+     * Note: resolution uses the LIGHT-mode token. True dark-mode switching
+     * happens at render time on the native side (via `<native:screen>` and
+     * theme-aware component renderers). For fine-grained class-based tinting,
+     * users accept that the light token is what ships to native.
+     */
+    private static function parseThemeBg(string $token): ?array
+    {
+        $color = self::resolveThemeToken($token);
+
+        return $color !== null ? ['bg' => $color] : null;
+    }
+
+    private static function parseThemeText(string $token): ?array
+    {
+        $color = self::resolveThemeToken($token);
+
+        return $color !== null ? ['color' => $color] : null;
+    }
+
+    private static function resolveThemeToken(string $token): ?string
+    {
+        if (static::$themeResolver === null) {
+            return null;
+        }
+        $resolved = call_user_func(static::$themeResolver, $token);
+
+        return is_string($resolved) ? $resolved : null;
     }
 
     private static function parseText(string $value): ?array

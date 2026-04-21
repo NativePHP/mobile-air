@@ -47,6 +47,9 @@ struct NodeLayoutModifier: ViewModifier {
     private var resolvedMaxWidth: CGFloat {
         if let l = layout {
             if l.widthMode == SizeMode.fill { return availableWidth }
+            if l.widthMode == SizeMode.percent, l.width > 0 {
+                return availableWidth * CGFloat(l.width) / 100
+            }
             if l.widthMode == SizeMode.fixed, l.width > 0 { return CGFloat(l.width) }
             if l.maxWidth > 0 { return CGFloat(l.maxWidth) }
         }
@@ -56,6 +59,9 @@ struct NodeLayoutModifier: ViewModifier {
     private var resolvedMaxHeight: CGFloat {
         if let l = layout {
             if l.heightMode == SizeMode.fill { return availableHeight }
+            if l.heightMode == SizeMode.percent, l.height > 0 {
+                return availableHeight * CGFloat(l.height) / 100
+            }
             if l.heightMode == SizeMode.fixed, l.height > 0 { return CGFloat(l.height) }
             if l.maxHeight > 0 { return CGFloat(l.maxHeight) }
         }
@@ -68,6 +74,11 @@ struct NodeLayoutModifier: ViewModifier {
         guard let l = layout else { return nil }
         if l.widthMode == SizeMode.fixed, l.width > 0 { return CGFloat(l.width) }
         if l.widthMode == SizeMode.fill { return availableWidth }
+        // Percent mode: resolve as a fraction of the available parent width.
+        // `l.width` is the percent numeric (e.g. 75 for "75%").
+        if l.widthMode == SizeMode.percent, l.width > 0 {
+            return availableWidth * CGFloat(l.width) / 100
+        }
         return nil
     }
 
@@ -75,6 +86,9 @@ struct NodeLayoutModifier: ViewModifier {
         guard let l = layout else { return nil }
         if l.heightMode == SizeMode.fixed, l.height > 0 { return CGFloat(l.height) }
         if l.heightMode == SizeMode.fill { return availableHeight }
+        if l.heightMode == SizeMode.percent, l.height > 0 {
+            return availableHeight * CGFloat(l.height) / 100
+        }
         return nil
     }
 

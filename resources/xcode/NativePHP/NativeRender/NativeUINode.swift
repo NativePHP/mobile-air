@@ -210,6 +210,30 @@ final class NativeUINode: Identifiable, Equatable {
     static func == (lhs: NativeUINode, rhs: NativeUINode) -> Bool {
         lhs === rhs
     }
+
+    /// Recursive structural equality. Used by `NodeView.==` so SwiftUI's
+    /// `.equatable()` short-circuit fires on semantically-unchanged subtrees,
+    /// even when PHP rebuilds the tree (producing fresh `NativeUINode` refs).
+    ///
+    /// Short-circuits on first difference — cheap in practice even on large
+    /// trees (a few hundred nodes compare in microseconds).
+    func deepEquals(_ other: NativeUINode) -> Bool {
+        if self === other { return true }
+        guard id == other.id,
+              type == other.type,
+              onPress == other.onPress,
+              onLongPress == other.onLongPress,
+              layout == other.layout,
+              style == other.style,
+              props == other.props,
+              children.count == other.children.count
+        else { return false }
+
+        for (a, b) in zip(children, other.children) {
+            if !a.deepEquals(b) { return false }
+        }
+        return true
+    }
 }
 
 // MARK: - Layout

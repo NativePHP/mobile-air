@@ -2,30 +2,30 @@
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\ElementRegistry;
-use Nativephp\ComposeUi\Elements\ActivityIndicator;
-use Nativephp\ComposeUi\Elements\Button;
-use Nativephp\ComposeUi\Elements\Checkbox;
-use Nativephp\ComposeUi\Elements\Divider;
-use Nativephp\ComposeUi\Elements\Icon;
-use Nativephp\ComposeUi\Elements\Image;
-use Nativephp\ComposeUi\Elements\ProgressBar;
-use Nativephp\ComposeUi\Elements\Radio;
-use Nativephp\ComposeUi\Elements\RadioGroup;
-use Nativephp\ComposeUi\Elements\Select;
-use Nativephp\ComposeUi\Elements\Slider;
-use Nativephp\ComposeUi\Elements\Spacer;
-use Nativephp\ComposeUi\Elements\Text;
-use Nativephp\ComposeUi\Elements\TextInput;
-use Nativephp\ComposeUi\Elements\Toggle;
-use Nativephp\ComposeUi\Elements\Badge;
-use Nativephp\ComposeUi\Elements\BottomSheet;
-use Nativephp\ComposeUi\Elements\Card;
-use Nativephp\ComposeUi\Elements\Chip;
-use Nativephp\ComposeUi\Elements\ListItem;
-use Nativephp\ComposeUi\Elements\Tab;
-use Nativephp\ComposeUi\Elements\TabRow;
-use Nativephp\ComposeUi\Elements\ButtonGroup;
-use Nativephp\ComposeUi\Elements\Carousel;
+use Nativephp\NativeUi\Elements\ActivityIndicator;
+use Nativephp\NativeUi\Elements\Button;
+use Nativephp\NativeUi\Elements\Checkbox;
+use Nativephp\NativeUi\Elements\Divider;
+use Nativephp\NativeUi\Elements\Icon;
+use Nativephp\NativeUi\Elements\Image;
+use Nativephp\NativeUi\Elements\ProgressBar;
+use Nativephp\NativeUi\Elements\Radio;
+use Nativephp\NativeUi\Elements\RadioGroup;
+use Nativephp\NativeUi\Elements\Select;
+use Nativephp\NativeUi\Elements\Slider;
+use Nativephp\NativeUi\Elements\Spacer;
+use Nativephp\NativeUi\Elements\Text;
+use Nativephp\NativeUi\Elements\TextInput;
+use Nativephp\NativeUi\Elements\Toggle;
+use Nativephp\NativeUi\Elements\Badge;
+use Nativephp\NativeUi\Elements\BottomSheet;
+use Nativephp\NativeUi\Elements\Card;
+use Nativephp\NativeUi\Elements\Chip;
+use Nativephp\NativeUi\Elements\ListItem;
+use Nativephp\NativeUi\Elements\Tab;
+use Nativephp\NativeUi\Elements\TabRow;
+use Nativephp\NativeUi\Elements\ButtonGroup;
+use Nativephp\NativeUi\Elements\Carousel;
 use Native\Mobile\Edge\NativeElementCollector;
 
 beforeEach(function () {
@@ -370,10 +370,10 @@ it('produces identical tree to programmatic API', function () {
 
     // Build via programmatic API
     $programmatic = \Native\Mobile\Edge\Elements\Column::make(
-        \Nativephp\ComposeUi\Elements\Text::make('Count: 5')->fontSize(32)->fontWeight(7)->color('#1a1a2e'),
+        \Nativephp\NativeUi\Elements\Text::make('Count: 5')->fontSize(32)->fontWeight(7)->color('#1a1a2e'),
         \Native\Mobile\Edge\Elements\Row::make(
-            \Nativephp\ComposeUi\Elements\Button::make('-')->onPress('decrement')->color('#FF5722')->labelColor('#FFFFFF'),
-            \Nativephp\ComposeUi\Elements\Button::make('+')->onPress('increment')->color('#4CAF50')->labelColor('#FFFFFF'),
+            \Nativephp\NativeUi\Elements\Button::make('-')->onPress('decrement')->color('#FF5722')->labelColor('#FFFFFF'),
+            \Nativephp\NativeUi\Elements\Button::make('+')->onPress('increment')->color('#4CAF50')->labelColor('#FFFFFF'),
         )->gap(16),
     )->fill()->center();
 

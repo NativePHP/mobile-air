@@ -1,3 +1,4 @@
+
 import Foundation
 import UIKit // needed for UIScreen.main, UIApplication
 import os
@@ -5,12 +6,12 @@ import os
 /// Element Runtime bridge — reads flat buffer from PHP shared memory, posts tree to main thread.
 ///
 /// Flat node layout (160 bytes packed, little-endian) — must match nphp_element.h:
-///   0: id (u32)           4: type_idx (u16)      6: child_count (u16)
+///   0: id (u32)            4: type_idx (u16)       6: child_count (u16)
 ///   8: first_child_offset  12: on_press           16: on_long_press
 ///  20: width (f32)        24: width_mode (u8)    25: height (f32)
 ///  29: height_mode (u8)   30: padding[4] (4×f32) 46: margin[4] (4×f32)
-///  62: flex_grow          66: flex_shrink         70: align_self (u8)
-///  71: align_items (u8)   72: justify_content     73: gap (f32)
+///  62: flex_grow           66: flex_shrink         70: align_self (u8)
+///  71: align_items (u8)   72: justify_content    73: gap (f32)
 ///  77: safe_area (u8)
 ///  --- Extended layout (Yoga) ---
 ///  78: min_width          82: min_height          86: max_width

@@ -7,8 +7,8 @@ use Native\Mobile\Edge\TailwindParser;
 beforeEach(function () {
     TailwindParser::clearCache();
     ElementRegistry::reset();
-    if (class_exists(\Nativephp\ComposeUi\Elements\Button::class)) {
-        ElementRegistry::register('button', \Nativephp\ComposeUi\Elements\Button::class);
+    if (class_exists(\Nativephp\NativeUi\Elements\Button::class)) {
+        ElementRegistry::register('button', \Nativephp\NativeUi\Elements\Button::class);
     }
     ElementRegistry::register('text', Text::class);
 });

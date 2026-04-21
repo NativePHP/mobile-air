@@ -2,7 +2,7 @@ import SwiftUI
 
 /// SwiftUI View modifier that wires onPress / onLongPress callbacks from a
 /// NativeUINode to tap and long-press gestures.  Used by plugin renderers
-/// (e.g. ComposeUI) that build their UI in SwiftUI rather than UIKit.
+/// (e.g. NativeUI) that build their UI in SwiftUI rather than UIKit.
 extension View {
     func applyClickHandlers(node: NativeUINode) -> some View {
         self.modifier(ClickHandlerModifier(node: node))

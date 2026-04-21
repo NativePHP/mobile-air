@@ -2,13 +2,13 @@ package com.nativephp.mobile.bridge.plugins
 
 import com.nativephp.mobile.ui.nativerender.NativeRendererRegistry
 import com.nativephp.mobile.ui.nativerender.NodeRenderer
-import com.nativephp.plugins.compose_ui.ui.*
+import com.nativephp.plugins.native_ui.ui.*
 
 // AUTO-GENERATED FILE - DO NOT EDIT
 // Generated from installed NativePHP UI plugins
 
 fun registerPluginRenderers() {
-    // Plugin: compose-ui — Container types
+    // Plugin: native-ui — Container types
     NativeRendererRegistry.register("column", NodeRenderer { node, modifier ->
         ColumnRenderer.Render(node, modifier)
     })
@@ -28,7 +28,7 @@ fun registerPluginRenderers() {
         CanvasRenderer.Render(node, modifier)
     })
 
-    // Plugin: compose-ui — Core leaf types (new renderers)
+    // Plugin: native-ui — Core leaf types (new renderers)
     NativeRendererRegistry.register("text", NodeRenderer { node, modifier ->
         TextRenderer.Render(node, modifier)
     })
@@ -36,7 +36,7 @@ fun registerPluginRenderers() {
         ImageRenderer.Render(node, modifier)
     })
 
-    // Plugin: compose-ui — Simple types (new renderers)
+    // Plugin: native-ui — Simple types (new renderers)
     NativeRendererRegistry.register("spacer", NodeRenderer { node, modifier ->
         SpacerRenderer.Render(node, modifier)
     })
@@ -53,7 +53,7 @@ fun registerPluginRenderers() {
         LineRenderer.Render(node, modifier)
     })
 
-    // Plugin: compose-ui — Existing plugin renderers (already in compose-ui plugin)
+    // Plugin: native-ui — Existing plugin renderers (already in native-ui plugin)
     NativeRendererRegistry.register("button", NodeRenderer { node, modifier ->
         ButtonRenderer.Render(node, modifier)
     })
@@ -103,7 +103,7 @@ fun registerPluginRenderers() {
         TabRowRenderer.Render(node, modifier)
     })
 
-    // Plugin: compose-ui — Navigation chrome
+    // Plugin: native-ui — Navigation chrome
     NativeRendererRegistry.register("top_bar", NodeRenderer { node, modifier ->
         TopBarRenderer.Render(node, modifier)
     })

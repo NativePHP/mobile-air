@@ -230,6 +230,15 @@ private fun buildChildModifier(
         mod = mod.height(layout.height.dp)
     }
 
+    // Main axis: percent size (e.g. w-3/4 → 75). fillMaxWidth takes a fraction
+    // in 0..1, so we divide the percent value by 100.
+    if (isRow && layout?.widthMode == SizeMode.PERCENT && (layout.width) > 0f) {
+        mod = mod.fillMaxWidth((layout.width / 100f).coerceIn(0f, 1f))
+    }
+    if (!isRow && layout?.heightMode == SizeMode.PERCENT && (layout.height) > 0f) {
+        mod = mod.fillMaxHeight((layout.height / 100f).coerceIn(0f, 1f))
+    }
+
     // Cross axis: fixed or fill
     // Note: STRETCH alignment does NOT apply fillMaxWidth/fillMaxHeight.
     // In Compose, fillMaxHeight() in a Row creates a circular dependency —
@@ -242,11 +251,15 @@ private fun buildChildModifier(
     if (isRow) {
         when {
             layout?.heightMode == SizeMode.FIXED && (layout.height) > 0f -> mod = mod.height(layout.height.dp)
+            layout?.heightMode == SizeMode.PERCENT && (layout.height) > 0f ->
+                mod = mod.fillMaxHeight((layout.height / 100f).coerceIn(0f, 1f))
             layout?.heightMode == SizeMode.FILL -> mod = mod.fillMaxHeight()
         }
     } else {
         when {
             layout?.widthMode == SizeMode.FIXED && (layout.width) > 0f -> mod = mod.width(layout.width.dp)
+            layout?.widthMode == SizeMode.PERCENT && (layout.width) > 0f ->
+                mod = mod.fillMaxWidth((layout.width / 100f).coerceIn(0f, 1f))
             layout?.widthMode == SizeMode.FILL || effectiveAlign == AlignItems.STRETCH -> mod = mod.fillMaxWidth()
         }
     }

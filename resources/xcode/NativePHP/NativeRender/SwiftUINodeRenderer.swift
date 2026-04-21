@@ -82,6 +82,16 @@ struct NodeView: View, Equatable {
     @Environment(\.availableHeight) private var availableHeight
 
     static func == (lhs: NodeView, rhs: NodeView) -> Bool {
+        // Reference identity. Between PHP publishes, `node` refs are stable
+        // across SwiftUI body re-evaluations (scroll, focus, env changes) —
+        // so `===` short-circuits reliably during steady-state, keeping scroll
+        // frames cheap. On PHP publish the whole tree gets new refs → full
+        // re-render, which is fine since that's exactly when we want updates.
+        //
+        // Deep-equality comparison (walking the whole subtree on every ==)
+        // was tried earlier and killed scroll perf once the tree got dense:
+        // `.equatable()` is applied at every child NodeView, so the cost
+        // compounds to O(n·depth) per scroll frame.
         lhs.node === rhs.node
     }
 
