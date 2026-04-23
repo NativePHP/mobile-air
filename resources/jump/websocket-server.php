@@ -3,12 +3,13 @@
 /**
  * Jump WebSocket Bridge Server
  *
- * Single-process server that handles both:
- * - WebSocket connections from the mobile device
+ * Single-process server that handles:
+ * - WebSocket connections from the mobile device (device bridge)
  * - TCP connections from PHP (nativephp_call bridge)
+ * - WebSocket proxy for Vite HMR (phone ↔ Jump ↔ Vite)
  *
  * Usage:
- *   php websocket-server.php <base_path> [ws_port] [bridge_port] start [-d]
+ *   php websocket-server.php <base_path> [ws_port] [bridge_port] [vite_proxy_port] start [-d]
  */
 
 // Parse arguments
@@ -24,6 +25,7 @@ foreach ($args as $arg) {
 $basePath = $positional[0] ?? getenv('JUMP_BASE_PATH');
 $wsPort = $positional[1] ?? getenv('JUMP_WS_PORT') ?: '3001';
 $bridgePort = $positional[2] ?? getenv('JUMP_BRIDGE_PORT') ?: '3002';
+$viteProxyPort = $positional[3] ?? getenv('JUMP_VITE_PROXY_PORT') ?: '3003';
 
 if (! $basePath || ! file_exists($basePath.'/vendor/autoload.php')) {
     fwrite(STDERR, "[Jump] Error: base_path not provided or vendor/autoload.php not found\n");
@@ -32,6 +34,7 @@ if (! $basePath || ! file_exists($basePath.'/vendor/autoload.php')) {
 
 require_once $basePath.'/vendor/autoload.php';
 
+use Workerman\Connection\AsyncTcpConnection;
 use Workerman\Connection\TcpConnection;
 use Workerman\Worker;
 
@@ -179,17 +182,24 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
         }
     });
 
-    // File watcher for live reload
+    // File watcher for live reload. Front-end extensions (js/ts/vue/css)
+    // are handled by Vite HMR when `public/hot` exists — firing our own
+    // full-reload on those changes wipes HMR state (form inputs, Inertia
+    // page props, scroll position). Only watch them when Vite isn't running.
     $lastModTimes = [];
     $lastReloadTime = 0;
     $watchPaths = ['app', 'resources', 'routes', 'config'];
-    $watchExtensions = ['php', 'blade.php', 'js', 'css', 'ts', 'vue'];
+    $serverExtensions = ['php', 'blade.php'];
+    $clientExtensions = ['js', 'jsx', 'ts', 'tsx', 'vue', 'css', 'scss', 'sass', 'less'];
 
-    \Workerman\Timer::add(1, function () use (&$deviceConnections, &$lastModTimes, &$lastReloadTime, $watchPaths, $watchExtensions) {
+    \Workerman\Timer::add(1, function () use (&$deviceConnections, &$lastModTimes, &$lastReloadTime, $watchPaths, $serverExtensions, $clientExtensions) {
         global $basePath;
         if (empty($deviceConnections)) {
             return;
         }
+
+        $viteRunning = file_exists($basePath.'/public/hot');
+        $watchExtensions = $viteRunning ? $serverExtensions : array_merge($serverExtensions, $clientExtensions);
 
         $changed = false;
         foreach ($watchPaths as $dir) {
@@ -240,5 +250,110 @@ function jumpLog($message)
 {
     fwrite(STDERR, '['.date('H:i:s').'] [Jump] '.$message."\n");
 }
+
+/**
+ * Resolve the live Vite dev-server origin (host + port) from the Laravel
+ * Vite hot file. Returns [host, port] — host is what we should actually
+ * connect to. macOS Node binds `localhost` to IPv6 [::1] only, so dialing
+ * 127.0.0.1 would fail; we respect the file. Wildcard binds (0.0.0.0 / ::)
+ * collapse to `localhost` since they're listener-only addresses.
+ */
+function jumpResolveViteTarget(string $basePath): array
+{
+    $hot = $basePath.'/public/hot';
+    if (is_file($hot)) {
+        $origin = rtrim(trim((string) @file_get_contents($hot)), '/');
+        $parts = parse_url($origin);
+        if (! empty($parts['host']) && ! empty($parts['port'])) {
+            $hostRaw = trim($parts['host'], '[]');
+            if (in_array($hostRaw, ['0.0.0.0', '::', '::0'], true)) {
+                return ['localhost', (int) $parts['port']];
+            }
+            $host = str_contains($hostRaw, ':') ? '['.$hostRaw.']' : $hostRaw;
+
+            return [$host, (int) $parts['port']];
+        }
+    }
+
+    return ['localhost', 5173];
+}
+
+// Vite HMR proxy — lets the phone reach Vite's HMR WebSocket without the user
+// editing vite.config.js. The phone connects here (to the LAN-reachable Jump
+// host) and we open a WebSocket client to Vite on 127.0.0.1, then relay frames
+// both directions. Vite's allowedHosts / origin-token checks pass naturally
+// because we dial Vite as localhost with the genuine token from /@vite/client.
+$viteProxy = new Worker("websocket://0.0.0.0:{$viteProxyPort}");
+$viteProxy->count = 1;
+$viteProxy->name = 'JumpViteProxy';
+
+$viteProxy->onWebSocketConnect = function (TcpConnection $phone, $httpBuffer) use ($basePath) {
+    $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
+    $query = parse_url($requestUri, PHP_URL_QUERY) ?: '';
+    [$viteHost, $vitePort] = jumpResolveViteTarget($basePath);
+
+    // Forward the exact path + query the phone used so Vite sees the same
+    // token (?token=…) it baked into /@vite/client.
+    $upstreamUrl = "ws://{$viteHost}:{$vitePort}".($query ? "/?{$query}" : '/');
+    $upstream = new AsyncTcpConnection($upstreamUrl);
+    $upstream->websocketClientProtocol = 'vite-hmr';
+
+    // Hold frames sent by the phone until Vite finishes its handshake.
+    $phoneBuffer = [];
+    $upstreamReady = false;
+
+    $phone->upstream = $upstream;
+    $upstream->phone = $phone;
+
+    $upstream->onWebSocketConnect = function ($upstream) use (&$upstreamReady, &$phoneBuffer, $phone) {
+        $upstreamReady = true;
+        foreach ($phoneBuffer as [$type, $data]) {
+            $upstream->websocketType = $type;
+            $upstream->send($data);
+        }
+        $phoneBuffer = [];
+        jumpLog('Vite HMR proxy: upstream connected for device '.$phone->id);
+    };
+
+    $upstream->onMessage = function ($upstream, $data) use ($phone) {
+        $phone->websocketType = $upstream->websocketType ?? "\x81";
+        $phone->send($data);
+    };
+
+    $upstream->onClose = function ($upstream) use ($phone) {
+        if ($phone->getStatus() !== TcpConnection::STATUS_CLOSED) {
+            $phone->close();
+        }
+    };
+
+    $upstream->onError = function ($upstream, $code, $msg) use ($phone) {
+        jumpLog("Vite HMR proxy: upstream error [{$code}] {$msg}");
+        if ($phone->getStatus() !== TcpConnection::STATUS_CLOSED) {
+            $phone->close();
+        }
+    };
+
+    // Re-route phone → upstream. Must assign per-connection so other phones
+    // don't stomp this one's upstream reference.
+    $phone->onMessage = function ($phone, $data) use (&$phoneBuffer, &$upstreamReady) {
+        $type = $phone->websocketType ?? "\x81";
+        if (! $upstreamReady) {
+            $phoneBuffer[] = [$type, $data];
+
+            return;
+        }
+        $phone->upstream->websocketType = $type;
+        $phone->upstream->send($data);
+    };
+
+    $phone->onClose = function ($phone) {
+        if (isset($phone->upstream) && $phone->upstream->getStatus() !== TcpConnection::STATUS_CLOSED) {
+            $phone->upstream->close();
+        }
+    };
+
+    jumpLog("Vite HMR proxy: device {$phone->id} connecting to {$upstreamUrl}");
+    $upstream->connect();
+};
 
 Worker::runAll();

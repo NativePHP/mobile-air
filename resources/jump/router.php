@@ -94,9 +94,10 @@ if ($path === '/favicon.ico' || str_ends_with($path, '.map')) {
 }
 
 // Short-circuit WebSocket upgrade requests — PHP's built-in server can't
-// handle them. If we forward to Laravel, the `/` route runs `Auth::login`
-// which rotates the CSRF token and breaks every subsequent Livewire POST
-// with a 419. Most notably: Vite HMR upgrades hit us as `GET /?token=<ws-token>`.
+// handle them. HMR upgrades go through Jump's Workerman proxy on
+// JUMP_VITE_PROXY_PORT; anything hitting the HTTP port is a stale client or
+// misconfigured library. Forwarding to Laravel would run `/`'s Auth::login
+// which rotates CSRF and breaks subsequent Livewire POSTs with 419.
 if (($_SERVER['HTTP_UPGRADE'] ?? '') === 'websocket') {
     http_response_code(404);
     exit;
@@ -192,12 +193,25 @@ if ($viteRunning) {
 }
 
 if ($viteRunning) {
-    $isViteRequest = str_starts_with($path, '/@vite')
-        || str_starts_with($path, '/@fs')
-        || str_starts_with($path, '/@id')
+    // Any /@-prefixed path is a Vite virtual module (/@vite, /@fs, /@id,
+    // /@react-refresh, /@tailwindcss/*, /@vue/*, etc). Missing one causes HMR
+    // requests to fall through to Laravel, 404, and leave the client in a
+    // half-updated state (CSS dropped, JS reload).
+    $isViteRequest = str_starts_with($path, '/@')
         || str_starts_with($path, '/resources/')
         || str_starts_with($path, '/node_modules/')
         || str_contains($path, '.hot-update.');
+
+    // Inertia's resolvePageComponent keys modules by absolute filesystem path
+    // (/Users/..., /home/..., /var/..., or /C:/... on Windows), so HMR updates
+    // arrive here as absolute paths under the project root. Vite serves those
+    // at `/@fs/<abs>`, so rewrite before proxying.
+    $isFsPath = $basePath && str_starts_with($path, $basePath.'/');
+    if ($isFsPath) {
+        $_SERVER['REQUEST_URI'] = '/@fs'.$_SERVER['REQUEST_URI'];
+        proxyToVite($vitePort);
+        exit;
+    }
 
     if ($isViteRequest) {
         proxyToVite($vitePort);
@@ -916,14 +930,13 @@ function proxyToVite($vitePort)
 {
     $method = $_SERVER['REQUEST_METHOD'];
     $uri = $_SERVER['REQUEST_URI'];
+    $path = parse_url($uri, PHP_URL_PATH);
 
-    // Try the hot file origin first (may be IPv6 [::1]), fall back to 127.0.0.1
-    global $hotFilePath;
-    $viteHost = "http://127.0.0.1:{$vitePort}";
-    if (isset($hotFilePath) && file_exists($hotFilePath)) {
-        $viteHost = rtrim(trim(file_get_contents($hotFilePath)), '/');
-    }
-    $viteUrl = "{$viteHost}{$uri}";
+    // Dial Vite on the host it actually bound to. Vite's default is
+    // `localhost` which on macOS Node resolves to IPv6 [::1] only — dialing
+    // 127.0.0.1 gives connection refused. Respect the hot file origin, with
+    // a wildcard fallback (0.0.0.0 / [::]/ [::0] aren't valid connect targets).
+    $viteUrl = resolveViteOrigin($vitePort).$uri;
 
     $headers = [];
     foreach ($_SERVER as $key => $value) {
@@ -962,6 +975,16 @@ function proxyToVite($vitePort)
     $responseHeaders = substr($response, 0, $headerSize);
     $responseBody = substr($response, $headerSize);
 
+    // Patch Vite's HMR client to route WebSocket traffic through Jump's proxy
+    // port instead of trying to dial Vite directly. Without this the phone
+    // opens `ws://<lan>:<vitePort>/` — unreachable because Vite binds to
+    // localhost and rejects non-allowed Host headers. With the rewrite, the
+    // phone opens `ws://<lan>:<proxyPort>/` to our Workerman proxy, which
+    // relays to Vite over 127.0.0.1 where Vite's checks pass naturally.
+    if ($path === '/@vite/client') {
+        $responseBody = patchViteClient($responseBody);
+    }
+
     http_response_code($httpCode);
 
     $headerLines = explode("\r\n", $responseHeaders);
@@ -972,10 +995,86 @@ function proxyToVite($vitePort)
         if (stripos($headerLine, 'transfer-encoding:') === 0) {
             continue;
         }
+        // If we patched the body, the original Content-Length is stale.
+        if ($path === '/@vite/client' && stripos($headerLine, 'content-length:') === 0) {
+            continue;
+        }
         header($headerLine);
     }
 
     echo $responseBody;
+}
+
+/**
+ * Return the HTTP origin of the running Vite dev server, picking something
+ * cURL can actually connect to. Reads the Laravel Vite `public/hot` file so
+ * IPv6-only Vite (the default on macOS Node, which binds [::1] only) still
+ * works. Rewrites wildcard binds to localhost since they're listener-only.
+ */
+function resolveViteOrigin(int $vitePort): string
+{
+    global $basePath;
+
+    $hotFile = $basePath ? $basePath.'/public/hot' : null;
+    if ($hotFile && is_file($hotFile)) {
+        $origin = trim((string) @file_get_contents($hotFile));
+        $origin = rtrim($origin, '/');
+        $parts = parse_url($origin);
+        if (! empty($parts['host']) && ! empty($parts['port'])) {
+            // parse_url returns bracketed IPv6 hosts (e.g. "[::1]").
+            // Strip brackets for the wildcard compare, then add them back
+            // for any IPv6 literal when we rebuild the URL.
+            $hostRaw = trim($parts['host'], '[]');
+            if (in_array($hostRaw, ['0.0.0.0', '::', '::0'], true)) {
+                return 'http://localhost:'.$parts['port'];
+            }
+            $host = str_contains($hostRaw, ':') ? '['.$hostRaw.']' : $hostRaw;
+
+            return 'http://'.$host.':'.$parts['port'];
+        }
+    }
+
+    return 'http://localhost:'.$vitePort;
+}
+
+/**
+ * Rewrite the HMR endpoint in Vite's `/@vite/client` so the phone connects
+ * to Jump's Vite HMR proxy instead of Vite directly.
+ *
+ * Matches the two server-baked lines Vite emits (stable since v3, tolerant of
+ * value drift). Logs a warning if neither pattern fires — signals Vite
+ * template refactor.
+ */
+function patchViteClient(string $body): string
+{
+    $proxyPort = getenv('JUMP_VITE_PROXY_PORT') ?: '3003';
+    $displayHost = getenv('JUMP_DISPLAY_HOST') ?: 'localhost';
+
+    $totalReplaced = 0;
+
+    $body = preg_replace(
+        '/const hmrPort = (null|\d+);/',
+        'const hmrPort = '.(int) $proxyPort.';',
+        $body,
+        1,
+        $count
+    );
+    $totalReplaced += $count;
+
+    $body = preg_replace(
+        '/const directSocketHost = "[^"]*";/',
+        'const directSocketHost = "'.$displayHost.':'.(int) $proxyPort.'/";',
+        $body,
+        1,
+        $count
+    );
+    $totalReplaced += $count;
+
+    if ($totalReplaced === 0) {
+        jumpRequestLog('WARN: /@vite/client patching matched no patterns — Vite may have refactored the client template');
+    }
+
+    return $body;
 }
 
 /**
