@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { networkInterfaces } from 'os';
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync } from 'fs';
 import path from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,6 +53,36 @@ export function nativephpMobile() {
 
     const config = {};
 
+    const axiosPath = path.resolve(process.cwd(), 'node_modules/axios/lib/axios.js');
+
+    // NativePHP Mobile needs axios as a direct dependency: we intercept axios
+    // imports at bundle time and route them through the embedded PHP runtime.
+    // Inertia 3 removed axios in favour of native fetch, so fresh Inertia 3
+    // projects won't declare it — though it may still be in node_modules via
+    // transitive deps from @inertiajs/core. Check the project's package.json
+    // (not just the filesystem) so a stale transitive dep can't silently pass
+    // the check and produce an app that can't talk to its own backend.
+    const pkgJsonPath = path.resolve(process.cwd(), 'package.json');
+    let declaresAxios = false;
+    try {
+        const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf8'));
+        declaresAxios = !!(pkg.dependencies?.axios || pkg.devDependencies?.axios);
+    } catch {
+        // No package.json accessible — skip the check rather than failing
+        // outside a user project (e.g. tooling that loads the plugin directly).
+    }
+
+    if (!declaresAxios || !existsSync(axiosPath)) {
+        throw new Error(
+            '[nativephp/mobile] axios must be declared as a dependency in your package.json.\n'
+            + 'Inertia 3 removed axios in favour of native fetch; reinstall it so outgoing '
+            + 'requests can be routed through our handler:\n'
+            + '  npm install axios\n'
+            + 'Then follow https://inertiajs.com/docs/v3/installation/client-side-setup#using-axios '
+            + 'to tell Inertia to use axios for its client-side requests.'
+        );
+    }
+
     if (isIos) {
         // Force the correct URL for iOS
         process.env.APP_URL = 'php://127.0.0.1';
@@ -62,11 +92,6 @@ export function nativephpMobile() {
             config.base = '/_assets/build/';
         }
 
-        // Always prevent Vite from pre-bundling axios so our plugin can intercept it
-        config.optimizeDeps = {
-            exclude: ['axios']
-        };
-
         config.server = {
             host: localIP,
             cors: {
@@ -74,24 +99,26 @@ export function nativephpMobile() {
             },
         };
 
-        // Add plugins for iOS
+        // Prevent Vite from pre-bundling axios so our plugin can intercept it
+        config.optimizeDeps = {
+            exclude: ['axios']
+        };
+
+        // Intercept ALL axios imports and swap in the PHP adapter so outgoing
+        // requests go through the WKURLSchemeHandler instead of real sockets.
         config.plugins = [
-            // Intercept ALL axios imports and wrap with PHP adapter
             {
                 name: 'axios-php-wrapper',
                 enforce: 'pre',
                 resolveId(id) {
                     if (id === 'axios') {
-                        // Return a virtual module ID
                         return '\0axios-with-php-adapter';
                     }
                     return null;
                 },
                 load(id) {
                     if (id === '\0axios-with-php-adapter') {
-                        // Return code that imports real axios and applies the adapter
                         const adapterPath = resolve(__dirname, 'phpProtocolAdapter.js');
-                        const axiosPath = path.resolve(process.cwd(), 'node_modules/axios/lib/axios.js');
 
                         return `
 import axios from '${axiosPath}';
@@ -122,8 +149,10 @@ export const mergeConfig = axios.mergeConfig;
         };
     }
 
-    // Extract axios plugin for iOS
-    const axiosPlugin = config.plugins?.[0];
+    // Extract iOS-only plugins (the axios wrapper) so we can return them
+    // alongside the main plugin; they must not be part of the config the
+    // main plugin's config() hook returns, or Vite double-registers them.
+    const extraPlugins = config.plugins || [];
     delete config.plugins;
 
     const mainPlugin = {
@@ -147,9 +176,8 @@ export const mergeConfig = axios.mergeConfig;
         }
     };
 
-    // Return array with axios wrapper only for iOS
-    if (isIos) {
-        return [mainPlugin, axiosPlugin];
+    if (extraPlugins.length > 0) {
+        return [mainPlugin, ...extraPlugins];
     }
 
     return mainPlugin;
