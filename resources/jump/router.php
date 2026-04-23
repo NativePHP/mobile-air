@@ -200,6 +200,7 @@ if ($viteRunning) {
     $isViteRequest = str_starts_with($path, '/@')
         || str_starts_with($path, '/resources/')
         || str_starts_with($path, '/node_modules/')
+        || str_starts_with($path, '/vendor/')
         || str_contains($path, '.hot-update.');
 
     // Inertia's resolvePageComponent keys modules by absolute filesystem path
