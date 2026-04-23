@@ -999,8 +999,20 @@ function proxyToVite($vitePort)
         if ($path === '/@vite/client' && stripos($headerLine, 'content-length:') === 0) {
             continue;
         }
+        // Override Vite's cache headers below — Android WebView's module
+        // loader was re-using cached HMR modules even with `?t=` busters.
+        if (stripos($headerLine, 'cache-control:') === 0 || stripos($headerLine, 'pragma:') === 0 || stripos($headerLine, 'expires:') === 0) {
+            continue;
+        }
         header($headerLine);
     }
+
+    // Force every Vite-proxied response to bypass any on-device cache. This
+    // is dev-only traffic; no perf cost. Fixes Android HMR where dynamic
+    // `import('…?t=N')` was resolving to a stale cached module.
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
 
     echo $responseBody;
 }

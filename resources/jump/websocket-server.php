@@ -292,6 +292,20 @@ $viteProxy->onWebSocketConnect = function (TcpConnection $phone, $httpBuffer) us
     $query = parse_url($requestUri, PHP_URL_QUERY) ?: '';
     [$viteHost, $vitePort] = jumpResolveViteTarget($basePath);
 
+    // Echo the client's requested subprotocol back in the handshake response.
+    // Chrome/Android WebView (per RFC 6455) aborts with "Sent non-empty
+    // Sec-WebSocket-Protocol header but no response was received" if we
+    // don't — iOS WebKit is forgiving, so only Android fails visibly.
+    // Workerman doesn't do this automatically; inject via $connection->headers
+    // which gets added to the 101 response at Protocols/Websocket.php:468.
+    $requestedProto = $_SERVER['HTTP_SEC_WEBSOCKET_PROTOCOL'] ?? '';
+    if ($requestedProto !== '') {
+        // Server must pick exactly one of the offered subprotocols. Vite
+        // only uses 'vite-hmr' / 'vite-ping', so echo the first offered.
+        $chosen = trim(explode(',', $requestedProto)[0]);
+        $phone->headers = ['Sec-WebSocket-Protocol: '.$chosen];
+    }
+
     // Forward the exact path + query the phone used so Vite sees the same
     // token (?token=…) it baked into /@vite/client.
     $upstreamUrl = "ws://{$viteHost}:{$vitePort}".($query ? "/?{$query}" : '/');
@@ -299,6 +313,11 @@ $viteProxy->onWebSocketConnect = function (TcpConnection $phone, $httpBuffer) us
     $upstream->websocketClientProtocol = 'vite-hmr';
 
     // Hold frames sent by the phone until Vite finishes its handshake.
+    // Vite HMR's wire protocol is text-only (JSON payloads); control frames
+    // (ping/pong) are handled by Workerman internally and don't fire
+    // onMessage. Forcing "\x81" (text) in both directions avoids a stale
+    // websocketType from leaking in — Android's WebView WS parser is
+    // stricter about opcode correctness than iOS WebKit's.
     $phoneBuffer = [];
     $upstreamReady = false;
 
@@ -307,8 +326,8 @@ $viteProxy->onWebSocketConnect = function (TcpConnection $phone, $httpBuffer) us
 
     $upstream->onWebSocketConnect = function ($upstream) use (&$upstreamReady, &$phoneBuffer, $phone) {
         $upstreamReady = true;
-        foreach ($phoneBuffer as [$type, $data]) {
-            $upstream->websocketType = $type;
+        foreach ($phoneBuffer as $data) {
+            $upstream->websocketType = "\x81";
             $upstream->send($data);
         }
         $phoneBuffer = [];
@@ -316,7 +335,7 @@ $viteProxy->onWebSocketConnect = function (TcpConnection $phone, $httpBuffer) us
     };
 
     $upstream->onMessage = function ($upstream, $data) use ($phone) {
-        $phone->websocketType = $upstream->websocketType ?? "\x81";
+        $phone->websocketType = "\x81";
         $phone->send($data);
     };
 
@@ -336,13 +355,12 @@ $viteProxy->onWebSocketConnect = function (TcpConnection $phone, $httpBuffer) us
     // Re-route phone → upstream. Must assign per-connection so other phones
     // don't stomp this one's upstream reference.
     $phone->onMessage = function ($phone, $data) use (&$phoneBuffer, &$upstreamReady) {
-        $type = $phone->websocketType ?? "\x81";
         if (! $upstreamReady) {
-            $phoneBuffer[] = [$type, $data];
+            $phoneBuffer[] = $data;
 
             return;
         }
-        $phone->upstream->websocketType = $type;
+        $phone->upstream->websocketType = "\x81";
         $phone->upstream->send($data);
     };
 
