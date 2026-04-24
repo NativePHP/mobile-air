@@ -13,8 +13,20 @@ import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class LaravelEnvironment(private val context: Context) {
+    companion object {
+        // Process-wide lock around Laravel bundle extraction. MainActivity and
+        // PHPSchedulerWorker each construct their own LaravelEnvironment, so an
+        // instance-level lock wouldn't serialize them. Without this, an updated
+        // APK + queued WorkManager job can run an ephemeral PHP task against a
+        // mid-delete / mid-extract vendor/ tree and fail with
+        // `Class "Native\Mobile\Runtime" not found`.
+        private val extractionLock = ReentrantLock()
+    }
+
     private val appStorageDir = context.getDir("storage", Context.MODE_PRIVATE)
     private val phpBridge = PHPBridge(context)
 
@@ -174,8 +186,15 @@ class LaravelEnvironment(private val context: Context) {
 
     /**
      * Extract Laravel bundle if needed. Returns true if extraction was performed.
+     * Serialized process-wide via extractionLock so MainActivity's init thread and
+     * a WorkManager worker can't clobber each other mid-extract. Safe to call from
+     * either path; the isUpToDate check inside short-circuits repeat callers.
      */
-    private fun extractLaravelBundle(): Boolean {
+    private fun extractLaravelBundle(): Boolean = extractionLock.withLock {
+        extractLaravelBundleUnlocked()
+    }
+
+    private fun extractLaravelBundleUnlocked(): Boolean {
         val laravelDir = File(appStorageDir, DIR_LARAVEL)
         val otaMarkerFile = File(laravelDir, OTA_MARKER)
 
@@ -898,7 +917,17 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
     fun initializeForBackground() {
         try {
             setupDirectories()
+            // Run extraction too. If MainActivity already extracted, the isUpToDate
+            // check returns false (no work). If MainActivity is mid-extract, the
+            // lock inside extractLaravelBundle() blocks us here until it finishes.
+            // If we arrived first (WorkManager cold start after an app update), we
+            // do the extraction ourselves before the ephemeral runtime touches vendor/.
+            val didExtract = extractLaravelBundle()
             setupEnvironment()
+            if (didExtract) {
+                Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
+                runBaseArtisanCommands()
+            }
             Log.d(TAG, "Background environment initialized")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing background environment", e)
