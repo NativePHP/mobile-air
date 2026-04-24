@@ -6,6 +6,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
+#include <time.h>
 #include <zend_exceptions.h>
 
 static phpOutputCallback swiftOutputCallback = NULL;
@@ -190,6 +192,53 @@ static int persistent_initialized = 0;
 static int worker_thread_alive = 0;
 static char *persistent_boot_error = NULL;
 
+// ── Persistent boot gate ─────────────────────────────────────────────────
+// Serializes startup: worker/ephemeral runtimes wait until php_embed_init
+// has finished in php_worker_main before they call ts_resource and
+// php_module_startup. Without this gate, a cold-launch race (e.g. iOS BGTask
+// handler firing while the main thread is mid-boot) can enter SAPI init
+// before sapi_startup() has completed, crashing in sapi_initialize_empty_request
+// (NULL write to sapi_globals).
+typedef enum {
+    PERSISTENT_BOOT_NEVER_STARTED = 0,
+    PERSISTENT_BOOT_IN_PROGRESS,
+    PERSISTENT_BOOT_SUCCEEDED,
+    PERSISTENT_BOOT_FAILED,
+} persistent_boot_state_t;
+
+static persistent_boot_state_t g_persistent_boot_state = PERSISTENT_BOOT_NEVER_STARTED;
+static pthread_mutex_t g_persistent_boot_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_persistent_boot_cond  = PTHREAD_COND_INITIALIZER;
+
+static void set_persistent_boot_state(persistent_boot_state_t state) {
+    pthread_mutex_lock(&g_persistent_boot_mutex);
+    g_persistent_boot_state = state;
+    pthread_cond_broadcast(&g_persistent_boot_cond);
+    pthread_mutex_unlock(&g_persistent_boot_mutex);
+}
+
+// Wait for persistent boot to leave IN_PROGRESS.
+// Returns 0 on SUCCEEDED, -1 on timeout, -2 on FAILED or NEVER_STARTED.
+// iOS ephemeral/worker runtimes require a successful persistent boot to
+// piggyback on; NEVER_STARTED is a caller-ordering error here.
+static int wait_for_persistent_boot(int timeout_seconds) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_seconds;
+
+    pthread_mutex_lock(&g_persistent_boot_mutex);
+    while (g_persistent_boot_state == PERSISTENT_BOOT_IN_PROGRESS) {
+        int rc = pthread_cond_timedwait(&g_persistent_boot_cond, &g_persistent_boot_mutex, &deadline);
+        if (rc == ETIMEDOUT) {
+            pthread_mutex_unlock(&g_persistent_boot_mutex);
+            return -1;
+        }
+    }
+    int result = (g_persistent_boot_state == PERSISTENT_BOOT_SUCCEEDED) ? 0 : -2;
+    pthread_mutex_unlock(&g_persistent_boot_mutex);
+    return result;
+}
+
 // Forward declarations
 static void do_dispatch(const dispatch_params_t *params);
 static void do_artisan(const char *command);
@@ -230,6 +279,7 @@ static void *php_worker_main(void *arg) {
         fflush(stderr);
         php_work_int_result = -1;
         worker_thread_alive = 0;
+        set_persistent_boot_state(PERSISTENT_BOOT_FAILED);
         dispatch_semaphore_signal(php_done_sem);
         return NULL;
     }
@@ -297,9 +347,13 @@ static void *php_worker_main(void *arg) {
         pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
 
         worker_thread_alive = 0;
+        set_persistent_boot_state(PERSISTENT_BOOT_FAILED);
         dispatch_semaphore_signal(php_done_sem);
         return NULL;  // Exit thread — do NOT enter work loop
     }
+
+    // Release any threads waiting to piggyback on the persistent runtime
+    set_persistent_boot_state(PERSISTENT_BOOT_SUCCEEDED);
 
     // Signal boot complete
     dispatch_semaphore_signal(php_done_sem);
@@ -532,6 +586,9 @@ static void do_shutdown(void) {
 
     persistent_initialized = 0;
     worker_thread_alive = 0;
+    // After shutdown the per-thread TSRM/SAPI state is gone; reset the gate
+    // so a later ephemeral/worker caller can't wrongly take the hot path.
+    set_persistent_boot_state(PERSISTENT_BOOT_NEVER_STARTED);
 }
 
 // ── Public API (called from Swift, dispatches to PHP thread) ──
@@ -560,6 +617,10 @@ int persistent_php_boot(const char *bootstrapPath) {
 
     php_work_sem = dispatch_semaphore_create(0);
     php_done_sem = dispatch_semaphore_create(0);
+
+    // Flip the gate BEFORE pthread_create so any ephemeral/worker caller that
+    // arrives before php_worker_main runs will wait, not race-past.
+    set_persistent_boot_state(PERSISTENT_BOOT_IN_PROGRESS);
 
     // Create the worker thread — it boots PHP immediately, then enters work loop
     pthread_t thread;
@@ -831,6 +892,15 @@ static void *worker_thread_main(void *arg) {
 // ── Worker public API (called from Swift) ───────────
 
 int worker_php_boot(const char *bootstrapPath) {
+    // Worker piggybacks on persistent's tsrm_startup/sapi_startup — wait for
+    // that to finish before we call ts_resource() on a new thread.
+    int gate = wait_for_persistent_boot(10);
+    if (gate != 0) {
+        fprintf(stderr, "worker_php_boot: persistent runtime not ready (gate=%d), aborting\n", gate);
+        fflush(stderr);
+        return -4;
+    }
+
     fprintf(stderr, "worker_php_boot: creating worker thread\n");
     fflush(stderr);
 
@@ -1065,6 +1135,16 @@ static void *ephemeral_thread_main(void *arg) {
 // ── Ephemeral public API (called from Swift plugins) ────────
 
 int ephemeral_php_boot(const char *bootstrapPath) {
+    // Ephemeral piggybacks on persistent's tsrm_startup/sapi_startup — wait
+    // for that to finish before we call ts_resource() on a new thread.
+    // Fixes a cold-launch BGTask crash where SAPI init ran before sapi_startup.
+    int gate = wait_for_persistent_boot(10);
+    if (gate != 0) {
+        fprintf(stderr, "ephemeral_php_boot: persistent runtime not ready (gate=%d), aborting\n", gate);
+        fflush(stderr);
+        return -4;
+    }
+
     fprintf(stderr, "ephemeral_php_boot: creating ephemeral thread\n");
     fflush(stderr);
 
