@@ -69,9 +69,57 @@ abstract class NativeComponent
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->callbacks);
 
-        view("native.{$name}", $viewData)->render();
+        $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
         return NativeElementCollector::collect();
+    }
+
+    /**
+     * Render a Blade view with `$this` bound to the component instance, so
+     * templates can call methods and read properties on the component
+     * directly — same convenience Livewire components offer.
+     *
+     * Mirrors what Livewire's `ExtendedCompilerEngine::evaluatePath()` does
+     * for its components, but applies it to NativeComponent renders. Without
+     * this, `$this` evaluates to the view engine (or nothing in some paths)
+     * and bare `$this->property` from the blade fails with "Using $this when
+     * not in object context."
+     */
+    private function renderBladeBoundToSelf(string $name, array $data): void
+    {
+        // `view()` with no args returns the Factory itself; `view($name, $data)`
+        // returns a View. We need the View to access its engine + path.
+        $view = view($name, $data);
+        $engine = $view->getEngine();
+
+        if (! $engine instanceof \Illuminate\View\Engines\CompilerEngine) {
+            // Non-blade engine — fall back to the standard render path.
+            // $this won't be bound, but at least the view still runs.
+            $view->render();
+
+            return;
+        }
+
+        $compiler = $engine->getCompiler();
+        $bladePath = $view->getPath();
+
+        if ($compiler->isExpired($bladePath)) {
+            $compiler->compile($bladePath);
+        }
+        $compiledPath = $compiler->getCompiledPath($bladePath);
+
+        // Use the View's full data set — Factory injects `$__env` and other
+        // helpers compiled views depend on (`@include`, `@yield`, the loop
+        // stack, etc.). Skipping that produces "Undefined variable $__env".
+        $viewData = $view->gatherData();
+
+        // Closure::bind ties `$this` inside the include to the component
+        // instance and grants access to protected/private members via the
+        // class-scope second argument.
+        \Closure::bind(function () use ($compiledPath, $viewData) {
+            extract($viewData, EXTR_SKIP);
+            include $compiledPath;
+        }, $this, static::class)();
     }
 
     /**
@@ -89,7 +137,7 @@ abstract class NativeComponent
 
         try {
             $t0 = microtime(true);
-            view("native.{$name}", $viewData)->render();
+            $this->renderBladeBoundToSelf("native.{$name}", $viewData);
             $t1 = microtime(true);
 
             nphp_frame_end();
