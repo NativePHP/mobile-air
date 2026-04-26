@@ -130,7 +130,13 @@ struct FlexContainer: Layout {
                 positionBottom: CGFloat(layout?.positionBottom ?? 0),
                 positionLeft: CGFloat(layout?.positionLeft ?? 0),
                 display: layout?.display ?? 0,
-                flexBasis: (layout?.flexBasis ?? 0) > 0 ? CGFloat(layout!.flexBasis) : -1
+                // flex_basis is "set" only when its mode is fixed (1) — that
+                // distinguishes Tailwind's `flex-1` (which sends 0/fixed) from
+                // an unset basis (mode=0/auto). Without this check, an explicit
+                // basis of 0 was treated as "use content size", which made
+                // flex-1 children inflate to their natural width (e.g. a long
+                // single-line <native:text> ⇒ 600+pt column overflow).
+                flexBasis: (layout?.flexBasisMode ?? 0) == 1 ? CGFloat(layout?.flexBasis ?? 0) : -1
             )
             cache.childInfos.append(info)
 
@@ -202,10 +208,15 @@ struct FlexContainer: Layout {
         let proposedMain = mainSize(proposed)
         let proposedCross = crossSize(proposed)
 
-        // Measure each flow child. When the cross dimension (width for columns)
-        // is known, measure at that width so text wrapping affects the height.
+        // Phase A: hypothetical main size + first-pass cross measurement.
+        // Each child's "hypothetical main" follows CSS flex-base-size semantics:
+        //   - explicit flex_basis → that value
+        //   - flex_grow > 0       → 0 (Tailwind `flex-1` = `1 1 0%`)
+        //   - otherwise           → natural main size from .unspecified measure
         var totalMain: CGFloat = 0
         var maxCross: CGFloat = 0
+        var hypotheticalMains = [Int: CGFloat]()
+        var totalGrow: CGFloat = 0
 
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
@@ -224,16 +235,58 @@ struct FlexContainer: Layout {
             let childMain: CGFloat
             if info.flexBasis >= 0 {
                 childMain = info.flexBasis
+            } else if info.flexGrow > 0 {
+                childMain = 0
             } else {
                 childMain = mainSize(ideal)
             }
 
+            hypotheticalMains[i] = childMain
             totalMain += childMain + mainMargin(info)
+            totalGrow += info.flexGrow
             maxCross = max(maxCross, crossSize(ideal) + crossMargin(info))
         }
 
         let gaps = gap * CGFloat(max(0, cache.flowIndices.count - 1))
         totalMain += gaps
+
+        // Phase B: when the parent gave us a finite main proposal AND we have
+        // flex-grow children, distribute the remaining main space, then RE-
+        // measure each child at its distributed main. This is essential for
+        // accurate cross-axis (height) sizing — without it, a text-heavy
+        // flex-1 column reports its natural single-line width as its main and
+        // its single-line height as its cross, which is too short once the
+        // child actually gets constrained at placement time.
+        if proposedMain.isFinite && totalGrow > 0 {
+            let remaining = proposedMain - totalMain
+            if remaining > 0 {
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    if info.flexGrow > 0 {
+                        hypotheticalMains[i, default: 0] += remaining * (info.flexGrow / totalGrow)
+                    }
+                }
+
+                // Re-measure with constrained main. Update maxCross from the new
+                // (taller) cross sizes so the parent gets a height that fits the
+                // wrapped content.
+                maxCross = 0
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    let distributedMain = hypotheticalMains[i, default: 0]
+                    let crossAvail = proposedCross.isFinite ? proposedCross - crossMargin(info) : nil
+                    let proposal: ProposedViewSize
+                    if isRow {
+                        proposal = ProposedViewSize(width: distributedMain, height: crossAvail)
+                    } else {
+                        proposal = ProposedViewSize(width: crossAvail, height: distributedMain)
+                    }
+                    let measured = subviews[i].sizeThatFits(proposal)
+                    cache.childInfos[i].idealSize = measured
+                    maxCross = max(maxCross, crossSize(measured) + crossMargin(info))
+                }
+            }
+        }
 
         // A FlexContainer fills its proposed space when the proposal is finite.
         // This matches CSS block-level flex container behavior.
@@ -281,12 +334,25 @@ struct FlexContainer: Layout {
 
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
-            let ideal = subviews[i].sizeThatFits(.unspecified)
-            cache.childInfos[i].idealSize = ideal
+            // Reuse the cross-constrained measurement done in sizeThatFits.
+            // Re-measuring here with .unspecified produced different results
+            // than the flex base size (CSS hypothetical main size under the
+            // container's cross constraint) AND was the dominant cost in
+            // initial layout — Instruments showed 438 main-thread samples in
+            // sizeThatFits during a 671ms hang on a dense tree.
+            let ideal = info.idealSize
 
             let childMain: CGFloat
             if info.flexBasis >= 0 {
                 childMain = info.flexBasis
+            } else if info.flexGrow > 0 {
+                // Tailwind's `flex-1` is shorthand for `flex: 1 1 0%`. When a
+                // child has flex-grow set but no explicit flex-basis, treat
+                // its hypothetical main size as 0 (CSS shorthand semantics).
+                // Without this, the child's natural content size (often huge,
+                // e.g. an unwrapped <native:text>) inflates totalIdealMain and
+                // shrink can't recover.
+                childMain = 0
             } else {
                 childMain = mainSize(ideal)
             }
@@ -334,11 +400,17 @@ struct FlexContainer: Layout {
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
             let crossAvail = containerCross - crossMargin(info)
+            // Propose only the cross-axis dimension; leave main as nil so
+            // children (especially text) report the height they actually need
+            // when constrained to the available width. Proposing childMains[i]
+            // for the main axis would feed text a too-short height (e.g. its
+            // single-line ideal) and Text could return that height back without
+            // reporting its true wrapped requirement.
             let proposedChild: ProposedViewSize
             if isRow {
-                proposedChild = ProposedViewSize(width: childMains[i], height: crossAvail)
+                proposedChild = ProposedViewSize(width: childMains[i], height: nil)
             } else {
-                proposedChild = ProposedViewSize(width: crossAvail, height: childMains[i])
+                proposedChild = ProposedViewSize(width: crossAvail, height: nil)
             }
             let measured = subviews[i].sizeThatFits(proposedChild)
             childCrosses[i] = crossSize(measured)
@@ -383,7 +455,11 @@ struct FlexContainer: Layout {
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
             case AlignItems.stretch:
-                // No FILL: use natural size, align to start (like Android)
+                // No FILL: use natural size, align to start (like Android).
+                // We can't reuse childCrosses[i] from Phase 3 here — Phase 3
+                // proposes crossAvail, which makes container children (e.g.
+                // a flex column) fill the cross axis and report container
+                // cross size, not their natural content size.
                 let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
                 finalCross = min(natural, containerCross - crossMargin(info))
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
