@@ -133,6 +133,18 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "checkmark.circle.fill"
     case "close":
         return "xmark.circle.fill"
+
+    // Form controls — Material-style names mapped to nearest SF Symbol so
+    // composed-in-Blade checkboxes / radios look native on iOS without
+    // platform-specific icon names in the template.
+    case "check_box", "checkbox":
+        return "checkmark.square.fill"
+    case "check_box_outline", "check_box_outline_blank", "checkbox_outline":
+        return "square"
+    case "radio_button_checked", "radio_checked":
+        return "circle.inset.filled"
+    case "radio_button_unchecked", "radio_unchecked", "radio_button":
+        return "circle"
     case "warning":
         return "exclamationmark.triangle.fill"
     case "error":
