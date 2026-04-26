@@ -5,6 +5,7 @@ namespace Native\Mobile\Commands;
 use GuzzleHttp\Client;
 use Illuminate\Console\Command;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\AppIdValidator;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\ManagesViteDevServer;
 use Native\Mobile\Traits\ManagesWatchman;
@@ -222,6 +223,22 @@ class RunCommand extends Command
 
         if (str($appId)->startsWith('com.nativephp.')) {
             warning('Please change your NATIVEPHP_APP_ID from the default value.');
+        }
+
+        $errors = AppIdValidator::validate($appId);
+
+        if ($errors['android']) {
+            error('Invalid app ID for Android: '.$errors['android']);
+        }
+
+        if ($errors['ios']) {
+            error('Invalid app ID for iOS: '.$errors['ios']);
+        }
+
+        if ($errors['android'] || $errors['ios']) {
+            note('Please fix NATIVEPHP_APP_ID in your .env file.');
+            note('A valid app ID looks like: com.yourcompany.yourapp');
+            exit(1);
         }
     }
 

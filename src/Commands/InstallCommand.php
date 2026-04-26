@@ -5,7 +5,7 @@ namespace Native\Mobile\Commands;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\File;
+use Native\Mobile\Support\AppIdValidator;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\InstallsAndroid;
 use Native\Mobile\Traits\InstallsIos;
@@ -209,6 +209,7 @@ class InstallCommand extends Command
             placeholder: $suggestedAppId,
             default: $suggestedAppId,
             hint: 'This uniquely identifies your app on the App Store and Google Play',
+            validate: fn (string $value) => AppIdValidator::validateForPrompt($value),
         );
 
         $this->setEnvValue('NATIVEPHP_APP_ID', $appId);
