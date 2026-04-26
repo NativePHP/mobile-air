@@ -7,7 +7,7 @@ import kotlin.concurrent.write
 /**
  * Thread-safe registry mapping type strings to Compose-based node renderers.
  * All component renderers (including core types like text, button, image)
- * are registered here by the compose-ui plugin via registerPluginRenderers().
+ * are registered here by the native-ui plugin via registerPluginRenderers().
  */
 object NativeRendererRegistry {
 

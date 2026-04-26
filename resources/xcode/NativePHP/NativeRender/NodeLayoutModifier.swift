@@ -26,27 +26,42 @@ struct NodeLayoutModifier: ViewModifier {
                 maxHeight: resolvedMaxHeight,
                 alignment: .topLeading
             )
-            // Base padding (explicit padding from PHP, no safe area)
-            .padding(.top, CGFloat(layout?.paddingTop ?? 0))
-            .padding(.trailing, CGFloat(layout?.paddingRight ?? 0))
-            .padding(.bottom, CGFloat(layout?.paddingBottom ?? 0))
-            .padding(.leading, CGFloat(layout?.paddingLeft ?? 0))
+            // Base padding (explicit padding from PHP, no safe area).
+            // Combined into a single EdgeInsets-based call so each NodeView
+            // adds one _PaddingLayout to the SwiftUI graph instead of four.
+            .padding(EdgeInsets(
+                top: CGFloat(layout?.paddingTop ?? 0),
+                leading: CGFloat(layout?.paddingLeft ?? 0),
+                bottom: CGFloat(layout?.paddingBottom ?? 0),
+                trailing: CGFloat(layout?.paddingRight ?? 0)
+            ))
             // Safe area as safeAreaPadding — view extends behind notch,
-            // content insets below it, scrollable content flows under it
-            .safeAreaPadding(.top, layout?.safeArea != 0 ? safeAreaTop : 0)
-            .safeAreaPadding(.bottom, layout?.safeArea != 0 ? safeAreaBottom : 0)
+            // content insets below it, scrollable content flows under it.
+            // Wrapped in a conditional modifier so nodes that don't opt in
+            // pay zero cost (the unconditional version showed up heavily in
+            // SafeAreaInsets.adjust during steady-state profiling).
+            .modifier(ConditionalSafeAreaModifier(
+                enabled: layout?.safeArea != 0,
+                top: safeAreaTop,
+                bottom: safeAreaBottom
+            ))
             // Aspect ratio
             .modifier(AspectRatioModifier(ratio: layout?.aspectRatio))
             // Hidden
             .opacity(layout?.display == Display.none ? 0 : 1)
     }
 
-    /// For fill mode, use the exact available size so the FlexContainer
-    /// receives a finite proposal and lays out children within it.
-    /// Using .infinity causes SwiftUI to ask for ideal size first (which is tiny).
+    /// For fill mode, set max=.infinity so the frame respects the parent's
+    /// actual proposed cross axis (instead of forcing the full screen size).
+    /// `fixedWidth` still returns `availableWidth` as the *ideal*, which keeps
+    /// SwiftUI's ideal-size discovery sensible at the root, but nested w-full
+    /// elements no longer overflow when their parent is narrower than the screen.
     private var resolvedMaxWidth: CGFloat {
         if let l = layout {
-            if l.widthMode == SizeMode.fill { return availableWidth }
+            if l.widthMode == SizeMode.fill { return .infinity }
+            if l.widthMode == SizeMode.percent, l.width > 0 {
+                return availableWidth * CGFloat(l.width) / 100
+            }
             if l.widthMode == SizeMode.fixed, l.width > 0 { return CGFloat(l.width) }
             if l.maxWidth > 0 { return CGFloat(l.maxWidth) }
         }
@@ -55,7 +70,10 @@ struct NodeLayoutModifier: ViewModifier {
 
     private var resolvedMaxHeight: CGFloat {
         if let l = layout {
-            if l.heightMode == SizeMode.fill { return availableHeight }
+            if l.heightMode == SizeMode.fill { return .infinity }
+            if l.heightMode == SizeMode.percent, l.height > 0 {
+                return availableHeight * CGFloat(l.height) / 100
+            }
             if l.heightMode == SizeMode.fixed, l.height > 0 { return CGFloat(l.height) }
             if l.maxHeight > 0 { return CGFloat(l.maxHeight) }
         }
@@ -67,14 +85,24 @@ struct NodeLayoutModifier: ViewModifier {
     private var fixedWidth: CGFloat? {
         guard let l = layout else { return nil }
         if l.widthMode == SizeMode.fixed, l.width > 0 { return CGFloat(l.width) }
-        if l.widthMode == SizeMode.fill { return availableWidth }
+        // FILL: don't set idealWidth — let SwiftUI use the parent's proposal
+        // directly via the maxWidth=.infinity bound. Forcing idealWidth here
+        // pulls nested w-full elements past their parent's actual width.
+        // Percent mode: resolve as a fraction of the available parent width.
+        // `l.width` is the percent numeric (e.g. 75 for "75%").
+        if l.widthMode == SizeMode.percent, l.width > 0 {
+            return availableWidth * CGFloat(l.width) / 100
+        }
         return nil
     }
 
     private var fixedHeight: CGFloat? {
         guard let l = layout else { return nil }
         if l.heightMode == SizeMode.fixed, l.height > 0 { return CGFloat(l.height) }
-        if l.heightMode == SizeMode.fill { return availableHeight }
+        // FILL: same reasoning as fixedWidth above.
+        if l.heightMode == SizeMode.percent, l.height > 0 {
+            return availableHeight * CGFloat(l.height) / 100
+        }
         return nil
     }
 
@@ -100,6 +128,28 @@ private struct AspectRatioModifier: ViewModifier {
     func body(content: Content) -> some View {
         if let ratio, ratio > 0, ratio.isFinite {
             content.aspectRatio(CGFloat(ratio), contentMode: .fit)
+        } else {
+            content
+        }
+    }
+}
+
+// MARK: - Conditional Safe Area Modifier
+
+/// Applies `.safeAreaPadding(.top/.bottom)` only when the node opts in.
+/// Skipping the modifier entirely (vs. passing 0) avoids per-node
+/// SafeAreaInsets.adjust work that SwiftUI does for any safeAreaPadding
+/// in the chain, which dominated steady-state main-thread samples.
+private struct ConditionalSafeAreaModifier: ViewModifier {
+    let enabled: Bool
+    let top: CGFloat
+    let bottom: CGFloat
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .safeAreaPadding(.top, top)
+                .safeAreaPadding(.bottom, bottom)
         } else {
             content
         }

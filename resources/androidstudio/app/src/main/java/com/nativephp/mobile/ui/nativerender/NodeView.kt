@@ -41,10 +41,16 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
                 when (layout.widthMode) {
                     SizeMode.FILL -> mod = mod.fillMaxWidth()
                     SizeMode.FIXED -> if (layout.width > 0f) mod = mod.width(layout.width.dp)
+                    SizeMode.PERCENT -> if (layout.width > 0f) {
+                        mod = mod.fillMaxWidth((layout.width / 100f).coerceIn(0f, 1f))
+                    }
                 }
                 when (layout.heightMode) {
                     SizeMode.FILL -> mod = mod.fillMaxHeight()
                     SizeMode.FIXED -> if (layout.height > 0f) mod = mod.height(layout.height.dp)
+                    SizeMode.PERCENT -> if (layout.height > 0f) {
+                        mod = mod.fillMaxHeight((layout.height / 100f).coerceIn(0f, 1f))
+                    }
                 }
             }
             mod

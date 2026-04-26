@@ -454,15 +454,12 @@ class NativeServiceProvider extends PackageServiceProvider
             'image' => Elements\Image::class,
             'icon' => Elements\Icon::class,
 
-            // Input
+            // Input (core primitive only)
             'pressable' => Elements\Pressable::class,
-            'button' => Elements\Button::class,
-            'text_input' => Elements\TextInput::class,
-            'toggle' => Elements\Toggle::class,
-
-            // Feedback
-            'activity_indicator' => Elements\ActivityIndicator::class,
-            'bottom_sheet' => Elements\BottomSheet::class,
+            // `button`, `text_input`, `toggle`, `activity_indicator`, `bottom_sheet`
+            // are registered by UI plugins (see nativephp/native-ui). Plugin
+            // discovery can't override an existing registration, so these must
+            // NOT be registered here.
 
             // Navigation chrome
             'top_bar' => Elements\TopBar::class,

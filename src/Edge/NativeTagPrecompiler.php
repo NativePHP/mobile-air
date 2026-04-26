@@ -45,10 +45,30 @@ class NativeTagPrecompiler
 
     public function __invoke(string $value): string
     {
-        // Expand @model="propName" into :value="$propName" _change="__syncProperty('propName')"
+        // Expand `native:model="propName"` (with optional Livewire-style
+        // modifiers) into the equivalent `:value` + `_change` + `sync-mode`
+        // attribute set. Supported shapes:
+        //
+        //     native:model="name"                 — default live, echo-prevention
+        //     native:model.live="name"            — explicit live
+        //     native:model.blur="name"            — dispatch only on focus loss
+        //     native:model.lazy="name"            — alias for .blur
+        //     native:model.debounce.300ms="name"  — dispatch after Nms of inactivity
+        //
+        // This is the native counterpart to Livewire's `wire:model`. The two
+        // address different rendering paths (native tree vs. WebView DOM) and
+        // are not meant to be mixed on a single element.
+        $value = preg_replace_callback(
+            '/native:model(\.[a-zA-Z0-9.]+)?=["\']([^"\']+)["\']/',
+            fn ($m) => $this->compileNativeModel($m[2], $m[1] ?? ''),
+            $value
+        );
+
+        // Legacy shorthand — `@model="propName"` expands to the live variant.
+        // Kept for backwards compatibility; prefer `native:model` going forward.
         $value = preg_replace_callback(
             '/@model=["\']([^"\']+)["\']/',
-            fn ($m) => ':value="$'.$m[1].'" _change="__syncProperty(\''.$m[1].'\')"',
+            fn ($m) => ':value="$'.$m[1].'" _change="__syncProperty(\''.$m[1].'\')" sync-mode="live"',
             $value
         );
 
@@ -97,6 +117,48 @@ class NativeTagPrecompiler
     private function tagToType(string $tag): string
     {
         return str_replace('-', '_', $tag);
+    }
+
+    /**
+     * Expand a `native:model` directive into the equivalent attribute triplet.
+     *
+     *   $prop       — the property name (as written in the Blade attribute)
+     *   $modifiers  — the leading-dot chain (e.g. ".live", ".debounce.300ms"),
+     *                 or empty string when no modifier was supplied
+     *
+     * Output format is a Blade attribute string (no surrounding whitespace).
+     */
+    private function compileNativeModel(string $prop, string $modifiers): string
+    {
+        $syncMode = 'live';
+        $debounceMs = 0;
+
+        if ($modifiers !== '') {
+            $parts = explode('.', trim($modifiers, '.'));
+            $head = $parts[0] ?? '';
+
+            if ($head === 'blur' || $head === 'lazy') {
+                $syncMode = 'blur';
+            } elseif ($head === 'debounce') {
+                $syncMode = 'debounce';
+                // Accept `.debounce.300ms` — if the ms segment is missing or
+                // malformed, fall back to a sensible 300ms default so typos
+                // don't silently flip modes.
+                if (isset($parts[1]) && preg_match('/^(\d+)ms$/', $parts[1], $m)) {
+                    $debounceMs = (int) $m[1];
+                } else {
+                    $debounceMs = 300;
+                }
+            }
+            // `.live` or anything unknown falls through to syncMode=live.
+        }
+
+        $out = ':value="$'.$prop.'" _change="__syncProperty(\''.$prop.'\')" sync-mode="'.$syncMode.'"';
+        if ($debounceMs > 0) {
+            $out .= ' debounce-ms="'.$debounceMs.'"';
+        }
+
+        return $out;
     }
 
     private function compileSelfClosing(string $tag, string $rawAttrs): string
