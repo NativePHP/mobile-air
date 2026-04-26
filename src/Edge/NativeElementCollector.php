@@ -246,6 +246,9 @@ class NativeElementCollector
         if (isset($attrs['flexShrink'])) {
             $layout['flex_shrink'] = (float) $attrs['flexShrink'];
         }
+        if (isset($attrs['flexBasis'])) {
+            $layout['flex_basis'] = (float) $attrs['flexBasis'];
+        }
         if (isset($attrs['alignSelf'])) {
             $layout['align_self'] = (int) $attrs['alignSelf'];
         }

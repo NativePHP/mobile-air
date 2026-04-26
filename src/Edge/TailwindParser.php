@@ -226,7 +226,7 @@ class TailwindParser
 
         // Exact matches
         return match (true) {
-            $class === 'flex-1' => ['flexGrow' => 1],
+            $class === 'flex-1' => ['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0],
             $class === 'flex-grow' => ['flexGrow' => 1],
             $class === 'flex-grow-0' => ['flexGrow' => 0],
             $class === 'flex-shrink' => ['flexShrink' => 1],
