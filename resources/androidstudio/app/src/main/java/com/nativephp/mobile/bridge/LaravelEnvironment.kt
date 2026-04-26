@@ -17,16 +17,7 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 class LaravelEnvironment(private val context: Context) {
-    companion object {
-        // Process-wide lock around Laravel bundle extraction. MainActivity and
-        // PHPSchedulerWorker each construct their own LaravelEnvironment, so an
-        // instance-level lock wouldn't serialize them. Without this, an updated
-        // APK + queued WorkManager job can run an ephemeral PHP task against a
-        // mid-delete / mid-extract vendor/ tree and fail with
-        // `Class "Native\Mobile\Runtime" not found`.
-        private val extractionLock = ReentrantLock()
-    }
-
+    
     private val appStorageDir = context.getDir("storage", Context.MODE_PRIVATE)
     private val phpBridge = PHPBridge(context)
 
@@ -56,6 +47,14 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     companion object {
+        // Process-wide lock around Laravel bundle extraction. MainActivity and
+        // PHPSchedulerWorker each construct their own LaravelEnvironment, so an
+        // instance-level lock wouldn't serialize them. Without this, an updated
+        // APK + queued WorkManager job can run an ephemeral PHP task against a
+        // mid-delete / mid-extract vendor/ tree and fail with
+        // `Class "Native\Mobile\Runtime" not found`.
+        private val extractionLock = ReentrantLock()
+        
         private const val TAG = "LaravelEnvironment"
 
         // File and directory names
