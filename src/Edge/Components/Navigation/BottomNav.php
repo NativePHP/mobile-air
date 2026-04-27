@@ -2,27 +2,12 @@
 
 namespace Native\Mobile\Edge\Components\Navigation;
 
-use Native\Mobile\Edge\Components\EdgeComponent;
+use Native\Mobile\Edge\Components\Native\NativeBladeComponent;
 
-class BottomNav extends EdgeComponent
+class BottomNav extends NativeBladeComponent
 {
-    protected string $type = 'bottom_nav';
-
-    protected bool $hasChildren = true;
-
-    public function __construct(
-        public ?bool $dark = null,
-        public string $labelVisibility = 'labeled',
-        public ?string $activeColor = null,
-    ) {}
-
-    protected function toNativeProps(): array
+    protected function elementType(): string
     {
-        return [
-            'dark' => $this->dark,
-            'label_visibility' => $this->labelVisibility,
-            'active_color' => $this->activeColor,
-            'id' => 'bottom_nav',
-        ];
+        return 'bottom_nav';
     }
 }
