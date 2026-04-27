@@ -455,10 +455,18 @@ struct FlexContainer: Layout {
             }
             let measured = subviews[i].sizeThatFits(proposedChild)
             childCrosses[i] = crossSize(measured)
-            // Update main size when the cross constraint changes it (e.g. text wrapping)
-            let measuredMain = mainSize(measured)
-            if measuredMain > childMains[i] {
-                childMains[i] = measuredMain
+            // Update main size when the cross constraint changes it (e.g. text
+            // wrapping that grows height when width is constrained). Skip
+            // flex-grow children — their main is already authoritative from
+            // Phase 2's distribution, and a re-measure with `nil` main would
+            // get back the child's intrinsic content size (e.g. a ScrollView's
+            // full content height), inflating the placement back past the
+            // allocated bound and breaking scroll viewport sizing.
+            if info.flexGrow == 0 {
+                let measuredMain = mainSize(measured)
+                if measuredMain > childMains[i] {
+                    childMains[i] = measuredMain
+                }
             }
         }
 
