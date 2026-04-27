@@ -175,10 +175,11 @@ class NativeServiceProvider extends PackageServiceProvider
 
             return Route::get($uri, function () use ($componentClass) {
                 $router = new NativeRouter;
-                $resolved = NativeRouter::resolve('/'.ltrim(request()->path(), '/'));
+                $path = '/'.ltrim(request()->path(), '/');
+                $resolved = NativeRouter::resolve($path);
                 $params = $resolved ? $resolved['params'] : [];
 
-                $exitUri = $router->start($componentClass, $params);
+                $exitUri = $router->start($componentClass, $params, $path);
 
                 if ($exitUri !== null) {
                     return redirect($exitUri);
@@ -191,6 +192,28 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+        });
+
+        // Route::nativeGroup(layout: TabsLayout::class, function () { ... })
+        // Routes registered inside the closure inherit the group's layout
+        // unless they call ->layout(...) themselves to override.
+        Route::macro('nativeGroup', function (string $layout, \Closure $routes) {
+            NativeRouter::beginGroup($layout);
+            try {
+                $routes();
+            } finally {
+                NativeRouter::endGroup();
+            }
+        });
+
+        // Fluent ->layout() chaining on the Route returned by Route::native().
+        // Example:
+        //     Route::native('/item/{id}', ItemDetail::class)
+        //         ->layout(StackLayout::class);
+        \Illuminate\Routing\Route::macro('layout', function (string $layoutClass) {
+            NativeRouter::setLayout($this->uri, $layoutClass);
+
+            return $this;
         });
     }
 

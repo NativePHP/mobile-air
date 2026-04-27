@@ -27,13 +27,16 @@ class NativeRouter
 
     /**
      * Signal a view transition to the native renderer.
+     *
+     * The handler lives in the native-ui plugin (NativeUI.Transition.Set);
+     * core mobile-air doesn't ship UI logic.
      */
     protected static function signalTransition(Transition|string $type): void
     {
         $value = $type instanceof Transition ? $type->value : $type;
 
         if (function_exists('nativephp_call')) {
-            nativephp_call('UI.SetTransition', json_encode(['type' => $value]));
+            nativephp_call('NativeUI.Transition.Set', json_encode(['type' => $value]));
         }
     }
 
@@ -55,9 +58,17 @@ class NativeRouter
      * URI → component class registry.
      * Populated by Route::native() calls.
      *
-     * @var array<string, string>
+     * Each entry: ['class' => string, 'layout' => ?string]
+     *
+     * @var array<string, array{class: string, layout: ?string}>
      */
     protected static array $routes = [];
+
+    /**
+     * Layout class active during a Route::nativeGroup(layout: ..., ...) closure.
+     * Applied to any Route::native() registered while the group is open.
+     */
+    protected static ?string $currentGroupLayout = null;
 
     /**
      * Navigation stack. Each entry holds a live component instance
@@ -95,10 +106,35 @@ class NativeRouter
 
     // ── Static registry ─────────────────────────────
 
-    public static function register(string $uri, string $class): void
+    public static function register(string $uri, string $class, ?string $layout = null): void
     {
         $pattern = '/'.ltrim($uri, '/');
-        static::$routes[$pattern] = $class;
+        static::$routes[$pattern] = [
+            'class' => $class,
+            'layout' => $layout ?? static::$currentGroupLayout,
+        ];
+    }
+
+    /**
+     * Update the layout for an already-registered route. Used by the
+     * Route::native(...)->layout(...) fluent chain.
+     */
+    public static function setLayout(string $uri, string $layout): void
+    {
+        $pattern = '/'.ltrim($uri, '/');
+        if (isset(static::$routes[$pattern])) {
+            static::$routes[$pattern]['layout'] = $layout;
+        }
+    }
+
+    public static function beginGroup(string $layout): void
+    {
+        static::$currentGroupLayout = $layout;
+    }
+
+    public static function endGroup(): void
+    {
+        static::$currentGroupLayout = null;
     }
 
     public static function resolve(string $uri): ?array
@@ -107,18 +143,28 @@ class NativeRouter
 
         // Exact match first
         if (isset(static::$routes[$uri])) {
-            return ['class' => static::$routes[$uri], 'params' => []];
+            $entry = static::$routes[$uri];
+
+            return [
+                'class' => $entry['class'],
+                'layout' => $entry['layout'] ?? null,
+                'params' => [],
+            ];
         }
 
         // Pattern match with route parameters
-        foreach (static::$routes as $pattern => $class) {
+        foreach (static::$routes as $pattern => $entry) {
             $regex = preg_replace('/\{(\w+)\}/', '(?P<$1>[^/]+)', $pattern);
             $regex = '#^'.$regex.'$#';
 
             if (preg_match($regex, $uri, $matches)) {
                 $params = array_filter($matches, fn ($key) => is_string($key), ARRAY_FILTER_USE_KEY);
 
-                return ['class' => $class, 'params' => $params];
+                return [
+                    'class' => $entry['class'],
+                    'layout' => $entry['layout'] ?? null,
+                    'params' => $params,
+                ];
             }
         }
 
@@ -133,6 +179,37 @@ class NativeRouter
     public static function clearRoutes(): void
     {
         static::$routes = [];
+        static::$currentGroupLayout = null;
+    }
+
+    /**
+     * Number of components currently on the navigation stack.
+     * 1 means the user is at the root screen.
+     */
+    public function stackDepth(): int
+    {
+        return count($this->stack);
+    }
+
+    /**
+     * True if the current screen is the first one on the stack
+     * (i.e., it was not pushed from anything).
+     */
+    public function isRootScreen(): bool
+    {
+        return $this->stackDepth() <= 1;
+    }
+
+    /**
+     * URI of the screen currently on top of the stack.
+     */
+    public function currentUri(): ?string
+    {
+        if (empty($this->stack)) {
+            return null;
+        }
+
+        return $this->stack[count($this->stack) - 1]['uri'] ?? null;
     }
 
     // ── Instance: session lifecycle ─────────────────
@@ -143,19 +220,26 @@ class NativeRouter
      *
      * @return string|null  Exit URI for redirect, or null
      */
-    public function start(string $class, array $params = []): ?string
+    public function start(string $class, array $params = [], string $uri = ''): ?string
     {
         NativeComponent::registerDumpHandler();
 
         nativephp_element_init();
 
         try {
-            static::debugLog("start: class=$class");
+            static::debugLog("start: class=$class uri=$uri");
             $component = $this->createComponent($class, $params);
+
+            // Hydrate layout from the registered route entry so the
+            // component knows its chrome before mount() runs.
+            $resolved = $uri !== '' ? static::resolve($uri) : null;
+            if ($resolved !== null && ! empty($resolved['layout'])) {
+                $component->setLayout($resolved['layout']);
+            }
 
             $this->stack[] = [
                 'component' => $component,
-                'uri' => '',
+                'uri' => $uri,
                 'params' => $params,
             ];
 
@@ -240,6 +324,9 @@ class NativeRouter
                         $resolved['params'],
                         $intent->data
                     );
+                    if (! empty($resolved['layout'])) {
+                        $next->setLayout($resolved['layout']);
+                    }
                     static::debugLog("NAVIGATE: component created, pushing to stack");
 
                     $this->stack[] = [
@@ -292,6 +379,9 @@ class NativeRouter
                             $resolved['params'],
                             $intent->data
                         );
+                        if (! empty($resolved['layout'])) {
+                            $next->setLayout($resolved['layout']);
+                        }
 
                         $this->stack[] = [
                             'component' => $next,

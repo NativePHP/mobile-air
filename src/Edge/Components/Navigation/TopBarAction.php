@@ -2,33 +2,14 @@
 
 namespace Native\Mobile\Edge\Components\Navigation;
 
-use Native\Mobile\Edge\Components\EdgeComponent;
+use Native\Mobile\Edge\Components\Native\NativeBladeComponent;
 
-class TopBarAction extends EdgeComponent
+class TopBarAction extends NativeBladeComponent
 {
-    protected string $type = 'top_bar_action';
+    protected bool $isSelfClosing = true;
 
-    public function __construct(
-        public ?string $id = null,
-        public ?string $icon = null,
-        public ?string $label = null,
-        public ?string $url = null,
-        public ?string $event = null,
-    ) {}
-
-    protected function requiredProps(): array
+    protected function elementType(): string
     {
-        return ['id', 'icon', 'label', 'url'];
-    }
-
-    protected function toNativeProps(): array
-    {
-        return [
-            'id' => $this->id,
-            'icon' => $this->icon,
-            'label' => $this->label,
-            'url' => $this->url,
-            'event' => $this->event,
-        ];
+        return 'top_bar_action';
     }
 }

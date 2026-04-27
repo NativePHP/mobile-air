@@ -80,4 +80,8 @@ final class NativeUIBridge: ObservableObject {
     static func sendHotReloadEvent() {
         NativeElementBridge.sendHotReloadEvent()
     }
+
+    static func sendSystemBackEvent() {
+        NativeElementBridge.sendSystemBackEvent()
+    }
 }

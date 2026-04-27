@@ -24,14 +24,19 @@ struct ContentView: View {
                     }
             }
 
-            // Native Element UI overlay — shown when Route::native() publishes a UI tree
+            // Native Element UI overlay — shown when Route::native() publishes a UI tree.
+            // .id(screenKey) makes SwiftUI treat each pushed/popped screen as a
+            // distinct view so .transition(...) animates the swap. The transition
+            // type is set per-navigation by PHP via UI.SetTransition.
             if nativeUIBridge.isActive, let tree = nativeUIBridge.currentTree {
                 NativeTreeRenderer(tree: tree)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(.systemBackground))
-                    .transition(.opacity)
+                    .id(nativeUIBridge.screenKey)
+                    .transition(NativeUITransitionFunctions.transition(for: nativeUIBridge.pendingTransition))
             }
         }
+        .animation(.easeInOut(duration: 0.25), value: nativeUIBridge.screenKey)
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isActive)
     }
 

@@ -88,6 +88,34 @@ struct FlexContainer: Layout {
         var childInfos: [ChildInfo] = []
         var flowIndices: [Int] = []
         var absoluteIndices: [Int] = []
+        /// Memoize `finalSize` results by proposal. SwiftUI calls sizeThatFits
+        /// repeatedly with the same proposal during a single layout pass —
+        /// returning the cached size avoids re-walking subviews. We deliberately
+        /// do NOT restore `idealSize` on a cache hit: a previous attempt did
+        /// that and got bitten when Phase 5's `sizeThatFits(.unspecified)` call
+        /// would clobber wrapped heights set by an earlier constrained-cross
+        /// measurement. Returning the cached size leaves whatever idealSize
+        /// the most recent actual measurement set.
+        var sizeCache: [ProposalKey: CGSize] = [:]
+    }
+
+    /// Quantized proposal hash. CGFloat sizes can drift sub-pixel between
+    /// SwiftUI calls; rounding to 1/1000 pt absorbs the noise.
+    struct ProposalKey: Hashable {
+        let width: Int64?
+        let height: Int64?
+
+        init(_ proposal: ProposedViewSize) {
+            self.width = Self.encode(proposal.width)
+            self.height = Self.encode(proposal.height)
+        }
+
+        private static func encode(_ value: CGFloat?) -> Int64? {
+            guard let value else { return nil }
+            if value.isNaN { return 0 }
+            if value.isInfinite { return value > 0 ? .max : .min }
+            return Int64(value * 1000)
+        }
     }
 
     struct ChildInfo {
@@ -201,6 +229,13 @@ struct FlexContainer: Layout {
             )
         }
 
+        // Memoization: SwiftUI calls sizeThatFits multiple times per layout
+        // pass with the same proposal. Skip the full subview walk on repeats.
+        let key = ProposalKey(proposal)
+        if let cached = cache.sizeCache[key] {
+            return cached
+        }
+
         let proposed = CGSize(
             width: proposal.width ?? .infinity,
             height: proposal.height ?? .infinity
@@ -252,11 +287,9 @@ struct FlexContainer: Layout {
 
         // Phase B: when the parent gave us a finite main proposal AND we have
         // flex-grow children, distribute the remaining main space, then RE-
-        // measure each child at its distributed main. This is essential for
-        // accurate cross-axis (height) sizing — without it, a text-heavy
-        // flex-1 column reports its natural single-line width as its main and
-        // its single-line height as its cross, which is too short once the
-        // child actually gets constrained at placement time.
+        // measure ONLY the grow children at their distributed main. Non-grow
+        // children's sizes don't change with distribution — Phase A already
+        // measured them at the cross constraint, so their cross size is final.
         if proposedMain.isFinite && totalGrow > 0 {
             let remaining = proposedMain - totalMain
             if remaining > 0 {
@@ -267,12 +300,13 @@ struct FlexContainer: Layout {
                     }
                 }
 
-                // Re-measure with constrained main. Update maxCross from the new
-                // (taller) cross sizes so the parent gets a height that fits the
-                // wrapped content.
-                maxCross = 0
+                // Re-measure only flex-grow children with their distributed main.
+                // This is essential for accurate cross-axis (height) sizing — a
+                // text-heavy flex-1 column needs the constrained-width measure
+                // to wrap text to the right number of lines.
                 for i in cache.flowIndices {
                     let info = cache.childInfos[i]
+                    guard info.flexGrow > 0 else { continue }
                     let distributedMain = hypotheticalMains[i, default: 0]
                     let crossAvail = proposedCross.isFinite ? proposedCross - crossMargin(info) : nil
                     let proposal: ProposedViewSize
@@ -283,7 +317,12 @@ struct FlexContainer: Layout {
                     }
                     let measured = subviews[i].sizeThatFits(proposal)
                     cache.childInfos[i].idealSize = measured
-                    maxCross = max(maxCross, crossSize(measured) + crossMargin(info))
+                    // maxCross was tracking Phase A measurements — replace this
+                    // child's contribution with the new (constrained) one.
+                    let newCross = crossSize(measured) + crossMargin(info)
+                    if newCross > maxCross {
+                        maxCross = newCross
+                    }
                 }
             }
         }
@@ -308,7 +347,9 @@ struct FlexContainer: Layout {
             finalCross = maxCross
         }
 
-        return makeSize(main: finalMain, cross: finalCross)
+        let result = makeSize(main: finalMain, cross: finalCross)
+        cache.sizeCache[key] = result
+        return result
     }
 
     // MARK: - placeSubviews
@@ -414,10 +455,18 @@ struct FlexContainer: Layout {
             }
             let measured = subviews[i].sizeThatFits(proposedChild)
             childCrosses[i] = crossSize(measured)
-            // Update main size when the cross constraint changes it (e.g. text wrapping)
-            let measuredMain = mainSize(measured)
-            if measuredMain > childMains[i] {
-                childMains[i] = measuredMain
+            // Update main size when the cross constraint changes it (e.g. text
+            // wrapping that grows height when width is constrained). Skip
+            // flex-grow children — their main is already authoritative from
+            // Phase 2's distribution, and a re-measure with `nil` main would
+            // get back the child's intrinsic content size (e.g. a ScrollView's
+            // full content height), inflating the placement back past the
+            // allocated bound and breaking scroll viewport sizing.
+            if info.flexGrow == 0 {
+                let measuredMain = mainSize(measured)
+                if measuredMain > childMains[i] {
+                    childMains[i] = measuredMain
+                }
             }
         }
 
