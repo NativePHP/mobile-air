@@ -38,6 +38,15 @@ abstract class NativeComponent
 
     protected array $navigationData = [];
 
+    /** Layout class for this screen (set by router from route metadata). */
+    protected ?string $layout = null;
+
+    /** Imperative navbar overrides — merged onto layout's NavBar at render time. */
+    protected array $pendingNavBarState = [];
+
+    /** Imperative tabbar overrides — merged onto layout's TabBar at render time. */
+    protected array $pendingTabBarState = [];
+
     public function render(): Element
     {
         return $this->view(static::inferViewName());
@@ -71,7 +80,157 @@ abstract class NativeComponent
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
-        return NativeElementCollector::collect();
+        $content = NativeElementCollector::collect();
+
+        return $this->wrapWithChrome($content);
+    }
+
+    /**
+     * Wrap the screen's element tree with chrome from its layout.
+     *
+     * - Looks up the layout class declared by the route or the component.
+     * - Asks the layout for a NavBar / TabBar.
+     * - Merges in the screen's navigationOptions() and pendingNavBarState.
+     * - Skips chrome the screen overrode inline in its blade
+     *   (i.e., a top-level <native:top-bar> or <native:bottom-nav>).
+     * - Wraps everything in a Column.fill().safeArea() with the chrome
+     *   stacked above and below the content.
+     */
+    protected function wrapWithChrome(Element $content): Element
+    {
+        if ($this->layout === null || ! class_exists($this->layout)) {
+            return $content;
+        }
+
+        /** @var \Native\Mobile\Edge\Layouts\NativeLayout $layout */
+        $layout = new ($this->layout)();
+
+        // If the screen blade already contains TopBar / BottomNav at the
+        // root level, the dev took manual control — skip layout chrome
+        // for those slots.
+        $hasInlineNavBar = $this->treeContainsType($content, 'top_bar');
+        $hasInlineTabBar = $this->treeContainsType($content, 'bottom_nav');
+
+        $navBar = null;
+        if (! $hasInlineNavBar) {
+            $navBar = $layout->navBar($this);
+            if ($navBar !== null) {
+                $navBar->mergeOptions($this->navigationOptions());
+                if (! empty($this->pendingNavBarState)) {
+                    $navBar->mergeState($this->pendingNavBarState);
+                }
+            }
+        }
+
+        $tabBar = null;
+        if (! $hasInlineTabBar) {
+            $tabBar = $layout->tabBar($this);
+            if ($tabBar !== null) {
+                $currentUri = $this->router?->currentUri();
+                if ($currentUri !== null) {
+                    $tabBar->highlight($currentUri);
+                }
+            }
+        }
+
+        // Nothing to inject — return the screen content untouched.
+        if ($navBar === null && $tabBar === null) {
+            return $content;
+        }
+
+        $wrapper = \Native\Mobile\Edge\Elements\Column::make()
+            ->fill()
+            ->safeArea();
+
+        if ($navBar !== null) {
+            $wrapper->addChild($navBar->toElement());
+        }
+
+        // Force the content slot to flex-grow so it gets a bounded height
+        // (= screen − chrome) inside the wrapper column. Without this, a
+        // SwiftUI ScrollView at the blade root reports its intrinsic content
+        // height, FlexContainer gives it that much, and scrolling never
+        // engages because viewport == content.
+        //
+        // NOTE: do NOT also apply ->fillWidth() here. fillWidth maps to
+        // .frame(maxWidth: .infinity), which eats SwiftUI's height proposal
+        // on the way through to the inner ScrollView and re-creates the
+        // "no scroll" symptom. flex-grow alone is enough — FlexContainer's
+        // place(at:proposal:) gives the content the right height directly.
+        $content->flexGrow(1);
+        $wrapper->addChild($content);
+
+        if ($tabBar !== null) {
+            $wrapper->addChild($tabBar->toElement());
+        }
+
+        return $wrapper;
+    }
+
+    /**
+     * Walk the root element (and one level of children if it's an implicit
+     * Column wrapper) looking for an element of $type.
+     *
+     * NativeElementCollector::collect() wraps multi-root trees in an
+     * implicit Column, so checking only $tree's direct children doesn't
+     * catch top-level <native:top-bar> when the blade also has siblings.
+     */
+    protected function treeContainsType(Element $tree, string $type): bool
+    {
+        if ($tree->getType() === $type) {
+            return true;
+        }
+        foreach ($tree->getChildren() as $child) {
+            if ($child->getType() === $type) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Override to provide a default screen title that the layout's
+     * NavBar can read.
+     */
+    public function navTitle(): string
+    {
+        return '';
+    }
+
+    /**
+     * Override to provide structured per-screen NavBar overrides that
+     * merge onto the layout's NavBar.
+     */
+    public function navigationOptions(): ?\Native\Mobile\Edge\Layouts\Builders\NavBarOptions
+    {
+        return null;
+    }
+
+    /**
+     * Imperative override: mutate the navbar at any time during the
+     * runloop. The next render reads the merged result.
+     */
+    public function setNavBar(array $options): void
+    {
+        $this->pendingNavBarState = array_merge($this->pendingNavBarState, $options);
+    }
+
+    /**
+     * Imperative override: mutate the tabbar.
+     */
+    public function setTabBar(array $options): void
+    {
+        $this->pendingTabBarState = array_merge($this->pendingTabBarState, $options);
+    }
+
+    /**
+     * Set by the router from the resolved route's metadata so the
+     * component knows which layout class wraps it.
+     */
+    public function setLayout(?string $layoutClass): void
+    {
+        $this->layout = $layoutClass;
     }
 
     /**

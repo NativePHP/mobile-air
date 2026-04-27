@@ -392,6 +392,14 @@ abstract class Element
         return $this->type;
     }
 
+    /**
+     * @return Element[]
+     */
+    public function getChildren(): array
+    {
+        return $this->children;
+    }
+
     public function getLayout(): array
     {
         return array_merge($this->layoutDefaults(), $this->layout);
