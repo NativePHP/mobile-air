@@ -449,6 +449,13 @@ final class NativeElementBridge {
         writeEvent(type: EventType.hotReload, callbackId: 0, nodeId: 0, data: nil)
     }
 
+    /// Fire a system-back event into the PHP event queue. Equivalent to
+    /// the device hardware back button on Android — PHP's NativeComponent
+    /// runloop catches type 8 and calls onBackPressed() → back().
+    static func sendSystemBackEvent() {
+        writeEvent(type: EventType.systemBack, callbackId: 0, nodeId: 0, data: nil)
+    }
+
     /// Inject a native event into the element event queue.
     /// Wakes up nativephp_element_wait_event() on the PHP side.
     /// Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
