@@ -274,11 +274,18 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
-        // Extract GET parameters
+        // Extract URI + query with percent-encoding preserved. PHP consumes them
+        // verbatim as $_SERVER['REQUEST_URI'] / $_SERVER['QUERY_STRING'], so they
+        // must match what a real HTTP server would set — same shape Android
+        // produces via Uri.encodedPath. Using .path / .query would decode once
+        // and corrupt paths containing reserved chars ('/', '+', '$', '*') or
+        // literal '%' from the data.
+        var uri = "/"
         var query: String?
         if let url = request.url {
             let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            query = urlComponents?.query
+            uri = urlComponents?.percentEncodedPath ?? "/"
+            query = urlComponents?.percentEncodedQuery
         }
 
         // Extract HTTP method
@@ -294,20 +301,6 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 data = body
             }
         }
-
-        // WKWebView normalizes URLs for custom scheme handlers by decoding
-        // percent-encoded characters before passing them to the handler.
-        // For example, %253A in HTML becomes %3A in request.url.absoluteString.
-        // To match browser behavior (where URLs are sent as-is), we re-encode
-        // the path so PHP receives the same encoding it would from a real browser.
-        // rawurldecode() in PHP then produces the correct result.
-        let components = URLComponents(string: request.url!.absoluteString)
-        let rawPath = components?.percentEncodedPath ?? "/"
-
-        // Re-encode to restore any encoding levels stripped by WebKit's normalization.
-        // .urlPathAllowed does NOT include %, so percent-encoded sequences like %3A
-        // are properly re-encoded to %253A, preserving the encoding depth PHP expects.
-        let uri = rawPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? rawPath
 
         // Create a RequestData object
         let requestData = RequestData(
