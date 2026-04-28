@@ -315,6 +315,32 @@ private fun getManualMapping(iconName: String): String? {
         "music.note" -> "music_note"
         "mic.fill" -> "mic"
 
+        // SF Symbols — Common
+        "paperplane", "paperplane.fill" -> "send"
+        "flame", "flame.fill" -> "local_fire_department"
+
+        // SF Symbols — Editor & Text
+        "square.and.pencil" -> "edit"
+        "textformat", "textformat.alt", "textformat.size" -> "text_fields"
+        "square.text.square", "doc.text" -> "text_snippet"
+        "doc.plaintext", "doc.plaintext.fill" -> "description"
+
+        // SF Symbols — Layout & Grid
+        "rectangle.3.group", "rectangle.3.group.fill", "square.grid.3x3" -> "view_module"
+        "rectangle.grid.2x2" -> "grid_view"
+        "rectangle.split.3x1" -> "view_column"
+
+        // SF Symbols — Media
+        "play.rectangle", "play.rectangle.fill" -> "play_circle"
+        "play.tv", "play.tv.fill" -> "smart_display"
+        "tv", "tv.fill" -> "tv"
+        "film", "film.fill" -> "movie"
+
+        // SF Symbols — Furniture & Lifestyle
+        "bed.double", "bed.double.fill" -> "bed"
+        "sofa", "sofa.fill" -> "weekend"
+        "house.lodge", "house.lodge.fill" -> "cottage"
+
         // SF Symbols — Misc
         "eye", "eye.fill" -> "visibility"
         "eye.slash", "eye.slash.fill" -> "visibility_off"
