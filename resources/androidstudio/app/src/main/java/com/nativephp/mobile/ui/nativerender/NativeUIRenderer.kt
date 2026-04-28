@@ -1,5 +1,17 @@
 package com.nativephp.mobile.ui.nativerender
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -26,6 +38,8 @@ import androidx.core.view.WindowInsetsCompat
 @Composable
 fun NativeUIContent() {
     val tree by NativeUIBridge.currentTree
+    val screenKey by NativeUIBridge.screenKey
+    val pendingTransition by NativeUIBridge.pendingTransition
 
     // Performance tracking — measure frame draw latency
     LaunchedEffect(tree) {
@@ -65,10 +79,43 @@ fun NativeUIContent() {
             LocalAvailableWidth provides maxWidth.value,
             LocalAvailableHeight provides maxHeight.value
         ) {
-            tree?.let { t ->
-                NodeView(node = t.root)
+            // AnimatedContent keyed off screenKey transitions when PHP signals
+            // a navigation. The transition spec maps Edge\Transition string
+            // values (slide_from_right, fade, etc.) to Compose's enter/exit
+            // pairs, mirroring the iOS NativeUITransitionFunctions mapper.
+            AnimatedContent(
+                targetState = screenKey,
+                transitionSpec = { transitionFor(pendingTransition) },
+                label = "screen-transition"
+            ) { _ ->
+                tree?.let { t ->
+                    NodeView(node = t.root)
+                }
             }
         }
+    }
+}
+
+/**
+ * Map a PHP-side Edge\Transition value to a Compose AnimatedContent
+ * ContentTransform. Mirrors NativeUITransitionFunctions.transition(for:)
+ * on the iOS side.
+ */
+private fun transitionFor(type: String?): ContentTransform {
+    val spec = tween<Float>(durationMillis = 250)
+    val intSpec = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 250)
+    return when (type) {
+        "slide_from_right" -> slideInHorizontally(intSpec) { it } togetherWith
+            slideOutHorizontally(intSpec) { -it }
+        "slide_from_left" -> slideInHorizontally(intSpec) { -it } togetherWith
+            slideOutHorizontally(intSpec) { it }
+        "slide_from_bottom" -> slideInVertically(intSpec) { it } togetherWith
+            slideOutVertically(intSpec) { -it }
+        "fade" -> fadeIn(spec) togetherWith fadeOut(spec)
+        "fade_from_bottom" -> (slideInVertically(intSpec) { it } + fadeIn(spec)) togetherWith fadeOut(spec)
+        "scale_from_center" -> (scaleIn(spec) + fadeIn(spec)) togetherWith (scaleOut(spec) + fadeOut(spec))
+        "none" -> fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+        else -> fadeIn(spec) togetherWith fadeOut(spec)
     }
 }
 
