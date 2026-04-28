@@ -166,6 +166,18 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
 
         onBackPressedDispatcher.addCallback(this) {
+            // Native UI mode: route the back press into the PHP event queue
+            // (EventType.systemBack = 8) so NativeComponent.runLoop can pop
+            // the navigation stack via onBackPressed → back(). PHP handles
+            // the deferredTransition (slide-from-left) and republishes.
+            // When the stack empties, NativeUIBridge.isActive flips false on
+            // the next iteration and a subsequent back press falls through
+            // to the WebView / finish() path below.
+            if (NativeUIBridge.isActive.value) {
+                NativeElementBridge.sendSystemBackEvent()
+                return@addCallback
+            }
+
             if (webView.canGoBack()) {
                 webView.goBack()
             } else {
