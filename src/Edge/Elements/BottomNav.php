@@ -30,6 +30,14 @@ class BottomNav extends Element
             $this->props['active_color'] = $attrs['activeColor'];
         }
 
+        if (isset($attrs['backgroundColor'])) {
+            $this->props['background_color'] = $attrs['backgroundColor'];
+        }
+
+        if (isset($attrs['textColor'])) {
+            $this->props['text_color'] = $attrs['textColor'];
+        }
+
         $this->props['id'] = 'bottom_nav';
     }
 

@@ -160,9 +160,39 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Apply both the top (status-bar / notch) and bottom (home-indicator)
+     * safe-area insets to this view's content. Encoded as `safe_area = 1`
+     * for backward compatibility with the original single-flag semantics.
+     */
     public function safeArea(): static
     {
         $this->layout['safe_area'] = 1;
+
+        return $this;
+    }
+
+    /**
+     * Apply only the top safe-area inset (status bar / notch). Useful for
+     * a layout's wrapper column when there's a TabBar at the bottom — the
+     * TabBar handles its own bottom inset, so the wrapper should free that
+     * edge so the bar's bg can reach the screen edge.
+     */
+    public function safeAreaTop(): static
+    {
+        $this->layout['safe_area'] = 2;
+
+        return $this;
+    }
+
+    /**
+     * Apply only the bottom safe-area inset (home indicator / nav bar).
+     * Symmetric to `safeAreaTop()` — used when a NavBar handles its own
+     * top inset.
+     */
+    public function safeAreaBottom(): static
+    {
+        $this->layout['safe_area'] = 3;
 
         return $this;
     }

@@ -238,7 +238,13 @@ class NativeElementCollector
             $layout['justify_content'] = 1;
         }
         if (! empty($attrs['safeArea'])) {
-            $layout['safe_area'] = 1;
+            $layout['safe_area'] = 1;            // both edges
+        }
+        if (! empty($attrs['safeAreaTop'])) {
+            $layout['safe_area'] = 2;            // top only
+        }
+        if (! empty($attrs['safeAreaBottom'])) {
+            $layout['safe_area'] = 3;            // bottom only
         }
         if (isset($attrs['flexGrow'])) {
             $layout['flex_grow'] = (float) $attrs['flexGrow'];
@@ -257,6 +263,19 @@ class NativeElementCollector
         }
         if (isset($attrs['justifyContent'])) {
             $layout['justify_content'] = (int) $attrs['justifyContent'];
+        }
+        if (isset($attrs['positionType'])) {
+            $layout['position_type'] = (int) $attrs['positionType'];
+        }
+        if (isset($attrs['positionTop']) || isset($attrs['positionRight'])
+            || isset($attrs['positionBottom']) || isset($attrs['positionLeft'])) {
+            // [top, right, bottom, left] — same order as Element::insets()
+            $layout['position'] = [
+                (float) ($attrs['positionTop']    ?? 0),
+                (float) ($attrs['positionRight']  ?? 0),
+                (float) ($attrs['positionBottom'] ?? 0),
+                (float) ($attrs['positionLeft']   ?? 0),
+            ];
         }
 
         return $layout;
@@ -534,6 +553,12 @@ class NativeElementCollector
         if (! empty($attrs['safeArea'])) {
             $element->safeArea();
         }
+        if (! empty($attrs['safeAreaTop'])) {
+            $element->safeAreaTop();
+        }
+        if (! empty($attrs['safeAreaBottom'])) {
+            $element->safeAreaBottom();
+        }
         if (isset($attrs['flexGrow'])) {
             $element->flexGrow((float) $attrs['flexGrow']);
         }
@@ -548,6 +573,18 @@ class NativeElementCollector
         }
         if (isset($attrs['justifyContent'])) {
             $element->justifyContent((int) $attrs['justifyContent']);
+        }
+        if (isset($attrs['positionType'])) {
+            $element->positionType((int) $attrs['positionType']);
+        }
+        if (isset($attrs['positionTop']) || isset($attrs['positionRight'])
+            || isset($attrs['positionBottom']) || isset($attrs['positionLeft'])) {
+            $element->insets(
+                (float) ($attrs['positionTop']    ?? 0),
+                (float) ($attrs['positionRight']  ?? 0),
+                (float) ($attrs['positionBottom'] ?? 0),
+                (float) ($attrs['positionLeft']   ?? 0),
+            );
         }
     }
 

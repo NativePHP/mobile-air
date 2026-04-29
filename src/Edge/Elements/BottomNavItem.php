@@ -37,8 +37,13 @@ class BottomNavItem extends Element
     protected function resolveProps(CallbackRegistry $registry): array
     {
         if (!empty($this->props['url']) && $this->pressMethod === null) {
+            // Tab taps should `replace` the current screen, not push onto
+            // the stack. Otherwise tapping Chats → Friends → Profile builds
+            // up a 4-deep stack, and the framework back chevron pops one
+            // tab at a time instead of returning to where the user came
+            // from before entering the tabs section.
             $this->setNavigateConfig([
-                'type' => 'navigate',
+                'type' => 'replace',
                 'uri' => $this->props['url'],
                 'data' => [],
                 'transition' => 'none',

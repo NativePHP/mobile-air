@@ -237,6 +237,12 @@ class TailwindParser
             $class === 'rounded' => ['borderRadius' => 4],
             $class === 'shadow' => ['elevation' => 3],
             $class === 'safe-area' => ['safeArea' => true],
+            $class === 'safe-area-top' => ['safeAreaTop' => true],
+            $class === 'safe-area-bottom' => ['safeAreaBottom' => true],
+
+            // Position
+            $class === 'absolute' => ['positionType' => 1],
+            $class === 'relative' => ['positionType' => 0],
 
             // Padding
             str_starts_with($class, 'px-') => self::parseSpacingAxis('padding', 'x', substr($class, 3)),
@@ -260,8 +266,10 @@ class TailwindParser
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
-            str_starts_with($class, 'left-') => self::parseSpacingUniform('left', substr($class, 5)),
-            str_starts_with($class, 'top-') => self::parseSpacingUniform('top', substr($class, 4)),
+            str_starts_with($class, 'left-')   => self::parseSpacingUniform('positionLeft',   substr($class, 5)),
+            str_starts_with($class, 'top-')    => self::parseSpacingUniform('positionTop',    substr($class, 4)),
+            str_starts_with($class, 'right-')  => self::parseSpacingUniform('positionRight',  substr($class, 6)),
+            str_starts_with($class, 'bottom-') => self::parseSpacingUniform('positionBottom', substr($class, 7)),
 
             // Colors and text
             // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
@@ -530,8 +538,10 @@ class TailwindParser
             'rounded' => ['borderRadius' => (float) $value],
             'border' => $isColor ? ['borderColor' => self::normalizeHex($value)] : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
-            'left' => ['left' => (float) $value],
-            'top' => ['top' => (float) $value],
+            'top'    => ['positionTop'    => (float) $value],
+            'right'  => ['positionRight'  => (float) $value],
+            'bottom' => ['positionBottom' => (float) $value],
+            'left'   => ['positionLeft'   => (float) $value],
             default => null,
         };
     }

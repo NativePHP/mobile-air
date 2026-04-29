@@ -83,12 +83,33 @@ fun FlexContainer(
             } else {
                 FlexColumn(justify, align, gap, childNodes, Modifier.matchParentSize(), content)
             }
-            // Render absolute children on top
+            // Render absolute children on top — anchor to the appropriate
+            // corner based on which edge insets are set, then offset inward.
+            // Same convention as iOS FlexContainer.placeAbsolute: when
+            // `right` is set and `left` is 0, anchor to the right edge;
+            // same for bottom vs top.
             childNodes.forEachIndexed { i, node ->
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
                     val left = node.layout?.positionLeft ?: 0f
                     val top = node.layout?.positionTop ?: 0f
-                    Box(modifier = Modifier.offset(x = left.dp, y = top.dp)) {
+                    val right = node.layout?.positionRight ?: 0f
+                    val bottom = node.layout?.positionBottom ?: 0f
+
+                    val anchor = when {
+                        right > 0f && bottom > 0f -> Alignment.BottomEnd
+                        right > 0f && top > 0f    -> Alignment.TopEnd
+                        right > 0f                 -> Alignment.TopEnd
+                        bottom > 0f                -> Alignment.BottomStart
+                        else                       -> Alignment.TopStart
+                    }
+                    val offsetX = if (right > 0f) (-right).dp else left.dp
+                    val offsetY = if (bottom > 0f) (-bottom).dp else top.dp
+
+                    Box(
+                        modifier = Modifier
+                            .align(anchor)
+                            .offset(x = offsetX, y = offsetY)
+                    ) {
                         NodeView(node = node)
                     }
                 }

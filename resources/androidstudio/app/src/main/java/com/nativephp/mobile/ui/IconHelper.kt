@@ -318,6 +318,15 @@ private fun getManualMapping(iconName: String): String? {
         // SF Symbols — Common
         "paperplane", "paperplane.fill" -> "send"
         "flame", "flame.fill" -> "local_fire_department"
+        "plus.message", "plus.message.fill" -> "add_comment"
+        "qrcode.viewfinder" -> "qr_code_scanner"
+        "person.fill.badge.plus", "person.badge.plus" -> "person_add"
+        "person.crop.circle.badge.plus" -> "person_add"
+        "arrow.triangle.2.circlepath" -> "sync"
+        "face.smiling", "face.smiling.fill" -> "mood"
+        "paperclip" -> "attach_file"
+        "doc.on.doc", "doc.on.doc.fill" -> "content_copy"
+        "video", "video.fill" -> "videocam"
 
         // SF Symbols — Editor & Text
         "square.and.pencil" -> "edit"

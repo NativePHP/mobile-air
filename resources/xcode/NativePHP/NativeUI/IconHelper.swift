@@ -223,6 +223,11 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "info.circle.fill"
     case "more":
         return "ellipsis.circle.fill"
+    case "ellipsis", "more_vert", "more_horiz":
+        // SF Symbols `ellipsis` (horizontal three dots) is well-supported
+        // across all iOS versions. Auto-conversion otherwise produces
+        // `ellipsis.fill` which renders as nothing on some iOS versions.
+        return "ellipsis"
     case "list":
         return "list.bullet"
     case "visibility":

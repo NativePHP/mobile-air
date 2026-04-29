@@ -138,9 +138,22 @@ abstract class NativeComponent
             return $content;
         }
 
-        $wrapper = \Native\Mobile\Edge\Elements\Column::make()
-            ->fill()
-            ->safeArea();
+        // Pick the right safe-area variant based on which bars own which
+        // edges. When a TabBar exists at the bottom, it handles its own
+        // home-indicator inset internally so its bg can reach the screen
+        // edge — the wrapper frees the bottom edge by using `safeAreaTop()`.
+        // Same logic mirrored for the top edge when a NavBar exists.
+        // When both bars exist, the wrapper applies neither edge — both
+        // bars handle their own.
+        $wrapper = \Native\Mobile\Edge\Elements\Column::make()->fill();
+        if ($navBar !== null && $tabBar === null) {
+            $wrapper->safeAreaBottom();   // navBar owns top, wrapper owns bottom
+        } elseif ($tabBar !== null && $navBar === null) {
+            $wrapper->safeAreaTop();      // tabBar owns bottom, wrapper owns top
+        } elseif ($navBar === null && $tabBar === null) {
+            $wrapper->safeArea();         // no chrome — wrapper handles both
+        }
+        // Both bars present: neither edge applied at the wrapper level.
 
         if ($navBar !== null) {
             $wrapper->addChild($navBar->toElement());

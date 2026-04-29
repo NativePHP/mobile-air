@@ -40,10 +40,16 @@ struct NodeLayoutModifier: ViewModifier {
             // Wrapped in a conditional modifier so nodes that don't opt in
             // pay zero cost (the unconditional version showed up heavily in
             // SafeAreaInsets.adjust during steady-state profiling).
+            // safe_area encodes which edges to inset:
+            //   0 = none, 1 = both (legacy), 2 = top only, 3 = bottom only
+            // Top-only / bottom-only let a layout's wrapper free one edge so
+            // a chrome bar (NavBar at top, TabBar at bottom) can extend its
+            // bg through the corresponding system inset zone, while the
+            // wrapper still handles the other edge for the screen content.
             .modifier(ConditionalSafeAreaModifier(
                 enabled: layout?.safeArea != 0,
-                top: safeAreaTop,
-                bottom: safeAreaBottom
+                top: (layout?.safeArea == 1 || layout?.safeArea == 2) ? safeAreaTop : 0,
+                bottom: (layout?.safeArea == 1 || layout?.safeArea == 3) ? safeAreaBottom : 0
             ))
             // Aspect ratio
             .modifier(AspectRatioModifier(ratio: layout?.aspectRatio))

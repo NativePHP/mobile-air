@@ -497,38 +497,44 @@ struct FlexContainer: Layout {
                 ? (childLayout?.heightMode == 2)
                 : (childLayout?.widthMode == 2)
 
-            switch effectiveAlign {
-            case AlignItems.stretch where crossFill:
-                // Stretch only when child has FILL mode (w-full / h-full)
+            // `w-full` / `h-full` (crossFill) is the child's explicit opt-in
+            // to occupy the full cross axis — equivalent to CSS
+            // `align-self: stretch`. It must take precedence over the
+            // parent's `items-*` so that e.g. a `w-full` row inside an
+            // `items-center` column actually spans the full width instead
+            // of collapsing to its content's natural width.
+            if crossFill {
                 finalCross = containerCross - crossMargin(info)
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
+            } else {
+                switch effectiveAlign {
+                case AlignItems.stretch:
+                    // No FILL: use natural size, align to start (like Android).
+                    // We can't reuse childCrosses[i] from Phase 3 here — Phase 3
+                    // proposes crossAvail, which makes container children (e.g.
+                    // a flex column) fill the cross axis and report container
+                    // cross size, not their natural content size.
+                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    finalCross = min(natural, containerCross - crossMargin(info))
+                    crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
-            case AlignItems.stretch:
-                // No FILL: use natural size, align to start (like Android).
-                // We can't reuse childCrosses[i] from Phase 3 here — Phase 3
-                // proposes crossAvail, which makes container children (e.g.
-                // a flex column) fill the cross axis and report container
-                // cross size, not their natural content size.
-                let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
-                finalCross = min(natural, containerCross - crossMargin(info))
-                crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
+                case AlignItems.center:
+                    // Center: measure natural size, center within container
+                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    finalCross = min(natural, containerCross - crossMargin(info))
+                    crossPos = (isRow ? bounds.minY : bounds.minX) + (containerCross - finalCross) / 2
 
-            case AlignItems.center:
-                // Center: measure natural size, center within container
-                let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
-                finalCross = min(natural, containerCross - crossMargin(info))
-                crossPos = (isRow ? bounds.minY : bounds.minX) + (containerCross - finalCross) / 2
+                case AlignItems.end:
+                    // End: measure natural size, align to end
+                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    finalCross = min(natural, containerCross - crossMargin(info))
+                    crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
 
-            case AlignItems.end:
-                // End: measure natural size, align to end
-                let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
-                finalCross = min(natural, containerCross - crossMargin(info))
-                crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
-
-            default: // start
-                // Start: use measured cross size (from Phase 3), align to start
-                finalCross = childCrosses[i]
-                crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
+                default: // start
+                    // Start: use measured cross size (from Phase 3), align to start
+                    finalCross = childCrosses[i]
+                    crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
+                }
             }
 
             let childSize: CGSize

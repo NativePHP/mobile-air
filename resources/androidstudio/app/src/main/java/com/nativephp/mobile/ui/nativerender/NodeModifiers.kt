@@ -133,11 +133,17 @@ fun Modifier.nodeLayout(
         )
     }
 
-    // Safe area padding
+    // Safe area padding. `safe_area` encodes which edges to inset:
+    //   0 = none, 1 = both (legacy), 2 = top only, 3 = bottom only.
+    // Top-only / bottom-only let a layout's wrapper free one edge so a
+    // chrome bar (NavBar / TabBar) can extend its bg through the system
+    // inset zone, while the wrapper still handles the other edge.
     if (layout.safeArea != 0) {
+        val applyTop = layout.safeArea == 1 || layout.safeArea == 2
+        val applyBottom = layout.safeArea == 1 || layout.safeArea == 3
         mod = mod.padding(
-            top = safeAreaTop.dp,
-            bottom = safeAreaBottom.dp
+            top = if (applyTop) safeAreaTop.dp else 0.dp,
+            bottom = if (applyBottom) safeAreaBottom.dp else 0.dp
         )
     }
 

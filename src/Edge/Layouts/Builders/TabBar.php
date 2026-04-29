@@ -28,6 +28,10 @@ class TabBar
 
     private ?string $activeColor = null;
 
+    private ?string $textColor = null;
+
+    private ?string $backgroundColor = null;
+
     private ?string $labelVisibility = null;
 
     private bool $dark = false;
@@ -47,6 +51,28 @@ class TabBar
     public function activeColor(string $color): self
     {
         $this->activeColor = $color;
+
+        return $this;
+    }
+
+    /**
+     * Explicit bar background color. Overrides whatever bg `dark()` would
+     * pick. Hex strings (e.g. `#0F172A`).
+     */
+    public function backgroundColor(string $color): self
+    {
+        $this->backgroundColor = $color;
+
+        return $this;
+    }
+
+    /**
+     * Color for inactive tab icons + labels. Overrides the gray defaults
+     * picked by `dark()`. Active tabs continue to use `activeColor()`.
+     */
+    public function textColor(string $color): self
+    {
+        $this->textColor = $color;
 
         return $this;
     }
@@ -90,6 +116,8 @@ class TabBar
         if ($this->dark)                       $attrs['dark']            = true;
         if ($this->labelVisibility !== null)   $attrs['labelVisibility'] = $this->labelVisibility;
         if ($this->activeColor !== null)       $attrs['activeColor']     = $this->activeColor;
+        if ($this->backgroundColor !== null)   $attrs['backgroundColor'] = $this->backgroundColor;
+        if ($this->textColor !== null)         $attrs['textColor']       = $this->textColor;
 
         $nav->applyAttributes($attrs);
 
