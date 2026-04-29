@@ -127,6 +127,30 @@ class NavBar
         return $this;
     }
 
+    /**
+     * Serialize the bar's declarative config as an attrs dict suitable
+     * for `NativeRootStack::applyAttributes()` (camelCase keys: `title`,
+     * `subtitle`, `back`, `backgroundColor`, `textColor`, `elevation`).
+     * Used by the native-chrome rollout path in
+     * `NativeComponent::wrapWithNativeChrome()`.
+     */
+    public function toRootProps(): array
+    {
+        $attrs = ['back' => $this->back];
+        if ($this->title !== null)           $attrs['title']           = $this->title;
+        if ($this->subtitle !== null)        $attrs['subtitle']        = $this->subtitle;
+        if ($this->backgroundColor !== null) $attrs['backgroundColor'] = $this->backgroundColor;
+        if ($this->textColor !== null)       $attrs['textColor']       = $this->textColor;
+        if ($this->elevation !== null)       $attrs['elevation']       = $this->elevation;
+        return $attrs;
+    }
+
+    /** @return NavAction[] */
+    public function getActions(): array
+    {
+        return $this->actions;
+    }
+
     public function toElement(): TopBar
     {
         $bar = TopBar::make();

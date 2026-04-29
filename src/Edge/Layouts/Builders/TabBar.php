@@ -108,6 +108,30 @@ class TabBar
         return $this;
     }
 
+    /**
+     * Serialize the bar's declarative config as an attrs dict suitable
+     * for `NativeRootTabs::applyAttributes()` (camelCase keys: `dark`,
+     * `activeColor`, `backgroundColor`, `textColor`, `labelVisibility`).
+     * Used by the native-chrome rollout path in
+     * `NativeComponent::wrapWithNativeChrome()`.
+     */
+    public function toRootProps(): array
+    {
+        $attrs = [];
+        if ($this->dark)                       $attrs['dark']            = true;
+        if ($this->labelVisibility !== null)   $attrs['labelVisibility'] = $this->labelVisibility;
+        if ($this->activeColor !== null)       $attrs['activeColor']     = $this->activeColor;
+        if ($this->backgroundColor !== null)   $attrs['backgroundColor'] = $this->backgroundColor;
+        if ($this->textColor !== null)         $attrs['textColor']       = $this->textColor;
+        return $attrs;
+    }
+
+    /** @return Tab[] */
+    public function getTabs(): array
+    {
+        return $this->tabs;
+    }
+
     public function toElement(): BottomNav
     {
         $nav = BottomNav::make();

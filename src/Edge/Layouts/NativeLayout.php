@@ -35,4 +35,30 @@ abstract class NativeLayout
     {
         return null;
     }
+
+    /**
+     * Opt this layout into native chrome rendering — `NavigationStack` /
+     * `TabView` on iOS, `NavHost` / `Scaffold` on Android. When `true`,
+     * the framework emits a `NativeRootStack` / `NativeRootTabs` element
+     * carrying the bar config as serialized props instead of the current
+     * Column-of-[navBar, content, tabBar] tree. The native renderer takes
+     * over from there: edge-swipe-back, predictive-back, large titles,
+     * and (on iOS 26+) Liquid Glass — all for free.
+     *
+     * Default `false` so existing layouts keep their custom-drawn chrome
+     * behavior. Layouts opt in one at a time as they're ready.
+     *
+     * Three-tier appearance contract once opted in:
+     *  - `TabBar` / `NavBar` with no `backgroundColor()` set → system
+     *    Liquid Glass / Material You.
+     *  - `backgroundColor()` set → opaque native bar with custom solid
+     *    colors (the X / Instagram path).
+     *  - Inline `<native:top-bar>` / `<native:bottom-nav>` in the screen's
+     *    blade → bypasses native chrome entirely (use this layout method
+     *    just for stacking semantics).
+     */
+    public function usesNativeChrome(): bool
+    {
+        return false;
+    }
 }

@@ -138,6 +138,22 @@ abstract class NativeComponent
             return $content;
         }
 
+        // Phase 1 of the native chrome swap (project_native_chrome_swap.md /
+        // ~/.claude/plans/glowing-tumbling-crane.md): when a layout opts in
+        // via `usesNativeChrome()`, emit a `native_root_*` sentinel element
+        // carrying the bar config as serialized props instead of a Column
+        // of [navBar, content, tabBar]. The native iOS / Android renderers
+        // for those types take over and use NavigationStack / TabView /
+        // NavHost / Scaffold to render the chrome system-natively.
+        //
+        // Phase 1 ships this branch but leaves renderers as stubs (no
+        // current layout opts in by default). Phase 2 wires the iOS
+        // NavigationStack renderer; Phase 3 wires TabView; Phase 4 ports
+        // to Compose. See plan for the full rollout.
+        if ($layout->usesNativeChrome()) {
+            return $this->wrapWithNativeChrome($content, $navBar, $tabBar);
+        }
+
         // Pick the right safe-area variant based on which bars own which
         // edges. When a TabBar exists at the bottom, it handles its own
         // home-indicator inset internally so its bg can reach the screen
@@ -178,6 +194,66 @@ abstract class NativeComponent
         }
 
         return $wrapper;
+    }
+
+    /**
+     * Native-chrome path. Emits a `NativeRootStack` or `NativeRootTabs`
+     * sentinel element instead of a custom Column-of-bars layout. The
+     * iOS / Android renderers for those types route to NavigationStack /
+     * TabView / NavHost / Scaffold.
+     *
+     * Layout, in either case:
+     *   - Bar config serialized as flat element props
+     *   - Tabs (when present) emitted as `bottom_nav_item` children
+     *   - NavBar actions (when present) emitted as `top_bar_action` children
+     *   - Screen content appended as the final child
+     */
+    protected function wrapWithNativeChrome(
+        Element $content,
+        ?\Native\Mobile\Edge\Layouts\Builders\NavBar $navBar,
+        ?\Native\Mobile\Edge\Layouts\Builders\TabBar $tabBar,
+    ): Element {
+        if ($tabBar !== null) {
+            $root = \Native\Mobile\Edge\Elements\NativeRootTabs::make();
+            $attrs = $tabBar->toRootProps();
+
+            // Fold NavBar config in via nav-prefixed keys when both exist
+            // (each tab hosts its own NavigationStack natively).
+            if ($navBar !== null) {
+                foreach ($navBar->toRootProps() as $key => $value) {
+                    $attrs['nav' . ucfirst($key)] = $value;
+                }
+            }
+            $root->applyAttributes($attrs);
+
+            // Tab items as bottom_nav_item children.
+            foreach ($tabBar->getTabs() as $tab) {
+                $root->addChild($tab->toElement());
+            }
+            // NavBar actions (if any) as top_bar_action children.
+            if ($navBar !== null) {
+                foreach ($navBar->getActions() as $action) {
+                    $root->addChild($action->toElement());
+                }
+            }
+            // Active screen content as the final child.
+            $root->addChild($content);
+
+            return $root;
+        }
+
+        if ($navBar !== null) {
+            $root = \Native\Mobile\Edge\Elements\NativeRootStack::make();
+            $root->applyAttributes($navBar->toRootProps());
+            foreach ($navBar->getActions() as $action) {
+                $root->addChild($action->toElement());
+            }
+            $root->addChild($content);
+
+            return $root;
+        }
+
+        return $content;
     }
 
     /**
