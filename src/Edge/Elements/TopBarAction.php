@@ -23,6 +23,9 @@ class TopBarAction extends Element
                 $this->props[$key] = $attrs[$key];
             }
         }
+        if (isset($attrs['destructive'])) {
+            $this->props['destructive'] = (bool) $attrs['destructive'];
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
