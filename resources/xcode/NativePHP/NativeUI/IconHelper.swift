@@ -125,6 +125,45 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "chevron.up"
     case "down":
         return "chevron.down"
+    case "expand_less":
+        return "chevron.up"
+    case "expand_more":
+        return "chevron.down"
+
+    // Media controls — Material names → SF Symbol equivalents.
+    case "play_arrow":
+        return "play.fill"
+    case "play_circle", "play_circle_filled":
+        return "play.circle.fill"
+    case "pause":
+        return "pause.fill"
+    case "stop":
+        return "stop.fill"
+    case "skip_next":
+        return "forward.fill"
+    case "skip_previous":
+        return "backward.fill"
+    case "volume_up":
+        return "speaker.wave.3.fill"
+    case "volume_off":
+        return "speaker.slash.fill"
+    case "playlist_add":
+        return "text.badge.plus"
+    case "cast":
+        return "tv.and.hifispeaker.fill"
+    case "videocam":
+        return "video.fill"
+
+    // Reactions — Material thumb_up / thumb_down Have outlined +
+    // filled variants; map to SF Symbols' hand.thumbs* family.
+    case "thumb_up":
+        return "hand.thumbsup.fill"
+    case "thumb_up_off_alt", "thumb_up_outline":
+        return "hand.thumbsup"
+    case "thumb_down":
+        return "hand.thumbsdown.fill"
+    case "thumb_down_off_alt", "thumb_down_outline":
+        return "hand.thumbsdown"
 
     // Status
     case "verified":
@@ -171,6 +210,8 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "star.fill"
     case "bookmark":
         return "bookmark.fill"
+    case "bookmark_border", "bookmark_outline":
+        return "bookmark"
     case "image", "photo":
         return "photo.fill"
     case "image-plus":

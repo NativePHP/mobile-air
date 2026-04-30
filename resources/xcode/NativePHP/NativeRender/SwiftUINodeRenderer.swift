@@ -280,7 +280,20 @@ private struct NativeAsyncImage: View {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
-                    let img = image.resizable().aspectRatio(contentMode: contentMode)
+                    // `.aspectRatio(.fill)` makes the image fill its frame
+                    // by aspect-scaling — but SwiftUI does NOT clip the
+                    // overflowing dimension. Without an explicit `.clipped()`
+                    // the cropped pixels are still drawn OUTSIDE the
+                    // declared frame, bleeding over sibling views below
+                    // (or above) the image. Looks fine on the simulator
+                    // when the source's aspect happens to match the frame,
+                    // but breaks on real devices where higher-resolution
+                    // images decode to larger dimensions and overflow
+                    // visibly. Always clip — it's a no-op for `.fit`.
+                    let img = image
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                        .clipped()
                     if tintArgb != 0 {
                         img.foregroundStyle(colorFromARGB(tintArgb))
                     } else {
