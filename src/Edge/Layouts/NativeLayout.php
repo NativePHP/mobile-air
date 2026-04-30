@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge\Layouts;
 
+use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
 use Native\Mobile\Edge\NativeComponent;
@@ -32,6 +33,21 @@ abstract class NativeLayout
      * Return the bottom tab bar for this screen, or null for none.
      */
     public function tabBar(NativeComponent $screen): ?TabBar
+    {
+        return null;
+    }
+
+    /**
+     * Optional persistent component pinned above the tab bar — Apple's
+     * Music MiniPlayer pattern. Renders inside SwiftUI's
+     * `.tabViewBottomAccessory { … }` slot on iOS 26+, falls back to a
+     * regular row above the bar on older iOS. Combine with
+     * `TabBar::minimizeOnScroll()` to get the auto-minimize behavior
+     * where the accessory tucks inline with the active tab on scroll.
+     *
+     * Only consulted on layouts where `usesNativeChrome() = true`.
+     */
+    public function tabBarAccessory(NativeComponent $screen): ?Element
     {
         return null;
     }

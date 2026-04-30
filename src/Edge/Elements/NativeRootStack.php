@@ -11,9 +11,9 @@ use Native\Mobile\Edge\Element;
  * NavBar (no TabBar) is present.
  *
  * Carries the NavBar config as flat props (title, subtitle, back,
- * background_color, text_color, elevation) plus per-screen action items
- * as `top_bar_action` children. The screen's rendered content is
- * appended as the final child.
+ * background_color, text_color, elevation, current_uri) plus per-screen
+ * action items as `top_bar_action` children. The screen's rendered
+ * content is appended as the final child.
  *
  * iOS / Android renderers detect this element type and route to native
  * `NavigationStack` / `NavHost` chrome instead of laying out chrome via
@@ -38,6 +38,11 @@ class NativeRootStack extends Element
         if (isset($attrs['backgroundColor'])) $this->props['background_color'] = $attrs['backgroundColor'];
         if (isset($attrs['textColor']))       $this->props['text_color']       = $attrs['textColor'];
         if (isset($attrs['elevation']))       $this->props['elevation']        = (int) $attrs['elevation'];
+        // The URI of the screen currently being published. The iOS
+        // NavigationCoordinator keys per-URI tree caches off this so it
+        // can render the correct content during NavigationStack push /
+        // pop transitions.
+        if (isset($attrs['currentUri']))      $this->props['current_uri']      = $attrs['currentUri'];
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

@@ -45,6 +45,7 @@ class NativeRootTabs extends Element
         if (isset($attrs['backgroundColor'])) $this->props['background_color'] = $attrs['backgroundColor'];
         if (isset($attrs['textColor']))       $this->props['text_color']       = $attrs['textColor'];
         if (isset($attrs['labelVisibility'])) $this->props['label_visibility'] = $attrs['labelVisibility'];
+        if (isset($attrs['minimizeOnScroll'])) $this->props['minimize_on_scroll'] = (bool) $attrs['minimizeOnScroll'];
 
         // Optional folded NavBar config (when this layout supplies both bars).
         if (isset($attrs['navTitle']))           $this->props['nav_title']            = $attrs['navTitle'];
@@ -53,6 +54,11 @@ class NativeRootTabs extends Element
         if (isset($attrs['navBackgroundColor'])) $this->props['nav_background_color'] = $attrs['navBackgroundColor'];
         if (isset($attrs['navTextColor']))       $this->props['nav_text_color']       = $attrs['navTextColor'];
         if (isset($attrs['navElevation']))       $this->props['nav_elevation']        = (int) $attrs['navElevation'];
+
+        // The URI of the active tab's screen. The iOS bridge keys its
+        // per-URI tree diff off this so tab-switch publishes reuse
+        // unchanged subtree refs and don't trigger a full re-render.
+        if (isset($attrs['currentUri']))      $this->props['current_uri']      = $attrs['currentUri'];
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

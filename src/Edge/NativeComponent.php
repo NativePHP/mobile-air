@@ -138,20 +138,14 @@ abstract class NativeComponent
             return $content;
         }
 
-        // Phase 1 of the native chrome swap (project_native_chrome_swap.md /
-        // ~/.claude/plans/glowing-tumbling-crane.md): when a layout opts in
-        // via `usesNativeChrome()`, emit a `native_root_*` sentinel element
-        // carrying the bar config as serialized props instead of a Column
-        // of [navBar, content, tabBar]. The native iOS / Android renderers
-        // for those types take over and use NavigationStack / TabView /
-        // NavHost / Scaffold to render the chrome system-natively.
-        //
-        // Phase 1 ships this branch but leaves renderers as stubs (no
-        // current layout opts in by default). Phase 2 wires the iOS
-        // NavigationStack renderer; Phase 3 wires TabView; Phase 4 ports
-        // to Compose. See plan for the full rollout.
+        // Native chrome path: when a layout opts in via
+        // `usesNativeChrome()`, emit a `native_root_*` sentinel element
+        // carrying the bar config as serialized props instead of a
+        // Column of [navBar, content, tabBar]. The native iOS / Android
+        // renderers for those types take over and use NavigationStack /
+        // TabView / NavHost / Scaffold to render chrome system-natively.
         if ($layout->usesNativeChrome()) {
-            return $this->wrapWithNativeChrome($content, $navBar, $tabBar);
+            return $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
         }
 
         // Pick the right safe-area variant based on which bars own which
@@ -212,6 +206,7 @@ abstract class NativeComponent
         Element $content,
         ?\Native\Mobile\Edge\Layouts\Builders\NavBar $navBar,
         ?\Native\Mobile\Edge\Layouts\Builders\TabBar $tabBar,
+        \Native\Mobile\Edge\Layouts\NativeLayout $layout,
     ): Element {
         if ($tabBar !== null) {
             $root = \Native\Mobile\Edge\Elements\NativeRootTabs::make();
@@ -224,6 +219,9 @@ abstract class NativeComponent
                     $attrs['nav' . ucfirst($key)] = $value;
                 }
             }
+            // Active tab's screen URI — used by the iOS bridge's per-URI
+            // diff to keep tab-switch animations smooth.
+            $attrs['currentUri'] = $this->router?->currentUri() ?? '';
             $root->applyAttributes($attrs);
 
             // Tab items as bottom_nav_item children.
@@ -236,6 +234,16 @@ abstract class NativeComponent
                     $root->addChild($action->toElement());
                 }
             }
+            // Optional persistent accessory pinned above the tab bar
+            // (Apple's MiniPlayer pattern). Wrapped in a `TabAccessory`
+            // marker element so the renderer can pick it out of children
+            // alongside tabs and screen content.
+            $accessory = $layout->tabBarAccessory($this);
+            if ($accessory !== null) {
+                $wrapper = \Native\Mobile\Edge\Elements\TabAccessory::make();
+                $wrapper->addChild($accessory);
+                $root->addChild($wrapper);
+            }
             // Active screen content as the final child.
             $root->addChild($content);
 
@@ -244,7 +252,12 @@ abstract class NativeComponent
 
         if ($navBar !== null) {
             $root = \Native\Mobile\Edge\Elements\NativeRootStack::make();
-            $root->applyAttributes($navBar->toRootProps());
+            $attrs = $navBar->toRootProps();
+            // The per-URI tree cache on iOS keys off this so the
+            // NavigationCoordinator can route push / pop / no-op
+            // correctly across publishes.
+            $attrs['currentUri'] = $this->router?->currentUri() ?? '';
+            $root->applyAttributes($attrs);
             foreach ($navBar->getActions() as $action) {
                 $root->addChild($action->toElement());
             }

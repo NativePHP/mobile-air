@@ -15,6 +15,9 @@ func registerBridgeFunctions() {
     SwiftUIRendererRegistry.shared.register("native_root_stack") {
         AnyView(NativeRootStackRenderer(node: $0))
     }
+    SwiftUIRendererRegistry.shared.register("native_root_tabs") {
+        AnyView(NativeRootTabsRenderer(node: $0))
+    }
 
     // Register plugin renderers
     registerPluginRenderers()

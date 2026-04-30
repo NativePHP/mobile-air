@@ -7,13 +7,22 @@ use Native\Mobile\Edge\Elements\BottomNavItem;
 /**
  * Fluent builder for a single bottom-tab-bar item.
  *
- * BottomNavItem auto-wires its `url` attribute to a navigation event,
- * so simply setting the url is enough to make the tab navigate when
- * tapped. No press handler needed.
+ * Two constructor styles:
+ *   - `Tab::link($label, $url, icon: ...)` — URL-bound tab. BottomNavItem
+ *     auto-wires the URL to a `replace` navigation event when tapped.
+ *   - `Tab::action($label, icon: ...)->press('method')` — action tab.
+ *     No URL, no navigation. Tapping fires the dev's press handler so
+ *     they can do anything (open a sheet, focus a search field, run
+ *     business logic). Combine with `->search()` for the iOS 26
+ *     floating-capsule treatment.
+ *
+ * Either form can be customised with `->press('method')` to override the
+ * default URL-driven navigation with an arbitrary handler.
  *
  * Usage:
  *   Tab::link('Home', '/', icon: 'home')
  *   Tab::link('Profile', '/profile', icon: 'person')->badge('3')
+ *   Tab::action('Search', icon: 'search')->search()->press('openSearch')
  */
 class Tab
 {
@@ -32,6 +41,10 @@ class Tab
     private bool $news = false;
 
     private bool $active = false;
+
+    private bool $search = false;
+
+    private ?string $pressMethod = null;
 
     private function __construct(string $id, string $label, string $url)
     {
@@ -56,6 +69,38 @@ class Tab
         }
 
         return $tab;
+    }
+
+    /**
+     * Action-only tab — no URL, no auto-navigation. Tap fires the press
+     * handler set via `->press('method')`. Useful with `->search()` for
+     * the iOS 26 floating-capsule treatment when the tap should open a
+     * search sheet instead of navigating to a separate route.
+     */
+    public static function action(string $label, ?string $icon = null): self
+    {
+        $tab = new self(
+            id: strtolower(preg_replace('/[^a-z0-9]+/i', '_', $label)),
+            label: $label,
+            url: '',
+        );
+        if ($icon !== null) {
+            $tab->icon = $icon;
+        }
+
+        return $tab;
+    }
+
+    /**
+     * Override the default URL-driven `replace` navigation with a custom
+     * press handler. Works with both `Tab::link()` (overrides nav) and
+     * `Tab::action()` (sole tap behavior).
+     */
+    public function press(string $method): self
+    {
+        $this->pressMethod = $method;
+
+        return $this;
     }
 
     public function id(string $id): self
@@ -94,6 +139,19 @@ class Tab
         return $this;
     }
 
+    /**
+     * Mark this tab as the "search" tab. On iOS 26+ the system renders it
+     * as a separate floating Liquid Glass capsule beside the main tab bar
+     * (the pattern used by Apple's own Photos / Music / Mail apps). On
+     * older iOS the role is a no-op visually but still semantically tagged.
+     */
+    public function search(bool $search = true): self
+    {
+        $this->search = $search;
+
+        return $this;
+    }
+
     public function getUrl(): string
     {
         return $this->url;
@@ -120,8 +178,16 @@ class Tab
         if ($this->badge !== null)       $attrs['badge']      = $this->badge;
         if ($this->badgeColor !== null)  $attrs['badgeColor'] = $this->badgeColor;
         if ($this->news)                 $attrs['news']       = true;
+        if ($this->search)               $attrs['search']     = true;
 
         $item->applyAttributes($attrs);
+
+        // Wire custom press handler if set. BottomNavItem::resolveProps
+        // skips its URL → `replace` auto-navigation when a press method
+        // is already attached, so this cleanly overrides the default.
+        if ($this->pressMethod !== null) {
+            $item->onPress($this->pressMethod);
+        }
 
         return $item;
     }

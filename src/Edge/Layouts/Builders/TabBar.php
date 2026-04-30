@@ -36,6 +36,8 @@ class TabBar
 
     private bool $dark = false;
 
+    private bool $minimizeOnScroll = false;
+
     public static function make(): self
     {
         return new self;
@@ -96,6 +98,19 @@ class TabBar
     }
 
     /**
+     * iOS 26+ only. When the user scrolls content down, the tab bar
+     * shrinks to a pill and the bottom accessory (if any) moves inline
+     * with the active tab — Apple's Music / Podcasts pattern. Tapping a
+     * tab or scrolling back to the top re-expands the bar.
+     */
+    public function minimizeOnScroll(bool $value = true): self
+    {
+        $this->minimizeOnScroll = $value;
+
+        return $this;
+    }
+
+    /**
      * Mark the tab whose url matches as active. Called by the framework
      * once the current route is known.
      */
@@ -118,11 +133,12 @@ class TabBar
     public function toRootProps(): array
     {
         $attrs = [];
-        if ($this->dark)                       $attrs['dark']            = true;
-        if ($this->labelVisibility !== null)   $attrs['labelVisibility'] = $this->labelVisibility;
-        if ($this->activeColor !== null)       $attrs['activeColor']     = $this->activeColor;
-        if ($this->backgroundColor !== null)   $attrs['backgroundColor'] = $this->backgroundColor;
-        if ($this->textColor !== null)         $attrs['textColor']       = $this->textColor;
+        if ($this->dark)                       $attrs['dark']             = true;
+        if ($this->labelVisibility !== null)   $attrs['labelVisibility']  = $this->labelVisibility;
+        if ($this->activeColor !== null)       $attrs['activeColor']      = $this->activeColor;
+        if ($this->backgroundColor !== null)   $attrs['backgroundColor']  = $this->backgroundColor;
+        if ($this->textColor !== null)         $attrs['textColor']        = $this->textColor;
+        if ($this->minimizeOnScroll)           $attrs['minimizeOnScroll'] = true;
         return $attrs;
     }
 

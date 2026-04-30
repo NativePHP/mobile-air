@@ -60,6 +60,15 @@ final class NativeElementBridge {
     /// Previous tree for incremental diff
     private static var previousTree: NativeUITree?
 
+    /// Per-URI previous tree for native chrome stacks. Used so that when
+    /// PHP republishes a URI we've seen before (e.g. popping back to the
+    /// stack root), we can diff against the LAST tree at that URI rather
+    /// than the most recent unrelated tree — preserving subtree refs that
+    /// haven't structurally changed. Without this, every nav publish
+    /// arrives with all-new refs, NodeView's `===` equality fails, and
+    /// SwiftUI re-renders the entire tree mid-animation = visible jitter.
+    private static var nativeChromePrevTrees: [String: NativeUITree] = [:]
+
     // MARK: - Shadow Thread with Frame Coalescing
     // Mirrors Android's AtomicReference<ShadowUpdate> + LockSupport pattern.
     // PHP thread sets pendingUpdate and signals the shadow thread.
@@ -271,21 +280,55 @@ final class NativeElementBridge {
                 continue
             }
 
-            // Diff against previous tree (reuse unchanged subtrees for SwiftUI Equatable optimization)
+            // Determine whether this is a continuation within native chrome
+            // (same root sentinel type as the previous publish). Used both
+            // to pick the right diff baseline below AND to suppress the
+            // screen-level transition further down.
+            let prevRootType = NativeUIBridge.shared.currentTree?.root.type
+            let newRootType = tree.root.type
+            let nativeChromeContinuation =
+                (prevRootType == "native_root_stack" && newRootType == "native_root_stack") ||
+                (prevRootType == "native_root_tabs"  && newRootType == "native_root_tabs")
+
+            // Diff against previous tree (reuse unchanged subtrees so
+            // NodeView's `===` equality short-circuits and SwiftUI skips
+            // re-rendering them).
+            //   - For state changes (!isNav): diff against the immediate
+            //     previous tree — same screen, almost everything matches.
+            //   - For nav within native chrome: diff against the LAST tree
+            //     at the SAME URI, not against the unrelated previous tree
+            //     (which is a different screen). Pop back to a cached URI
+            //     re-uses every unchanged subtree's ref → no mid-animation
+            //     re-render of the root view's content.
+            //   - Otherwise (cross-layout nav, first publish): no diff.
             let finalTree: NativeUITree
-            if let prev = previousTree, !update.isNav {
+            let newUri = tree.root.props.getString("current_uri", default: "")
+            if !update.isNav, let prev = previousTree {
                 let diffedRoot = diffNode(old: prev.root, new: tree.root)
+                finalTree = NativeUITree(version: tree.version, callbackCount: tree.callbackCount, root: diffedRoot)
+            } else if update.isNav, nativeChromeContinuation, !newUri.isEmpty,
+                      let prevAtUri = nativeChromePrevTrees[newUri] {
+                let diffedRoot = diffNode(old: prevAtUri.root, new: tree.root)
                 finalTree = NativeUITree(version: tree.version, callbackCount: tree.callbackCount, root: diffedRoot)
             } else {
                 finalTree = tree
             }
             previousTree = finalTree
 
+            // Track the most recent tree per native chrome URI so future
+            // nav publishes back to the same URI can diff against it.
+            if newRootType == "native_root_stack" || newRootType == "native_root_tabs" {
+                let uri = finalTree.root.props.getString("current_uri", default: "")
+                if !uri.isEmpty {
+                    nativeChromePrevTrees[uri] = finalTree
+                }
+            }
+
             let isNav = update.isNav
             DispatchQueue.main.async {
                 let bridge = NativeUIBridge.shared
                 bridge.isActive = true
-                if isNav { bridge.screenKey += 1 }
+                if isNav && !nativeChromeContinuation { bridge.screenKey += 1 }
                 bridge.currentTree = finalTree
             }
         }
@@ -762,6 +805,7 @@ final class NativeElementBridge {
         // Stop any existing shadow thread before resetting state
         stopShadowThread()
         previousTree = nil
+        nativeChromePrevTrees.removeAll()
         cachedTypeTable = nil
         os_unfair_lock_lock(&pendingLock)
         pendingUpdate = nil
@@ -771,6 +815,7 @@ final class NativeElementBridge {
     static func stopWatching() {
         stopShadowThread()
         previousTree = nil
+        nativeChromePrevTrees.removeAll()
         cachedTypeTable = nil
         os_unfair_lock_lock(&pendingLock)
         pendingUpdate = nil

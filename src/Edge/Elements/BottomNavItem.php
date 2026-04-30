@@ -32,6 +32,10 @@ class BottomNavItem extends Element
         if (isset($attrs['news'])) {
             $this->props['news'] = filter_var($attrs['news'], FILTER_VALIDATE_BOOLEAN);
         }
+
+        if (isset($attrs['search'])) {
+            $this->props['search'] = filter_var($attrs['search'], FILTER_VALIDATE_BOOLEAN);
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
