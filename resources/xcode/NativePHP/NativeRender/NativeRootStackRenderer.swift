@@ -84,15 +84,37 @@ struct NativeRootStackRenderer: View {
         let showBack = root.props.getBool("back")
         let bgArgb = root.props.getColor("background_color", default: 0)
         let textArgb = root.props.getColor("text_color", default: 0)
+        let displayModeStr = root.props.getString("display_mode", default: "inline")
         let actions = root.children.filter { $0.type == "top_bar_action" }
         let screenContent = root.children.first { $0.type != "top_bar_action" }
 
         let textColor: Color = textArgb != 0 ? Color(argb: textArgb) : .primary
         let hasExplicitBg = bgArgb != 0
 
+        // Map the PHP-side string to SwiftUI's NavigationBarItem.TitleDisplayMode.
+        //   `large`     — iOS-native big title, left-aligned, collapses on scroll
+        //   `automatic` — iOS picks (large at root, inline after a push)
+        //   else        — small centered title (previous default)
+        let titleDisplayMode: NavigationBarItem.TitleDisplayMode = {
+            switch displayModeStr {
+            case "large":     return .large
+            case "automatic": return .automatic
+            default:          return .inline
+            }
+        }()
+
         screenView(screenContent)
             .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(titleDisplayMode)
+            // iOS 18+ has a first-class `.navigationSubtitle(...)` that sits
+            // with the title (next to it for inline, under the large title
+            // for large). Use it when the OS supports it AND we're not
+            // already rendering subtitle via the principal toolbar item
+            // (which only happens for inline mode below).
+            .modifier(NavigationSubtitleModifier(
+                subtitle: subtitle,
+                showsAsPrincipal: titleDisplayMode == .inline
+            ))
             .toolbar {
                 // Manual back chevron only at the root level — pushed
                 // levels get the system back chevron from NavigationStack
@@ -110,7 +132,14 @@ struct NativeRootStackRenderer: View {
                         }
                     }
                 }
-                if !subtitle.isEmpty {
+                // Render subtitle as a `.principal` toolbar item ONLY when
+                // displayMode is inline. With `.large` (or `.automatic` at
+                // root), the principal slot duplicates content next to the
+                // big title — the user sees two stacked titles. iOS 18+
+                // exposes `.navigationSubtitle(...)` which sits with the
+                // large title naturally; until we adopt that path, we just
+                // suppress the principal subtitle for non-inline modes.
+                if !subtitle.isEmpty && titleDisplayMode == .inline {
                     ToolbarItem(placement: .principal) {
                         VStack(spacing: 0) {
                             Text(title)
@@ -128,14 +157,7 @@ struct NativeRootStackRenderer: View {
                     }
                 }
             }
-            .toolbarBackground(
-                hasExplicitBg ? Color(argb: bgArgb) : .clear,
-                for: .navigationBar
-            )
-            .toolbarBackground(
-                hasExplicitBg ? .visible : .automatic,
-                for: .navigationBar
-            )
+            .modifier(StackBarBackgroundModifier(argb: bgArgb))
     }
 
     @ViewBuilder
@@ -189,6 +211,49 @@ struct NativeRootStackRenderer: View {
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
             }
+        }
+    }
+}
+
+/// Same conditional-bar-background pattern as the tabs renderer: skip
+/// `.toolbarBackground` entirely when the layout didn't supply an
+/// explicit color, so iOS 26 keeps its adaptive Liquid Glass material
+/// on the navigation bar instead of having `.clear` forcibly applied.
+private struct StackBarBackgroundModifier: ViewModifier {
+    let argb: Int
+
+    func body(content: Content) -> some View {
+        if argb != 0 {
+            content
+                .toolbarBackground(Color(argb: argb), for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+        } else {
+            content
+        }
+    }
+}
+
+/// Conditionally applies iOS 26+ `.navigationSubtitle(...)` so the
+/// subtitle sits with the title in the system bar — the right place for
+/// it when the title display mode is `.large`. Skipped when the inline
+/// path already renders the subtitle via a `.principal` `ToolbarItem`
+/// (so we don't double-render it).
+///
+/// `.navigationSubtitle` was added in iOS 26 (alongside the toolbar
+/// title-display-mode work). Pre-iOS-26 the subtitle is silently dropped
+/// in `.large`/`.automatic` modes — fall back to `displayMode('inline')`
+/// to keep the subtitle visible on older OSes.
+private struct NavigationSubtitleModifier: ViewModifier {
+    let subtitle: String
+    let showsAsPrincipal: Bool
+
+    func body(content: Content) -> some View {
+        if subtitle.isEmpty || showsAsPrincipal {
+            content
+        } else if #available(iOS 26.0, *) {
+            content.navigationSubtitle(subtitle)
+        } else {
+            content
         }
     }
 }

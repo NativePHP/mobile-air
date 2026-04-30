@@ -32,6 +32,14 @@ class NavBar
 
     private ?int $elevation = null;
 
+    /**
+     * Title display mode — controls how iOS NavigationStack renders the
+     * title. Valid: `inline` (small, centered — current default),
+     * `large` (big, left-aligned, collapses on scroll), `automatic`
+     * (large at root, inline once pushed).
+     */
+    private ?string $displayMode = null;
+
     /** @var NavAction[] */
     private array $actions = [];
 
@@ -82,6 +90,23 @@ class NavBar
         return $this;
     }
 
+    /**
+     * Title display mode. `large` gives the iOS-native large-title-on-top,
+     * left-aligned, collapses to inline when content scrolls beneath.
+     * `inline` is the small centered title. `automatic` lets iOS pick
+     * (large at the root of a stack, inline after a push).
+     *
+     *   ->displayMode('large')   // big left-aligned hero title
+     *   ->displayMode('inline')  // current default
+     *   ->displayMode('automatic')
+     */
+    public function displayMode(string $mode): self
+    {
+        $this->displayMode = $mode;
+
+        return $this;
+    }
+
     public function action(NavAction $action): self
     {
         $this->actions[] = $action;
@@ -104,6 +129,7 @@ class NavBar
         if ($opts->backgroundColor !== null) $this->backgroundColor = $opts->backgroundColor;
         if ($opts->textColor !== null)       $this->textColor = $opts->textColor;
         if ($opts->elevation !== null)       $this->elevation = $opts->elevation;
+        if ($opts->displayMode !== null)     $this->displayMode = $opts->displayMode;
         foreach ($opts->actions as $action) {
             $this->actions[] = $action;
         }
@@ -123,6 +149,7 @@ class NavBar
         if (isset($state['backgroundColor']))  $this->backgroundColor = $state['backgroundColor'];
         if (isset($state['textColor']))        $this->textColor = $state['textColor'];
         if (isset($state['elevation']))        $this->elevation = (int) $state['elevation'];
+        if (isset($state['displayMode']))      $this->displayMode = $state['displayMode'];
 
         return $this;
     }
@@ -130,8 +157,8 @@ class NavBar
     /**
      * Serialize the bar's declarative config as an attrs dict suitable
      * for `NativeRootStack::applyAttributes()` (camelCase keys: `title`,
-     * `subtitle`, `back`, `backgroundColor`, `textColor`, `elevation`).
-     * Used by the native-chrome rollout path in
+     * `subtitle`, `back`, `backgroundColor`, `textColor`, `elevation`,
+     * `displayMode`). Used by the native-chrome rollout path in
      * `NativeComponent::wrapWithNativeChrome()`.
      */
     public function toRootProps(): array
@@ -142,6 +169,7 @@ class NavBar
         if ($this->backgroundColor !== null) $attrs['backgroundColor'] = $this->backgroundColor;
         if ($this->textColor !== null)       $attrs['textColor']       = $this->textColor;
         if ($this->elevation !== null)       $attrs['elevation']       = $this->elevation;
+        if ($this->displayMode !== null)     $attrs['displayMode']     = $this->displayMode;
         return $attrs;
     }
 

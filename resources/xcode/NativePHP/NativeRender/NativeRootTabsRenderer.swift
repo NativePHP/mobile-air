@@ -68,7 +68,17 @@ struct NativeRootTabsRenderer: View {
         let hasNavBar = navBack || !navTitleText.isEmpty
 
         TabView(selection: $selection) {
-            ForEach(Array(tabs.enumerated()), id: \.element.id) { idx, tab in
+            // Key the ForEach off the enumerated `offset` (integer
+            // position) rather than the SwiftUI element id — element
+            // ids regenerate on every PHP publish, which would make
+            // ForEach treat every tab as brand-new on tab switch.
+            // SwiftUI would then rebuild every Tab + its inner
+            // NavigationStack from scratch each publish, producing a
+            // visible flicker (toolbar styles applied a frame late)
+            // and recreating animation state mid-transition. Tab
+            // positions are stable across publishes for a layout's
+            // tabBar(), so the offset is a reliable identity.
+            ForEach(Array(tabs.enumerated()), id: \.offset) { idx, tab in
                 let label = tab.props.getString("label", default: "")
                 let icon = tab.props.getString("icon", default: "circle")
                 let isSearch = tab.props.getBool("search")
@@ -98,14 +108,10 @@ struct NativeRootTabsRenderer: View {
             }
         }
         .tint(activeColor)
-        .toolbarBackground(
-            hasExplicitBg ? Color(argb: bgArgb) : .clear,
-            for: .tabBar
-        )
-        .toolbarBackground(
-            hasExplicitBg ? .visible : .automatic,
-            for: .tabBar
-        )
+        .modifier(ExplicitBarBackgroundModifier(
+            argb: bgArgb,
+            placement: .tabBar
+        ))
         .preferredColorScheme(isDark ? .dark : nil)
         .modifier(TabBarLiquidGlassModifier(
             accessory: accessory,
@@ -195,24 +201,60 @@ struct NativeRootTabsRenderer: View {
         let bgColor: Color = hasExplicitBg ? Color(argb: bgArgb) : .clear
         let bgVisibility: Visibility = hasExplicitBg ? .visible : .automatic
 
+        // Pick a toolbar color scheme so the system can resolve title +
+        // chevron colors consistently on first frame (avoids the
+        // black→white→black flicker on tab switch when the bar has a
+        // dark explicit background). Heuristic: if the dev supplied a
+        // light text color, the bar is meant to be dark → `.dark`
+        // scheme renders light controls. Else leave it nil so the
+        // system decides.
+        let toolbarScheme: ColorScheme? = {
+            guard textArgb != 0 else { return nil }
+            let r = Double((textArgb >> 16) & 0xFF) / 255.0
+            let g = Double((textArgb >>  8) & 0xFF) / 255.0
+            let b = Double( textArgb        & 0xFF) / 255.0
+            let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            return luminance > 0.5 ? .dark : .light
+        }()
+
         tabContent(idx: idx, activeIdx: activeIdx, screenContent: screenContent)
+            // Cross-fade the content area whenever the active tab
+            // changes — `tabContent`'s ViewBuilder already swaps between
+            // `NodeView` (active) and `Color.clear` (inactive), so an
+            // animation on `activeIdx` is enough to make SwiftUI's
+            // default opacity transition fire on appear / disappear.
+            .animation(.easeInOut(duration: 0.18), value: activeIdx)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if showBack {
-                    ToolbarItem(placement: .topBarLeading) {
+                // Explicit `id:` on each ToolbarItem keeps SwiftUI's
+                // identity stable across publishes — without it,
+                // toolbar items are matched structurally per body run,
+                // and a tab-switch publish that re-evaluates the body
+                // can briefly drop the back-chevron's tinted Liquid
+                // Glass capsule before re-applying it.
+                ToolbarItem(id: "back", placement: .topBarLeading) {
+                    if showBack {
                         Button {
                             NativeElementBridge.sendSystemBackEvent()
                         } label: {
                             Image(systemName: "chevron.backward")
                                 .font(.system(size: 17, weight: .semibold))
-                                .foregroundColor(textColor)
                         }
                     }
                 }
             }
-            .toolbarBackground(bgColor, for: .navigationBar)
-            .toolbarBackground(bgVisibility, for: .navigationBar)
+            // Use a toolbar color scheme to keep the title + chevron
+            // colors stable from the first frame — without this, the
+            // title falls back to the system default and visibly
+            // flickers black→white on tab switch when the bar has a
+            // dark explicit background. (`toolbarForegroundStyle` is
+            // unavailable on iOS, so we fall back to `colorScheme`.)
+            .toolbarColorScheme(toolbarScheme, for: .navigationBar)
+            .modifier(ExplicitBarBackgroundModifier(
+                argb: bgArgb,
+                placement: .navigationBar
+            ))
     }
 
     /// On the new `Tab(value:role:)` API, `.badge` accepts a `Text?` — nil
@@ -230,6 +272,27 @@ struct NativeRootTabsRenderer: View {
     }
 }
 
+/// Conditionally applies `.toolbarBackground` only when the layout
+/// supplied an explicit color. Applying `.toolbarBackground(.clear, ...)`
+/// to a default-styled bar disables iOS 26 Liquid Glass, which manifests
+/// as the bar visibly going white during tab transitions and
+/// republishes. Skipping the modifier entirely lets the system keep its
+/// adaptive material.
+private struct ExplicitBarBackgroundModifier: ViewModifier {
+    let argb: Int
+    let placement: ToolbarPlacement
+
+    func body(content: Content) -> some View {
+        if argb != 0 {
+            content
+                .toolbarBackground(Color(argb: argb), for: placement)
+                .toolbarBackground(.visible, for: placement)
+        } else {
+            content
+        }
+    }
+}
+
 /// Encapsulates the iOS 26-only `.tabViewBottomAccessory(...)` and
 /// `.tabBarMinimizeBehavior(...)` modifiers. Wrapping them in a single
 /// `ViewModifier` keeps the `#available` branch confined to one place
@@ -240,15 +303,21 @@ private struct TabBarLiquidGlassModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content
-                .tabBarMinimizeBehavior(minimizeOnScroll ? .onScrollDown : .never)
-                .tabViewBottomAccessory {
-                    if let acc = accessory, let inner = acc.children.first {
+            // `.tabViewBottomAccessory` always renders the slot — even when
+            // its closure is empty — so an empty pill appears above the tab
+            // bar. Only attach the modifier when the layout actually
+            // supplied an accessory; otherwise just apply the minimize
+            // behavior on its own.
+            if let inner = accessory?.children.first {
+                content
+                    .tabBarMinimizeBehavior(minimizeOnScroll ? .onScrollDown : .never)
+                    .tabViewBottomAccessory {
                         NodeView(node: inner)
-                    } else {
-                        EmptyView()
                     }
-                }
+            } else {
+                content
+                    .tabBarMinimizeBehavior(minimizeOnScroll ? .onScrollDown : .never)
+            }
         } else {
             content
         }

@@ -15,6 +15,7 @@ import com.nativephp.mobile.bridge.PHPQueueWorker
 import com.nativephp.mobile.bridge.LaravelEnvironment
 import com.nativephp.mobile.bridge.registerBridgeFunctions
 import com.nativephp.mobile.bridge.plugins.registerPluginRenderers
+import com.nativephp.mobile.ui.nativerender.registerNativeChromeRenderers
 import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -125,6 +126,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Register bridge functions early, before PHP code can execute
         Log.d("MainActivity", "🔌 Registering bridge functions...")
         registerBridgeFunctions(this, applicationContext)
+        registerNativeChromeRenderers()
         registerPluginRenderers()
         Log.d("MainActivity", "✅ Bridge functions registered")
 

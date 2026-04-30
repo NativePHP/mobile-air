@@ -60,6 +60,17 @@ class NativeElementBridge private constructor() {
         /** Previous tree for incremental diff — reuse unchanged node references (shadow thread only) */
         private var previousTree: NativeUITree? = null
 
+        /**
+         * Per-URI previous tree for native chrome stacks / tabs. Keyed
+         * on the `current_uri` prop carried by `native_root_stack` /
+         * `native_root_tabs`. Used so a publish that returns to a URI
+         * we've seen before (e.g. popping back to a stack root, or
+         * switching tabs) can diff against the LAST tree at that URI —
+         * unchanged subtrees keep their refs and Compose's `key()` /
+         * structural diffing avoids rebuilding them mid-animation.
+         */
+        private val nativeChromePrevTrees = mutableMapOf<String, NativeUITree>()
+
         /** Runtime toggle for tree diff — set via Perf.SetDiffEnabled */
         @Volatile
         @JvmStatic
@@ -172,9 +183,21 @@ class NativeElementBridge private constructor() {
                         val nc = countNodes(tree.root)
                         val prev = previousTree
                         val isDiffOn = diffEnabled
+
+                        // Detect native-chrome continuation — same root sentinel
+                        // type across publishes. Drives both diff baseline
+                        // selection and screenKey suppression.
+                        val prevRootType = prev?.root?.type
+                        val newRootType = tree.root.type
+                        val nativeChromeContinuation =
+                            (prevRootType == "native_root_stack" && newRootType == "native_root_stack") ||
+                            (prevRootType == "native_root_tabs"  && newRootType == "native_root_tabs")
+
+                        val newUri = tree.root.props.getString("current_uri", "")
                         val diffedTree: NativeUITree
 
                         if (prev != null && !update.isNav && isDiffOn) {
+                            // State change — diff against immediate previous.
                             val stats = DiffStats()
                             val tDiffStart = System.nanoTime()
                             val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
@@ -182,6 +205,30 @@ class NativeElementBridge private constructor() {
                             diffedTree = tree.copy(root = diffedRoot)
                             PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
                             PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
+                        } else if (update.isNav && nativeChromeContinuation && isDiffOn) {
+                            // Nav within native chrome — prefer the prev tree at
+                            // the SAME URI when available (pop-back to a cached
+                            // URI re-uses every unchanged ref). Fall back to the
+                            // immediate previous (tab switch / push within the
+                            // same chrome — shared chrome subtrees still match).
+                            val baseline = if (newUri.isNotEmpty()) {
+                                nativeChromePrevTrees[newUri] ?: prev
+                            } else {
+                                prev
+                            }
+                            if (baseline != null) {
+                                val stats = DiffStats()
+                                val tDiffStart = System.nanoTime()
+                                val diffedRoot = diffNodeWithStats(baseline.root, tree.root, stats)
+                                val tDiffEnd = System.nanoTime()
+                                diffedTree = tree.copy(root = diffedRoot)
+                                PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
+                                PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
+                            } else {
+                                diffedTree = tree
+                                PerformanceTracker.onTreeDiffed(0, 0, nc, false)
+                                PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, 0)
+                            }
                         } else {
                             diffedTree = tree
                             PerformanceTracker.onTreeDiffed(0, 0, nc, false)
@@ -189,14 +236,30 @@ class NativeElementBridge private constructor() {
                         }
                         previousTree = diffedTree
 
-                        Log.d(TAG, "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav}")
+                        // Track per-URI for native chrome so future publishes
+                        // back to the same URI can diff against it.
+                        if (newRootType == "native_root_stack" || newRootType == "native_root_tabs") {
+                            val uri = diffedTree.root.props.getString("current_uri", "")
+                            if (uri.isNotEmpty()) {
+                                nativeChromePrevTrees[uri] = diffedTree
+                            }
+                        }
+
+                        Log.d(TAG, "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav} cont=$nativeChromeContinuation")
 
                         val isNav = update.isNav
                         mainHandler.post {
                             PerformanceTracker.onTreePostedToMain()
                             NativeUIBridge.isActive.value = true
                             val prevKey = NativeUIBridge.screenKey.intValue
-                            if (isNav) NativeUIBridge.screenKey.intValue++
+                            // Suppress screen-level screenKey bump when both
+                            // trees are the same kind of native chrome — the
+                            // NavigationStack / TabView already animates the
+                            // push / pop / tab switch internally, and bumping
+                            // screenKey would trigger the AnimatedContent at
+                            // NativeUIContent's root, replacing the system
+                            // animation with a slide overlay.
+                            if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
                             NativeUIBridge.currentTree.value = diffedTree
                             Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
                         }
@@ -251,6 +314,7 @@ class NativeElementBridge private constructor() {
             clearEvents()
             cachedTypeTable = null
             previousTree = null
+            nativeChromePrevTrees.clear()
             pendingUpdate.set(null)
 
             // Start shadow thread

@@ -30,6 +30,9 @@ class NavBarOptions
 
     public ?int $elevation = null;
 
+    /** Title display mode — `large` | `inline` | `automatic`. See NavBar::displayMode(). */
+    public ?string $displayMode = null;
+
     /** @var NavAction[] */
     public array $actions = [];
 
@@ -76,6 +79,13 @@ class NavBarOptions
     public function elevation(int $px): self
     {
         $this->elevation = $px;
+
+        return $this;
+    }
+
+    public function displayMode(string $mode): self
+    {
+        $this->displayMode = $mode;
 
         return $this;
     }

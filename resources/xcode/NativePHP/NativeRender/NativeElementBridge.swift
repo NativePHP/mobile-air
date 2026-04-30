@@ -295,11 +295,16 @@ final class NativeElementBridge {
             // re-rendering them).
             //   - For state changes (!isNav): diff against the immediate
             //     previous tree — same screen, almost everything matches.
-            //   - For nav within native chrome: diff against the LAST tree
-            //     at the SAME URI, not against the unrelated previous tree
-            //     (which is a different screen). Pop back to a cached URI
-            //     re-uses every unchanged subtree's ref → no mid-animation
-            //     re-render of the root view's content.
+            //   - Pop back to a cached URI within native chrome: diff
+            //     against the LAST tree at that URI so unchanged subtrees
+            //     reuse refs across the pop animation.
+            //   - Tab switch / push within native chrome: diff against the
+            //     immediate previous tree — the chrome's tab bar /
+            //     toolbar config is identical across tabs declared by the
+            //     same layout, and matching subtrees keep their refs so
+            //     SwiftUI doesn't rebuild the toolbar / tab bar from
+            //     scratch on each publish (which manifests as toolbar
+            //     items briefly losing their tinted Liquid Glass treatment).
             //   - Otherwise (cross-layout nav, first publish): no diff.
             let finalTree: NativeUITree
             let newUri = tree.root.props.getString("current_uri", default: "")
@@ -309,6 +314,9 @@ final class NativeElementBridge {
             } else if update.isNav, nativeChromeContinuation, !newUri.isEmpty,
                       let prevAtUri = nativeChromePrevTrees[newUri] {
                 let diffedRoot = diffNode(old: prevAtUri.root, new: tree.root)
+                finalTree = NativeUITree(version: tree.version, callbackCount: tree.callbackCount, root: diffedRoot)
+            } else if update.isNav, nativeChromeContinuation, let prev = previousTree {
+                let diffedRoot = diffNode(old: prev.root, new: tree.root)
                 finalTree = NativeUITree(version: tree.version, callbackCount: tree.callbackCount, root: diffedRoot)
             } else {
                 finalTree = tree

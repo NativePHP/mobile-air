@@ -7,21 +7,34 @@ class TailwindParser
     private static array $cache = [];
 
     /**
-     * Plugin-provided resolver for `bg-theme-*` / `text-theme-*` classes.
-     * Takes a token name (e.g. "primary", "on-surface") and returns a hex
-     * color string, or null if the token is unknown.
-     *
-     * Set by plugins (e.g. nativephp/native-ui's service provider) so this
-     * parser remains dependency-free from specific plugin namespaces.
+     * Plugin-provided resolver for `bg-theme-*` / `text-theme-*` classes —
+     * resolves a token name (e.g. "primary", "on-surface") to its LIGHT-mode
+     * hex color, or null if unknown.
      *
      * @var callable(string): (?string)|null
      */
     private static $themeResolver = null;
 
+    /**
+     * Companion resolver for the same tokens against the DARK token set.
+     * When set, theme-class parsing emits a `dark` companion node so the
+     * collector / native side can pick the dark hex at render time based on
+     * system colorScheme (existing `dark_bg_color` / `dark_color` /
+     * `dark_border_color` machinery in NodeStyleModifier).
+     *
+     * @var callable(string): (?string)|null
+     */
+    private static $themeDarkResolver = null;
+
     public static function setThemeResolver(?callable $resolver): void
     {
         static::$themeResolver = $resolver;
-        // Bust cache — existing entries may reference stale theme values.
+        static::$cache = [];
+    }
+
+    public static function setThemeDarkResolver(?callable $resolver): void
+    {
+        static::$themeDarkResolver = $resolver;
         static::$cache = [];
     }
 
@@ -184,13 +197,19 @@ class TailwindParser
 
         foreach ($classes as $class) {
             $parsed = self::parseClass($class);
-            if ($parsed !== null) {
-                if (isset($parsed['dark']) && isset($result['dark'])) {
-                    $result['dark'] = array_merge($result['dark'], $parsed['dark']);
-                } else {
-                    $result = array_merge($result, $parsed);
-                }
+            if ($parsed === null) {
+                continue;
             }
+            // Merge dark companion separately so a class that contributes BOTH
+            // a light key AND a dark key (e.g. `bg-theme-surface`) doesn't
+            // drop one side when another dark-bearing class is already merged.
+            if (isset($parsed['dark'])) {
+                $result['dark'] = isset($result['dark'])
+                    ? array_merge($result['dark'], $parsed['dark'])
+                    : $parsed['dark'];
+                unset($parsed['dark']);
+            }
+            $result = array_merge($result, $parsed);
         }
 
         self::$cache[$classString] = $result;
@@ -275,8 +294,9 @@ class TailwindParser
             // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
             // Checked BEFORE the generic bg-/text- branches so e.g. `bg-theme-*`
             // doesn't fall into the color-palette parser as `theme-primary`.
-            str_starts_with($class, 'bg-theme-')   => self::parseThemeBg(substr($class, 9)),
-            str_starts_with($class, 'text-theme-') => self::parseThemeText(substr($class, 11)),
+            str_starts_with($class, 'bg-theme-')     => self::parseThemeBg(substr($class, 9)),
+            str_starts_with($class, 'text-theme-')   => self::parseThemeText(substr($class, 11)),
+            str_starts_with($class, 'border-theme-') => self::parseThemeBorder(substr($class, 13)),
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
@@ -368,33 +388,66 @@ class TailwindParser
     }
 
     /**
-     * `bg-theme-<token>` — resolve a theme color via the registered resolver.
+     * `bg-theme-<token>` — emit BOTH the light hex and a dark companion (when
+     * a dark resolver is registered). The collector splits the dark portion
+     * into `dark_bg_color` props that the native render layer
+     * (`NodeStyleModifier`) picks at draw time based on system colorScheme.
      *
-     * Note: resolution uses the LIGHT-mode token. True dark-mode switching
-     * happens at render time on the native side (via `<native:screen>` and
-     * theme-aware component renderers). For fine-grained class-based tinting,
-     * users accept that the light token is what ships to native.
+     * If no dark resolver is registered, only the light hex is emitted —
+     * which means the class behaves identically in light and dark mode.
      */
     private static function parseThemeBg(string $token): ?array
     {
-        $color = self::resolveThemeToken($token);
+        $light = self::resolveThemeToken($token, false);
+        if ($light === null) {
+            return null;
+        }
+        $dark = self::resolveThemeToken($token, true);
+        $out  = ['bg' => $light];
+        if ($dark !== null && $dark !== $light) {
+            $out['dark'] = ['bg' => $dark];
+        }
 
-        return $color !== null ? ['bg' => $color] : null;
+        return $out;
     }
 
     private static function parseThemeText(string $token): ?array
     {
-        $color = self::resolveThemeToken($token);
-
-        return $color !== null ? ['color' => $color] : null;
-    }
-
-    private static function resolveThemeToken(string $token): ?string
-    {
-        if (static::$themeResolver === null) {
+        $light = self::resolveThemeToken($token, false);
+        if ($light === null) {
             return null;
         }
-        $resolved = call_user_func(static::$themeResolver, $token);
+        $dark = self::resolveThemeToken($token, true);
+        $out  = ['color' => $light];
+        if ($dark !== null && $dark !== $light) {
+            $out['dark'] = ['color' => $dark];
+        }
+
+        return $out;
+    }
+
+    private static function parseThemeBorder(string $token): ?array
+    {
+        $light = self::resolveThemeToken($token, false);
+        if ($light === null) {
+            return null;
+        }
+        $dark = self::resolveThemeToken($token, true);
+        $out  = ['borderColor' => $light, 'borderWidth' => 1];
+        if ($dark !== null && $dark !== $light) {
+            $out['dark'] = ['borderColor' => $dark];
+        }
+
+        return $out;
+    }
+
+    private static function resolveThemeToken(string $token, bool $dark = false): ?string
+    {
+        $resolver = $dark ? static::$themeDarkResolver : static::$themeResolver;
+        if ($resolver === null) {
+            return null;
+        }
+        $resolved = call_user_func($resolver, $token);
 
         return is_string($resolved) ? $resolved : null;
     }

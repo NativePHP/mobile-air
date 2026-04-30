@@ -38,6 +38,9 @@ class NativeRootStack extends Element
         if (isset($attrs['backgroundColor'])) $this->props['background_color'] = $attrs['backgroundColor'];
         if (isset($attrs['textColor']))       $this->props['text_color']       = $attrs['textColor'];
         if (isset($attrs['elevation']))       $this->props['elevation']        = (int) $attrs['elevation'];
+        // Title display mode for the iOS NavigationStack toolbar — `large`,
+        // `inline` (default), or `automatic`.
+        if (isset($attrs['displayMode']))     $this->props['display_mode']     = $attrs['displayMode'];
         // The URI of the screen currently being published. The iOS
         // NavigationCoordinator keys per-URI tree caches off this so it
         // can render the correct content during NavigationStack push /
