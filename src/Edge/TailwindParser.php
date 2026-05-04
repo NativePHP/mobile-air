@@ -224,6 +224,22 @@ class TailwindParser
 
     private static function parseClass(string $class): ?array
     {
+        // Pre-strip trailing `/N` opacity modifier (Tailwind v3+ syntax).
+        // Only color-bearing prefixes are eligible — sizing classes like
+        // `w-1/2` use `/` for fractions, not alpha.
+        [$class, $alphaHex] = self::extractColorAlpha($class);
+
+        $result = self::parseClassImpl($class);
+
+        if ($alphaHex !== null && is_array($result)) {
+            $result = self::applyAlphaToColorResult($result, $alphaHex);
+        }
+
+        return $result;
+    }
+
+    private static function parseClassImpl(string $class): ?array
+    {
         // Dark mode variant: dark:class-name
         if (str_starts_with($class, 'dark:')) {
             $inner = self::parseClass(substr($class, 5));
@@ -258,6 +274,34 @@ class TailwindParser
             $class === 'safe-area' => ['safeArea' => true],
             $class === 'safe-area-top' => ['safeAreaTop' => true],
             $class === 'safe-area-bottom' => ['safeAreaBottom' => true],
+
+            // Liquid Glass material — iOS 26+ Liquid Glass with graceful
+            // fallback (`.regularMaterial` on iOS 18-25; tonal surface on
+            // Compose). Composes with `rounded-*` / `px-*` / etc. so any
+            // padded element can be a glass surface.
+            //
+            // Modifiers chain after a colon, in any order:
+            //
+            //   glass                              regular glass
+            //   glass:prominent                    button-only — `.buttonStyle(.glassProminent)`
+            //   glass:interactive                  adds touch-highlight feedback
+            //   glass:clear                        `.glassEffect(.clear)` — fully translucent,
+            //                                        no tint backdrop (older iOS: `.ultraThinMaterial`).
+            //                                        Ignored on buttons (no `.buttonStyle(.glassClear)`).
+            //   glass:clear:interactive            etc. — modifiers compose freely
+            //
+            // Encoded as a single int with bitflags into the existing
+            // `glass` prop slot — no new wire keys:
+            //
+            //   bit 0 (1) — enabled
+            //   bit 1 (2) — prominent
+            //   bit 2 (4) — interactive
+            //   bit 3 (8) — clear
+            //
+            // Unknown segments (typos like `glass:thicc`) are silently
+            // ignored; the base `glass` flag still applies.
+            $class === 'glass' || str_starts_with($class, 'glass:')
+                => self::parseGlassClass($class),
 
             // Position
             $class === 'absolute' => ['positionType' => 1],
@@ -317,6 +361,92 @@ class TailwindParser
         };
     }
 
+
+    /**
+     * Pull a trailing `/N` (or `/[N]`) opacity modifier off a color class.
+     *
+     * Returns `[strippedClass, alphaHexByte]` where the alpha byte is a
+     * two-char uppercase hex (e.g. `4D` for 30%). When the class is not a
+     * color-bearing class, or has no slash, alpha is null and the class is
+     * returned unchanged.
+     *
+     * Only `bg-`, `text-`, `border-` prefixes are eligible. Sizing classes
+     * like `w-1/2` legitimately use `/` for fraction values, so we leave
+     * them alone.
+     *
+     * Bracketed alpha values (`bg-red-500/[27]`) are supported for parity
+     * with Tailwind v3+ arbitrary-value syntax. Out-of-range values clamp
+     * to 0..100 silently.
+     *
+     * @return array{0: string, 1: ?string}
+     */
+    private static function extractColorAlpha(string $class): array
+    {
+        $isColorPrefix = str_starts_with($class, 'bg-')
+            || str_starts_with($class, 'text-')
+            || str_starts_with($class, 'border-');
+
+        if (! $isColorPrefix) {
+            return [$class, null];
+        }
+
+        $slashPos = strrpos($class, '/');
+        if ($slashPos === false) {
+            return [$class, null];
+        }
+
+        $tail = substr($class, $slashPos + 1);
+
+        // Bracketed arbitrary alpha: bg-red-500/[27]
+        if (preg_match('/^\[(\d+)\]$/', $tail, $m)) {
+            $tail = $m[1];
+        }
+
+        if (! ctype_digit($tail)) {
+            // Slash followed by non-numeric — not an alpha modifier (e.g.
+            // `border-l-2` doesn't have one but `bg-foo/bar` would land here
+            // and we'd safely fall through). Leave the class intact.
+            return [$class, null];
+        }
+
+        $opacity = max(0, min(100, (int) $tail));
+        $alphaByte = (int) round($opacity * 255 / 100);
+        $alphaHex = strtoupper(str_pad(dechex($alphaByte), 2, '0', STR_PAD_LEFT));
+
+        return [substr($class, 0, $slashPos), $alphaHex];
+    }
+
+    /**
+     * Inject an alpha byte into every hex color value in a parsed-class
+     * result array. Recurses into the `dark` companion so theme tokens get
+     * both their light and dark hexes alpha-modified.
+     *
+     * Non-hex values (numbers, bools, font sizes, etc.) are left untouched
+     * so it's safe to call this unconditionally on any parseClass result.
+     *
+     * Handles both 6-char (#RRGGBB) and 8-char (#AARRGGBB) inputs — for
+     * the 8-char case the existing alpha is overwritten.
+     */
+    private static function applyAlphaToColorResult(array $result, string $alphaHex): array
+    {
+        foreach ($result as $key => $val) {
+            if ($key === 'dark' && is_array($val)) {
+                $result[$key] = self::applyAlphaToColorResult($val, $alphaHex);
+                continue;
+            }
+            if (! is_string($val)) {
+                continue;
+            }
+            if (preg_match('/^#([0-9A-Fa-f]{6})$/', $val, $m)) {
+                $result[$key] = '#'.$alphaHex.strtoupper($m[1]);
+            } elseif (preg_match('/^#[0-9A-Fa-f]{2}([0-9A-Fa-f]{6})$/', $val, $m)) {
+                $result[$key] = '#'.$alphaHex.strtoupper($m[1]);
+            }
+        }
+
+        return $result;
+    }
+
     private static function parseSpacingUniform(string $key, string $value): ?array
     {
         if (isset(self::SPACING[$value])) {
@@ -324,6 +454,34 @@ class TailwindParser
         }
 
         return null;
+    }
+
+
+    /**
+     * Parse a `glass` token (with optional colon-chained modifiers) into a
+     * bitflag stored in the `glass` prop. See the inline doc above for the
+     * supported modifier set.
+     *
+     * @return array{glass: int}
+     */
+    private static function parseGlassClass(string $class): array
+    {
+        $flags = 1; // bit 0 = enabled
+
+        $parts = explode(':', $class);
+        foreach (array_slice($parts, 1) as $mod) {
+            if ($mod === 'prominent') {
+                $flags |= 2;
+            } elseif ($mod === 'interactive') {
+                $flags |= 4;
+            } elseif ($mod === 'clear') {
+                $flags |= 8;
+            }
+            // Unknown modifiers are ignored — keeps typos from breaking the
+            // base glass effect.
+        }
+
+        return ['glass' => $flags];
     }
 
     private static function parseSpacingAxis(string $prop, string $axis, string $value): ?array

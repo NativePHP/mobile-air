@@ -86,7 +86,13 @@ struct NativeRootStackRenderer: View {
         let textArgb = root.props.getColor("text_color", default: 0)
         let displayModeStr = root.props.getString("display_mode", default: "inline")
         let actions = root.children.filter { $0.type == "top_bar_action" }
-        let screenContent = root.children.first { $0.type != "top_bar_action" }
+        // Bottom-pinned content (chat input, search bar, etc.) — extracted
+        // out of children so it doesn't render inline; pinned via
+        // `.safeAreaInset(.bottom)` below so the keyboard pushes it up.
+        let bottomBar = root.children.first { $0.type == "bottom_bar" }
+        let screenContent = root.children.first {
+            $0.type != "top_bar_action" && $0.type != "bottom_bar"
+        }
 
         let textColor: Color = textArgb != 0 ? Color(argb: textArgb) : .primary
         let hasExplicitBg = bgArgb != 0
@@ -158,12 +164,19 @@ struct NativeRootStackRenderer: View {
                 }
             }
             .modifier(StackBarBackgroundModifier(argb: bgArgb))
+            .modifier(StackBottomBarInsetModifier(bottomBar: bottomBar))
     }
 
     @ViewBuilder
     private func screenView(_ node: NativeUINode?) -> some View {
         if let node = node {
-            NodeView(node: node)
+            // GlassEffectContainer coordinates `.interactive(true)` press
+            // animations across glass surfaces in this screen so they
+            // crossfade between idle and pressed states cleanly. Without
+            // a container, the per-glass-effect animation isn't scoped
+            // and the press transition renders as a visible flicker
+            // behind the touched element. iOS 26+ only.
+            NodeView(node: node).withGlassContainer()
         } else {
             Color.clear
         }
@@ -211,6 +224,32 @@ struct NativeRootStackRenderer: View {
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
             }
+        }
+    }
+}
+
+/// Pins a `bottom_bar` element above the safe-area-bottom (and above
+/// the keyboard when one is presented). Renders nothing if the layout
+/// didn't supply a bottom bar for this level. Mirrors the tabs
+/// renderer's `BottomBarInsetModifier`: iOS 26 uses `.safeAreaBar`
+/// (first-class floating glass bar primitive), pre-26 falls back to
+/// `.safeAreaInset(.bottom)`.
+private struct StackBottomBarInsetModifier: ViewModifier {
+    let bottomBar: NativeUINode?
+
+    func body(content: Content) -> some View {
+        if let bottomBar, let inner = bottomBar.children.first {
+            if #available(iOS 26.0, *) {
+                content.safeAreaBar(edge: .bottom) {
+                    NodeView(node: inner)
+                }
+            } else {
+                content.safeAreaInset(edge: .bottom, spacing: 0) {
+                    NodeView(node: inner)
+                }
+            }
+        } else {
+            content
         }
     }
 }

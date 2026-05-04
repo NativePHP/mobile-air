@@ -482,7 +482,7 @@ class NativeElementCollector
         return $element;
     }
 
-    protected static function applyLayout(Element $element, array $attrs): void
+    public static function applyLayout(Element $element, array $attrs): void
     {
         if (! empty($attrs['fill'])) {
             $element->fill();
@@ -588,7 +588,7 @@ class NativeElementCollector
         }
     }
 
-    protected static function applyStyle(Element $element, array $attrs): void
+    public static function applyStyle(Element $element, array $attrs): void
     {
         if (isset($attrs['bg'])) {
             $element->bg($attrs['bg']);
@@ -604,6 +604,12 @@ class NativeElementCollector
         }
         if (isset($attrs['elevation'])) {
             $element->elevation((float) $attrs['elevation']);
+        }
+        // Liquid Glass material (1 = regular, 2 = thick). Stored as a
+        // generic prop so the renderer can read it via `props.getInt`
+        // — no NodeStyle binary-layout change needed.
+        if (isset($attrs['glass'])) {
+            $element->setProp('glass', (int) $attrs['glass']);
         }
     }
 
@@ -638,12 +644,19 @@ class NativeElementCollector
         }
     }
 
-    protected static function applyElementProps(Element $element, array $attrs): void
+    public static function applyElementProps(Element $element, array $attrs): void
     {
         if ($element instanceof ScrollView) {
-            if (! empty($attrs['horizontal'])) {
+            // `axis="both"` enables 2D scrolling. Falls back to the legacy
+            // `horizontal` boolean when axis isn't set.
+            $axis = $attrs['axis'] ?? null;
+            if ($axis === 'both') {
+                $element->both();
+            } elseif ($axis === 'horizontal' || ! empty($attrs['horizontal'])) {
                 $element->horizontal();
             }
+            // 'vertical' (or unset) is the default — no method call needed.
+
             if (isset($attrs['showsIndicators'])) {
                 $element->showsIndicators((bool) $attrs['showsIndicators']);
             }

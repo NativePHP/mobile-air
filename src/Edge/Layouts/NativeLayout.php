@@ -53,6 +53,24 @@ abstract class NativeLayout
     }
 
     /**
+     * Optional bottom-pinned content — chat input, search bar,
+     * contextual menu. Renders via `.safeAreaInset(edge: .bottom)` on
+     * iOS (keyboard avoidance is automatic) and `Scaffold(bottomBar =
+     * …)` + `imePadding()` on Compose.
+     *
+     * Returns any composable Element tree. Style with the `glass` /
+     * `glass-thick` Tailwind classes for Liquid Glass capsules. Survives
+     * pushes inside a `NavigationStack` (iOS) — i.e. a chat-detail-only
+     * input bar can be returned conditionally based on `$screen` type.
+     *
+     * Only consulted on layouts where `usesNativeChrome() = true`.
+     */
+    public function bottomBar(NativeComponent $screen): ?Element
+    {
+        return null;
+    }
+
+    /**
      * Opt this layout into native chrome rendering — `NavigationStack` /
      * `TabView` on iOS, `NavHost` / `Scaffold` on Android. When `true`,
      * the framework emits a `NativeRootStack` / `NativeRootTabs` element

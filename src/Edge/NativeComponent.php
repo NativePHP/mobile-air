@@ -244,6 +244,15 @@ abstract class NativeComponent
                 $wrapper->addChild($accessory);
                 $root->addChild($wrapper);
             }
+            // Optional bottom-pinned content (chat input, search bar,
+            // contextual menu). Wrapped in a `BottomBar` marker so the
+            // renderer can pick it out and pin via `.safeAreaInset(.bottom)`.
+            $bottomBar = $layout->bottomBar($this);
+            if ($bottomBar !== null) {
+                $bottomWrapper = \Native\Mobile\Edge\Elements\BottomBar::make();
+                $bottomWrapper->addChild($bottomBar);
+                $root->addChild($bottomWrapper);
+            }
             // Active screen content as the final child.
             $root->addChild($content);
 
@@ -260,6 +269,15 @@ abstract class NativeComponent
             $root->applyAttributes($attrs);
             foreach ($navBar->getActions() as $action) {
                 $root->addChild($action->toElement());
+            }
+            // Optional bottom-pinned content — same shape as the tabs
+            // path above so a stack-only layout (no tab bar) can still
+            // pin a chat input / search bar above the keyboard.
+            $bottomBar = $layout->bottomBar($this);
+            if ($bottomBar !== null) {
+                $bottomWrapper = \Native\Mobile\Edge\Elements\BottomBar::make();
+                $bottomWrapper->addChild($bottomBar);
+                $root->addChild($bottomWrapper);
             }
             $root->addChild($content);
 

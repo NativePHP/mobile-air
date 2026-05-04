@@ -111,13 +111,43 @@ class TabBar
     }
 
     /**
-     * Mark the tab whose url matches as active. Called by the framework
-     * once the current route is known.
+     * Mark the tab that "owns" the current URL as active. Uses
+     * longest-prefix matching so a pushed sub-route (e.g.
+     * `/syncup-native/chat/123` under a `/syncup-native` Chats tab)
+     * still highlights the right tab even when it's not the tab's
+     * exact URL — letting native chrome route the pushed level
+     * through that tab's NavigationStack instead of replacing the
+     * whole layout.
+     *
+     * Tab URLs that are an exact match OR a prefix of `currentUrl`
+     * (where the next char is `/`) are candidates; the longest
+     * matching tab wins. This is a superset of the previous
+     * exact-match behavior.
      */
     public function highlight(string $currentUrl): self
     {
+        $bestTab = null;
+        $bestLen = -1;
+
         foreach ($this->tabs as $tab) {
-            $tab->setActive($tab->getUrl() === $currentUrl);
+            $tab->setActive(false);
+
+            $tabUrl = $tab->getUrl();
+            if ($tabUrl === '') {
+                continue;
+            }
+
+            $isExact  = $tabUrl === $currentUrl;
+            $isPrefix = str_starts_with($currentUrl, $tabUrl . '/');
+
+            if (($isExact || $isPrefix) && strlen($tabUrl) > $bestLen) {
+                $bestTab = $tab;
+                $bestLen = strlen($tabUrl);
+            }
+        }
+
+        if ($bestTab !== null) {
+            $bestTab->setActive(true);
         }
 
         return $this;

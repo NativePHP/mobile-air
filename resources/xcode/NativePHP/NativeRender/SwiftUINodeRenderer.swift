@@ -104,7 +104,7 @@ struct NodeView: View, Equatable {
                 safeAreaTop: safeAreaTop,
                 safeAreaBottom: safeAreaBottom
             ))
-            .modifier(NodeStyleModifier(style: node.style, props: node.props))
+            .modifier(NodeStyleModifier(style: node.style, props: node.props, nodeType: node.type))
             .modifier(NodeGestureModifier(node: node))
     }
 
@@ -148,14 +148,29 @@ struct NodeView: View, Equatable {
 // MARK: - Gesture Modifier
 
 /// Wires onPress / onLongPress callbacks to SwiftUI gestures.
+///
+/// `.contentShape(Rectangle())` is applied ONLY when the node actually has
+/// a press handler. Without that gate, every container's full frame becomes
+/// hit-testable — including transparent empty ones — which breaks
+/// pass-through patterns like a backdrop scroll-view layered behind an
+/// empty foreground column. SwiftUI's default hit-testing on opaque/visible
+/// content is what we want for non-interactive containers.
 private struct NodeGestureModifier: ViewModifier {
     let node: NativeUINode
 
+    private var hasGesture: Bool {
+        node.onPress != 0 || node.onLongPress != 0
+    }
+
     func body(content: Content) -> some View {
-        content
-            .contentShape(Rectangle())
-            .modifier(TapModifier(callbackId: node.onPress, nodeId: node.id))
-            .modifier(LongPressModifier(callbackId: node.onLongPress, nodeId: node.id))
+        if hasGesture {
+            content
+                .contentShape(Rectangle())
+                .modifier(TapModifier(callbackId: node.onPress, nodeId: node.id))
+                .modifier(LongPressModifier(callbackId: node.onLongPress, nodeId: node.id))
+        } else {
+            content
+        }
     }
 }
 

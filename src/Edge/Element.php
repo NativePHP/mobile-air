@@ -24,6 +24,14 @@ abstract class Element
 
     protected array $darkProps = [];
 
+    /**
+     * Generic key-value props applied to every element (set by Tailwind
+     * parser dispatch / `setProp(...)`). Carried through to the
+     * serialized node's props map alongside any subclass-specific
+     * resolveProps() output.
+     */
+    protected array $extraProps = [];
+
     // ── Attribute hydration ──────────────────────────────
 
     /**
@@ -42,6 +50,31 @@ abstract class Element
     public function addChild(Element $child): static
     {
         $this->children[] = $child;
+
+        return $this;
+    }
+
+    /**
+     * Apply a string of Tailwind utility classes to this element using
+     * the same parser the blade collector uses. Lets layout-side
+     * Element composition (e.g. `NativeLayout::bottomBar()`) read like
+     * blade markup:
+     *
+     *   Row::make()->class('px-3 gap-2 items-center glass rounded-full')
+     *       ->addChild(...)
+     *
+     * Parses through `TailwindParser` and dispatches to the same
+     * applyLayout / applyStyle / applyElementProps helpers
+     * `NativeElementCollector` uses for blade-driven elements, so the
+     * resolved keys map to the same node fields with no behavioural
+     * drift between blade and programmatic construction.
+     */
+    public function class(string $classes): static
+    {
+        $attrs = TailwindParser::parse($classes);
+        NativeElementCollector::applyLayout($this, $attrs);
+        NativeElementCollector::applyStyle($this, $attrs);
+        NativeElementCollector::applyElementProps($this, $attrs);
 
         return $this;
     }
@@ -398,6 +431,18 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Set a generic prop that flows through to the serialized node's
+     * props map. Used for Tailwind-mapped properties that aren't part
+     * of the layout / style schemas (e.g. `glass`).
+     */
+    public function setProp(string $key, mixed $value): static
+    {
+        $this->extraProps[$key] = $value;
+
+        return $this;
+    }
+
     // ── Defaults (override in subclasses) ──────────────
 
     protected function defaults(): array
@@ -467,6 +512,14 @@ abstract class Element
     public function getResolvedProps(CallbackRegistry $registry): array
     {
         $props = array_merge($this->defaults(), $this->resolveProps($registry));
+
+        // Generic extras (Tailwind-dispatched glass / etc.) merged after
+        // resolveProps so subclass props (`current_uri`, `nav_*`, …) take
+        // precedence on key collision while still letting any element
+        // carry through extras set via `setProp` / `class('glass')`.
+        if (! empty($this->extraProps)) {
+            $props = array_merge($this->extraProps, $props);
+        }
 
         if ($this->swipeDeleteMethod !== null) {
             $props['on_swipe_delete'] = $registry->register($this->swipeDeleteMethod);

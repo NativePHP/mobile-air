@@ -18,6 +18,13 @@ func registerBridgeFunctions() {
     SwiftUIRendererRegistry.shared.register("native_root_tabs") {
         AnyView(NativeRootTabsRenderer(node: $0))
     }
+    // `bottom_bar` is a marker element — its content is extracted by
+    // the parent chrome renderer (NavigationStack / TabView) and pinned
+    // via `.safeAreaInset(edge: .bottom)`. The marker itself renders
+    // nothing if it ever falls through to the default container path.
+    SwiftUIRendererRegistry.shared.register("bottom_bar") { _ in
+        AnyView(EmptyView())
+    }
 
     // Register plugin renderers
     registerPluginRenderers()
