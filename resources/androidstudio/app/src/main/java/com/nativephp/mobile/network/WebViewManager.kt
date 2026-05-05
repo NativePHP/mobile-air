@@ -260,7 +260,13 @@ class WebViewManager(
                             request.method.equals("PATCH", ignoreCase = true)) {
                             val reqId = request.requestHeaders?.get("X-NativePHP-Req-Id")
                             if (reqId != null) {
-                                phpBridge.consumePostData(reqId)
+                                // Header may contain a comma-joined list if setRequestHeader
+                                // was called multiple times on the same XHR. Try each ID.
+                                reqId.split(",")
+                                    .map { it.trim() }
+                                    .firstNotNullOfOrNull { id ->
+                                        if (id.isNotEmpty()) phpBridge.consumePostData(id) else null
+                                    }
                             } else {
                                 // Native form submission — try full URL first, then path only
                                 var data = phpBridge.consumePostData(url)
@@ -383,6 +389,15 @@ class WebViewManager(
 
 
             });
+
+            // Guard against re-injection on every onPageFinished. Without this,
+            // each injection wraps XHR.send / window.fetch again, and repeated
+            // setRequestHeader('X-NativePHP-Req-Id', ...) calls get joined with
+            // ", " per HTTP spec — making the concatenated value unlookupable.
+            if (window.__nphpPostPatched) {
+                return "POST+PATCH+PUT interception already installed";
+            }
+            window.__nphpPostPatched = true;
 
             // Unique request ID counter
             var _nphpReqId = 0;
