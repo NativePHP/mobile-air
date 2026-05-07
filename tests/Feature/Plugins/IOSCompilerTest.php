@@ -283,9 +283,58 @@ class NestedClass {}');
     /**
      * @test
      *
-     * Should not duplicate Info.plist entries that already exist.
+     * App-level config('nativephp.permissions.ios') wins over plugin manifests,
+     * so an app developer can resolve key collisions between plugins.
      */
-    public function it_does_not_duplicate_existing_plist_entries(): void
+    public function it_applies_app_permission_overrides_after_plugins(): void
+    {
+        config()->set('nativephp.permissions', [
+            'NSCameraUsageDescription' => 'App-level camera string.',
+        ]);
+
+        // Two plugins both claim the same key — last wins among plugins,
+        // but app override should beat both.
+        $pluginA = $this->createTestPlugin([
+            'name' => 'plugin-a',
+            'ios' => [
+                'info_plist' => [
+                    'NSCameraUsageDescription' => 'Plugin A camera string.',
+                ],
+            ],
+        ]);
+        $pluginB = $this->createTestPlugin([
+            'name' => 'plugin-b',
+            'ios' => [
+                'info_plist' => [
+                    'NSCameraUsageDescription' => 'Plugin B camera string.',
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$pluginA, $pluginB]));
+
+        $this->compiler->compile();
+
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $content = $this->files->get($plistPath);
+
+        $this->assertStringContainsString('App-level camera string.', $content);
+        $this->assertStringNotContainsString('Plugin A camera string.', $content);
+        $this->assertStringNotContainsString('Plugin B camera string.', $content);
+        $this->assertEquals(1, substr_count($content, 'NSCameraUsageDescription'));
+
+        config()->set('nativephp.permissions', []);
+    }
+
+    /**
+     * @test
+     *
+     * Should update existing Info.plist entries without duplicating the key,
+     * so plugin manifests remain the source of truth across rebuilds.
+     */
+    public function it_updates_existing_plist_entries_without_duplicating(): void
     {
         // Add a permission to the plist first
         $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
@@ -301,7 +350,7 @@ class NestedClass {}');
         $plugin = $this->createTestPlugin([
             'ios' => [
                 'info_plist' => [
-                    'NSCameraUsageDescription' => 'New camera description',  // Should not duplicate
+                    'NSCameraUsageDescription' => 'New camera description',
                 ],
             ],
         ]);
@@ -314,9 +363,10 @@ class NestedClass {}');
 
         $content = $this->files->get($plistPath);
 
-        // Key should only appear once
-        $count = substr_count($content, 'NSCameraUsageDescription');
-        $this->assertEquals(1, $count);
+        // Key should appear exactly once, with the manifest value applied
+        $this->assertEquals(1, substr_count($content, 'NSCameraUsageDescription'));
+        $this->assertStringContainsString('<string>New camera description</string>', $content);
+        $this->assertStringNotContainsString('Existing camera description', $content);
     }
 
     /**

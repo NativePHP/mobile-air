@@ -299,6 +299,8 @@ class IOSPluginCompiler
             $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
         ];
 
+        $appOverrides = $this->getAppInfoPlistOverrides();
+
         foreach ($plistPaths as $plistPath) {
             if (! $this->files->exists($plistPath)) {
                 continue;
@@ -322,8 +324,21 @@ class IOSPluginCompiler
                 }
             }
 
+            // Apply app-level overrides last so they always win over plugins.
+            if (! empty($appOverrides)) {
+                $plist = $this->injectPlistEntries($plist, $appOverrides);
+            }
+
             $this->files->put($plistPath, $plist);
         }
+    }
+
+    /**
+     * Read app-level Info.plist overrides from config('nativephp.permissions').
+     */
+    protected function getAppInfoPlistOverrides(): array
+    {
+        return config('nativephp.permissions', []);
     }
 
     /**
@@ -350,12 +365,12 @@ class IOSPluginCompiler
         foreach ($entries as $key => $value) {
             // Check if key already exists
             if (str_contains($plist, "<key>{$key}</key>")) {
-                // For array values, merge with existing array
                 if (is_array($value)) {
                     $plist = $this->mergeArrayEntry($plist, $key, $value);
+                } elseif (is_string($value)) {
+                    $plist = $this->updateStringEntry($plist, $key, $this->substituteEnvPlaceholders($value));
                 }
 
-                // Skip non-array values that already exist
                 continue;
             }
 
@@ -387,6 +402,18 @@ class IOSPluginCompiler
         }
 
         return $plist;
+    }
+
+    /**
+     * Update an existing string entry's value in the plist
+     */
+    protected function updateStringEntry(string $plist, string $key, string $value): string
+    {
+        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<string>)([^<]*)(<\/string>)/';
+
+        return preg_replace_callback($pattern, function ($matches) use ($value) {
+            return $matches[1].htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8').$matches[3];
+        }, $plist, 1);
     }
 
     /**
