@@ -13,6 +13,7 @@ import com.nativephp.mobile.security.LaravelCookieStore
 class PHPBridge(private val context: Context) {
     private var lastPostData: String? = null
     private val requestDataMap = ConcurrentHashMap<String, String>()
+    private val postDataByKey = ConcurrentHashMap<String, String>()
     private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private val nativePhpScript: String
@@ -62,6 +63,11 @@ class PHPBridge(private val context: Context) {
     external fun nativeWorkerBoot(bootstrapPath: String): Int
     external fun nativeWorkerArtisan(command: String): String
     external fun nativeWorkerShutdown()
+
+    // Ephemeral runtime JNI methods — generic background TSRM context for plugin use
+    external fun nativeEphemeralBoot(bootstrapPath: String): Int
+    external fun nativeEphemeralArtisan(command: String): String
+    external fun nativeEphemeralShutdown()
 
     @Volatile
     private var runtimeInitialized = false
@@ -282,6 +288,35 @@ class PHPBridge(private val context: Context) {
         if (keysToRemove.isNotEmpty()) {
             Log.d(TAG, "Cleaned up ${keysToRemove.size} old request entries")
         }
+    }
+
+    fun storePostData(key: String, data: String) {
+        postDataByKey[key] = data
+        Log.d(TAG, "Stored POST data for key=$key (length=${data.length})")
+    }
+
+    fun consumePostData(key: String): String? {
+        // Try immediate lookup
+        var data = postDataByKey.remove(key)
+
+        // If not found, the JS bridge may not have fired yet — wait briefly
+        if (data == null) {
+            for (i in 1..10) {
+                Thread.sleep(5)
+                data = postDataByKey.remove(key)
+                if (data != null) {
+                    Log.d(TAG, "POST data for key=$key arrived after ${i * 5}ms wait")
+                    break
+                }
+            }
+        }
+
+        if (data != null) {
+            Log.d(TAG, "Consumed POST data for key=$key (length=${data.length})")
+        } else {
+            Log.w(TAG, "No POST data for key=$key after 50ms — request may have no body")
+        }
+        return data
     }
 
     fun getLastPostData(): String? {
