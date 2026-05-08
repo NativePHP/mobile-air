@@ -270,8 +270,10 @@ trait PreparesBuild
             });
 
             $version = config('nativephp.version', now()->format('Ymd-His'));
-            $this->logToFile("  Writing version file: $version");
-            file_put_contents($tempDir.DIRECTORY_SEPARATOR.'.version', $version.PHP_EOL);
+            $versionCode = config('nativephp.version_code', 1);
+            $bundleVersionId = $version === 'DEBUG' ? 'DEBUG' : "{$version}b{$versionCode}";
+            $this->logToFile("  Writing version file: $bundleVersionId");
+            file_put_contents($tempDir.DIRECTORY_SEPARATOR.'.version', $bundleVersionId.PHP_EOL);
 
             if (file_exists($source.DIRECTORY_SEPARATOR.'.env')) {
                 $this->logToFile('  Copying and cleaning .env file...');
@@ -306,12 +308,13 @@ trait PreparesBuild
             }
             $bundleMeta = json_encode([
                 'version' => $version,
+                'version_code' => $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
             ], JSON_PRETTY_PRINT);
             file_put_contents($assetsDir.DIRECTORY_SEPARATOR.'bundle_meta.json', $bundleMeta);
             $runtimeMode = config('nativephp.runtime.mode', 'persistent');
-            $this->logToFile("  Written bundle_meta.json: version=$version, bifrost=".($bifrostAppId ?? 'null').", runtime_mode=$runtimeMode");
+            $this->logToFile("  Written bundle_meta.json: version=$version, version_code=$versionCode, bifrost=".($bifrostAppId ?? 'null').", runtime_mode=$runtimeMode");
 
             $sizeMB = round(filesize($destinationZip) / 1024 / 1024, 2);
             $this->logToFile("  Bundle size: {$sizeMB} MB");

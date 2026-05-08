@@ -28,22 +28,10 @@ class LaravelEnvironment(private val context: Context) {
     // Data class to hold bundle metadata read from ZIP
     private data class BundleMetadata(
         val version: String?,
+        val versionCode: String?,
         val bifrostAppId: String?,
         val runtimeMode: String?
     )
-
-    // Data class for version information with utility methods
-    private data class VersionInfo(val raw: String, val clean: String) {
-        val isDebug: Boolean get() = clean.equals(VERSION_DEBUG, ignoreCase = true)
-
-        companion object {
-            fun from(version: String?): VersionInfo? {
-                if (version == null) return null
-                val clean = version.trim().trim('"').trim('\'')
-                return VersionInfo(version, clean)
-            }
-        }
-    }
 
     companion object {
         // Process-wide lock around Laravel bundle extraction. MainActivity and
@@ -88,8 +76,23 @@ class LaravelEnvironment(private val context: Context) {
         private const val VERSION_DEFAULT = "0.0.0"
 
         // Environment variable regex patterns
-        private const val REGEX_APP_VERSION = "NATIVEPHP_APP_VERSION=(.+)"
+        private const val REGEX_APP_VERSION = "(?m)^NATIVEPHP_APP_VERSION=(.+)$"
+        private const val REGEX_APP_VERSION_CODE = "(?m)^NATIVEPHP_APP_VERSION_CODE=(.+)$"
         private const val REGEX_BIFROST_ID = "BIFROST_APP_ID=(.+)"
+
+        /**
+         * Build the composite identity ("version+b+versionCode" or "DEBUG") used to
+         * decide whether the embedded Laravel bundle needs to be re-extracted.
+         */
+        private fun buildVersionId(version: String?, versionCode: String?): String? {
+            if (version == null) return null
+            val cleanVersion = version.trim().trim('"').trim('\'')
+            if (cleanVersion.equals(VERSION_DEBUG, ignoreCase = true)) {
+                return VERSION_DEBUG
+            }
+            val cleanCode = versionCode?.trim()?.trim('"')?.trim('\'') ?: "0"
+            return "${cleanVersion}b${cleanCode}"
+        }
 
         init {
             System.loadLibrary("php_wrapper")
@@ -217,48 +220,46 @@ class LaravelEnvironment(private val context: Context) {
             return false
         }
 
-        // Get embedded version using VersionInfo wrapper
-        val embeddedVersionRaw = getVersionFromBundledEnv() ?: readVersionFromZip(BUNDLE_ZIP)
-        val embeddedVersion = VersionInfo.from(embeddedVersionRaw)
+        // Build composite "version+b+versionCode" identity from bundle metadata.
+        // This is what we compare against the extracted .env so a build-number-only
+        // bump still triggers re-extraction.
+        val bundleMeta = readBundleMetadata()
+        val embeddedId = buildVersionId(bundleMeta.version, bundleMeta.versionCode)
 
-        if (embeddedVersion == null) {
+        if (embeddedId == null) {
             Log.e(TAG, "❌ Couldn't read version from laravel_bundle.zip")
             return false
         }
 
-        Log.d(TAG, "🔍 DEBUG: embeddedVersion from bundle = '${embeddedVersion.raw}'")
+        Log.d(TAG, "🔍 DEBUG: embeddedId from bundle = '$embeddedId'")
 
-        // Check current version from .env if exists
-        val currentVersionRaw = if (laravelDir.exists()) {
+        // Build composite from extracted .env if it exists
+        val currentId = if (laravelDir.exists()) {
             val envFile = File(laravelDir, ENV_FILE)
             if (envFile.exists()) {
-                getVersionFromEnvFile(envFile)
+                buildVersionId(getVersionFromEnvFile(envFile), getVersionCodeFromEnvFile(envFile))
             } else {
                 null
             }
         } else {
             null
         }
-        val currentVersion = VersionInfo.from(currentVersionRaw)
 
-        Log.d(TAG, "🔍 DEBUG: currentVersion = '${currentVersion?.clean ?: "none"}'")
-        Log.d(TAG, "🔍 DEBUG: embeddedVersion.clean = '${embeddedVersion.clean}'")
-        Log.d(TAG, "🔍 DEBUG: isDebugOverride = ${embeddedVersion.isDebug}")
+        Log.d(TAG, "🔍 DEBUG: currentId = '${currentId ?: "none"}'")
 
-        // If DEBUG mode, ALWAYS extract. Otherwise, only extract if versions don't match
-        val isUpToDate = currentVersion?.clean == embeddedVersion.clean
-        val shouldExtract = embeddedVersion.isDebug || !isUpToDate
+        // If DEBUG mode, ALWAYS extract. Otherwise, only extract if composites don't match.
+        val isDebug = embeddedId.equals(VERSION_DEBUG, ignoreCase = true)
+        val isUpToDate = currentId == embeddedId
+        val shouldExtract = isDebug || !isUpToDate
 
-        Log.d(TAG, "🔍 DEBUG: isUpToDate = $isUpToDate")
-        Log.d(TAG, "🔍 DEBUG: shouldExtract = $shouldExtract")
+        Log.d(TAG, "🔍 DEBUG: isUpToDate = $isUpToDate, isDebug = $isDebug, shouldExtract = $shouldExtract")
 
         if (!shouldExtract) {
-            Log.d(TAG, "✅ Laravel already up to date (version ${embeddedVersion.clean})")
+            Log.d(TAG, "✅ Laravel already up to date (id $embeddedId)")
             return false
         }
 
-        Log.d(TAG, "📦 Extracting Laravel bundle (new version: ${embeddedVersion.raw})")
-        Log.d(TAG, "📦 Current: ${currentVersion?.raw ?: "none"}, Embedded: ${embeddedVersion.raw}")
+        Log.d(TAG, "📦 Extracting Laravel bundle — current: ${currentId ?: "none"}, embedded: $embeddedId")
 
         // Delete entire laravel directory - persisted_data is separate and safe
         if (laravelDir.exists()) {
@@ -290,13 +291,13 @@ class LaravelEnvironment(private val context: Context) {
                 otaMarkerFile.delete()
             }
 
-            // Update .version file to match the environment value
-            val versionFromEnv = getVersionFromEnvFile(File(laravelDir, ENV_FILE))
-            if (versionFromEnv != null) {
-                val versionFile = File(laravelDir, VERSION_FILE)
-                val cleanVersion = versionFromEnv.trim('"').trim('\'')
-                versionFile.writeText(cleanVersion)
-                Log.d(TAG, "✅ Updated .version file to: $cleanVersion")
+            // Update .version file with the composite identity so it stays in sync
+            // with the bundled .version (and survives a re-read for the staleness check).
+            val envFile = File(laravelDir, ENV_FILE)
+            val installedId = buildVersionId(getVersionFromEnvFile(envFile), getVersionCodeFromEnvFile(envFile))
+            if (installedId != null) {
+                File(laravelDir, VERSION_FILE).writeText(installedId)
+                Log.d(TAG, "✅ Updated .version file to: $installedId")
             }
 
             Log.d(TAG, "✅ Extraction complete to ${laravelDir.absolutePath}")
@@ -318,11 +319,6 @@ class LaravelEnvironment(private val context: Context) {
         return true
     }
 
-    private fun isDebugVersion(version: String?): Boolean {
-        // Use VersionInfo for consistent version handling
-        return VersionInfo.from(version)?.isDebug ?: false
-    }
-
     /**
      * Read bundle metadata from bundle_meta.json (fast path) or ZIP scan (fallback).
      * Results are cached to avoid redundant reads.
@@ -336,10 +332,14 @@ class LaravelEnvironment(private val context: Context) {
             val json = context.assets.open(BUNDLE_META).bufferedReader().use { it.readText() }
             val obj = JSONObject(json)
             val version = if (obj.has("version")) obj.getString("version") else null
+            val versionCode = when {
+                !obj.has("version_code") || obj.isNull("version_code") -> null
+                else -> obj.get("version_code").toString()
+            }
             val bifrostAppId = if (obj.has("bifrost_app_id") && !obj.isNull("bifrost_app_id")) obj.getString("bifrost_app_id") else null
             val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
-            Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
-            val metadata = BundleMetadata(version, bifrostAppId, runtimeMode)
+            Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, version_code=$versionCode, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
+            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode)
             bundleMetadataCache = metadata
             return metadata
         } catch (e: Exception) {
@@ -348,7 +348,9 @@ class LaravelEnvironment(private val context: Context) {
 
         // Slow fallback: scan ZIP for .env and .version
         var version: String? = null
+        var versionCode: String? = null
         var bifrostAppId: String? = null
+        var versionIdFromVersionFile: String? = null
 
         try {
             val zis = ZipInputStream(context.assets.open(BUNDLE_ZIP) as java.io.InputStream)
@@ -358,34 +360,50 @@ class LaravelEnvironment(private val context: Context) {
                 when (entry?.name) {
                     ENV_FILE -> {
                         val envContent = zis.bufferedReader().readText()
-                        val versionMatch = Regex(REGEX_APP_VERSION).find(envContent)
-                        version = versionMatch?.groupValues?.get(1)?.trim()
-                        val bifrostIdMatch = Regex(REGEX_BIFROST_ID).find(envContent)
-                        bifrostAppId = bifrostIdMatch?.groupValues?.get(1)?.trim()
+                        version = Regex(REGEX_APP_VERSION).find(envContent)?.groupValues?.get(1)?.trim()
+                        versionCode = Regex(REGEX_APP_VERSION_CODE).find(envContent)?.groupValues?.get(1)?.trim()
+                        bifrostAppId = Regex(REGEX_BIFROST_ID).find(envContent)?.groupValues?.get(1)?.trim()
                     }
                     VERSION_FILE -> {
-                        if (version == null) {
-                            version = zis.bufferedReader().readText().trim()
-                        }
+                        // .version contains the composite id (e.g. "1.0.0b42") used as a fallback
+                        // when .env can't be parsed.
+                        versionIdFromVersionFile = zis.bufferedReader().readText().trim()
                     }
                 }
-                if (version != null && bifrostAppId != null) break
             }
             zis.close()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read bundle metadata", e)
         }
 
-        val metadata = BundleMetadata(version, bifrostAppId, null)
+        // If .env didn't yield a version but .version did, decompose the composite back
+        // into version + versionCode so the metadata shape stays consistent.
+        if (version == null && versionIdFromVersionFile != null) {
+            val (parsedVersion, parsedCode) = parseVersionId(versionIdFromVersionFile)
+            version = parsedVersion
+            versionCode = parsedCode
+        }
+
+        val metadata = BundleMetadata(version, versionCode, bifrostAppId, null)
         bundleMetadataCache = metadata
         return metadata
     }
 
-    private fun readVersionFromZip(zipFileName: String): String? {
-        // Use cached metadata instead of reading ZIP again
-        return readBundleMetadata().version
+    /**
+     * Decompose a composite version id ("1.0.0b42" or "DEBUG") back into its parts.
+     * Used when .version is the only metadata source available.
+     */
+    private fun parseVersionId(id: String): Pair<String?, String?> {
+        if (id.equals(VERSION_DEBUG, ignoreCase = true)) {
+            return Pair(VERSION_DEBUG, null)
+        }
+        val sepIndex = id.lastIndexOf('b')
+        if (sepIndex <= 0 || sepIndex == id.length - 1) {
+            return Pair(id, null)
+        }
+        return Pair(id.substring(0, sepIndex), id.substring(sepIndex + 1))
     }
-    
+
     private fun checkAndApplyOTAUpdate(): Boolean {
         // Check if BIFROST_APP_ID exists in environment or app metadata
         val bifrostAppId = getBifrostAppId()
@@ -442,14 +460,23 @@ class LaravelEnvironment(private val context: Context) {
     private fun getVersionFromEnvFile(envFile: File): String? {
         return try {
             val envContent = envFile.readText()
-            val versionMatch = Regex(REGEX_APP_VERSION).find(envContent)
-            versionMatch?.groupValues?.get(1)?.trim()
+            Regex(REGEX_APP_VERSION).find(envContent)?.groupValues?.get(1)?.trim()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read version from .env file", e)
             null
         }
     }
-    
+
+    private fun getVersionCodeFromEnvFile(envFile: File): String? {
+        return try {
+            val envContent = envFile.readText()
+            Regex(REGEX_APP_VERSION_CODE).find(envContent)?.groupValues?.get(1)?.trim()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read version code from .env file", e)
+            null
+        }
+    }
+
     private fun getVersionFromBundledEnv(): String? {
         // Use cached metadata instead of reading ZIP again
         return readBundleMetadata().version
