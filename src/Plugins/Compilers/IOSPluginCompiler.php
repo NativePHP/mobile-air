@@ -989,12 +989,38 @@ SECTION;
             return;
         }
 
-        // Check if marker exists (preferred injection point)
-        if (str_contains($podfile, '# NATIVEPHP_PLUGIN_PODS')) {
-            $podfile = str_replace(
-                '# NATIVEPHP_PLUGIN_PODS',
-                "# NativePHP Plugin Dependencies\n{$newPodLines}",
-                $podfile
+        // Check if marker exists (preferred injection point).
+        //
+        // The shipped iOS Podfile template uses a paired marker block so the same
+        // injection site works on every run:
+        //
+        //   # NATIVEPHP_PLUGIN_PODS_START
+        //   # NATIVEPHP_PLUGIN_PODS_END
+        //
+        // Replace the entire block (preserving the markers) so subsequent runs are
+        // idempotent. A naive str_replace on '# NATIVEPHP_PLUGIN_PODS' would match
+        // both marker lines and corrupt them into 'pod ...'_START / 'pod ...'_END.
+        $blockPattern = '/^[ \t]*# NATIVEPHP_PLUGIN_PODS_START\s*?\R.*?^[ \t]*# NATIVEPHP_PLUGIN_PODS_END[ \t]*$/ms';
+
+        if (preg_match($blockPattern, $podfile)) {
+            $replacement = "  # NATIVEPHP_PLUGIN_PODS_START\n"
+                ."  # NativePHP Plugin Dependencies\n"
+                ."{$newPodLines}\n"
+                ."  # NATIVEPHP_PLUGIN_PODS_END";
+
+            $podfile = preg_replace_callback(
+                $blockPattern,
+                fn () => $replacement,
+                $podfile,
+                1
+            );
+        } elseif (str_contains($podfile, '# NATIVEPHP_PLUGIN_PODS')) {
+            // Legacy single-marker template — replace it once with the comment + pods.
+            $podfile = preg_replace(
+                '/# NATIVEPHP_PLUGIN_PODS\b(?!_)/',
+                "# NativePHP Plugin Dependencies\n".addcslashes($newPodLines, '\\$'),
+                $podfile,
+                1
             );
         } else {
             // Find the NativePHP target block and insert before its 'end'
@@ -1037,7 +1063,8 @@ platform :ios, '15.0'
 use_frameworks!
 
 target 'NativePHP' do
-  # NATIVEPHP_PLUGIN_PODS
+  # NATIVEPHP_PLUGIN_PODS_START
+  # NATIVEPHP_PLUGIN_PODS_END
 end
 
 post_install do |installer|
