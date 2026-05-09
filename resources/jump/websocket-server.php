@@ -36,6 +36,7 @@ require_once $basePath.'/vendor/autoload.php';
 
 use Workerman\Connection\AsyncTcpConnection;
 use Workerman\Connection\TcpConnection;
+use Workerman\Timer;
 use Workerman\Worker;
 
 // Make basePath available globally for file watcher
@@ -175,7 +176,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
     jumpLog("TCP bridge listening on 127.0.0.1:{$bridgePort}");
 
     // Keepalive ping
-    \Workerman\Timer::add(15, function () use (&$deviceConnections) {
+    Timer::add(15, function () use (&$deviceConnections) {
         $ping = json_encode(['type' => 'ping']);
         foreach ($deviceConnections as $connection) {
             $connection->send($ping);
@@ -192,7 +193,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
     $serverExtensions = ['php', 'blade.php'];
     $clientExtensions = ['js', 'jsx', 'ts', 'tsx', 'vue', 'css', 'scss', 'sass', 'less'];
 
-    \Workerman\Timer::add(1, function () use (&$deviceConnections, &$lastModTimes, &$lastReloadTime, $watchPaths, $serverExtensions, $clientExtensions) {
+    Timer::add(1, function () use (&$deviceConnections, &$lastModTimes, &$lastReloadTime, $watchPaths, $serverExtensions, $clientExtensions) {
         global $basePath;
         if (empty($deviceConnections)) {
             return;
@@ -208,8 +209,8 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
                 continue;
             }
 
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($fullPath, \RecursiveDirectoryIterator::SKIP_DOTS)
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($fullPath, RecursiveDirectoryIterator::SKIP_DOTS)
             );
 
             foreach ($iterator as $file) {

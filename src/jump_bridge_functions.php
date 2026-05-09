@@ -1,5 +1,7 @@
 <?php
 
+use Native\Mobile\JumpBridge;
+
 /**
  * Fallback implementations of nativephp_call() and nativephp_can()
  * for Jump hybrid mode (dev machine execution).
@@ -22,7 +24,7 @@ if (! function_exists('nativephp_call')) {
      */
     function nativephp_call(string $method, string $params = '{}'): ?string
     {
-        return \Native\Mobile\JumpBridge::instance()->call($method, $params);
+        return JumpBridge::instance()->call($method, $params);
     }
 }
 
@@ -42,7 +44,7 @@ if (! function_exists('nativephp_can')) {
 if (! function_exists('nativephp_element_init')) {
     function nativephp_element_init(): void
     {
-        \Native\Mobile\JumpBridge::instance()->call('Element.Init');
+        JumpBridge::instance()->call('Element.Init');
     }
 }
 
@@ -56,7 +58,7 @@ if (! function_exists('nativephp_element_publish')) {
             date('[H:i:s] ')."Publish: hash={$hash} size=".strlen($json)."\n",
             FILE_APPEND
         );
-        \Native\Mobile\JumpBridge::instance()->call('Element.Publish', $json);
+        JumpBridge::instance()->call('Element.Publish', $json);
     }
 }
 
@@ -65,7 +67,7 @@ if (! function_exists('nativephp_element_wait_event')) {
     {
         static $consecutiveErrors = 0;
 
-        $result = \Native\Mobile\JumpBridge::instance()->call('Element.WaitEvent', json_encode(['timeout' => $timeoutMs]));
+        $result = JumpBridge::instance()->call('Element.WaitEvent', json_encode(['timeout' => $timeoutMs]));
 
         if ($result === null) {
             // TCP timeout — not an error, just no interaction yet. Retry.
@@ -117,7 +119,7 @@ if (! function_exists('nativephp_element_wait_event')) {
 if (! function_exists('nativephp_element_reset')) {
     function nativephp_element_reset(): void
     {
-        \Native\Mobile\JumpBridge::instance()->call('Element.Reset');
+        JumpBridge::instance()->call('Element.Reset');
     }
 }
 
@@ -129,6 +131,6 @@ if (! function_exists('nativephp_element_shutdown')) {
         // On-device, Kotlin/Swift handles this cleanup — in Jump, we do it here.
         @unlink(storage_path('framework/.hot_restart'));
 
-        \Native\Mobile\JumpBridge::instance()->call('Element.Shutdown');
+        JumpBridge::instance()->call('Element.Shutdown');
     }
 }

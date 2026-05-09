@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Commands;
 
+use Endroid\QrCode\Builder\Builder;
 use Illuminate\Console\Command;
 
 use function Laravel\Prompts\intro;
@@ -447,13 +448,13 @@ class JumpCommand extends Command
     private function displayTerminalQrCode(string $host, int $port): void
     {
         try {
-            if (! class_exists(\Endroid\QrCode\Builder\Builder::class)) {
+            if (! class_exists(Builder::class)) {
                 return;
             }
 
             $qrData = "jump://connect?host={$host}&port={$port}";
 
-            $result = (new \Endroid\QrCode\Builder\Builder(
+            $result = (new Builder(
                 data: $qrData,
                 size: 300,
                 margin: 2,

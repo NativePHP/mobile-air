@@ -951,7 +951,7 @@ class AndroidPluginCompiler
 
             $authBlock = '';
             if ($authentication === 'basic') {
-                $authBlock = <<<KOTLIN
+                $authBlock = <<<'KOTLIN'
 
                 authentication {
                     create<BasicAuthentication>("basic")

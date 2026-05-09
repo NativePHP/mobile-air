@@ -150,7 +150,7 @@ return [
         'storage/framework/sessions',
         'storage/framework/cache',
         'storage/framework/testing',
-        'storage/logs/laravel.log'
+        'storage/logs/laravel.log',
     ],
 
     /*
@@ -190,7 +190,6 @@ return [
         | target_sdk:  The SDK version your app is designed and tested for
         |
         */
-
 
         /*
         |--------------------------------------------------------------------------

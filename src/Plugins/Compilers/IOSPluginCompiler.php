@@ -1006,7 +1006,7 @@ SECTION;
             $replacement = "  # NATIVEPHP_PLUGIN_PODS_START\n"
                 ."  # NativePHP Plugin Dependencies\n"
                 ."{$newPodLines}\n"
-                ."  # NATIVEPHP_PLUGIN_PODS_END";
+                .'  # NATIVEPHP_PLUGIN_PODS_END';
 
             $podfile = preg_replace_callback(
                 $blockPattern,
