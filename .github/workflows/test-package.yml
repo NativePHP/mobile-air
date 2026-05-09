@@ -176,117 +176,68 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
 
-    - name: Setup signing keystore
+    - name: Test unsigned bundle AAB build via native:run
       run: |
         cd /tmp/test-app
-        
+
+        echo "=== Testing native:run android --build=bundle (unsigned) ==="
+
+        # Clean previous build
+        rm -rf nativephp/android/app/build/outputs/bundle || true
+
+        # native:run will fail at the device install stage, but the build
+        # itself should succeed and produce an AAB.
+        set +e
+        timeout 900 php artisan native:run android --build=bundle --no-tty 2>&1 | tee bundle-build.log
+        set -e
+
+        echo "=== Build log output ==="
+        tail -50 bundle-build.log
+
+        echo "=== Verifying AAB build output ==="
+        find nativephp/android/app/build/outputs -name "*.aab" -type f | head -5
+
+        if find nativephp/android/app/build/outputs -name "*.aab" -type f | grep -q .; then
+          echo "✅ Bundle AAB build successful"
+          AAB_FILE=$(find nativephp/android/app/build/outputs -name "*.aab" -type f | head -1)
+          AAB_SIZE=$(stat -c%s "$AAB_FILE")
+          echo "AAB file: $AAB_FILE"
+          echo "AAB size: $AAB_SIZE bytes"
+        else
+          echo "❌ No AAB files found"
+          exit 1
+        fi
+
+    - name: Setup signing keystore
+      if: env.ANDROID_KEYSTORE_BASE64 != ''
+      env:
+        ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      run: |
+        cd /tmp/test-app
+
         echo "🔐 Setting up signing keystore for signed builds..."
-        
+
         # Decode keystore from base64 and save to Android project
-        echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > nativephp/android/app-keystore.jks
-        
+        echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > nativephp/android/app-keystore.jks
+
         # Set up gradle properties for signing
         cd nativephp/android
         echo "MYAPP_UPLOAD_STORE_FILE=$(pwd)/app-keystore.jks" >> local.properties
-        echo "MYAPP_UPLOAD_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> local.properties
-        echo "MYAPP_UPLOAD_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> local.properties
-        echo "MYAPP_UPLOAD_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> local.properties
-        
+        echo "MYAPP_UPLOAD_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> local.properties
+        echo "MYAPP_UPLOAD_STORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> local.properties
+        echo "MYAPP_UPLOAD_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> local.properties
+
         echo "✅ Signing keystore configured successfully"
 
-#    - name: Test unsigned release APK build via native:run
-#      run: |
-#        cd /tmp/test-app
-#
-#        echo "=== Testing native:run android --build=release (unsigned) ==="
-#
-#        # This should:
-#        # 1. Update Android configuration (including version placeholders)
-#        # 2. Create Laravel bundle
-#        # 3. Build release APK
-#        # 4. Should fail at device install stage (which is expected)
-#        set +e  # Don't exit on error since device install will fail
-#        timeout 900 php artisan native:run android --build=release --no-tty 2>&1 | tee release-build.log
-#        BUILD_EXIT_CODE=$?
-#        set -e
-#
-#        echo "=== Build log output ==="
-#        tail -20 release-build.log
-#
-#        echo "=== Checking for infinite recursion errors ==="
-#        if grep -q "nativephp/android/laravel/nativephp/android/laravel" release-build.log; then
-#          echo "❌ ERROR: Infinite recursion detected in paths!"
-#          echo "Found problematic paths:"
-#          grep "nativephp/android/laravel/nativephp/android/laravel" release-build.log
-#          exit 1
-#        else
-#          echo "✅ No infinite recursion detected"
-#        fi
-#
-#        echo "=== Checking Laravel bundle creation ==="
-#        if [ -f "nativephp/android/app/src/main/assets/laravel_bundle.zip" ]; then
-#          BUNDLE_SIZE=$(stat -c%s "nativephp/android/app/src/main/assets/laravel_bundle.zip")
-#          echo "✅ Laravel bundle found - Size: $BUNDLE_SIZE bytes"
-#
-#          if [ "$BUNDLE_SIZE" -eq 0 ]; then
-#            echo "❌ ERROR: Laravel bundle is 0 bytes"
-#            exit 1
-#          fi
-#        else
-#          echo "❌ ERROR: Laravel bundle not found!"
-#          exit 1
-#        fi
-#
-#        echo "=== Verifying APK build output ==="
-#        find nativephp/android/app/build/outputs -name "*.apk" -type f | head -5
-#
-#        # Check if APK was created
-#        if find nativephp/android/app/build/outputs -name "*.apk" -type f | grep -q .; then
-#          echo "✅ Release APK build successful"
-#          APK_FILE=$(find nativephp/android/app/build/outputs -name "*.apk" -type f | head -1)
-#          APK_SIZE=$(stat -c%s "$APK_FILE")
-#          echo "APK file: $APK_FILE"
-#          echo "APK size: $APK_SIZE bytes"
-#        else
-#          echo "❌ No APK files found"
-#          exit 1
-#        fi
-#
-#    - name: Test unsigned bundle AAB build via native:run
-#      run: |
-#        cd /tmp/test-app
-#
-#        echo "=== Testing native:run android --build=bundle (unsigned) ==="
-#
-#        # Clean previous build
-#        rm -rf nativephp/android/app/build/outputs/bundle || true
-#
-#        # This should create an AAB bundle
-#        set +e  # Don't exit on error since device install will fail
-#        timeout 900 php artisan native:run android --build=bundle --no-tty 2>&1 | tee bundle-build.log
-#        BUILD_EXIT_CODE=$?
-#        set -e
-#
-#        echo "=== Build log output ==="
-#        tail -50 bundle-build.log
-#
-#        echo "=== Verifying AAB build output ==="
-#        find nativephp/android/app/build/outputs -name "*.aab" -type f | head -5
-#
-#        # Check if AAB was created
-#        if find nativephp/android/app/build/outputs -name "*.aab" -type f | grep -q .; then
-#          echo "✅ Bundle AAB build successful"
-#          AAB_FILE=$(find nativephp/android/app/build/outputs -name "*.aab" -type f | head -1)
-#          AAB_SIZE=$(stat -c%s "$AAB_FILE")
-#          echo "AAB file: $AAB_FILE"
-#          echo "AAB size: $AAB_SIZE bytes"
-#        else
-#          echo "❌ No AAB files found"
-#          exit 1
-#        fi
-#
-
     - name: Test signed AAB build via native:package
+      if: env.ANDROID_KEYSTORE_PASSWORD != ''
+      env:
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       run: |
         cd /tmp/test-app
         
@@ -297,7 +248,7 @@ jobs:
         
         # This should create a signed AAB using the keystore
         set +e  # Don't exit on error
-        timeout 900 php artisan native:package android --build-type=bundle --keystore=/tmp/test-app/nativephp/android/app-keystore.jks --keystore-password="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" --key-alias="${{ secrets.ANDROID_KEY_ALIAS }}" --key-password="${{ secrets.ANDROID_KEY_PASSWORD }}" --no-tty 2>&1 | tee signed-bundle-build.log
+        timeout 900 php artisan native:package android --build-type=bundle --keystore=/tmp/test-app/nativephp/android/app-keystore.jks --keystore-password="$ANDROID_KEYSTORE_PASSWORD" --key-alias="$ANDROID_KEY_ALIAS" --key-password="$ANDROID_KEY_PASSWORD" --no-tty 2>&1 | tee signed-bundle-build.log
         BUILD_EXIT_CODE=$?
         set -e
         
