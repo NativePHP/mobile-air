@@ -14,11 +14,6 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
-    private function getIosBinaryBranch(): string
-    {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
-    }
-
     public string $iosPath;
 
     protected ?bool $includeIcuIos = null;
@@ -63,26 +58,11 @@ trait InstallsIos
     private function installPHPIos(): void
     {
         $includeIcu = $this->includeIcuIos ?? false;
-        $phpVersion = $this->detectPhpVersion();
+        $phpVersion = $this->phpVersion;
+        $versions = $this->versionsManifest;
 
-        $branch = $this->getIosBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
-
-        $client = new Client;
-
-        try {
-            $versions = json_decode(
-                $client->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
-        } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
-
-            return;
-        }
-
-        if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries not available in {$branch} branch");
+        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available");
 
             return;
         }
@@ -108,7 +88,8 @@ trait InstallsIos
             return;
         }
 
-        $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
+        $fullVersion = $versions['versions'][$phpVersion]['php_version'] ?? $phpVersion;
+        $this->components->twoColumnDetail('PHP version', $fullVersion);
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
         $cacheDir = base_path('nativephp/binaries');
@@ -193,14 +174,6 @@ trait InstallsIos
         $bridgeDst = $this->iosPath.'/Include/Bridge';
         if (is_dir($bridgeSrc)) {
             File::copyDirectory($bridgeSrc, $bridgeDst);
-        }
-
-        // Store ICU preference for run command
-        $icuFlagFile = base_path('nativephp/ios/.icu-enabled');
-        if ($includeIcu) {
-            File::put($icuFlagFile, '1');
-        } elseif (File::exists($icuFlagFile)) {
-            File::delete($icuFlagFile);
         }
 
         try {
