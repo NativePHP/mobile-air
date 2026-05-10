@@ -281,33 +281,27 @@ private func getManualMapping(_ iconName: String) -> String? {
     }
 }
 
-/// Attempt to auto-convert icon name to SF Symbol
-/// Tries common patterns: "newspaper" -> "newspaper.fill", "shopping-cart" -> "cart.fill"
+/// Last-line normaliser for raw icon strings that aren't already in
+/// canonical SF form and don't appear in the manual mapping above.
+///
+/// Returns the input lower-cased with `_` / `-` collapsed — that's the
+/// shape SF Symbol names actually take. **Crucially, it does NOT
+/// append `.fill`.** Many valid SF symbols (`archivebox`, `bell`,
+/// `house`, `trash`, …) ship as the unfilled glyph at that bare name,
+/// and auto-appending `.fill` silently swaps them for their filled
+/// variant. The `(name, sf, material)` API on the PHP side now passes
+/// canonical SF names through (e.g. `SF::Archivebox` = `archivebox`),
+/// so the right thing is to leave them alone here. Callers that want
+/// the filled glyph use the `*.fill` enum case (e.g.
+/// `SF::ArchiveboxFill`).
+///
+/// `Image(systemName:)` shows a placeholder for unknown names, which is
+/// the right diagnostic — surfaces typos to the developer instead of
+/// hiding them behind a wrong-but-valid filled fallback.
 private func tryAutoConvertIcon(_ iconName: String) -> String? {
-    // Convert kebab-case to lowercase without separators for SF Symbol matching
-    // "shopping-cart" -> "shoppingcart", "qr-code" -> "qrcode"
     let normalized = iconName.replacingOccurrences(of: "-", with: "")
         .replacingOccurrences(of: "_", with: "")
         .lowercased()
 
-    // Try common SF Symbol patterns
-    let patterns = [
-        "\(normalized).fill",           // e.g., "newspaper.fill"
-        "\(normalized)",                // e.g., "newspaper"
-        "\(normalized).circle.fill",    // e.g., "newspaper.circle.fill"
-        "\(normalized).square.fill",    // e.g., "newspaper.square.fill"
-    ]
-
-    // Check if any pattern exists as an SF Symbol
-    // Note: SF Symbols are validated at runtime by UIImage/Image
-    // We'll try the most common pattern and let iOS handle validation
-    for pattern in patterns {
-        // Return first pattern - iOS will show placeholder if invalid
-        // In production, we could validate using UIImage(systemName:) != nil
-        if pattern == patterns[0] {
-            return pattern
-        }
-    }
-
-    return nil
+    return normalized.isEmpty ? nil : normalized
 }

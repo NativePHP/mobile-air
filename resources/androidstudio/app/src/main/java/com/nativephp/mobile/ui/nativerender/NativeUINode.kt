@@ -1,5 +1,7 @@
 package com.nativephp.mobile.ui.nativerender
 
+import androidx.compose.runtime.Stable
+
 /**
  * Size modes — must match nativephp_ui.h
  */
@@ -270,7 +272,22 @@ data class NativeUITree(
 
 /**
  * A single node in the UI tree.
+ *
+ * Identity contract — mirrors iOS's `NodeView: Equatable` with `===`. The
+ * tree differ (`diffNodeWithStats`) returns the *previous* node reference
+ * when a subtree is structurally identical across publishes; refs only
+ * change when something in the subtree actually changed. Marking
+ * `NativeUINode` `@Stable` and using reference identity for `equals` lets
+ * Compose skip recomposition of `NodeView(node)` whenever the diff handed
+ * back the same ref — same skip semantic SwiftUI gets on iOS.
+ *
+ * Structural-equality consumers (the diff itself, debugging, tests) compare
+ * subordinate types directly (`old.layout == new.layout`, `old.props ==
+ * new.props`, etc.), so overriding equals here doesn't break them. There
+ * are no `Set<NativeUINode>` / `Map<NativeUINode, _>` users in the
+ * codebase that would silently change semantics.
  */
+@Stable
 data class NativeUINode(
     val id: Int,
     val type: String,
@@ -280,7 +297,10 @@ data class NativeUINode(
     val onPress: Int,
     val onLongPress: Int,
     val children: List<NativeUINode>
-)
+) {
+    override fun equals(other: Any?): Boolean = this === other
+    override fun hashCode(): Int = System.identityHashCode(this)
+}
 
 /**
  * Layout properties for a node.

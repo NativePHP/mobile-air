@@ -407,6 +407,62 @@ it('ignores unknown dark: classes', function () {
     expect($result)->toBe([]);
 });
 
+// ── Platform variants (ios: / android:) ─────────────
+
+it('applies ios: classes only on ios', function () {
+    TailwindParser::setPlatform('ios');
+    $result = TailwindParser::parse('bg-white ios:bg-red-500 android:bg-blue-500');
+    expect($result)->toBe(['bg' => '#EF4444']);
+
+    TailwindParser::setPlatform(null);
+});
+
+it('applies android: classes only on android', function () {
+    TailwindParser::setPlatform('android');
+    $result = TailwindParser::parse('bg-white ios:bg-red-500 android:bg-blue-500');
+    expect($result)->toBe(['bg' => '#3B82F6']);
+
+    TailwindParser::setPlatform(null);
+});
+
+it('drops platform variants when no platform is set', function () {
+    TailwindParser::setPlatform(null);
+    $result = TailwindParser::parse('bg-white ios:bg-red-500 android:bg-blue-500');
+    expect($result)->toBe(['bg' => '#FFFFFF']);
+});
+
+it('composes platform variants with dark variant', function () {
+    TailwindParser::setPlatform('android');
+    $result = TailwindParser::parse('bg-white android:dark:bg-gray-900');
+    expect($result)->toBe([
+        'bg' => '#FFFFFF',
+        'dark' => ['bg' => '#111827'],
+    ]);
+
+    TailwindParser::setPlatform('ios');
+    TailwindParser::clearCache();
+    $result = TailwindParser::parse('bg-white android:dark:bg-gray-900');
+    expect($result)->toBe(['bg' => '#FFFFFF']);
+
+    TailwindParser::setPlatform(null);
+});
+
+it('composes platform variants in reverse order with dark', function () {
+    TailwindParser::setPlatform('android');
+    $result = TailwindParser::parse('bg-white dark:android:bg-gray-900');
+    expect($result)->toBe([
+        'bg' => '#FFFFFF',
+        'dark' => ['bg' => '#111827'],
+    ]);
+
+    TailwindParser::setPlatform('ios');
+    TailwindParser::clearCache();
+    $result = TailwindParser::parse('bg-white dark:android:bg-gray-900');
+    expect($result)->toBe(['bg' => '#FFFFFF']);
+
+    TailwindParser::setPlatform(null);
+});
+
 // ── Edge Cases ──────────────────────────────────────
 
 it('ignores unknown classes silently', function () {

@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -187,10 +188,12 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 /**
  * Renders a single trailing toolbar action — plain IconButton when no
  * sub-items, DropdownMenu when `NavAction::items()` produced
- * `top_bar_action` children.
+ * `top_bar_action` children. Module-internal so the tabs renderer can
+ * reuse the same plumbing when the layout folds NavBar actions onto a
+ * `native_root_tabs` sentinel.
  */
 @Composable
-private fun TopBarActionView(action: NativeUINode) {
+internal fun TopBarActionView(action: NativeUINode) {
     val icon = action.props.getString("icon", "more_vert")
     val subItems = action.children.filter { it.type == "top_bar_action" }
 
@@ -209,18 +212,39 @@ private fun TopBarActionView(action: NativeUINode) {
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             subItems.forEach { item ->
+                if (item.props.getBool("divider")) {
+                    // Inline visual separator emitted by `NavAction::divider()`.
+                    HorizontalDivider()
+                    return@forEach
+                }
                 val itemLabel = item.props.getString("label", "")
                 val itemIcon = item.props.getString("icon", "")
                 val isDestructive = item.props.getBool("destructive")
+                val destructiveColor = MaterialTheme.colorScheme.error
                 DropdownMenuItem(
                     text = {
                         Text(
                             itemLabel,
-                            color = if (isDestructive) MaterialTheme.colorScheme.error else Color.Unspecified
+                            color = if (isDestructive) destructiveColor else Color.Unspecified
                         )
                     },
                     leadingIcon = if (itemIcon.isNotEmpty()) {
-                        { MaterialIcon(name = itemIcon, contentDescription = itemLabel) }
+                        {
+                            // `destructive()` should tint the whole row red — text +
+                            // icon — to mirror SwiftUI's `Button(role: .destructive)`
+                            // which colors both. Using the bare default leaves the
+                            // icon at LocalContentColor while the text reads red,
+                            // which scans as a styling glitch.
+                            if (isDestructive) {
+                                MaterialIcon(
+                                    name = itemIcon,
+                                    contentDescription = itemLabel,
+                                    tint = destructiveColor,
+                                )
+                            } else {
+                                MaterialIcon(name = itemIcon, contentDescription = itemLabel)
+                            }
+                        }
                     } else null,
                     onClick = {
                         expanded = false

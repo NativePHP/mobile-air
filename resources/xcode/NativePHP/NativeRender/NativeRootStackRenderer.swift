@@ -204,19 +204,31 @@ struct NativeRootStackRenderer: View {
         } else {
             Menu {
                 ForEach(subItems) { item in
-                    let itemLabel = item.props.getString("label", default: "")
-                    let itemIcon = item.props.getString("icon", default: "")
-                    let isDestructive = item.props.getBool("destructive")
-                    Button(role: isDestructive ? .destructive : nil) {
-                        if item.onPress != 0 {
-                            NativeElementBridge.sendPressEvent(item.onPress, nodeId: item.id)
+                    if item.props.getBool("divider") {
+                        // Inline visual separator emitted by `NavAction::divider()`.
+                        Divider()
+                    } else {
+                        let itemLabel = item.props.getString("label", default: "")
+                        let itemIcon = item.props.getString("icon", default: "")
+                        let isDestructive = item.props.getBool("destructive")
+                        Button(role: isDestructive ? .destructive : nil) {
+                            if item.onPress != 0 {
+                                NativeElementBridge.sendPressEvent(item.onPress, nodeId: item.id)
+                            }
+                        } label: {
+                            if !itemIcon.isEmpty {
+                                Label(itemLabel, systemImage: getIconForName(itemIcon))
+                            } else {
+                                Text(itemLabel)
+                            }
                         }
-                    } label: {
-                        if !itemIcon.isEmpty {
-                            Label(itemLabel, systemImage: getIconForName(itemIcon))
-                        } else {
-                            Text(itemLabel)
-                        }
+                        // SwiftUI's Menu won't propagate `.foregroundStyle(.red)`
+                        // applied inside the Button label down to the Label's
+                        // systemImage — the icon stays on the menu's accent color
+                        // even with `Button(role: .destructive)`. Applying `.tint`
+                        // on the Button itself is the path Menu actually honors;
+                        // both the text and the symbol then render in the tint.
+                        .tint(isDestructive ? .red : nil)
                     }
                 }
             } label: {
@@ -296,3 +308,4 @@ private struct NavigationSubtitleModifier: ViewModifier {
         }
     }
 }
+

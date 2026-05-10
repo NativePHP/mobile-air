@@ -9,7 +9,10 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -20,6 +23,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -53,6 +57,9 @@ import com.nativephp.mobile.ui.MaterialIcon
 fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val tabs = node.children.filter { it.type == "bottom_nav_item" }
     val accessory = node.children.firstOrNull { it.type == "tab_accessory" }
+    // NavBar actions folded onto the tabs sentinel by `wrapWithNativeChrome`
+    // when both bars are present — render trailing on the top bar.
+    val actions = node.children.filter { it.type == "top_bar_action" }
     val screenContent = node.children.firstOrNull {
         it.type != "bottom_nav_item"
             && it.type != "top_bar_action"
@@ -72,6 +79,18 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val activeColorArgb = node.props.getColor("active_color", 0)
     val bgArgb = node.props.getColor("background_color", 0)
     val textArgb = node.props.getColor("text_color", 0)
+
+    // Per-screen explicit signal from PHP (`$hidesTabBar` shortcut or
+    // `tabBarOptions()->hidden()` builder, folded into the chrome
+    // sentinel by `wrapWithNativeChrome`). Replaces the earlier
+    // URI-match / `nav_back` heuristics — those couldn't distinguish a
+    // tab root with a back chevron from a pushed-detail screen.
+    val hideTabBar = node.props.getBool("hide_tab_bar")
+
+    // Active screen URI — used as part of the inner AnimatedContent's
+    // key so within-tab navigation (chats list → chat detail) animates
+    // even when the tab index doesn't change.
+    val currentUri = node.props.getString("current_uri", "")
 
     // Folded NavBar config — present when the layout supplied both bars.
     val navBack = node.props.getBool("nav_back")
@@ -107,6 +126,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                             }
                         }
                     },
+                    actions = {
+                        actions.forEach { action -> TopBarActionView(action) }
+                    },
                     colors = if (navBgArgb != 0) {
                         val bg = argbToComposeColor(navBgArgb)
                         val fg = if (navTextArgb != 0) argbToComposeColor(navTextArgb) else Color.White
@@ -122,11 +144,41 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 )
             }
         },
-        bottomBar = {
+        bottomBar = bottomBar@{
+            // Mirror iOS's `HideTabBarOnPushModifier`: pushed-detail
+            // screens hide the tab strip entirely (iMessage / Music /
+            // Mail pattern). Driven by the `hide_tab_bar` wire prop set
+            // by the screen via `$hidesTabBar` or
+            // `tabBarOptions()->hidden()`.
+            if (hideTabBar) return@bottomBar
+
             Column {
-                // Persistent accessory pinned above the bar (Music's MiniPlayer pattern).
+                // Persistent accessory pinned above the NavigationBar
+                // (Apple Music / Spotify / YouTube Music MiniPlayer
+                // pattern). Compose / M3 has no native equivalent of
+                // iOS 26's `.safeAreaBar(.bottom)` Liquid Glass capsule
+                // — there's no built-in floating-bar primitive that
+                // sits ABOVE the navigation bar, and Modifier.blur on
+                // Android blurs the surface itself rather than the
+                // content beneath it (so a true "backdrop blur" glass
+                // material isn't directly available).
+                //
+                // Best-effort idiomatic replacement: a tonal Surface at
+                // `surfaceContainerHigh` (one tonal step above the
+                // NavigationBar's container so the two read as
+                // separate layers) with rounded top corners + a small
+                // shadow elevation. Matches what real-world Android
+                // music apps ship.
                 accessory?.children?.firstOrNull()?.let { acc ->
-                    NodeView(node = acc)
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                        tonalElevation = 3.dp,
+                        shadowElevation = 4.dp,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        NodeView(node = acc)
+                    }
                 }
 
                 NavigationBar(
@@ -187,12 +239,36 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         },
         modifier = modifier.fillMaxSize()
     ) { padding ->
-        // Cross-fade content as the active tab changes — mirrors the iOS
-        // renderer's `.animation(.easeInOut, value: activeTabIdx)`.
+        // Animate two distinct kinds of swap inside the tabs scaffold:
+        //
+        //   1. Tab switch (active tab index changes) — keep the soft
+        //      cross-fade. PHP signals these via `BottomNavItem` with
+        //      transition='none' because the renderer is supposed to
+        //      handle the visual; honor that contract here.
+        //
+        //   2. Within-tab push / pop (active tab same, URI changed) —
+        //      use the PHP-signaled transition (slide_from_right by
+        //      default for navigate, slide_from_left for back). iOS gets
+        //      this for free from per-tab NavigationStack; Android lacks
+        //      that, so we drive it explicitly off the same
+        //      `pendingTransition` that the root NativeUIContent reads.
+        //      The bridge suppresses the *root* screenKey bump for
+        //      native-chrome continuation publishes (NativeElementBridge
+        //      ~line 261) so the outer animation stays out of our way;
+        //      this inner one fills the gap.
+        val pendingTransition by NativeUIBridge.pendingTransition
+        val targetKey = "$activeTabIdx|$currentUri"
+
         AnimatedContent(
-            targetState = activeTabIdx,
+            targetState = targetKey,
             transitionSpec = {
-                fadeIn(tween(180)) togetherWith fadeOut(tween(180))
+                val initialIdx = initialState.substringBefore('|')
+                val targetIdx = targetState.substringBefore('|')
+                if (initialIdx != targetIdx) {
+                    fadeIn(tween(180)) togetherWith fadeOut(tween(180))
+                } else {
+                    transitionFor(pendingTransition)
+                }
             },
             label = "tab-content",
             modifier = Modifier.fillMaxSize().padding(padding)

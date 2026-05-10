@@ -2,19 +2,24 @@
 
 namespace Native\Mobile\Edge\Layouts\Builders;
 
+use Native\Mobile\Concerns\HasPlatformIcon;
 use Native\Mobile\Edge\Elements\TopBarAction;
 
 /**
  * Fluent builder for a top-bar action (right-side icon buttons).
  *
  * Usage:
- *   NavAction::make('save')->icon('save')->press('save')
+ *   NavAction::make('save')->icon('save')->press('save');
+ *
+ *   NavAction::make('mute')
+ *       ->icon(sf: SF::BellSlash, material: Material::NotificationsOff)
+ *       ->press('mute');
  */
 class NavAction
 {
-    private string $id;
+    use HasPlatformIcon;
 
-    private ?string $icon = null;
+    private string $id;
 
     private ?string $label = null;
 
@@ -25,6 +30,14 @@ class NavAction
     private ?string $press = null;
 
     private bool $destructive = false;
+
+    /**
+     * Marks this action as a visual divider rather than a tappable row.
+     * Use [divider] to construct one — when set, the renderer emits a
+     * separator line in place of a `Button` / `DropdownMenuItem`. All
+     * other props (icon, label, press, …) are ignored on a divider.
+     */
+    private bool $isDivider = false;
 
     /** @var NavAction[] — sub-items rendered as a SwiftUI `Menu` when set. */
     private array $items = [];
@@ -39,11 +52,24 @@ class NavAction
         return new self($id);
     }
 
-    public function icon(string $icon): self
+    /**
+     * Visual divider for use inside `items()`.
+     *
+     *   NavAction::make('more')->items([
+     *       NavAction::make('mute')->...,
+     *       NavAction::divider(),
+     *       NavAction::make('delete')->destructive()->...,
+     *   ])
+     *
+     * Renders as `Divider()` (iOS Menu) / `HorizontalDivider()` (Compose
+     * DropdownMenu). The id is just a sentinel — never seen by users.
+     */
+    public static function divider(): self
     {
-        $this->icon = $icon;
+        $div = new self('divider');
+        $div->isDivider = true;
 
-        return $this;
+        return $div;
     }
 
     public function label(string $label): self
@@ -117,7 +143,22 @@ class NavAction
         $action = TopBarAction::make();
 
         $attrs = ['id' => $this->id];
-        if ($this->icon !== null)  $attrs['icon']        = $this->icon;
+
+        // Divider sentinel — strip everything else so the renderer just
+        // sees `divider: true` and emits a separator line, no row.
+        if ($this->isDivider) {
+            $attrs['divider'] = true;
+            $action->applyAttributes($attrs);
+
+            return $action;
+        }
+
+        if (($icon = $this->resolvedIcon()) !== null) {
+            $attrs['icon'] = $icon;
+            if (($variant = $this->resolvedMaterialVariant()) !== null) {
+                $attrs['material_variant'] = $variant;
+            }
+        }
         if ($this->label !== null) $attrs['label']       = $this->label;
         if ($this->url !== null)   $attrs['url']         = $this->url;
         if ($this->event !== null) $attrs['event']       = $this->event;

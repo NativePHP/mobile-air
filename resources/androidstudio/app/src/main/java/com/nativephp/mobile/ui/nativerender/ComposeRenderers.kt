@@ -26,13 +26,24 @@ fun interface NodeRenderer {
 
 /**
  * Recursively renders a NativeUINode using registered composable renderers.
- * Falls back to rendering children via DefaultContainerNode if no renderer is found.
- * Used by existing plugin renderers (Card, Carousel, etc.) to render child nodes.
+ * Plugin renderers (Card, Carousel, …) use this to draw child nodes.
+ *
+ * The optional [modifier] is forwarded as `NodeView`'s `overrideModifier`,
+ * which represents *parent-supplied* layout extras (clip, weight, margin, …)
+ * that wrap the child. Pass `null` (default) for "no extras" — `NodeView`
+ * will then derive sizing from `node.layout` directly. When a non-null
+ * modifier is provided, `NodeView` skips deriving sizing from `node.layout`,
+ * since the parent is assumed to be controlling size (e.g. a flex cell or
+ * a carousel item slot).
+ *
+ * Do **not** include the child's own style/layout in this modifier —
+ * `NodeView` chains `nodeStyle`/`nodeLayout`/`nodeGestures` after the
+ * override, so passing duplicates double-applies padding, background, and
+ * border.
  */
 @Composable
-fun RenderNode(node: NativeUINode, modifier: Modifier = Modifier) {
-    // Delegate to NodeView which handles registry dispatch + modifiers
-    NodeView(node)
+fun RenderNode(node: NativeUINode, modifier: Modifier? = null) {
+    NodeView(node, overrideModifier = modifier)
 }
 
 /**

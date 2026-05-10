@@ -39,11 +39,12 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ime
 import androidx.compose.material3.FabPosition
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
+import com.nativephp.plugins.native_ui.NativeUITheme
+import com.nativephp.plugins.native_ui.toMaterialColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -132,9 +133,16 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         handleDeepLinkIntent(intent)
 
-        // Set up Compose UI
+        // Set up Compose UI. The outer MaterialTheme threads the plugin's
+        // theme tokens (`NativeUITheme.light` / `.dark` — driven by PHP
+        // `Theme::merge`) into M3's color scheme so native chrome
+        // (TopAppBar, Scaffold, dialogs, vanilla M3 controls) stays in
+        // brand instead of falling back to the M3 baseline lavender.
         setContent {
-            MainScreen()
+            val isDark = isSystemInDarkTheme()
+            MaterialTheme(colorScheme = nativeUiMaterialColorScheme(isDark)) {
+                MainScreen()
+            }
         }
 
         initializeEnvironmentAsync {
@@ -1098,6 +1106,18 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     /**
+     * Derive an M3 [ColorScheme] from the active plugin theme tokens.
+     * Reads from [NativeUITheme.light] / [NativeUITheme.dark] reactively
+     * so PHP-side `Theme::merge` updates flow through to chrome (top
+     * bar, drawers, M3 controls) on the next recomposition.
+     */
+    @Composable
+    private fun nativeUiMaterialColorScheme(isDark: Boolean): ColorScheme {
+        val tokens = if (isDark) NativeUITheme.dark else NativeUITheme.light
+        return tokens.toMaterialColorScheme(isDark)
+    }
+
+    /**
      * Bottom navigation composable
      * Hides with animation when keyboard is visible to prevent layout conflicts
      */
@@ -1108,7 +1128,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         val systemInDarkMode = isSystemInDarkTheme()
         val useDarkTheme = bottomNavData?.dark ?: systemInDarkMode
-        val colorScheme = if (useDarkTheme) darkColorScheme() else lightColorScheme()
+        val colorScheme = nativeUiMaterialColorScheme(useDarkTheme)
 
         // Animate bottom nav visibility - slide down when keyboard opens
         AnimatedVisibility(
@@ -1141,7 +1161,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         val systemInDarkMode = isSystemInDarkTheme()
         val sideNavData by NativeUIState.sideNavData
         val useDarkTheme = sideNavData?.dark ?: systemInDarkMode
-        val colorScheme = if (useDarkTheme) darkColorScheme() else lightColorScheme()
+        val colorScheme = nativeUiMaterialColorScheme(useDarkTheme)
 
         MaterialTheme(colorScheme = colorScheme) {
             NativeSideDrawer(

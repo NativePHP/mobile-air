@@ -18,13 +18,16 @@ class TopBarAction extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        foreach (['id', 'icon', 'label', 'url', 'event'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }
         }
         if (isset($attrs['destructive'])) {
             $this->props['destructive'] = (bool) $attrs['destructive'];
+        }
+        if (isset($attrs['divider'])) {
+            $this->props['divider'] = (bool) $attrs['divider'];
         }
     }
 

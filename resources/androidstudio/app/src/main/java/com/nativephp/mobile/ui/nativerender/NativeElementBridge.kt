@@ -41,8 +41,11 @@ import java.util.concurrent.locks.LockSupport
 class NativeElementBridge private constructor() {
     companion object {
         private const val TAG = "NativeElementBridge"
-        private const val LEGACY_NODE_SIZE = 108
-        private const val YOGA_NODE_SIZE = 160
+        // Wire-format node stride. Mirrors iOS's `nodeSize` and the
+        // `nphp_element` struct on the PHP-extension side. If the producer
+        // emits a different stride, the binaries are out of sync and we
+        // hard-fail rather than guess at a legacy layout.
+        private const val NODE_SIZE = 160
 
         /* ── JNI native methods (registered by bridge_jni.cpp) ── */
 
@@ -211,24 +214,20 @@ class NativeElementBridge private constructor() {
                             // URI re-uses every unchanged ref). Fall back to the
                             // immediate previous (tab switch / push within the
                             // same chrome — shared chrome subtrees still match).
+                            // `prev` is non-null here — nativeChromeContinuation
+                            // requires prev?.root?.type to match a sentinel.
                             val baseline = if (newUri.isNotEmpty()) {
                                 nativeChromePrevTrees[newUri] ?: prev
                             } else {
                                 prev
                             }
-                            if (baseline != null) {
-                                val stats = DiffStats()
-                                val tDiffStart = System.nanoTime()
-                                val diffedRoot = diffNodeWithStats(baseline.root, tree.root, stats)
-                                val tDiffEnd = System.nanoTime()
-                                diffedTree = tree.copy(root = diffedRoot)
-                                PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
-                                PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
-                            } else {
-                                diffedTree = tree
-                                PerformanceTracker.onTreeDiffed(0, 0, nc, false)
-                                PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, 0)
-                            }
+                            val stats = DiffStats()
+                            val tDiffStart = System.nanoTime()
+                            val diffedRoot = diffNodeWithStats(baseline.root, tree.root, stats)
+                            val tDiffEnd = System.nanoTime()
+                            diffedTree = tree.copy(root = diffedRoot)
+                            PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
+                            PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
                         } else {
                             diffedTree = tree
                             PerformanceTracker.onTreeDiffed(0, 0, nc, false)
@@ -354,20 +353,15 @@ class NativeElementBridge private constructor() {
         ): NativeUITree? {
             if (nodeCount == 0) return null
 
-            // Auto-detect node stride from buffer size
             val perNode = flatBuf.remaining() / nodeCount
-            val stride = when {
-                perNode >= YOGA_NODE_SIZE -> YOGA_NODE_SIZE
-                perNode >= LEGACY_NODE_SIZE -> LEGACY_NODE_SIZE
-                else -> {
-                    Log.e(TAG, "unexpected node size $perNode (flat=${flatBuf.remaining()} nodes=$nodeCount)")
-                    return null
-                }
+            if (perNode < NODE_SIZE) {
+                Log.e(TAG, "ERROR node size $perNode < $NODE_SIZE — rebuild PHP binaries with $NODE_SIZE-byte struct (flat=${flatBuf.remaining()} nodes=$nodeCount)")
+                return null
             }
 
-            if (flatBuf.remaining() < nodeCount * stride) return null
+            if (flatBuf.remaining() < nodeCount * NODE_SIZE) return null
 
-            val root = readNodeDFS(flatBuf, propBuf, typeTable, stride) ?: return null
+            val root = readNodeDFS(flatBuf, propBuf, typeTable, NODE_SIZE) ?: return null
             return NativeUITree(0, 0, root)
         }
 
@@ -378,8 +372,6 @@ class NativeElementBridge private constructor() {
             stride: Int
         ): NativeUINode? {
             if (buf.remaining() < stride) return null
-
-            val isYoga = stride >= YOGA_NODE_SIZE
 
             val id = buf.int
             val typeIdx = buf.short.toInt() and 0xFFFF
@@ -411,37 +403,20 @@ class NativeElementBridge private constructor() {
             val gap = buf.float
             val safeArea = buf.get().toInt() and 0xFF
 
-            // Extended layout fields (Yoga) — only present in 160-byte nodes
-            val minWidth: Float; val minHeight: Float; val maxWidth: Float; val maxHeight: Float
-            val flexBasis: Float; val flexBasisMode: Int; val flexWrap: Int; val flexDirection: Int
-            val positionType: Int
-            val positionTop: Float; val positionRight: Float; val positionBottom: Float; val positionLeft: Float
-            val display: Int; val overflow: Int; val alignContent: Int; val direction: Int
-            val aspectRatio: Float; val rowGap: Float
-
-            if (isYoga) {
-                minWidth = buf.float; minHeight = buf.float
-                maxWidth = buf.float; maxHeight = buf.float
-                flexBasis = buf.float
-                flexBasisMode = buf.get().toInt() and 0xFF
-                flexWrap = buf.get().toInt() and 0xFF
-                flexDirection = buf.get().toInt() and 0xFF
-                positionType = buf.get().toInt() and 0xFF
-                positionTop = buf.float; positionRight = buf.float
-                positionBottom = buf.float; positionLeft = buf.float
-                display = buf.get().toInt() and 0xFF
-                overflow = buf.get().toInt() and 0xFF
-                alignContent = buf.get().toInt() and 0xFF
-                direction = buf.get().toInt() and 0xFF
-                aspectRatio = buf.float; rowGap = buf.float
-            } else {
-                minWidth = 0f; minHeight = 0f; maxWidth = 0f; maxHeight = 0f
-                flexBasis = 0f; flexBasisMode = 0; flexWrap = 0; flexDirection = 0
-                positionType = 0
-                positionTop = 0f; positionRight = 0f; positionBottom = 0f; positionLeft = 0f
-                display = 0; overflow = 0; alignContent = 0; direction = 0
-                aspectRatio = 0f; rowGap = 0f
-            }
+            val minWidth = buf.float; val minHeight = buf.float
+            val maxWidth = buf.float; val maxHeight = buf.float
+            val flexBasis = buf.float
+            val flexBasisMode = buf.get().toInt() and 0xFF
+            val flexWrap = buf.get().toInt() and 0xFF
+            val flexDirection = buf.get().toInt() and 0xFF
+            val positionType = buf.get().toInt() and 0xFF
+            val positionTop = buf.float; val positionRight = buf.float
+            val positionBottom = buf.float; val positionLeft = buf.float
+            val display = buf.get().toInt() and 0xFF
+            val overflow = buf.get().toInt() and 0xFF
+            val alignContent = buf.get().toInt() and 0xFF
+            val direction = buf.get().toInt() and 0xFF
+            val aspectRatio = buf.float; val rowGap = buf.float
 
             val bgColor = buf.int
             val borderRadius = buf.float

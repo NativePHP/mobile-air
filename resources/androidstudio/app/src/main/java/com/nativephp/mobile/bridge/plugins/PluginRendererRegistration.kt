@@ -60,8 +60,14 @@ fun registerPluginRenderers() {
     NativeRendererRegistry.register("icon", NodeRenderer { node, modifier ->
         IconRenderer.Render(node, modifier)
     })
-    NativeRendererRegistry.register("text_input", NodeRenderer { node, modifier ->
-        TextInputRenderer.Render(node, modifier)
+    NativeRendererRegistry.register("outlined_text_input", NodeRenderer { node, modifier ->
+        OutlinedTextInputRenderer.Render(node, modifier)
+    })
+    NativeRendererRegistry.register("filled_text_input", NodeRenderer { node, modifier ->
+        FilledTextInputRenderer.Render(node, modifier)
+    })
+    NativeRendererRegistry.register("bare_text_input", NodeRenderer { node, modifier ->
+        BareTextInputRenderer.Render(node, modifier)
     })
     NativeRendererRegistry.register("toggle", NodeRenderer { node, modifier ->
         ToggleRenderer.Render(node, modifier)

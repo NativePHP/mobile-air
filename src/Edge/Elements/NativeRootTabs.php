@@ -59,6 +59,13 @@ class NativeRootTabs extends Element
         // per-URI tree diff off this so tab-switch publishes reuse
         // unchanged subtree refs and don't trigger a full re-render.
         if (isset($attrs['currentUri']))      $this->props['current_uri']      = $attrs['currentUri'];
+
+        // Per-screen tab-bar overrides folded in by `wrapWithNativeChrome`.
+        // `hide_tab_bar` is the explicit signal renderers use to hide the
+        // bottom nav on detail / pushed screens — replaces the earlier
+        // URI-match heuristic.
+        if (isset($attrs['hideTabBar']))      $this->props['hide_tab_bar']     = (bool) $attrs['hideTabBar'];
+        if (isset($attrs['tabHighlight']))    $this->props['tab_highlight']    = $attrs['tabHighlight'];
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

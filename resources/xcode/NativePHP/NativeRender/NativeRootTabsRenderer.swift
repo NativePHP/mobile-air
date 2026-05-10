@@ -260,6 +260,12 @@ private struct PerTabContent: View {
     @ViewBuilder
     private func renderLevel(_ root: NativeUINode, isRoot: Bool) -> some View {
         let title = root.props.getString("nav_title", default: fallbackTitle)
+        // Per-screen explicit hide signal (PHP-side `$hidesTabBar` /
+        // `tabBarOptions()->hidden()`). Unions with the `!isRoot`
+        // path-depth signal in `HideTabBarOnPushModifier` so either can
+        // request hiding — useful for tab-root screens that want the bar
+        // hidden anyway, which path-depth alone can't express.
+        let forceHideTabBar = root.props.getBool("hide_tab_bar")
         // Manual back chevron only shows at the tab's root level — at
         // that level there's no NavigationStack history to pop, so the
         // chevron fires `sendSystemBackEvent` to leave the tabs entirely
@@ -300,7 +306,7 @@ private struct PerTabContent: View {
             // bottom-bar modifier below) pins to the correct edge.
             // Inverting the order leaves the bar latched to where the
             // tab bar *used to be* — visually mid-screen.
-            .modifier(HideTabBarOnPushModifier(isRoot: isRoot))
+            .modifier(HideTabBarOnPushModifier(isRoot: isRoot, forceHide: forceHideTabBar))
             .modifier(BottomBarInsetModifier(bottomBar: bottomBar))
     }
 
@@ -393,19 +399,27 @@ private struct TabsActionView: View {
         } else {
             Menu {
                 ForEach(subItems) { item in
-                    let itemLabel = item.props.getString("label", default: "")
-                    let itemIcon = item.props.getString("icon", default: "")
-                    let isDestructive = item.props.getBool("destructive")
-                    Button(role: isDestructive ? .destructive : nil) {
-                        if item.onPress != 0 {
-                            NativeElementBridge.sendPressEvent(item.onPress, nodeId: item.id)
+                    if item.props.getBool("divider") {
+                        Divider()
+                    } else {
+                        let itemLabel = item.props.getString("label", default: "")
+                        let itemIcon = item.props.getString("icon", default: "")
+                        let isDestructive = item.props.getBool("destructive")
+                        Button(role: isDestructive ? .destructive : nil) {
+                            if item.onPress != 0 {
+                                NativeElementBridge.sendPressEvent(item.onPress, nodeId: item.id)
+                            }
+                        } label: {
+                            if !itemIcon.isEmpty {
+                                Label(itemLabel, systemImage: getIconForName(itemIcon))
+                            } else {
+                                Text(itemLabel)
+                            }
                         }
-                    } label: {
-                        if !itemIcon.isEmpty {
-                            Label(itemLabel, systemImage: getIconForName(itemIcon))
-                        } else {
-                            Text(itemLabel)
-                        }
+                        // See NativeRootStackRenderer.swift for the rationale —
+                        // .tint on the Button is what SwiftUI's Menu actually
+                        // routes to the Label's systemImage in destructive rows.
+                        .tint(isDestructive ? .red : nil)
                     }
                 }
             } label: {
@@ -460,11 +474,22 @@ private struct BottomBarInsetModifier: ViewModifier {
 /// Device-level safe areas (home indicator) are NOT in the `.container`
 /// region, so they stay intact and our content still pins above the
 /// home indicator correctly.
+///
+/// Two signals can request hiding:
+///   - `!isRoot` — the per-tab `NavigationStack` has pushed levels, so
+///     this is a detail screen (iOS-native path-depth signal).
+///   - `forceHide` — the screen explicitly requested it via PHP-side
+///     `$hidesTabBar` / `tabBarOptions()->hidden()`, folded onto the
+///     chrome sentinel as `hide_tab_bar`. Lets the dev override the
+///     default for cases where path-depth alone doesn't capture intent.
+///
+/// Bar hides if EITHER is true.
 private struct HideTabBarOnPushModifier: ViewModifier {
     let isRoot: Bool
+    let forceHide: Bool
 
     func body(content: Content) -> some View {
-        if isRoot {
+        if isRoot && !forceHide {
             content
         } else {
             content

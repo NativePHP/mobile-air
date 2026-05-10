@@ -222,6 +222,21 @@ abstract class NativeComponent
             // Active tab's screen URI — used by the iOS bridge's per-URI
             // diff to keep tab-switch animations smooth.
             $attrs['currentUri'] = $this->router?->currentUri() ?? '';
+
+            // Per-screen tab-bar overrides ($hidesTabBar shortcut +
+            // tabBarOptions() builder). Folded onto the chrome sentinel
+            // as flat props so the iOS / Android renderers don't need to
+            // re-derive visibility from URI matching or `nav_back`.
+            if ($this->shouldHideTabBar()) {
+                $attrs['hideTabBar'] = true;
+            }
+            $tabOptions = $this->tabBarOptions();
+            if ($tabOptions !== null) {
+                if ($tabOptions->highlight !== null)       $attrs['tabHighlight']     = $tabOptions->highlight;
+                if ($tabOptions->activeColor !== null)     $attrs['activeColor']      = $tabOptions->activeColor;
+                if ($tabOptions->backgroundColor !== null) $attrs['backgroundColor']  = $tabOptions->backgroundColor;
+            }
+
             $root->applyAttributes($attrs);
 
             // Tab items as bottom_nav_item children.
@@ -325,6 +340,48 @@ abstract class NativeComponent
     public function navigationOptions(): ?\Native\Mobile\Edge\Layouts\Builders\NavBarOptions
     {
         return null;
+    }
+
+    /**
+     * Hide the tab bar on this screen — Filament-style shorthand for the
+     * common "pushed detail screen" case. Equivalent to
+     * `tabBarOptions()->hidden()`. When both are set the explicit builder
+     * wins. Default `false` → tab bar shows (tab-root behavior).
+     */
+    protected bool $hidesTabBar = false;
+
+    /**
+     * Override to provide structured per-screen tab-bar overrides that
+     * merge onto the layout's TabBar — visibility, active highlight,
+     * colors. Per-screen tab content edits (insert/remove tabs) are
+     * intentionally out of scope; define tabs once at the layout level.
+     *
+     *   public function tabBarOptions(): ?TabBarOptions
+     *   {
+     *       return TabBarOptions::make()
+     *           ->hidden()
+     *           ->highlight('chats');
+     *   }
+     */
+    public function tabBarOptions(): ?\Native\Mobile\Edge\Layouts\Builders\TabBarOptions
+    {
+        return null;
+    }
+
+    /**
+     * Resolved "should the tab bar be hidden on this screen?" — combines
+     * the boolean shortcut and the builder. The builder wins on conflict
+     * (more explicit). Used by [wrapWithNativeChrome] to fold the
+     * `hide_tab_bar` prop onto the chrome sentinel.
+     */
+    public function shouldHideTabBar(): bool
+    {
+        $options = $this->tabBarOptions();
+        if ($options !== null && $options->hidden !== null) {
+            return $options->isHidden();
+        }
+
+        return $this->hidesTabBar;
     }
 
     /**
@@ -806,6 +863,7 @@ abstract class NativeComponent
     public function navigate(string $uri, array $data = []): static
     {
         $this->navigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
+        $this->publishFinalState();
         $this->stop();
 
         return $this;
@@ -814,6 +872,7 @@ abstract class NativeComponent
     public function back(): static
     {
         $this->navigationIntent = new NavigationIntent(NavigationIntent::BACK);
+        $this->publishFinalState();
         $this->stop();
 
         return $this;
@@ -822,9 +881,47 @@ abstract class NativeComponent
     public function replace(string $uri, array $data = []): static
     {
         $this->navigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
+        $this->publishFinalState();
         $this->stop();
 
         return $this;
+    }
+
+    /**
+     * Re-render and publish ONE more time before stopping the runloop.
+     *
+     * The runloop is `render → wait → dispatch → loop`. State mutations
+     * inside a handler that ALSO calls `navigate()` / `back()` /
+     * `replace()` happen AFTER the iteration's render, so they never
+     * reach the renderer — the loop exits via `stop()` before looping
+     * back to render again.
+     *
+     * Without this, a handler that closes a bottom sheet AND navigates
+     * (`$this->showNewMessage = false; $this->navigate(...)`) leaves
+     * iOS / Compose with the pre-mutation tree on screen — sheet stays
+     * visible over the newly-pushed view. Worse, the sheet's later
+     * onDismiss callback ID lands on the wrong active component (see
+     * the ID-collision rationale in `CallbackRegistry`) and can fire an
+     * arbitrary method, with destructive consequences when the
+     * collided ID maps to something like `confirmClearHistory`.
+     *
+     * One extra render+publish per navigation is negligible compared
+     * to the wire/diff cost of every other publish.
+     */
+    protected function publishFinalState(): void
+    {
+        if ($this->hasError) {
+            return;
+        }
+        try {
+            $element = $this->render();
+            $tree = $element->toArray($this->callbacks);
+            nativephp_element_publish($tree);
+        } catch (\Throwable $e) {
+            // Render failure on the way out — outgoing component is
+            // about to unmount anyway, swallow.
+            NativeRouter::debugLog('publishFinalState failed in '.static::class.': '.$e->getMessage());
+        }
     }
 
     public function transition(Transition $type): static

@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Platform;
+
 class TailwindParser
 {
     private static array $cache = [];
@@ -36,6 +38,22 @@ class TailwindParser
     {
         static::$themeDarkResolver = $resolver;
         static::$cache = [];
+    }
+
+    /**
+     * Test seam — force the parser's view of the current platform.
+     * Delegates to [Platform::set] and clears the parsed-class cache so
+     * platform-variant classes are re-evaluated.
+     */
+    public static function setPlatform(?string $platform): void
+    {
+        Platform::set($platform);
+        static::$cache = [];
+    }
+
+    private static function currentPlatform(): ?string
+    {
+        return Platform::current();
     }
 
     private const COLORS = [
@@ -240,6 +258,23 @@ class TailwindParser
 
     private static function parseClassImpl(string $class): ?array
     {
+        // Platform variants: ios:class-name / android:class-name
+        // The class is applied only on the matching platform; on the other
+        // platform it drops silently (so e.g. `android:bg-theme-primary` is
+        // a no-op on iOS, leaving any unprefixed bg class to win).
+        // Composes with `dark:` either way: `ios:dark:foo` and
+        // `dark:ios:foo` both work via the recursive parse.
+        if (str_starts_with($class, 'ios:')) {
+            return self::currentPlatform() === 'ios'
+                ? self::parseClass(substr($class, 4))
+                : null;
+        }
+        if (str_starts_with($class, 'android:')) {
+            return self::currentPlatform() === 'android'
+                ? self::parseClass(substr($class, 8))
+                : null;
+        }
+
         // Dark mode variant: dark:class-name
         if (str_starts_with($class, 'dark:')) {
             $inner = self::parseClass(substr($class, 5));

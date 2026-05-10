@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge\Layouts\Builders;
 
+use Native\Mobile\Concerns\HasPlatformIcon;
 use Native\Mobile\Edge\Elements\BottomNavItem;
 
 /**
@@ -26,13 +27,13 @@ use Native\Mobile\Edge\Elements\BottomNavItem;
  */
 class Tab
 {
+    use HasPlatformIcon;
+
     private string $id;
 
     private string $label;
 
     private string $url;
-
-    private ?string $icon = null;
 
     private ?string $badge = null;
 
@@ -65,7 +66,7 @@ class Tab
             url: $url,
         );
         if ($icon !== null) {
-            $tab->icon = $icon;
+            $tab->icon($icon);
         }
 
         return $tab;
@@ -85,7 +86,7 @@ class Tab
             url: '',
         );
         if ($icon !== null) {
-            $tab->icon = $icon;
+            $tab->icon($icon);
         }
 
         return $tab;
@@ -106,13 +107,6 @@ class Tab
     public function id(string $id): self
     {
         $this->id = $id;
-
-        return $this;
-    }
-
-    public function icon(string $icon): self
-    {
-        $this->icon = $icon;
 
         return $this;
     }
@@ -174,7 +168,12 @@ class Tab
             'url' => $this->url,
             'active' => $this->active,
         ];
-        if ($this->icon !== null)        $attrs['icon']       = $this->icon;
+        if (($icon = $this->resolvedIcon()) !== null) {
+            $attrs['icon'] = $icon;
+            if (($variant = $this->resolvedMaterialVariant()) !== null) {
+                $attrs['material_variant'] = $variant;
+            }
+        }
         if ($this->badge !== null)       $attrs['badge']      = $this->badge;
         if ($this->badgeColor !== null)  $attrs['badgeColor'] = $this->badgeColor;
         if ($this->news)                 $attrs['news']       = true;

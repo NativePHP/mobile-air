@@ -18,7 +18,7 @@ class BottomNavItem extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        foreach (['id', 'icon', 'url', 'label', 'badge', 'badgeColor'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'url', 'label', 'badge', 'badgeColor'] as $key) {
             if (isset($attrs[$key])) {
                 $snakeKey = strtolower(preg_replace('/[A-Z]/', '_$0', $key));
                 $this->props[$snakeKey] = $attrs[$key];

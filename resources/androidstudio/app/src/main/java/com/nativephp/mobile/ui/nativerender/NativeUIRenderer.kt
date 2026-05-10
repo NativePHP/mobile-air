@@ -100,8 +100,12 @@ fun NativeUIContent() {
  * Map a PHP-side Edge\Transition value to a Compose AnimatedContent
  * ContentTransform. Mirrors NativeUITransitionFunctions.transition(for:)
  * on the iOS side.
+ *
+ * `internal` so other renderers (NativeRootTabsRenderer's within-tab
+ * push animation, future stack renderers) can share the same mapper
+ * instead of duplicating the spec table.
  */
-private fun transitionFor(type: String?): ContentTransform {
+internal fun transitionFor(type: String?): ContentTransform {
     val spec = tween<Float>(durationMillis = 250)
     val intSpec = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 250)
     return when (type) {

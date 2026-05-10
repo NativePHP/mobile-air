@@ -4,7 +4,20 @@ namespace Native\Mobile\Edge;
 
 class CallbackRegistry
 {
-    protected int $nextId = 1;
+    /**
+     * Process-wide ID counter. Was per-instance, but per-instance IDs
+     * collide across components — when component A registers
+     * `closeSheet` as ID 5 and component B registers `confirmDelete` as
+     * ID 5, an event meant for A's sheet (still visible from a stale
+     * tree) lands on B's active runloop and fires `confirmDelete`
+     * instead. Global counter guarantees IDs from different components
+     * never collide; if an event arrives with an ID this component
+     * doesn't own, `resolve()` returns null and `dispatch()` drops it
+     * instead of mis-firing.
+     *
+     * u32 wire range (≈4B IDs) is plenty even for long-lived sessions.
+     */
+    protected static int $globalNextId = 1;
 
     protected array $map = [];
 
@@ -18,7 +31,7 @@ class CallbackRegistry
             return $this->expressionMap[$expression];
         }
 
-        $id = $this->nextId++;
+        $id = self::$globalNextId++;
         $this->expressionMap[$expression] = $id;
         $this->map[$id] = self::parse($expression);
 
