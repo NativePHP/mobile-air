@@ -2,7 +2,6 @@
 
 namespace Native\Mobile\Commands;
 
-use GuzzleHttp\Client;
 use Illuminate\Console\Command;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
@@ -12,7 +11,6 @@ use Native\Mobile\Traits\PlatformFileOperations;
 use Native\Mobile\Traits\RunsAndroid;
 use Native\Mobile\Traits\RunsIos;
 
-use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
@@ -123,9 +121,6 @@ class RunCommand extends Command
 
         intro('Running NativePHP for '.$osName);
 
-        if (! $this->checkForPhpBinaryUpdates()) {
-            return self::FAILURE;
-        }
         $this->checkForUnregisteredPlugins();
 
         match ($os) {
@@ -136,60 +131,6 @@ class RunCommand extends Command
         $this->showBifrostBanner();
 
         return self::SUCCESS;
-    }
-
-    protected function checkForPhpBinaryUpdates(): bool
-    {
-        try {
-            $jsonPath = base_path('nativephp.json');
-
-            if (! file_exists($jsonPath)) {
-                return true;
-            }
-
-            $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
-            $installedVersion = $nativephp['php']['version'] ?? null;
-
-            if (! $installedVersion) {
-                return true;
-            }
-
-            $parts = explode('.', $installedVersion);
-            $installedMinor = $parts[0].'.'.$parts[1];
-            $runningMinor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
-
-            // If the installed binary minor version doesn't match the running PHP, offer to reinstall
-            if ($installedMinor !== $runningMinor) {
-                warning("PHP version mismatch:\n  • Mobile PHP version: {$installedMinor}\n  • CLI PHP version: {$runningMinor}\n\nYour app will not run.");
-
-                if (confirm('Run native:install again to fix this?', default: true)) {
-                    $this->call('native:install', ['--force' => true]);
-
-                    return true;
-                }
-
-                return false;
-            }
-
-            // Check for newer patch version
-            $branch = env('NATIVEPHP_BIN_BRANCH', 'main');
-            $client = new Client;
-            $response = $client->get("https://bin.nativephp.com/{$branch}/versions.json", [
-                'connect_timeout' => 3,
-                'timeout' => 3,
-            ]);
-
-            $versions = json_decode($response->getBody()->getContents(), true);
-            $latestVersion = $versions['versions'][$installedMinor]['php_version'] ?? null;
-
-            if ($latestVersion && version_compare($latestVersion, $installedVersion, '>')) {
-                note("PHP {$latestVersion} is available (installed: {$installedVersion}). Run <comment>php artisan native:install --force</comment> to update.");
-            }
-        } catch (\Throwable) {
-            // Fail silently — this is a non-critical check
-        }
-
-        return true;
     }
 
     protected function checkForUnregisteredPlugins(): void

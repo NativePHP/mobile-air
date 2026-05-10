@@ -15,6 +15,7 @@ class JumpCommand extends Command
                             {--http-port= : The HTTP port to serve on}
                             {--ws-port= : The WebSocket bridge port}
                             {--bridge-port= : The internal TCP bridge port}
+                            {--vite-proxy-port= : The port Jump uses to proxy Vite HMR to the phone}
                             {--no-serve : Do not start artisan serve automatically (use if running your own server)}
                             {--laravel-port= : The Laravel dev server port (auto-detected when artisan serve is managed)}
                             {--no-mdns : Disable mDNS service advertisement}';
@@ -29,8 +30,12 @@ class JumpCommand extends Command
 
     private array $laravelPipes = [];
 
+    private bool $verbose = false;
+
     public function handle()
     {
+        $this->verbose = $this->output->isVerbose();
+
         intro('NativePHP Jump Server');
 
         // Kill existing servers
@@ -67,6 +72,11 @@ class JumpCommand extends Command
         $wsPort = (int) ($this->option('ws-port') ?? $this->findAvailablePort(3001, 100, $usedPorts));
         $usedPorts[] = $wsPort;
         $bridgePort = (int) ($this->option('bridge-port') ?? $this->findAvailablePort(3002, 100, $usedPorts));
+        $usedPorts[] = $bridgePort;
+        // Vite HMR proxy: phone connects here over WebSocket, we relay frames
+        // to the real Vite dev server on 127.0.0.1. Keeps users from having to
+        // edit vite.config.js for network access.
+        $viteProxyPort = (int) ($this->option('vite-proxy-port') ?? $this->findAvailablePort(3003, 100, $usedPorts));
 
         // Start or detect the Laravel dev server
         if ($this->option('no-serve')) {
@@ -104,12 +114,13 @@ class JumpCommand extends Command
             }
         }
 
-        $this->startBridgeServer($wsPort, $bridgePort);
+        $this->startBridgeServer($wsPort, $bridgePort, $viteProxyPort);
         $this->components->twoColumnDetail('Bridge WebSocket', "ws://{$this->displayHost}:{$wsPort}/jump/ws");
         $this->components->twoColumnDetail('Bridge TCP', "tcp://127.0.0.1:{$bridgePort}");
+        $this->components->twoColumnDetail('Vite HMR proxy', "ws://{$this->displayHost}:{$viteProxyPort}/");
 
         // Start PHP built-in server (serves QR page + proxies to Laravel)
-        $this->startPhpServer($host, $httpPort, $openQr, $bridgePort, $wsPort);
+        $this->startPhpServer($host, $httpPort, $openQr, $bridgePort, $wsPort, $viteProxyPort);
 
         return self::SUCCESS;
     }
@@ -117,7 +128,7 @@ class JumpCommand extends Command
     /**
      * Start PHP's built-in development server with the Jump router
      */
-    private function startPhpServer(string $host, int $httpPort, bool $openQr, int $bridgePort = 3002, int $wsPort = 3001): void
+    private function startPhpServer(string $host, int $httpPort, bool $openQr, int $bridgePort = 3002, int $wsPort = 3001, int $viteProxyPort = 3003): void
     {
         $routerPath = __DIR__.'/../../resources/jump/router.php';
 
@@ -135,6 +146,7 @@ class JumpCommand extends Command
             'JUMP_BRIDGE_PORT' => (string) $bridgePort,
             'JUMP_WS_PORT' => (string) $wsPort,
             'JUMP_VITE_PORT' => (string) config('nativephp.server.vite_port', 5173),
+            'JUMP_VITE_PROXY_PORT' => (string) $viteProxyPort,
             'JUMP_BASE_PATH' => base_path(),
             'APP_NAME' => config('app.name', 'Laravel'),
         ];
@@ -211,8 +223,8 @@ class JumpCommand extends Command
             // Read stdout (PHP server access log)
             $stdout = fgets($pipes[1]);
             if ($stdout) {
-                // Filter out noisy requests
-                if (! str_contains($stdout, 'favicon.ico') && ! str_contains($stdout, '.map')) {
+                // Filter out noisy requests (unless verbose)
+                if ($this->verbose || (! str_contains($stdout, 'favicon.ico') && ! str_contains($stdout, '.map'))) {
                     // Parse and format the output
                     $this->formatServerOutput($stdout);
                 }
@@ -225,6 +237,24 @@ class JumpCommand extends Command
                 if (str_contains($stderr, '[Jump]')) {
                     $message = trim(str_replace('[Jump]', '', $stderr));
                     $this->components->twoColumnDetail('Device', $message);
+                } elseif ($this->verbose) {
+                    $this->line('  <fg=gray>[php] '.trim($stderr).'</>');
+                }
+            }
+
+            // Drain Laravel server output to prevent pipe buffer from filling
+            if ($this->laravelProcess && is_resource($this->laravelProcess)) {
+                if (is_resource($this->laravelPipes[1] ?? null)) {
+                    $laravelStdout = fgets($this->laravelPipes[1]);
+                    if ($laravelStdout && $this->verbose) {
+                        $this->line('  <fg=gray>[laravel] '.trim($laravelStdout).'</>');
+                    }
+                }
+                if (is_resource($this->laravelPipes[2] ?? null)) {
+                    $laravelStderr = fgets($this->laravelPipes[2]);
+                    if ($laravelStderr && $this->verbose) {
+                        $this->line('  <fg=gray>[laravel] '.trim($laravelStderr).'</>');
+                    }
                 }
             }
 
@@ -258,7 +288,7 @@ class JumpCommand extends Command
      * Start the WebSocket bridge server for hybrid mode.
      * Runs as a background process alongside the HTTP server.
      */
-    private function startBridgeServer(int $wsPort, int $bridgePort): void
+    private function startBridgeServer(int $wsPort, int $bridgePort, int $viteProxyPort = 3003): void
     {
         $serverPath = __DIR__.'/../../resources/jump/websocket-server.php';
 
@@ -278,16 +308,17 @@ class JumpCommand extends Command
             @mkdir($logDir, 0755, true);
         }
         $logFile = $logDir.'/jump-bridge.log';
-        @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort}) ===\n", FILE_APPEND);
+        @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort} vite_proxy={$viteProxyPort}) ===\n", FILE_APPEND);
 
         // Run in background (not Workerman daemon mode — it breaks the event loop)
         $cmd = sprintf(
-            '%s %s %s %d %d start >> %s 2>&1 &',
+            '%s %s %s %d %d %d start >> %s 2>&1 &',
             escapeshellarg($phpBinary),
             escapeshellarg($serverPath),
             escapeshellarg(base_path()),
             $wsPort,
             $bridgePort,
+            $viteProxyPort,
             escapeshellarg($logFile)
         );
 
@@ -390,9 +421,9 @@ class JumpCommand extends Command
             $method = $matches[4];
             $path = $matches[5];
 
-            // Skip certain paths
-            if (str_contains($path, '/jump/')) {
-                return; // Our internal endpoints
+            // Skip internal endpoints unless verbose
+            if (! $this->verbose && str_contains($path, '/jump/')) {
+                return;
             }
 
             // Color code by status
@@ -404,8 +435,13 @@ class JumpCommand extends Command
                 // Surface non-GET traffic (Livewire POSTs, form submits) so
                 // you can correlate UI actions with server handlers.
                 $this->line("<fg=cyan>{$method} {$path} [{$status}]</>");
+            } elseif ($this->verbose) {
+                // GET 2xx are silent by default to reduce asset-load noise.
+                $this->line("<fg=gray>{$method} {$path} [{$status}]</>");
             }
-            // GET 2xx still silent to reduce noise from asset loads.
+        } elseif ($this->verbose) {
+            // Unrecognized output — show it raw so you don't miss PHP warnings/notices.
+            $this->line('  <fg=gray>'.$output.'</>');
         }
     }
 

@@ -11,6 +11,8 @@ import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
 
 class PHPBridge(private val context: Context) {
+    private var lastPostData: String? = null
+    private val requestDataMap = ConcurrentHashMap<String, String>()
     private val postDataByKey = ConcurrentHashMap<String, String>()
     private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
@@ -247,6 +249,47 @@ class PHPBridge(private val context: Context) {
         return result
     }
 
+    // New function to store request data with a key
+    fun storeRequestData(key: String, data: String) {
+        requestDataMap[key] = data
+        Log.d(TAG, "Stored request data with key: $key (length=${data.length})")
+
+        // Also update last post data for backward compatibility
+        lastPostData = data
+
+        // Clean up old requests occasionally
+        if (requestDataMap.size > 10) {
+            cleanupOldRequests()
+        }
+    }
+
+    // Clean up old request data
+    private fun cleanupOldRequests() {
+        val now = System.currentTimeMillis()
+        val keysToRemove = mutableListOf<String>()
+
+        // Find keys with timestamps older than MAX_REQUEST_AGE
+        requestDataMap.keys.forEach { key ->
+            if (key.contains("-")) {
+                val timestampStr = key.substringAfterLast("-")
+                try {
+                    val timestamp = timestampStr.toLong()
+                    if (now - timestamp > MAX_REQUEST_AGE) {
+                        keysToRemove.add(key)
+                    }
+                } catch (e: NumberFormatException) {
+                    // Key doesn't have a valid timestamp format, ignore
+                }
+            }
+        }
+
+        // Remove old entries
+        keysToRemove.forEach { requestDataMap.remove(it) }
+        if (keysToRemove.isNotEmpty()) {
+            Log.d(TAG, "Cleaned up ${keysToRemove.size} old request entries")
+        }
+    }
+
     fun storePostData(key: String, data: String) {
         postDataByKey[key] = data
         Log.d(TAG, "Stored POST data for key=$key (length=${data.length})")
@@ -291,6 +334,10 @@ class PHPBridge(private val context: Context) {
             }
         }
         future.get()  // Block caller — native UI route runs until navigation exits
+    }
+
+    fun getLastPostData(): String? {
+        return lastPostData
     }
 
     fun getLaravelPath(): String {

@@ -2,6 +2,8 @@
 #include <android/log.h>
 #include <signal.h>
 #include <pthread.h>
+#include <errno.h>
+#include <time.h>
 #include "php_embed.h"
 #include "PHP.h"
 #include <zend_exceptions.h>
@@ -26,6 +28,54 @@ static int php_initialized = 0;    // tracks whether php_embed_init is active
 static pthread_mutex_t g_php_request_mutex = PTHREAD_MUTEX_INITIALIZER;
 static jobject g_callback_obj = NULL;
 static jmethodID g_callback_method = NULL;
+
+// ── Persistent boot gate ─────────────────────────────────────────────────
+// Without this gate, two threads can concurrently call php_embed_init():
+// one from native_persistent_boot (holding g_php_request_mutex), another from
+// native_ephemeral_boot taking the cold path (holding g_ephemeral_mutex, a
+// different lock) because it read php_initialized==0 before persistent set it.
+// Concurrent php_embed_init calls corrupt TSRM/SAPI globals.
+//
+// The gate lets ephemeral block while persistent is mid-boot, then re-check
+// php_initialized and take hot or cold path correctly.
+typedef enum {
+    PERSISTENT_BOOT_NEVER_STARTED = 0,
+    PERSISTENT_BOOT_IN_PROGRESS,
+    PERSISTENT_BOOT_SUCCEEDED,
+    PERSISTENT_BOOT_FAILED,
+} persistent_boot_state_t;
+
+static persistent_boot_state_t g_persistent_boot_state = PERSISTENT_BOOT_NEVER_STARTED;
+static pthread_mutex_t g_persistent_boot_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_persistent_boot_cond  = PTHREAD_COND_INITIALIZER;
+
+static void set_persistent_boot_state(persistent_boot_state_t state) {
+    pthread_mutex_lock(&g_persistent_boot_mutex);
+    g_persistent_boot_state = state;
+    pthread_cond_broadcast(&g_persistent_boot_cond);
+    pthread_mutex_unlock(&g_persistent_boot_mutex);
+}
+
+// Wait for persistent boot to leave IN_PROGRESS (settle into a terminal state).
+// Returns 0 once settled; returns -1 on timeout.
+// Callers re-check php_initialized after this to pick hot vs cold path —
+// this helper only prevents the concurrent php_embed_init race.
+static int wait_for_persistent_boot_settled(int timeout_seconds) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_seconds;
+
+    pthread_mutex_lock(&g_persistent_boot_mutex);
+    while (g_persistent_boot_state == PERSISTENT_BOOT_IN_PROGRESS) {
+        int rc = pthread_cond_timedwait(&g_persistent_boot_cond, &g_persistent_boot_mutex, &deadline);
+        if (rc == ETIMEDOUT) {
+            pthread_mutex_unlock(&g_persistent_boot_mutex);
+            return -1;
+        }
+    }
+    pthread_mutex_unlock(&g_persistent_boot_mutex);
+    return 0;
+}
 
 #define BUFFER_CHUNK_SIZE (256 * 1024)  // 256KB increments
 #define MAX_BUFFER_SIZE (16 * 1024 * 1024)  // 16MB max buffer
@@ -336,9 +386,14 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     setenv("APP_URL", "http://127.0.0.1", 1);
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
 
+    // Open the boot gate so any concurrent ephemeral_embed_init call blocks
+    // instead of racing into a second php_embed_init().
+    set_persistent_boot_state(PERSISTENT_BOOT_IN_PROGRESS);
+
     setup_embed_module();
     if (php_embed_init(0, NULL) != SUCCESS) {
         LOGE("persistent_boot: php_embed_init() FAILED");
+        set_persistent_boot_state(PERSISTENT_BOOT_FAILED);
         (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
         pthread_mutex_unlock(&g_php_request_mutex);
         return -1;
@@ -362,6 +417,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     }
 
     persistent_initialized = 1;
+    set_persistent_boot_state(PERSISTENT_BOOT_SUCCEEDED);
     LOGI("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
@@ -464,6 +520,15 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
         "try {\n"
         "    // Clean PHP output buffers from previous dispatch\n"
         "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
+        "\n"
+        "    // Drop stale HTTP_* / CONTENT_* keys from previous request before re-populating.\n"
+        "    // $_SERVER persists across dispatches in the persistent runtime; without this,\n"
+        "    // headers like X-Inertia leak into subsequent requests and trigger JSON responses.\n"
+        "    foreach ($_SERVER as $__k => $__v) {\n"
+        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
+        "            unset($_SERVER[$__k]);\n"
+        "        }\n"
+        "    }\n"
         "\n"
         "    // Sync $_SERVER from current env (setenv in C doesn't update PHP $_SERVER)\n"
         "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
@@ -640,6 +705,9 @@ JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
     safe_php_embed_shutdown();
     php_initialized = 0;
     persistent_initialized = 0;
+    // Reset the gate so a future ephemeral_embed_init cold path is safe and
+    // a subsequent persistent_boot can transition IN_PROGRESS cleanly.
+    set_persistent_boot_state(PERSISTENT_BOOT_NEVER_STARTED);
 
     LOGI("persistent_shutdown: done");
     pthread_mutex_unlock(&g_php_request_mutex);
@@ -971,6 +1039,14 @@ static void worker_embed_shutdown(void) {
  * Called once from the worker thread when it starts.
  */
 JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    // Worker's ts_resource(0) assumes tsrm_startup() already ran (inside
+    // persistent's php_embed_init). Wait for persistent to settle so we
+    // don't race past a half-initialized TSRM.
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("worker_boot: timed out waiting for persistent boot to settle");
+        return -1;
+    }
+
     pthread_mutex_lock(&g_worker_mutex);
 
     if (worker_initialized) {
@@ -1097,6 +1173,15 @@ JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
 // cold start after app killed).
 
 static int ephemeral_embed_init(void) {
+    // If persistent is mid-boot (started but not yet finished php_embed_init),
+    // wait. Otherwise php_initialized would read 0 and we'd take the cold path
+    // — calling php_embed_init() concurrently with the persistent thread, which
+    // corrupts TSRM/SAPI globals.
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("ephemeral_embed_init: timed out waiting for persistent boot to settle");
+        return FAILURE;
+    }
+
     if (php_initialized) {
         // Hot path: persistent runtime is alive, allocate a TSRM thread context
         LOGI("ephemeral_embed_init: hot path — using existing TSRM");

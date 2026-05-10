@@ -15,6 +15,11 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
+    private function getBinaryBranch(): string
+    {
+        return env('NATIVEPHP_BIN_BRANCH', 'main');
+    }
+
     protected ?bool $includeIcu = null;
 
     public function promptAndroidOptions(): void
@@ -82,11 +87,26 @@ trait InstallsAndroid
     private function installPHPAndroid(): void
     {
         $includeIcu = $this->includeIcu ?? false;
-        $phpVersion = $this->phpVersion;
-        $versions = $this->versionsManifest;
+        $phpVersion = $this->detectPhpVersion();
 
-        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries not available");
+        $branch = $this->getBinaryBranch();
+        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
+
+        $client = new Client;
+
+        try {
+            $versions = json_decode(
+                $client->get($versionsUrl)->getBody()->getContents(),
+                true
+            );
+        } catch (RequestException $e) {
+            error("Failed to fetch versions manifest from: {$versionsUrl}");
+
+            return;
+        }
+
+        if (! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available in {$branch} branch");
 
             return;
         }
@@ -240,6 +260,14 @@ trait InstallsAndroid
                 $this->platformOptimizedCopy($includeSrc, $includeDst);
             }
         });
+
+        // Store ICU preference for run command
+        $icuFlagFile = base_path('nativephp/android/.icu-enabled');
+        if ($includeIcu) {
+            File::put($icuFlagFile, '1');
+        } elseif (File::exists($icuFlagFile)) {
+            File::delete($icuFlagFile);
+        }
 
         try {
             $this->removeDirectory($extractPath);
