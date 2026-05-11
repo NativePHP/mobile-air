@@ -39,9 +39,6 @@ class JumpCommand extends Command
 
         intro('NativePHP Jump Server');
 
-        // Kill existing servers
-        $this->killExistingServers();
-
         // Configuration
         $host = $this->option('host');
         $httpPort = $this->option('http-port') ?? config('nativephp.server.http_port', 3000);
@@ -301,19 +298,35 @@ class JumpCommand extends Command
         $logFile = $logDir.'/jump-bridge.log';
         @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort} vite_proxy={$viteProxyPort}) ===\n", FILE_APPEND);
 
-        // Run in background (not Workerman daemon mode — it breaks the event loop)
-        $cmd = sprintf(
-            '%s %s %s %d %d %d start >> %s 2>&1 &',
-            escapeshellarg($phpBinary),
-            escapeshellarg($serverPath),
-            escapeshellarg(base_path()),
-            $wsPort,
-            $bridgePort,
-            $viteProxyPort,
-            escapeshellarg($logFile)
-        );
-
-        exec($cmd);
+        // Run in background (not Workerman daemon mode — it breaks the event loop).
+        // Windows: `&` is a command separator (not "background"), so exec() would
+        // block here forever waiting on the long-lived server. Use `start /B` to
+        // detach properly.
+        if (PHP_OS_FAMILY === 'Windows') {
+            $cmd = sprintf(
+                'start "" /B %s %s %s %d %d %d start >> %s 2>&1',
+                escapeshellarg($phpBinary),
+                escapeshellarg($serverPath),
+                escapeshellarg(base_path()),
+                $wsPort,
+                $bridgePort,
+                $viteProxyPort,
+                escapeshellarg($logFile)
+            );
+            pclose(popen($cmd, 'r'));
+        } else {
+            $cmd = sprintf(
+                '%s %s %s %d %d %d start >> %s 2>&1 &',
+                escapeshellarg($phpBinary),
+                escapeshellarg($serverPath),
+                escapeshellarg(base_path()),
+                $wsPort,
+                $bridgePort,
+                $viteProxyPort,
+                escapeshellarg($logFile)
+            );
+            exec($cmd);
+        }
 
         // Give it a moment to start
         usleep(500000);
@@ -639,70 +652,25 @@ APPLESCRIPT;
         }
     }
 
-    private function killExistingServers()
-    {
-        $currentPid = getmypid();
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            // Kill PHP servers running the jump router
-            $output = shell_exec('wmic process where "commandline like \'%router.php%\'" get processid 2>NUL');
-            if (! $output) {
-                $output = shell_exec('powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like \'*router.php*\' } | Select-Object -ExpandProperty ProcessId" 2>NUL');
-            }
-
-            if ($output) {
-                $pids = array_filter(preg_split('/\s+/', trim($output)), function ($pid) use ($currentPid) {
-                    return is_numeric($pid) && $pid != $currentPid && ! empty($pid);
-                });
-
-                if (count($pids) > 0) {
-                    $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
-                        foreach ($pids as $pid) {
-                            exec("taskkill /F /PID {$pid} 2>NUL");
-                        }
-                        usleep(500000);
-
-                        return true;
-                    });
-                }
-            }
-        } else {
-            // Unix: Kill WebSocket bridge servers and Workerman workers
-            exec("pkill -9 -f 'websocket-server.php' 2>/dev/null");
-            exec("pkill -9 -f 'WorkerMan:' 2>/dev/null");
-            usleep(300000);
-
-            // Unix: Kill PHP servers running the jump router
-            $output = shell_exec("pgrep -f 'router.php' 2>/dev/null");
-
-            if ($output) {
-                $pids = array_filter(explode("\n", trim($output)));
-                $pids = array_filter($pids, function ($pid) use ($currentPid) {
-                    return $pid != $currentPid && ! empty($pid);
-                });
-
-                if (count($pids) > 0) {
-                    $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
-                        foreach ($pids as $pid) {
-                            exec("kill -9 {$pid} 2>/dev/null");
-                        }
-                        usleep(500000);
-
-                        return true;
-                    });
-                }
-            }
-        }
-    }
-
     private function isPortInUse($port)
     {
+        // Connect-test: does anything accept on this port right now?
         $connection = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
         if ($connection) {
             fclose($connection);
 
             return true;
         }
+
+        // Bind-test: catches ports held by a process that isn't accepting
+        // (stuck/half-dead Windows servers, TIME_WAIT, bound-but-not-listening).
+        // fsockopen alone missed these, which is why a previous run's artisan
+        // serve on 8000 could fool us into picking 8000 again.
+        $socket = @stream_socket_server("tcp://127.0.0.1:{$port}", $errno, $errstr);
+        if ($socket === false) {
+            return true;
+        }
+        fclose($socket);
 
         return false;
     }
