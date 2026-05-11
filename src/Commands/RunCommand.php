@@ -11,6 +11,7 @@ use Native\Mobile\Traits\PlatformFileOperations;
 use Native\Mobile\Traits\RunsAndroid;
 use Native\Mobile\Traits\RunsIos;
 
+use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
@@ -36,6 +37,10 @@ class RunCommand extends Command
     public function handle(): int
     {
         $this->ensureValidAppId();
+
+        if (! $this->ensureHostPhpMatchesLock()) {
+            return self::FAILURE;
+        }
 
         // Check watchman is installed when --watch flag is used
         if ($this->option('watch') && ! $this->checkWatchmanDependencies()) {
@@ -149,6 +154,59 @@ class RunCommand extends Command
 
         note('Register them in your NativeServiceProvider or run: php artisan native:plugin:register');
         $this->newLine();
+    }
+
+    protected function ensureHostPhpMatchesLock(): bool
+    {
+        $lockPath = base_path('nativephp.lock');
+
+        if (! file_exists($lockPath)) {
+            return true;
+        }
+
+        $lock = json_decode(file_get_contents($lockPath), true) ?? [];
+        $lockedVersion = $lock['php']['version'] ?? null;
+
+        if (! is_string($lockedVersion) || $lockedVersion === '') {
+            return true;
+        }
+
+        $lockedMinor = implode('.', array_slice(explode('.', $lockedVersion), 0, 2));
+        $hostMinor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+
+        if ($lockedMinor === $hostMinor) {
+            return true;
+        }
+
+        error("Host PHP {$hostMinor} does not match nativephp.lock ({$lockedVersion}).");
+        note('Composer resolves your app dependencies against the host PHP, but the bundled runtime is pinned to PHP '.$lockedMinor.'. Building now will likely fail or produce a bundle that crashes on device.');
+
+        $supported = ['8.5', '8.4', '8.3'];
+
+        if (! in_array($hostMinor, $supported, true)) {
+            note("Your host PHP {$hostMinor} is not supported by NativePHP. Switch your host to PHP {$lockedMinor}.x and retry.");
+
+            return false;
+        }
+
+        if (! confirm("Re-run `native:install --force` to bundle PHP {$hostMinor} instead?", default: true)) {
+            note("Switch your host to PHP {$lockedMinor}.x and retry, or re-install when ready.");
+
+            return false;
+        }
+
+        $lock['php']['version'] = $hostMinor;
+        file_put_contents($lockPath, json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+        $exitCode = $this->call('native:install', ['--force' => true]);
+
+        if ($exitCode !== 0) {
+            error('native:install --force failed. Resolve the install error and retry.');
+
+            return false;
+        }
+
+        return true;
     }
 
     protected function ensureValidAppId(): void
