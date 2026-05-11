@@ -308,20 +308,7 @@ class InstallCommand extends Command
             }
         }
 
-        // Fall back to composer.json's PHP constraint
-        $composerPath = base_path('composer.json');
-        if (file_exists($composerPath)) {
-            $composer = json_decode(file_get_contents($composerPath), true);
-            $constraint = $composer['require']['php'] ?? '';
-
-            foreach ($supported as $version) {
-                if (preg_match('/(?:\^|>=|~)?'.preg_quote($version, '/').'/', $constraint)) {
-                    return $version;
-                }
-            }
-        }
-
-        // Fall back to the running PHP version
+        // Fall back to the host PHP — Composer resolves against it.
         $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
 
         if (in_array($minor, $supported, true)) {
