@@ -6,9 +6,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 
 /**
@@ -55,10 +57,41 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             }
             mod
         }
-        val modifier = base
+        // Order matters: gestures must come BEFORE padding so the
+        // clickable bounds cover the FULL sized surface (background +
+        // padding region), not just the inner content rect. Compose
+        // applies modifiers outer→inner; if `nodeLayout` (padding) ran
+        // before `nodeGestures` the ripple would be inset by the
+        // padding and visibly fall short of the pressable's edges —
+        // looks like the ripple is "ignoring" the padding.
+        //
+        // Stack: size (base) → bg/border (nodeStyle) → optional clip
+        // (rounded tappable surfaces) → click region (nodeGestures) →
+        // inset children (nodeLayout).
+        //
+        // The conditional `.clip(RoundedCornerShape)` is the reason
+        // ripples stay inside the pill / rounded-button shape instead
+        // of bleeding past the corners. It applies ONLY when both
+        // conditions hold:
+        //   - the node has a press / long-press handler (so ripple
+        //     will actually be drawn — clipping a non-tappable surface
+        //     wouldn't do anything useful)
+        //   - the node has a non-zero border radius
+        // Non-tappable rounded surfaces (cards, chips with overflowing
+        // avatars, etc.) intentionally skip the clip — the existing
+        // policy in NodeModifiers.kt explains why we don't clip
+        // unconditionally: it'd cut off children that legitimately
+        // overflow the rounded shape.
+        val hasPress = node.onPress != 0 || node.onLongPress != 0
+        val radius = node.style?.borderRadius ?: 0f
+        var modifier: Modifier = base
             .nodeStyle(node.style, node.props, isDarkMode)
-            .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
+        if (hasPress && radius > 0f) {
+            modifier = modifier.clip(RoundedCornerShape(radius.dp))
+        }
+        modifier = modifier
             .nodeGestures(node)
+            .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
         if (renderer != null) {
             renderer.Render(node, modifier)

@@ -88,6 +88,14 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val actions = activeNode.children.filter { it.type == "top_bar_action" }
     val screenContent = activeNode.children.firstOrNull { it.type != "top_bar_action" }
 
+    // Inline search field config (NavBar::searchBar() — Apple HIG /
+    // Expo pattern). When set, replaces the title slot with a search
+    // text field; query changes flow back via TEXT_CHANGE.
+    val searchPlaceholder = activeNode.props.getString("search_placeholder", "")
+    val searchOnQueryCb = activeNode.props.getCallbackId("search_on_query")
+    val searchDebounceMs = activeNode.props.getInt("search_debounce_ms", 300)
+    val hasSearch = searchPlaceholder.isNotEmpty()
+
     // System back / predictive-back: shrink path if pushed, otherwise
     // forward to PHP so it pops the underlying stack (e.g. back to
     // wherever the user came from before entering native chrome).
@@ -104,7 +112,14 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         topBar = {
             TopAppBar(
                 title = {
-                    if (subtitle.isNotEmpty()) {
+                    if (hasSearch) {
+                        InlineNavSearchField(
+                            placeholder = searchPlaceholder,
+                            callbackId = searchOnQueryCb,
+                            nodeId = activeNode.id,
+                            debounceMs = searchDebounceMs,
+                        )
+                    } else if (subtitle.isNotEmpty()) {
                         Column {
                             Text(
                                 title,

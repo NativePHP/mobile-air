@@ -47,9 +47,27 @@ abstract class NativeComponent
     /** Imperative tabbar overrides — merged onto layout's TabBar at render time. */
     protected array $pendingTabBarState = [];
 
-    public function render(): Element
+    public function render(): Element|\Illuminate\View\View
     {
         return $this->view(static::inferViewName());
+    }
+
+    /**
+     * Invoke the subclass's `render()` and normalize its return value
+     * to an `Element`. Subclasses may return either an `Element`
+     * (built via `$this->view(...)` / element builders) or a Laravel
+     * `View` instance (built via the global `view('native.foo')`
+     * helper — preferred for IDE CMD-click navigation). Centralizing
+     * the dispatch here keeps the three call sites in the runloop
+     * from each having to repeat the type check.
+     */
+    private function renderToElement(): Element
+    {
+        $result = $this->render();
+
+        return $result instanceof \Illuminate\View\View
+            ? $this->fromView($result)
+            : $result;
     }
 
     /**
@@ -83,6 +101,86 @@ abstract class NativeComponent
         $content = NativeElementCollector::collect();
 
         return $this->wrapWithChrome($content);
+    }
+
+    /**
+     * Render a Blade partial into an `Element` tree without wrapping
+     * it in layout chrome. Useful for any place that builds Elements
+     * outside a `render()` call — most notably custom search-result
+     * rows from `onSearchQuery()` / `searchItems()`:
+     *
+     *     return collect($posts)
+     *         ->map(fn ($p) => $this->partial('search-row', ['post' => $p]))
+     *         ->toArray();
+     *
+     * Counterpart of `view()` minus the `wrapWithChrome()` call. Safe
+     * to call multiple times in a loop — each call resets the static
+     * collector and returns a fresh detached subtree.
+     */
+    protected function partial(string $name, array $data = []): Element
+    {
+        $viewData = array_merge($this->getPublicProperties(), $data);
+
+        NativeElementCollector::reset();
+        NativeElementCollector::setCallbacks($this->callbacks);
+
+        $this->renderBladeBoundToSelf("native.{$name}", $viewData);
+
+        return NativeElementCollector::collect();
+    }
+
+    /**
+     * Convert a Laravel `View` instance into a screen-level `Element`
+     * tree. Equivalent to `view($name, $data)` but accepting an
+     * already-constructed `View` — so devs can write
+     *
+     *     public function render(): View
+     *     {
+     *         return view('native.home');
+     *     }
+     *
+     * and let the IDE CMD-click the view name to the Blade file
+     * (PhpStorm / Laravel Idea / Intelephense all recognize the global
+     * `view()` helper). The runloop calls this when `render()` returns
+     * a `View`; devs don't usually invoke it directly.
+     */
+    protected function fromView(\Illuminate\View\View $view): Element
+    {
+        $viewData = array_merge($this->getPublicProperties(), $view->getData());
+
+        NativeElementCollector::reset();
+        NativeElementCollector::setCallbacks($this->callbacks);
+
+        $this->renderBladeBoundToSelf($view->getName(), $viewData);
+
+        $content = NativeElementCollector::collect();
+
+        return $this->wrapWithChrome($content);
+    }
+
+    /**
+     * Convert a Laravel `View` to an `Element` tree without wrapping
+     * in layout chrome — partial equivalent of `fromView`. Lets devs
+     * use `view('native.search-row', [...])` anywhere `partial(...)`
+     * would have been used, with IDE-navigable view names:
+     *
+     *     return collect($posts)
+     *         ->map(fn ($p) => view('native.search-row', ['post' => $p]))
+     *         ->toArray();
+     *
+     * `wrapWithNativeChrome` calls this automatically when it spots a
+     * `View` instance in a screen's search-items list.
+     */
+    protected function fromViewPartial(\Illuminate\View\View $view): Element
+    {
+        $viewData = array_merge($this->getPublicProperties(), $view->getData());
+
+        NativeElementCollector::reset();
+        NativeElementCollector::setCallbacks($this->callbacks);
+
+        $this->renderBladeBoundToSelf($view->getName(), $viewData);
+
+        return NativeElementCollector::collect();
     }
 
     /**
@@ -237,10 +335,58 @@ abstract class NativeComponent
                 if ($tabOptions->backgroundColor !== null) $attrs['backgroundColor']  = $tabOptions->backgroundColor;
             }
 
+            // Two sources contribute to the search corpus on the
+            // active screen, in priority order:
+            //
+            //   1. `$pendingSearchResults` — latest return from
+            //      `onSearchQuery($q)` if the screen overrides it.
+            //      Written by `dispatch()` when a `search_query`-kinded
+            //      callback fires.
+            //   2. `searchItems()` — static corpus.
+            //
+            // We intentionally DON'T pre-call `onSearchQuery('')` here
+            // — that runs synchronously on the runloop's render thread
+            // and would block navigation if the screen hits the network
+            // for its seed data. Dynamic-mode screens start with an
+            // empty list; the renderer shows a "Type to search" empty
+            // state until the first keystroke fires TEXT_CHANGE.
+            $hasDynamicQuery = $this->hasOnSearchQueryOverride();
+            $screenSearchItems = $this->pendingSearchResults
+                ?? $this->searchItems();
+
+            // Devs can return Laravel `View` instances in their search
+            // items (so they can write `view('native.row', [...])` and
+            // get IDE CMD-click navigation to the Blade file). Convert
+            // them to `Element` instances here before they reach
+            // `SearchItem::from` — that's a static normalizer with no
+            // component reference, so the conversion can't happen
+            // further down.
+            if (is_array($screenSearchItems)) {
+                $screenSearchItems = array_map(
+                    fn ($item) => $item instanceof \Illuminate\View\View
+                        ? $this->fromViewPartial($item)
+                        : $item,
+                    $screenSearchItems
+                );
+            }
+
+            if ($hasDynamicQuery) {
+                $attrs['navSearchOnQueryMethod'] = 'onSearchQuery';
+            }
+
             $root->applyAttributes($attrs);
 
-            // Tab items as bottom_nav_item children.
+            // Tab items as bottom_nav_item children. For the search-
+            // role tab we inject the resolved corpus above; when it's
+            // null (screen opted out — neither `searchItems()` nor
+            // `onSearchQuery()` overridden), the iOS / Android
+            // renderer hides the search tab via the sticky-inclusion
+            // pattern (visible only when currently selected, so the
+            // TabView reconciliation stays clean).
             foreach ($tabBar->getTabs() as $tab) {
+                if ($tab->isSearchTab() && $screenSearchItems !== null) {
+                    $tab->setSearchItems($screenSearchItems);
+                }
                 $root->addChild($tab->toElement());
             }
             // NavBar actions (if any) as top_bar_action children.
@@ -332,6 +478,82 @@ abstract class NativeComponent
     {
         return '';
     }
+
+    /**
+     * Override to provide a static search corpus for this screen.
+     * Returned items can be strings, structured arrays (`title`,
+     * `subtitle`, `leading`, `trailing`, `url` or `method`), or
+     * `Element` instances for fully custom rows. iOS filters locally
+     * against the user's query for snappy per-keystroke response.
+     *
+     * Returning `null` (the default) causes the search tab to be
+     * omitted entirely while this screen is active. That's how a layout
+     * shared across multiple screens can scope search to only the
+     * screens where it makes sense — e.g. Home defines a list of
+     * articles, Profile returns null and gets no search tab.
+     *
+     * @return list<mixed>|null
+     */
+    public function searchItems(): ?array
+    {
+        return null;
+    }
+
+    /**
+     * Override for dynamic-mode search — fires on each (debounced)
+     * keystroke. The return value replaces the search items for the
+     * next frame. Ideal for Eloquent queries, external APIs, or
+     * anything that can't be pre-computed.
+     *
+     *     public function onSearchQuery(string $query): array
+     *     {
+     *         return User::where('name', 'like', "%{$query}%")
+     *             ->limit(20)
+     *             ->get()
+     *             ->map(fn ($u) => [
+     *                 'title' => $u->name,
+     *                 'subtitle' => $u->email,
+     *                 'url' => "/people/{$u->id}",
+     *             ])
+     *             ->toArray();
+     *     }
+     *
+     * When overridden, the framework treats this as the source of
+     * truth and disables iOS-side client filtering. `searchItems()`
+     * (if also overridden) still seeds the initial item list shown
+     * before the user types.
+     *
+     * The default returns an empty array; the framework detects
+     * "overridden" via reflection (declaring-class != NativeComponent).
+     *
+     * @return list<mixed>
+     */
+    public function onSearchQuery(string $query): array
+    {
+        return [];
+    }
+
+    /**
+     * True when this component overrides `onSearchQuery()`. Used by
+     * `wrapWithNativeChrome` to decide whether to enable dynamic mode
+     * and register the search-query callback.
+     */
+    final protected function hasOnSearchQueryOverride(): bool
+    {
+        $reflection = new \ReflectionMethod($this, 'onSearchQuery');
+
+        return $reflection->getDeclaringClass()->getName() !== self::class;
+    }
+
+    /**
+     * Latest results returned by `onSearchQuery($q)`. Written by
+     * `dispatch()` when a `search_query`-kinded callback fires;
+     * consumed by `wrapWithNativeChrome` (preferred over
+     * `searchItems()`'s static return).
+     *
+     * @var list<mixed>|null
+     */
+    protected ?array $pendingSearchResults = null;
 
     /**
      * Override to provide structured per-screen NavBar overrides that
@@ -666,7 +888,7 @@ abstract class NativeComponent
             if (! $this->hasError) {
                 try {
                     if (! $this->renderStreaming()) {
-                        $element = $this->render();
+                        $element = $this->renderToElement();
                         $tree = $element->toArray($this->callbacks);
                         nativephp_element_publish($tree);
                     }
@@ -687,10 +909,21 @@ abstract class NativeComponent
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->flushCompiledViews();
-                $uri = '/'.ltrim(request()->path(), '/');
+                // Prefer the native router's top-of-stack URI (where the
+                // user actually IS after SPA-style internal navigation)
+                // over `request()->path()` (the original HTTP entry-
+                // point URI, typically `/`). Otherwise hot reload always
+                // lands the user back on the root screen.
+                $uri = $this->router?->currentUri()
+                    ?? '/'.ltrim(request()->path(), '/');
+                // Serialize the full stack so back-button history
+                // survives the reboot. `Route::native`'s handler reads
+                // this on the way back in and preloads entries below
+                // the top via `NativeRouter::preloadStack`.
+                $stack = $this->router?->getStackEntries() ?? [];
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
-                    json_encode(['uri' => $uri, 'ts' => time()])
+                    json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
                 );
                 $this->stop();
 
@@ -763,7 +996,7 @@ abstract class NativeComponent
                             static::class, ($t3 - $t0) * 1000
                         ));
                     } else {
-                        $element = $this->render();
+                        $element = $this->renderToElement();
 
                         $t1 = microtime(true);
                         $tree = $element->toArray($this->callbacks);
@@ -797,12 +1030,23 @@ abstract class NativeComponent
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->flushCompiledViews();
-                $uri = '/'.ltrim(request()->path(), '/');
+                // Prefer the native router's top-of-stack URI (where the
+                // user actually IS after SPA-style internal navigation)
+                // over `request()->path()` (the original HTTP entry-
+                // point URI, typically `/`). Otherwise hot reload always
+                // lands the user back on the root screen.
+                $uri = $this->router?->currentUri()
+                    ?? '/'.ltrim(request()->path(), '/');
+                // Serialize the full stack so back-button history
+                // survives the reboot. `Route::native`'s handler reads
+                // this on the way back in and preloads entries below
+                // the top via `NativeRouter::preloadStack`.
+                $stack = $this->router?->getStackEntries() ?? [];
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
-                    json_encode(['uri' => $uri, 'ts' => time()])
+                    json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
                 );
-                NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri");
+                NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri (stack depth=" . count($stack) . ")");
                 $this->navigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
                 $this->stop();
 
@@ -914,7 +1158,7 @@ abstract class NativeComponent
             return;
         }
         try {
-            $element = $this->render();
+            $element = $this->renderToElement();
             $tree = $element->toArray($this->callbacks);
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
@@ -1261,6 +1505,21 @@ abstract class NativeComponent
             13      => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
             default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
         };
+
+        // Dispatch path forks based on callback kind. Default kind
+        // (null) is fire-and-forget — return value is discarded.
+        // `search_query` kind captures the `array` return into
+        // `$pendingSearchResults`, which the next publish reads as
+        // the new `nav_search_items` corpus.
+        $kind = $this->callbacks->kind($event['callback_id'] ?? 0);
+
+        if ($kind === 'search_query') {
+            $result = $this->$method(...[...$args, ...$eventArgs]);
+            if (is_array($result)) {
+                $this->pendingSearchResults = array_values($result);
+            }
+            return;
+        }
 
         $this->$method(...[...$args, ...$eventArgs]);
     }

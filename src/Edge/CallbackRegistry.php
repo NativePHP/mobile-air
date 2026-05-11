@@ -25,15 +25,30 @@ class CallbackRegistry
 
     protected array $navigationConfigs = [];
 
-    public function register(string $expression): int
+    /**
+     * Optional `kind` tag per callback id. Used by `NativeComponent::dispatch`
+     * to special-case callbacks whose return value must flow back through
+     * the publish cycle (currently just `'search_query'` — the
+     * `onSearchQuery($q): array` handler). Default callbacks have no kind
+     * and are dispatched fire-and-forget.
+     *
+     * @var array<int, string>
+     */
+    protected array $kindMap = [];
+
+    public function register(string $expression, ?string $kind = null): int
     {
         if (isset($this->expressionMap[$expression])) {
-            return $this->expressionMap[$expression];
+            $id = $this->expressionMap[$expression];
+        } else {
+            $id = self::$globalNextId++;
+            $this->expressionMap[$expression] = $id;
+            $this->map[$id] = self::parse($expression);
         }
 
-        $id = self::$globalNextId++;
-        $this->expressionMap[$expression] = $id;
-        $this->map[$id] = self::parse($expression);
+        if ($kind !== null) {
+            $this->kindMap[$id] = $kind;
+        }
 
         return $id;
     }
@@ -41,6 +56,11 @@ class CallbackRegistry
     public function resolve(int $id): ?array
     {
         return $this->map[$id] ?? null;
+    }
+
+    public function kind(int $id): ?string
+    {
+        return $this->kindMap[$id] ?? null;
     }
 
     /** Look up a callback ID by its expression string. */

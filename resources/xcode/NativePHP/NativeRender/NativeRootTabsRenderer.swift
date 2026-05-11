@@ -34,7 +34,13 @@ import SwiftUI
 struct NativeRootTabsRenderer: View {
     let node: NativeUINode
 
-    @State private var selection: Int = 0
+    // String-id-based selection rather than Int index — the tabs list
+    // can change between publishes (e.g. when a search-role tab is
+    // omitted because the active screen doesn't define searchItems()),
+    // and an Int index can fall out of range during reconciliation,
+    // which silently breaks the TabView's rendering. The string id is
+    // stable across publishes for the same tab.
+    @State private var selection: String = ""
     @StateObject private var tabBag = TabCoordinatorBag()
 
     var body: some View {
@@ -52,6 +58,9 @@ struct NativeRootTabsRenderer: View {
         // the same way) so non-prefix tab layouts still pick correctly.
         let owningIdx = owningTabIndex(for: currentUri, tabs: tabs)
             ?? (tabs.firstIndex { $0.props.getBool("active") } ?? 0)
+        let owningId = owningIdx < tabs.count
+            ? tabs[owningIdx].props.getString("id", default: "")
+            : ""
 
         // Sync the owning tab's coordinator with this publish — cache
         // synchronously so the destination resolver always sees the
@@ -80,34 +89,80 @@ struct NativeRootTabsRenderer: View {
         let navTextArgb = node.props.getColor("nav_text_color", default: 0)
         let hasNavBar = navBack || !navTitleText.isEmpty
 
+        // Search-tab plumbing: iOS-side stable `NativeSearchTabRoot`
+        // view renders inside the search tab when the user hasn't yet
+        // navigated to the search route. Required for iOS 26's
+        // `Tab(role: .search)` floating capsule's tap-to-activate —
+        // confirmed via minimal SwiftUI reproducer that real `List` +
+        // internal `.searchable` is what makes single-tap fire. On
+        // activation (isPresented → true), the stable view fires the
+        // search tab's auto-wired press → PHP `replace`s to the search
+        // route → the PerTabContent path then renders the PHP tree
+        // (which has its own `.searchable` via NavBarOptions::searchBar).
+        let searchPlaceholder = node.props.getString("nav_search_placeholder", default: "")
+        let searchMode = node.props.getString("nav_search_mode", default: "static")
+        let searchDebounceMs = node.props.getInt("nav_search_debounce_ms", default: 250)
+        let searchOnQueryCb = Int(node.props.getCallbackId("nav_search_on_query"))
+        // Each search item is a `search_item` child node of the tabs
+        // root (parallel to `bottom_nav_item`). PHP couldn't carry the
+        // mixed string/object/element item shapes through the prop
+        // wire format, so they ride the existing tree path instead.
+        let searchItemNodes = node.children.filter { $0.type == "search_item" }
+        let searchTabNode = tabs.first { $0.props.getBool("search") }
+        let searchTabPressId = Int(searchTabNode?.onPress ?? 0)
+        let searchTabNodeId = searchTabNode?.id ?? 0
+
         // Explicit `return` switches the body out of @ViewBuilder mode so
         // the side-effect `if !currentUri.isEmpty { … }` block above is a
         // plain statement (not a "view" with a `()` result) — same pattern
         // as `NativeRootStackRenderer.body`.
+        // Pre-extract stable string ids alongside each tab — `NativeUINode.id`
+        // is a per-publish FlatBuffer index that regenerates each tree, so
+        // it isn't a stable ForEach identity across publishes. The PHP-side
+        // slugified id (e.g. "home", "profile") is stable.
+        let regularTabEntries: [(id: String, idx: Int, tab: NativeUINode)] = tabs
+            .enumerated()
+            .compactMap { idx, tab in
+                tab.props.getBool("search")
+                    ? nil
+                    : (id: tab.props.getString("id", default: "tab_\(idx)"), idx: idx, tab: tab)
+            }
+        // Search-role tab is handled OUTSIDE the ForEach via a separate
+        // conditional `if` — Apple's documented pattern for conditional
+        // search tabs (`if selectedTab == 0 || selectedTab == 3`).
+        // Putting it inside a ForEach with the regular tabs causes the
+        // entire bar to drop out when the tab appears/disappears.
+        let searchTabIdx = tabs.firstIndex { $0.props.getBool("search") }
+        let searchTabIdString: String? = searchTabIdx.map { idx in
+            tabs[idx].props.getString("id", default: "tab_\(idx)")
+        }
+        // Show the search tab when any of:
+        //   - dynamic mode (results come on demand after the user
+        //     types — the tab must be tappable even with zero items
+        //     since that's the pre-typing state)
+        //   - the active screen has static items injected
+        //   - the user is currently on the search tab (sticky — keeps
+        //     the tab from yanking itself out the instant they tap it)
+        let shouldShowSearchTab = searchMode == "dynamic"
+            || !searchItemNodes.isEmpty
+            || selection == searchTabIdString
+
         return TabView(selection: $selection) {
-            // Key the ForEach off the enumerated `offset` (integer
-            // position) rather than the SwiftUI element id — element
-            // ids regenerate on every PHP publish, which would make
-            // ForEach treat every tab as brand-new on tab switch.
-            // SwiftUI would then rebuild every Tab + its inner
-            // NavigationStack from scratch each publish, producing a
-            // visible flicker (toolbar styles applied a frame late)
-            // and recreating animation state mid-transition. Tab
-            // positions are stable across publishes for a layout's
-            // tabBar(), so the offset is a reliable identity.
-            ForEach(Array(tabs.enumerated()), id: \.offset) { idx, tab in
+            // Regular (non-search) tabs via ForEach. Keyed off the
+            // stable PHP-side id so SwiftUI preserves identity across
+            // publishes (was previously keyed off enumerated offset,
+            // which shifted when tab counts changed and mangled
+            // TabView's internal state).
+            ForEach(regularTabEntries, id: \.id) { entry in
+                let tab = entry.tab
+                let idx = entry.idx
                 let label = tab.props.getString("label", default: "")
                 let icon = tab.props.getString("icon", default: "circle")
-                let isSearch = tab.props.getBool("search")
-
-                // `Tab(role: .search)` is the iOS 18+ API; on iOS 26 the
-                // role triggers the floating Liquid Glass capsule beside
-                // the main bar (Apple's Photos / Music pattern). Pre-26
-                // it's a semantic no-op visually but kept for consistency.
+                let tabId = entry.id
                 let tabRootUri = tab.props.getString("url", default: "")
                 let coord = tabBag.coordinator(forIdx: idx, rootUri: tabRootUri)
 
-                Tab(value: idx, role: isSearch ? .search : nil) {
+                Tab(value: tabId) {
                     PerTabContent(
                         coordinator: coord,
                         hasNavBar: hasNavBar,
@@ -120,9 +175,29 @@ struct NativeRootTabsRenderer: View {
                     Label(label, systemImage: getIconForName(icon))
                 }
                 .badge(badgeFor(tab))
-                    // ↑ `.badge(Text?)` — nil means "no badge". Passing
-                    //   an empty string here would render as a presence
-                    //   dot on the new `Tab(value:role:)` API.
+            }
+
+            // Conditional search tab — Apple's "if inside TabView" pattern.
+            // Declaring it outside ForEach (with a static `if`) keeps the
+            // TabView declarative structure stable enough for SwiftUI to
+            // diff add/remove correctly. Inside a ForEach this broke and
+            // dropped the entire bar.
+            if shouldShowSearchTab, let searchIdx = searchTabIdx, let searchId = searchTabIdString {
+                let searchTab = tabs[searchIdx]
+                let searchLabel = searchTab.props.getString("label", default: "Search")
+                let searchIcon = searchTab.props.getString("icon", default: "magnifyingglass")
+                Tab(searchLabel, systemImage: getIconForName(searchIcon), value: searchId, role: .search) {
+                    NavigationStack {
+                        NativeSearchTabRoot(
+                            placeholder: searchPlaceholder,
+                            itemNodes: searchItemNodes,
+                            mode: searchMode,
+                            onQueryCallbackId: searchOnQueryCb,
+                            debounceMs: searchDebounceMs
+                        )
+                    }
+                }
+                .badge(badgeFor(searchTab))
             }
         }
         .tint(activeColor)
@@ -136,34 +211,38 @@ struct NativeRootTabsRenderer: View {
             minimizeOnScroll: minimizeOnScroll
         ))
         .onAppear {
-            selection = owningIdx
+            selection = owningId
         }
-        .onChange(of: owningIdx) { newIdx in
+        .onChange(of: owningId) { newId in
             // PHP-driven owning-tab change (publish landed under a
             // different tab's URL prefix) — sync our SwiftUI selection.
-            if selection != newIdx {
-                selection = newIdx
+            if selection != newId {
+                selection = newId
             }
         }
-        .onChange(of: selection) { newIdx in
+        .onChange(of: selection) { newId in
             // User tapped a tab — fire its press handler so PHP runs
             // the BottomNavItem-auto-wired `replace` navigation. We
             // don't fire when selection already matches the owning tab
             // (PHP-driven sync path).
-            guard newIdx != owningIdx, newIdx < tabs.count else { return }
-            let tab = tabs[newIdx]
+            guard newId != owningId else { return }
+            guard let tab = tabs.first(where: { $0.props.getString("id", default: "") == newId }) else { return }
             if tab.onPress != 0 {
                 NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
             }
-            // Action-only tab (no URL) — the press fires something
-            // off-screen (e.g. a bottom sheet) instead of navigating,
-            // so PHP won't republish to switch the owning tab. Snap
-            // selection back to the actual owning tab so the visible
-            // "selected" indicator doesn't get stuck.
+            // Action-only tab (no URL, no press handler) — the press
+            // fires something off-screen instead of navigating, so PHP
+            // won't republish to switch the owning tab. Snap selection
+            // back to the actual owning tab so the visible "selected"
+            // indicator doesn't get stuck. Search-role tabs also have
+            // `on_press == 0` (they're iOS-owned, no PHP destination)
+            // but should keep selection on themselves while the user
+            // interacts with the search UI — we skip snap-back for them.
             let url = tab.props.getString("url", default: "")
-            if url.isEmpty {
+            let isSearch = tab.props.getBool("search")
+            if url.isEmpty && !isSearch {
                 DispatchQueue.main.async {
-                    selection = owningIdx
+                    selection = owningId
                 }
             }
         }
@@ -288,6 +367,15 @@ private struct PerTabContent: View {
                 && $0.type != "bottom_bar"
         }
 
+        // Inline search field — Apple HIG pattern. iOS attaches
+        // `.searchable` to the destination's nav bar when the screen's
+        // `NavBarOptions::searchBar(...)` set `nav_search_*` props on
+        // the folded chrome. `placeholder.isEmpty` no-ops the modifier
+        // so non-search screens render unchanged.
+        let searchPlaceholder = root.props.getString("nav_search_placeholder", default: "")
+        let searchOnQueryCb = Int(root.props.getCallbackId("nav_search_on_query"))
+        let searchDebounceMs = root.props.getInt("nav_search_debounce_ms", default: 300)
+
         levelContent(for: root, screenContent: screenContent)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
@@ -297,6 +385,12 @@ private struct PerTabContent: View {
                 actions: actions,
                 textArgb: textArgb,
                 bgArgb: bgArgb
+            ))
+            .modifier(SearchableNavBarModifier(
+                placeholder: searchPlaceholder,
+                callbackId: searchOnQueryCb,
+                nodeId: root.id,
+                debounceMs: searchDebounceMs
             ))
             // Hide the parent TabView's tab bar on any pushed level
             // FIRST — matches Apple's iMessage / Music / Mail pattern
@@ -548,5 +642,245 @@ private struct TabBarLiquidGlassModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// Attaches `.searchable` to a destination view when the chrome
+/// sentinel carries `nav_search_*` props (PHP-side
+/// `NavBarOptions::searchBar(...)`). Local `@State` holds the field
+/// text; a debounced effect forwards changes to PHP via the existing
+/// TEXT_CHANGE event type. iOS gets free Liquid Glass + scroll-collapse
+/// + keyboard handling for the search field.
+///
+/// `placeholder.isEmpty` no-ops the modifier so screens without a
+/// configured search bar render unchanged.
+struct SearchableNavBarModifier: ViewModifier {
+    let placeholder: String
+    let callbackId: Int
+    let nodeId: Int
+    let debounceMs: Int
+
+    @State private var text: String = ""
+    @State private var debounceTask: Task<Void, Never>? = nil
+
+    func body(content: Content) -> some View {
+        if placeholder.isEmpty {
+            content
+        } else {
+            content
+                .searchable(text: $text, prompt: placeholder)
+                .onChange(of: text) { _, newValue in
+                    guard callbackId != 0 else { return }
+                    debounceTask?.cancel()
+                    if debounceMs <= 0 {
+                        NativeElementBridge.sendTextChangeEvent(callbackId, nodeId: nodeId, text: newValue)
+                        return
+                    }
+                    debounceTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: UInt64(debounceMs) * 1_000_000)
+                        if Task.isCancelled { return }
+                        NativeElementBridge.sendTextChangeEvent(callbackId, nodeId: nodeId, text: newValue)
+                    }
+                }
+        }
+    }
+}
+
+/// iOS-side root for the `Tab(role: .search)` floating Liquid Glass
+/// capsule. Mirrors the minimal SwiftUI reproducer (PeopleListView)
+/// exactly: a `List` with `.searchable` attached internally. PHP
+/// supplies the search corpus via `Tab::search(items: [...])`; iOS
+/// filters locally against the user's query for snappy per-keystroke
+/// response without a PHP round-trip.
+///
+/// iOS 26 single-tap on the floating Liquid Glass capsule activates
+/// the `.searchable` reliably with this shape (real `List` content +
+/// internal `.searchable`).
+/// iOS-side root for the `Tab(role: .search)` floating Liquid Glass
+/// capsule. Mirrors the minimal SwiftUI reproducer's shape (List +
+/// internal `.searchable`) which is what iOS 26 needs for reliable
+/// single-tap capsule activation.
+///
+/// Search items arrive as `search_item` child nodes on the tabs root
+/// (PHP can't carry mixed shapes through a prop, so items ride the
+/// regular tree wire). Each item's `kind` prop drives the row UI:
+///
+///   - `kind = "string"`  → `Text(value)` row, no tap.
+///   - `kind = "object"`  → standard row with title/subtitle/leading/trailing.
+///                          Tap fires the node's `on_press` (URL nav or method).
+///   - `kind = "element"` → `NodeView(node: child)` for the user-provided
+///                          subtree; tap handled by its own `->onPress(...)`.
+///
+/// Filter mode forks on the `mode` prop:
+///   - `"static"`  → iOS filters locally against `query`.
+///   - `"dynamic"` → iOS fires debounced TEXT_CHANGE; PHP returns new
+///                   items via `search_item` children on next publish.
+private struct NativeSearchTabRoot: View {
+    let placeholder: String
+    let itemNodes: [NativeUINode]
+    let mode: String
+    let onQueryCallbackId: Int
+    let debounceMs: Int
+
+    @State private var query: String = ""
+    @State private var debounceTask: Task<Void, Never>? = nil
+
+    /// Plain-text representation of an item for client-side filtering.
+    /// Element-kind items aren't filtered (no generic text extraction)
+    /// — they always pass through.
+    private func searchableText(for item: NativeUINode) -> String? {
+        let kind = item.props.getString("kind", default: "")
+        switch kind {
+        case "string":
+            return item.props.getString("value", default: "")
+        case "object":
+            let title = item.props.getString("title", default: "")
+            let subtitle = item.props.getString("subtitle", default: "")
+            return subtitle.isEmpty ? title : "\(title) \(subtitle)"
+        default:
+            return nil
+        }
+    }
+
+    private var displayed: [NativeUINode] {
+        if mode == "dynamic" {
+            return itemNodes
+        }
+        if query.isEmpty {
+            return itemNodes
+        }
+        let q = query
+        return itemNodes.filter { item in
+            guard let text = searchableText(for: item) else { return true }
+            return text.localizedCaseInsensitiveContains(q)
+        }
+    }
+
+    var body: some View {
+        // List + overlay rather than putting the empty-state inside the
+        // List. A `Label` row inside a List visually resembles a search
+        // field — confusing alongside the real `.searchable` at the
+        // bottom. `ContentUnavailableView` centers the icon above the
+        // text (Apple's canonical empty state, see Photos / Music /
+        // Mail) which reads unambiguously as a placeholder.
+        List(displayed) { item in
+            rowView(for: item)
+        }
+        .overlay {
+            if itemNodes.isEmpty {
+                if mode == "dynamic" {
+                    if query.isEmpty {
+                        ContentUnavailableView(
+                            "Type to search",
+                            systemImage: "magnifyingglass"
+                        )
+                    } else {
+                        ContentUnavailableView.search(text: query)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "Nothing to search here",
+                        systemImage: "magnifyingglass",
+                        description: Text("This screen hasn't declared `searchItems()` or `onSearchQuery()`.")
+                    )
+                }
+            }
+        }
+        .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
+        .onChange(of: query) { _, newValue in
+            guard mode == "dynamic", onQueryCallbackId != 0 else { return }
+            debounceTask?.cancel()
+            if debounceMs <= 0 {
+                NativeElementBridge.sendTextChangeEvent(onQueryCallbackId, nodeId: 0, text: newValue)
+                return
+            }
+            debounceTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(debounceMs) * 1_000_000)
+                if Task.isCancelled { return }
+                NativeElementBridge.sendTextChangeEvent(onQueryCallbackId, nodeId: 0, text: newValue)
+            }
+        }
+        .navigationTitle("Search")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func rowView(for item: NativeUINode) -> some View {
+        let kind = item.props.getString("kind", default: "")
+        switch kind {
+        case "string":
+            Text(item.props.getString("value", default: ""))
+        case "object":
+            ObjectResultRow(
+                title: item.props.getString("title", default: ""),
+                subtitle: emptyToNil(item.props.getString("subtitle", default: "")),
+                leading: emptyToNil(item.props.getString("leading", default: "")),
+                trailing: emptyToNil(item.props.getString("trailing", default: "")),
+                tapCallback: Int(item.onPress),
+                tapNodeId: item.id
+            )
+        case "element":
+            // The user-provided Element comes through as the first
+            // child of the `search_item` wrapper. Defer to NodeView so
+            // any onPress / styling on the element works as normal.
+            if let inner = item.children.first {
+                NodeView(node: inner)
+            }
+        default:
+            // Forward-compat: ignore unknown item kinds rather than crash.
+            EmptyView()
+        }
+    }
+
+    private func emptyToNil(_ s: String) -> String? { s.isEmpty ? nil : s }
+}
+
+/// Standard search-result row for object-kind items. Apple's
+/// People-List style: optional leading SF Symbol, title + optional
+/// subtitle, optional trailing chevron, tappable surface.
+private struct ObjectResultRow: View {
+    let title: String
+    let subtitle: String?
+    let leading: String?
+    let trailing: String?
+    let tapCallback: Int
+    let tapNodeId: Int
+
+    var body: some View {
+        Button {
+            guard tapCallback != 0 else { return }
+            NativeElementBridge.sendPressEvent(tapCallback, nodeId: tapNodeId)
+        } label: {
+            HStack(spacing: 12) {
+                // Route icon names through `getIconForName` so cross-
+                // platform names like `article` (a Material icon, not
+                // an SF Symbol) get mapped to their SF equivalent.
+                // Using the raw name with `Image(systemName:)` for an
+                // unknown symbol leaves a 24pt empty gap on the left —
+                // that's what the visible padding was.
+                if let leading, !leading.isEmpty {
+                    Image(systemName: getIconForName(leading))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .foregroundStyle(.primary)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+                if let trailing, !trailing.isEmpty {
+                    Image(systemName: getIconForName(trailing))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(tapCallback == 0)
     }
 }

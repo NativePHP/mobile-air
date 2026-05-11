@@ -6,16 +6,29 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -23,23 +36,29 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.nativephp.mobile.ui.MaterialIcon
+import kotlinx.coroutines.delay
 
 /**
  * Compose port of iOS's `NativeRootTabsRenderer`. Renders the
@@ -47,10 +66,13 @@ import com.nativephp.mobile.ui.MaterialIcon
  * `NavigationBar`, with an optional inner `TopAppBar` when the layout
  * supplies both bars.
  *
- * Search role and iOS 26-only modifiers (`tabViewBottomAccessory`,
- * `tabBarMinimizeBehavior`) have no exact Android equivalent; the
- * accessory renders inline above the NavigationBar, and search-flagged
- * tabs render as regular tabs.
+ * iOS 26-only modifiers (`Tab(role: .search)` floating Liquid Glass
+ * capsule, `tabBarMinimizeBehavior`, `tabViewBottomAccessory`) have no
+ * exact Android equivalent. The search-role tab renders as a regular
+ * tab with a magnifying-glass icon; tapping it swaps the content area
+ * to an `AndroidSearchTabRoot` that mirrors iOS's `NativeSearchTabRoot`
+ * — same three-kind item dispatch (string / object / element), same
+ * static / dynamic filter modes.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,10 +82,15 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // NavBar actions folded onto the tabs sentinel by `wrapWithNativeChrome`
     // when both bars are present — render trailing on the top bar.
     val actions = node.children.filter { it.type == "top_bar_action" }
+    // Search items live as `search_item` children on the tabs root —
+    // PHP can't carry the mixed string/object/element shapes through a
+    // prop, so they ride the tree wire format instead.
+    val searchItemNodes = node.children.filter { it.type == "search_item" }
     val screenContent = node.children.firstOrNull {
         it.type != "bottom_nav_item"
             && it.type != "top_bar_action"
             && it.type != "tab_accessory"
+            && it.type != "search_item"
     }
 
     // Activeness flows from `BottomNavItem.active` (TabBar::highlight() set it).
@@ -78,13 +105,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     val activeColorArgb = node.props.getColor("active_color", 0)
     val bgArgb = node.props.getColor("background_color", 0)
-    val textArgb = node.props.getColor("text_color", 0)
 
     // Per-screen explicit signal from PHP (`$hidesTabBar` shortcut or
-    // `tabBarOptions()->hidden()` builder, folded into the chrome
-    // sentinel by `wrapWithNativeChrome`). Replaces the earlier
-    // URI-match / `nav_back` heuristics — those couldn't distinguish a
-    // tab root with a back chevron from a pushed-detail screen.
+    // `tabBarOptions()->hidden()` builder, folded onto the sentinel).
     val hideTabBar = node.props.getBool("hide_tab_bar")
 
     // Active screen URI — used as part of the inner AnimatedContent's
@@ -100,6 +123,31 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val navTextArgb = node.props.getColor("nav_text_color", 0)
     val hasNavBar = navBack || navTitle.isNotEmpty()
 
+    // Search-tab config — search-role tab plus its items live as children.
+    // Show the search-role tab when any of:
+    //   - dynamic mode (results come on demand; tab must be tappable
+    //     even with zero items since that's the pre-typing state)
+    //   - the active screen declared static items
+    //   - the user is currently on the search tab (sticky — keeps the
+    //     tab from yanking itself out the instant they tap it)
+    val searchTabIdx = tabs.indexOfFirst { it.props.getBool("search") }
+    val searchPlaceholder = node.props.getString("nav_search_placeholder", "")
+    val searchMode = node.props.getString("nav_search_mode", "static")
+    val searchDebounceMs = node.props.getInt("nav_search_debounce_ms", 250)
+    val searchOnQueryCb = node.props.getCallbackId("nav_search_on_query")
+
+    val shouldShowSearchTab = searchMode == "dynamic"
+        || searchItemNodes.isNotEmpty()
+        || (searchTabIdx >= 0 && selection == searchTabIdx)
+
+    val visibleTabs = if (searchTabIdx >= 0 && !shouldShowSearchTab) {
+        tabs.filterIndexed { idx, _ -> idx != searchTabIdx }
+    } else {
+        tabs
+    }
+
+    val isOnSearchTab = searchTabIdx >= 0 && selection == searchTabIdx
+
     // System back: defer to PHP (the tabs root has nowhere to pop within Compose).
     BackHandler(enabled = true) {
         NativeElementBridge.sendSystemBackEvent()
@@ -107,7 +155,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     Scaffold(
         topBar = {
-            if (hasNavBar) {
+            if (hasNavBar && !isOnSearchTab) {
                 TopAppBar(
                     title = {
                         if (navSubtitle.isNotEmpty()) {
@@ -155,20 +203,8 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             Column {
                 // Persistent accessory pinned above the NavigationBar
                 // (Apple Music / Spotify / YouTube Music MiniPlayer
-                // pattern). Compose / M3 has no native equivalent of
-                // iOS 26's `.safeAreaBar(.bottom)` Liquid Glass capsule
-                // — there's no built-in floating-bar primitive that
-                // sits ABOVE the navigation bar, and Modifier.blur on
-                // Android blurs the surface itself rather than the
-                // content beneath it (so a true "backdrop blur" glass
-                // material isn't directly available).
-                //
-                // Best-effort idiomatic replacement: a tonal Surface at
-                // `surfaceContainerHigh` (one tonal step above the
-                // NavigationBar's container so the two read as
-                // separate layers) with rounded top corners + a small
-                // shadow elevation. Matches what real-world Android
-                // music apps ship.
+                // pattern). Best-effort idiomatic M3 — tonal Surface at
+                // `surfaceContainerHigh` with rounded top corners.
                 accessory?.children?.firstOrNull()?.let { acc ->
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -187,25 +223,27 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     else
                         NavigationBarDefaults.containerColor
                 ) {
-                    tabs.forEachIndexed { idx, tab ->
+                    visibleTabs.forEach { tab ->
+                        val actualIdx = tabs.indexOf(tab)
                         val label = tab.props.getString("label", "")
                         val icon = tab.props.getString("icon", "circle")
                         val badge = tab.props.getString("badge", "")
                         val news = tab.props.getBool("news")
+                        val isSearchTab = tab.props.getBool("search")
 
                         NavigationBarItem(
-                            selected = idx == selection,
+                            selected = actualIdx == selection,
                             onClick = {
-                                // Local selection updates instantly so the
-                                // ripple / selection indicator responds; the
-                                // press handler fires the PHP-side
-                                // BottomNavItem-auto-wired `replace` nav (or
-                                // a Tab::press() override on action tabs).
-                                if (idx != activeTabIdx) {
-                                    selection = idx
-                                    if (tab.onPress != 0) {
-                                        NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
-                                    }
+                                // Local selection updates instantly so
+                                // the ripple / selection indicator
+                                // responds; for the search tab, no PHP
+                                // navigation fires (it's an iOS-/Android-
+                                // side overlay). For regular tabs, the
+                                // BottomNavItem-auto-wired `replace`
+                                // press handler fires here.
+                                selection = actualIdx
+                                if (!isSearchTab && actualIdx != activeTabIdx && tab.onPress != 0) {
+                                    NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
                                 }
                             },
                             icon = {
@@ -239,23 +277,27 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         },
         modifier = modifier.fillMaxSize()
     ) { padding ->
-        // Animate two distinct kinds of swap inside the tabs scaffold:
-        //
-        //   1. Tab switch (active tab index changes) — keep the soft
-        //      cross-fade. PHP signals these via `BottomNavItem` with
-        //      transition='none' because the renderer is supposed to
-        //      handle the visual; honor that contract here.
-        //
-        //   2. Within-tab push / pop (active tab same, URI changed) —
-        //      use the PHP-signaled transition (slide_from_right by
-        //      default for navigate, slide_from_left for back). iOS gets
-        //      this for free from per-tab NavigationStack; Android lacks
-        //      that, so we drive it explicitly off the same
-        //      `pendingTransition` that the root NativeUIContent reads.
-        //      The bridge suppresses the *root* screenKey bump for
-        //      native-chrome continuation publishes (NativeElementBridge
-        //      ~line 261) so the outer animation stays out of our way;
-        //      this inner one fills the gap.
+        // The search-role tab swaps the entire content area to the
+        // Android equivalent of iOS's NativeSearchTabRoot — a search
+        // TextField above a results list, with `search_item` children
+        // dispatched by kind. Other tabs render their PHP-published
+        // content normally.
+        if (isOnSearchTab) {
+            AndroidSearchTabRoot(
+                placeholder = searchPlaceholder,
+                itemNodes = searchItemNodes,
+                mode = searchMode,
+                onQueryCallbackId = searchOnQueryCb,
+                debounceMs = searchDebounceMs,
+                modifier = Modifier.fillMaxSize().padding(padding),
+            )
+            return@Scaffold
+        }
+
+        // Animate tab switch (cross-fade) vs within-tab push (PHP-
+        // signaled transition). iOS gets within-tab transitions for
+        // free via per-tab NavigationStack; Compose lacks that, so we
+        // drive both off `pendingTransition` and the (tabIdx, uri) key.
         val pendingTransition by NativeUIBridge.pendingTransition
         val targetKey = "$activeTabIdx|$currentUri"
 
@@ -279,5 +321,334 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 Box(modifier = Modifier.fillMaxSize())
             }
         }
+    }
+}
+
+/**
+ * Compose mirror of iOS's `NativeSearchTabRoot`. Replaces the active
+ * screen's content with a search experience when the search-role tab
+ * is selected: a top search field plus a list of `search_item` nodes
+ * dispatched by `kind` prop:
+ *
+ *   - `kind = "string"`  → single `Text(value)` row, no tap.
+ *   - `kind = "object"`  → title + optional subtitle/leading/trailing,
+ *                          tap fires the node's `on_press`.
+ *   - `kind = "element"` → `NodeView(child)` for the user-provided
+ *                          subtree; tap handled by its own `onPress`.
+ *
+ * `mode = "static"` filters locally against the typed query (string/
+ * object items only — element items always pass through). `mode =
+ * "dynamic"` fires a debounced TEXT_CHANGE to PHP's `onSearchQuery($q)`
+ * which republishes new `search_item` children.
+ */
+@Composable
+private fun AndroidSearchTabRoot(
+    placeholder: String,
+    itemNodes: List<NativeUINode>,
+    mode: String,
+    onQueryCallbackId: Int,
+    debounceMs: Int,
+    modifier: Modifier = Modifier,
+) {
+    var query by remember { mutableStateOf("") }
+    var hasInteracted by remember { mutableStateOf(false) }
+
+    // Dynamic mode: debounced TEXT_CHANGE → PHP → new items on next
+    // publish. Static mode skips this entirely; iOS-side filtering
+    // happens below.
+    if (mode == "dynamic" && onQueryCallbackId != 0) {
+        LaunchedEffect(query) {
+            if (!hasInteracted) {
+                hasInteracted = true
+                return@LaunchedEffect
+            }
+            if (debounceMs > 0) delay(debounceMs.toLong())
+            NativeUIBridge.sendTextChangeEvent(onQueryCallbackId, 0, query)
+        }
+    }
+
+    val displayed = if (mode == "dynamic" || query.isEmpty()) {
+        itemNodes
+    } else {
+        itemNodes.filter { item ->
+            val text = androidSearchableText(item) ?: return@filter true
+            text.contains(query, ignoreCase = true)
+        }
+    }
+
+    Column(modifier = modifier) {
+        SearchHeaderField(
+            placeholder = placeholder,
+            value = query,
+            onValueChange = { query = it },
+        )
+        HorizontalDivider()
+
+        if (itemNodes.isEmpty()) {
+            val (icon, headline, body) = when {
+                mode == "dynamic" && query.isEmpty() ->
+                    Triple("search", "Type to search", "")
+                mode == "dynamic" ->
+                    Triple("search_off", "No results", "Nothing matched \"$query\".")
+                else ->
+                    Triple(
+                        "search",
+                        "Nothing to search here",
+                        "This screen hasn't declared searchItems() or onSearchQuery().",
+                    )
+            }
+            Column(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Spacer(modifier = Modifier.height(64.dp))
+                MaterialIcon(
+                    name = icon,
+                    contentDescription = null,
+                    size = 44.dp,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    headline,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (body.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        body,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(displayed, key = { it.id }) { item ->
+                    SearchItemRow(item)
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Top-of-screen search field for `AndroidSearchTabRoot`. Standalone
+ * row with a magnifying-glass leading icon, a `BasicTextField`, and a
+ * placeholder when empty.
+ */
+@Composable
+private fun SearchHeaderField(
+    placeholder: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            MaterialIcon(
+                name = "search",
+                contentDescription = null,
+                size = 22.dp,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = TextStyle(
+                    fontSize = 17.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { /* IME submits via debounce */ }),
+                decorationBox = { inner ->
+                    if (value.isEmpty() && placeholder.isNotEmpty()) {
+                        Text(
+                            placeholder,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 17.sp,
+                        )
+                    }
+                    inner()
+                },
+            )
+        }
+    }
+}
+
+/**
+ * One row in the search results list. Dispatches by `kind`:
+ *   - "string"  → plain `Text`
+ *   - "object"  → standard List-style row (leading / title+subtitle / trailing)
+ *   - "element" → `NodeView` over the first child subtree
+ */
+@Composable
+private fun SearchItemRow(item: NativeUINode) {
+    when (item.props.getString("kind", "")) {
+        "string" -> {
+            Text(
+                item.props.getString("value", ""),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            )
+        }
+        "object" -> {
+            ObjectResultRow(item)
+        }
+        "element" -> {
+            item.children.firstOrNull()?.let { NodeView(node = it) }
+        }
+        else -> {
+            // Forward-compat: ignore unknown kinds rather than crash.
+        }
+    }
+}
+
+/**
+ * Standard search-result row for object-kind items. Optional leading
+ * Material icon (icon name from PHP), title + optional subtitle,
+ * optional trailing icon, tappable surface (`on_press` fires the
+ * registered callback — typically a `__navigate(...)` for url-form
+ * items or a regular method callback for method-form items).
+ */
+@Composable
+private fun ObjectResultRow(item: NativeUINode) {
+    val title = item.props.getString("title", "")
+    val subtitle = item.props.getString("subtitle", "")
+    val leading = item.props.getString("leading", "")
+    val trailing = item.props.getString("trailing", "")
+    val tapCallback = item.onPress
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(enabled = tapCallback != 0) {
+                NativeElementBridge.sendPressEvent(tapCallback, item.id)
+            }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+            if (leading.isNotEmpty()) {
+                MaterialIcon(
+                    name = leading,
+                    contentDescription = null,
+                    size = 24.dp,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = MaterialTheme.colorScheme.onSurface)
+                if (subtitle.isNotEmpty()) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        if (trailing.isNotEmpty()) {
+            Spacer(modifier = Modifier.width(8.dp))
+            MaterialIcon(
+                name = trailing,
+                contentDescription = null,
+                size = 18.dp,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Extracted plain-text view of an item for static-mode client filter. */
+private fun androidSearchableText(item: NativeUINode): String? {
+    return when (item.props.getString("kind", "")) {
+        "string" -> item.props.getString("value", "")
+        "object" -> {
+            val title = item.props.getString("title", "")
+            val subtitle = item.props.getString("subtitle", "")
+            if (subtitle.isEmpty()) title else "$title $subtitle"
+        }
+        else -> null
+    }
+}
+
+/**
+ * Inline search field placed in a `TopAppBar` title slot when a
+ * stack-only chrome screen carries `search_placeholder` /
+ * `search_on_query` props (set via `NavBarOptions::searchBar()`).
+ * Used by `NativeRootStackRenderer` for the legacy in-NavBar search
+ * pattern; the new tab-based search experience uses
+ * `AndroidSearchTabRoot` instead.
+ *
+ * Debounce semantics mirror iOS's `SearchableNavBarModifier`: changes
+ * are coalesced over `debounceMs` ms before firing the bridge event.
+ * `LaunchedEffect(text)` cancels the in-flight delay on the next
+ * keystroke.
+ */
+@Composable
+internal fun InlineNavSearchField(
+    placeholder: String,
+    callbackId: Int,
+    nodeId: Int,
+    debounceMs: Int,
+) {
+    var text by remember { mutableStateOf("") }
+    var hasInteracted by remember { mutableStateOf(false) }
+
+    LaunchedEffect(text) {
+        if (!hasInteracted) {
+            hasInteracted = true
+            return@LaunchedEffect
+        }
+        if (callbackId == 0) return@LaunchedEffect
+        if (debounceMs > 0) {
+            delay(debounceMs.toLong())
+        }
+        NativeUIBridge.sendTextChangeEvent(callbackId, nodeId, text)
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        MaterialIcon(
+            name = "search",
+            contentDescription = null,
+            size = 20.dp,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        BasicTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .fillMaxWidth(),
+            singleLine = true,
+            textStyle = TextStyle(
+                fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { /* IME submits via debounce */ }),
+            decorationBox = { inner ->
+                if (text.isEmpty() && placeholder.isNotEmpty()) {
+                    Text(
+                        placeholder,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 16.sp,
+                    )
+                }
+                inner()
+            },
+        )
     }
 }

@@ -338,6 +338,11 @@ final class NativeElementBridge {
                 bridge.isActive = true
                 if isNav && !nativeChromeContinuation { bridge.screenKey += 1 }
                 bridge.currentTree = finalTree
+                // First publish after a hot-reload dismisses the
+                // "Reloading…" pill. Set by `ContentView.reloadWebView`
+                // at the start of the reboot; cleared here when the
+                // fresh tree from the rebooted PHP runtime lands.
+                if bridge.isReloading { bridge.isReloading = false }
             }
         }
     }
@@ -820,7 +825,18 @@ final class NativeElementBridge {
         os_unfair_lock_unlock(&pendingLock)
     }
 
-    static func stopWatching() {
+    /// Stop the shadow thread and clear all bridge-internal caches. The
+    /// `preserveTree` flag controls whether the visible UI state is also
+    /// cleared:
+    ///   - `false` (default): clear `NativeUIBridge.isActive` and
+    ///     `currentTree` too — SwiftUI swaps to the WebView branch
+    ///     immediately. Right for "leaving native UI entirely".
+    ///   - `true`: keep the last published tree visible. Used by the
+    ///     hot-reload path so the user keeps seeing their screen during
+    ///     the ~500ms PHP reboot, instead of a brief flash of the
+    ///     WebView root. The next `registerRegion` + publish replaces
+    ///     the (stale) tree atomically.
+    static func stopWatching(preserveTree: Bool = false) {
         stopShadowThread()
         previousTree = nil
         nativeChromePrevTrees.removeAll()
@@ -828,9 +844,11 @@ final class NativeElementBridge {
         os_unfair_lock_lock(&pendingLock)
         pendingUpdate = nil
         os_unfair_lock_unlock(&pendingLock)
-        DispatchQueue.main.async {
-            NativeUIBridge.shared.isActive = false
-            NativeUIBridge.shared.currentTree = nil
+        if !preserveTree {
+            DispatchQueue.main.async {
+                NativeUIBridge.shared.isActive = false
+                NativeUIBridge.shared.currentTree = nil
+            }
         }
     }
 

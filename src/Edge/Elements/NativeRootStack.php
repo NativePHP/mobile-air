@@ -25,6 +25,9 @@ class NativeRootStack extends Element
 
     protected array $props = [];
 
+    /** Method name for the inline-search query callback; registered in resolveProps. */
+    private ?string $searchOnQueryMethod = null;
+
     public static function make(): static
     {
         return new static;
@@ -46,10 +49,21 @@ class NativeRootStack extends Element
         // can render the correct content during NavigationStack push /
         // pop transitions.
         if (isset($attrs['currentUri']))      $this->props['current_uri']      = $attrs['currentUri'];
+
+        // Inline NavBar search field — Apple HIG / Expo pattern.
+        // iOS attaches `.searchable` to the destination view; Android
+        // shows an M3 search field in the top app bar slot.
+        if (isset($attrs['searchPlaceholder'])) $this->props['search_placeholder'] = $attrs['searchPlaceholder'];
+        if (isset($attrs['searchOnQuery']))     $this->searchOnQueryMethod        = $attrs['searchOnQuery'];
+        if (isset($attrs['searchDebounceMs']))  $this->props['search_debounce_ms'] = (int) $attrs['searchDebounceMs'];
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
     {
+        if ($this->searchOnQueryMethod !== null) {
+            $this->props['search_on_query'] = $registry->register($this->searchOnQueryMethod);
+        }
+
         return $this->props;
     }
 }

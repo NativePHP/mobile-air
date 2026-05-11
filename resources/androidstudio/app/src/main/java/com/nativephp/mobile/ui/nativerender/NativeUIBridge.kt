@@ -22,6 +22,14 @@ class NativeUIBridge private constructor() {
         /** Whether the native UI system is active */
         val isActive = mutableStateOf(false)
 
+        /**
+         * True between the start of a hot-reload event and the next
+         * tree publish from the rebooted PHP runtime. Drives the
+         * small Material 3 "Reloading…" pill in the root activity.
+         * Mirrors iOS's `NativeUIBridge.isReloading`.
+         */
+        val isReloading = mutableStateOf(false)
+
         /** Screen key — incremented on navigation to drive AnimatedContent */
         val screenKey = mutableIntStateOf(0)
 

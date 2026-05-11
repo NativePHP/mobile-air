@@ -150,6 +150,22 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->loadViewsFrom(__DIR__.'/resources/views', 'nativephp-mobile');
         $this->loadViewsFrom(__DIR__.'/../resources/jump/views', 'jump');
+
+        // Register `resources/views/native` as a primary view-finder
+        // location (mirrors Livewire's `resources/views/livewire`
+        // convention). Lets devs write `view('home')` in their
+        // `render()` instead of `view('native.home')`.
+        //
+        // Unconditional on purpose: Laravel-aware IDE plugins
+        // (Laravel Idea, PhpStorm Laravel support, Intelephense)
+        // scan service-provider code STATICALLY to find view paths
+        // to index. They can't evaluate `is_dir(...)` at scan time —
+        // a conditional registration is skipped by the indexer, and
+        // CMD-click on view names stops resolving. Laravel's
+        // view-finder tolerates a missing path at runtime (it just
+        // won't find any views there), so the guard wasn't buying us
+        // anything.
+        app('view')->addLocation(resource_path('views/native'));
     }
 
     public function packageBooted()
@@ -178,6 +194,35 @@ class NativeServiceProvider extends PackageServiceProvider
                 $path = '/'.ltrim(request()->path(), '/');
                 $resolved = NativeRouter::resolve($path);
                 $params = $resolved ? $resolved['params'] : [];
+
+                // Hot-reload stack restoration. PHP wrote the full
+                // navigation stack to `.hot_restart` when the user
+                // saved a file; replay the entries below the current
+                // top so back-button history survives the PHP reboot.
+                // We delete the file here (PHP becomes the sole
+                // consumer); iOS / Android just peek at it for the
+                // top URI to dispatch.
+                $restartPath = storage_path('framework/.hot_restart');
+                if (is_file($restartPath)) {
+                    $raw = @file_get_contents($restartPath);
+                    @unlink($restartPath);
+                    $data = $raw ? @json_decode($raw, true) : null;
+                    $stack = is_array($data['stack'] ?? null) ? $data['stack'] : [];
+                    // Drop the entry matching the current request URI —
+                    // `start()` will push that as the top itself. Also
+                    // ignore stale data older than 30s (e.g. left over
+                    // from a previous crash).
+                    $age = time() - (int) ($data['ts'] ?? 0);
+                    if ($age <= 30 && ! empty($stack)) {
+                        $last = end($stack);
+                        if (is_array($last) && ($last['uri'] ?? null) === $path) {
+                            array_pop($stack);
+                        }
+                        if (! empty($stack)) {
+                            $router->preloadStack($stack);
+                        }
+                    }
+                }
 
                 $exitUri = $router->start($componentClass, $params, $path);
 

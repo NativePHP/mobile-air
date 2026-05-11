@@ -212,6 +212,74 @@ class NativeRouter
         return $this->stack[count($this->stack) - 1]['uri'] ?? null;
     }
 
+    /**
+     * Full ordered list of stack entries — bottom (root) first, top
+     * (current screen) last. Each entry is `['uri' => ..., 'params' => [...]]`.
+     * Used by the hot-reload path to serialize the user's navigation
+     * history into `.hot_restart` so back-button history survives a
+     * PHP reboot.
+     *
+     * @return list<array{uri: string, params: array}>
+     */
+    public function getStackEntries(): array
+    {
+        return array_map(
+            fn ($entry) => [
+                'uri' => $entry['uri'] ?? '',
+                'params' => $entry['params'] ?? [],
+            ],
+            $this->stack
+        );
+    }
+
+    /**
+     * Replay a list of stack entries below the current top. Each
+     * entry is resolved through the route registry, the component is
+     * instantiated + mounted, and the entry is pushed onto the stack
+     * — so when the user taps back, the runloop's `onResume` path
+     * picks up a fully-initialised component.
+     *
+     * Invalid / unresolvable URIs are skipped (e.g. a route renamed
+     * since the hot-reload was triggered). Caller is responsible for
+     * NOT including the current top — `start()` pushes that itself.
+     *
+     * @param  list<array{uri: string, params?: array}>  $entries
+     */
+    public function preloadStack(array $entries): void
+    {
+        foreach ($entries as $entry) {
+            $uri = $entry['uri'] ?? null;
+            if (! is_string($uri) || $uri === '') {
+                continue;
+            }
+
+            $resolved = static::resolve($uri);
+            if ($resolved === null) {
+                continue;
+            }
+
+            try {
+                $component = $this->createComponent(
+                    $resolved['class'],
+                    $resolved['params'] ?: ($entry['params'] ?? []),
+                );
+                if (! empty($resolved['layout'])) {
+                    $component->setLayout($resolved['layout']);
+                }
+                $component->mount();
+            } catch (\Throwable $e) {
+                static::debugLog("preloadStack: skipped $uri — " . $e->getMessage());
+                continue;
+            }
+
+            $this->stack[] = [
+                'component' => $component,
+                'uri' => $uri,
+                'params' => $resolved['params'] ?: ($entry['params'] ?? []),
+            ];
+        }
+    }
+
     // ── Instance: session lifecycle ─────────────────
 
     /**

@@ -260,6 +260,15 @@ class NativeElementBridge private constructor() {
                             // animation with a slide overlay.
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
                             NativeUIBridge.currentTree.value = diffedTree
+                            // First publish after a hot-reload dismisses
+                            // the "Reloading…" pill and clears the
+                            // tree-preservation flag. Both are set by
+                            // MainActivity::startHotReloadWatcher at the
+                            // top of the reboot sequence.
+                            if (NativeUIBridge.isReloading.value) {
+                                NativeUIBridge.isReloading.value = false
+                                preserveTreeOnStop = false
+                            }
                             Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
                         }
                     } else {
@@ -324,6 +333,20 @@ class NativeElementBridge private constructor() {
             }
         }
 
+        /**
+         * Flag set by the hot-reload watcher around a PHP shutdown/
+         * reboot cycle. When true, `stopWatching` skips clearing
+         * `NativeUIBridge.isActive` / `currentTree` so SwiftUI's
+         * equivalent (Compose's `if (nativeUIActive)` overlay) keeps
+         * showing the previous tree across the reboot. Required to
+         * avoid a window where `isActive` flips false and the watcher
+         * misroutes a follow-up save to the WebView branch — which
+         * doesn't write `.hot_restart` and breaks the reload chain.
+         */
+        @JvmStatic
+        @Volatile
+        var preserveTreeOnStop = false
+
         @JvmStatic
         fun stopWatching() {
             // Stop shadow thread
@@ -335,11 +358,13 @@ class NativeElementBridge private constructor() {
             clearEvents()
             cachedTypeTable = null
             previousTree = null
-            mainHandler.post {
-                NativeUIBridge.isActive.value = false
-                NativeUIBridge.currentTree.value = null
-                // Don't clear sideNavNode — the new page's RenderSideNav will overwrite it.
-                // Clearing it mid-navigation causes a null→non-null flicker that glitches the drawer.
+            if (!preserveTreeOnStop) {
+                mainHandler.post {
+                    NativeUIBridge.isActive.value = false
+                    NativeUIBridge.currentTree.value = null
+                    // Don't clear sideNavNode — the new page's RenderSideNav will overwrite it.
+                    // Clearing it mid-navigation causes a null→non-null flicker that glitches the drawer.
+                }
             }
         }
 

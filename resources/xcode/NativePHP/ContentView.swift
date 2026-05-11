@@ -13,31 +13,48 @@ struct ContentView: View {
     @ObservedObject private var nativeUIBridge = NativeUIBridge.shared
 
     var body: some View {
-        ZStack {
-            NativeSideNavigation(onNavigate: handleNavigation) {
-                WebViewLayoutContainer(onTabSelected: handleNavigation)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .safeAreaInset(edge: .top, spacing: 0) {
-                        if uiState.hasTopBar() {
-                            NativeTopBar(onNavigate: handleNavigation)
-                        }
-                    }
-            }
-
-            // Native Element UI overlay — shown when Route::native() publishes a UI tree.
-            // .id(screenKey) makes SwiftUI treat each pushed/popped screen as a
-            // distinct view so .transition(...) animates the swap. The transition
-            // type is set per-navigation by PHP via UI.SetTransition.
+        // When native UI is active, render JUST the native tree —
+        // unmount the WebView entirely. Keeping the WebView alive
+        // alongside the SwiftUI overlay caused iOS 26's
+        // `Tab(role: .search)` floating Liquid Glass capsule to lose
+        // single-tap activation (likely WKWebView's UIKit hit-testing
+        // racing the capsule's gesture recognizer). The trade-off is a
+        // WebView remount when transitioning back from native UI; the
+        // WebView's `SharedWebView.shared` cache keeps that fast.
+        Group {
             if nativeUIBridge.isActive, let tree = nativeUIBridge.currentTree {
                 NativeTreeRenderer(tree: tree)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(.systemBackground))
                     .id(nativeUIBridge.screenKey)
                     .transition(NativeUITransitionFunctions.transition(for: nativeUIBridge.pendingTransition))
+            } else {
+                NativeSideNavigation(onNavigate: handleNavigation) {
+                    WebViewLayoutContainer(onTabSelected: handleNavigation)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            if uiState.hasTopBar() {
+                                NativeTopBar(onNavigate: handleNavigation)
+                            }
+                        }
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            // Hot-reload indicator. Mirrors iOS 26's Liquid Glass pill
+            // language so it feels native and doesn't intrude on the
+            // user's content. Fades in/out around the ~500ms PHP
+            // reboot window. Bridge state owned by `NativeUIBridge.isReloading`.
+            if nativeUIBridge.isReloading {
+                HotReloadIndicator()
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(1)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: nativeUIBridge.screenKey)
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isActive)
+        .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
     }
 
     /// Handle navigation from any UI component
@@ -104,6 +121,42 @@ struct ContentView: View {
         let fallback = url.hasPrefix("/") ? url : "/\(url)"
 
         return fallback
+    }
+}
+
+/// Liquid Glass pill shown briefly during hot reload. Two rows of
+/// content: a spinner + label. Auto-dismisses when
+/// `NativeUIBridge.isReloading` flips false (driven by the first
+/// publish from the rebooted PHP runtime — see
+/// `NativeElementBridge.postTreeUpdateFromRegion`).
+///
+/// Uses iOS 26's `.glassEffect` material when available; falls back
+/// to a thin material on earlier OSes.
+struct HotReloadIndicator: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Reloading…")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .modifier(GlassPillBackground())
+    }
+}
+
+/// Wraps the glass / thin-material material lookup behind an iOS-26
+/// availability check. iOS 26+ gets the real Liquid Glass capsule;
+/// earlier versions fall back to a Capsule-shaped `.thinMaterial`.
+private struct GlassPillBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(in: .capsule)
+        } else {
+            content.background(.thinMaterial, in: .capsule)
+        }
     }
 }
 
@@ -370,6 +423,13 @@ struct WebView: UIViewRepresentable {
             let currentPath = self.webView?.url?.path ?? NativePHPApp.getStartURL()
 
             if isNativeUI {
+                // Show the "Reloading…" overlay (ContentView watches this).
+                // Cleared in `NativeElementBridge.postTreeUpdateFromRegion`
+                // when the first new tree from the rebooted PHP arrives.
+                DispatchQueue.main.async {
+                    NativeUIBridge.shared.isReloading = true
+                }
+
                 // CRITICAL: Send the hot reload event BEFORE queuing on the serial
                 // dispatch queue. For native UI routes the serial queue is blocked by
                 // the component's event-loop dispatch (PHPSchemeHandler also uses
@@ -386,7 +446,12 @@ struct WebView: UIViewRepresentable {
                 // By the time this block runs, the native route dispatch has already
                 // returned (the hot reload event caused PHP to exit its event loop).
                 if isNativeUI {
-                    NativeElementBridge.stopWatching()
+                    // `preserveTree: true` keeps the last published tree
+                    // on screen while PHP reboots (~500ms). The next
+                    // publish from the dispatch below replaces it
+                    // atomically — no white flash through the WebView
+                    // root.
+                    NativeElementBridge.stopWatching(preserveTree: true)
                     NativeElementBridge.unregisterRegion()
                 }
 
@@ -416,12 +481,43 @@ struct WebView: UIViewRepresentable {
                     // to break out of it.
                     self?.reloadInProgress = false
 
+                    // Prefer the URI PHP wrote into .hot_restart over the WebView's
+                    // URL — for native-chrome routes the WebView URL isn't kept in
+                    // sync with the active component, so otherwise we'd lose the
+                    // screen on every reload and land on `/`. Android already does
+                    // the same (MainActivity.kt::startHotReloadWatcher).
+                    //
+                    // The file is written by `NativeComponent::runLoop` after the
+                    // EVENT_HOT_RELOAD event fires (PHP-side), and by this point
+                    // PHP has already exited the event loop and the file is on
+                    // disk. Read once, delete, then use.
+                    // Peek at the URI PHP wrote into `.hot_restart`
+                    // (full stack + top URI). We don't delete the
+                    // file here — the PHP-side `Route::native` macro
+                    // handler is the sole consumer; it reads the full
+                    // stack and removes the file. Otherwise we'd lose
+                    // the back-history payload.
+                    let hotRestartUri: String? = {
+                        let storageDir = FileManager.default
+                            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                            .first
+                        guard let path = storageDir?
+                            .appendingPathComponent("storage/framework/.hot_restart")
+                            .path,
+                            let data = FileManager.default.contents(atPath: path),
+                            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                            let uri = json["uri"] as? String,
+                            !uri.isEmpty
+                        else { return nil }
+                        return uri
+                    }()
+
                     // Native element mode: re-execute the route directly through
                     // the persistent runtime (same as Android's executeNativeRoute).
                     // PHP re-registers the mmap region and publishes a new tree.
                     let request = RequestData(
                         method: "GET",
-                        uri: currentPath,
+                        uri: hotRestartUri ?? currentPath,
                         data: nil,
                         query: nil,
                         headers: [:]

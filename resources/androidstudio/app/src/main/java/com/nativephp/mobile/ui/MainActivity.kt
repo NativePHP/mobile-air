@@ -526,7 +526,17 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             // PHP's storage_path() resolves to persisted_data/storage/ (set by LARAVEL_STORAGE_PATH)
             val restartFile = File("${appStorageDir.absolutePath}/persisted_data/storage/framework/.hot_restart")
             var lastModified: Long = 0
+            // Track .hot_restart's last-seen mtime so the polling loop
+            // doesn't re-trigger reboot every iteration while the file
+            // exists. PHP consumes the file (deletes it) inside its
+            // Route::native macro after extracting the nav stack; the
+            // loop here just needs to fire once per write.
+            var lastRestartModified: Long = 0
             var pollCount = 0
+            // Generation counter — increments on every hot-reload
+            // cycle. Helps identify exactly which reload is stuck in
+            // logcat output ("HMR#N").
+            var reloadGeneration = 0
 
             Log.d("HotReload", "Watcher started — watching: ${reloadFile.absolutePath}")
 
@@ -537,32 +547,57 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         Log.d("HotReload", "Poll #$pollCount — exists=${reloadFile.exists()} lastMod=$lastModified curMod=${if (reloadFile.exists()) reloadFile.lastModified() else "N/A"} nativeUI=${NativeUIBridge.isActive.value}")
                     }
 
-                    // Check for native UI restart signal (PHP wrote .hot_restart before exiting)
-                    if (restartFile.exists()) {
+                    // Reset the mtime tracker when the file is gone
+                    // (PHP consumed it) so the next reload triggers.
+                    if (!restartFile.exists() && lastRestartModified != 0L) {
+                        lastRestartModified = 0L
+                    }
+
+                    // Check for native UI restart signal (PHP wrote .hot_restart before exiting).
+                    // We peek the top URI but DON'T delete the file —
+                    // PHP's Route::native handler is the sole
+                    // consumer; it reads the full nav stack to
+                    // restore back-button history, then removes the
+                    // file. Deleting here would strip that payload.
+                    // Mtime gate prevents the polling loop from re-
+                    // triggering reboot every iteration while the file
+                    // is in flight to PHP (we run faster than PHP can
+                    // consume).
+                    if (restartFile.exists() && restartFile.lastModified() > lastRestartModified) {
+                        reloadGeneration++
+                        val gen = reloadGeneration
+                        val mtime = restartFile.lastModified()
+                        lastRestartModified = mtime
+                        Log.d("HotReload", "HMR#$gen .hot_restart detected — mtime=$mtime size=${restartFile.length()}")
                         try {
                             val content = restartFile.readText()
                             val json = org.json.JSONObject(content)
                             val restartUri = json.optString("uri", "/")
-                            restartFile.delete()
+                            val stackSize = json.optJSONArray("stack")?.length() ?: 0
 
-                            Log.d("HotReload", "Restart signal found — re-executing PHP for: $restartUri")
+                            Log.d("HotReload", "HMR#$gen restart uri=$restartUri stackDepth=$stackSize")
 
                             // Wait for old PHP thread to finish (C mutex also guards this,
                             // but joining here avoids starting a thread that just blocks)
                             val oldThread = nativeUIThread
                             if (oldThread != null && oldThread.isAlive) {
-                                Log.d("HotReload", "Waiting for old PHP thread to finish...")
+                                val joinStart = System.currentTimeMillis()
+                                Log.d("HotReload", "HMR#$gen waiting on old PHP thread (name=${oldThread.name})...")
                                 oldThread.join(5000)
+                                val joinElapsed = System.currentTimeMillis() - joinStart
                                 if (oldThread.isAlive) {
-                                    Log.w("HotReload", "Old PHP thread still alive after 5s — proceeding anyway (C mutex will serialize)")
+                                    Log.w("HotReload", "HMR#$gen ⚠️ old PHP thread STILL ALIVE after ${joinElapsed}ms — proceeding anyway (C mutex will serialize)")
                                 } else {
-                                    Log.d("HotReload", "Old PHP thread finished")
+                                    Log.d("HotReload", "HMR#$gen old PHP thread exited in ${joinElapsed}ms")
                                 }
+                            } else {
+                                Log.d("HotReload", "HMR#$gen no live old PHP thread (nativeUIThread=${oldThread?.name ?: "null"})")
                             }
 
                             // If persistent mode, reboot interpreter to pick up new class definitions
                             if (phpBridge.isPersistentMode()) {
-                                Log.d("HotReload", "Rebooting persistent runtime for native UI restart...")
+                                val rebootStart = System.currentTimeMillis()
+                                Log.d("HotReload", "HMR#$gen rebooting persistent runtime...")
 
                                 // Stop queue worker before shutdown — its TSRM context
                                 // will be destroyed by php_module_shutdown
@@ -573,6 +608,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
                                 // Restart queue worker with fresh runtime
                                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                Log.d("HotReload", "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms")
                             }
 
                             // Re-start the native UI watcher (PHP will re-init shared memory)
@@ -583,19 +619,20 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             // This bypasses the WebView entirely — fresh PHP process
                             val restartThread = Thread({
                                 try {
-                                    Log.d("HotReload", "Re-executing PHP for $restartUri")
+                                    Log.d("HotReload", "HMR#$gen executing PHP for $restartUri")
+                                    val execStart = System.currentTimeMillis()
                                     phpBridge.executeNativeRoute(restartUri)
-                                    Log.d("HotReload", "PHP execution completed for $restartUri")
+                                    Log.d("HotReload", "HMR#$gen PHP execution returned after ${System.currentTimeMillis() - execStart}ms")
                                 } catch (e: Exception) {
-                                    Log.e("HotReload", "Restart execution failed: ${e.message}", e)
+                                    Log.e("HotReload", "HMR#$gen execution failed: ${e.message}", e)
                                 }
-                            }, "npui-hot-restart")
+                            }, "npui-hot-restart-$gen")
                             nativeUIThread = restartThread
                             restartThread.start()
 
                             continue
                         } catch (e: Exception) {
-                            Log.e("HotReload", "Failed to read restart signal: ${e.message}")
+                            Log.e("HotReload", "HMR#$gen failed: ${e.message}", e)
                             restartFile.delete()
                         }
                     }
@@ -603,11 +640,35 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                     if (reloadFile.exists() && reloadFile.lastModified() > lastModified) {
                         lastModified = reloadFile.lastModified()
 
+                        // Skip if a hot reload is still in flight — the
+                        // C-side PHP shutdown briefly flips `isActive`
+                        // false; a save landing in that window used to
+                        // misroute to the WebView else-branch (which
+                        // reboots PHP without dispatching a route, then
+                        // never recovers). Drop the duplicate; the user
+                        // can save again after this reload finishes.
+                        if (NativeUIBridge.isReloading.value) {
+                            Log.d("HotReload", "▶ reload_signal fired (mod=$lastModified) — SKIPPED, reload already in flight")
+                            continue
+                        }
+
                         if (NativeUIBridge.isActive.value) {
                             // Native UI mode: send hot reload event through mmap
                             // PHP will shut down and write .hot_restart signal
                             val elementReady = NativeElementBridge.nativeElementIsReady()
-                            Log.d("HotReload", "Native UI active — sending hot reload event (mod=$lastModified elementReady=$elementReady)")
+                            val phpBooted = phpBridge.isPersistentMode()
+                            Log.d("HotReload", "▶ reload_signal fired (mod=$lastModified) — sending HMR event (isActive=true elementReady=$elementReady persistent=$phpBooted lastRestartModified=$lastRestartModified)")
+                            // Preserve the visible tree across PHP's
+                            // C-side stopWatching call. Cleared in
+                            // `onTreePostedToMain` when the first new
+                            // tree from the rebooted runtime lands.
+                            NativeElementBridge.preserveTreeOnStop = true
+                            // Show the "Reloading…" pill (root Compose
+                            // overlay watches this). Cleared in
+                            // `NativeElementBridge.onTreePostedToMain`
+                            // when the first new tree from the rebooted
+                            // PHP runtime lands.
+                            NativeUIBridge.isReloading.value = true
                             NativeUIBridge.sendHotReloadEvent()
                             // Brief wait for PHP to process event and write .hot_restart,
                             // then loop back to check immediately (instead of 500ms sleep)
@@ -1024,6 +1085,29 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                     NativeUIContent()
                                 }
                             }
+
+                            // Hot-reload indicator. Mirrors iOS's
+                            // `HotReloadIndicator` — small Material 3
+                            // pill at top with a spinner + label.
+                            // `isReloading` is true between the start
+                            // of the hot-reload event and the first
+                            // new tree publish from the rebooted PHP.
+                            val isReloading by NativeUIBridge.isReloading
+                            AnimatedVisibility(
+                                visible = isReloading,
+                                enter = slideInVertically { -it } + androidx.compose.animation.fadeIn(),
+                                exit = slideOutVertically { -it } + androidx.compose.animation.fadeOut(),
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    // `statusBarsPadding` clears the
+                                    // notch / status bar; the extra
+                                    // 8.dp gives the pill some breathing
+                                    // room below it.
+                                    .statusBarsPadding()
+                                    .padding(top = 8.dp),
+                            ) {
+                                HotReloadIndicator()
+                            }
                         }
                     }
                 }
@@ -1209,4 +1293,43 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
     }
 
+}
+
+/**
+ * Material 3 "Reloading…" pill shown briefly during hot reload.
+ * Tonal `surfaceContainerHigh` capsule with a small `CircularProgressIndicator`
+ * and label. Auto-dismisses when `NativeUIBridge.isReloading` flips
+ * false (driven by the first publish from the rebooted PHP runtime —
+ * see `NativeElementBridge.onTreePostedToMain`). Mirrors iOS's
+ * `HotReloadIndicator`.
+ */
+@Composable
+private fun HotReloadIndicator() {
+    androidx.compose.material3.Surface(
+        // `primaryContainer` reads as a brand-colored chip — more
+        // visible against arbitrary screen content than the tonal
+        // surface variant. Matches the prominence of iOS's Liquid
+        // Glass capsule, which has its own material vocabulary.
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(percent = 50),
+        tonalElevation = 6.dp,
+        shadowElevation = 8.dp,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                "Reloading…",
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
 }

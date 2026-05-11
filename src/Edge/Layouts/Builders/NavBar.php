@@ -43,6 +43,18 @@ class NavBar
     /** @var NavAction[] */
     private array $actions = [];
 
+    /**
+     * Inline search bar config — same shape as
+     * [NavBarOptions::$searchBar]. Set via [searchBar] or merged in
+     * via [mergeOptions]. Folded into the chrome sentinel as
+     * `nav_search_*` wire props; iOS attaches `.searchable` to the
+     * destination, Android attaches an M3 search field to the top
+     * app bar slot.
+     *
+     * @var array{placeholder?: string, onQuery?: ?string, debounceMs?: int}|null
+     */
+    private ?array $searchBar = null;
+
     public static function make(): self
     {
         return new self;
@@ -115,6 +127,24 @@ class NavBar
     }
 
     /**
+     * Attach an inline search field to this nav bar. Apple HIG / Expo
+     * Router pattern. See [NavBarOptions::searchBar] for the full doc.
+     */
+    public function searchBar(
+        string $placeholder = '',
+        ?string $onQuery = null,
+        int $debounceMs = 300,
+    ): self {
+        $this->searchBar = [
+            'placeholder' => $placeholder,
+            'onQuery'     => $onQuery,
+            'debounceMs'  => $debounceMs,
+        ];
+
+        return $this;
+    }
+
+    /**
      * Apply a NavBarOptions struct from a screen's navigationOptions().
      * Non-null fields on $opts override our values.
      */
@@ -130,6 +160,7 @@ class NavBar
         if ($opts->textColor !== null)       $this->textColor = $opts->textColor;
         if ($opts->elevation !== null)       $this->elevation = $opts->elevation;
         if ($opts->displayMode !== null)     $this->displayMode = $opts->displayMode;
+        if ($opts->searchBar !== null)       $this->searchBar = $opts->searchBar;
         foreach ($opts->actions as $action) {
             $this->actions[] = $action;
         }
@@ -170,6 +201,17 @@ class NavBar
         if ($this->textColor !== null)       $attrs['textColor']       = $this->textColor;
         if ($this->elevation !== null)       $attrs['elevation']       = $this->elevation;
         if ($this->displayMode !== null)     $attrs['displayMode']     = $this->displayMode;
+        if ($this->searchBar !== null) {
+            $attrs['searchPlaceholder'] = $this->searchBar['placeholder'] ?? '';
+            if (! empty($this->searchBar['onQuery'])) {
+                // Method name as a string — the chrome sentinel
+                // (NativeRootStack / NativeRootTabs) registers it with
+                // its own CallbackRegistry inside `resolveProps()` so
+                // the wire carries a numeric callback id.
+                $attrs['searchOnQuery'] = $this->searchBar['onQuery'];
+            }
+            $attrs['searchDebounceMs'] = $this->searchBar['debounceMs'] ?? 300;
+        }
         return $attrs;
     }
 

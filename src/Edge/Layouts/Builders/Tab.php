@@ -9,12 +9,16 @@ use Native\Mobile\Edge\Elements\BottomNavItem;
  * Fluent builder for a single bottom-tab-bar item.
  *
  * Two constructor styles:
+ *   - `Tab::search($label, icon: ..., placeholder: ..., debounceMs: ...)`
+ *     — iOS 26 floating Liquid Glass search capsule. No URL; the search
+ *     experience is an iOS-side overlay driven by the active screen's
+ *     `searchItems()` and/or `onSearchQuery()` methods.
  *   - `Tab::link($label, $url, icon: ...)` — URL-bound tab. BottomNavItem
  *     auto-wires the URL to a `replace` navigation event when tapped.
  *   - `Tab::action($label, icon: ...)->press('method')` — action tab.
  *     No URL, no navigation. Tapping fires the dev's press handler so
  *     they can do anything (open a sheet, focus a search field, run
- *     business logic). Combine with `->search()` for the iOS 26
+ *     business logic). Use `Tab::search()` instead for the iOS 26
  *     floating-capsule treatment.
  *
  * Either form can be customised with `->press('method')` to override the
@@ -23,7 +27,7 @@ use Native\Mobile\Edge\Elements\BottomNavItem;
  * Usage:
  *   Tab::link('Home', '/', icon: 'home')
  *   Tab::link('Profile', '/profile', icon: 'person')->badge('3')
- *   Tab::action('Search', icon: 'search')->search()->press('openSearch')
+ *   Tab::search('Search', icon: 'search', placeholder: '…')
  */
 class Tab
 {
@@ -45,6 +49,13 @@ class Tab
 
     private bool $search = false;
 
+    private ?string $searchPlaceholder = null;
+
+    private int $searchDebounceMs = 250;
+
+    /** @var list<mixed>|null  Mixed shapes: string | array | Element (see SearchItem). */
+    private ?array $searchItems = null;
+
     private ?string $pressMethod = null;
 
     private function __construct(string $id, string $label, string $url)
@@ -58,8 +69,11 @@ class Tab
      * Most common form: a label, the url to navigate to, and an icon.
      * The id defaults to the label slugified.
      */
-    public static function link(string $label, string $url, ?string $icon = null): self
-    {
+    public static function link(
+        string $label,
+        string $url,
+        ?string $icon = null,
+    ): self {
         $tab = new self(
             id: strtolower(preg_replace('/[^a-z0-9]+/i', '_', $label)),
             label: $label,
@@ -74,12 +88,12 @@ class Tab
 
     /**
      * Action-only tab — no URL, no auto-navigation. Tap fires the press
-     * handler set via `->press('method')`. Useful with `->search()` for
-     * the iOS 26 floating-capsule treatment when the tap should open a
-     * search sheet instead of navigating to a separate route.
+     * handler set via `->press('method')`.
      */
-    public static function action(string $label, ?string $icon = null): self
-    {
+    public static function action(
+        string $label,
+        ?string $icon = null,
+    ): self {
         $tab = new self(
             id: strtolower(preg_replace('/[^a-z0-9]+/i', '_', $label)),
             label: $label,
@@ -88,6 +102,40 @@ class Tab
         if ($icon !== null) {
             $tab->icon($icon);
         }
+
+        return $tab;
+    }
+
+    /**
+     * Dedicated factory for the iOS 26 search-role tab (floating Liquid
+     * Glass capsule). Has no URL — the search experience is an iOS-side
+     * overlay driven by the active screen's `searchItems()` and/or
+     * `onSearchQuery()` methods.
+     *
+     * Usage:
+     *
+     *     Tab::search('Search', icon: 'search',
+     *         placeholder: 'Search articles, songs, people…',
+     *         debounceMs: 200,
+     *     )
+     */
+    public static function search(
+        string $label,
+        ?string $icon = null,
+        ?string $placeholder = null,
+        int $debounceMs = 250,
+    ): self {
+        $tab = new self(
+            id: strtolower(preg_replace('/[^a-z0-9]+/i', '_', $label)),
+            label: $label,
+            url: '',
+        );
+        if ($icon !== null) {
+            $tab->icon($icon);
+        }
+        $tab->search = true;
+        $tab->searchPlaceholder = $placeholder;
+        $tab->searchDebounceMs = $debounceMs;
 
         return $tab;
     }
@@ -133,22 +181,40 @@ class Tab
         return $this;
     }
 
-    /**
-     * Mark this tab as the "search" tab. On iOS 26+ the system renders it
-     * as a separate floating Liquid Glass capsule beside the main tab bar
-     * (the pattern used by Apple's own Photos / Music / Mail apps). On
-     * older iOS the role is a no-op visually but still semantically tagged.
-     */
-    public function search(bool $search = true): self
-    {
-        $this->search = $search;
-
-        return $this;
-    }
-
     public function getUrl(): string
     {
         return $this->url;
+    }
+
+    public function isSearchTab(): bool
+    {
+        return $this->search;
+    }
+
+    public function getSearchDebounceMs(): int
+    {
+        return $this->searchDebounceMs;
+    }
+
+    /** @return list<mixed>|null */
+    public function getSearchItems(): ?array
+    {
+        return $this->searchItems;
+    }
+
+    /**
+     * Inject the search corpus from the active screen. Called by the
+     * framework during chrome wrapping; not part of the user-facing
+     * fluent API. Items may be strings, arrays, or Element instances —
+     * shape dispatch happens at serialization time via `SearchItem`.
+     *
+     * @param  list<mixed>  $items
+     */
+    public function setSearchItems(array $items): self
+    {
+        $this->searchItems = array_values($items);
+
+        return $this;
     }
 
     public function setActive(bool $active): self
@@ -178,8 +244,20 @@ class Tab
         if ($this->badgeColor !== null)  $attrs['badgeColor'] = $this->badgeColor;
         if ($this->news)                 $attrs['news']       = true;
         if ($this->search)               $attrs['search']     = true;
+        if ($this->searchPlaceholder !== null) {
+            $attrs['search_placeholder'] = $this->searchPlaceholder;
+        }
+        $attrs['search_debounce_ms'] = $this->searchDebounceMs;
 
         $item->applyAttributes($attrs);
+
+        // Raw items go through a dedicated setter, not via $attrs, so
+        // they bypass `applyAttributes` (which only handles primitives)
+        // and remain mixed types until `NativeRootTabs::resolveProps`
+        // normalizes them through the registry-aware `SearchItem` DTO.
+        if ($this->searchItems !== null) {
+            $item->setRawSearchItems($this->searchItems);
+        }
 
         // Wire custom press handler if set. BottomNavItem::resolveProps
         // skips its URL → `replace` auto-navigation when a press method

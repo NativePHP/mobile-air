@@ -32,6 +32,16 @@ class NativeRootTabs extends Element
 
     protected array $props = [];
 
+    /**
+     * Method name on the active screen that handles dynamic-mode
+     * search queries (returns `array` of items per keystroke). Set by
+     * `wrapWithNativeChrome` when the active component overrides
+     * `onSearchQuery`. Registered with kind `search_query` so
+     * `NativeComponent::dispatch` knows to capture the return value
+     * and stash it as the next publish's `nav_search_items`.
+     */
+    private ?string $navSearchOnQueryMethod = null;
+
     public static function make(): static
     {
         return new static;
@@ -66,10 +76,72 @@ class NativeRootTabs extends Element
         // URI-match heuristic.
         if (isset($attrs['hideTabBar']))      $this->props['hide_tab_bar']     = (bool) $attrs['hideTabBar'];
         if (isset($attrs['tabHighlight']))    $this->props['tab_highlight']    = $attrs['tabHighlight'];
+
+        // Inline NavBar search field — Apple HIG / Expo pattern.
+        // iOS attaches `.searchable` to the destination view; Android
+        // shows an M3 search field in the top app bar slot.
+        if (isset($attrs['navSearchPlaceholder'])) $this->props['nav_search_placeholder'] = $attrs['navSearchPlaceholder'];
+        if (isset($attrs['navSearchOnQuery']))     $this->navSearchOnQueryMethod         = $attrs['navSearchOnQuery'];
+        if (isset($attrs['navSearchDebounceMs']))  $this->props['nav_search_debounce_ms'] = (int) $attrs['navSearchDebounceMs'];
+
+        // New screen-driven dynamic-mode handler (preferred over the
+        // legacy NavBar-folded variant above). `wrapWithNativeChrome`
+        // sets this when the active screen overrides `onSearchQuery`.
+        if (isset($attrs['navSearchOnQueryMethod'])) {
+            $this->navSearchOnQueryMethod = $attrs['navSearchOnQueryMethod'];
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
     {
+        // Register the dynamic-mode query handler with kind `search_query`
+        // so `NativeComponent::dispatch()` knows to capture its return
+        // value into `$pendingSearchResults` instead of fire-and-forget.
+        if ($this->navSearchOnQueryMethod !== null) {
+            $this->props['nav_search_on_query'] = $registry->register(
+                $this->navSearchOnQueryMethod,
+                kind: 'search_query'
+            );
+        }
+
+        // Hoist the search-role tab's config up to the root and adopt
+        // its items as `search_item` children of this root. Wire format
+        // can't carry arbitrary arrays-of-dicts as a prop, so items go
+        // through the regular tree path — one node per item, dispatched
+        // by `kind` in the renderer. Items are inserted just after the
+        // existing children so the search-role BottomNavItem stays
+        // adjacent to its corpus in the tree (helpful for diff
+        // locality, and means iOS can filter `children.type ==
+        // "search_item"` without scanning the whole subtree).
+        $searchItemsToAdopt = [];
+        foreach ($this->children as $child) {
+            if (! ($child instanceof BottomNavItem) || ! $child->isSearchTab()) {
+                continue;
+            }
+            if (empty($this->props['nav_search_placeholder'])) {
+                $this->props['nav_search_placeholder'] = $child->getSearchPlaceholder() ?? 'Search';
+            }
+            $this->props['nav_search_debounce_ms'] = $child->getSearchDebounceMs();
+
+            if (($rawItems = $child->getRawSearchItems()) !== null) {
+                foreach ($rawItems as $rawItem) {
+                    if (($item = SearchItem::from($rawItem)) !== null) {
+                        $searchItemsToAdopt[] = $item;
+                    }
+                }
+            }
+
+            // Mode discriminator for the renderers: when an
+            // `onSearchQuery` handler is wired, items flow PHP → iOS
+            // per keystroke (`dynamic`); otherwise items are a static
+            // corpus iOS filters locally (`static`).
+            $this->props['nav_search_mode'] = isset($this->props['nav_search_on_query']) ? 'dynamic' : 'static';
+            break;
+        }
+        foreach ($searchItemsToAdopt as $item) {
+            $this->children[] = $item;
+        }
+
         return $this->props;
     }
 }

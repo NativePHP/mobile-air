@@ -42,20 +42,39 @@ struct NativeTreeRenderer: View {
     let tree: NativeUITree
 
     var body: some View {
-        GeometryReader { geo in
-            // Get safe area from the window — GeometryReader reports zero
-            // after .ignoresSafeArea() since it thinks there's no safe area.
-            let insets = Self.windowSafeAreaInsets
-            NodeView(node: tree.root)
-                .environment(\.nativeSafeAreaTop, insets.top)
-                .environment(\.nativeSafeAreaBottom, insets.bottom)
-                .environment(\.availableWidth, geo.size.width)
-                .environment(\.availableHeight, geo.size.height)
-        }
-        .ignoresSafeArea()
-        // Tap outside any input dismisses keyboard
-        .onTapGesture {
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        // Native chrome sentinels (`native_root_tabs`,
+        // `native_root_stack`) need the TabView / NavigationStack to
+        // sit AS CLOSE TO THE ROOT as possible. Going through `NodeView`
+        // wraps them in `NodeLayoutModifier` + `NodeStyleModifier` +
+        // `AnyView` (from the renderer registry), and `GeometryReader`
+        // adds another layer. That cumulative wrapping breaks iOS 26's
+        // `Tab(role: .search)` floating Liquid Glass capsule single-
+        // tap activation. Bypassing the wrappers gets us byte-for-byte
+        // close to the minimal SwiftUI reproducer, where capsule
+        // activation works reliably.
+        if tree.root.type == "native_root_tabs" {
+            NativeRootTabsRenderer(node: tree.root)
+                .ignoresSafeArea()
+        } else if tree.root.type == "native_root_stack" {
+            NativeRootStackRenderer(node: tree.root)
+                .ignoresSafeArea()
+        } else {
+            GeometryReader { geo in
+                // Get safe area from the window — GeometryReader reports zero
+                // after .ignoresSafeArea() since it thinks there's no safe area.
+                let insets = Self.windowSafeAreaInsets
+                NodeView(node: tree.root)
+                    .environment(\.nativeSafeAreaTop, insets.top)
+                    .environment(\.nativeSafeAreaBottom, insets.bottom)
+                    .environment(\.availableWidth, geo.size.width)
+                    .environment(\.availableHeight, geo.size.height)
+            }
+            .ignoresSafeArea()
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+            )
         }
     }
 

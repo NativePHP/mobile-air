@@ -13,6 +13,11 @@ final class NativeUIBridge: ObservableObject {
     /// Whether the native UI system is active
     @Published var isActive: Bool = false
 
+    /// True between the start of a hot-reload event and the next tree
+    /// publish from the rebooted PHP runtime. Drives the small Liquid
+    /// Glass "Reloading…" pill in `ContentView`.
+    @Published var isReloading: Bool = false
+
     /// Screen key — incremented on navigation to drive transitions
     @Published var screenKey: Int = 0
 

@@ -165,6 +165,17 @@ struct NativeRootStackRenderer: View {
             }
             .modifier(StackBarBackgroundModifier(argb: bgArgb))
             .modifier(StackBottomBarInsetModifier(bottomBar: bottomBar))
+            // Inline search field — Apple HIG / Expo pattern. The
+            // SearchableNavBarModifier (defined in NativeRootTabsRenderer.swift,
+            // file-internal) reads the same `*search*` props that
+            // `NavBar::searchBar()` emits in the stack-only path. No-ops
+            // when the screen didn't configure a search bar.
+            .modifier(SearchableNavBarModifier(
+                placeholder: root.props.getString("search_placeholder", default: ""),
+                callbackId: Int(root.props.getCallbackId("search_on_query")),
+                nodeId: root.id,
+                debounceMs: root.props.getInt("search_debounce_ms", default: 300)
+            ))
     }
 
     @ViewBuilder
