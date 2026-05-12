@@ -2,6 +2,8 @@
 #include <android/log.h>
 #include <signal.h>
 #include <pthread.h>
+#include <errno.h>
+#include <time.h>
 #include "php_embed.h"
 #include "PHP.h"
 #include <zend_exceptions.h>
@@ -18,6 +20,7 @@ jobject g_bridge_instance = NULL;
 extern jint InitializeBridgeJNI(JNIEnv* env);
 static void safe_php_embed_shutdown(void);
 static void worker_embed_shutdown(void);
+static void ephemeral_embed_shutdown(void);
 int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers);
 
 // Global state
@@ -25,6 +28,54 @@ static int php_initialized = 0;    // tracks whether php_embed_init is active
 static pthread_mutex_t g_php_request_mutex = PTHREAD_MUTEX_INITIALIZER;
 static jobject g_callback_obj = NULL;
 static jmethodID g_callback_method = NULL;
+
+// ── Persistent boot gate ─────────────────────────────────────────────────
+// Without this gate, two threads can concurrently call php_embed_init():
+// one from native_persistent_boot (holding g_php_request_mutex), another from
+// native_ephemeral_boot taking the cold path (holding g_ephemeral_mutex, a
+// different lock) because it read php_initialized==0 before persistent set it.
+// Concurrent php_embed_init calls corrupt TSRM/SAPI globals.
+//
+// The gate lets ephemeral block while persistent is mid-boot, then re-check
+// php_initialized and take hot or cold path correctly.
+typedef enum {
+    PERSISTENT_BOOT_NEVER_STARTED = 0,
+    PERSISTENT_BOOT_IN_PROGRESS,
+    PERSISTENT_BOOT_SUCCEEDED,
+    PERSISTENT_BOOT_FAILED,
+} persistent_boot_state_t;
+
+static persistent_boot_state_t g_persistent_boot_state = PERSISTENT_BOOT_NEVER_STARTED;
+static pthread_mutex_t g_persistent_boot_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_persistent_boot_cond  = PTHREAD_COND_INITIALIZER;
+
+static void set_persistent_boot_state(persistent_boot_state_t state) {
+    pthread_mutex_lock(&g_persistent_boot_mutex);
+    g_persistent_boot_state = state;
+    pthread_cond_broadcast(&g_persistent_boot_cond);
+    pthread_mutex_unlock(&g_persistent_boot_mutex);
+}
+
+// Wait for persistent boot to leave IN_PROGRESS (settle into a terminal state).
+// Returns 0 once settled; returns -1 on timeout.
+// Callers re-check php_initialized after this to pick hot vs cold path —
+// this helper only prevents the concurrent php_embed_init race.
+static int wait_for_persistent_boot_settled(int timeout_seconds) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_seconds;
+
+    pthread_mutex_lock(&g_persistent_boot_mutex);
+    while (g_persistent_boot_state == PERSISTENT_BOOT_IN_PROGRESS) {
+        int rc = pthread_cond_timedwait(&g_persistent_boot_cond, &g_persistent_boot_mutex, &deadline);
+        if (rc == ETIMEDOUT) {
+            pthread_mutex_unlock(&g_persistent_boot_mutex);
+            return -1;
+        }
+    }
+    pthread_mutex_unlock(&g_persistent_boot_mutex);
+    return 0;
+}
 
 #define BUFFER_CHUNK_SIZE (256 * 1024)  // 256KB increments
 #define MAX_BUFFER_SIZE (16 * 1024 * 1024)  // 16MB max buffer
@@ -68,6 +119,11 @@ static void (*jni_output_callback_ptr)(const char *) = NULL;
 // Worker state
 static int worker_initialized = 0;
 static pthread_mutex_t g_worker_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Ephemeral state — generic background TSRM context for plugin use
+static int ephemeral_initialized = 0;
+static int ephemeral_cold_booted = 0;
+static pthread_mutex_t g_ephemeral_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
  * Configure the embed SAPI module with host-registered functions.
@@ -325,9 +381,14 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     setenv("APP_URL", "http://127.0.0.1", 1);
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
 
+    // Open the boot gate so any concurrent ephemeral_embed_init call blocks
+    // instead of racing into a second php_embed_init().
+    set_persistent_boot_state(PERSISTENT_BOOT_IN_PROGRESS);
+
     setup_embed_module();
     if (php_embed_init(0, NULL) != SUCCESS) {
         LOGE("persistent_boot: php_embed_init() FAILED");
+        set_persistent_boot_state(PERSISTENT_BOOT_FAILED);
         (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
         pthread_mutex_unlock(&g_php_request_mutex);
         return -1;
@@ -350,6 +411,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     }
 
     persistent_initialized = 1;
+    set_persistent_boot_state(PERSISTENT_BOOT_SUCCEEDED);
     LOGI("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
@@ -451,6 +513,15 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
         "    // Clean PHP output buffers from previous dispatch\n"
         "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
         "\n"
+        "    // Drop stale HTTP_* / CONTENT_* keys from previous request before re-populating.\n"
+        "    // $_SERVER persists across dispatches in the persistent runtime; without this,\n"
+        "    // headers like X-Inertia leak into subsequent requests and trigger JSON responses.\n"
+        "    foreach ($_SERVER as $__k => $__v) {\n"
+        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
+        "            unset($_SERVER[$__k]);\n"
+        "        }\n"
+        "    }\n"
+        "\n"
         "    // Sync $_SERVER from current env (setenv in C doesn't update PHP $_SERVER)\n"
         "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
         "    $_SERVER['REQUEST_URI'] = '%s';\n"
@@ -503,6 +574,19 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
         "    // Parse query string\n"
         "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
         "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
+        "    }\n"
+        "\n"
+        "    // Parse POST body into $_POST for form-urlencoded requests\n"
+        "    // php://input is set up by the C layer but $_POST was cleared above\n"
+        "    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {\n"
+        "        $__rawInput = file_get_contents('php://input');\n"
+        "        if ($__rawInput !== false && $__rawInput !== '') {\n"
+        "            $__ct = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';\n"
+        "            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {\n"
+        "                parse_str($__rawInput, $_POST);\n"
+        "            }\n"
+        "            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);\n"
+        "        }\n"
         "    }\n"
         "\n"
         "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
@@ -611,6 +695,9 @@ JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
     safe_php_embed_shutdown();
     php_initialized = 0;
     persistent_initialized = 0;
+    // Reset the gate so a future ephemeral_embed_init cold path is safe and
+    // a subsequent persistent_boot can transition IN_PROGRESS cleanly.
+    set_persistent_boot_state(PERSISTENT_BOOT_NEVER_STARTED);
 
     LOGI("persistent_shutdown: done");
     pthread_mutex_unlock(&g_php_request_mutex);
@@ -660,6 +747,12 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     const char *command = (*env)->GetStringUTFChars(env, jcommand, NULL);
     LOGI("runArtisanCommand: %s", command);
 
+    // Lock ephemeral mutex to prevent background workers from starting
+    // ephemeral runtime while artisan commands are running (and vice versa).
+    // runArtisanCommand does php_embed_init/shutdown which destroys global
+    // state that ephemeral hot path would be using.
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
     clear_collected_output();
 
     // Get Laravel path
@@ -673,6 +766,7 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
     if (php_embed_init(0, NULL) != SUCCESS) {
         LOGE("Failed to initialize PHP for artisan");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         (*env)->ReleaseStringUTFChars(env, jcommand, command);
         (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
         (*env)->DeleteLocalRef(env, jLaravelPath);
@@ -702,7 +796,6 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
     setenv("PHP_SELF", "artisan.php", 1);
-    setenv("APP_ENV", "local", 1);
 
     // Set $argv/$argc via PHP
     {
@@ -730,6 +823,8 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     safe_php_embed_shutdown();
     php_initialized = 0;
+
+    pthread_mutex_unlock(&g_ephemeral_mutex);
 
     (*env)->ReleaseStringUTFChars(env, jcommand, command);
     (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
@@ -932,6 +1027,14 @@ static void worker_embed_shutdown(void) {
  * Called once from the worker thread when it starts.
  */
 JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    // Worker's ts_resource(0) assumes tsrm_startup() already ran (inside
+    // persistent's php_embed_init). Wait for persistent to settle so we
+    // don't race past a half-initialized TSRM.
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("worker_boot: timed out waiting for persistent boot to settle");
+        return -1;
+    }
+
     pthread_mutex_lock(&g_worker_mutex);
 
     if (worker_initialized) {
@@ -1050,6 +1153,183 @@ JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_unlock(&g_worker_mutex);
 }
 
+// ============================================================================
+// Ephemeral PHP Runtime — separate TSRM context for plugin background work
+// ============================================================================
+// Generic background PHP context that any plugin can use (e.g. background tasks,
+// scheduled jobs). Supports both hot path (app alive) and cold path (WorkManager
+// cold start after app killed).
+
+static int ephemeral_embed_init(void) {
+    // If persistent is mid-boot (started but not yet finished php_embed_init),
+    // wait. Otherwise php_initialized would read 0 and we'd take the cold path
+    // — calling php_embed_init() concurrently with the persistent thread, which
+    // corrupts TSRM/SAPI globals.
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("ephemeral_embed_init: timed out waiting for persistent boot to settle");
+        return FAILURE;
+    }
+
+    if (php_initialized) {
+        // Hot path: persistent runtime is alive, allocate a TSRM thread context
+        LOGI("ephemeral_embed_init: hot path — using existing TSRM");
+
+        ts_resource(0);
+        setup_embed_module();
+
+        if (php_embed_module.startup(&php_embed_module) == FAILURE) {
+            LOGE("ephemeral_embed_init: module startup failed");
+            return FAILURE;
+        }
+
+        if (php_request_startup() == FAILURE) {
+            LOGE("ephemeral_embed_init: request startup failed");
+            return FAILURE;
+        }
+
+        ephemeral_cold_booted = 0;
+
+        LOGI("ephemeral_embed_init: hot path ready");
+        return SUCCESS;
+    }
+
+    // Cold path: WorkManager started the process after app was killed.
+    // No persistent runtime exists — do a full php_embed_init().
+    LOGI("ephemeral_embed_init: cold path — full PHP bootstrap");
+
+    setenv("NATIVEPHP_RUNNING", "true", 1);
+    setenv("APP_URL", "http://127.0.0.1", 1);
+    setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+    setenv("PHP_SELF", "/ephemeral", 1);
+    setenv("HTTP_HOST", "127.0.0.1", 1);
+
+    setup_embed_module();
+    if (php_embed_init(0, NULL) != SUCCESS) {
+        LOGE("ephemeral_embed_init: cold path php_embed_init() FAILED");
+        return FAILURE;
+    }
+    sapi_module.header_handler = android_header_handler;
+    ephemeral_cold_booted = 1;
+
+    LOGI("ephemeral_embed_init: cold path ready");
+    return SUCCESS;
+}
+
+static void ephemeral_embed_shutdown(void) {
+    if (ephemeral_cold_booted) {
+        LOGI("ephemeral_embed_shutdown: cold path — full php_embed_shutdown");
+        safe_php_embed_shutdown();
+    } else {
+        LOGI("ephemeral_embed_shutdown: hot path — thread cleanup only");
+        php_request_shutdown(NULL);
+        ts_free_thread();
+    }
+    LOGI("ephemeral_embed_shutdown: done");
+}
+
+JNIEXPORT jint JNICALL native_ephemeral_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
+    if (ephemeral_initialized) {
+        LOGI("ephemeral_boot: already initialized, skipping");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return 0;
+    }
+
+    const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
+    LOGI("ephemeral_boot: initializing with bootstrap=%s", bootstrapPath);
+
+    clear_collected_output();
+
+    if (ephemeral_embed_init() != SUCCESS) {
+        LOGE("ephemeral_boot: ephemeral_embed_init() FAILED");
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return -1;
+    }
+
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, bootstrapPath);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    char *ephemeral_boot_output = get_collected_output();
+    if (ephemeral_boot_output && strstr(ephemeral_boot_output, "FATAL") != NULL) {
+        LOGE("ephemeral_boot: bootstrap produced errors: %.200s", ephemeral_boot_output);
+    }
+
+    ephemeral_initialized = 1;
+    LOGI("ephemeral_boot: ephemeral PHP interpreter ready");
+
+    (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+    return 0;
+}
+
+JNIEXPORT jstring JNICALL native_ephemeral_artisan(JNIEnv *env, jobject thiz, jstring jCommand) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
+    if (!ephemeral_initialized) {
+        LOGE("ephemeral_artisan: ephemeral runtime not initialized!");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return (*env)->NewStringUTF(env, "Ephemeral runtime not initialized.");
+    }
+
+    const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
+    LOGI("ephemeral_artisan: %s", command);
+
+    clear_collected_output();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+
+    char eval_code[4096];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    echo 'Ephemeral artisan error: ' . $e->getMessage();\n"
+        "}\n",
+        command);
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "ephemeral_artisan");
+    } zend_end_try();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
+
+    (*env)->ReleaseStringUTFChars(env, jCommand, command);
+
+    char *ephemeral_output = get_collected_output();
+    jstring result = (*env)->NewStringUTF(env, ephemeral_output ? ephemeral_output : "");
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+    return result;
+}
+
+JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
+    if (!ephemeral_initialized) {
+        LOGI("ephemeral_shutdown: not initialized, nothing to do");
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return;
+    }
+
+    LOGI("ephemeral_shutdown: shutting down ephemeral interpreter");
+
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "ephemeral_shutdown");
+    } zend_end_try();
+
+    ephemeral_embed_shutdown();
+    ephemeral_initialized = 0;
+
+    LOGI("ephemeral_shutdown: done");
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+}
+
 static JNINativeMethod gMethods[] = {
         // PHPBridge
         {"nativeExecuteScript", "(Ljava/lang/String;)Ljava/lang/String;", (void *) native_execute_script},
@@ -1078,6 +1358,11 @@ static JNINativeMethod gMethods[] = {
         {"nativeWorkerBoot","(Ljava/lang/String;)I",(void *) native_worker_boot},
         {"nativeWorkerArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_worker_artisan},
         {"nativeWorkerShutdown","()V",(void *) native_worker_shutdown},
+
+        // Ephemeral runtime (background tasks via WorkManager) methods
+        {"nativeEphemeralBoot","(Ljava/lang/String;)I",(void *) native_ephemeral_boot},
+        {"nativeEphemeralArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_ephemeral_artisan},
+        {"nativeEphemeralShutdown","()V",(void *) native_ephemeral_shutdown},
 };
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {

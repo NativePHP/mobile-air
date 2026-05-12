@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Commands;
 
+use Endroid\QrCode\Builder\Builder;
 use Illuminate\Console\Command;
 
 use function Laravel\Prompts\intro;
@@ -10,13 +11,15 @@ use function Laravel\Prompts\select;
 class JumpCommand extends Command
 {
     protected $signature = 'native:jump
-                            {platform? : Target platform (android/a or ios/i)}
                             {--host=0.0.0.0 : The host address to serve the application on}
                             {--ip= : The IP address to display in the QR code (overrides auto-detection)}
                             {--http-port= : The HTTP port to serve on}
-                            {--laravel-port=8000 : The Laravel dev server port to proxy to}
-                            {--no-mdns : Disable mDNS service advertisement}
-                            {--S|skip-build : Skip building the app bundle if app.zip already exists}';
+                            {--ws-port= : The WebSocket bridge port}
+                            {--bridge-port= : The internal TCP bridge port}
+                            {--vite-proxy-port= : The port Jump uses to proxy Vite HMR to the phone}
+                            {--no-serve : Do not start artisan serve automatically (use if running your own server)}
+                            {--laravel-port= : The Laravel dev server port (auto-detected when artisan serve is managed)}
+                            {--no-mdns : Disable mDNS service advertisement}';
 
     protected $description = 'Start the NativePHP development server for testing mobile apps';
 
@@ -24,39 +27,23 @@ class JumpCommand extends Command
 
     private string $displayHost;
 
-    private string $platform;
+    private $laravelProcess = null;
+
+    private array $laravelPipes = [];
+
+    private bool $verbose = false;
 
     public function handle()
     {
+        $this->verbose = $this->output->isVerbose();
+
         intro('NativePHP Jump Server');
-
-        // Get platform from argument (android/a, ios/i) or prompt
-        $platform = $this->argument('platform');
-
-        if ($platform && in_array(strtolower($platform), ['android', 'a', 'ios', 'i'])) {
-            $this->platform = match (strtolower($platform)) {
-                'android', 'a' => 'android',
-                'ios', 'i' => 'ios',
-            };
-        } else {
-            $this->platform = select(
-                label: 'Select target platform',
-                options: ['android' => 'Android', 'ios' => 'iOS'],
-            );
-        }
-
-        // Run npm build for the selected platform
-        $this->runNpmBuild();
-
-        // Kill existing servers
-        $this->killExistingServers();
 
         // Configuration
         $host = $this->option('host');
         $httpPort = $this->option('http-port') ?? config('nativephp.server.http_port', 3000);
-        $this->laravelPort = $this->option('laravel-port') ?? 8000;
 
-        // Auto-find available port
+        // Auto-find available port for the Jump proxy server
         $httpPort = $this->findAvailablePort($httpPort);
         if ($httpPort === null) {
             $this->error('Cannot start server: No available HTTP port found.');
@@ -64,16 +51,43 @@ class JumpCommand extends Command
             return self::FAILURE;
         }
 
+        // Resolve the Laravel port first (we need it so bridge ports don't collide)
+        if ($this->option('no-serve')) {
+            $this->laravelPort = (int) ($this->option('laravel-port') ?? 8000);
+        } else {
+            $desiredLaravelPort = (int) ($this->option('laravel-port') ?? 8000);
+            $this->laravelPort = $this->findAvailablePort($desiredLaravelPort, 100, [$httpPort]);
+            if ($this->laravelPort === null) {
+                $this->error('Cannot start server: No available port for artisan serve.');
+
+                return self::FAILURE;
+            }
+        }
+
+        // Pick WS + bridge ports BEFORE starting artisan serve so nativephp_call
+        // in the Laravel process can dial the correct JUMP_BRIDGE_PORT (not the default 3002).
+        $usedPorts = [$httpPort, $this->laravelPort];
+        $wsPort = (int) ($this->option('ws-port') ?? $this->findAvailablePort(3001, 100, $usedPorts));
+        $usedPorts[] = $wsPort;
+        $bridgePort = (int) ($this->option('bridge-port') ?? $this->findAvailablePort(3002, 100, $usedPorts));
+        $usedPorts[] = $bridgePort;
+        // Vite HMR proxy: phone connects here over WebSocket, we relay frames
+        // to the real Vite dev server on 127.0.0.1. Keeps users from having to
+        // edit vite.config.js for network access.
+        $viteProxyPort = (int) ($this->option('vite-proxy-port') ?? $this->findAvailablePort(3003, 100, $usedPorts));
+
+        // Start or detect the Laravel dev server
+        if ($this->option('no-serve')) {
+            // User is running their own artisan serve — tell them what to export
+            if (! $this->isPortInUse($this->laravelPort)) {
+                $this->warn("No server detected on port {$this->laravelPort}. Start one with: JUMP_BRIDGE_PORT={$bridgePort} php artisan serve --port={$this->laravelPort}");
+            }
+        } else {
+            $this->startLaravelServer($this->laravelPort, $bridgePort, $wsPort);
+        }
+
         // Check if we should open browser
         $openQr = config('nativephp.server.open_browser', true);
-
-        // Pre-build the Laravel bundle ZIP
-        $buildPath = storage_path('app/native-build');
-        $zipPath = $buildPath.'/app.zip';
-
-        if (! is_dir($buildPath)) {
-            mkdir($buildPath, 0755, true);
-        }
 
         // Get the local IP for dev server config
         $ipOption = $this->option('ip');
@@ -98,31 +112,13 @@ class JumpCommand extends Command
             }
         }
 
-        // Check if we should skip building
-        $skipBuild = $this->option('skip-build') && file_exists($zipPath);
+        $this->startBridgeServer($wsPort, $bridgePort, $viteProxyPort);
+        $this->components->twoColumnDetail('Bridge WebSocket', "ws://{$this->displayHost}:{$wsPort}/jump/ws");
+        $this->components->twoColumnDetail('Bridge TCP', "tcp://127.0.0.1:{$bridgePort}");
+        $this->components->twoColumnDetail('Vite HMR proxy', "ws://{$this->displayHost}:{$viteProxyPort}/");
 
-        if ($skipBuild) {
-            $bundleSize = $this->formatBytes(filesize($zipPath));
-            $this->components->twoColumnDetail('Using existing bundle', $bundleSize);
-        } else {
-            // Delete existing bundle to ensure fresh build
-            if (file_exists($zipPath)) {
-                unlink($zipPath);
-            }
-            $bundleResult = $this->createZipWithProgress($zipPath, $this->displayHost);
-
-            if (! $bundleResult) {
-                $this->error('Failed to create Laravel bundle. Cannot start server.');
-
-                return self::FAILURE;
-            }
-
-            $bundleSize = file_exists($zipPath) ? $this->formatBytes(filesize($zipPath)) : 'unknown';
-            $this->components->twoColumnDetail('Bundle created', $bundleSize);
-        }
-
-        // Start PHP built-in server
-        $this->startPhpServer($host, $httpPort, $zipPath, $openQr);
+        // Start PHP built-in server (serves QR page + proxies to Laravel)
+        $this->startPhpServer($host, $httpPort, $openQr, $bridgePort, $wsPort, $viteProxyPort);
 
         return self::SUCCESS;
     }
@@ -130,7 +126,7 @@ class JumpCommand extends Command
     /**
      * Start PHP's built-in development server with the Jump router
      */
-    private function startPhpServer(string $host, int $httpPort, string $zipPath, bool $openQr): void
+    private function startPhpServer(string $host, int $httpPort, bool $openQr, int $bridgePort = 3002, int $wsPort = 3001, int $viteProxyPort = 3003): void
     {
         $routerPath = __DIR__.'/../../resources/jump/router.php';
 
@@ -142,10 +138,13 @@ class JumpCommand extends Command
 
         // Build environment variables for the router
         $env = [
-            'JUMP_ZIP_PATH' => $zipPath,
             'JUMP_DISPLAY_HOST' => $this->displayHost,
             'JUMP_HTTP_PORT' => (string) $httpPort,
             'JUMP_LARAVEL_PORT' => (string) $this->laravelPort,
+            'JUMP_BRIDGE_PORT' => (string) $bridgePort,
+            'JUMP_WS_PORT' => (string) $wsPort,
+            'JUMP_VITE_PORT' => (string) config('nativephp.server.vite_port', 5173),
+            'JUMP_VITE_PROXY_PORT' => (string) $viteProxyPort,
             'JUMP_BASE_PATH' => base_path(),
             'APP_NAME' => config('app.name', 'Laravel'),
         ];
@@ -157,11 +156,7 @@ class JumpCommand extends Command
         $fullEnv = array_filter($fullEnv, fn ($v) => is_string($v) || is_numeric($v));
 
         $this->displayServerInfo($host, $httpPort, $this->laravelPort);
-
-        // Auto-open browser with QR code
-        if ($openQr) {
-            $this->openBrowser($host, $httpPort);
-        }
+        $this->displayTerminalQrCode($this->displayHost, $httpPort);
 
         // Build the PHP server command
         $phpBinary = PHP_BINARY;
@@ -198,9 +193,10 @@ class JumpCommand extends Command
 
         // Handle signals for graceful shutdown
         if (function_exists('pcntl_signal')) {
-            pcntl_signal(SIGINT, function () use ($process, &$pipes) {
+            $shutdown = function () use ($process, &$pipes) {
                 $this->newLine();
-                $this->components->info('Shutting down server...');
+                $this->components->info('Shutting down...');
+                $this->stopLaravelServer();
                 if (is_resource($pipes[1])) {
                     fclose($pipes[1]);
                 }
@@ -209,17 +205,9 @@ class JumpCommand extends Command
                 }
                 proc_terminate($process);
                 exit(0);
-            });
-            pcntl_signal(SIGTERM, function () use ($process, &$pipes) {
-                if (is_resource($pipes[1])) {
-                    fclose($pipes[1]);
-                }
-                if (is_resource($pipes[2])) {
-                    fclose($pipes[2]);
-                }
-                proc_terminate($process);
-                exit(0);
-            });
+            };
+            pcntl_signal(SIGINT, $shutdown);
+            pcntl_signal(SIGTERM, $shutdown);
         }
 
         // Main loop - read output from the server
@@ -233,8 +221,8 @@ class JumpCommand extends Command
             // Read stdout (PHP server access log)
             $stdout = fgets($pipes[1]);
             if ($stdout) {
-                // Filter out noisy requests
-                if (! str_contains($stdout, 'favicon.ico') && ! str_contains($stdout, '.map')) {
+                // Filter out noisy requests (unless verbose)
+                if ($this->verbose || (! str_contains($stdout, 'favicon.ico') && ! str_contains($stdout, '.map'))) {
                     // Parse and format the output
                     $this->formatServerOutput($stdout);
                 }
@@ -247,6 +235,24 @@ class JumpCommand extends Command
                 if (str_contains($stderr, '[Jump]')) {
                     $message = trim(str_replace('[Jump]', '', $stderr));
                     $this->components->twoColumnDetail('Device', $message);
+                } elseif ($this->verbose) {
+                    $this->line('  <fg=gray>[php] '.trim($stderr).'</>');
+                }
+            }
+
+            // Drain Laravel server output to prevent pipe buffer from filling
+            if ($this->laravelProcess && is_resource($this->laravelProcess)) {
+                if (is_resource($this->laravelPipes[1] ?? null)) {
+                    $laravelStdout = fgets($this->laravelPipes[1]);
+                    if ($laravelStdout && $this->verbose) {
+                        $this->line('  <fg=gray>[laravel] '.trim($laravelStdout).'</>');
+                    }
+                }
+                if (is_resource($this->laravelPipes[2] ?? null)) {
+                    $laravelStderr = fgets($this->laravelPipes[2]);
+                    if ($laravelStderr && $this->verbose) {
+                        $this->line('  <fg=gray>[laravel] '.trim($laravelStderr).'</>');
+                    }
                 }
             }
 
@@ -260,9 +266,147 @@ class JumpCommand extends Command
         }
 
         // Cleanup
+        $this->stopLaravelServer();
         fclose($pipes[1]);
         fclose($pipes[2]);
         proc_close($process);
+    }
+
+    /**
+     * Start the WebSocket bridge server for hybrid mode.
+     * Runs as a background process alongside the HTTP server.
+     */
+    private function startBridgeServer(int $wsPort, int $bridgePort, int $viteProxyPort = 3003): void
+    {
+        $serverPath = __DIR__.'/../../resources/jump/websocket-server.php';
+
+        if (! file_exists($serverPath)) {
+            $this->warn('WebSocket bridge server script not found, skipping hybrid mode support.');
+
+            return;
+        }
+
+        $phpBinary = PHP_BINARY;
+
+        // Write bridge logs to a file the user can tail. Prior versions sent
+        // stderr to /dev/null, which made it impossible to see bridge_call
+        // traffic, device connects, or errors.
+        $logDir = base_path('storage/logs');
+        if (! is_dir($logDir)) {
+            @mkdir($logDir, 0755, true);
+        }
+        $logFile = $logDir.'/jump-bridge.log';
+        @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort} vite_proxy={$viteProxyPort}) ===\n", FILE_APPEND);
+
+        // Run in background (not Workerman daemon mode — it breaks the event loop).
+        // Windows: `&` is a command separator (not "background"), so exec() would
+        // block here forever waiting on the long-lived server. Use `start /B` to
+        // detach properly.
+        if (PHP_OS_FAMILY === 'Windows') {
+            $cmd = sprintf(
+                'start "" /B %s %s %s %d %d %d start >> %s 2>&1',
+                escapeshellarg($phpBinary),
+                escapeshellarg($serverPath),
+                escapeshellarg(base_path()),
+                $wsPort,
+                $bridgePort,
+                $viteProxyPort,
+                escapeshellarg($logFile)
+            );
+            pclose(popen($cmd, 'r'));
+        } else {
+            $cmd = sprintf(
+                '%s %s %s %d %d %d start >> %s 2>&1 &',
+                escapeshellarg($phpBinary),
+                escapeshellarg($serverPath),
+                escapeshellarg(base_path()),
+                $wsPort,
+                $bridgePort,
+                $viteProxyPort,
+                escapeshellarg($logFile)
+            );
+            exec($cmd);
+        }
+
+        // Give it a moment to start
+        usleep(500000);
+
+        $this->components->twoColumnDetail('Bridge log', "tail -f {$logFile}");
+    }
+
+    /**
+     * Start Laravel's artisan serve as a background process.
+     */
+    private function startLaravelServer(int $port, int $bridgePort = 3002, int $wsPort = 3001): void
+    {
+        $phpBinary = PHP_BINARY;
+        $artisan = base_path('artisan');
+
+        $descriptorSpec = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+
+        $cmd = sprintf(
+            '%s %s serve --port=%d --host=127.0.0.1 --no-interaction',
+            escapeshellarg($phpBinary),
+            escapeshellarg($artisan),
+            $port
+        );
+
+        // Pass bridge ports so nativephp_call() (JumpBridge) in Laravel dials the right TCP port.
+        $env = array_merge($_ENV, $_SERVER, [
+            'JUMP_BRIDGE_PORT' => (string) $bridgePort,
+            'JUMP_WS_PORT' => (string) $wsPort,
+        ]);
+        $env = array_filter($env, fn ($v) => is_string($v) || is_numeric($v));
+
+        $this->laravelProcess = proc_open($cmd, $descriptorSpec, $this->laravelPipes, base_path(), $env);
+
+        if (! is_resource($this->laravelProcess)) {
+            $this->error('Failed to start artisan serve');
+
+            return;
+        }
+
+        // Set pipes to non-blocking so we don't hang
+        stream_set_blocking($this->laravelPipes[1], false);
+        stream_set_blocking($this->laravelPipes[2], false);
+        fclose($this->laravelPipes[0]);
+
+        // Wait for Laravel to actually start listening
+        $maxWait = 50; // 5 seconds max
+        for ($i = 0; $i < $maxWait; $i++) {
+            usleep(100000); // 100ms
+            if ($this->isPortInUse($port)) {
+                break;
+            }
+        }
+
+        if (! $this->isPortInUse($port)) {
+            $this->warn('Laravel server may not have started correctly on port '.$port);
+        }
+
+        $this->components->twoColumnDetail('Laravel server', "http://127.0.0.1:{$port}");
+    }
+
+    /**
+     * Stop the managed Laravel server process.
+     */
+    private function stopLaravelServer(): void
+    {
+        if ($this->laravelProcess && is_resource($this->laravelProcess)) {
+            if (is_resource($this->laravelPipes[1] ?? null)) {
+                fclose($this->laravelPipes[1]);
+            }
+            if (is_resource($this->laravelPipes[2] ?? null)) {
+                fclose($this->laravelPipes[2]);
+            }
+            proc_terminate($this->laravelProcess);
+            proc_close($this->laravelProcess);
+            $this->laravelProcess = null;
+        }
     }
 
     /**
@@ -281,9 +425,9 @@ class JumpCommand extends Command
             $method = $matches[4];
             $path = $matches[5];
 
-            // Skip certain paths
-            if (str_contains($path, '/jump/')) {
-                return; // Our internal endpoints
+            // Skip internal endpoints unless verbose
+            if (! $this->verbose && str_contains($path, '/jump/')) {
+                return;
             }
 
             // Color code by status
@@ -291,367 +435,81 @@ class JumpCommand extends Command
                 $this->line("<fg=red>{$method} {$path} [{$status}]</>");
             } elseif ($status >= 300) {
                 $this->line("<fg=yellow>{$method} {$path} [{$status}]</>");
+            } elseif ($method !== 'GET') {
+                // Surface non-GET traffic (Livewire POSTs, form submits) so
+                // you can correlate UI actions with server handlers.
+                $this->line("<fg=cyan>{$method} {$path} [{$status}]</>");
+            } elseif ($this->verbose) {
+                // GET 2xx are silent by default to reduce asset-load noise.
+                $this->line("<fg=gray>{$method} {$path} [{$status}]</>");
             }
-            // Don't log successful requests to reduce noise
+        } elseif ($this->verbose) {
+            // Unrecognized output — show it raw so you don't miss PHP warnings/notices.
+            $this->line('  <fg=gray>'.$output.'</>');
         }
-    }
-
-    private function runNpmBuild(): void
-    {
-        $mode = $this->platform;
-
-        // Check if package.json exists
-        if (! file_exists(base_path('package.json'))) {
-            return;
-        }
-
-        $buildOutput = [];
-        $buildExitCode = 0;
-
-        $this->components->task("Building assets for {$mode}", function () use ($mode, &$buildOutput, &$buildExitCode) {
-            $command = "npm run build -- --mode={$mode}";
-            exec('cd '.escapeshellarg(base_path())." && {$command} 2>&1", $buildOutput, $buildExitCode);
-
-            return $buildExitCode === 0;
-        });
-
-        if ($buildExitCode !== 0 && ! empty($buildOutput)) {
-            $this->line(implode("\n", array_slice($buildOutput, -5)));
-        }
-    }
-
-    private function createZipWithProgress($zipPath, $devHost = null): bool
-    {
-        $source = realpath(base_path());
-        $buildPath = storage_path('app/native-build');
-
-        if (! is_dir($buildPath)) {
-            mkdir($buildPath, 0755, true);
-        }
-
-        $tempDir = $buildPath.DIRECTORY_SEPARATOR.'temp-'.uniqid();
-
-        // Exclude directories - match run command's pattern
-        $excludedDirs = [
-            '.git',
-            '.idea',
-            '.vscode',
-            'node_modules',
-            'storage',
-            'nativephp/ios',
-            'nativephp/android',
-            'vendor/nativephp/mobile/resources',
-            'output',
-            'tests',
-            '.github',
-        ];
-
-        try {
-            // Phase 1: Copy files with progress
-            $this->copyFilesWithProgress($source, $tempDir, $excludedDirs);
-
-            // Copy and clean .env file
-            if (file_exists($source.DIRECTORY_SEPARATOR.'.env')) {
-                $envPath = $tempDir.DIRECTORY_SEPARATOR.'.env';
-                copy($source.DIRECTORY_SEPARATOR.'.env', $envPath);
-                $this->cleanEnvFile($envPath);
-            }
-
-            // Copy native.php bootstrap file
-            $nativePhpSource = __DIR__.'/../../resources/jump/native/native.php';
-            $nativePhpDest = $tempDir.'/native.php';
-            if (file_exists($nativePhpSource)) {
-                copy($nativePhpSource, $nativePhpDest);
-            }
-
-            // Copy artisan.php wrapper
-            $artisanPhpSource = __DIR__.'/../../resources/jump/native/artisan.php';
-            $artisanPhpDest = $tempDir.'/artisan.php';
-            if (file_exists($artisanPhpSource)) {
-                copy($artisanPhpSource, $artisanPhpDest);
-            }
-
-            // Create required Laravel directories
-            $requiredDirs = [
-                'bootstrap/cache',
-                'storage/framework/cache',
-                'storage/framework/sessions',
-                'storage/framework/views',
-                'storage/logs',
-            ];
-            foreach ($requiredDirs as $dir) {
-                $dirPath = $tempDir.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $dir);
-                if (! is_dir($dirPath)) {
-                    mkdir($dirPath, 0755, true);
-                }
-                file_put_contents($dirPath.DIRECTORY_SEPARATOR.'.gitkeep', '');
-            }
-
-            // Add dev server config
-            if ($devHost) {
-                $devServerConfig = [
-                    'host' => $devHost,
-                    'port' => 3000,
-                    'connectedAt' => date('c'),
-                ];
-                file_put_contents(
-                    $tempDir.'/storage/framework/native_dev_server.json',
-                    json_encode($devServerConfig, JSON_PRETTY_PRINT)
-                );
-            }
-
-            // Phase 2: Create zip with progress bar
-            $this->createZipWithProgressBar($tempDir, $zipPath, $excludedDirs);
-
-            // Phase 3: Cleanup
-            $this->cleanupTempDir($tempDir);
-
-            if (! file_exists($zipPath) || filesize($zipPath) === 0) {
-                throw new \Exception('ZIP file was not created or is empty');
-            }
-
-            return true;
-        } catch (\Exception $e) {
-            $this->error('Failed to create bundle: '.$e->getMessage());
-            if (is_dir($tempDir)) {
-                $this->cleanupTempDir($tempDir);
-            }
-
-            return false;
-        }
-    }
-
-    private function copyFilesWithProgress($source, $destination, $excludedDirs = []): void
-    {
-        if (! is_dir($destination)) {
-            mkdir($destination, 0755, true);
-        }
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            $this->copyWithRobocopy($source, $destination, $excludedDirs);
-        } else {
-            $this->copyWithRsync($source, $destination, $excludedDirs);
-        }
-    }
-
-    private function copyWithRobocopy($source, $destination, $excludedDirs = []): void
-    {
-        $excludeArgs = '';
-        foreach ($excludedDirs as $dir) {
-            $dir = ltrim($dir, '/\\');
-            $dir = str_replace('/', '\\', $dir);
-            $excludeArgs .= " /XD \"{$source}\\{$dir}\"";
-        }
-
-        $exitCode = 0;
-        $this->components->task('Copying files', function () use ($source, $destination, $excludeArgs, &$exitCode) {
-            $cmd = "robocopy \"{$source}\" \"{$destination}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}";
-            exec($cmd, $output, $exitCode);
-
-            return $exitCode < 8;
-        });
-
-        if ($exitCode >= 8) {
-            throw new \Exception("Robocopy failed with exit code {$exitCode}");
-        }
-    }
-
-    private function copyWithRsync($source, $destination, $excludedDirs = []): void
-    {
-        $excludedDirs[] = 'vendor/*/vendor';
-        $excludedDirs[] = 'vendor/nativephp/mobile/vendor';
-        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".ltrim($d, '/\\')."'", $excludedDirs));
-
-        $exitCode = 0;
-        $this->components->task('Copying files', function () use ($source, $destination, $excludeFlags, &$exitCode) {
-            $cmd = "rsync -aL {$excludeFlags} \"{$source}/\" \"{$destination}/\"";
-            exec($cmd, $output, $exitCode);
-
-            return $exitCode === 0;
-        });
-
-        if ($exitCode !== 0) {
-            throw new \Exception("rsync failed with exit code {$exitCode}");
-        }
-    }
-
-    private function createZipWithProgressBar($source, $destination, $excludedDirs = []): void
-    {
-        $source = realpath($source);
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            $this->createZipWith7Zip($source, $destination, $excludedDirs);
-        } else {
-            $this->createZipWithZipArchive($source, $destination, $excludedDirs);
-        }
-    }
-
-    private function createZipWithZipArchive($source, $destination, $excludedDirs = []): void
-    {
-        $this->components->task('Creating zip archive', function () use ($source, $destination, $excludedDirs) {
-            $zip = new \ZipArchive;
-            $result = $zip->open($destination, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
-
-            if ($result !== true) {
-                return false;
-            }
-
-            $files = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($source),
-                \RecursiveIteratorIterator::SELF_FIRST
-            );
-
-            foreach ($files as $file) {
-                $filePath = $file->getRealPath();
-                $relativePath = substr($filePath, strlen($source) + 1);
-
-                $shouldSkip = false;
-                foreach ($excludedDirs as $excluded) {
-                    if (strpos($relativePath, $excluded.DIRECTORY_SEPARATOR) === 0 || $relativePath === $excluded) {
-                        $shouldSkip = true;
-                        break;
-                    }
-                }
-
-                if ($shouldSkip || $file->getFilename() === '.' || $file->getFilename() === '..') {
-                    continue;
-                }
-
-                $zipPath = str_replace('\\', '/', $relativePath);
-                if (is_file($filePath)) {
-                    $zip->addFile($filePath, $zipPath);
-                } elseif (is_dir($filePath)) {
-                    $zip->addEmptyDir($zipPath);
-                }
-            }
-
-            $requiredDirs = [
-                'bootstrap/cache',
-                'storage/framework/cache',
-                'storage/framework/sessions',
-                'storage/framework/views',
-                'storage/logs',
-            ];
-
-            foreach ($requiredDirs as $dir) {
-                if (! $zip->statName($dir)) {
-                    $zip->addEmptyDir($dir);
-                }
-            }
-
-            $zip->close();
-
-            return true;
-        });
-    }
-
-    private function createZipWith7Zip($source, $destination, $excludedDirs = []): void
-    {
-        $sevenZip = config('nativephp.android.7zip-location', 'C:\\Program Files\\7-Zip\\7z.exe');
-
-        if (! file_exists($sevenZip)) {
-            $this->error("7-Zip not found at: {$sevenZip}");
-            $this->line('Install 7-Zip from https://7-zip.org or set NATIVEPHP_7ZIP_LOCATION in your .env');
-            throw new \Exception('7-Zip not found');
-        }
-
-        if (file_exists($destination)) {
-            unlink($destination);
-        }
-
-        $exitCode = 0;
-        $this->components->task('Creating zip archive', function () use ($sevenZip, $source, $destination, &$exitCode) {
-            $cmd = "\"{$sevenZip}\" a -tzip \"{$destination}\" \"{$source}\\*\" -xr!node_modules";
-            exec($cmd, $output, $exitCode);
-
-            return $exitCode === 0;
-        });
-
-        if ($exitCode !== 0) {
-            throw new \Exception("7-Zip failed with exit code {$exitCode}");
-        }
-
-        if (! file_exists($destination) || filesize($destination) === 0) {
-            throw new \Exception('7-Zip failed to create the archive');
-        }
-    }
-
-    private function cleanEnvFile($envPath)
-    {
-        if (! file_exists($envPath)) {
-            return;
-        }
-
-        $content = file_get_contents($envPath);
-        $lines = explode("\n", $content);
-        $cleanedLines = [];
-
-        foreach ($lines as $line) {
-            if (preg_match('/^(DB_|MAIL_|AWS_|PUSHER_|REDIS_)/', trim($line))) {
-                continue;
-            }
-            $cleanedLines[] = $line;
-        }
-
-        file_put_contents($envPath, implode("\n", $cleanedLines));
-    }
-
-    private function cleanupTempDir($tempDir)
-    {
-        if (! is_dir($tempDir)) {
-            return;
-        }
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            exec("rmdir /s /q \"{$tempDir}\" 2>NUL", $output, $exitCode);
-            if ($exitCode === 0) {
-                return;
-            }
-        } else {
-            exec('rm -rf '.escapeshellarg($tempDir));
-
-            return;
-        }
-
-        $this->recursiveDelete($tempDir);
-    }
-
-    private function recursiveDelete($dir)
-    {
-        if (! is_dir($dir)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::CHILD_FIRST
-        );
-
-        foreach ($files as $file) {
-            if ($file->isDir()) {
-                rmdir($file->getRealPath());
-            } else {
-                unlink($file->getRealPath());
-            }
-        }
-
-        rmdir($dir);
-    }
-
-    private function formatBytes($bytes)
-    {
-        $units = ['B', 'KB', 'MB', 'GB'];
-        $bytes = max($bytes, 0);
-        $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
-        $pow = min($pow, count($units) - 1);
-        $bytes /= (1 << (10 * $pow));
-
-        return round($bytes, 2).' '.$units[$pow];
     }
 
     private function displayServerInfo($host, $httpPort, $laravelPort)
     {
         $this->components->twoColumnDetail('Server running', 'Press Ctrl+C to stop');
+    }
+
+    /**
+     * Display a QR code in the terminal using Unicode block characters.
+     * Scannable with the phone's native camera — opens the Jump app via deep link.
+     */
+    private function displayTerminalQrCode(string $host, int $port): void
+    {
+        try {
+            if (! class_exists(Builder::class)) {
+                return;
+            }
+
+            $qrData = "jump://connect?host={$host}&port={$port}";
+
+            $result = (new Builder(
+                data: $qrData,
+                size: 300,
+                margin: 2,
+            ))->build();
+
+            $matrix = $result->getMatrix();
+            $size = $matrix->getBlockCount();
+
+            $this->newLine();
+            $this->line('  <fg=white;bg=black>Scan with your camera to open in Jump</>');
+            $this->newLine();
+
+            // Render two rows at a time using Unicode half-block characters:
+            // ▀ (upper half) = top black, bottom white
+            // ▄ (lower half) = top white, bottom black
+            // █ (full block) = both black
+            //   (space)      = both white
+            for ($y = 0; $y < $size; $y += 2) {
+                $line = '  '; // left margin
+                for ($x = 0; $x < $size; $x++) {
+                    $top = $matrix->getBlockValue($x, $y);
+                    $bottom = ($y + 1 < $size) ? $matrix->getBlockValue($x, $y + 1) : 0;
+
+                    if ($top && $bottom) {
+                        $line .= '█';
+                    } elseif ($top && ! $bottom) {
+                        $line .= '▀';
+                    } elseif (! $top && $bottom) {
+                        $line .= '▄';
+                    } else {
+                        $line .= ' ';
+                    }
+                }
+                $this->line($line);
+            }
+
+            $this->newLine();
+            $this->line("  <fg=gray>{$qrData}</>");
+            $this->newLine();
+        } catch (\Throwable $e) {
+            // QR display is optional — don't break the server
+        }
     }
 
     private function getAllLocalIpAddresses(): array
@@ -794,65 +652,25 @@ APPLESCRIPT;
         }
     }
 
-    private function killExistingServers()
-    {
-        $currentPid = getmypid();
-
-        if (PHP_OS_FAMILY === 'Windows') {
-            // Kill PHP servers running the jump router
-            $output = shell_exec('wmic process where "commandline like \'%router.php%\'" get processid 2>NUL');
-            if (! $output) {
-                $output = shell_exec('powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like \'*router.php*\' } | Select-Object -ExpandProperty ProcessId" 2>NUL');
-            }
-
-            if ($output) {
-                $pids = array_filter(preg_split('/\s+/', trim($output)), function ($pid) use ($currentPid) {
-                    return is_numeric($pid) && $pid != $currentPid && ! empty($pid);
-                });
-
-                if (count($pids) > 0) {
-                    $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
-                        foreach ($pids as $pid) {
-                            exec("taskkill /F /PID {$pid} 2>NUL");
-                        }
-                        usleep(500000);
-
-                        return true;
-                    });
-                }
-            }
-        } else {
-            // Unix: Kill PHP servers running the jump router
-            $output = shell_exec("pgrep -f 'router.php' 2>/dev/null");
-
-            if ($output) {
-                $pids = array_filter(explode("\n", trim($output)));
-                $pids = array_filter($pids, function ($pid) use ($currentPid) {
-                    return $pid != $currentPid && ! empty($pid);
-                });
-
-                if (count($pids) > 0) {
-                    $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
-                        foreach ($pids as $pid) {
-                            exec("kill -9 {$pid} 2>/dev/null");
-                        }
-                        usleep(500000);
-
-                        return true;
-                    });
-                }
-            }
-        }
-    }
-
     private function isPortInUse($port)
     {
+        // Connect-test: does anything accept on this port right now?
         $connection = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
         if ($connection) {
             fclose($connection);
 
             return true;
         }
+
+        // Bind-test: catches ports held by a process that isn't accepting
+        // (stuck/half-dead Windows servers, TIME_WAIT, bound-but-not-listening).
+        // fsockopen alone missed these, which is why a previous run's artisan
+        // serve on 8000 could fool us into picking 8000 again.
+        $socket = @stream_socket_server("tcp://127.0.0.1:{$port}", $errno, $errstr);
+        if ($socket === false) {
+            return true;
+        }
+        fclose($socket);
 
         return false;
     }

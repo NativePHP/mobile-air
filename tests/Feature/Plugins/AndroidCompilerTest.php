@@ -656,6 +656,305 @@ object TestFunctions {
     }
 
     /**
+     * @test
+     *
+     * Should add meta-data entries inside a service component using value attribute.
+     */
+    public function it_adds_meta_data_with_value_inside_service(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.MyService',
+                        'exported' => false,
+                        'meta_data' => [
+                            ['name' => 'com.example.API_KEY', 'value' => 'abc123'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<service', $content);
+        $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="abc123" />', $content);
+        // Service should use closing tag (not self-closing) when it has nested content
+        $this->assertStringContainsString('</service>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Should add meta-data entries inside a service component using resource attribute.
+     */
+    public function it_adds_meta_data_with_resource_inside_service(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.MyService',
+                        'exported' => false,
+                        'meta_data' => [
+                            ['name' => 'com.example.ICON', 'resource' => '@drawable/icon'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<meta-data android:name="com.example.ICON" android:resource="@drawable/icon" />', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Should handle boolean values in service meta-data.
+     */
+    public function it_handles_boolean_values_in_service_meta_data(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.MyService',
+                        'exported' => false,
+                        'meta_data' => [
+                            ['name' => 'com.example.ENABLED', 'value' => true],
+                            ['name' => 'com.example.DEBUG', 'value' => false],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('android:value="true"', $content);
+        $this->assertStringContainsString('android:value="false"', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Should support kebab-case meta-data key in service definitions.
+     */
+    public function it_supports_kebab_case_meta_data_key_in_service(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.MyService',
+                        'exported' => false,
+                        'meta-data' => [
+                            ['name' => 'com.example.SETTING', 'value' => 'kebab-works'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<meta-data android:name="com.example.SETTING" android:value="kebab-works" />', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Should support both intent-filters and meta-data nested inside a service.
+     */
+    public function it_supports_both_intent_filters_and_meta_data_in_service(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.MyService',
+                        'exported' => true,
+                        'intent_filters' => [
+                            [
+                                'action' => 'com.example.ACTION',
+                                'category' => 'android.intent.category.DEFAULT',
+                            ],
+                        ],
+                        'meta_data' => [
+                            ['name' => 'com.example.API_KEY', 'value' => 'abc123'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<intent-filter>', $content);
+        $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="abc123" />', $content);
+        $this->assertStringContainsString('</service>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Service without meta-data or intent-filters should remain self-closing.
+     */
+    public function it_keeps_service_self_closing_without_nested_content(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.SimpleService',
+                        'exported' => false,
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('com.example.SimpleService', $content);
+        // Self-closing service tag
+        $this->assertMatchesRegularExpression('/<service[^>]*\/>/', $content);
+        $this->assertStringNotContainsString('</service>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Resource attribute should take precedence over value in service meta-data.
+     */
+    public function it_prefers_resource_over_value_in_service_meta_data(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.MyService',
+                        'exported' => false,
+                        'meta_data' => [
+                            ['name' => 'com.example.ICON', 'resource' => '@drawable/icon', 'value' => 'ignored'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        // Resource should be used, not value
+        $this->assertStringContainsString('android:resource="@drawable/icon"', $content);
+        $this->assertStringNotContainsString('android:value="ignored"', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Should handle multiple meta-data entries inside a single service.
+     */
+    public function it_handles_multiple_meta_data_entries_in_service(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'services' => [
+                    [
+                        'name' => 'com.example.MyService',
+                        'exported' => false,
+                        'meta_data' => [
+                            ['name' => 'com.example.KEY_ONE', 'value' => 'first'],
+                            ['name' => 'com.example.KEY_TWO', 'value' => 'second'],
+                            ['name' => 'com.example.KEY_THREE', 'resource' => '@string/third'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('android:name="com.example.KEY_ONE" android:value="first"', $content);
+        $this->assertStringContainsString('android:name="com.example.KEY_TWO" android:value="second"', $content);
+        $this->assertStringContainsString('android:name="com.example.KEY_THREE" android:resource="@string/third"', $content);
+    }
+
+    /**
      * Helper method to create a test Plugin instance.
      */
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin

@@ -152,7 +152,7 @@ class Runtime
         $output = new BufferedOutput;
 
         // Parse command and arguments
-        $parts = str_getcsv($command, ' ');
+        $parts = str_getcsv($command, ' ', '"', '\\');
         $commandName = array_shift($parts);
 
         $params = ['command' => $commandName];

@@ -382,13 +382,13 @@ XML;
 
     private function updateIcuConfiguration(): void
     {
-        $jsonPath = base_path('nativephp.json');
+        $lockPath = base_path('nativephp.lock');
 
-        if (! file_exists($jsonPath)) {
+        if (! file_exists($lockPath)) {
             return;
         }
 
-        $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+        $nativephp = json_decode(file_get_contents($lockPath), true) ?? [];
 
         if (empty($nativephp['php']['icu'])) {
             return;

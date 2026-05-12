@@ -163,6 +163,7 @@ class PHPWebViewClient(
         }
 
         val headers = HashMap<String, String>(request.requestHeaders)
+        headers.remove("X-NativePHP-Req-Id")
 
         // ✅ Apply CSRF token and cookies
         LaravelSecurity.applyToHeaders(headers)

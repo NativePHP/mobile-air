@@ -67,10 +67,13 @@ final class DeepLinkRouter {
 
         DebugLogger.shared.log("🔗 Normalized to: \(newURLString)")
         
-        // 3. Either redirect immediately or store for later
+        // 3. Either navigate immediately or store for later
         if isWebViewReady && isPhpReady {
-            DebugLogger.shared.log("🔗 Both ready, redirecting immediately")
-            redirectToURL(newURLString)
+            // App is already running — use Inertia router for SPA navigation
+            // This prevents Inertia from returning raw JSON on subsequent navigations
+            // (e.g. second OAuth login after logout)
+            DebugLogger.shared.log("🔗 Both ready, navigating with Inertia")
+            navigateWithInertia(normalizedRoute)
         } else {
             DebugLogger.shared.log("🔗 Not ready, storing as pending URL")
             // Store the URL to handle once both WebView and PHP are ready
@@ -86,5 +89,19 @@ final class DeepLinkRouter {
             userInfo: ["url": urlString]
         )
         DebugLogger.shared.log("🔗 redirectToURL() notification posted successfully")
+    }
+
+    /// Navigate using Inertia router when the app is already running.
+    /// Uses the path (not the full php:// URL) so window.router.visit() works correctly.
+    private func navigateWithInertia(_ path: String) {
+        DebugLogger.shared.log("🔗 navigateWithInertia() posting notification for path: \(path)")
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .navigateWithInertiaNotification,
+                object: nil,
+                userInfo: ["path": path]
+            )
+        }
+        DebugLogger.shared.log("🔗 navigateWithInertia() notification posted")
     }
 }

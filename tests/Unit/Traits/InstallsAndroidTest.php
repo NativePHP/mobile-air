@@ -98,7 +98,7 @@ class InstallsAndroidTest extends TestCase
         $this->assertFileExists($androidPath.'/new.txt');
     }
 
-    public function test_install_php_android_with_icu_json()
+    public function test_install_php_android_with_icu_lock()
     {
         $this->mockConfirm('➕ Include ICU-enabled PHP binary? (~30MB extra)', true);
 
@@ -106,15 +106,15 @@ class InstallsAndroidTest extends TestCase
         $destination = $this->testProjectPath.'/nativephp/android/app/src/main';
         File::makeDirectory($destination, 0755, true);
 
-        // ICU preference is now stored in nativephp.json by InstallCommand
-        $jsonPath = $this->testProjectPath.'/nativephp.json';
-        File::put($jsonPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
+        // ICU preference is now stored in nativephp.lock by InstallCommand
+        $lockPath = $this->testProjectPath.'/nativephp.lock';
+        File::put($lockPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
 
-        $data = json_decode(File::get($jsonPath), true);
+        $data = json_decode(File::get($lockPath), true);
         $this->assertTrue($data['php']['icu']);
     }
 
-    public function test_install_php_android_without_icu_json()
+    public function test_install_php_android_without_icu_lock()
     {
         $this->mockConfirm('➕ Include ICU-enabled PHP binary? (~30MB extra)', false);
 
@@ -122,11 +122,11 @@ class InstallsAndroidTest extends TestCase
         $destination = $this->testProjectPath.'/nativephp/android/app/src/main';
         File::makeDirectory($destination, 0755, true);
 
-        // ICU preference is now stored in nativephp.json by InstallCommand
-        $jsonPath = $this->testProjectPath.'/nativephp.json';
-        File::put($jsonPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => false]]));
+        // ICU preference is now stored in nativephp.lock by InstallCommand
+        $lockPath = $this->testProjectPath.'/nativephp.lock';
+        File::put($lockPath, json_encode(['php' => ['version' => '8.4.7', 'icu' => false]]));
 
-        $data = json_decode(File::get($jsonPath), true);
+        $data = json_decode(File::get($lockPath), true);
         $this->assertFalse($data['php']['icu']);
     }
 

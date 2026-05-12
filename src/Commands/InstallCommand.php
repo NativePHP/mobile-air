@@ -5,7 +5,6 @@ namespace Native\Mobile\Commands;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\File;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\InstallsAndroid;
 use Native\Mobile\Traits\InstallsIos;
@@ -131,7 +130,8 @@ class InstallCommand extends Command
 
         $this->callSilently('vendor:publish', ['--tag' => 'nativephp-mobile-config']);
 
-        // Fetch PHP binary manifest once for all platforms
+        $this->migrateLegacyNativephpJson();
+
         $shouldInstallPhp = ! ($this->option('skip-php') && ! $this->forcing);
 
         if ($shouldInstallPhp) {
@@ -147,10 +147,9 @@ class InstallCommand extends Command
             $this->setupIos();
         }
 
-        // Record the installed PHP version and ICU preference
         if ($shouldInstallPhp && $this->versionsManifest) {
             $includeIcu = (bool) $this->option('with-icu');
-            $this->writeNativephpJson($this->phpVersion, $includeIcu);
+            $this->writeNativephpLock($this->phpVersion, $includeIcu);
         }
 
         file_put_contents($path.DIRECTORY_SEPARATOR.'.gitignore', '*'.PHP_EOL);
@@ -253,6 +252,24 @@ class InstallCommand extends Command
         return implode('', $selected);
     }
 
+    protected function setEnvValue(string $key, string $value): void
+    {
+        $envPath = base_path('.env');
+        $envContents = file_exists($envPath) ? file_get_contents($envPath) : '';
+
+        $pattern = "/^{$key}=.*$/m";
+
+        if (preg_match($pattern, $envContents)) {
+            // Update existing value
+            $envContents = preg_replace($pattern, "{$key}={$value}", $envContents);
+        } else {
+            // Append new value
+            $envContents = rtrim($envContents)."\n\n{$key}={$value}\n";
+        }
+
+        file_put_contents($envPath, $envContents);
+    }
+
     protected function getBinaryBranch(): string
     {
         return env('NATIVEPHP_BIN_BRANCH', 'main');
@@ -277,25 +294,27 @@ class InstallCommand extends Command
     {
         $supported = ['8.5', '8.4', '8.3'];
 
-        // Check nativephp.json first (committed by the user or written by a previous install)
-        $jsonPath = base_path('nativephp.json');
-        if (file_exists($jsonPath)) {
-            $config = json_decode(file_get_contents($jsonPath), true);
-            $configVersion = $config['php']['version'] ?? null;
+        // Check nativephp.lock first (committed by the user or written by a previous install)
+        $lockPath = base_path('nativephp.lock');
+        if (file_exists($lockPath)) {
+            $lock = json_decode(file_get_contents($lockPath), true) ?? [];
+            $lockVersion = $lock['php']['version'] ?? null;
 
-            if ($configVersion && in_array($configVersion, $supported)) {
-                return $configVersion;
+            if (is_string($lockVersion)) {
+                $minor = implode('.', array_slice(explode('.', $lockVersion), 0, 2));
+                if (in_array($minor, $supported, true)) {
+                    return $minor;
+                }
             }
         }
 
-        // Fall back to the running PHP version
+        // Fall back to the host PHP — Composer resolves against it.
         $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
 
-        if (in_array($minor, $supported)) {
+        if (in_array($minor, $supported, true)) {
             return $minor;
         }
 
-        // Find highest supported version <= running version
         foreach ($supported as $version) {
             if (version_compare($minor, $version, '>=')) {
                 return $version;
@@ -305,37 +324,31 @@ class InstallCommand extends Command
         return '8.3';
     }
 
-    protected function writeNativephpJson(string $version, bool $icu): void
+    protected function writeNativephpLock(string $minor, bool $icu): void
     {
-        $jsonPath = base_path('nativephp.json');
+        $lockPath = base_path('nativephp.lock');
+        $fullVersion = $this->versionsManifest['versions'][$minor]['php_version'] ?? $minor;
 
-        $data = file_exists($jsonPath)
-            ? json_decode(file_get_contents($jsonPath), true) ?? []
+        $data = file_exists($lockPath)
+            ? json_decode(file_get_contents($lockPath), true) ?? []
             : [];
 
         $data['php'] = [
-            'version' => $version,
+            'version' => $fullVersion,
             'icu' => $icu,
         ];
 
-        file_put_contents($jsonPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+        file_put_contents($lockPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
     }
 
-    protected function setEnvValue(string $key, string $value): void
+    protected function migrateLegacyNativephpJson(): void
     {
-        $envPath = base_path('.env');
-        $envContents = file_exists($envPath) ? file_get_contents($envPath) : '';
+        $legacyPath = base_path('nativephp.json');
 
-        $pattern = "/^{$key}=.*$/m";
-
-        if (preg_match($pattern, $envContents)) {
-            // Update existing value
-            $envContents = preg_replace($pattern, "{$key}={$value}", $envContents);
-        } else {
-            // Append new value
-            $envContents = rtrim($envContents)."\n\n{$key}={$value}\n";
+        if (! file_exists($legacyPath)) {
+            return;
         }
 
-        file_put_contents($envPath, $envContents);
+        @unlink($legacyPath);
     }
 }
