@@ -611,20 +611,20 @@ class AndroidPluginCompiler
 
         // Build nested content (intent-filters and meta-data)
         $nestedContent = '';
-        
+
         // Support both snake_case and kebab-case for intent filters
         $intentFilters = $service['intent_filters'] ?? $service['intent-filters'] ?? [];
-        if (!empty($intentFilters)) {
+        if (! empty($intentFilters)) {
             $nestedContent .= $this->buildIntentFilters($intentFilters);
         }
-        
+
         // Add meta-data support at service level
         $metaData = $service['meta_data'] ?? $service['meta-data'] ?? [];
-        if (!empty($metaData)) {
+        if (! empty($metaData)) {
             $nestedContent .= $this->buildComponentMetaData($metaData);
         }
 
-        if (!empty($nestedContent)) {
+        if (! empty($nestedContent)) {
             return "<service\n            {$attrString}>\n{$nestedContent}        </service>";
         }
 
@@ -637,12 +637,12 @@ class AndroidPluginCompiler
     protected function buildComponentMetaData(array $metaDataEntries): string
     {
         $xml = '';
-        
+
         foreach ($metaDataEntries as $metaData) {
             $name = $metaData['name'];
             $value = $metaData['value'] ?? null;
             $resource = $metaData['resource'] ?? null;
-            
+
             if ($resource !== null) {
                 $xml .= "            <meta-data android:name=\"{$name}\" android:resource=\"{$resource}\" />\n";
             } elseif ($value !== null) {
@@ -652,7 +652,7 @@ class AndroidPluginCompiler
                 $xml .= "            <meta-data android:name=\"{$name}\" android:value=\"{$value}\" />\n";
             }
         }
-        
+
         return $xml;
     }
 
