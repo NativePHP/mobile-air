@@ -184,7 +184,19 @@ class NativeServiceProvider extends PackageServiceProvider
         }
 
         $blade = app('blade.compiler');
-        $blade->precompiler(new NativeTagPrecompiler);
+
+        // Build the bare-tag allowlist from registered element types so
+        // `<column>` / `<row>` / `<button>` etc. compile the same way as
+        // `<native:column>` / `<native:row>` / `<native:button>`. Types
+        // are snake_case (`scroll_view`) and tags are kebab-case
+        // (`scroll-view`) — convert here and the precompiler matches on
+        // the kebab form like it already does for the prefixed syntax.
+        $shortFormTags = array_map(
+            fn (string $type) => str_replace('_', '-', $type),
+            array_keys(ElementRegistry::all()),
+        );
+
+        $blade->precompiler(new NativeTagPrecompiler($shortFormTags));
 
         Route::macro('native', function (string $uri, string $componentClass) {
             NativeRouter::register($uri, $componentClass);
@@ -538,6 +550,10 @@ class NativeServiceProvider extends PackageServiceProvider
             'side_nav_item' => Elements\SideNavItem::class,
             'side_nav_group' => Elements\SideNavGroup::class,
             'side_nav_header' => Elements\SideNavHeader::class,
+
+            // Gesture / interaction
+            'gesture_area' => Elements\GestureArea::class,
+            'refreshable'  => Elements\Refreshable::class,
 
             // Canvas/shapes
             'canvas' => Elements\Canvas::class,

@@ -50,7 +50,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $darkProps = static::buildDarkProps($attrs);
+            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -63,7 +63,7 @@ class NativeElementCollector
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
-                ! empty($darkProps) ? $darkProps : null,
+                ! empty($props) ? $props : null,
                 $onPress,
                 $onLongPress,
             );
@@ -119,7 +119,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $darkProps = static::buildDarkProps($attrs);
+            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -127,7 +127,7 @@ class NativeElementCollector
                 $type,
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
-                ! empty($darkProps) ? $darkProps : null,
+                ! empty($props) ? $props : null,
                 $onPress,
                 $onLongPress,
             );
@@ -296,13 +296,92 @@ class NativeElementCollector
             $style['border_color'] = $attrs['borderColor'];
         }
         if (isset($attrs['opacity'])) {
-            $style['opacity'] = (float) $attrs['opacity'];
+            // SharedValue opacity is handled by `buildAnimationProps`
+            // — leave style.opacity at 1.0 here so the prop-bag
+            // binding wins on the native side.
+            if (! ($attrs['opacity'] instanceof SharedValue)) {
+                $style['opacity'] = (float) $attrs['opacity'];
+            }
         }
         if (isset($attrs['elevation'])) {
             $style['elevation'] = (float) $attrs['elevation'];
         }
 
         return $style;
+    }
+
+    /**
+     * Extract animation + transform props from attrs so they ride
+     * through to the renderer for builtin elements like
+     * `<native:column>`. Without this they'd be silently dropped — the
+     * builtin paths only forward layout/style/dark/callbacks.
+     *
+     * Plugin elements pick these up via their own `applyAttributes` and
+     * don't need this helper.
+     *
+     * Supported props:
+     *   - `animate-duration` (ms float, > 0 enables animation)
+     *   - `animate-easing`   (string: linear / ease-in / ease-out / ease-in-out)
+     *   - `translate-x` / `translate-y` (points, offset from layout position)
+     *   - `scale`            (uniform scale factor, 1.0 = identity)
+     *   - `rotate`           (degrees)
+     */
+    public static function buildAnimationProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['animate-duration'])) {
+            $props['animate-duration'] = (float) $attrs['animate-duration'];
+        }
+        if (isset($attrs['animate-easing'])) {
+            $props['animate-easing'] = (string) $attrs['animate-easing'];
+        }
+        if (isset($attrs['animate-loop'])) {
+            $val = $attrs['animate-loop'];
+            $props['animate-loop'] = is_string($val)
+                ? in_array(strtolower($val), ['true', '1', 'yes'], true)
+                : (bool) $val;
+        }
+
+        // Transform props — each may be a literal number or a
+        // `SharedValue` instance bound to a gesture. When it's a
+        // SharedValue, write both the initial value (for static
+        // fallback) AND a companion `{key}_sv` string that the native
+        // renderer parses to subscribe to live updates.
+        foreach (['translate-x', 'translate-y', 'scale', 'rotate'] as $key) {
+            if (! isset($attrs[$key])) continue;
+            $value = $attrs[$key];
+            if ($value instanceof SharedValue) {
+                $props[$key] = $value->value();         // initial / current snapshot
+                $props[$key.'_sv'] = (string) $value;   // wire-encoded binding
+            } else {
+                $props[$key] = (float) $value;
+            }
+        }
+
+        // Opacity is normally a Style prop, but when it's bound to a
+        // SharedValue we route the binding through the prop bag here
+        // (and `buildStyleArray` zeroes out style.opacity so it's a
+        // no-op there). `NodeAnimationModifier` checks `opacity_sv`
+        // and reads it from the store.
+        if (isset($attrs['opacity']) && $attrs['opacity'] instanceof SharedValue) {
+            $props['opacity_sv'] = (string) $attrs['opacity'];
+        }
+
+        // Press feedback — native-thread tap response (no PHP roundtrip).
+        // Identity values (1.0 scale, 1.0 opacity, 0 translate) mean
+        // "not configured"; the renderer treats any non-default as opt-in.
+        if (isset($attrs['press-scale'])) {
+            $props['press-scale'] = (float) $attrs['press-scale'];
+        }
+        if (isset($attrs['press-opacity'])) {
+            $props['press-opacity'] = (float) $attrs['press-opacity'];
+        }
+        if (isset($attrs['press-translate-y'])) {
+            $props['press-translate-y'] = (float) $attrs['press-translate-y'];
+        }
+
+        return $props;
     }
 
     /**
@@ -479,6 +558,13 @@ class NativeElementCollector
             $element->mergeDarkProps($darkProps);
         }
 
+        // Animation props — push through `setProp` so builtin elements
+        // (column/row/stack/etc.) pick up `animate-duration`,
+        // `animate-easing`, etc. without needing per-element wiring.
+        foreach (static::buildAnimationProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+
         return $element;
     }
 
@@ -599,7 +685,10 @@ class NativeElementCollector
         if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
             $element->border((float) $attrs['borderWidth'], $attrs['borderColor']);
         }
-        if (isset($attrs['opacity'])) {
+        if (isset($attrs['opacity']) && ! ($attrs['opacity'] instanceof SharedValue)) {
+            // SharedValue-bound opacity is routed through the prop bag
+            // (`opacity_sv`) by `buildAnimationProps` — skip the style
+            // setter here so the binding wins on the native side.
             $element->opacity((float) $attrs['opacity']);
         }
         if (isset($attrs['elevation'])) {

@@ -124,7 +124,18 @@ struct NodeView: View, Equatable {
                 safeAreaBottom: safeAreaBottom
             ))
             .modifier(NodeStyleModifier(style: node.style, props: node.props, nodeType: node.type))
+            // Animation modifier runs AFTER style so it sees the resolved
+            // opacity. No-op when `animate-duration` is not set, so the
+            // hot path is unchanged for non-animated nodes.
+            .modifier(NodeAnimationModifier(style: node.style, props: node.props))
+            // Gesture FIRST (inner) — onTapGesture must be attached
+            // before any simultaneousGesture wrapper or the tap is
+            // starved by SwiftUI's gesture composition.
             .modifier(NodeGestureModifier(node: node))
+            // Press feedback LAST (outer) — simultaneousGesture wraps
+            // the tap and runs alongside it for press-in/press-out
+            // tracking. No-op when no `press-*` prop is set.
+            .modifier(NodePressFeedbackModifier(props: node.props))
     }
 
     // MARK: - Content Dispatch (via plugin registry)

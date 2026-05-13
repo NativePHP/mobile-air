@@ -1,5 +1,20 @@
 package com.nativephp.mobile.ui.nativerender
 
+import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -8,9 +23,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 
 /**
@@ -84,13 +103,170 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         // overflow the rounded shape.
         val hasPress = node.onPress != 0 || node.onLongPress != 0
         val radius = node.style?.borderRadius ?: 0f
+
+        // ── Phase 1a/1b — animation + transform value resolution ─────
+        val animateDuration = node.props.getFloat("animate-duration", 0f)
+        val animateLoop = node.props.getBool("animate-loop")
+
+        // SharedValue bindings (companion `_sv` props) take precedence
+        // over literals. The `evaluate` call is @Composable — its
+        // mutableState read subscribes the caller to recomposition.
+        val txRef = node.props.getString("translate-x_sv", "")
+        val tyRef = node.props.getString("translate-y_sv", "")
+        val scRef = node.props.getString("scale_sv", "")
+        val rtRef = node.props.getString("rotate_sv", "")
+        val opRef = node.props.getString("opacity_sv", "")
+
+        val translateX = if (txRef.isNotEmpty()) SharedValueStore.evaluate(txRef) ?: 0f
+                         else node.props.getFloat("translate-x", 0f)
+        val translateY = if (tyRef.isNotEmpty()) SharedValueStore.evaluate(tyRef) ?: 0f
+                         else node.props.getFloat("translate-y", 0f)
+        val scaleVal   = if (scRef.isNotEmpty()) SharedValueStore.evaluate(scRef) ?: 1f
+                         else node.props.getFloat("scale", 1f)
+        val rotateVal  = if (rtRef.isNotEmpty()) SharedValueStore.evaluate(rtRef) ?: 0f
+                         else node.props.getFloat("rotate", 0f)
+
+        val hasTransforms = translateX != 0f || translateY != 0f
+            || scaleVal != 1f || rotateVal != 0f
+        val hasSharedBinding = txRef.isNotEmpty() || tyRef.isNotEmpty()
+            || scRef.isNotEmpty() || rtRef.isNotEmpty() || opRef.isNotEmpty()
+        val needsAnimLayer = animateDuration > 0f || hasTransforms || animateLoop || hasSharedBinding
+
+        // Compute animated values upfront so we can build the modifier
+        // chain in the correct order below (graphicsLayer must come
+        // BEFORE nodeStyle so transforms + alpha wrap the bg, not just
+        // the inner content — same reason `.contentShape` doesn't help
+        // here: it's a draw-layer issue, not a hit-test one).
+        var animAlpha = 1f
+        var animTx = 0f
+        var animTy = 0f
+        var animScale = 1f
+        var animRotate = 0f
+        var applyAnimAlpha = false
+
+        if (needsAnimLayer) {
+            val style = node.style
+            val darkOpacity = if (isDarkMode) node.props.getFloat("dark_opacity", 0f) else 0f
+            val literalOpacity = when {
+                darkOpacity > 0f -> darkOpacity
+                style != null -> style.opacity
+                else -> 1f
+            }
+            val targetOpacity = if (opRef.isNotEmpty()) SharedValueStore.evaluate(opRef) ?: literalOpacity
+                                else literalOpacity
+            val easingName = node.props.getString("animate-easing", "ease-in-out")
+            val isSpring = easingName == "spring"
+            val easing: Easing = when (easingName) {
+                "linear"      -> LinearEasing
+                "ease-in"     -> FastOutLinearInEasing
+                "ease-out"    -> LinearOutSlowInEasing
+                "ease-in-out" -> FastOutSlowInEasing
+                else          -> FastOutSlowInEasing
+            }
+            val effectiveMs = if (animateDuration > 0f) animateDuration.toInt() else 600
+
+            // `animate-easing="spring"` uses Compose's spring physics
+            // instead of a tween, to match SwiftUI's `.spring(...)`.
+            // Duration on spring is approximate — the dampingRatio /
+            // stiffness drive the actual feel.
+            fun <T> oneShotSpec(): androidx.compose.animation.core.AnimationSpec<T> =
+                if (isSpring) spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+                else tween(durationMillis = animateDuration.toInt().coerceAtLeast(1), easing = easing)
+
+            if (animateLoop) {
+                val infinite = rememberInfiniteTransition(label = "node_loop")
+                // `infiniteRepeatable` only accepts duration-based specs,
+                // so `spring` falls back to a tween for loop mode —
+                // springs have natural completion, the "yoyo" repeat
+                // wouldn't have a meaningful spring shape anyway.
+                val loopSpec = infiniteRepeatable<Float>(
+                    animation = tween(durationMillis = effectiveMs, easing = easing),
+                    repeatMode = RepeatMode.Reverse,
+                )
+                animAlpha   = infinite.animateFloat(initialValue = 1f, targetValue = targetOpacity, animationSpec = loopSpec, label = "loop_alpha").value
+                animTx      = infinite.animateFloat(initialValue = 0f, targetValue = translateX,    animationSpec = loopSpec, label = "loop_tx").value
+                animTy      = infinite.animateFloat(initialValue = 0f, targetValue = translateY,    animationSpec = loopSpec, label = "loop_ty").value
+                animScale   = infinite.animateFloat(initialValue = 1f, targetValue = scaleVal,      animationSpec = loopSpec, label = "loop_scale").value
+                animRotate  = infinite.animateFloat(initialValue = 0f, targetValue = rotateVal,     animationSpec = loopSpec, label = "loop_rotate").value
+                applyAnimAlpha = true
+            } else {
+                val spec: androidx.compose.animation.core.AnimationSpec<Float> = oneShotSpec()
+                animAlpha   = animateFloatAsState(targetValue = targetOpacity, animationSpec = spec, label = "node_alpha").value
+                animTx      = animateFloatAsState(targetValue = translateX,    animationSpec = spec, label = "node_tx").value
+                animTy      = animateFloatAsState(targetValue = translateY,    animationSpec = spec, label = "node_ty").value
+                animScale   = animateFloatAsState(targetValue = scaleVal,      animationSpec = spec, label = "node_scale").value
+                animRotate  = animateFloatAsState(targetValue = rotateVal,     animationSpec = spec, label = "node_rotate").value
+                applyAnimAlpha = animateDuration > 0f || opRef.isNotEmpty()
+            }
+        }
+
+        // ── Phase 2 — press feedback value resolution ────────────────
+        val pressScale = node.props.getFloat("press-scale", 0f)
+        val pressOpacityProp = node.props.getFloat("press-opacity", 0f)
+        val pressTy = node.props.getFloat("press-translate-y", 0f)
+        val hasPressFeedback = hasPress && (pressScale > 0f || pressOpacityProp > 0f || pressTy != 0f)
+        val interactionSource = if (hasPressFeedback) remember { MutableInteractionSource() } else null
+
+        var pressAnimScale = 1f
+        var pressAnimAlpha = 1f
+        var pressAnimTy = 0f
+
+        if (hasPressFeedback && interactionSource != null) {
+            val isPressed by interactionSource.collectIsPressedAsState()
+            val springSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+
+            val targetScale = if (isPressed && pressScale > 0f) pressScale else 1f
+            val targetOpacity = if (isPressed && pressOpacityProp > 0f) pressOpacityProp else 1f
+            val targetTy = if (isPressed) pressTy else 0f
+
+            pressAnimScale = animateFloatAsState(targetScale, springSpec, label = "press_scale").value
+            pressAnimAlpha = animateFloatAsState(targetOpacity, springSpec, label = "press_opacity").value
+            pressAnimTy = animateFloatAsState(targetTy, springSpec, label = "press_ty").value
+        }
+
+        // ── Modifier chain ───────────────────────────────────────────
+        // Outer to inner:
+        //   base (sizing)
+        //   → press feedback graphicsLayer  (wraps everything for visual scale/alpha on press)
+        //   → animation graphicsLayer       (wraps bg too so translate/alpha affect the box, not just inner content)
+        //   → nodeStyle                     (background + border)
+        //   → clip (rounded pressable)
+        //   → nodeGestures                  (clickable; ripple now lives inside the scaled visual)
+        //   → nodeLayout                    (padding)
         var modifier: Modifier = base
-            .nodeStyle(node.style, node.props, isDarkMode)
+
+        if (hasPressFeedback) {
+            modifier = modifier.graphicsLayer {
+                scaleX = pressAnimScale
+                scaleY = pressAnimScale
+                alpha = pressAnimAlpha
+                // dp → px to match iOS's point-based offset.
+                translationY = pressAnimTy.dp.toPx()
+            }
+        }
+
+        if (needsAnimLayer) {
+            modifier = modifier.graphicsLayer {
+                if (applyAnimAlpha) alpha = animAlpha
+                // PHP-side values are logical/dp units (matching iOS
+                // points). Compose's `translationX/Y` take raw pixels,
+                // so convert here. Without this every Android-side
+                // translation is `1/density`× too small.
+                translationX = animTx.dp.toPx()
+                translationY = animTy.dp.toPx()
+                scaleX = animScale
+                scaleY = animScale
+                rotationZ = animRotate
+            }
+        }
+
+        modifier = modifier.nodeStyle(node.style, node.props, isDarkMode)
+
         if (hasPress && radius > 0f) {
             modifier = modifier.clip(RoundedCornerShape(radius.dp))
         }
         modifier = modifier
-            .nodeGestures(node)
+            .nodeGestures(node, interactionSource)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
         if (renderer != null) {

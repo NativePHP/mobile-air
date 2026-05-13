@@ -27,6 +27,18 @@ struct NodeStyleModifier: ViewModifier {
         let radius = cornerRadius
         let glassFlags = props.getInt("glass", default: 0)
 
+        // Defer opacity to `NodeAnimationModifier` when:
+        //   - `animate-duration > 0` (state-change transitions),
+        //   - `animate-loop` is on (yoyo),
+        //   - opacity is bound to a `SharedValue` (gesture-driven).
+        // Otherwise multiplying would double-apply.
+        let animateDuration = props.getFloat("animate-duration", default: 0)
+        let animateLoop = props.getBool("animate-loop")
+        let opacitySharedBound = !props.getString("opacity_sv", default: "").isEmpty
+        let opacity = (animateDuration > 0 || animateLoop || opacitySharedBound)
+            ? 1.0
+            : resolvedOpacity(dark: dark)
+
         content
             // `bg-*` color sits BEHIND the content. When `glass` is also
             // set, the bg color is visible behind the glass and acts as
@@ -50,7 +62,7 @@ struct NodeStyleModifier: ViewModifier {
                 x: 0,
                 y: shadowY
             )
-            .opacity(resolvedOpacity(dark: dark))
+            .opacity(opacity)
     }
 
     // MARK: - Background Color

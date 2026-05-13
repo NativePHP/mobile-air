@@ -89,11 +89,22 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         }
     }
 
-    // Opacity (with dark mode override)
-    val darkOpacity = if (isDarkMode) props.getFloat("dark_opacity", 0f) else 0f
-    val opacity = if (darkOpacity > 0f) darkOpacity else style.opacity
-    if (opacity < 1f && opacity >= 0f) {
-        mod = mod.alpha(opacity)
+    // Opacity (with dark mode override).
+    //
+    // Defer to `NodeView` when:
+    //   - `animate-duration > 0` (state transitions),
+    //   - `animate-loop` (yoyo),
+    //   - opacity is bound to a SharedValue (`opacity_sv` set).
+    // Otherwise applying here would double-multiply.
+    val animateDuration = props.getFloat("animate-duration", 0f)
+    val animateLoop = props.getBool("animate-loop")
+    val opacitySharedBound = props.getString("opacity_sv", "").isNotEmpty()
+    if (animateDuration <= 0f && !animateLoop && !opacitySharedBound) {
+        val darkOpacity = if (isDarkMode) props.getFloat("dark_opacity", 0f) else 0f
+        val opacity = if (darkOpacity > 0f) darkOpacity else style.opacity
+        if (opacity < 1f && opacity >= 0f) {
+            mod = mod.alpha(opacity)
+        }
     }
 
     return mod
@@ -164,29 +175,64 @@ fun Modifier.nodeLayout(
 
 /**
  * Wires onPress / onLongPress callbacks to Compose gestures.
+ *
+ * When `interactionSource` is non-null, it's passed to the underlying
+ * clickable so callers can collect press state (via
+ * `interactionSource.collectIsPressedAsState()`) and drive visual
+ * press feedback on the UI thread. In that case the ripple is
+ * suppressed (`indication = null`) because the caller is providing
+ * the press feedback via `press-*` props. Pass null to keep the
+ * default ripple behavior.
  */
 @OptIn(ExperimentalFoundationApi::class)
-fun Modifier.nodeGestures(node: NativeUINode): Modifier {
+fun Modifier.nodeGestures(
+    node: NativeUINode,
+    interactionSource: androidx.compose.foundation.interaction.MutableInteractionSource? = null,
+): Modifier {
     if (node.onPress == 0 && node.onLongPress == 0) return this
 
     val callbackId = node.onPress
     val longPressId = node.onLongPress
     val nodeId = node.id
 
-    return if (longPressId != 0) {
-        this.combinedClickable(
-            onClick = {
-                if (callbackId != 0) {
-                    NativeElementBridge.sendPressEvent(callbackId, nodeId)
+    return if (interactionSource != null) {
+        if (longPressId != 0) {
+            this.combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {
+                    if (callbackId != 0) {
+                        NativeElementBridge.sendPressEvent(callbackId, nodeId)
+                    }
+                },
+                onLongClick = {
+                    NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
                 }
-            },
-            onLongClick = {
-                NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
+            )
+        } else {
+            this.clickable(
+                interactionSource = interactionSource,
+                indication = null,
+            ) {
+                NativeElementBridge.sendPressEvent(callbackId, nodeId)
             }
-        )
+        }
     } else {
-        this.clickable {
-            NativeElementBridge.sendPressEvent(callbackId, nodeId)
+        if (longPressId != 0) {
+            this.combinedClickable(
+                onClick = {
+                    if (callbackId != 0) {
+                        NativeElementBridge.sendPressEvent(callbackId, nodeId)
+                    }
+                },
+                onLongClick = {
+                    NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
+                }
+            )
+        } else {
+            this.clickable {
+                NativeElementBridge.sendPressEvent(callbackId, nodeId)
+            }
         }
     }
 }

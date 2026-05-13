@@ -43,6 +43,39 @@ class NativeTagPrecompiler
 
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
+    /**
+     * Bare tag names (without the `native:` prefix) that should also be
+     * recognized as native elements. Populated by the service provider
+     * from `ElementRegistry::all()` (types converted snake_case →
+     * kebab-case) so both `<native:column>` and `<column>` compile to
+     * the same NativeElementCollector calls.
+     *
+     * @var string[]
+     */
+    private array $shortFormTags;
+
+    /** Precomputed alternation regex group (e.g. `column|row|stack|...`). */
+    private ?string $shortFormAlt;
+
+    /**
+     * @param  string[]  $shortFormTags  Bare tag names to recognize alongside `<native:*>`.
+     */
+    public function __construct(array $shortFormTags = [])
+    {
+        $this->shortFormTags = $shortFormTags;
+
+        // Sort by descending length so the regex alternation matches the
+        // longest tag first — otherwise `<top-bar-action>` would tokenize
+        // as `<top-bar>` with `-action` left over as attrs when both
+        // names are in the list.
+        $sorted = $shortFormTags;
+        usort($sorted, fn ($a, $b) => strlen($b) - strlen($a));
+
+        $this->shortFormAlt = $sorted === []
+            ? null
+            : implode('|', array_map('preg_quote', $sorted));
+    }
+
     public function __invoke(string $value): string
     {
         // Expand `native:model="propName"` (with optional Livewire-style
@@ -90,9 +123,23 @@ class NativeTagPrecompiler
         // @endReached, @swipeDelete to underscored versions before Blade interprets @ as a directive
         $value = preg_replace('/@(press|longPress|change|submit|dismiss|refresh|endReached|swipeDelete)=/', '_$1=', $value);
 
+        // The attribute-region pattern below uses possessive quantifiers
+        // (`*+`) to keep PCRE from catastrophically backtracking when a
+        // long template has many tags and quoted attribute values. The
+        // earlier non-possessive form hit PHP's pcre.backtrack_limit on
+        // templates above ~9KB, returning NULL silently — caller saw
+        // "No root element was built" because tags weren't transformed.
+        //
+        // The character class also excludes `/` so the trailing `/>`
+        // terminator of a self-closing tag stays visible to the closing
+        // pattern. Without that exclusion the possessive `*+` would
+        // swallow the `/` and the regex would fail to match (where the
+        // non-possessive form previously backtracked to release it).
+        $attrs = "((?:[^>\"'\\/]*+(?:\"[^\"]*+\"|'[^']*+')[^>\"'\\/]*+)*+|[^>\"'\\/]*+)";
+
         // 1. Self-closing tags: <native:type attrs />
         $value = preg_replace_callback(
-            '/<\s*native\s*:\s*([a-zA-Z0-9\-_]+)\s*((?:[^>"\']*(?:"[^"]*"|\'[^\']*\')[^>"\']*)*|[^>"\']*?)\s*\/>/s',
+            '/<\s*native\s*:\s*([a-zA-Z0-9\-_]+)\s*'.$attrs.'\s*\/>/s',
             fn ($m) => $this->compileSelfClosing($m[1], trim($m[2] ?? '')),
             $value
         );
@@ -106,10 +153,36 @@ class NativeTagPrecompiler
 
         // 3. Opening tags: <native:type attrs>
         $value = preg_replace_callback(
-            '/<\s*native\s*:\s*([a-zA-Z0-9\-_]+)\s*((?:[^>"\']*(?:"[^"]*"|\'[^\']*\')[^>"\']*)*|[^>"\']*?)\s*>/s',
+            '/<\s*native\s*:\s*([a-zA-Z0-9\-_]+)\s*'.$attrs.'\s*>/s',
             fn ($m) => $this->compileOpening($m[1], trim($m[2] ?? '')),
             $value
         );
+
+        // Short-form pass — same compilation, no `native:` prefix required.
+        // Tag must be in the registered-element allowlist so we don't
+        // accidentally rewrite arbitrary markup. Order matches the
+        // prefixed pass: self-closing, then closing, then opening.
+        if ($this->shortFormAlt !== null) {
+            $alt = $this->shortFormAlt;
+
+            $value = preg_replace_callback(
+                '/<\s*('.$alt.')\s*'.$attrs.'\s*\/>/s',
+                fn ($m) => $this->compileSelfClosing($m[1], trim($m[2] ?? '')),
+                $value
+            );
+
+            $value = preg_replace_callback(
+                '/<\/\s*('.$alt.')\s*>/s',
+                fn ($m) => $this->compileClosing($m[1]),
+                $value
+            );
+
+            $value = preg_replace_callback(
+                '/<\s*('.$alt.')\s*'.$attrs.'\s*>/s',
+                fn ($m) => $this->compileOpening($m[1], trim($m[2] ?? '')),
+                $value
+            );
+        }
 
         return $value;
     }
