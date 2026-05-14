@@ -955,6 +955,154 @@ object TestFunctions {
     }
 
     /**
+     * @test
+     *
+     * Should add meta-data entries inside a receiver component using resource attribute (e.g. AppWidgetProvider).
+     */
+    public function it_adds_meta_data_with_resource_inside_receiver(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'receivers' => [
+                    [
+                        'name' => 'com.example.MyWidgetProvider',
+                        'exported' => true,
+                        'meta-data' => [
+                            ['name' => 'android.appwidget.provider', 'resource' => '@xml/my_widget_info'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<receiver', $content);
+        $this->assertStringContainsString('<meta-data android:name="android.appwidget.provider" android:resource="@xml/my_widget_info" />', $content);
+        $this->assertStringContainsString('</receiver>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Should add meta-data entries inside a receiver component using value attribute.
+     */
+    public function it_adds_meta_data_with_value_inside_receiver(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'receivers' => [
+                    [
+                        'name' => 'com.example.MyReceiver',
+                        'exported' => false,
+                        'meta_data' => [
+                            ['name' => 'com.example.API_KEY', 'value' => 'abc123'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="abc123" />', $content);
+        $this->assertStringContainsString('</receiver>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Should support both intent-filters and meta-data nested inside a receiver (AppWidgetProvider use-case).
+     */
+    public function it_supports_both_intent_filters_and_meta_data_in_receiver(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'receivers' => [
+                    [
+                        'name' => 'com.example.MyWidgetProvider',
+                        'exported' => true,
+                        'intent-filters' => [
+                            ['action' => 'android.appwidget.action.APPWIDGET_UPDATE'],
+                        ],
+                        'meta-data' => [
+                            ['name' => 'android.appwidget.provider', 'resource' => '@xml/my_widget_info'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<intent-filter>', $content);
+        $this->assertStringContainsString('<action android:name="android.appwidget.action.APPWIDGET_UPDATE" />', $content);
+        $this->assertStringContainsString('<meta-data android:name="android.appwidget.provider" android:resource="@xml/my_widget_info" />', $content);
+        $this->assertStringContainsString('</receiver>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Receiver without meta-data or intent-filters should remain self-closing.
+     */
+    public function it_keeps_receiver_self_closing_without_nested_content(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'receivers' => [
+                    [
+                        'name' => 'com.example.SimpleReceiver',
+                        'exported' => false,
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('com.example.SimpleReceiver', $content);
+        $this->assertMatchesRegularExpression('/<receiver[^>]*\/>/', $content);
+        $this->assertStringNotContainsString('</receiver>', $content);
+    }
+
+    /**
      * Helper method to create a test Plugin instance.
      */
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin
