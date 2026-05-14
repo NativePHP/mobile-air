@@ -30,6 +30,7 @@ trait InstallsAndroid
     public function setupAndroid(): void
     {
         $this->createAndroidStudioProject();
+        $this->writeAndroidTheme();
 
         // Skip PHP installation if --skip-php is passed, unless --force/--fresh is also passed
         $shouldSkipPhp = $this->option('skip-php') && ! $this->forcing;
@@ -54,6 +55,60 @@ trait InstallsAndroid
         $source = base_path('vendor/nativephp/mobile/resources/androidstudio');
 
         $this->components->task('Creating Android project', fn () => $this->platformOptimizedCopy($source, $androidPath));
+    }
+
+    private function writeAndroidTheme(): void
+    {
+        $androidRoot = base_path('nativephp/android');
+        $valuesPath = "{$androidRoot}/app/src/main/res/values/themes.xml";
+        $valuesNightPath = "{$androidRoot}/app/src/main/res/values-night/themes.xml";
+
+        $primary = $this->normalizeThemeColor(config('nativephp.android.theme.color_primary') ?: '#000000');
+        $primaryNight = $this->normalizeThemeColor(config('nativephp.android.theme.color_primary_night') ?: '#FFFFFF');
+        $onPrimary = $this->normalizeThemeColor(config('nativephp.android.theme.color_on_primary') ?: '#FFFFFF');
+
+        File::ensureDirectoryExists(dirname($valuesNightPath));
+
+        $this->components->task('Applying Android theme', function () use ($valuesPath, $valuesNightPath, $primary, $primaryNight, $onPrimary) {
+            File::put($valuesPath, $this->renderThemeXml($primary, $onPrimary));
+            File::put($valuesNightPath, $this->renderThemeXml($primaryNight, $onPrimary));
+
+            return true;
+        });
+    }
+
+    private function normalizeThemeColor(string $value): string
+    {
+        if (! preg_match('/^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/', $value)) {
+            warning("Invalid hex color '{$value}' in nativephp.android.theme — falling back to #000000.");
+            $value = '#000000';
+        }
+
+        $hex = strtoupper(ltrim($value, '#'));
+
+        return '#'.(strlen($hex) === 6 ? 'FF'.$hex : $hex);
+    }
+
+    private function renderThemeXml(string $primary, string $onPrimary): string
+    {
+        return <<<XML
+            <?xml version="1.0" encoding="utf-8"?>
+            <resources>
+                <style name="Theme.AndroidPHP" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+                    <item name="colorPrimary">{$primary}</item>
+                    <item name="colorPrimaryVariant">{$primary}</item>
+                    <item name="colorOnPrimary">{$onPrimary}</item>
+                    <item name="colorAccent">{$primary}</item>
+                    <item name="android:colorAccent">{$primary}</item>
+                    <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+                    <item name="android:statusBarColor">@android:color/transparent</item>
+                    <item name="android:navigationBarColor">@android:color/transparent</item>
+                    <item name="android:enforceStatusBarContrast">false</item>
+                    <item name="android:enforceNavigationBarContrast">false</item>
+                </style>
+            </resources>
+
+            XML;
     }
 
     private function installPHPAndroid(): void

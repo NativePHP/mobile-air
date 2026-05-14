@@ -206,6 +206,32 @@ return [
 
         /*
         |--------------------------------------------------------------------------
+        | Android Theme Colors
+        |--------------------------------------------------------------------------
+        |
+        | Colors applied to the generated Android theme (Theme.AndroidPHP). These
+        | drive the colorPrimary / colorOnPrimary values used by native dialogs
+        | such as the date and time pickers (OK / Cancel buttons).
+        |
+        | The night value is written to values-night/themes.xml so Android can
+        | switch automatically when the device is in dark mode.
+        |
+        | Values must be hex strings: #RRGGBB or #AARRGGBB. Wrap them in quotes
+        | inside your .env file (e.g. NATIVEPHP_ANDROID_COLOR_PRIMARY="#04ABA6")
+        | because '#' starts a comment in .env.
+        |
+        | Both values/themes.xml and values-night/themes.xml are written from
+        | these values during `php artisan native:install`.
+        |
+        */
+        'theme' => [
+            'color_primary' => env('NATIVEPHP_ANDROID_COLOR_PRIMARY') ?: '#04ABA6',
+            'color_primary_night' => env('NATIVEPHP_ANDROID_COLOR_PRIMARY_NIGHT') ?: '#FFFFFF',
+            'color_on_primary' => env('NATIVEPHP_ANDROID_COLOR_ON_PRIMARY') ?: '#FFFFFF',
+        ],
+
+        /*
+        |--------------------------------------------------------------------------
         | Android Build Configuration
         |--------------------------------------------------------------------------
         |
