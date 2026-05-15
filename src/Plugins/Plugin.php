@@ -38,6 +38,19 @@ class Plugin
         return $this->manifest->ios['info_plist'] ?? [];
     }
 
+    /**
+     * Per-locale overrides for Info.plist string entries.
+     *
+     * Shape: ['nl' => ['NSCameraUsageDescription' => 'Dutch text'], 'fr' => [...]]
+     * Locale keys become {locale}.lproj/InfoPlist.strings at build time.
+     *
+     * @return array<string, array<string, string>>
+     */
+    public function getIosInfoPlistLocalizations(): array
+    {
+        return $this->manifest->ios['info_plist_localizations'] ?? [];
+    }
+
     public function getAndroidDependencies(): array
     {
         return $this->manifest->android['dependencies'] ?? [];

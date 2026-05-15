@@ -117,6 +117,36 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | iOS Permission String Localizations
+    |--------------------------------------------------------------------------
+    |
+    | Provide per-locale overrides for the strings declared above. Each key is
+    | a BCP 47 locale code (e.g. 'nl', 'fr', 'zh-Hans') and its value mirrors
+    | the `permissions` array shape. At build time these are written to
+    | {locale}.lproj/InfoPlist.strings inside the iOS bundle, and the locales
+    | are registered with the Xcode project so they ship with the app.
+    |
+    | iOS picks the right string at runtime based on the user's preferred
+    | language, falling back to the value in `permissions` (Info.plist).
+    |
+    | Plugins can ship their own localizations via `ios.info_plist_localizations`
+    | in their nativephp.json — app-level entries win on key collisions.
+    |
+    */
+
+    'permission_localizations' => [
+        // 'nl' => [
+        //     'NSCameraUsageDescription' => 'Gebruikt om een profielfoto te maken.',
+        //     'NSMicrophoneUsageDescription' => 'Gebruikt om audio op te nemen bij je video\'s.',
+        //     'NSPhotoLibraryUsageDescription' => 'Gebruikt om foto\'s voor je bericht te selecteren.',
+        // ],
+        // 'fr' => [
+        //     'NSCameraUsageDescription' => 'Utilisé pour prendre une photo de profil.',
+        // ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment Keys to Clean Up
     |--------------------------------------------------------------------------
     |

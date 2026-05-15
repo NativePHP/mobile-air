@@ -119,8 +119,18 @@ class IOSPluginCompiler
             return ! empty($p->getIosInfoPlist()) || ! empty($p->getIosDependencies());
         });
 
+        // The app may declare per-locale permission strings without depending on
+        // any plugin shipping iOS data — keep going past the early return below
+        // so writeInfoPlistLocalizations() can run on app config alone.
+        $hasAppLocalizations = ! empty($this->getAppInfoPlistLocalizations());
+
         // If no plugins have any iOS-related data, generate empty registration
-        if ($pluginsWithCode->isEmpty() && $pluginsWithFunctions->isEmpty() && $pluginsWithIosData->isEmpty()) {
+        if (
+            $pluginsWithCode->isEmpty()
+            && $pluginsWithFunctions->isEmpty()
+            && $pluginsWithIosData->isEmpty()
+            && ! $hasAppLocalizations
+        ) {
             $this->generateEmptyRegistration();
 
             return;
@@ -137,6 +147,9 @@ class IOSPluginCompiler
 
         // Merge Info.plist entries (for any plugins with iOS permissions)
         $this->mergeInfoPlistEntries($allPlugins);
+
+        // Write per-locale InfoPlist.strings for any localized permission entries
+        $this->writeInfoPlistLocalizations($allPlugins);
 
         // Merge background modes into Info.plist
         $this->mergeBackgroundModes($allPlugins);
@@ -339,6 +352,166 @@ class IOSPluginCompiler
     protected function getAppInfoPlistOverrides(): array
     {
         return config('nativephp.permissions', []);
+    }
+
+    /**
+     * Read app-level per-locale Info.plist overrides from
+     * config('nativephp.permission_localizations').
+     *
+     * Shape: ['nl' => ['NSCameraUsageDescription' => 'Dutch text'], 'fr' => [...]]
+     *
+     * @return array<string, array<string, string>>
+     */
+    protected function getAppInfoPlistLocalizations(): array
+    {
+        return config('nativephp.permission_localizations', []);
+    }
+
+    /**
+     * Write {locale}.lproj/InfoPlist.strings files for each locale that has
+     * per-locale permission strings, and register the locales with the Xcode
+     * project so they ship with the app bundle.
+     *
+     * Plugin manifests contribute via `ios.info_plist_localizations`; the app
+     * config wins on key collisions, mirroring how flat entries are merged.
+     */
+    protected function writeInfoPlistLocalizations(Collection $plugins): void
+    {
+        // [locale => [key => value]]
+        $merged = [];
+
+        foreach ($plugins as $plugin) {
+            foreach ($plugin->getIosInfoPlistLocalizations() as $locale => $entries) {
+                if (! is_array($entries)) {
+                    continue;
+                }
+                $locale = $this->normalizeLocale($locale);
+                $merged[$locale] = array_merge($merged[$locale] ?? [], $entries);
+            }
+        }
+
+        foreach ($this->getAppInfoPlistLocalizations() as $locale => $entries) {
+            if (! is_array($entries)) {
+                continue;
+            }
+            $locale = $this->normalizeLocale($locale);
+            $merged[$locale] = array_merge($merged[$locale] ?? [], $entries);
+        }
+
+        if (empty($merged)) {
+            return;
+        }
+
+        // Write one .lproj folder per locale inside the synced NativePHP group;
+        // Xcode 16's PBXFileSystemSynchronizedRootGroup picks them up automatically.
+        $resourcesRoot = $this->iosProjectPath.'/NativePHP';
+
+        foreach ($merged as $locale => $entries) {
+            $lprojPath = $resourcesRoot.'/'.$locale.'.lproj';
+            $this->files->ensureDirectoryExists($lprojPath);
+
+            $this->files->put(
+                $lprojPath.'/InfoPlist.strings',
+                $this->renderInfoPlistStrings($entries)
+            );
+        }
+
+        $this->registerKnownRegions(array_keys($merged));
+    }
+
+    /**
+     * Render a strings file body. iOS expects UTF-8 with one `"key" = "value";`
+     * entry per line; backslashes, quotes, and newlines must be escaped.
+     */
+    protected function renderInfoPlistStrings(array $entries): string
+    {
+        ksort($entries);
+
+        $lines = [];
+        foreach ($entries as $key => $value) {
+            if (! is_string($value)) {
+                continue;
+            }
+            $value = $this->substituteEnvPlaceholders($value);
+            $lines[] = sprintf(
+                '"%s" = "%s";',
+                $this->escapeStringsLiteral((string) $key),
+                $this->escapeStringsLiteral($value)
+            );
+        }
+
+        return implode("\n", $lines)."\n";
+    }
+
+    /**
+     * Escape a value for inclusion in a .strings file literal.
+     */
+    protected function escapeStringsLiteral(string $value): string
+    {
+        return strtr($value, [
+            '\\' => '\\\\',
+            '"' => '\\"',
+            "\n" => '\\n',
+            "\r" => '\\r',
+            "\t" => '\\t',
+        ]);
+    }
+
+    /**
+     * Apple uses BCP 47 / POSIX style locale identifiers in .lproj names
+     * (e.g. `en`, `nl`, `zh-Hans`, `pt-BR`). Normalize PHP/Laravel-style
+     * `nl_NL` to `nl-NL` so it lands in the right bundle folder.
+     */
+    protected function normalizeLocale(string $locale): string
+    {
+        return str_replace('_', '-', trim($locale));
+    }
+
+    /**
+     * Add any new locales to the PBXProject's `knownRegions` list so Xcode
+     * includes the .lproj folders during the resource copy phase. The
+     * `developmentRegion` is left untouched; Info.plist remains the source
+     * of truth for the default language.
+     */
+    protected function registerKnownRegions(array $locales): void
+    {
+        $projectPath = $this->iosProjectPath.'/NativePHP.xcodeproj/project.pbxproj';
+
+        if (! $this->files->exists($projectPath)) {
+            return;
+        }
+
+        $pbxproj = $this->files->get($projectPath);
+
+        $pattern = '/(knownRegions\s*=\s*\()([^)]*)(\s*\))/s';
+
+        if (! preg_match($pattern, $pbxproj)) {
+            return;
+        }
+
+        $updated = preg_replace_callback($pattern, function ($matches) use ($locales) {
+            $existing = $matches[2];
+            $additions = '';
+
+            foreach ($locales as $locale) {
+                // Match on delimiters so `en` doesn't match `en-GB`.
+                if (preg_match('/(^|,|\s)'.preg_quote($locale, '/').'(\s*,|\s*$)/', $existing)) {
+                    continue;
+                }
+
+                $additions .= "\n\t\t\t\t".$locale.',';
+            }
+
+            if ($additions === '') {
+                return $matches[0];
+            }
+
+            return $matches[1].rtrim($matches[2], "\n\t ").$additions."\n\t\t\t".ltrim($matches[3]);
+        }, $pbxproj, 1);
+
+        if ($updated !== null && $updated !== $pbxproj) {
+            $this->files->put($projectPath, $updated);
+        }
     }
 
     /**
