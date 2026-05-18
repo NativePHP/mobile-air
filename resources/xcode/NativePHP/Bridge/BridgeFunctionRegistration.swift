@@ -8,6 +8,23 @@ func registerBridgeFunctions() {
 
     registry.register("Edge.Set", function: EdgeFunctions.Set())
 
+    // Perf.* — mirror of Android's `bridge/functions/PerfFunctions.kt`.
+    // Used by `BenchmarkComponent` to drive each scenario. The
+    // `Perf.Export` JSON shape matches Android's so PHP analysis is
+    // one code path.
+    registry.register("Perf.Enable",             function: PerfFunctions.Enable())
+    registry.register("Perf.Disable",            function: PerfFunctions.Disable())
+    registry.register("Perf.Reset",              function: PerfFunctions.Reset())
+    registry.register("Perf.Export",             function: PerfFunctions.Export())
+    registry.register("Perf.Summary",            function: PerfFunctions.Summary())
+    registry.register("Perf.StartCaptureWindow", function: PerfFunctions.StartCaptureWindow())
+    registry.register("Perf.StopCaptureWindow",  function: PerfFunctions.StopCaptureWindow())
+    registry.register("Perf.SimulatePress",      function: PerfFunctions.SimulatePress())
+    registry.register("Perf.SimulateTextChange", function: PerfFunctions.SimulateTextChange())
+    registry.register("Perf.SimulateToggle",     function: PerfFunctions.SimulateToggle())
+    registry.register("Perf.SetDiffEnabled",     function: PerfFunctions.SetDiffEnabled())
+    registry.register("Perf.Memory",             function: PerfFunctions.Memory())
+
     // Built-in framework-level renderers for chrome sentinels emitted
     // by `wrapWithChrome` when a layout opts into native chrome via
     // `NativeLayout::usesNativeChrome() = true`. These aren't plugin

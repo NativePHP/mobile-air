@@ -1521,6 +1521,19 @@ abstract class NativeComponent
             return;
         }
 
+        // 'virtual_window' callbacks ride on the TEXT_CHANGE event format
+        // (the C extension parses payloads by event type — reusing
+        // TEXT_CHANGE keeps the extension untouched). Native packs
+        // "from,to" as the text; we decode and pass two ints.
+        if ($kind === 'virtual_window') {
+            $payload = $event['text'] ?? '';
+            $parts = explode(',', $payload, 2);
+            $from = (int) ($parts[0] ?? 0);
+            $to = (int) ($parts[1] ?? 0);
+            $this->$method(...[...$args, $from, $to]);
+            return;
+        }
+
         $this->$method(...[...$args, ...$eventArgs]);
     }
 }

@@ -140,6 +140,12 @@ struct NativePHPApp: App {
                         }
                 }
             }
+            // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
+            // Driven by CADisplayLink via FrameTracker.shared. Sits on
+            // top of ContentView AND the splash so it's visible during
+            // boot / hot-reload too. Toggle off for production
+            // screenshots via FrameTracker.shared.enabled = false.
+            .perfOverlay()
             .animation(.easeInOut(duration: 0.3), value: appState.isInitialized)
             .onOpenURL { url in
                 // Only handle if not already handled by AppDelegate during cold start

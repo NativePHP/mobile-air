@@ -141,7 +141,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         setContent {
             val isDark = isSystemInDarkTheme()
             MaterialTheme(colorScheme = nativeUiMaterialColorScheme(isDark)) {
-                MainScreen()
+                Box(modifier = Modifier.fillMaxSize()) {
+                    MainScreen()
+                    // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
+                    // Driven by Choreographer via FrameTracker. Recomposes at
+                    // 4Hz only — no per-frame render cost. Toggle off in
+                    // production via FrameTracker.enabled = false.
+                    com.nativephp.mobile.ui.nativerender.PerfOverlay()
+                }
             }
         }
 

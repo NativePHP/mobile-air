@@ -272,6 +272,12 @@ final class NativeElementBridge {
                 continue
             }
 
+            // Mark "tree update arrived from PHP" — this is the T1
+            // checkpoint InteractionTracker uses to derive
+            // event_delivery_ms. Recording before parse so the time
+            // includes PHP processing + wire only, not native parse.
+            InteractionTracker.shared.onTreeUpdateReceived()
+
             // Parse tree from flat buffer
             guard let tree = readTreeFromFlatBuffer(
                 update.flatData, propData: update.propData,
@@ -334,6 +340,9 @@ final class NativeElementBridge {
 
             let isNav = update.isNav
             DispatchQueue.main.async {
+                // T2 checkpoint — tree is now on the main thread about
+                // to drive SwiftUI. The next CADisplayLink tick is T3.
+                InteractionTracker.shared.onTreePostedToMain()
                 let bridge = NativeUIBridge.shared
                 bridge.isActive = true
                 if isNav && !nativeChromeContinuation { bridge.screenKey += 1 }
@@ -408,6 +417,7 @@ final class NativeElementBridge {
     }
 
     static func sendPressEvent(_ callbackId: Int, nodeId: Int) {
+        InteractionTracker.shared.onInteractionStart(callbackId: callbackId, type: "press")
         var buf = Data(count: 8)
         buf.withUnsafeMutableBytes { ptr in
             ptr.storeBytes(of: Float(0).bitPattern.littleEndian, toByteOffset: 0, as: UInt32.self)
@@ -417,6 +427,7 @@ final class NativeElementBridge {
     }
 
     static func sendLongPressEvent(_ callbackId: Int, nodeId: Int) {
+        InteractionTracker.shared.onInteractionStart(callbackId: callbackId, type: "long_press")
         var buf = Data(count: 8)
         buf.withUnsafeMutableBytes { ptr in
             ptr.storeBytes(of: Float(0).bitPattern.littleEndian, toByteOffset: 0, as: UInt32.self)
@@ -426,6 +437,7 @@ final class NativeElementBridge {
     }
 
     static func sendTextChangeEvent(_ callbackId: Int, nodeId: Int, text: String) {
+        InteractionTracker.shared.onInteractionStart(callbackId: callbackId, type: "text_change")
         let textBytes = Array(text.utf8)
         var buf = Data(count: 2 + textBytes.count)
         buf.withUnsafeMutableBytes { ptr in
@@ -438,6 +450,7 @@ final class NativeElementBridge {
     }
 
     static func sendToggleChangeEvent(_ callbackId: Int, nodeId: Int, value: Bool) {
+        InteractionTracker.shared.onInteractionStart(callbackId: callbackId, type: "toggle_change")
         writeEvent(type: EventType.toggleChange, callbackId: callbackId, nodeId: nodeId, data: Data([value ? 1 : 0]))
     }
 

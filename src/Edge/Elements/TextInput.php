@@ -53,6 +53,20 @@ class TextInput extends Element
         return $this;
     }
 
+    public function placeholder(string $placeholder): static
+    {
+        $this->props['placeholder'] = $placeholder;
+
+        return $this;
+    }
+
+    public function value(string $value): static
+    {
+        $this->props['value'] = $value;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         if ($this->changeMethod !== null) {

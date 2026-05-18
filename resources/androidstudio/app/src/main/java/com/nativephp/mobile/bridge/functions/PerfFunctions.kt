@@ -1,5 +1,6 @@
 package com.nativephp.mobile.bridge.functions
 
+import android.os.Debug
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.PerformanceTracker
@@ -108,6 +109,39 @@ object PerfFunctions {
             val value = parameters["value"] as? Boolean ?: false
             NativeElementBridge.sendToggleChangeEvent(callbackId, nodeId, value)
             return mapOf("success" to true)
+        }
+    }
+
+    /**
+     * Current process memory (totalPss in bytes) + delta from a baseline
+     * captured on first call. Pass `reset_baseline: true` to re-capture.
+     * Mirrors iOS `MemoryProbe.swift`.
+     */
+    class Memory : BridgeFunction {
+        companion object {
+            // -1 = not yet set. Single-process so a plain object field is
+            // fine; same lifecycle as the rest of PerformanceTracker state.
+            @Volatile
+            var baselineBytes: Long = -1L
+        }
+
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            if (parameters["reset_baseline"] as? Boolean == true) {
+                baselineBytes = -1L
+            }
+            val info = Debug.MemoryInfo()
+            Debug.getMemoryInfo(info)
+            // totalPss reports kilobytes; convert to bytes for parity with iOS.
+            val current = info.totalPss.toLong() * 1024L
+            if (baselineBytes < 0) {
+                baselineBytes = current
+            }
+            return mapOf(
+                "success" to true,
+                "resident_bytes" to current,
+                "baseline_bytes" to baselineBytes,
+                "delta_bytes" to (current - baselineBytes),
+            )
         }
     }
 }

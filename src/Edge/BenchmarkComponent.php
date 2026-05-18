@@ -9,6 +9,7 @@ use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
 use Native\Mobile\Edge\Elements\Spacer;
 use Native\Mobile\Edge\Elements\Text;
+use Native\Mobile\Edge\Elements\TextInput;
 
 class BenchmarkComponent extends NativeComponent
 {
@@ -51,25 +52,228 @@ class BenchmarkComponent extends NativeComponent
     const LARGE_TREE_NODE_COUNT = 200;
     const LIST_SCROLL_ITEM_COUNT = 1000;
 
-    const DIFF_AB_ITERATIONS = 100;
-
     const JSON_RECORD_COUNT = 10_000;
     const JSON_PARSE_ITERATIONS = 20;
     const LARGE_LIST_ITEM_COUNT = 10_000;
 
+    /**
+     * Scenarios in run order. Labels are user-facing; keys are stable
+     * identifiers (don't rename — used as result-array keys + dispatch
+     * names downstream).
+     *
+     * `navigation` is the historical key for what's actually a "tree
+     * replace" benchmark (two consecutive publishes with a buffer reset
+     * between, no real router involvement). Renaming the key would
+     * invalidate saved benchmark runs; we keep the key and call out the
+     * scope in the label.
+     */
     const SCENARIOS = [
-        'counter_tap'   => 'Counter Tap',
+        'counter_tap'    => 'Counter Tap',
         'large_tree_tap' => 'Large Tree Tap',
-        'text_input'    => 'Text Input',
-        'list_scroll'   => 'Large List Render',
-        'json_parse'    => 'JSON 10k Parse',
+        'text_input'     => 'Text Input',
+        'list_scroll'    => 'Large List Render',
+        'json_parse'     => 'JSON 10k Parse',
         'large_list_fps' => 'List 10k FPS',
-        'rapid_fire'    => 'Rapid-Fire',
-        'navigation'    => 'Navigation',
-        'toggle_tree'   => 'Toggle Tree',
-        'diff_ab'       => 'Diff A/B Test',
-        'render'        => 'PHP Render',
-        'stream_render' => 'Streaming Render',
+        'rapid_fire'     => 'Rapid-Fire',
+        'navigation'     => 'Tree Replace (push/pop sim)',
+        'toggle_tree'    => 'Toggle Tree',
+        'render'         => 'PHP Render (tree builder)',
+        'stream_render'  => 'PHP Render (streaming)',
+    ];
+
+    /**
+     * Per-scenario explainer payload — shown inline on each result card
+     * so the user understands what they're looking at without leaving
+     * the screen.
+     *
+     * Each entry has:
+     *   - `measures`:      one-paragraph statement of what is measured
+     *   - `methodology`:   how the scenario actually drives the system
+     *   - `metric_meaning`: dict of metric name → human-readable gloss
+     *   - `reference`:     ordered list of comparison rows (framework + note)
+     *
+     * Reference numbers are deliberately ranges, not single points —
+     * published benchmarks vary by device, OS version, and methodology.
+     * Sources: SynergyBoat 2025–2026 benchmark series, React Native
+     * Fabric / TurboModules docs, Flutter DeviceLab, Apple WWDC perf
+     * sessions.
+     */
+    const SCENARIO_INFO = [
+        'counter_tap' => [
+            'measures' => 'End-to-end press → render round-trip latency on a minimal screen. Lower is better. This is the "tap a button, screen updates" baseline that every framework optimizes for.',
+            'methodology' => '100 simulated press events on a counter. Each press fires from native through the bridge into PHP, PHP dispatches the handler, increments state, re-renders the tree, publishes the new tree, native diffs + paints. Total RTT is measured from press-send to frame-drawn.',
+            'metric_meaning' => [
+                'avg' => 'Mean round-trip across all 100 presses (ms).',
+                'p50 / p95 / p99' => 'Percentiles. p95 = 95% of presses were faster than this. Tail latency matters for perceived responsiveness.',
+                'event_delivery' => 'Native press → PHP event loop. Transport + serialization cost.',
+                'compose_post' => 'PHP-published tree → native UI thread. Diff + dispatch.',
+                'frame_paint' => 'UI thread post → frame visible. SwiftUI / Compose render.',
+            ],
+            'reference' => [
+                ['framework' => 'Native Swift / Kotlin',         'note' => '~5–15ms typical'],
+                ['framework' => 'Flutter',                        'note' => '~8–20ms (Skia, platform thread)'],
+                ['framework' => 'React Native (Fabric, Hermes)', 'note' => '~30–50ms — JS bridge + renderer + Yoga'],
+                ['framework' => 'React Native (Expo)',           'note' => '~30–60ms — same engine, slight cold-path tax'],
+            ],
+        ],
+        'large_tree_tap' => [
+            'measures' => 'Press → render RTT when the tree being rebuilt has ~200 nodes. Probes whether the framework\'s diff / reconciliation degrades under tree-size load.',
+            'methodology' => 'Same loop as Counter Tap but with a 200-node tree (rows of bullets + text + values) on screen. Each press triggers a full re-render of the tree.',
+            'metric_meaning' => [
+                'avg' => 'Mean RTT under 200-node tree load.',
+                'p95 / p99' => 'Tail latency — captures GC pauses, allocator pressure, etc.',
+            ],
+            'reference' => [
+                ['framework' => 'Native Swift / Kotlin',         'note' => '~10–25ms typical'],
+                ['framework' => 'Flutter',                        'note' => '~15–35ms'],
+                ['framework' => 'React Native (Fabric)',         'note' => '~40–80ms — diff cost is super-linear in tree size before Fabric'],
+                ['framework' => 'React Native (Expo)',           'note' => '~40–90ms'],
+            ],
+        ],
+        'text_input' => [
+            'measures' => 'Per-keystroke RTT for text input. Critical for typing feel — anything above ~30ms feels laggy.',
+            'methodology' => '50 simulated character changes appended to a `<text_input>` field. Each character fires a text-change event through the bridge, PHP updates state, tree republishes.',
+            'metric_meaning' => [
+                'avg' => 'Mean per-keystroke RTT (ms).',
+                'p95' => 'Tail-end keystrokes — if this exceeds 30ms users feel hitching.',
+            ],
+            'reference' => [
+                ['framework' => 'Native UITextField / EditText', 'note' => '~5–15ms typical'],
+                ['framework' => 'Flutter TextField',              'note' => '~10–25ms'],
+                ['framework' => 'React Native TextInput',         'note' => '~25–50ms per keystroke (controlled component)'],
+            ],
+        ],
+        'list_scroll' => [
+            'measures' => 'Cost of repeatedly re-rendering a 1000-item list. Probes the framework\'s diff path under list-shaped trees.',
+            'methodology' => '100 back-to-back full publishes of a 1000-row list where each row\'s text rotates by frame index. Forces the bridge to diff every row each frame.',
+            'metric_meaning' => [
+                'fps' => 'Effective frames-per-second during the burst. Higher is better.',
+                'avg / p95 / p99' => 'Per-frame latency. 16.67ms is the 60Hz budget.',
+                'drop%' => 'Frames slower than 16.67ms. Lower is better.',
+                'jank%' => 'Frames slower than the jank threshold (2× target). Lower is better.',
+                'CoV' => 'Coefficient of variation. Lower = smoother frame timing.',
+            ],
+            'reference' => [
+                ['framework' => 'Native UICollectionView',       'note' => '~58–60 fps stable on 60Hz'],
+                ['framework' => 'Flutter ListView',               'note' => '~60 fps, p95 ~2–5ms (article-cited)'],
+                ['framework' => 'React Native FlatList',         'note' => '~55–58 fps; ~15% dropped on iOS 60Hz'],
+            ],
+        ],
+        'json_parse' => [
+            'measures' => 'Pure PHP-side JSON encode / decode / filter / render throughput. No native involvement.',
+            'methodology' => 'Builds 10,000 records with nested fields. Times one `json_encode`, then 20 `json_decode`s, then 20 filter passes, then 5 decode+render-1000-list-items cycles.',
+            'metric_meaning' => [
+                'encode_ms' => 'One-time encode of 10k records to JSON string.',
+                'decode_avg_ms' => 'Mean of 20 `json_decode` runs.',
+                'decode_p95_ms' => 'Tail decode latency.',
+                'filter_avg_ms' => 'Iterate + `array_filter` on 10k decoded records.',
+                'render_avg_ms' => 'Decode + build element tree for first 1000 items.',
+            ],
+            'reference' => [
+                ['framework' => 'PHP json_decode (native ext)',   'note' => 'this benchmark IS the comparison — no framework equivalent'],
+                ['framework' => 'JS JSON.parse (RN / Expo)',      'note' => '10k records typically 5–15ms (V8 / Hermes)'],
+            ],
+        ],
+        'large_list_fps' => [
+            'measures' => 'Sustained FPS while auto-scrolling a 10,000-row list end-to-end. The canonical scrolling-list benchmark.',
+            'methodology' => 'Builds a 10k-item list once, publishes, then auto-scrolls to the last row over ~6 seconds. FPS is captured between Perf.StartCaptureWindow / Perf.StopCaptureWindow so only scroll frames count.',
+            'metric_meaning' => [
+                'fps' => 'Mean FPS during the scroll capture window.',
+                'avg / p95 / p99' => 'Per-frame interval (ms).',
+                'drop% / jank%' => 'Frames missing the 60Hz budget.',
+                'CoV' => 'Smoothness measure — lower is steadier.',
+                'build_ms / toArray_ms / publish_ms' => 'PHP-side cost of building the initial 10k tree (one-shot).',
+            ],
+            'reference' => [
+                ['framework' => 'Native Swift (60Hz, 100 rows)',  'note' => 'avg ~17.2ms, p95 ~16.7ms, ~58.5 fps (SynergyBoat 2025)'],
+                ['framework' => 'Flutter (60Hz, 100 rows)',       'note' => 'avg ~1.7ms, p95 ~2.5ms, ~59.3 fps (SynergyBoat 2025)'],
+                ['framework' => 'React Native (60Hz, 100 rows)',  'note' => 'avg ~16.7ms, ~57.5 fps, ~15% dropped (SynergyBoat 2025)'],
+                ['framework' => 'Native Kotlin (120Hz)',          'note' => 'avg ~8.3ms, ~119.8 fps (SynergyBoat 2025)'],
+            ],
+        ],
+        'rapid_fire' => [
+            'measures' => 'PHP-side publish throughput with no event-wait between iterations. Probes the max events/sec the framework can sustain.',
+            'methodology' => '500 publishes of a small tree, back to back, no event loop pause. Times render, toArray, and publish per iteration. Discards first 10 as warmup.',
+            'metric_meaning' => [
+                'evt/s' => 'Sustained events per second. Higher is better.',
+                'avg / p95' => 'Per-iteration total time (render + toArray + publish).',
+                'render / toArray / publish' => 'Per-phase breakdown of the publish pipeline.',
+            ],
+            'reference' => [
+                ['framework' => 'Native programmatic updates',    'note' => 'typically 500–2000 evt/s, very implementation-dependent'],
+                ['framework' => 'React Native bridge',            'note' => '~60–120 evt/s for full re-renders'],
+            ],
+        ],
+        'navigation' => [
+            'measures' => 'Cost of replacing one full tree with another — the dominant cost of a real navigation transition.',
+            'methodology' => '20 cycles of: reset bridge buffers + publish "Screen A", then reset + publish "Screen B". Times each push / pop separately. NOT a real router navigation (no transitions, no nav stack), just the tree-replace cost in isolation.',
+            'metric_meaning' => [
+                'avg_push_ms / avg_pop_ms' => 'Mean time for one tree replacement.',
+                'p95_push_ms / p95_pop_ms' => 'Tail latency for tree replace.',
+            ],
+            'reference' => [
+                ['framework' => 'Native nav controllers',         'note' => '~5–15ms for tree mount, transitions are separate'],
+                ['framework' => 'Flutter Navigator',              'note' => '~10–25ms for route push'],
+                ['framework' => 'React Navigation',               'note' => '~30–60ms route push (Fabric, no animation)'],
+            ],
+        ],
+        'toggle_tree' => [
+            'measures' => 'RTT when a state change adds or removes ~200 nodes from the tree. Exercises the diff path harder than a simple counter — half the iterations mount a subtree, half unmount it.',
+            'methodology' => '50 simulated toggle events. Each one flips a boolean that the render function uses to include or exclude a 200-node subtree.',
+            'metric_meaning' => [
+                'avg / p95 / p99' => 'Per-toggle RTT (ms).',
+                'event_delivery / compose_post / frame_paint' => 'Pipeline breakdown — see Counter Tap for definitions.',
+            ],
+            'reference' => [
+                ['framework' => 'Native Swift / Kotlin',         'note' => '~10–25ms for 200-node mount'],
+                ['framework' => 'React Native (Fabric)',         'note' => '~40–80ms — mount/unmount stresses the renderer harder than re-render'],
+            ],
+        ],
+        'render' => [
+            'measures' => 'Pure PHP-side cost of building and converting an element tree to its wire array — no native publish. Useful for separating PHP overhead from native overhead.',
+            'methodology' => 'For each size in [10, 50, 100, 500] nodes: 100 iterations of `render() → toArray()`. Discards first 10 as warmup. Times the render call, the toArray serialization, and the total. Trees are built via the fluent element builder.',
+            'metric_meaning' => [
+                'avg_total' => 'Mean total time per iteration (ms).',
+                'p50 / p95' => 'Median and tail per-iteration time.',
+                'avg_render' => 'Time spent in the Blade-style fluent tree builder.',
+                'avg_toArray' => 'Time spent serializing the tree to a wire array.',
+            ],
+            'reference' => [
+                ['framework' => 'PHP-only test',                  'note' => 'no direct framework analog — compare against Streaming below'],
+            ],
+        ],
+        'stream_render' => [
+            'measures' => 'Same workload as Render, but using streaming-mode functions (`nphp_frame_begin` / `nphp_node_open` / `nphp_frame_end`) that write directly into the bridge buffer instead of constructing an intermediate Element tree. Measures whether streaming actually wins.',
+            'methodology' => 'Same per-size iteration count and warmup as Render. Trees are built procedurally via the streaming API. `toArray` cost is zero because there\'s no intermediate tree.',
+            'metric_meaning' => [
+                'avg_total' => 'Mean total time per streaming iteration (ms).',
+                'avg_render' => 'Time spent in the streaming `nphp_node_*` calls.',
+                'avg_publish' => 'Time spent in `nphp_frame_end` flushing the buffer.',
+                'vs tree builder' => 'Speedup over the Render scenario at the same node count.',
+            ],
+            'reference' => [
+                ['framework' => 'PHP-only test',                  'note' => 'compare directly against the Render rows above'],
+            ],
+        ],
+    ];
+
+    /**
+     * One-line description per scenario — what it actually measures.
+     * Shown under each menu button so users aren't surprised by the
+     * methodology. Keep concise; full detail belongs in commit / docs.
+     */
+    const SCENARIO_DESCRIPTIONS = [
+        'counter_tap'    => '100 simulated taps on a minimal screen — measures press→render round-trip',
+        'large_tree_tap' => '100 taps with a 200-node tree mounted — RTT under build/diff load',
+        'text_input'     => '50 simulated text changes — measures text-event RTT through the bridge',
+        'list_scroll'    => 'Re-renders a 1000-item list 100× back to back — diff/publish cost',
+        'json_parse'     => 'PHP-only: encode 10k records, decode 20×, filter, render first 1000',
+        'large_list_fps' => 'Publishes a 10000-item list with auto-scroll — captures FPS during scroll',
+        'rapid_fire'     => '500 publishes with no event wait — PHP throughput + events/sec',
+        'navigation'     => '20 cycles of tree-reset → publish A → reset → publish B (NOT real router nav)',
+        'toggle_tree'    => '50 toggles flipping a 200-node subtree on/off',
+        'render'         => 'PHP-only: build & toArray() trees of 10/50/100/500 nodes (no native publish)',
+        'stream_render'  => 'PHP-only: same as Render but streaming directly into the bridge buffer',
     ];
 
     public function render(): Element
@@ -94,6 +298,19 @@ class BenchmarkComponent extends NativeComponent
         $scroll = ScrollView::make()->fill()->safeArea()->bg('#0F172A');
         $content = Column::make()->fillWidth()->padding(20, 16, 40, 16)->gap(10);
 
+        // Back-to-launcher chevron — the component overlays the
+        // StackLayout's back chrome with its own dark theme so we need
+        // our own way out.
+        $content->addChild(
+            Pressable::make(
+                Row::make(
+                    Text::make('<')->fontSize(20)->fontWeight(7)->color('#94A3B8'),
+                    Spacer::make()->width(8),
+                    Text::make('Back')->fontSize(15)->color('#94A3B8'),
+                )->gap(0)
+            )->onPress('backToLauncher')->padding(4, 0, 4, 0)
+        );
+
         $content->addChild(
             Row::make(
                 Text::make('BENCHMARK')->fontSize(13)->fontWeight(7)->color('#38BDF8'),
@@ -110,10 +327,8 @@ class BenchmarkComponent extends NativeComponent
         $content->addChild(Spacer::make()->height(4));
 
         foreach (self::SCENARIOS as $key => $label) {
-
-            $content->addChild(
-                $this->makeButton($label)->onPress("startScenario('{$key}')")
-            );
+            $description = self::SCENARIO_DESCRIPTIONS[$key] ?? '';
+            $content->addChild($this->makeScenarioCard($key, $label, $description));
         }
 
         $content->addChild(Spacer::make()->height(4));
@@ -240,7 +455,6 @@ class BenchmarkComponent extends NativeComponent
                 'rapid_fire'     => $this->runRapidFire(),
                 'navigation'     => $this->runNavigation(),
                 'toggle_tree'    => $this->runToggleTree(),
-                'diff_ab'        => $this->runDiffAB(),
                 'render'         => $this->runRenderBenchmark(),
                 'stream_render'  => $this->runStreamRenderBenchmark(),
                 default          => null,
@@ -481,6 +695,10 @@ class BenchmarkComponent extends NativeComponent
 
     protected function renderTextInputScreen(): Element
     {
+        // Real `<text_input>` element so the simulated text changes
+        // actually appear in a typing affordance — earlier this was a
+        // Pressable mocked up to look like an input, which obscured what
+        // the test was measuring (the RTT was real, the UI lied).
         return Column::make(
             Row::make(
                 Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
@@ -490,10 +708,11 @@ class BenchmarkComponent extends NativeComponent
             Spacer::make()->height(1)->flexGrow(1),
             Text::make('TEXT INPUT')->fontSize(11)->fontWeight(7)->color('#38BDF8'),
             Spacer::make()->height(12),
-            Pressable::make(
-                Text::make($this->textValue ?: 'Type here...')
-                    ->fontSize(15)->color($this->textValue ? '#F1F5F9' : '#475569')
-            )->fillWidth()->bg('#1E293B')->borderRadius(8)->padding(14)->onPress('onTextChange'),
+            TextInput::make()
+                ->placeholder('Type here...')
+                ->value($this->textValue)
+                ->onChange('onTextChange')
+                ->fillWidth()->bg('#1E293B')->borderRadius(8)->padding(14),
             Spacer::make()->height(12),
             Text::make($this->textValue ?: 'waiting for input...')->fontSize(14)->color('#64748B'),
             Spacer::make()->height(24),
@@ -1036,108 +1255,7 @@ class BenchmarkComponent extends NativeComponent
         nativephp_call('Perf.Disable', '{}');
     }
 
-    // ── Scenario 8: Diff A/B Test ─────────────────────
-
-    protected function runDiffAB(): void
-    {
-        $iterations = self::DIFF_AB_ITERATIONS;
-        $warmup = 30;
-
-        // ── Warmup: run both paths to warm JIT/caches ──
-        $this->publishProgressScreen('Diff A/B', "Warming up ({$warmup} iterations)...");
-        $this->counter = 0;
-        $this->interactionCount = 0;
-        $this->phase = 'large_tree_tap';
-
-        for ($i = 0; $i < $warmup && $this->running; $i++) {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->renderLargeTreeTapScreen()->toArray($this->callbacks);
-            nativephp_element_publish($tree);
-            usleep(20_000);
-            $cbId = $this->callbacks->lookup('onTap');
-            if ($cbId === null) break;
-            $event = $this->simulatePress($cbId);
-            if ($event === null) continue;
-            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
-                return;
-            }
-            $this->dispatch($event);
-        }
-
-        // ── Pass 1: Diff OFF (run first to avoid warmup advantage) ──
-        $this->publishProgressScreen('Diff A/B', "Pass 1/{$iterations}: diff OFF");
-        nativephp_call('Perf.SetDiffEnabled', json_encode(['enabled' => false]));
-
-        $this->counter = 0;
-        $this->interactionCount = 0;
-
-        nativephp_call('Perf.Enable', '{}');
-
-        for ($i = 0; $i < $iterations && $this->running; $i++) {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->renderLargeTreeTapScreen()->toArray($this->callbacks);
-            nativephp_element_publish($tree);
-
-            usleep(20_000);
-
-            $cbId = $this->callbacks->lookup('onTap');
-            if ($cbId === null) break;
-
-            $event = $this->simulatePress($cbId);
-            if ($event === null) continue;
-            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
-                break;
-            }
-            $this->dispatch($event);
-        }
-
-        $diffOffResult = nativephp_call('Perf.Export', '{}');
-        nativephp_call('Perf.Disable', '{}');
-
-        // ── Pass 2: Diff ON ──
-        $this->publishProgressScreen('Diff A/B', "Pass 2/{$iterations}: diff ON");
-        nativephp_call('Perf.SetDiffEnabled', json_encode(['enabled' => true]));
-
-        $this->counter = 0;
-        $this->interactionCount = 0;
-
-        nativephp_call('Perf.Enable', '{}');
-
-        for ($i = 0; $i < $iterations && $this->running; $i++) {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->renderLargeTreeTapScreen()->toArray($this->callbacks);
-            nativephp_element_publish($tree);
-
-            usleep(20_000);
-
-            $cbId = $this->callbacks->lookup('onTap');
-            if ($cbId === null) break;
-
-            $event = $this->simulatePress($cbId);
-            if ($event === null) continue;
-            if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
-                break;
-            }
-            $this->dispatch($event);
-        }
-
-        $diffOnResult = nativephp_call('Perf.Export', '{}');
-        nativephp_call('Perf.Disable', '{}');
-
-        // Restore diff enabled
-        nativephp_call('Perf.SetDiffEnabled', json_encode(['enabled' => true]));
-
-        $this->results['diff_ab'] = [
-            'iterations' => $iterations,
-            'diff_on' => json_decode($diffOnResult, true)['data'] ?? '{}',
-            'diff_off' => json_decode($diffOffResult, true)['data'] ?? '{}',
-        ];
-    }
-
-    // ── Scenario 9: PHP Render Benchmark (existing) ─
+    // ── PHP Render Benchmark ──────────────────────────
 
     protected function publishProgressScreen(string $label, string $detail): void
     {
@@ -1171,6 +1289,11 @@ class BenchmarkComponent extends NativeComponent
         if (! function_exists('nphp_frame_begin')) {
             $this->publishProgressScreen('Streaming Render', 'Skipped — rebuild PHP with streaming functions');
             usleep(1_500_000);
+            // Surface the skip in results so the user sees something
+            // rather than the scenario silently producing no card.
+            $this->results['stream_render_skipped'] = [
+                'reason' => 'PHP extension is missing `nphp_frame_begin` — streaming-mode functions need a rebuild of the PHP runtime.',
+            ];
 
             return;
         }
@@ -1469,6 +1592,99 @@ class BenchmarkComponent extends NativeComponent
         )->fillWidth()->bg('#1E293B')->borderRadius(10)->padding(14)->center();
     }
 
+    /**
+     * Append the per-scenario "what this measures / what the numbers
+     * mean / how it compares to RN / Flutter / Native" panel to a card.
+     *
+     * Pulls from `SCENARIO_INFO` so per-test docs live with the test
+     * definition, not scattered through the renderers. Designed so a
+     * scenario can be added by editing one constant and one render
+     * site picks it up.
+     */
+    protected function appendScenarioInfo(Element $parent, string $key): void
+    {
+        $info = self::SCENARIO_INFO[$key] ?? null;
+        if (! $info) {
+            return;
+        }
+
+        $parent->addChild(Spacer::make()->height(12));
+        $parent->addChild(
+            Text::make('ABOUT THIS TEST')->fontSize(12)->fontWeight(7)->color('#64748B')
+        );
+        if (isset($info['measures'])) {
+            $parent->addChild(
+                Text::make($info['measures'])->fontSize(13)->color('#CBD5E1')
+            );
+        }
+        if (isset($info['methodology'])) {
+            $parent->addChild(Spacer::make()->height(4));
+            $parent->addChild(
+                Text::make('Methodology')->fontSize(11)->fontWeight(7)->color('#475569')
+            );
+            $parent->addChild(
+                Text::make($info['methodology'])->fontSize(12)->color('#94A3B8')
+            );
+        }
+
+        if (!empty($info['metric_meaning'])) {
+            $parent->addChild(Spacer::make()->height(8));
+            $parent->addChild(
+                Text::make('Reading the numbers')->fontSize(11)->fontWeight(7)->color('#475569')
+            );
+            foreach ($info['metric_meaning'] as $metric => $meaning) {
+                $parent->addChild(
+                    Row::make(
+                        Text::make($metric)->fontSize(12)->fontWeight(6)->color('#38BDF8')->width(140),
+                        Text::make($meaning)->fontSize(12)->color('#94A3B8')->flexGrow(1),
+                    )->fillWidth()->gap(8)
+                );
+            }
+        }
+
+        if (!empty($info['reference'])) {
+            $parent->addChild(Spacer::make()->height(8));
+            $parent->addChild(
+                Text::make('Compared to other frameworks')->fontSize(11)->fontWeight(7)->color('#475569')
+            );
+            foreach ($info['reference'] as $row) {
+                $framework = (string) ($row['framework'] ?? '');
+                $note = (string) ($row['note'] ?? '');
+                $parent->addChild(
+                    Row::make(
+                        Text::make($framework)->fontSize(12)->fontWeight(6)->color('#CBD5E1')->width(180),
+                        Text::make($note)->fontSize(12)->color('#94A3B8')->flexGrow(1),
+                    )->fillWidth()->gap(8)
+                );
+            }
+        }
+    }
+
+    /**
+     * Two-line scenario menu entry: bold label + one-line description.
+     * Replaces the prior bare-button rendering so users can see what
+     * each test actually measures before tapping it.
+     */
+    protected function makeScenarioCard(string $key, string $label, string $description): Pressable
+    {
+        $inner = Column::make()->fillWidth()->gap(4);
+        $inner->addChild(
+            Text::make($label)->fontSize(14)->fontWeight(6)->color('#E2E8F0')
+        );
+        if ($description !== '') {
+            $inner->addChild(
+                Text::make($description)->fontSize(12)->color('#94A3B8')
+            );
+        }
+
+        return Pressable::make($inner)
+            ->fillWidth()
+            ->bg('#1E293B')
+            ->borderRadius(10)
+            ->padding(14)
+            ->onPress("startScenario('{$key}')");
+    }
+
     protected function makeListItem(string $headline, string $supporting = '', string $bullet = '•'): Row
     {
         $row = Row::make()->fillWidth()->gap(12)->padding(14, 16);
@@ -1506,86 +1722,133 @@ class BenchmarkComponent extends NativeComponent
             Text::make("Pipeline: {$this->pipeline}")->fontSize(15)->color('#94A3B8')
         );
 
+        // Each result card injects the per-scenario "what this measures
+        // / what the numbers mean / how it compares" panel before being
+        // attached, so every test on this screen comes with its own
+        // documentation.
+
         // Interactive scenario results (counter_tap, large_tree_tap, text_input, toggle_tree)
         foreach (['counter_tap', 'large_tree_tap', 'text_input', 'toggle_tree'] as $key) {
             $data = $this->results[$key] ?? null;
             if ($data) {
-                $content->addChild($this->renderInteractionCard(
-                    self::SCENARIOS[$key] ?? $key,
-                    $data
-                ));
+                $card = $this->renderInteractionCard(self::SCENARIOS[$key] ?? $key, $data);
+                $this->appendScenarioInfo($card, $key);
+                $content->addChild($card);
             }
         }
 
         // List scroll FPS result
         $listScroll = $this->results['list_scroll'] ?? null;
         if ($listScroll) {
-            $content->addChild($this->renderFrameCard('Large List Render', $listScroll));
+            $card = $this->renderFrameCard(self::SCENARIOS['list_scroll'], $listScroll);
+            $this->appendScenarioInfo($card, 'list_scroll');
+            $content->addChild($card);
         }
 
         // JSON 10k parse result
         $jsonParse = $this->results['json_parse'] ?? null;
         if ($jsonParse) {
-            $content->addChild($this->renderJsonParseCard($jsonParse));
+            $card = $this->renderJsonParseCard($jsonParse);
+            $this->appendScenarioInfo($card, 'json_parse');
+            $content->addChild($card);
         }
 
         // Large list 10k FPS result
         $largeListFps = $this->results['large_list_fps'] ?? null;
         if ($largeListFps) {
-            $content->addChild($this->renderLargeListFpsCard($largeListFps));
+            $card = $this->renderLargeListFpsCard($largeListFps);
+            $this->appendScenarioInfo($card, 'large_list_fps');
+            $content->addChild($card);
         }
 
         // Rapid-fire result
         $rapidFire = $this->results['rapid_fire'] ?? null;
         if ($rapidFire) {
-            $content->addChild($this->renderRapidFireCard($rapidFire));
+            $card = $this->renderRapidFireCard($rapidFire);
+            $this->appendScenarioInfo($card, 'rapid_fire');
+            $content->addChild($card);
         }
 
-        // Navigation result
+        // Navigation / Tree Replace result
         $nav = $this->results['navigation'] ?? null;
         if ($nav) {
-            $content->addChild($this->renderNavigationCard($nav));
+            $card = $this->renderNavigationCard($nav);
+            $this->appendScenarioInfo($card, 'navigation');
+            $content->addChild($card);
         }
 
-        // Diff A/B result
-        $diffAB = $this->results['diff_ab'] ?? null;
-        if ($diffAB) {
-            $content->addChild($this->renderDiffABCard($diffAB));
-        }
-
-        // PHP-side render benchmark cards
-        $hasRender = false;
+        // PHP-side render benchmark cards (tree builder mode) — collect
+        // first so we can render the section header even when only the
+        // streaming variant produced data, and vice versa.
+        $renderEntries = [];
+        $streamEntries = [];
         foreach ($this->results as $key => $stats) {
             if (str_starts_with($key, 'render_') && is_array($stats) && isset($stats['avg_total'])) {
-                if (! $hasRender) {
-                    $content->addChild(Spacer::make()->height(4));
-                    $content->addChild(
-                        Text::make('PHP RENDER (LEGACY)')->fontSize(13)->fontWeight(7)->color('#38BDF8')
-                    );
-                    $hasRender = true;
+                $renderEntries[(int) str_replace('render_', '', $key)] = $stats;
+            } elseif (str_starts_with($key, 'stream_') && $key !== 'stream_render_skipped' && is_array($stats) && isset($stats['avg_total'])) {
+                $streamEntries[(int) str_replace('stream_', '', $key)] = $stats;
+            }
+        }
+        ksort($renderEntries);
+        ksort($streamEntries);
+
+        // Tree-builder section
+        if (! empty($renderEntries)) {
+            $content->addChild(Spacer::make()->height(4));
+            $content->addChild(
+                Text::make('PHP RENDER (TREE BUILDER)')->fontSize(13)->fontWeight(7)->color('#38BDF8')
+            );
+            $sectionInfoEmitted = false;
+            foreach ($renderEntries as $nodeCount => $stats) {
+                $card = $this->renderPhpBenchCard("{$nodeCount} nodes", $stats);
+                // Emit the info panel ONCE under the first card so the
+                // section explainer isn't repeated 4× for [10/50/100/500].
+                if (! $sectionInfoEmitted) {
+                    $this->appendScenarioInfo($card, 'render');
+                    $sectionInfoEmitted = true;
                 }
-                $nodeCount = str_replace('render_', '', $key);
-                $content->addChild($this->renderPhpBenchCard("{$nodeCount} nodes", $stats));
+                $content->addChild($card);
             }
         }
 
-        // Streaming render benchmark cards
-        $hasStream = false;
-        foreach ($this->results as $key => $stats) {
-            if (str_starts_with($key, 'stream_') && is_array($stats) && isset($stats['avg_total'])) {
-                if (! $hasStream) {
-                    $content->addChild(Spacer::make()->height(4));
-                    $content->addChild(
-                        Text::make('STREAMING RENDER')->fontSize(13)->fontWeight(7)->color('#10B981')
-                    );
-                    $hasStream = true;
-                }
-                $nodeCount = str_replace('stream_', '', $key);
+        // Streaming section — three branches: real results, skipped
+        // (extension missing), or genuinely absent (not run at all).
+        $streamSkipped = $this->results['stream_render_skipped'] ?? null;
+        $streamRanAtAll = ! empty($streamEntries) || $streamSkipped !== null;
 
-                // Show comparison if legacy result exists
-                $legacyKey = "render_{$nodeCount}";
-                $legacyStats = $this->results[$legacyKey] ?? null;
-                $content->addChild($this->renderStreamBenchCard("{$nodeCount} nodes", $stats, $legacyStats));
+        if ($streamRanAtAll) {
+            $content->addChild(Spacer::make()->height(4));
+            $headerColor = $streamSkipped ? '#F59E0B' : '#10B981';
+            $content->addChild(
+                Text::make('PHP RENDER (STREAMING)')->fontSize(13)->fontWeight(7)->color($headerColor)
+            );
+
+            if ($streamSkipped !== null) {
+                $reason = (string) ($streamSkipped['reason'] ?? 'Skipped.');
+                $skipCard = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
+                $skipCard->addChild(
+                    Row::make(
+                        Text::make('Skipped')->fontSize(18)->fontWeight(7)->color('#F1F5F9'),
+                        Spacer::make()->flexGrow(1),
+                        Text::make('NOT AVAILABLE')->fontSize(11)->fontWeight(7)->color('#F59E0B'),
+                    )->fillWidth()
+                );
+                $skipCard->addChild(Text::make($reason)->fontSize(13)->color('#94A3B8'));
+                $this->appendScenarioInfo($skipCard, 'stream_render');
+                $content->addChild($skipCard);
+            } else {
+                $sectionInfoEmitted = false;
+                foreach ($streamEntries as $nodeCount => $stats) {
+                    // Pair with the tree-builder result at the same node
+                    // count so the "% faster" comparison is shown inline.
+                    $legacyStats = $renderEntries[$nodeCount] ?? null;
+                    $card = $this->renderStreamBenchCard("{$nodeCount} nodes", $stats, $legacyStats);
+                    if (! $sectionInfoEmitted) {
+                        $this->appendScenarioInfo($card, 'stream_render');
+                        $sectionInfoEmitted = true;
+                    }
+                    $content->addChild($card);
+                }
             }
         }
 
@@ -1604,6 +1867,16 @@ class BenchmarkComponent extends NativeComponent
         $this->phase = 'menu';
         $this->results = [];
         $this->benchmarkDone = false;
+    }
+
+    /**
+     * Leave the suite entirely. The component owns its own dark UI and
+     * `safeArea()` so the StackLayout's auto-chevron is hidden — give
+     * the user an explicit way out via this handler.
+     */
+    public function backToLauncher(): void
+    {
+        $this->back();
     }
 
     // ── Result Card Renderers ───────────────────────
@@ -1681,6 +1954,7 @@ class BenchmarkComponent extends NativeComponent
     {
         $data = is_string($rawData) ? json_decode($rawData, true) : $rawData;
         $frames = $data['frame_times_ms'] ?? null;
+        $rawFrames = $data['raw_frames'] ?? null;
 
         $cardContent = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
 
@@ -1707,10 +1981,25 @@ class BenchmarkComponent extends NativeComponent
             $cardContent->addChild(
                 Row::make(
                     $this->statChip('avg', (float) ($frames['average'] ?? 0), '#38BDF8'),
+                    $this->statChip('p50', (float) ($frames['p50'] ?? 0), '#38BDF8'),
                     $this->statChip('p95', (float) ($frames['p95'] ?? 0), '#F59E0B'),
                     $this->statChip('p99', (float) ($frames['p99'] ?? 0), '#EF4444'),
                 )->fillWidth()->gap(8)
             );
+
+            // Dropped % / jank % / CoV — derived from raw_frames when
+            // available, otherwise from the summary jank counts.
+            $extended = $this->computeExtendedFrameMetrics($frames, $rawFrames);
+            if ($extended !== null) {
+                $cardContent->addChild(Spacer::make()->height(4));
+                $cardContent->addChild(
+                    Row::make(
+                        $this->statChip('drop%', $extended['dropped_pct'], $extended['dropped_pct'] > 5 ? '#EF4444' : '#10B981'),
+                        $this->statChip('jank%', $extended['jank_pct'], $extended['jank_pct'] > 3 ? '#F59E0B' : '#10B981'),
+                        $this->statChip('CoV', $extended['cov'], '#94A3B8'),
+                    )->fillWidth()->gap(8)
+                );
+            }
 
             $cardContent->addChild(Spacer::make()->height(6));
             $cardContent->addChild(
@@ -1723,6 +2012,10 @@ class BenchmarkComponent extends NativeComponent
                     $this->statChip('sync', (float) ($frames['avg_sync_ms'] ?? 0), '#94A3B8'),
                 )->fillWidth()->gap(8)
             );
+
+            // Inline comparison against RN / Flutter / Native — same
+            // metrics methodology as SynergyBoat 2025-2026.
+            $this->appendReferenceRows($cardContent, $data, $frames);
         } else {
             $cardContent->addChild(
                 Text::make('No frame data captured')->fontSize(14)->color('#64748B')
@@ -1730,6 +2023,103 @@ class BenchmarkComponent extends NativeComponent
         }
 
         return $cardContent;
+    }
+
+    /**
+     * Derive p50/p95-adjacent metrics that aren't always in the summary
+     * block. Pulls from raw frame times when available, otherwise falls
+     * back to summary counts (and CoV stays null without raw data).
+     */
+    protected function computeExtendedFrameMetrics(array $frames, ?array $rawFrames): ?array
+    {
+        $count = (int) ($frames['count'] ?? 0);
+        if ($count === 0) {
+            return null;
+        }
+
+        $jankCount = (int) ($frames['jank_count'] ?? 0);
+        $jankPct = ($jankCount / $count) * 100;
+
+        // Dropped frames = those that missed a 60Hz budget (16.67ms).
+        // For 120Hz devices the platform-side fps stat is more telling,
+        // so we'd ideally use 8.33ms — but the cross-platform metric
+        // everyone publishes is the 60Hz-equivalent dropped rate.
+        $droppedCount = 0;
+        $cov = 0.0;
+
+        if (is_array($rawFrames) && !empty($rawFrames)) {
+            $totals = array_map(fn($f) => (float) ($f['total_ms'] ?? 0), $rawFrames);
+            foreach ($totals as $ms) {
+                if ($ms > 16.67) $droppedCount++;
+            }
+            $mean = array_sum($totals) / count($totals);
+            if ($mean > 0) {
+                $variance = array_sum(array_map(fn($x) => ($x - $mean) ** 2, $totals)) / count($totals);
+                $cov = sqrt($variance) / $mean;
+            }
+        } else {
+            // Approximate: use jank count as a proxy for drops.
+            $droppedCount = $jankCount;
+        }
+
+        return [
+            'dropped_pct' => round(($droppedCount / $count) * 100, 1),
+            'jank_pct' => round($jankPct, 1),
+            'cov' => round($cov, 2),
+        ];
+    }
+
+    /**
+     * Append a "vs reference" panel comparing our measured numbers
+     * against published RN / Flutter / Native iOS / Android values
+     * from the SynergyBoat 2025-2026 benchmark series.
+     */
+    protected function appendReferenceRows(Element $parent, array $data, array $frames): void
+    {
+        $framework = $data['framework'] ?? '';
+        $platform = stripos($framework, 'iOS') !== false ? 'ios' : 'android';
+        $refs = BenchmarkReferenceData::listScrollFor($platform);
+
+        $parent->addChild(Spacer::make()->height(8));
+        $parent->addChild(
+            Text::make('VS REFERENCE (' . strtoupper($platform) . ', PUBLISHED)')->fontSize(12)->fontWeight(7)->color('#64748B')
+        );
+
+        // "Ours" row first for visual comparison.
+        $oursAvg = (float) ($frames['average'] ?? 0);
+        $oursP95 = (float) ($frames['p95'] ?? 0);
+        $oursFps = (float) ($frames['fps'] ?? 0);
+        $parent->addChild($this->referenceRow('NativePHP (ours)', $oursAvg, $oursP95, $oursFps, '#38BDF8'));
+
+        foreach ($refs as $name => $ref) {
+            $label = match ($name) {
+                'native_swift'  => 'Native (Swift)',
+                'native_kotlin' => 'Native (Kotlin)',
+                'flutter'       => 'Flutter',
+                'react_native'  => 'React Native',
+                default         => $name,
+            };
+            $parent->addChild($this->referenceRow(
+                $label,
+                (float) $ref['avg_ms'],
+                (float) $ref['p95_ms'],
+                (float) $ref['fps'],
+                '#475569'
+            ));
+        }
+    }
+
+    /** One row of the reference comparison table. */
+    protected function referenceRow(string $label, float $avg, float $p95, float $fps, string $accent): Element
+    {
+        return Row::make(
+            Text::make($label)->fontSize(13)->color($accent)->flexGrow(1),
+            Text::make(number_format($avg, 1) . 'ms')->fontSize(12)->color('#94A3B8'),
+            Spacer::make()->width(8),
+            Text::make('p95 ' . number_format($p95, 1))->fontSize(12)->color('#94A3B8'),
+            Spacer::make()->width(8),
+            Text::make(number_format($fps, 0) . 'fps')->fontSize(12)->color('#94A3B8'),
+        )->fillWidth()->gap(0);
     }
 
     protected function renderRapidFireCard(array $stats): Element
@@ -1811,86 +2201,6 @@ class BenchmarkComponent extends NativeComponent
                     )->fillWidth()->gap(8)
                 );
             }
-        }
-
-        return $cardContent;
-    }
-
-    protected function renderDiffABCard(array $stats): Element
-    {
-        $iterations = $stats['iterations'] ?? 0;
-        $onRaw = $stats['diff_on'] ?? '{}';
-        $offRaw = $stats['diff_off'] ?? '{}';
-        $on = is_string($onRaw) ? json_decode($onRaw, true) : $onRaw;
-        $off = is_string($offRaw) ? json_decode($offRaw, true) : $offRaw;
-
-        $onLatency = $on['interaction_latency_ms'] ?? [];
-        $offLatency = $off['interaction_latency_ms'] ?? [];
-        $onDiff = $on['diff_stats'] ?? [];
-        $offDiff = $off['diff_stats'] ?? [];
-
-        $cardContent = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(12)->padding(20)->gap(6);
-
-        $cardContent->addChild(
-            Text::make('Diff A/B Test')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
-        );
-        $cardContent->addChild(
-            Text::make("{$iterations} large-tree taps per pass")->fontSize(14)->color('#94A3B8')
-        );
-
-        // Diff ON section
-        $cardContent->addChild(Spacer::make()->height(6));
-        $cardContent->addChild(
-            Text::make('DIFF ON')->fontSize(12)->fontWeight(7)->color('#10B981')
-        );
-        $cardContent->addChild(
-            Row::make(
-                $this->statChip('avg', (float) ($onLatency['average'] ?? 0), '#10B981'),
-                $this->statChip('p50', (float) ($onLatency['p50'] ?? 0), '#10B981'),
-                $this->statChip('p95', (float) ($onLatency['p95'] ?? 0), '#10B981'),
-            )->fillWidth()->gap(8)
-        );
-
-        $reuseRatio = (float) ($onDiff['avg_reuse_ratio'] ?? 0) * 100;
-        $diffTime = (float) (($onDiff['diff_time_ms'] ?? [])['average'] ?? 0);
-        $cardContent->addChild(
-            Row::make(
-                $this->statChip('reuse', $reuseRatio, '#10B981', '%'),
-                $this->statChip('diff', $diffTime, '#10B981'),
-            )->fillWidth()->gap(8)
-        );
-
-        // Diff OFF section
-        $cardContent->addChild(Spacer::make()->height(6));
-        $cardContent->addChild(
-            Text::make('DIFF OFF')->fontSize(12)->fontWeight(7)->color('#EF4444')
-        );
-        $cardContent->addChild(
-            Row::make(
-                $this->statChip('avg', (float) ($offLatency['average'] ?? 0), '#EF4444'),
-                $this->statChip('p50', (float) ($offLatency['p50'] ?? 0), '#EF4444'),
-                $this->statChip('p95', (float) ($offLatency['p95'] ?? 0), '#EF4444'),
-            )->fillWidth()->gap(8)
-        );
-
-        // Delta
-        $onAvg = (float) ($onLatency['average'] ?? 0);
-        $offAvg = (float) ($offLatency['average'] ?? 0);
-        if ($offAvg > 0 && $onAvg > 0) {
-            $deltaMs = $offAvg - $onAvg;
-            $deltaPct = ($deltaMs / $offAvg) * 100;
-            $deltaColor = $deltaMs > 0 ? '#10B981' : '#EF4444';
-
-            $cardContent->addChild(Spacer::make()->height(6));
-            $cardContent->addChild(
-                Text::make('IMPROVEMENT')->fontSize(12)->fontWeight(7)->color('#64748B')
-            );
-            $cardContent->addChild(
-                Row::make(
-                    $this->statChip('saved', abs($deltaMs), $deltaColor),
-                    $this->statChip('faster', abs($deltaPct), $deltaColor, '%'),
-                )->fillWidth()->gap(8)
-            );
         }
 
         return $cardContent;

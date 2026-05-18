@@ -246,7 +246,38 @@ class NativeTagPrecompiler
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
 
+        // <native:virtual-list /> is special: open the element, loop the
+        // window, render the `item` Blade view once per index (each render
+        // streams its own native tags into the same collector), then close.
+        // Lets the user write a single self-closing tag while we silently
+        // open/iterate/close behind the scenes — keeps the DX symmetric
+        // with `<native:list>` even though semantically this is a
+        // container element.
+        if ($type === 'virtual_list') {
+            return $this->compileVirtualList($attrs);
+        }
+
         return '<?php '.self::C."::leaf('{$type}', {$attrs}); ?>";
+    }
+
+    private function compileVirtualList(string $attrs): string
+    {
+        $C = self::C;
+
+        return "<?php \$__vlAttrs = {$attrs};
+            \$__vlItem = \$__vlAttrs['item'] ?? null;
+            unset(\$__vlAttrs['item']);
+            \$__vlFrom = (int)(\$__vlAttrs['from'] ?? \$__vlAttrs['window_from'] ?? \$__vlAttrs['windowFrom'] ?? 0);
+            \$__vlTo = (int)(\$__vlAttrs['to'] ?? \$__vlAttrs['window_to'] ?? \$__vlAttrs['windowTo'] ?? \$__vlFrom + 29);
+            \$__vlCount = (int)(\$__vlAttrs['count'] ?? 0);
+            {$C}::open('virtual_list', \$__vlAttrs);
+            if (\$__vlItem && \$__vlCount > 0) {
+                \$__vlEnd = min(\$__vlTo, \$__vlCount - 1);
+                for (\$__vlI = max(0, \$__vlFrom); \$__vlI <= \$__vlEnd; \$__vlI++) {
+                    view(\$__vlItem, ['index' => \$__vlI])->render();
+                }
+            }
+            {$C}::close(); ?>";
     }
 
     private function compileOpening(string $tag, string $rawAttrs): string

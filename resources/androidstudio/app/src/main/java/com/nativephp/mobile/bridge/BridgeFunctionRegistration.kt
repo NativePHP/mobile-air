@@ -30,6 +30,7 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     registry.register("Perf.SimulateTextChange", PerfFunctions.SimulateTextChange())
     registry.register("Perf.SimulateToggle", PerfFunctions.SimulateToggle())
     registry.register("Perf.SetDiffEnabled", PerfFunctions.SetDiffEnabled())
+    registry.register("Perf.Memory", PerfFunctions.Memory())
 
     // Register plugin bridge functions
     registerPluginBridgeFunctions(activity, context)
