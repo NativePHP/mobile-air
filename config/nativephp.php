@@ -265,8 +265,10 @@ return [
         // Build output directory (where the ZIP will be created)
         'build_path' => env('NATIVEPHP_BUILD_PATH', 'storage/app/native-build'),
 
-        // Automatically open browser with QR code when server starts
-        'open_browser' => env('NATIVEPHP_OPEN_BROWSER', true),
+        // Automatically open browser with QR code when server starts.
+        // Default off — the terminal renders a scannable QR. Pass --browser
+        // to native:jump (or set NATIVEPHP_OPEN_BROWSER=true) to opt in.
+        'open_browser' => env('NATIVEPHP_OPEN_BROWSER', false),
 
         // Watch these directories for changes
         'watch_paths' => [

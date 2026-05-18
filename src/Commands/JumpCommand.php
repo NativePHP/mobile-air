@@ -94,12 +94,14 @@ class JumpCommand extends Command
             $this->startLaravelServer($this->laravelPort, $bridgePort, $wsPort);
         }
 
-        // Open the browser-rendered QR page only when explicitly requested
-        // via --browser, or when the user has set the config opt-in. The
-        // terminal QR is the default visual; the browser fallback is for
+        // Open the browser-rendered QR page only when --browser is passed.
+        // Terminal QR is the default; the browser page is the fallback for
         // environments where terminal rendering can't produce a scannable
         // image (font/line-height issues, narrow viewports, etc.).
-        $openQr = $this->option('browser') || config('nativephp.server.open_browser', false);
+        // Intentionally ignore config('nativephp.server.open_browser') —
+        // published consumer configs default it to true, which would
+        // override the flag-driven UX we want here.
+        $openQr = (bool) $this->option('browser');
 
         // Get the local IP for dev server config
         $ipOption = $this->option('ip');
@@ -711,6 +713,8 @@ class JumpCommand extends Command
 
             $this->newLine();
             $this->line("  <fg=gray>{$qrData}</>");
+            $this->newLine();
+            $this->line("  <fg=yellow>Can't scan the QR code? Try it in the browser by re-running with <fg=cyan>--browser</></>");
             $this->newLine();
         } catch (\Throwable $e) {
             // QR display is optional — don't break the server
