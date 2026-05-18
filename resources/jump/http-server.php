@@ -120,7 +120,7 @@ $worker->name = 'JumpHttpProxy';
 $worker->onMessage = function (TcpConnection $connection, Request $request) {
     try {
         $response = jumpHandleRequest($request);
-    } catch (\Throwable $e) {
+    } catch (Throwable $e) {
         jumpRouterLog($request->method().' '.$request->uri().' [500 handler-exception] '.$e->getMessage());
         $response = new Response(500, ['Content-Type' => 'text/plain; charset=utf-8'], 'Internal proxy error: '.$e->getMessage());
     }
@@ -240,7 +240,7 @@ function jumpRenderQrPage(string $method, string $uri): Response
 
     try {
         if (! class_exists(Builder::class)) {
-            throw new \RuntimeException('QR Code library not available. Make sure endroid/qr-code is installed.');
+            throw new RuntimeException('QR Code library not available. Make sure endroid/qr-code is installed.');
         }
 
         $qrData = "jump://connect?host={$JUMP['displayHost']}&port={$JUMP['httpPort']}";
@@ -276,7 +276,7 @@ function jumpRenderQrPage(string $method, string $uri): Response
         jumpRouterLog($method.' '.$uri.' [200]');
 
         return new Response(200, ['Content-Type' => 'text/html; charset=utf-8'], $html);
-    } catch (\Throwable $e) {
+    } catch (Throwable $e) {
         jumpRouterLog($method.' '.$uri.' [500 qr] '.$e->getMessage());
 
         return new Response(500, ['Content-Type' => 'text/plain; charset=utf-8'], 'Error generating QR code: '.$e->getMessage());
