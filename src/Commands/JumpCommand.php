@@ -31,6 +31,8 @@ class JumpCommand extends Command
 
     private array $laravelPipes = [];
 
+    private $bridgeProcess = null;
+
     private bool $verbose = false;
 
     public function handle()
@@ -299,21 +301,37 @@ class JumpCommand extends Command
         @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort} vite_proxy={$viteProxyPort}) ===\n", FILE_APPEND);
 
         // Run in background (not Workerman daemon mode — it breaks the event loop).
-        // Windows: `&` is a command separator (not "background"), so exec() would
-        // block here forever waiting on the long-lived server. Use `start /B` to
-        // detach properly.
         if (PHP_OS_FAMILY === 'Windows') {
+            // `&` is a command separator on Windows (not "background"), and the
+            // previous `pclose(popen("start /B ..."))` approach hangs: cmd.exe's
+            // stdout pipe (created by popen) gets inherited by the grandchild
+            // PHP via CreateProcess(bInheritHandles=TRUE) and the pipe never
+            // sees EOF, so pclose blocks until the long-lived bridge exits.
+            //
+            // Use proc_open with explicit file handles (no inheritable pipes)
+            // and bypass_shell so no cmd.exe sits in the middle. Intentionally
+            // do NOT proc_close the resource — that would wait on the
+            // long-running child. The OS process is independent and the PHP
+            // resource is cleaned up at script shutdown.
             $cmd = sprintf(
-                'start "" /B %s %s %s %d %d %d start >> %s 2>&1',
+                '%s %s %s %d %d %d start',
                 escapeshellarg($phpBinary),
                 escapeshellarg($serverPath),
                 escapeshellarg(base_path()),
                 $wsPort,
                 $bridgePort,
-                $viteProxyPort,
-                escapeshellarg($logFile)
+                $viteProxyPort
             );
-            pclose(popen($cmd, 'r'));
+            $desc = [
+                0 => ['file', 'NUL', 'r'],
+                1 => ['file', $logFile, 'a'],
+                2 => ['file', $logFile, 'a'],
+            ];
+            // Keep the resource on the instance so its destructor doesn't fire
+            // mid-command (proc_close blocks waiting for the long-lived child).
+            // On Ctrl+C the PHP process is hard-terminated by Windows and the
+            // bridge stays running, matching Mac/Linux behaviour.
+            $this->bridgeProcess = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
         } else {
             $cmd = sprintf(
                 '%s %s %s %d %d %d start >> %s 2>&1 &',
