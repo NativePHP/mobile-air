@@ -26,6 +26,7 @@ use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RunCommand;
+use Native\Mobile\Commands\SimCommand;
 use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
@@ -58,6 +59,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 RunCommand::class,
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
+                SimCommand::class,
                 ReleaseCommand::class,
                 JumpCommand::class,
                 WatchCommand::class,

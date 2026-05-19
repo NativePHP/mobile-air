@@ -673,12 +673,22 @@ class AndroidPluginCompiler
 
         $attrString = implode("\n            ", $attrs);
 
+        $nestedContent = '';
+
         // Support both snake_case and kebab-case
         $intentFilters = $receiver['intent_filters'] ?? $receiver['intent-filters'] ?? [];
         if (! empty($intentFilters)) {
-            $filters = $this->buildIntentFilters($intentFilters);
+            $nestedContent .= $this->buildIntentFilters($intentFilters);
+        }
 
-            return "<receiver\n            {$attrString}>\n{$filters}        </receiver>";
+        // Add meta-data support at receiver level (e.g. for AppWidgetProvider)
+        $metaData = $receiver['meta_data'] ?? $receiver['meta-data'] ?? [];
+        if (! empty($metaData)) {
+            $nestedContent .= $this->buildComponentMetaData($metaData);
+        }
+
+        if (! empty($nestedContent)) {
+            return "<receiver\n            {$attrString}>\n{$nestedContent}        </receiver>";
         }
 
         return "<receiver\n            {$attrString} />";

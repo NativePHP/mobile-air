@@ -356,6 +356,7 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
 // The mutex serializes all access — only one PHP execution at a time.
 
 static int persistent_initialized = 0;
+static char *persistent_bootstrap_path = NULL;
 
 /**
  * Boot the persistent PHP interpreter once.
@@ -411,7 +412,13 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     }
 
     persistent_initialized = 1;
+
+    // Store bootstrap path for reboot capability
+    if (persistent_bootstrap_path) free(persistent_bootstrap_path);
+    persistent_bootstrap_path = strdup(bootstrapPath);
+
     set_persistent_boot_state(PERSISTENT_BOOT_SUCCEEDED);
+
     LOGI("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
@@ -673,6 +680,76 @@ JNIEXPORT jstring JNICALL native_persistent_artisan(JNIEnv *env, jobject thiz, j
 }
 
 /**
+ * Reboot the persistent runtime WITHOUT restarting the PHP interpreter.
+ * Flushes the Laravel app, clears opcache, and re-executes the bootstrap script.
+ * The PHP process stays alive — only the Laravel application is rebuilt.
+ */
+JNIEXPORT jint JNICALL native_persistent_reboot(JNIEnv *env, jobject thiz) {
+    pthread_mutex_lock(&g_php_request_mutex);
+
+    if (!persistent_initialized || !persistent_bootstrap_path) {
+        LOGE("persistent_reboot: runtime not initialized or no bootstrap path");
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return -1;
+    }
+
+    LOGI("persistent_reboot: rebooting Laravel (PHP interpreter stays alive)...");
+
+    // 1. Shut down the Laravel application (flush container, null out kernel)
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "persistent_reboot_shutdown");
+    } zend_end_try();
+    LOGI("persistent_reboot: Runtime::shutdown() complete");
+
+    // 2. Clear opcache so PHP re-reads files from disk
+    zend_first_try {
+        zend_eval_string(
+            "if (function_exists('opcache_reset')) { opcache_reset(); }",
+            NULL, "persistent_reboot_opcache"
+        );
+    } zend_end_try();
+    LOGI("persistent_reboot: opcache cleared");
+
+    // 3. Clear compiled views and cached config
+    zend_first_try {
+        zend_eval_string(
+            "$__storage = getenv('LARAVEL_STORAGE_PATH');"
+            "if ($__storage) {"
+            "    $__viewsDir = $__storage . '/framework/views';"
+            "    if (is_dir($__viewsDir)) {"
+            "        foreach (glob($__viewsDir . '/*.php') as $__f) { @unlink($__f); }"
+            "    }"
+            "    @unlink($__storage . '/framework/cache/config.php');"
+            "    @unlink($__storage . '/framework/cache/routes-v7.php');"
+            "}",
+            NULL, "persistent_reboot_clear_cache"
+        );
+    } zend_end_try();
+    LOGI("persistent_reboot: compiled views and cache cleared");
+
+    // 4. Rebuild the Laravel application from scratch
+    //    Autoloader is already loaded, classes are in memory — just create fresh app + kernel
+    clear_collected_output();
+    zend_first_try {
+        zend_eval_string(
+            "$app = require $_SERVER['LARAVEL_BOOTSTRAP_PATH'] . '/app.php';"
+            "\\Native\\Mobile\\Runtime::boot($app);"
+            "error_log('persistent_reboot: Laravel re-bootstrapped');",
+            NULL, "persistent_reboot_bootstrap"
+        );
+    } zend_end_try();
+
+    char *boot_output = get_collected_output();
+    if (boot_output && strlen(boot_output) > 0) {
+        LOGI("persistent_reboot: bootstrap output: %.500s", boot_output);
+    }
+
+    LOGI("persistent_reboot: Laravel rebooted successfully");
+    pthread_mutex_unlock(&g_php_request_mutex);
+    return 0;
+}
+
+/**
  * Shut down the persistent PHP interpreter.
  * Called on app destroy or before hot-reload reboot.
  */
@@ -698,6 +775,11 @@ JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
     // Reset the gate so a future ephemeral_embed_init cold path is safe and
     // a subsequent persistent_boot can transition IN_PROGRESS cleanly.
     set_persistent_boot_state(PERSISTENT_BOOT_NEVER_STARTED);
+
+    if (persistent_bootstrap_path) {
+        free(persistent_bootstrap_path);
+        persistent_bootstrap_path = NULL;
+    }
 
     LOGI("persistent_shutdown: done");
     pthread_mutex_unlock(&g_php_request_mutex);
@@ -1353,6 +1435,7 @@ static JNINativeMethod gMethods[] = {
         {"nativePersistentDispatch","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_dispatch},
         {"nativePersistentArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_artisan},
         {"nativePersistentShutdown","()V",(void *) native_persistent_shutdown},
+        {"nativePersistentReboot","()I",(void *) native_persistent_reboot},
 
         // Worker (background queue) methods
         {"nativeWorkerBoot","(Ljava/lang/String;)I",(void *) native_worker_boot},

@@ -58,6 +58,7 @@ class PHPBridge(private val context: Context) {
     ): String
     external fun nativePersistentArtisan(command: String): String
     external fun nativePersistentShutdown()
+    external fun nativePersistentReboot(): Int
 
     // Worker (background queue) JNI methods — runs on a separate thread with its own TSRM context
     external fun nativeWorkerBoot(bootstrapPath: String): Int
@@ -150,6 +151,31 @@ class PHPBridge(private val context: Context) {
     }
 
     fun isPersistentMode(): Boolean = persistentMode && persistentBooted
+
+    /**
+     * Reboot the persistent runtime without restarting the PHP interpreter.
+     * Flushes the Laravel app, clears opcache and compiled views, then re-bootstraps.
+     * Used by hot reload to pick up file changes while keeping persistent mode speed.
+     */
+    fun rebootPersistentRuntime(): Boolean {
+        if (!persistentBooted) {
+            Log.w(TAG, "Cannot reboot — persistent runtime not booted")
+            return false
+        }
+        val future = phpExecutor.submit<Boolean> {
+            val start = System.currentTimeMillis()
+            val result = nativePersistentReboot()
+            val elapsed = System.currentTimeMillis() - start
+            if (result == 0) {
+                Log.i(TAG, "Persistent runtime rebooted in ${elapsed}ms")
+                true
+            } else {
+                Log.e(TAG, "Persistent runtime reboot failed (code=$result) after ${elapsed}ms")
+                false
+            }
+        }
+        return future.get()
+    }
 
     /**
      * Boot the worker PHP runtime on a dedicated TSRM context.

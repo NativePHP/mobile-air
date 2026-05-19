@@ -36,7 +36,18 @@ final class DeepLinkRouter {
     func handle(url: URL) {
         DebugLogger.shared.log("🔗 DeepLinkRouter.handle() called with: \(url)")
         DebugLogger.shared.log("🔗 Current state - WebView ready: \(isWebViewReady), PHP ready: \(isPhpReady)")
-        
+
+        // Guard: DeepLinkRouter only handles deep links (custom URL schemes and universal links).
+        // File URLs are delivered to the app when CFBundleDocumentTypes / LSSupportsOpeningDocumentsInPlace
+        // are declared (e.g. when the user picks the app from another app's share sheet or "Open In…").
+        // Without this guard, the file path is treated as a Laravel route and the WebView displays
+        // a 404 like "route /private/var/mobile/.../filename.pdf could not be found". Plugins that
+        // declare document types are responsible for handling file URLs before they reach this router.
+        guard !url.isFileURL else {
+            DebugLogger.shared.log("🔗 Ignoring file URL — DeepLinkRouter only handles deep links: \(url)")
+            return
+        }
+
         // 1. Normalise the URL (strip scheme, keep host/path/query)
         var route = ""
 

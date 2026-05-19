@@ -509,10 +509,17 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             val reloadFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/reload_signal.json")
             var lastModified: Long = 0
 
+            Log.d("HotReload", "Watcher started, persistent=${phpBridge.isPersistentMode()}")
+
             while (!shouldStopWatcher && !Thread.currentThread().isInterrupted) {
                 try {
                     if (reloadFile.exists() && reloadFile.lastModified() > lastModified) {
                         lastModified = reloadFile.lastModified()
+
+                        // Reboot the persistent runtime so it picks up file changes
+                        if (phpBridge.isPersistentMode()) {
+                            phpBridge.rebootPersistentRuntime()
+                        }
 
                         runOnUiThread {
                             webView.stopLoading()

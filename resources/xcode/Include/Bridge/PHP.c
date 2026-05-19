@@ -175,7 +175,8 @@ typedef struct {
 typedef enum {
     PHP_WORK_DISPATCH,
     PHP_WORK_ARTISAN,
-    PHP_WORK_SHUTDOWN
+    PHP_WORK_SHUTDOWN,
+    PHP_WORK_REBOOT
 } php_work_type_t;
 
 // Synchronization: caller posts to work_sem, worker posts to done_sem
@@ -191,6 +192,7 @@ static char                *php_work_str_result  = NULL;
 static int persistent_initialized = 0;
 static int worker_thread_alive = 0;
 static char *persistent_boot_error = NULL;
+static char *persistent_bootstrap_path = NULL;
 
 // ── Persistent boot gate ─────────────────────────────────────────────────
 // Serializes startup: worker/ephemeral runtimes wait until php_embed_init
@@ -243,6 +245,7 @@ static int wait_for_persistent_boot(int timeout_seconds) {
 static void do_dispatch(const dispatch_params_t *params);
 static void do_artisan(const char *command);
 static void do_shutdown(void);
+static void do_reboot(void);
 
 static void setup_persistent_sapi(void) {
     php_embed_module.ub_write       = capture_php_output;
@@ -326,6 +329,9 @@ static void *php_worker_main(void *arg) {
         persistent_initialized = 1;
         php_work_int_result = 0;
         free(bootstrap_output);
+        // Store bootstrap path for reboot
+        if (persistent_bootstrap_path) free(persistent_bootstrap_path);
+        persistent_bootstrap_path = strdup(bootstrapPath);
         // Clear any previous boot error
         if (persistent_boot_error) { free(persistent_boot_error); persistent_boot_error = NULL; }
         fprintf(stderr, "PHP-WORKER: bootstrap complete, Runtime::isBooted() confirmed\n");
@@ -371,6 +377,9 @@ static void *php_worker_main(void *arg) {
                 break;
             case PHP_WORK_SHUTDOWN:
                 do_shutdown();
+                break;
+            case PHP_WORK_REBOOT:
+                do_reboot();
                 break;
         }
 
@@ -605,9 +614,74 @@ static void do_shutdown(void) {
 
     persistent_initialized = 0;
     worker_thread_alive = 0;
+
+    if (persistent_bootstrap_path) {
+        free(persistent_bootstrap_path);
+        persistent_bootstrap_path = NULL;
+    }
+
     // After shutdown the per-thread TSRM/SAPI state is gone; reset the gate
     // so a later ephemeral/worker caller can't wrongly take the hot path.
     set_persistent_boot_state(PERSISTENT_BOOT_NEVER_STARTED);
+}
+
+/// Reboot the persistent runtime WITHOUT restarting the PHP interpreter.
+/// Flushes the Laravel app, clears opcache and compiled views, then re-bootstraps.
+static void do_reboot(void) {
+    if (!persistent_initialized || !persistent_bootstrap_path) {
+        fprintf(stderr, "persistent_reboot: not initialized or no bootstrap path\n");
+        fflush(stderr);
+        php_work_int_result = -1;
+        return;
+    }
+
+    fprintf(stderr, "persistent_reboot: rebooting Laravel (PHP interpreter stays alive)...\n");
+    fflush(stderr);
+
+    // 1. Shut down the Laravel application
+    clear_output_buffer();
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "persistent_reboot_shutdown");
+    } zend_end_try();
+
+    // 2. Clear opcache
+    zend_first_try {
+        zend_eval_string(
+            "if (function_exists('opcache_reset')) { opcache_reset(); }",
+            NULL, "persistent_reboot_opcache"
+        );
+    } zend_end_try();
+
+    // 3. Clear compiled views and cached config
+    zend_first_try {
+        zend_eval_string(
+            "$__storage = getenv('LARAVEL_STORAGE_PATH');"
+            "if ($__storage) {"
+            "    $__viewsDir = $__storage . '/framework/views';"
+            "    if (is_dir($__viewsDir)) {"
+            "        foreach (glob($__viewsDir . '/*.php') as $__f) { @unlink($__f); }"
+            "    }"
+            "    @unlink($__storage . '/framework/cache/config.php');"
+            "    @unlink($__storage . '/framework/cache/routes-v7.php');"
+            "}",
+            NULL, "persistent_reboot_clear_cache"
+        );
+    } zend_end_try();
+
+    // 4. Rebuild the Laravel application
+    clear_output_buffer();
+    zend_first_try {
+        zend_eval_string(
+            "$app = require $_SERVER['LARAVEL_BOOTSTRAP_PATH'] . '/app.php';"
+            "\\Native\\Mobile\\Runtime::boot($app);"
+            "error_log('persistent_reboot: Laravel re-bootstrapped');",
+            NULL, "persistent_reboot_bootstrap"
+        );
+    } zend_end_try();
+
+    fprintf(stderr, "persistent_reboot: Laravel rebooted successfully\n");
+    fflush(stderr);
+    php_work_int_result = 0;
 }
 
 // ── Public API (called from Swift, dispatches to PHP thread) ──
@@ -714,6 +788,13 @@ void persistent_php_shutdown(void) {
     if (!persistent_initialized) return;
     php_work_type = PHP_WORK_SHUTDOWN;
     submit_and_wait(PHP_WORK_SHUTDOWN);
+}
+
+int persistent_php_reboot(void) {
+    if (!persistent_initialized) return -1;
+    php_work_type = PHP_WORK_REBOOT;
+    submit_and_wait(PHP_WORK_REBOOT);
+    return php_work_int_result;
 }
 
 int persistent_php_is_booted(void) {

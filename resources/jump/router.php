@@ -41,8 +41,13 @@ function jumpRequestLog($message)
     if (! $basePath) {
         return;
     }
-    $logFile = $basePath.'/storage/logs/jump-bridge.log';
-    @file_put_contents($logFile, '['.date('H:i:s').'] [Jump] '.$message."\n", FILE_APPEND);
+    // Router writes to its own file so concurrent appends from the Workerman
+    // bridge (which logs device connects to jump-bridge.log) don't interleave
+    // with our request lines — on Windows, two processes appending to the
+    // same file regularly produced clobbered/truncated lines that hid the
+    // actual request flow during debugging.
+    $logFile = $basePath.'/storage/logs/jump-router.log';
+    @file_put_contents($logFile, '['.date('H:i:s.').substr((string) (microtime(true) - floor(microtime(true))), 2, 3).'] [Jump] '.$message."\n", FILE_APPEND);
 }
 
 // Helper function to format bytes
@@ -85,6 +90,15 @@ function jumpLog($message)
         fwrite($stderr, "[Jump] {$message}\n");
         fclose($stderr);
     }
+}
+
+// Log the START of every non-trivial request. Pairs with the completion log
+// at the end of each proxy function so we can see which request is in-flight
+// when the router wedges — without entry logs we only see successful
+// completions, which makes "stuck on upstream" look identical to "request
+// never arrived".
+if ($path !== '/favicon.ico' && ! str_ends_with($path, '.map')) {
+    jumpRequestLog($_SERVER['REQUEST_METHOD'].' '.$_SERVER['REQUEST_URI'].' [start]');
 }
 
 // Ignore favicon and sourcemap requests
@@ -959,16 +973,36 @@ function proxyToVite($vitePort)
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    // Vite can take well over 10s for cold transforms (Vue SFC compile,
+    // first-hit module graph build, large /@vite/client at ~200KB). The
+    // original 10s timeout was producing 502s under `npm run dev` cold load
+    // on Windows where PHP startup + Vite first-compile compounds.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
+    $upstreamStart = microtime(true);
     $response = curl_exec($ch);
+    $upstreamMs = (int) ((microtime(true) - $upstreamStart) * 1000);
+    $error = curl_error($ch);
+    $errno = curl_errno($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
     if ($response === false) {
         http_response_code(502);
-        echo 'Vite dev server not reachable on port '.$vitePort;
+
+        if ($errno === CURLE_COULDNT_CONNECT) {
+            $detail = "Vite dev server is not listening on {$viteUrl}. Is `npm run dev` running?";
+        } elseif ($errno === CURLE_OPERATION_TIMEDOUT) {
+            $detail = "Vite request to {$viteUrl} timed out after 30s ({$upstreamMs}ms).";
+        } else {
+            $detail = "Could not reach Vite at {$viteUrl}. cURL error ({$errno}): {$error}";
+        }
+
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Bad Gateway: {$detail}";
+        jumpRequestLog("{$method} {$uri} [502 vite] {$detail}");
 
         return;
     }
@@ -996,6 +1030,11 @@ function proxyToVite($vitePort)
         if (stripos($headerLine, 'transfer-encoding:') === 0) {
             continue;
         }
+        // Strip upstream's connection-management headers — see Connection: close
+        // note below.
+        if (stripos($headerLine, 'connection:') === 0 || stripos($headerLine, 'keep-alive:') === 0) {
+            continue;
+        }
         // If we patched the body, the original Content-Length is stale.
         if ($path === '/@vite/client' && stripos($headerLine, 'content-length:') === 0) {
             continue;
@@ -1015,7 +1054,21 @@ function proxyToVite($vitePort)
     header('Pragma: no-cache');
     header('Expires: 0');
 
+    // Tell the client to close after this response. `php -S` doesn't honour
+    // this on its own, but the client does — and that's what matters: idle
+    // keep-alive sockets from the phone WebView were piling up after page
+    // load and wedging the single-threaded server. See proxyToLaravel for
+    // the full rationale.
+    header('Connection: close');
+
     echo $responseBody;
+
+    // Log successful Vite proxy completions to match the proxyToLaravel
+    // logging shape. Without this, the router log was showing only
+    // `[start]` lines for Vite-proxied paths (and only fonts/Laravel
+    // routes had visible completions), which made it look like Vite
+    // requests were hanging when they were actually completing silently.
+    jumpRequestLog("{$method} {$uri} [{$httpCode} vite {$upstreamMs}ms]");
 }
 
 /**
@@ -1135,7 +1188,11 @@ function proxyToLaravel($laravelPort)
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    // Generous transfer timeout — PHP's built-in server is single-threaded,
+    // so a cold first request (opcache empty, Inertia/Wayfinder boot) can
+    // easily exceed 30s on Windows + Herd. JumpCommand pre-warms Laravel
+    // before printing the QR, but keep headroom here for slow handlers.
+    curl_setopt($ch, CURLOPT_TIMEOUT, 90);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
 
     if ($body !== null) {
@@ -1144,14 +1201,28 @@ function proxyToLaravel($laravelPort)
 
     $response = curl_exec($ch);
     $error = curl_error($ch);
+    $errno = curl_errno($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
     if ($response === false) {
         http_response_code(502);
-        echo "Bad Gateway: Could not connect to Laravel on port {$laravelPort}. Error: {$error}";
-        jumpRequestLog("{$method} {$uri} [502]");
+
+        // Differentiate "Laravel isn't there" from "Laravel is too slow" —
+        // the original message blamed both on the same cause and made the
+        // common slow-cold-start case look like a server failure.
+        if ($errno === CURLE_COULDNT_CONNECT) {
+            $detail = "Laravel dev server is not listening on 127.0.0.1:{$laravelPort}. Is `artisan serve` running?";
+        } elseif ($errno === CURLE_OPERATION_TIMEDOUT) {
+            $detail = "Request to Laravel on port {$laravelPort} timed out. The handler took longer than 90s to respond.";
+        } else {
+            $detail = "Could not reach Laravel on port {$laravelPort}. cURL error ({$errno}): {$error}";
+        }
+
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Bad Gateway: {$detail}";
+        jumpRequestLog("{$method} {$uri} [502] {$detail}");
 
         return;
     }
@@ -1183,6 +1254,12 @@ function proxyToLaravel($laravelPort)
         if (stripos($headerLine, 'transfer-encoding:') === 0) {
             continue;
         }
+        // Strip upstream's connection-management headers so we can emit our
+        // own `Connection: close` below — see the close-after-response note
+        // at the end of this function for why.
+        if (stripos($headerLine, 'connection:') === 0 || stripos($headerLine, 'keep-alive:') === 0) {
+            continue;
+        }
         // Rewrite Location headers that still point to Laravel's internal address
         if (stripos($headerLine, 'location:') === 0) {
             $headerLine = str_replace($laravelOrigin, $jumpOrigin, $headerLine);
@@ -1198,6 +1275,17 @@ function proxyToLaravel($laravelPort)
             header($headerLine);
         }
     }
+
+    // Force the client to close the TCP connection after this response. PHP's
+    // built-in dev server (`php -S`) does not honour `Connection: close` on
+    // outgoing responses — it decides keep-alive based on the *request* — but
+    // the WebView / browser does. Without this, the phone WebView holds
+    // 10+ idle keep-alive sockets to the router after a page load, which on
+    // Windows starves PHP -S of the ability to accept any new connections
+    // (browser visits to the same proxy hang indefinitely). Closing per
+    // response trades reusable keep-alive (negligible on localhost/LAN) for
+    // a router that stays responsive after the phone is done loading.
+    header('Connection: close');
 
     // Rewrite Vite dev server URLs so the phone routes them through the Jump proxy.
     // Vite can generate URLs with localhost, 127.0.0.1, [::], or the network IP.
