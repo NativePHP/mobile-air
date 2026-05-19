@@ -107,7 +107,18 @@ class AppUpdateManager {
         var fileDataMap: [(path: URL, data: Data)] = []
 
         for entry in archive {
-            let destinationPath = destinationURL.appendingPathComponent(entry.path)
+            // ZIPFoundation 0.9.19's `entry.path` decodes as CP437 unless the EFS bit
+            // is set on the entry — and macOS `zip` often omits that flag even for
+            // UTF-8 names, producing mojibake (⚡️ → ΓÜí∩╕Å). Force UTF-8 decode via
+            // path(using:); fall back to `entry.path` only if the bytes aren't valid
+            // UTF-8 (which shouldn't happen for archives we build).
+            let utf8Path = entry.path(using: .utf8)
+            let rawPath = utf8Path.isEmpty ? entry.path : utf8Path
+
+            // Normalize to NFC: macOS sources may emit NFD filenames; iOS APFS stores
+            // bytes verbatim, but PHP autoloaders look up the NFC form.
+            let normalizedPath = (rawPath as NSString).precomposedStringWithCanonicalMapping
+            let destinationPath = destinationURL.appendingPathComponent(normalizedPath)
 
             switch entry.type {
             case .directory:
