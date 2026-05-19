@@ -334,6 +334,9 @@ class PHPWebViewClient(
             "png" -> "image/png"
             "jpg", "jpeg" -> "image/jpeg"
             "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "heic" -> "image/heic"
+            "heif" -> "image/heif"
             "svg" -> "image/svg+xml"
             "json" -> "application/json"
             "pdf" -> "application/pdf"
@@ -345,6 +348,26 @@ class PHPWebViewClient(
             "eot" -> "application/vnd.ms-fontobject"
             "otf" -> "font/otf"
             "ico" -> "image/x-icon"
+            // Video — Chromium WebView refuses to play <video src> without an
+            // explicit video/* Content-Type. Without these entries the asset
+            // handler returned application/octet-stream and the player
+            // stayed black on Android.
+            "mp4" -> "video/mp4"
+            "m4v" -> "video/x-m4v"
+            "mov" -> "video/quicktime"
+            "webm" -> "video/webm"
+            "mkv" -> "video/x-matroska"
+            "avi" -> "video/x-msvideo"
+            "3gp" -> "video/3gpp"
+            // HLS playlist + segments for locally served streams.
+            "m3u8" -> "application/vnd.apple.mpegurl"
+            "ts" -> "video/mp2t"
+            // Audio
+            "mp3" -> "audio/mpeg"
+            "wav" -> "audio/wav"
+            "m4a" -> "audio/mp4"
+            "aac" -> "audio/aac"
+            "ogg" -> "audio/ogg"
             else -> {
                 Log.w(TAG, "⚠️ Unknown file extension for: $fileName. Defaulting to application/octet-stream")
                 "application/octet-stream"

@@ -255,10 +255,47 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             return "image/jpeg"
         case "gif":
             return "image/gif"
+        case "webp":
+            return "image/webp"
+        case "heic":
+            return "image/heic"
+        case "heif":
+            return "image/heif"
         case "svg":
             return "image/svg+xml"
+        // Video — keep parity with the Android handler so plugin-staged media
+        // (and any other locally served clips) play with the correct
+        // Content-Type. WKWebView byte-sniffs in some cases, but stricter
+        // clients still need an explicit video/* type.
+        case "mp4":
+            return "video/mp4"
+        case "m4v":
+            return "video/x-m4v"
+        case "mov":
+            return "video/quicktime"
+        case "webm":
+            return "video/webm"
+        case "mkv":
+            return "video/x-matroska"
+        case "avi":
+            return "video/x-msvideo"
+        case "3gp":
+            return "video/3gpp"
+        case "m3u8":
+            return "application/vnd.apple.mpegurl"
+        case "ts":
+            return "video/mp2t"
+        // Audio
         case "m4a":
             return "audio/mp4"
+        case "mp3":
+            return "audio/mpeg"
+        case "wav":
+            return "audio/wav"
+        case "aac":
+            return "audio/aac"
+        case "ogg":
+            return "audio/ogg"
         default:
             return "application/octet-stream"
         }
