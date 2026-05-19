@@ -260,13 +260,9 @@ class AppUpdateManager {
         }
     }
 
+    /// Returns just the version name (e.g. "1.0.0"). Used for OTA URLs / display.
+    /// For the staleness comparison against the bundle, use `getInstalledVersionId()`.
     func getAppVersion() -> String? {
-        // Try to get version from installed.version file first (fastest)
-        if let installedVersion = getInstalledVersion() {
-            return installedVersion
-        }
-
-        // If app directory doesn't exist, assume DEBUG version
         if !FileManager.default.fileExists(atPath: appPath) {
             print("❌ App directory doesn't exist - assuming DEBUG")
             return "DEBUG"
@@ -284,56 +280,98 @@ class AppUpdateManager {
         return "DEBUG"
     }
 
+    /// Returns the composite "version+build" identity for the installed app
+    /// (e.g. "1.0.0b42", or "DEBUG"). Falls back to building it from the
+    /// extracted .env if installed.version is missing.
+    private func getInstalledVersionId() -> String? {
+        if let id = getInstalledVersion() {
+            return id
+        }
+        return getInstalledVersionIdFromEnv()
+    }
+
+    private func getInstalledVersionIdFromEnv() -> String? {
+        let envFile = appPath + "/.env"
+        guard FileManager.default.fileExists(atPath: envFile) else {
+            return nil
+        }
+        guard let version = getVersionFromEnvFile(envFile) else {
+            return nil
+        }
+        return buildVersionId(version: version, versionCode: getVersionCodeFromEnvFile(envFile))
+    }
+
+    private func buildVersionId(version: String, versionCode: String?) -> String {
+        if version == "DEBUG" {
+            return "DEBUG"
+        }
+        return "\(version)b\(versionCode ?? "0")"
+    }
+
     private func getVersionFromEnvFile(_ envFilePath: String) -> String? {
+        return getEnvValue(envFilePath, key: "NATIVEPHP_APP_VERSION")
+    }
+
+    private func getVersionCodeFromEnvFile(_ envFilePath: String) -> String? {
+        return getEnvValue(envFilePath, key: "NATIVEPHP_APP_VERSION_CODE")
+    }
+
+    private func getEnvValue(_ envFilePath: String, key: String) -> String? {
         do {
             let envContent = try String(contentsOfFile: envFilePath, encoding: .utf8)
-            // Look for NATIVEPHP_APP_VERSION=value
-            let regex = try NSRegularExpression(pattern: "NATIVEPHP_APP_VERSION=(.+)")
+            return extractEnvValue(envContent, key: key)
+        } catch {
+            print("❌ Error reading .env file: \(error)")
+            return nil
+        }
+    }
+
+    private func extractEnvValue(_ envContent: String, key: String) -> String? {
+        do {
+            let pattern = "^\(NSRegularExpression.escapedPattern(for: key))=(.+)$"
+            let regex = try NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
             let range = NSRange(location: 0, length: envContent.utf16.count)
 
             if let match = regex.firstMatch(in: envContent, range: range) {
-                let versionRange = Range(match.range(at: 1), in: envContent)!
-                let version = String(envContent[versionRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-                // Remove surrounding quotes if present
-                let cleanVersion = version.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                return cleanVersion
+                let valueRange = Range(match.range(at: 1), in: envContent)!
+                let value = String(envContent[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             }
         } catch {
-            print("❌ Error reading .env file: \(error)")
+            print("❌ Error matching \(key) in .env: \(error)")
         }
-
         return nil
     }
 
     private func shouldUpdateFromBundle() -> Bool {
-        guard let bundledVersion = getBundledAppVersionFast() else {
+        guard let bundledId = getBundledAppVersionFast() else {
             print("⚠️ Could not read version from bundled.version file, falling back to ZIP extraction")
-            guard let bundledVersion = getBundledAppVersion() else {
+            guard let bundledId = getBundledAppVersion() else {
                 print("⚠️ Could not read version from bundled app.zip")
                 return false
             }
-            return shouldUpdateWithVersion(bundledVersion)
+            return shouldUpdateWithVersion(bundledId)
         }
 
-        return shouldUpdateWithVersion(bundledVersion)
+        return shouldUpdateWithVersion(bundledId)
     }
 
-    private func shouldUpdateWithVersion(_ bundledVersion: String) -> Bool {
+    private func shouldUpdateWithVersion(_ bundledId: String) -> Bool {
         // Special case: If bundled version is DEBUG, always update from bundle (for development)
-        if bundledVersion == "DEBUG" {
+        if bundledId == "DEBUG" {
             print("🚧 DEBUG version detected, updating from bundle")
             return true
         }
 
-        let currentVersion = getInstalledVersion() ?? getAppVersion()
+        let currentId = getInstalledVersionId()
 
-        // If versions differ, update from bundle
-        if currentVersion != bundledVersion {
-            print("📦 Bundle version (\(bundledVersion)) differs from current (\(currentVersion ?? "none")), updating from bundle")
+        // If composite identities differ, update from bundle
+        if currentId != bundledId {
+            print("📦 Bundle id (\(bundledId)) differs from current (\(currentId ?? "none")), updating from bundle")
             return true
         }
 
-        print("✅ App already up to date with bundle version (\(bundledVersion))")
+        print("✅ App already up to date with bundle id (\(bundledId))")
         return false
     }
 
@@ -355,7 +393,7 @@ class AppUpdateManager {
             return nil
         }
 
-        // Try to read .env file first
+        // Try to build composite from .env first (preferred - has both version + version_code)
         if let envEntry = archive[".env"] {
             var envContent = Data()
             do {
@@ -363,9 +401,10 @@ class AppUpdateManager {
                     envContent.append(data)
                 }
                 if let envString = String(data: envContent, encoding: .utf8) {
-                    if let version = extractVersionFromEnv(envString) {
-                        print("✅ Read version from .env without full extraction")
-                        return version
+                    if let version = extractEnvValue(envString, key: "NATIVEPHP_APP_VERSION") {
+                        let versionCode = extractEnvValue(envString, key: "NATIVEPHP_APP_VERSION_CODE")
+                        print("✅ Read version id from .env without full extraction")
+                        return buildVersionId(version: version, versionCode: versionCode)
                     }
                 }
             } catch {
@@ -373,7 +412,7 @@ class AppUpdateManager {
             }
         }
 
-        // Fallback: try .version file
+        // Fallback: try .version file (already a composite when written by PreparesBuild)
         if let versionEntry = archive[".version"] {
             var versionContent = Data()
             do {
@@ -381,7 +420,7 @@ class AppUpdateManager {
                     versionContent.append(data)
                 }
                 if let versionString = String(data: versionContent, encoding: .utf8) {
-                    print("✅ Read version from .version without full extraction")
+                    print("✅ Read version id from .version without full extraction")
                     return versionString.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             } catch {
@@ -390,20 +429,6 @@ class AppUpdateManager {
         }
 
         print("❌ No .env or .version found in ZIP")
-        return nil
-    }
-
-    private func extractVersionFromEnv(_ envContent: String) -> String? {
-        let lines = envContent.components(separatedBy: .newlines)
-        for line in lines {
-            if line.hasPrefix("NATIVEPHP_APP_VERSION=") {
-                let version = String(line.dropFirst("NATIVEPHP_APP_VERSION=".count))
-                let trimmedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Remove surrounding quotes if present
-                let cleanVersion = trimmedVersion.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                return cleanVersion
-            }
-        }
         return nil
     }
 
@@ -659,16 +684,18 @@ class AppUpdateManager {
     private func createInstalledVersionFile() {
         let installedVersionPath = documentsPath + "/app/installed.version"
 
-        // Get the version from the extracted app's .env file
-        if let version = getAppVersion() {
-            do {
-                try version.write(toFile: installedVersionPath, atomically: true, encoding: .utf8)
-                print("📝 Created installed.version file: \(version)")
-            } catch {
-                print("❌ Failed to create installed.version file: \(error)")
-            }
-        } else {
-            print("⚠️ Could not determine app version for installed.version file")
+        // Build composite identity from the extracted .env so the on-disk
+        // identity matches the bundle (same format: "version+b+versionCode" or "DEBUG").
+        guard let id = getInstalledVersionIdFromEnv() else {
+            print("⚠️ Could not determine app version id for installed.version file")
+            return
+        }
+
+        do {
+            try id.write(toFile: installedVersionPath, atomically: true, encoding: .utf8)
+            print("📝 Created installed.version file: \(id)")
+        } catch {
+            print("❌ Failed to create installed.version file: \(error)")
         }
     }
 

@@ -146,7 +146,7 @@ class AndroidPluginCompiler
             return;
         }
 
-        // Check if there are any plugins with Android bridge functions
+        // Check if there are any plugins with Android bridge functions or init functions
         $hasAndroidFunctions = $allPlugins->filter(function (Plugin $p) {
             foreach ($p->getBridgeFunctions() as $function) {
                 if (! empty($function['android'])) {
@@ -157,6 +157,10 @@ class AndroidPluginCompiler
             return false;
         })->isNotEmpty();
 
+        $hasInitFunctions = $allPlugins->filter(function (Plugin $p) {
+            return $p->getAndroidInitFunction() !== null;
+        })->isNotEmpty();
+
         // Ensure generated directory exists
         $this->files->ensureDirectoryExists($this->generatedPath);
 
@@ -164,8 +168,8 @@ class AndroidPluginCompiler
         $allPlugins->filter(fn (Plugin $p) => $p->hasAndroidCode())
             ->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));
 
-        // Generate the registration file
-        if ($hasAndroidFunctions) {
+        // Generate the bridge function registration file
+        if ($hasAndroidFunctions || $hasInitFunctions) {
             $this->generateBridgeFunctionRegistration($allPlugins);
         } else {
             $this->generateEmptyRegistration();
@@ -265,8 +269,10 @@ class AndroidPluginCompiler
     protected function generateBridgeFunctionRegistration(Collection $plugins): void
     {
         $registrations = [];
+        $initFunctions = [];
 
         foreach ($plugins as $plugin) {
+            // Collect bridge function registrations
             foreach ($plugin->getBridgeFunctions() as $function) {
                 if (empty($function['android'])) {
                     continue;
@@ -279,9 +285,18 @@ class AndroidPluginCompiler
                     'params' => $function['android_params'] ?? ['activity'],
                 ];
             }
+
+            // Collect init functions
+            $initFunction = $plugin->getAndroidInitFunction();
+            if ($initFunction) {
+                $initFunctions[] = [
+                    'function' => $initFunction,
+                    'plugin' => $plugin->name,
+                ];
+            }
         }
 
-        $content = $this->renderRegistrationTemplate($registrations);
+        $content = $this->renderRegistrationTemplate($registrations, $initFunctions);
         $path = $this->generatedPath.'/PluginBridgeFunctionRegistration.kt';
 
         $this->files->put($path, $content);
@@ -291,7 +306,7 @@ class AndroidPluginCompiler
     /**
      * Render the Kotlin registration file
      */
-    protected function renderRegistrationTemplate(array $registrations): string
+    protected function renderRegistrationTemplate(array $registrations, array $initFunctions = []): string
     {
         // Build imports from the android class paths in nativephp.json
         $imports = collect($registrations)
@@ -301,6 +316,18 @@ class AndroidPluginCompiler
             ->sort()
             ->map(fn ($package) => "import {$package}")
             ->implode("\n");
+
+        // Add imports for init functions (top-level Kotlin functions need full path import)
+        $initImports = collect($initFunctions)
+            ->pluck('function')
+            ->unique()
+            ->sort()
+            ->map(fn ($func) => "import {$func}")
+            ->implode("\n");
+
+        if ($initImports) {
+            $imports = $imports ? $imports."\n".$initImports : $initImports;
+        }
 
         $registerCalls = collect($registrations)
             ->map(function ($reg) {
@@ -312,10 +339,36 @@ class AndroidPluginCompiler
             })
             ->implode("\n\n");
 
+        // Generate context-only registrations for cold-boot WorkManager execution
+        $contextRegisterCalls = collect($registrations)
+            ->filter(function ($reg) {
+                $params = $reg['params'] ?? ['activity'];
+
+                return ! in_array('activity', $params) && in_array('context', $params);
+            })
+            ->map(function ($reg) {
+                $className = $this->extractClassName($reg['class']);
+
+                return "    // Plugin: {$reg['plugin']}\n    registry.register(\"{$reg['name']}\", {$className}(context))";
+            })
+            ->implode("\n\n");
+
+        $initCalls = collect($initFunctions)
+            ->map(function ($init) {
+                // Extract just the function name from the full path
+                $parts = explode('.', $init['function']);
+                $funcName = end($parts);
+
+                return "    // Plugin: {$init['plugin']}\n    {$funcName}(context)";
+            })
+            ->implode("\n\n");
+
         return Stub::make('android/PluginBridgeFunctionRegistration.kt.stub')
             ->replaceAll([
                 'IMPORTS' => $imports,
+                'INIT_FUNCTIONS' => $initCalls,
                 'REGISTRATIONS' => $registerCalls,
+                'CONTEXT_REGISTRATIONS' => $contextRegisterCalls ?: '    // No context-only bridge functions registered',
             ])
             ->render();
     }
@@ -548,7 +601,6 @@ class AndroidPluginCompiler
         }
         if (isset($service['foregroundServiceType'])) {
             $type = $service['foregroundServiceType'];
-            // Support both array and string formats
             if (is_array($type)) {
                 $type = implode('|', $type);
             }
@@ -557,15 +609,51 @@ class AndroidPluginCompiler
 
         $attrString = implode("\n            ", $attrs);
 
-        // Support both snake_case and kebab-case
+        // Build nested content (intent-filters and meta-data)
+        $nestedContent = '';
+
+        // Support both snake_case and kebab-case for intent filters
         $intentFilters = $service['intent_filters'] ?? $service['intent-filters'] ?? [];
         if (! empty($intentFilters)) {
-            $filters = $this->buildIntentFilters($intentFilters);
+            $nestedContent .= $this->buildIntentFilters($intentFilters);
+        }
 
-            return "<service\n            {$attrString}>\n{$filters}        </service>";
+        // Add meta-data support at service level
+        $metaData = $service['meta_data'] ?? $service['meta-data'] ?? [];
+        if (! empty($metaData)) {
+            $nestedContent .= $this->buildComponentMetaData($metaData);
+        }
+
+        if (! empty($nestedContent)) {
+            return "<service\n            {$attrString}>\n{$nestedContent}        </service>";
         }
 
         return "<service\n            {$attrString} />";
+    }
+
+    /**
+     * Build meta-data XML entries for use inside manifest components
+     */
+    protected function buildComponentMetaData(array $metaDataEntries): string
+    {
+        $xml = '';
+
+        foreach ($metaDataEntries as $metaData) {
+            $name = $metaData['name'];
+            $value = $metaData['value'] ?? null;
+            $resource = $metaData['resource'] ?? null;
+
+            if ($resource !== null) {
+                $xml .= "            <meta-data android:name=\"{$name}\" android:resource=\"{$resource}\" />\n";
+            } elseif ($value !== null) {
+                if (is_bool($value)) {
+                    $value = $value ? 'true' : 'false';
+                }
+                $xml .= "            <meta-data android:name=\"{$name}\" android:value=\"{$value}\" />\n";
+            }
+        }
+
+        return $xml;
     }
 
     /**
@@ -890,14 +978,25 @@ class AndroidPluginCompiler
     {
         $url = $repo['url'];
         $credentials = $repo['credentials'] ?? null;
+        $authentication = $repo['authentication'] ?? null;
 
         if ($credentials) {
             $username = $this->substituteEnvPlaceholders($credentials['username'] ?? 'mapbox');
             $password = $this->substituteEnvPlaceholders($credentials['password'] ?? '');
 
+            $authBlock = '';
+            if ($authentication === 'basic') {
+                $authBlock = <<<'KOTLIN'
+
+                authentication {
+                    create<BasicAuthentication>("basic")
+                }
+KOTLIN;
+            }
+
             return <<<KOTLIN
         maven {
-            url = uri("{$url}")
+            url = uri("{$url}"){$authBlock}
             credentials {
                 username = "{$username}"
                 password = "{$password}"

@@ -11,5 +11,18 @@ import com.nativephp.mobile.bridge.BridgeFunctionRegistry
 fun registerPluginBridgeFunctions(activity: FragmentActivity, context: Context) {
     val registry = BridgeFunctionRegistry.shared
 
+{{ INIT_FUNCTIONS }}
+
 {{ REGISTRATIONS }}
+}
+
+/**
+ * Register only bridge functions that require Context (not Activity).
+ * Used by WorkManager workers for cold-boot background execution
+ * when no Activity is available.
+ */
+fun registerContextOnlyBridgeFunctions(context: Context) {
+    val registry = BridgeFunctionRegistry.shared
+
+{{ CONTEXT_REGISTRATIONS }}
 }

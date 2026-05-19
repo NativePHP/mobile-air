@@ -140,15 +140,15 @@ class EdgeCasesAndErrorHandlingTest extends TestCase
         }
     }
 
-    public function test_handles_icu_disabled_in_json()
+    public function test_handles_icu_disabled_in_lock()
     {
-        // Create PHPBridge.kt with ICU disabled in nativephp.json
+        // Create PHPBridge.kt with ICU disabled in nativephp.lock
         $bridgePath = $this->testProjectPath.'/nativephp/android/app/src/main/java/com/test/app/bridge/PHPBridge.kt';
         File::makeDirectory(dirname($bridgePath), 0755, true);
         File::put($bridgePath, 'class PHPBridge { init { System.loadLibrary("php") } }');
 
         config(['nativephp.app_id' => 'com.test.app']);
-        File::put($this->testProjectPath.'/nativephp.json', json_encode(['php' => ['version' => '8.4.7', 'icu' => false]]));
+        File::put($this->testProjectPath.'/nativephp.lock', json_encode(['php' => ['version' => '8.4.7', 'icu' => false]]));
 
         // Update ICU configuration with ICU disabled
         $this->updateIcuConfiguration();

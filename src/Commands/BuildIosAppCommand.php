@@ -209,6 +209,7 @@ class BuildIosAppCommand extends Command
 
             if (Str::startsWith($relativePath, 'vendor/nativephp/mobile/resources') ||
                 Str::startsWith($relativePath, 'vendor/nativephp/mobile/vendor') ||
+                Str::startsWith($relativePath, 'vendor/endroid') ||
                 Str::startsWith($relativePath, 'nativephp') ||
                 Str::startsWith($relativePath, 'output/') ||
                 Str::startsWith($relativePath, 'build/') ||
@@ -915,11 +916,12 @@ class BuildIosAppCommand extends Command
 
     private function createBundledVersionFile(string $zipPath): void
     {
-        // Get version from Laravel config
         $appVersion = config('nativephp.version', 'DEBUG');
+        $versionCode = config('nativephp.version_code', 1);
+        $bundleVersionId = $appVersion === 'DEBUG' ? 'DEBUG' : "{$appVersion}b{$versionCode}";
 
         $versionFilePath = dirname($zipPath).'/bundled.version';
-        file_put_contents($versionFilePath, $appVersion);
+        file_put_contents($versionFilePath, $bundleVersionId);
 
         // Write bundle_meta.json for fast boot-time metadata reads (matches Android PreparesBuild)
         $bifrostAppId = null;
@@ -933,6 +935,7 @@ class BuildIosAppCommand extends Command
 
         $bundleMeta = json_encode([
             'version' => $appVersion,
+            'version_code' => $versionCode,
             'bifrost_app_id' => $bifrostAppId,
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
         ], JSON_PRETTY_PRINT);

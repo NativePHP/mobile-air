@@ -88,7 +88,8 @@ trait InstallsIos
             return;
         }
 
-        $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
+        $fullVersion = $versions['versions'][$phpVersion]['php_version'] ?? $phpVersion;
+        $this->components->twoColumnDetail('PHP version', $fullVersion);
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
         $cacheDir = base_path('nativephp/binaries');

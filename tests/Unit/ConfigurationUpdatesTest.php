@@ -69,8 +69,8 @@ class ConfigurationUpdatesTest extends TestCase
         // Create google-services.json
         File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
 
-        // Enable ICU via nativephp.json
-        File::put($this->testProjectPath.'/nativephp.json', json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
+        // Enable ICU via nativephp.lock
+        File::put($this->testProjectPath.'/nativephp.lock', json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
 
         // Execute configuration update
         $this->testUpdateAndroidConfiguration();
@@ -564,13 +564,13 @@ Java_com_nativephp_mobile_bridge_PHPBridge',
 
     protected function updateIcuConfiguration(): void
     {
-        $jsonPath = $this->testProjectPath.'/nativephp.json';
+        $lockPath = $this->testProjectPath.'/nativephp.lock';
 
-        if (! file_exists($jsonPath)) {
+        if (! file_exists($lockPath)) {
             return;
         }
 
-        $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
+        $nativephp = json_decode(file_get_contents($lockPath), true) ?? [];
 
         if (empty($nativephp['php']['icu'])) {
             return;

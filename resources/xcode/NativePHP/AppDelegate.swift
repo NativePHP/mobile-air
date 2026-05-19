@@ -107,4 +107,18 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         DeepLinkRouter.shared.handle(url: url)
         return true
     }
+
+    // Handle remote notifications (data-only messages, silent push)
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        NotificationCenter.default.post(
+            name: .didReceiveRemoteNotification,
+            object: nil,
+            userInfo: ["payload": userInfo]
+        )
+        completionHandler(.newData)
+    }
 }

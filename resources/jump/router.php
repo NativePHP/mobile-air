@@ -9,11 +9,12 @@ use Endroid\QrCode\Builder\Builder;
  * to handle Jump server requests without requiring Workerman.
  *
  * Configuration is passed via environment variables:
- * - JUMP_ZIP_PATH: Path to the app.zip bundle
  * - JUMP_DISPLAY_HOST: The host IP to display in QR code
  * - JUMP_HTTP_PORT: The HTTP port the server is running on
  * - JUMP_LARAVEL_PORT: The Laravel dev server port to proxy to
  * - JUMP_BASE_PATH: The Laravel base path for autoloading
+ * - JUMP_WS_PORT: The WebSocket bridge port
+ * - JUMP_VITE_PORT: The Vite dev server port
  */
 
 // Suppress all error output to prevent corrupting binary responses
@@ -21,17 +22,33 @@ error_reporting(0);
 ini_set('display_errors', '0');
 
 // Get configuration from environment
-$zipPath = getenv('JUMP_ZIP_PATH');
 $displayHost = getenv('JUMP_DISPLAY_HOST');
 $httpPort = getenv('JUMP_HTTP_PORT');
 $laravelPort = getenv('JUMP_LARAVEL_PORT') ?: 8000;
 $basePath = getenv('JUMP_BASE_PATH');
-$offlineMode = getenv('JUMP_OFFLINE_MODE') === '1';
 
 // Parse request FIRST - before loading any autoloaders
 $uri = $_SERVER['REQUEST_URI'];
 $path = parse_url($uri, PHP_URL_PATH);
 $path = rtrim($path, '/');
+
+// Append a request-log line to the bridge log file. We use a file (not stderr)
+// because PHP 8.5's built-in server treats stderr writes from request scripts
+// as response body output and commits headers prematurely.
+function jumpRequestLog($message)
+{
+    global $basePath;
+    if (! $basePath) {
+        return;
+    }
+    // Router writes to its own file so concurrent appends from the Workerman
+    // bridge (which logs device connects to jump-bridge.log) don't interleave
+    // with our request lines — on Windows, two processes appending to the
+    // same file regularly produced clobbered/truncated lines that hid the
+    // actual request flow during debugging.
+    $logFile = $basePath.'/storage/logs/jump-router.log';
+    @file_put_contents($logFile, '['.date('H:i:s.').substr((string) (microtime(true) - floor(microtime(true))), 2, 3).'] [Jump] '.$message."\n", FILE_APPEND);
+}
 
 // Helper function to format bytes
 function formatBytes($bytes)
@@ -75,50 +92,51 @@ function jumpLog($message)
     }
 }
 
+// Log the START of every non-trivial request. Pairs with the completion log
+// at the end of each proxy function so we can see which request is in-flight
+// when the router wedges — without entry logs we only see successful
+// completions, which makes "stuck on upstream" look identical to "request
+// never arrived".
+if ($path !== '/favicon.ico' && ! str_ends_with($path, '.map')) {
+    jumpRequestLog($_SERVER['REQUEST_METHOD'].' '.$_SERVER['REQUEST_URI'].' [start]');
+}
+
 // Ignore favicon and sourcemap requests
 if ($path === '/favicon.ico' || str_ends_with($path, '.map')) {
     http_response_code(204);
     exit;
 }
 
-// Handle ZIP download endpoint
-if ($path === '/jump/download') {
-    if (! $zipPath || ! file_exists($zipPath)) {
-        http_response_code(500);
-        echo 'App bundle not available. Please restart the server.';
-        exit;
-    }
-
-    $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
-    $deviceName = parseDeviceName($userAgent);
-    $fileSizeBytes = filesize($zipPath);
-    $fileSize = formatBytes($fileSizeBytes);
-    jumpLog("{$deviceName} downloading ({$fileSize})");
-
-    // Clean ALL output buffers
-    while (ob_get_level()) {
-        ob_end_clean();
-    }
-
-    // Minimal headers - match what Workerman's withFile() sends
-    header('Content-Type: application/zip');
-    header('Content-Length: '.$fileSizeBytes);
-    header('Content-Disposition: attachment; filename="app.zip"');
-
-    // Use readfile - simplest approach
-    readfile($zipPath);
+// Short-circuit WebSocket upgrade requests — PHP's built-in server can't
+// handle them. HMR upgrades go through Jump's Workerman proxy on
+// JUMP_VITE_PROXY_PORT; anything hitting the HTTP port is a stale client or
+// misconfigured library. Forwarding to Laravel would run `/`'s Auth::login
+// which rotates CSRF and breaks subsequent Livewire POSTs with 419.
+if (($_SERVER['HTTP_UPGRADE'] ?? '') === 'websocket') {
+    http_response_code(404);
     exit;
 }
 
 // Handle info endpoint
 if ($path === '/jump/info') {
     header('Content-Type: application/json');
-    echo json_encode([
+
+    // Get WebSocket port from environment (set by JumpCommand)
+    $wsPort = getenv('JUMP_WS_PORT') ?: null;
+
+    $info = [
         'name' => 'NativePHP Server',
         'app_name' => getenv('APP_NAME') ?: 'Laravel',
         'version' => '1.0.0',
         'type' => 'nativephp-server',
-    ]);
+    ];
+
+    // Include WebSocket port for hybrid mode
+    if ($wsPort) {
+        $info['ws_port'] = (string) $wsPort;
+    }
+
+    echo json_encode($info);
     exit;
 }
 
@@ -137,25 +155,21 @@ if ($path === '/jump/qr' || $path === '/jump') {
 
         $appName = getenv('APP_NAME') ?: 'Laravel';
 
-        // Create JSON data for the QR code
-        $qrData = json_encode([
-            'host' => $displayHost,
-            'port' => (string) $httpPort,
-        ]);
+        // Create deep link URL for the QR code
+        // jump:// scheme opens the Jump app directly when scanned with the camera
+        $qrData = "jump://connect?host={$displayHost}&port={$httpPort}";
 
         // Generate QR code
-        $result = Builder::create()
-            ->data($qrData)
-            ->size(300)
-            ->margin(10)
-            ->build();
+        $result = (new Builder(
+            data: $qrData,
+            size: 300,
+            margin: 10,
+        ))->build();
 
         $qrCodeDataUri = $result->getDataUri();
 
-        // Generate HTML - use offline version if flag is set
-        global $offlineMode;
-        $viewFile = $offlineMode ? 'qr-offline.blade.php' : 'qr.blade.php';
-        $viewPath = __DIR__.'/views/'.$viewFile;
+        // Generate HTML
+        $viewPath = __DIR__.'/views/qr.blade.php';
 
         if (file_exists($viewPath)) {
             // Read blade file and do simple variable substitution
@@ -175,6 +189,47 @@ if ($path === '/jump/qr' || $path === '/jump') {
     } catch (Exception $e) {
         http_response_code(500);
         echo 'Error generating QR code: '.$e->getMessage();
+        exit;
+    }
+}
+
+// Proxy Vite dev server requests (HMR, assets, websocket)
+// Vite paths: /@vite/, /@fs/, /@id/, /resources/ (dev assets), hot-update files
+$hotFilePath = $basePath.'/public/hot';
+$viteRunning = file_exists($hotFilePath);
+// Read the actual Vite dev server URL from the hot file (e.g. "http://[::1]:5174")
+$vitePort = 5173;
+if ($viteRunning) {
+    $hotContent = trim(file_get_contents($hotFilePath));
+    if (preg_match('/:(\d+)\/?$/', $hotContent, $m)) {
+        $vitePort = (int) $m[1];
+    }
+}
+
+if ($viteRunning) {
+    // Any /@-prefixed path is a Vite virtual module (/@vite, /@fs, /@id,
+    // /@react-refresh, /@tailwindcss/*, /@vue/*, etc). Missing one causes HMR
+    // requests to fall through to Laravel, 404, and leave the client in a
+    // half-updated state (CSS dropped, JS reload).
+    $isViteRequest = str_starts_with($path, '/@')
+        || str_starts_with($path, '/resources/')
+        || str_starts_with($path, '/node_modules/')
+        || str_starts_with($path, '/vendor/')
+        || str_contains($path, '.hot-update.');
+
+    // Inertia's resolvePageComponent keys modules by absolute filesystem path
+    // (/Users/..., /home/..., /var/..., or /C:/... on Windows), so HMR updates
+    // arrive here as absolute paths under the project root. Vite serves those
+    // at `/@fs/<abs>`, so rewrite before proxying.
+    $isFsPath = $basePath && str_starts_with($path, $basePath.'/');
+    if ($isFsPath) {
+        $_SERVER['REQUEST_URI'] = '/@fs'.$_SERVER['REQUEST_URI'];
+        proxyToVite($vitePort);
+        exit;
+    }
+
+    if ($isViteRequest) {
+        proxyToVite($vitePort);
         exit;
     }
 }
@@ -884,6 +939,211 @@ HTML;
 }
 
 /**
+ * Proxy request to Vite dev server
+ */
+function proxyToVite($vitePort)
+{
+    $method = $_SERVER['REQUEST_METHOD'];
+    $uri = $_SERVER['REQUEST_URI'];
+    $path = parse_url($uri, PHP_URL_PATH);
+
+    // Dial Vite on the host it actually bound to. Vite's default is
+    // `localhost` which on macOS Node resolves to IPv6 [::1] only — dialing
+    // 127.0.0.1 gives connection refused. Respect the hot file origin, with
+    // a wildcard fallback (0.0.0.0 / [::]/ [::0] aren't valid connect targets).
+    $viteUrl = resolveViteOrigin($vitePort).$uri;
+
+    $headers = [];
+    foreach ($_SERVER as $key => $value) {
+        if (strpos($key, 'HTTP_') === 0) {
+            $headerName = str_replace('_', '-', substr($key, 5));
+            if (in_array(strtolower($headerName), ['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'host'])) {
+                continue;
+            }
+            $headers[] = "{$headerName}: {$value}";
+        }
+    }
+    if (isset($_SERVER['CONTENT_TYPE'])) {
+        $headers[] = 'Content-Type: '.$_SERVER['CONTENT_TYPE'];
+    }
+
+    $ch = curl_init($viteUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HEADER, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+    // Vite can take well over 10s for cold transforms (Vue SFC compile,
+    // first-hit module graph build, large /@vite/client at ~200KB). The
+    // original 10s timeout was producing 502s under `npm run dev` cold load
+    // on Windows where PHP startup + Vite first-compile compounds.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+
+    $upstreamStart = microtime(true);
+    $response = curl_exec($ch);
+    $upstreamMs = (int) ((microtime(true) - $upstreamStart) * 1000);
+    $error = curl_error($ch);
+    $errno = curl_errno($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    if ($response === false) {
+        http_response_code(502);
+
+        if ($errno === CURLE_COULDNT_CONNECT) {
+            $detail = "Vite dev server is not listening on {$viteUrl}. Is `npm run dev` running?";
+        } elseif ($errno === CURLE_OPERATION_TIMEDOUT) {
+            $detail = "Vite request to {$viteUrl} timed out after 30s ({$upstreamMs}ms).";
+        } else {
+            $detail = "Could not reach Vite at {$viteUrl}. cURL error ({$errno}): {$error}";
+        }
+
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Bad Gateway: {$detail}";
+        jumpRequestLog("{$method} {$uri} [502 vite] {$detail}");
+
+        return;
+    }
+
+    $responseHeaders = substr($response, 0, $headerSize);
+    $responseBody = substr($response, $headerSize);
+
+    // Patch Vite's HMR client to route WebSocket traffic through Jump's proxy
+    // port instead of trying to dial Vite directly. Without this the phone
+    // opens `ws://<lan>:<vitePort>/` — unreachable because Vite binds to
+    // localhost and rejects non-allowed Host headers. With the rewrite, the
+    // phone opens `ws://<lan>:<proxyPort>/` to our Workerman proxy, which
+    // relays to Vite over 127.0.0.1 where Vite's checks pass naturally.
+    if ($path === '/@vite/client') {
+        $responseBody = patchViteClient($responseBody);
+    }
+
+    http_response_code($httpCode);
+
+    $headerLines = explode("\r\n", $responseHeaders);
+    foreach ($headerLines as $headerLine) {
+        if (empty($headerLine) || strpos($headerLine, 'HTTP/') === 0) {
+            continue;
+        }
+        if (stripos($headerLine, 'transfer-encoding:') === 0) {
+            continue;
+        }
+        // Strip upstream's connection-management headers — see Connection: close
+        // note below.
+        if (stripos($headerLine, 'connection:') === 0 || stripos($headerLine, 'keep-alive:') === 0) {
+            continue;
+        }
+        // If we patched the body, the original Content-Length is stale.
+        if ($path === '/@vite/client' && stripos($headerLine, 'content-length:') === 0) {
+            continue;
+        }
+        // Override Vite's cache headers below — Android WebView's module
+        // loader was re-using cached HMR modules even with `?t=` busters.
+        if (stripos($headerLine, 'cache-control:') === 0 || stripos($headerLine, 'pragma:') === 0 || stripos($headerLine, 'expires:') === 0) {
+            continue;
+        }
+        header($headerLine);
+    }
+
+    // Force every Vite-proxied response to bypass any on-device cache. This
+    // is dev-only traffic; no perf cost. Fixes Android HMR where dynamic
+    // `import('…?t=N')` was resolving to a stale cached module.
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    // Tell the client to close after this response. `php -S` doesn't honour
+    // this on its own, but the client does — and that's what matters: idle
+    // keep-alive sockets from the phone WebView were piling up after page
+    // load and wedging the single-threaded server. See proxyToLaravel for
+    // the full rationale.
+    header('Connection: close');
+
+    echo $responseBody;
+
+    // Log successful Vite proxy completions to match the proxyToLaravel
+    // logging shape. Without this, the router log was showing only
+    // `[start]` lines for Vite-proxied paths (and only fonts/Laravel
+    // routes had visible completions), which made it look like Vite
+    // requests were hanging when they were actually completing silently.
+    jumpRequestLog("{$method} {$uri} [{$httpCode} vite {$upstreamMs}ms]");
+}
+
+/**
+ * Return the HTTP origin of the running Vite dev server, picking something
+ * cURL can actually connect to. Reads the Laravel Vite `public/hot` file so
+ * IPv6-only Vite (the default on macOS Node, which binds [::1] only) still
+ * works. Rewrites wildcard binds to localhost since they're listener-only.
+ */
+function resolveViteOrigin(int $vitePort): string
+{
+    global $basePath;
+
+    $hotFile = $basePath ? $basePath.'/public/hot' : null;
+    if ($hotFile && is_file($hotFile)) {
+        $origin = trim((string) @file_get_contents($hotFile));
+        $origin = rtrim($origin, '/');
+        $parts = parse_url($origin);
+        if (! empty($parts['host']) && ! empty($parts['port'])) {
+            // parse_url returns bracketed IPv6 hosts (e.g. "[::1]").
+            // Strip brackets for the wildcard compare, then add them back
+            // for any IPv6 literal when we rebuild the URL.
+            $hostRaw = trim($parts['host'], '[]');
+            if (in_array($hostRaw, ['0.0.0.0', '::', '::0'], true)) {
+                return 'http://localhost:'.$parts['port'];
+            }
+            $host = str_contains($hostRaw, ':') ? '['.$hostRaw.']' : $hostRaw;
+
+            return 'http://'.$host.':'.$parts['port'];
+        }
+    }
+
+    return 'http://localhost:'.$vitePort;
+}
+
+/**
+ * Rewrite the HMR endpoint in Vite's `/@vite/client` so the phone connects
+ * to Jump's Vite HMR proxy instead of Vite directly.
+ *
+ * Matches the two server-baked lines Vite emits (stable since v3, tolerant of
+ * value drift). Logs a warning if neither pattern fires — signals Vite
+ * template refactor.
+ */
+function patchViteClient(string $body): string
+{
+    $proxyPort = getenv('JUMP_VITE_PROXY_PORT') ?: '3003';
+    $displayHost = getenv('JUMP_DISPLAY_HOST') ?: 'localhost';
+
+    $totalReplaced = 0;
+
+    $body = preg_replace(
+        '/const hmrPort = (null|\d+);/',
+        'const hmrPort = '.(int) $proxyPort.';',
+        $body,
+        1,
+        $count
+    );
+    $totalReplaced += $count;
+
+    $body = preg_replace(
+        '/const directSocketHost = "[^"]*";/',
+        'const directSocketHost = "'.$displayHost.':'.(int) $proxyPort.'/";',
+        $body,
+        1,
+        $count
+    );
+    $totalReplaced += $count;
+
+    if ($totalReplaced === 0) {
+        jumpRequestLog('WARN: /@vite/client patching matched no patterns — Vite may have refactored the client template');
+    }
+
+    return $body;
+}
+
+/**
  * Proxy request to Laravel development server
  */
 function proxyToLaravel($laravelPort)
@@ -893,6 +1153,7 @@ function proxyToLaravel($laravelPort)
     $laravelUrl = "http://127.0.0.1:{$laravelPort}{$uri}";
 
     // Build headers to forward
+    global $displayHost, $httpPort;
     $headers = [];
     foreach ($_SERVER as $key => $value) {
         if (strpos($key, 'HTTP_') === 0) {
@@ -908,6 +1169,12 @@ function proxyToLaravel($laravelPort)
         $headers[] = 'Content-Type: '.$_SERVER['CONTENT_TYPE'];
     }
 
+    // Tell Laravel the real host so it generates correct URLs (redirects, assets, etc.)
+    $headers[] = "Host: {$displayHost}:{$httpPort}";
+    $headers[] = "X-Forwarded-Host: {$displayHost}:{$httpPort}";
+    $headers[] = 'X-Forwarded-Proto: http';
+    $headers[] = 'X-Forwarded-Port: '.$httpPort;
+
     // Get request body for POST/PUT/PATCH
     $body = null;
     if (in_array($method, ['POST', 'PUT', 'PATCH'])) {
@@ -921,7 +1188,11 @@ function proxyToLaravel($laravelPort)
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    // Generous transfer timeout — PHP's built-in server is single-threaded,
+    // so a cold first request (opcache empty, Inertia/Wayfinder boot) can
+    // easily exceed 30s on Windows + Herd. JumpCommand pre-warms Laravel
+    // before printing the QR, but keep headroom here for slow handlers.
+    curl_setopt($ch, CURLOPT_TIMEOUT, 90);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
 
     if ($body !== null) {
@@ -930,13 +1201,28 @@ function proxyToLaravel($laravelPort)
 
     $response = curl_exec($ch);
     $error = curl_error($ch);
+    $errno = curl_errno($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
 
     if ($response === false) {
         http_response_code(502);
-        echo "Bad Gateway: Could not connect to Laravel on port {$laravelPort}. Error: {$error}";
+
+        // Differentiate "Laravel isn't there" from "Laravel is too slow" —
+        // the original message blamed both on the same cause and made the
+        // common slow-cold-start case look like a server failure.
+        if ($errno === CURLE_COULDNT_CONNECT) {
+            $detail = "Laravel dev server is not listening on 127.0.0.1:{$laravelPort}. Is `artisan serve` running?";
+        } elseif ($errno === CURLE_OPERATION_TIMEDOUT) {
+            $detail = "Request to Laravel on port {$laravelPort} timed out. The handler took longer than 90s to respond.";
+        } else {
+            $detail = "Could not reach Laravel on port {$laravelPort}. cURL error ({$errno}): {$error}";
+        }
+
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Bad Gateway: {$detail}";
+        jumpRequestLog("{$method} {$uri} [502] {$detail}");
 
         return;
     }
@@ -948,7 +1234,17 @@ function proxyToLaravel($laravelPort)
     // Set response code
     http_response_code($httpCode);
 
-    // Forward response headers (skip some)
+    // Log request to the bridge log file. Do NOT use fwrite(STDERR) here —
+    // PHP 8.5's built-in server treats stderr writes as response body output
+    // and silently commits headers, wiping Location/Set-Cookie.
+    if (! str_contains($uri, 'favicon.ico') && ! str_contains($uri, '.map')) {
+        jumpRequestLog("{$method} {$uri} [{$httpCode}]");
+    }
+
+    $laravelOrigin = "http://127.0.0.1:{$laravelPort}";
+    $jumpOrigin = "http://{$displayHost}:{$httpPort}";
+
+    // Forward response headers, rewriting any redirect URLs
     $headerLines = explode("\r\n", $responseHeaders);
     foreach ($headerLines as $headerLine) {
         if (empty($headerLine) || strpos($headerLine, 'HTTP/') === 0) {
@@ -958,9 +1254,56 @@ function proxyToLaravel($laravelPort)
         if (stripos($headerLine, 'transfer-encoding:') === 0) {
             continue;
         }
-        header($headerLine);
+        // Strip upstream's connection-management headers so we can emit our
+        // own `Connection: close` below — see the close-after-response note
+        // at the end of this function for why.
+        if (stripos($headerLine, 'connection:') === 0 || stripos($headerLine, 'keep-alive:') === 0) {
+            continue;
+        }
+        // Rewrite Location headers that still point to Laravel's internal address
+        if (stripos($headerLine, 'location:') === 0) {
+            $headerLine = str_replace($laravelOrigin, $jumpOrigin, $headerLine);
+        }
+
+        // Set-Cookie must be forwarded WITHOUT replacing — Laravel sends
+        // multiple cookies (XSRF-TOKEN + session) and PHP's header() defaults
+        // to replace=true, which would silently drop all but the last one.
+        // Without the session cookie the WebView can't do Livewire POSTs.
+        if (stripos($headerLine, 'set-cookie:') === 0) {
+            header($headerLine, false);
+        } else {
+            header($headerLine);
+        }
     }
 
-    // Output response body
+    // Force the client to close the TCP connection after this response. PHP's
+    // built-in dev server (`php -S`) does not honour `Connection: close` on
+    // outgoing responses — it decides keep-alive based on the *request* — but
+    // the WebView / browser does. Without this, the phone WebView holds
+    // 10+ idle keep-alive sockets to the router after a page load, which on
+    // Windows starves PHP -S of the ability to accept any new connections
+    // (browser visits to the same proxy hang indefinitely). Closing per
+    // response trades reusable keep-alive (negligible on localhost/LAN) for
+    // a router that stays responsive after the phone is done loading.
+    header('Connection: close');
+
+    // Rewrite Vite dev server URLs so the phone routes them through the Jump proxy.
+    // Vite can generate URLs with localhost, 127.0.0.1, [::], or the network IP.
+    global $vitePort;
+    if ($vitePort) {
+        $viteOrigins = [
+            "http://localhost:{$vitePort}",
+            "http://127.0.0.1:{$vitePort}",
+            "http://[::1]:{$vitePort}",
+            "http://[::]:{$vitePort}",
+            "http://{$displayHost}:{$vitePort}",
+        ];
+        $responseBody = str_replace(
+            $viteOrigins,
+            "http://{$displayHost}:{$httpPort}",
+            $responseBody
+        );
+    }
+
     echo $responseBody;
 }

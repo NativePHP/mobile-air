@@ -13,7 +13,7 @@ return [
     |
     */
 
-    'version' => env('NATIVEPHP_APP_VERSION', '1.0.0'),
+    'version' => env('NATIVEPHP_APP_VERSION', 'DEBUG'),
 
     /*
     |--------------------------------------------------------------------------
@@ -95,6 +95,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | iOS Permission Strings (Info.plist Overrides)
+    |--------------------------------------------------------------------------
+    |
+    | Override iOS Info.plist usage descriptions provided by plugins. Anything
+    | you set here is applied AFTER all plugin manifests are merged, so it
+    | always wins — useful when multiple plugins claim the same key (e.g.
+    | mobile-camera and mobile-scanner both set NSCameraUsageDescription) and
+    | you want a single explicit string for App Store review.
+    |
+    | Android has no equivalent: permission rationale is shown by app code at
+    | runtime, not declared in the manifest, so this block is iOS-only.
+    |
+    */
+
+    'permissions' => [
+        // 'NSCameraUsageDescription' => 'Used to take a profile photo.',
+        // 'NSMicrophoneUsageDescription' => 'Used to record audio with your videos.',
+        // 'NSPhotoLibraryUsageDescription' => 'Used to select photos for your post.',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment Keys to Clean Up
     |--------------------------------------------------------------------------
     |
@@ -128,7 +150,7 @@ return [
         'storage/framework/sessions',
         'storage/framework/cache',
         'storage/framework/testing',
-        'storage/logs/laravel.log'
+        'storage/logs/laravel.log',
     ],
 
     /*
@@ -168,9 +190,6 @@ return [
         | target_sdk:  The SDK version your app is designed and tested for
         |
         */
-        'compile_sdk' => env('NATIVEPHP_ANDROID_COMPILE_SDK', 36),
-        'min_sdk' => env('NATIVEPHP_ANDROID_MIN_SDK', 33),
-        'target_sdk' => env('NATIVEPHP_ANDROID_TARGET_SDK', 36),
 
         /*
         |--------------------------------------------------------------------------
@@ -246,8 +265,10 @@ return [
         // Build output directory (where the ZIP will be created)
         'build_path' => env('NATIVEPHP_BUILD_PATH', 'storage/app/native-build'),
 
-        // Automatically open browser with QR code when server starts
-        'open_browser' => env('NATIVEPHP_OPEN_BROWSER', true),
+        // Automatically open browser with QR code when server starts.
+        // Default off — the terminal renders a scannable QR. Pass --browser
+        // to native:jump (or set NATIVEPHP_OPEN_BROWSER=true) to opt in.
+        'open_browser' => env('NATIVEPHP_OPEN_BROWSER', false),
 
         // Watch these directories for changes
         'watch_paths' => [

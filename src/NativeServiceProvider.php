@@ -4,6 +4,7 @@ namespace Native\Mobile;
 
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
@@ -80,6 +81,18 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->publishPluginsServiceProvider();
         $this->registerPluginServices();
         $this->prepForIos();
+        $this->registerJumpBridgeFallback();
+
+        // Laravel's ServeCommand only forwards a whitelisted set of env vars to
+        // its PHP built-in server children. Without this, JUMP_BRIDGE_PORT/JUMP_WS_PORT
+        // set by `native:jump` are stripped before reaching the Livewire request
+        // handler, so JumpBridge falls back to port 3002 blindly.
+        if (class_exists(ServeCommand::class)) {
+            ServeCommand::$passthroughVariables = array_values(array_unique(array_merge(
+                ServeCommand::$passthroughVariables,
+                ['JUMP_BRIDGE_PORT', 'JUMP_WS_PORT']
+            )));
+        }
     }
 
     protected function publishPluginsServiceProvider(): void
@@ -332,6 +345,25 @@ class NativeServiceProvider extends PackageServiceProvider
             // Silently fail to avoid breaking the application
             // Could optionally log this if needed
         }
+    }
+
+    /**
+     * Register pure PHP fallback for nativephp_call() when running on dev machine.
+     *
+     * On device, nativephp_call() is a C extension that calls into Swift/Kotlin.
+     * On the dev machine (Jump hybrid mode), we define it as a PHP function that
+     * sends bridge calls over TCP to the WebSocket server, which relays to the device.
+     */
+    protected function registerJumpBridgeFallback(): void
+    {
+        // Only register if the C extension function doesn't exist
+        // (i.e., we're on the dev machine, not on device)
+        if (function_exists('nativephp_call')) {
+            return;
+        }
+
+        // Define the global nativephp_call function
+        require_once __DIR__.'/jump_bridge_functions.php';
     }
 
     protected function registerNativeComponents(): void

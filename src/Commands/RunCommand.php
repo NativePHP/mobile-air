@@ -2,7 +2,6 @@
 
 namespace Native\Mobile\Commands;
 
-use GuzzleHttp\Client;
 use Illuminate\Console\Command;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
@@ -38,6 +37,10 @@ class RunCommand extends Command
     public function handle(): int
     {
         $this->ensureValidAppId();
+
+        if (! $this->ensureHostPhpMatchesLock()) {
+            return self::FAILURE;
+        }
 
         // Check watchman is installed when --watch flag is used
         if ($this->option('watch') && ! $this->checkWatchmanDependencies()) {
@@ -122,9 +125,6 @@ class RunCommand extends Command
 
         intro('Running NativePHP for '.$osName);
 
-        if (! $this->checkForPhpBinaryUpdates()) {
-            return self::FAILURE;
-        }
         $this->checkForUnregisteredPlugins();
 
         match ($os) {
@@ -135,60 +135,6 @@ class RunCommand extends Command
         $this->showBifrostBanner();
 
         return self::SUCCESS;
-    }
-
-    protected function checkForPhpBinaryUpdates(): bool
-    {
-        try {
-            $jsonPath = base_path('nativephp.json');
-
-            if (! file_exists($jsonPath)) {
-                return true;
-            }
-
-            $nativephp = json_decode(file_get_contents($jsonPath), true) ?? [];
-            $installedVersion = $nativephp['php']['version'] ?? null;
-
-            if (! $installedVersion) {
-                return true;
-            }
-
-            $parts = explode('.', $installedVersion);
-            $installedMinor = $parts[0].'.'.$parts[1];
-            $runningMinor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
-
-            // If the installed binary minor version doesn't match the running PHP, offer to reinstall
-            if ($installedMinor !== $runningMinor) {
-                warning("PHP version mismatch:\n  • Mobile PHP version: {$installedMinor}\n  • CLI PHP version: {$runningMinor}\n\nYour app will not run.");
-
-                if (confirm('Run native:install again to fix this?', default: true)) {
-                    $this->call('native:install', ['--force' => true]);
-
-                    return true;
-                }
-
-                return false;
-            }
-
-            // Check for newer patch version
-            $branch = env('NATIVEPHP_BIN_BRANCH', 'main');
-            $client = new Client;
-            $response = $client->get("https://bin.nativephp.com/{$branch}/versions.json", [
-                'connect_timeout' => 3,
-                'timeout' => 3,
-            ]);
-
-            $versions = json_decode($response->getBody()->getContents(), true);
-            $latestVersion = $versions['versions'][$installedMinor]['php_version'] ?? null;
-
-            if ($latestVersion && version_compare($latestVersion, $installedVersion, '>')) {
-                note("PHP {$latestVersion} is available (installed: {$installedVersion}). Run <comment>php artisan native:install --force</comment> to update.");
-            }
-        } catch (\Throwable) {
-            // Fail silently — this is a non-critical check
-        }
-
-        return true;
     }
 
     protected function checkForUnregisteredPlugins(): void
@@ -208,6 +154,59 @@ class RunCommand extends Command
 
         note('Register them in your NativeServiceProvider or run: php artisan native:plugin:register');
         $this->newLine();
+    }
+
+    protected function ensureHostPhpMatchesLock(): bool
+    {
+        $lockPath = base_path('nativephp.lock');
+
+        if (! file_exists($lockPath)) {
+            return true;
+        }
+
+        $lock = json_decode(file_get_contents($lockPath), true) ?? [];
+        $lockedVersion = $lock['php']['version'] ?? null;
+
+        if (! is_string($lockedVersion) || $lockedVersion === '') {
+            return true;
+        }
+
+        $lockedMinor = implode('.', array_slice(explode('.', $lockedVersion), 0, 2));
+        $hostMinor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+
+        if ($lockedMinor === $hostMinor) {
+            return true;
+        }
+
+        error("Host PHP {$hostMinor} does not match nativephp.lock ({$lockedVersion}).");
+        note('Composer resolves your app dependencies against the host PHP, but the bundled runtime is pinned to PHP '.$lockedMinor.'. Building now will likely fail or produce a bundle that crashes on device.');
+
+        $supported = ['8.5', '8.4', '8.3'];
+
+        if (! in_array($hostMinor, $supported, true)) {
+            note("Your host PHP {$hostMinor} is not supported by NativePHP. Switch your host to PHP {$lockedMinor}.x and retry.");
+
+            return false;
+        }
+
+        if (! confirm("Re-run `native:install --force` to bundle PHP {$hostMinor} instead?", default: true)) {
+            note("Switch your host to PHP {$lockedMinor}.x and retry, or re-install when ready.");
+
+            return false;
+        }
+
+        $lock['php']['version'] = $hostMinor;
+        file_put_contents($lockPath, json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+        $exitCode = $this->call('native:install', ['--force' => true]);
+
+        if ($exitCode !== 0) {
+            error('native:install --force failed. Resolve the install error and retry.');
+
+            return false;
+        }
+
+        return true;
     }
 
     protected function ensureValidAppId(): void
