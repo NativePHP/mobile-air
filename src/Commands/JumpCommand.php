@@ -714,7 +714,10 @@ class JumpCommand extends Command
             $this->newLine();
             $this->line("  <fg=gray>{$qrData}</>");
             $this->newLine();
-            $this->line("  <fg=yellow>Can't scan the QR code? Try it in the browser by re-running with <fg=cyan>--browser</></>");
+            $browserHost = $host === '0.0.0.0' ? 'localhost' : $host;
+            $browserUrl = "http://{$browserHost}:{$port}/jump/qr";
+            $this->line("  <fg=yellow>Can't scan the QR code? Try it in the browser: <fg=cyan>{$browserUrl}</></>");
+            $this->line('  <fg=gray>Use the --browser option to auto-open your default browser on future runs.</>');
             $this->newLine();
         } catch (\Throwable $e) {
             // QR display is optional — don't break the server
