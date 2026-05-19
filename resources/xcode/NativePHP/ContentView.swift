@@ -146,7 +146,7 @@ struct WebViewLayoutContainer: View {
 }
 
 struct WebView: UIViewRepresentable {
-    static let dataStore = WKWebsiteDataStore.nonPersistent()
+    static let dataStore = WKWebsiteDataStore.default()
     let shared: SharedWebView
     let horizontalSizeClass: UserInterfaceSizeClass?
 
