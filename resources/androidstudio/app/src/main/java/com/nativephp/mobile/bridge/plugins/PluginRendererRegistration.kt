@@ -78,9 +78,6 @@ fun registerPluginRenderers() {
     NativeRendererRegistry.register("bottom_sheet", NodeRenderer { node, modifier ->
         BottomSheetRenderer.Render(node, modifier)
     })
-    NativeRendererRegistry.register("card", NodeRenderer { node, modifier ->
-        CardRenderer.Render(node, modifier)
-    })
     NativeRendererRegistry.register("slider", NodeRenderer { node, modifier ->
         SliderRenderer.Render(node, modifier)
     })

@@ -21,9 +21,10 @@ final class FrameTracker: ObservableObject {
     static let shared = FrameTracker()
 
     /// Master toggle. When false, the display link is paused and no
-    /// stats are computed. Default: on (dev builds); flip off in
-    /// production builds.
-    @Published var enabled: Bool = true {
+    /// stats are computed. Default: off — PHP-side config opts in via
+    /// `Perf.SetFpsOverlayEnabled` at boot (config key
+    /// `nativephp.fps_overlay`, env `NATIVEPHP_FPS_OVERLAY`).
+    @Published var enabled: Bool = false {
         didSet { applyEnabledState() }
     }
 

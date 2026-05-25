@@ -23,7 +23,7 @@ use Native\Mobile\Edge\Element;
  *   <native:lazy-grid :columns="4" :gap="12">
  *       @foreach ($icons as $icon)
  *           <native:column class="items-center gap-1 p-3 rounded-lg">
- *               <native:icon :sf="$icon" :size="28" />
+ *               <native:icon :ios="$icon" :size="28" />
  *           </native:column>
  *       @endforeach
  *   </native:lazy-grid>

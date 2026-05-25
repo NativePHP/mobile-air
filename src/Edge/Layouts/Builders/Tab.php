@@ -4,8 +4,8 @@ namespace Native\Mobile\Edge\Layouts\Builders;
 
 use Native\Mobile\Concerns\HasPlatformIcon;
 use Native\Mobile\Edge\Elements\BottomNavItem;
-use Native\Mobile\Icon\MaterialSymbol;
-use Native\Mobile\Icon\SFSymbol;
+use Native\Mobile\Icon\AndroidSymbol;
+use Native\Mobile\Icon\IosSymbol;
 
 /**
  * Fluent builder for a single bottom-tab-bar item.
@@ -30,14 +30,14 @@ use Native\Mobile\Icon\SFSymbol;
  *   Tab::link('Home', '/', icon: 'home')
  *   Tab::link('Profile', '/profile', icon: 'person')->badge('3')
  *   Tab::link('Messages', '/syncup-native',
- *       sf: SF::BubbleLeft, material: Material::ChatBubble)
+ *       ios: Ios::BubbleLeft, android: Android::ChatBubble)
  *   Tab::search('Search', icon: 'search', placeholder: '…')
  *
  * All three icon slots are nullable so each call site picks the
  * combination it needs. The string `icon:` is the cross-platform
- * fallback; `sf:` overrides on iOS only; `material:` overrides on
- * Android only (and the chosen enum — `Material` filled vs
- * `MaterialOutlined` — picks the variant font).
+ * fallback; `ios:` overrides on iOS only; `android:` overrides on
+ * Android only (and the chosen enum — `Android` filled vs
+ * `AndroidOutlined` — picks the variant font).
  */
 class Tab
 {
@@ -83,15 +83,15 @@ class Tab
         string $label,
         string $url,
         ?string $icon = null,
-        SFSymbol|string|null $sf = null,
-        MaterialSymbol|string|null $material = null,
+        IosSymbol|string|null $ios = null,
+        AndroidSymbol|string|null $android = null,
     ): self {
         $tab = new self(
             id: strtolower(preg_replace('/[^a-z0-9]+/i', '_', $label)),
             label: $label,
             url: $url,
         );
-        $tab->icon($icon, $sf, $material);
+        $tab->icon($icon, $ios, $android);
 
         return $tab;
     }
@@ -103,15 +103,15 @@ class Tab
     public static function action(
         string $label,
         ?string $icon = null,
-        SFSymbol|string|null $sf = null,
-        MaterialSymbol|string|null $material = null,
+        IosSymbol|string|null $ios = null,
+        AndroidSymbol|string|null $android = null,
     ): self {
         $tab = new self(
             id: strtolower(preg_replace('/[^a-z0-9]+/i', '_', $label)),
             label: $label,
             url: '',
         );
-        $tab->icon($icon, $sf, $material);
+        $tab->icon($icon, $ios, $android);
 
         return $tab;
     }
@@ -134,15 +134,15 @@ class Tab
         ?string $icon = null,
         ?string $placeholder = null,
         int $debounceMs = 250,
-        SFSymbol|string|null $sf = null,
-        MaterialSymbol|string|null $material = null,
+        IosSymbol|string|null $ios = null,
+        AndroidSymbol|string|null $android = null,
     ): self {
         $tab = new self(
             id: strtolower(preg_replace('/[^a-z0-9]+/i', '_', $label)),
             label: $label,
             url: '',
         );
-        $tab->icon($icon, $sf, $material);
+        $tab->icon($icon, $ios, $android);
         $tab->search = true;
         $tab->searchPlaceholder = $placeholder;
         $tab->searchDebounceMs = $debounceMs;

@@ -26,7 +26,7 @@ fun interface NodeRenderer {
 
 /**
  * Recursively renders a NativeUINode using registered composable renderers.
- * Plugin renderers (Card, Carousel, …) use this to draw child nodes.
+ * Plugin renderers (Carousel, ListItem, …) use this to draw child nodes.
  *
  * The optional [modifier] is forwarded as `NodeView`'s `overrideModifier`,
  * which represents *parent-supplied* layout extras (clip, weight, margin, …)

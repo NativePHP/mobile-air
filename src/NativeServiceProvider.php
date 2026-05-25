@@ -178,6 +178,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerFilesystems();
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
+        $this->applyFpsOverlayConfig();
 
         if (config('nativephp-internal.running')) {
             $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
@@ -395,6 +396,22 @@ class NativeServiceProvider extends PackageServiceProvider
         };
 
         Vite::useHotFile($hotFile);
+    }
+
+    /**
+     * Push the `nativephp.fps_overlay` config flag to the native side at
+     * boot so the iOS/Android FPS overlay turns on/off based purely on
+     * the dev's `.env` / config without touching native code.
+     */
+    private function applyFpsOverlayConfig(): void
+    {
+        if (! function_exists('nativephp_call')) {
+            return;
+        }
+
+        $enabled = (bool) config('nativephp.fps_overlay', false);
+
+        nativephp_call('Perf.SetFpsOverlayEnabled', json_encode(['enabled' => $enabled]));
     }
 
     private function setupComposerPostUpdateScript()

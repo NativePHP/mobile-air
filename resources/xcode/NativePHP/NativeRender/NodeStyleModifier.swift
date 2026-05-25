@@ -19,7 +19,7 @@ struct NodeStyleModifier: ViewModifier {
     /// these, the outer NodeStyleModifier must NOT also draw a glass plate
     /// behind the rectangular node frame — that produces a ghost rectangle
     /// behind the visible button capsule.
-    private static let glassHandledByRenderer: Set<String> = ["button", "card", "chip", "badge"]
+    private static let glassHandledByRenderer: Set<String> = ["button", "chip", "badge"]
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {

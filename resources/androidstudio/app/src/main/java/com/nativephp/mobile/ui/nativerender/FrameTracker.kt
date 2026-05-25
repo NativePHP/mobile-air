@@ -24,12 +24,18 @@ import androidx.compose.runtime.mutableStateOf
  */
 object FrameTracker {
     /** Master toggle. When false, the choreographer callback unregisters
-     *  and nothing is computed. Default: on. Flip off in production. */
-    @Volatile
-    var enabled: Boolean = true
+     *  and nothing is computed. Default: off — PHP-side config opts in
+     *  via `Perf.SetFpsOverlayEnabled` at boot (config key
+     *  `nativephp.fps_overlay`, env `NATIVEPHP_FPS_OVERLAY`).
+     *
+     *  Backed by Compose state so toggling at runtime recomposes the
+     *  overlay (PerfOverlay reads `enabled` directly). */
+    private val _enabled = androidx.compose.runtime.mutableStateOf(false)
+    var enabled: Boolean
+        get() = _enabled.value
         set(value) {
-            if (field == value) return
-            field = value
+            if (_enabled.value == value) return
+            _enabled.value = value
             if (value) start() else stop()
         }
 

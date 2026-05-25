@@ -12,7 +12,7 @@ use Native\Mobile\Edge\Elements\TopBarAction;
  *   NavAction::make('save')->icon('save')->press('save');
  *
  *   NavAction::make('mute')
- *       ->icon(sf: SF::BellSlash, material: Material::NotificationsOff)
+ *       ->icon(ios: Ios::BellSlash, android: Android::NotificationsOff)
  *       ->press('mute');
  */
 class NavAction

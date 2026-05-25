@@ -5,7 +5,7 @@ namespace Native\Mobile\Icon;
 use Native\Mobile\Platform;
 
 /**
- * Stateless helper that resolves a `(name, sf, material)` triple to the
+ * Stateless helper that resolves a `(name, ios, android)` triple to the
  * platform-correct wire pair `(icon, variant)`.
  *
  * Used by:
@@ -22,7 +22,7 @@ use Native\Mobile\Platform;
  *     get a sensible value).
  *
  * The `variant` ('filled' / 'outlined' / null) is only set when the
- * Material override is a `MaterialSymbol` enum instance, and only on
+ * Android override is an `AndroidSymbol` enum instance, and only on
  * Android — on iOS the value is irrelevant.
  */
 class IconResolver
@@ -32,14 +32,14 @@ class IconResolver
      */
     public static function resolve(
         ?string $name,
-        SFSymbol|string|null $sf,
-        MaterialSymbol|string|null $material,
+        IosSymbol|string|null $ios,
+        AndroidSymbol|string|null $android,
     ): array {
         $platform = Platform::current();
 
         $override = match ($platform) {
-            Platform::IOS     => $sf,
-            Platform::ANDROID => $material,
+            Platform::IOS     => $ios,
+            Platform::ANDROID => $android,
             default           => null,
         };
 
@@ -51,8 +51,8 @@ class IconResolver
             $icon = $override->value;
         }
 
-        $variant = ($platform === Platform::ANDROID && $material instanceof MaterialSymbol)
-            ? $material->variant()
+        $variant = ($platform === Platform::ANDROID && $android instanceof AndroidSymbol)
+            ? $android->variant()
             : null;
 
         return ['icon' => $icon, 'variant' => $variant];

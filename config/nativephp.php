@@ -210,6 +210,19 @@ return [
         'gc_between_dispatches' => false,
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | FPS Overlay
+    |--------------------------------------------------------------------------
+    |
+    | When true, shows a small dev overlay in the top-trailing corner with
+    | live FPS / p99 frame time / jank count. Useful for spotting jank
+    | during development. Default off so production users never see it.
+    | Toggle via `NATIVEPHP_FPS_OVERLAY=true` in `.env`.
+    |
+    */
+    'fps_overlay' => env('NATIVEPHP_FPS_OVERLAY', false),
+
     'android' => [
         'gradle_jdk_path' => env('NATIVEPHP_GRADLE_PATH'),
         'android_sdk_path' => env('NATIVEPHP_ANDROID_SDK_LOCATION'),

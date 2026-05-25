@@ -2,28 +2,28 @@
 
 namespace Native\Mobile\Concerns;
 
+use Native\Mobile\Icon\AndroidSymbol;
 use Native\Mobile\Icon\IconResolver;
-use Native\Mobile\Icon\MaterialSymbol;
-use Native\Mobile\Icon\SFSymbol;
+use Native\Mobile\Icon\IosSymbol;
 
 /**
  * Cross-platform icon storage + resolution for builders / elements.
  *
  * Three nullable slots: a shared name (string only — used as a fallback
  * on whichever platform doesn't have an explicit override), an iOS
- * override (SFSymbol enum case or raw string), an Android override
- * (MaterialSymbol enum case or raw string).
+ * override (IosSymbol enum case or raw string), an Android override
+ * (AndroidSymbol enum case or raw string).
  *
  * Resolution happens at PHP-side serialization via [Platform::current]
  * — the wire only ever carries one resolved string per icon prop, plus
- * a `material_variant` companion when the Android override is a
- * `MaterialSymbol` enum (so the Compose `MaterialIcon` composable knows
+ * a `material_variant` companion when the Android override is an
+ * `AndroidSymbol` enum (so the Compose `MaterialIcon` composable knows
  * which font to use).
  *
- * Type-hinting against the [SFSymbol] / [MaterialSymbol] marker
+ * Type-hinting against the [IosSymbol] / [AndroidSymbol] marker
  * interfaces (rather than the concrete plugin enums) keeps core free of
  * the native-ui plugin dependency. Plugin-supplied enum catalogs (the
- * `SF`, `Material`, `MaterialOutlined` enums in
+ * `Ios`, `Android`, `AndroidOutlined` enums in
  * `Nativephp\NativeUi\Icon\*`) implement these interfaces.
  *
  * Usage on a builder:
@@ -48,43 +48,43 @@ use Native\Mobile\Icon\SFSymbol;
  * Call sites:
  *
  *   ->icon('save')
- *   ->icon(sf: SF::BellSlash, material: Material::NotificationsOff)
- *   ->icon('share', sf: SF::SquareAndArrowUp)
- *   ->icon(material: MaterialOutlined::Home)
+ *   ->icon(ios: Ios::BellSlash, android: Android::NotificationsOff)
+ *   ->icon('share', ios: Ios::SquareAndArrowUp)
+ *   ->icon(android: AndroidOutlined::Home)
  */
 trait HasPlatformIcon
 {
     private ?string $iconName = null;
-    private SFSymbol|string|null $iconSf = null;
-    private MaterialSymbol|string|null $iconMaterial = null;
+    private IosSymbol|string|null $iconIos = null;
+    private AndroidSymbol|string|null $iconAndroid = null;
 
     /**
      * Set the icon. All three args are nullable; named-arg call sites
      * pick whichever combination they need:
      *
-     *   ->icon('save')                     // shared name (works on both)
-     *   ->icon(sf: SF::BellSlash)          // iOS override only
-     *   ->icon(material: Material::Search) // Android override only
-     *   ->icon(sf: …, material: …)         // explicit per-platform
-     *   ->icon('share', sf: SF::SquareAndArrowUp)  // shared + iOS override
+     *   ->icon('save')                      // shared name (works on both)
+     *   ->icon(ios: Ios::BellSlash)         // iOS override only
+     *   ->icon(android: Android::Search)    // Android override only
+     *   ->icon(ios: …, android: …)          // explicit per-platform
+     *   ->icon('share', ios: Ios::SquareAndArrowUp)  // shared + iOS override
      *
-     * The Material override may be either a Filled (`Material`) or
-     * Outlined (`MaterialOutlined`) enum case — the chosen variant is
+     * The Android override may be either a Filled (`Android`) or
+     * Outlined (`AndroidOutlined`) enum case — the chosen variant is
      * propagated to the renderer via [resolvedMaterialVariant].
      */
     public function icon(
         ?string $name = null,
-        SFSymbol|string|null $sf = null,
-        MaterialSymbol|string|null $material = null,
+        IosSymbol|string|null $ios = null,
+        AndroidSymbol|string|null $android = null,
     ): static {
         if ($name !== null) {
             $this->iconName = $name;
         }
-        if ($sf !== null) {
-            $this->iconSf = $sf;
+        if ($ios !== null) {
+            $this->iconIos = $ios;
         }
-        if ($material !== null) {
-            $this->iconMaterial = $material;
+        if ($android !== null) {
+            $this->iconAndroid = $android;
         }
 
         return $this;
@@ -103,14 +103,14 @@ trait HasPlatformIcon
      */
     public function resolvedIcon(): ?string
     {
-        return IconResolver::resolve($this->iconName, $this->iconSf, $this->iconMaterial)['icon'];
+        return IconResolver::resolve($this->iconName, $this->iconIos, $this->iconAndroid)['icon'];
     }
 
     /**
      * `'filled'` / `'outlined'` / `null` — only meaningful on Android.
      *
-     * - Returns the enum's `variant()` value when the Material override
-     *   is a [MaterialSymbol] enum case.
+     * - Returns the enum's `variant()` value when the Android override
+     *   is an [AndroidSymbol] enum case.
      * - Returns `null` for raw-string overrides and shared-name fallback
      *   so the renderer keeps its current default behavior unchanged.
      *
@@ -119,6 +119,6 @@ trait HasPlatformIcon
      */
     public function resolvedMaterialVariant(): ?string
     {
-        return IconResolver::resolve($this->iconName, $this->iconSf, $this->iconMaterial)['variant'];
+        return IconResolver::resolve($this->iconName, $this->iconIos, $this->iconAndroid)['variant'];
     }
 }

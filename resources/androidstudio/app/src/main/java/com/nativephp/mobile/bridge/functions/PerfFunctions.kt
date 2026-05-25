@@ -2,6 +2,7 @@ package com.nativephp.mobile.bridge.functions
 
 import android.os.Debug
 import com.nativephp.mobile.bridge.BridgeFunction
+import com.nativephp.mobile.ui.nativerender.FrameTracker
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.PerformanceTracker
 
@@ -68,6 +69,18 @@ object PerfFunctions {
             PerformanceTracker.stopCaptureWindow()
             val json = PerformanceTracker.exportCaptureWindowJson()
             return mapOf("success" to true, "data" to json)
+        }
+    }
+
+    /** Toggle the live FPS / p99 / jank overlay independently of the
+     *  heavier [PerformanceTracker]. Wired from PHP boot via the
+     *  `nativephp.fps_overlay` config key so devs can flip it via env
+     *  without touching native code. */
+    class SetFpsOverlayEnabled : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val enabled = parameters["enabled"] as? Boolean ?: false
+            FrameTracker.enabled = enabled
+            return mapOf("success" to true, "fps_overlay_enabled" to enabled)
         }
     }
 

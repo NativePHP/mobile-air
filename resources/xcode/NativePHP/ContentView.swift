@@ -134,16 +134,18 @@ struct ContentView: View {
 /// to a thin material on earlier OSes.
 struct HotReloadIndicator: View {
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             ProgressView()
-                .controlSize(.small)
+                .controlSize(.regular)
+                .tint(.accentColor)
             Text("Reloading…")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
         .modifier(GlassPillBackground())
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
     }
 }
 

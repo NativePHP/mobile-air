@@ -117,6 +117,20 @@ enum PerfFunctions {
         }
     }
 
+    /// Toggle the live FPS / p99 / jank overlay independently of the
+    /// heavier `InteractionTracker`. Wired from PHP boot via the
+    /// `nativephp.fps_overlay` config key so devs can flip it via env
+    /// without touching code.
+    class SetFpsOverlayEnabled: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            let enabled = parameters["enabled"] as? Bool ?? false
+            DispatchQueue.main.async {
+                FrameTracker.shared.enabled = enabled
+            }
+            return ["success": true, "fps_overlay_enabled": enabled]
+        }
+    }
+
     // MARK: - Memory
 
     /// Returns current resident memory plus delta from baseline.

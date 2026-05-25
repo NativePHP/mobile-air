@@ -47,8 +47,6 @@ struct NativeRootTabsRenderer: View {
         let tabs = node.children.filter { $0.type == "bottom_nav_item" }
         let accessory = node.children.first { $0.type == "tab_accessory" }
         let currentUri = node.props.getString("current_uri", default: "")
-        let minimizeOnScroll = node.props.getBool("minimize_on_scroll")
-
         // Determine which tab "owns" the current URI via longest URL
         // prefix match against tab URLs. This is what lets a pushed
         // sub-route (e.g. `/syncup-native/chat/123` under a
@@ -79,6 +77,17 @@ struct NativeRootTabsRenderer: View {
         let activeColor: Color = activeArgb != 0 ? Color(argb: activeArgb) : .accentColor
         let bgArgb = node.props.getColor("background_color", default: 0)
         let isDark = node.props.getBool("dark")
+
+        // `TabBar::labelVisibility('labeled'|'selected'|'unlabeled')`.
+        // Defaults to "labeled" — matches Apple's TabView default.
+        //   - "unlabeled" → Instagram pattern (icons only). We pass an
+        //     empty title to `Tab(_:systemImage:value:)` AND configure
+        //     `UITabBarAppearance` to suppress the title slot so the
+        //     icon centers vertically in the bar.
+        //   - "selected" → only the currently-active tab shows its label
+        //     (matches the legacy custom `NativeBottomNav` behavior).
+        //   - "labeled" → always show labels (default).
+        let labelVisibility = node.props.getString("label_visibility", default: "labeled")
 
         // Folded NavBar config — present when the layout supplies both
         // bars. Tabs render an inner NavigationStack with toolbar even
@@ -156,13 +165,37 @@ struct NativeRootTabsRenderer: View {
             ForEach(regularTabEntries, id: \.id) { entry in
                 let tab = entry.tab
                 let idx = entry.idx
-                let label = tab.props.getString("label", default: "")
+                let rawLabel = tab.props.getString("label", default: "")
                 let icon = tab.props.getString("icon", default: "circle")
                 let tabId = entry.id
                 let tabRootUri = tab.props.getString("url", default: "")
                 let coord = tabBag.coordinator(forIdx: idx, rootUri: tabRootUri)
 
-                Tab(value: tabId) {
+                // Per-tab label visibility resolution — passing an
+                // empty string keeps the system Tab styling intact
+                // (the closure-`label:` form would opt out of Liquid
+                // Glass entirely). The empty title space is suppressed
+                // by the `UITabBarAppearance` modifier applied below.
+                //
+                // No outline → fill swap: iOS 26 Liquid Glass tab bars
+                // auto-promote every SF symbol to `.fill` regardless
+                // of what we pass, and the selection indicator is the
+                // pill background (not the icon variant). Trying to
+                // fight the system here is pointless — Apple's own
+                // apps (Music, Mail, Photos) all show filled icons in
+                // every tab state on iOS 26.
+                let label: String = {
+                    switch labelVisibility {
+                    case "unlabeled":
+                        return ""
+                    case "selected":
+                        return tabId == selection ? rawLabel : ""
+                    default:
+                        return rawLabel
+                    }
+                }()
+
+                Tab(label, systemImage: getIconForName(icon), value: tabId) {
                     PerTabContent(
                         coordinator: coord,
                         hasNavBar: hasNavBar,
@@ -171,8 +204,7 @@ struct NativeRootTabsRenderer: View {
                         fallbackTextArgb: navTextArgb,
                         fallbackBgArgb: navBgArgb
                     )
-                } label: {
-                    Label(label, systemImage: getIconForName(icon))
+
                 }
                 .badge(badgeFor(tab))
             }
@@ -206,10 +238,8 @@ struct NativeRootTabsRenderer: View {
             placement: .tabBar
         ))
         .preferredColorScheme(isDark ? .dark : nil)
-        .modifier(TabBarLiquidGlassModifier(
-            accessory: accessory,
-            minimizeOnScroll: minimizeOnScroll
-        ))
+        .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility))
+        .modifier(TabBarAccessoryModifier(accessory: accessory))
         .onAppear {
             selection = owningId
         }
@@ -310,6 +340,7 @@ private struct PerTabContent: View {
                         levelView(uri: uri, isRoot: false)
                     }
             }
+            .id(coordinator.rootUri)
             .onChange(of: coordinator.path) { newPath in
                 coordinator.onPathChange(newPath: newPath)
             }
@@ -413,9 +444,7 @@ private struct PerTabContent: View {
                 && $0.type != "bottom_bar"
         }
         if let content {
-            // GlassEffectContainer scopes :interactive press animations.
-            // See NativeRootStackRenderer.screenView for the full rationale.
-            NodeView(node: content).withGlassContainer()
+            NodeView(node: content)
         } else {
             Color.clear
         }
@@ -614,30 +643,85 @@ private struct ExplicitBarBackgroundModifier: ViewModifier {
     }
 }
 
-/// Encapsulates the iOS 26-only `.tabViewBottomAccessory(...)` and
-/// `.tabBarMinimizeBehavior(...)` modifiers. Wrapping them in a single
-/// `ViewModifier` keeps the `#available` branch confined to one place
-/// and gives the renderer a no-op fallback on iOS 18-25.
-private struct TabBarLiquidGlassModifier: ViewModifier {
+/// Applies `UITabBarAppearance` tweaks based on the
+/// `TabBar::labelVisibility(...)` PHP-side setting. For "unlabeled"
+/// tabs (Instagram pattern) we zero out the title font and push the
+/// position off-screen so the icon centers vertically in the bar slot
+/// without the title strip taking layout space.
+///
+/// SwiftUI's new iOS 18+ `Tab(_:systemImage:value:)` initializer
+/// requires a `String` title (no overload for "icon only"), so we pass
+/// an empty title from the renderer and let the appearance config below
+/// suppress the slot itself.
+///
+/// `.labeled` is the default — no appearance changes; SwiftUI handles
+/// the standard outline→fill on-select / Liquid Glass progressive-fill
+/// styling on its own.
+///
+/// `.selected` is handled at the title-resolution site (empty title for
+/// non-selected tabs) — no appearance tweak needed.
+private struct TabBarLabelVisibilityModifier: ViewModifier {
+    let mode: String
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            applyAppearance()
+        }
+        .onChange(of: mode) { _ in
+            applyAppearance()
+        }
+    }
+
+    private func applyAppearance() {
+        if #available(iOS 26.0, *) {
+            // iOS 26 Liquid Glass tab bars own their own appearance —
+            // setting ANY UITabBarAppearance (even a default-init one)
+            // forces the bar into the legacy opaque rendering path,
+            // which breaks both the glass material and
+            // .tabBarMinimizeBehavior. The empty-string label passed to
+            // Tab(_:systemImage:value:) is sufficient on Liquid Glass;
+            // the bar auto-centers the icon without title spacing.
+            return
+        }
+
+        guard mode == "unlabeled" else { return }
+
+        let appearance = UITabBarAppearance()
+        appearance.configureWithDefaultBackground()
+
+        let clear: [NSAttributedString.Key: Any] = [.foregroundColor: UIColor.clear]
+        let offscreen = UIOffset(horizontal: 0, vertical: 1000)
+
+        for itemAppearance in [
+            appearance.stackedLayoutAppearance,
+            appearance.inlineLayoutAppearance,
+            appearance.compactInlineLayoutAppearance,
+        ] {
+            itemAppearance.normal.titleTextAttributes = clear
+            itemAppearance.selected.titleTextAttributes = clear
+            itemAppearance.normal.titlePositionAdjustment = offscreen
+            itemAppearance.selected.titlePositionAdjustment = offscreen
+        }
+
+        UITabBar.appearance().standardAppearance = appearance
+        if #available(iOS 15.0, *) {
+            UITabBar.appearance().scrollEdgeAppearance = appearance
+        }
+    }
+}
+
+private struct TabBarAccessoryModifier: ViewModifier {
     let accessory: NativeUINode?
-    let minimizeOnScroll: Bool
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            // `.tabViewBottomAccessory` always renders the slot — even when
-            // its closure is empty — so an empty pill appears above the tab
-            // bar. Only attach the modifier when the layout actually
-            // supplied an accessory; otherwise just apply the minimize
-            // behavior on its own.
             if let inner = accessory?.children.first {
                 content
-                    .tabBarMinimizeBehavior(minimizeOnScroll ? .onScrollDown : .never)
                     .tabViewBottomAccessory {
                         NodeView(node: inner)
                     }
             } else {
                 content
-                    .tabBarMinimizeBehavior(minimizeOnScroll ? .onScrollDown : .never)
             }
         } else {
             content

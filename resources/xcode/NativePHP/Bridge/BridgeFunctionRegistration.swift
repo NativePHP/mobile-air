@@ -23,6 +23,7 @@ func registerBridgeFunctions() {
     registry.register("Perf.SimulateTextChange", function: PerfFunctions.SimulateTextChange())
     registry.register("Perf.SimulateToggle",     function: PerfFunctions.SimulateToggle())
     registry.register("Perf.SetDiffEnabled",     function: PerfFunctions.SetDiffEnabled())
+    registry.register("Perf.SetFpsOverlayEnabled", function: PerfFunctions.SetFpsOverlayEnabled())
     registry.register("Perf.Memory",             function: PerfFunctions.Memory())
 
     // Built-in framework-level renderers for chrome sentinels emitted
