@@ -3,7 +3,9 @@ package com.nativephp.mobile.network
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.core.content.ContextCompat
 import android.util.Log
 import android.webkit.*
 import android.widget.Toast
@@ -120,6 +122,44 @@ class WebViewManager(
                     "${consoleMessage.message()} -- From line ${consoleMessage.lineNumber()}"
                 )
                 return true
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest) {
+                Log.d(TAG, "onPermissionRequest: ${request.resources.joinToString()}")
+
+                val allowed = mutableListOf<String>()
+                for (resource in request.resources) {
+                    when (resource) {
+                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> {
+                            if (ContextCompat.checkSelfPermission(
+                                    context,
+                                    android.Manifest.permission.RECORD_AUDIO,
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                allowed.add(resource)
+                            }
+                        }
+                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
+                            if (ContextCompat.checkSelfPermission(
+                                    context,
+                                    android.Manifest.permission.CAMERA,
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                allowed.add(resource)
+                            }
+                        }
+                        PermissionRequest.RESOURCE_MIDI_SYSEX,
+                        PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID -> allowed.add(resource)
+                    }
+                }
+
+                if (allowed.isNotEmpty()) {
+                    Log.d(TAG, "Granting WebView permission: ${allowed.joinToString()}")
+                    request.grant(allowed.toTypedArray())
+                } else {
+                    Log.d(TAG, "Denying WebView permission: ${request.resources.joinToString()}")
+                    request.deny()
+                }
             }
         }
     }

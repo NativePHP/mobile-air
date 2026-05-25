@@ -438,8 +438,20 @@ class AndroidPluginCompiler
             }
         }
 
+        $permissionsToAdd = array_unique($permissionsToAdd);
+
+        // Chromium's WebView audio stack needs MODIFY_AUDIO_SETTINGS whenever microphone
+        // capture is declared (e.g. for getUserMedia / communication device routing).
+        if (
+            in_array('android.permission.RECORD_AUDIO', $permissionsToAdd, true)
+            || str_contains($mainManifest, 'android.permission.RECORD_AUDIO')
+        ) {
+            $permissionsToAdd[] = 'android.permission.MODIFY_AUDIO_SETTINGS';
+            $permissionsToAdd = array_unique($permissionsToAdd);
+        }
+
         // Add permissions that don't already exist
-        $mainManifest = $this->injectPermissions($mainManifest, array_unique($permissionsToAdd));
+        $mainManifest = $this->injectPermissions($mainManifest, $permissionsToAdd);
 
         // Add features that don't already exist
         $mainManifest = $this->injectFeatures($mainManifest, $featuresToAdd);
