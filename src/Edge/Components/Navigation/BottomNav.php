@@ -14,6 +14,7 @@ class BottomNav extends EdgeComponent
         public ?bool $dark = null,
         public string $labelVisibility = 'labeled',
         public ?string $activeColor = null,
+        public ?int $paddingBottom = null,
     ) {}
 
     protected function toNativeProps(): array
@@ -22,6 +23,7 @@ class BottomNav extends EdgeComponent
             'dark' => $this->dark,
             'label_visibility' => $this->labelVisibility,
             'active_color' => $this->activeColor,
+            'padding_bottom' => $this->paddingBottom,
             'id' => 'bottom_nav',
         ];
     }

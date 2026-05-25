@@ -271,6 +271,8 @@ struct NativeBottomNavigation: View {
     var body: some View {
         if let bottomNavData = uiState.bottomNavData,
            let items = bottomNavData.children, !items.isEmpty {
+           
+            let customBottomPadding = CGFloat(bottomNavData.paddingBottom ?? 20)
 
             if #available(iOS 26.0, *) {
                 // iOS 26+: Tab bar with Liquid Glass effect
@@ -284,7 +286,7 @@ struct NativeBottomNavigation: View {
                     }
                 )
                 .frame(height: 49)
-                .padding(.bottom, 20)
+                .padding(.bottom, customBottomPadding)
                 .onAppear {
                     ensureSelectedTabInitialized(items: items)
                 }
