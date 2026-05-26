@@ -331,11 +331,39 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         // Extract Headers
         let headers = request.allHTTPHeaderFields ?? [:]
 
-        // Extract POST data if method is POST/PUT/PATCH
+        // Extract POST data if method is POST/PUT/PATCH.
+        //
+        // WKURLSchemeTask does not populate `request.httpBody` for XHR or
+        // fetch() POSTs originating from JavaScript — the body is exposed only
+        // via `request.httpBodyStream`. Read the stream as a fallback so JSON
+        // and other JS-initiated bodies (Inertia.js, axios, fetch) reach PHP.
         var data: String?
-        if ["POST", "PUT", "PATCH"].contains(method.uppercased()), let httpBody = request.httpBody {
-            if let body = String(data: httpBody, encoding: .utf8) {
-                data = body
+        if ["POST", "PUT", "PATCH"].contains(method.uppercased()) {
+            if let httpBody = request.httpBody {
+                if let body = String(data: httpBody, encoding: .utf8) {
+                    data = body
+                }
+            } else if let stream = request.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+
+                var bodyData = Data()
+                let bufferSize = 4096
+                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+                defer { buffer.deallocate() }
+
+                while stream.hasBytesAvailable {
+                    let bytesRead = stream.read(buffer, maxLength: bufferSize)
+                    if bytesRead > 0 {
+                        bodyData.append(buffer, count: bytesRead)
+                    } else {
+                        break
+                    }
+                }
+
+                if let body = String(data: bodyData, encoding: .utf8) {
+                    data = body
+                }
             }
         }
 
