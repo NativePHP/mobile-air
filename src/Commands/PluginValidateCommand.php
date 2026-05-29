@@ -280,7 +280,7 @@ class PluginValidateCommand extends Command
         // Search recursively for the Kotlin file
         $searchPaths = [
             $basePath.'/resources/android/src',
-            $basePath.'/resources/android'
+            $basePath.'/resources/android',
         ];
 
         $androidSrc = null;
