@@ -20,7 +20,7 @@ class TopBarAction extends EdgeComponent
 
     protected function requiredProps(): array
     {
-        return ['id', 'label'];
+        return ['id', 'icon', 'label'];
     }
 
     protected function toNativeProps(): array
