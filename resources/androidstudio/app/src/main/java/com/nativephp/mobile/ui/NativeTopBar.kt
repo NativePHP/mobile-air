@@ -38,6 +38,27 @@ fun NativeTopBar(
     val backgroundColor = data.backgroundColor?.let { parseColor(it) }
     val textColor = data.textColor?.let { parseColor(it) }
     val actions = data.children?.mapNotNull { it.data } ?: emptyList()
+    val handleActionClick: (TopBarAction) -> Unit = { action ->
+        Log.d(TAG, "⚡ Action clicked: ${action.label ?: action.id}")
+        action.url?.let { url ->
+            if (isExternalUrl(url)) {
+                Log.d(TAG, "🌐 Opening external URL in browser: $url")
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to open external URL: $url", e)
+                }
+            } else {
+                Log.d(TAG, "📱 Opening internal URL in WebView: $url")
+                onNavigate(url)
+            }
+        }
+        action.event?.let {
+            // Dispatch event if specified
+            Log.d(TAG, "📢 Dispatching event: $it")
+        }
+    }
 
     // Split actions into visible (max 3) and overflow
     val visibleActions = actions.take(3)
@@ -83,34 +104,47 @@ fun NativeTopBar(
         actions = {
             // Render visible actions (max 3)
             visibleActions.forEach { action ->
-                IconButton(
-                    onClick = {
-                        Log.d(TAG, "⚡ Action clicked: ${action.label ?: action.id}")
-                        action.url?.let { url ->
-                            if (isExternalUrl(url)) {
-                                Log.d(TAG, "🌐 Opening external URL in browser: $url")
-                                try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Failed to open external URL: $url", e)
+                val actionChildren = action.children?.mapNotNull { it.data } ?: emptyList()
+
+                if (actionChildren.isNotEmpty()) {
+                    val showActionMenu = remember(action.id) { mutableStateOf(false) }
+
+                    IconButton(onClick = { showActionMenu.value = true }) {
+                        MaterialIcon(
+                            name = action.icon,
+                            contentDescription = action.label ?: action.id,
+                            tint = textColor ?: MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showActionMenu.value,
+                        onDismissRequest = { showActionMenu.value = false }
+                    ) {
+                        actionChildren.forEach { child ->
+                            DropdownMenuItem(
+                                text = { Text(child.label ?: child.id) },
+                                onClick = {
+                                    showActionMenu.value = false
+                                    handleActionClick(child)
+                                },
+                                leadingIcon = {
+                                    MaterialIcon(
+                                        name = child.icon,
+                                        contentDescription = child.label ?: child.id
+                                    )
                                 }
-                            } else {
-                                Log.d(TAG, "📱 Opening internal URL in WebView: $url")
-                                onNavigate(url)
-                            }
-                        }
-                        action.event?.let {
-                            // Dispatch event if specified
-                            Log.d(TAG, "📢 Dispatching event: $it")
+                            )
                         }
                     }
-                ) {
-                    MaterialIcon(
-                        name = action.icon,
-                        contentDescription = action.label ?: action.id,
-                        tint = textColor ?: MaterialTheme.colorScheme.onSurface
-                    )
+                } else {
+                    IconButton(onClick = { handleActionClick(action) }) {
+                        MaterialIcon(
+                            name = action.icon,
+                            contentDescription = action.label ?: action.id,
+                            tint = textColor ?: MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
 
@@ -129,36 +163,51 @@ fun NativeTopBar(
                     onDismissRequest = { showOverflowMenu.value = false }
                 ) {
                     overflowActions.forEach { action ->
-                        DropdownMenuItem(
-                            text = { Text(action.label ?: action.id) },
-                            onClick = {
-                                showOverflowMenu.value = false
-                                Log.d(TAG, "⚡ Overflow action clicked: ${action.label ?: action.id}")
-                                action.url?.let { url ->
-                                    if (isExternalUrl(url)) {
-                                        Log.d(TAG, "🌐 Opening external URL in browser: $url")
-                                        try {
-                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                            context.startActivity(intent)
-                                        } catch (e: Exception) {
-                                            Log.e(TAG, "Failed to open external URL: $url", e)
-                                        }
-                                    } else {
-                                        Log.d(TAG, "📱 Opening internal URL in WebView: $url")
-                                        onNavigate(url)
+                        val actionChildren = action.children?.mapNotNull { it.data } ?: emptyList()
+
+                        if (actionChildren.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text(action.label ?: action.id) },
+                                onClick = {},
+                                enabled = false,
+                                leadingIcon = {
+                                    MaterialIcon(
+                                        name = action.icon,
+                                        contentDescription = action.label ?: action.id
+                                    )
+                                }
+                            )
+
+                            actionChildren.forEach { child ->
+                                DropdownMenuItem(
+                                    text = { Text(child.label ?: child.id) },
+                                    onClick = {
+                                        showOverflowMenu.value = false
+                                        handleActionClick(child)
+                                    },
+                                    leadingIcon = {
+                                        MaterialIcon(
+                                            name = child.icon,
+                                            contentDescription = child.label ?: child.id
+                                        )
                                     }
-                                }
-                                action.event?.let {
-                                    Log.d(TAG, "📢 Dispatching event: $it")
-                                }
-                            },
-                            leadingIcon = {
-                                MaterialIcon(
-                                    name = action.icon,
-                                    contentDescription = action.label ?: action.id
                                 )
                             }
-                        )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text(action.label ?: action.id) },
+                                onClick = {
+                                    showOverflowMenu.value = false
+                                    handleActionClick(action)
+                                },
+                                leadingIcon = {
+                                    MaterialIcon(
+                                        name = action.icon,
+                                        contentDescription = action.label ?: action.id
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
             }

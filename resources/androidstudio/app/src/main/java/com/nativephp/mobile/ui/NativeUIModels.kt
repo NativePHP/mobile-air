@@ -158,7 +158,8 @@ data class TopBarAction(
     val icon: String,
     val label: String? = null,
     val url: String? = null,
-    val event: String? = null
+    val event: String? = null,
+    val children: List<TopBarActionComponent>? = null
 )
 
 /**

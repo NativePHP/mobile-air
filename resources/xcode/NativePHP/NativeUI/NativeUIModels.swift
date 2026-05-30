@@ -217,8 +217,9 @@ struct TopBarActionComponent: Codable, Equatable {
 struct TopBarAction: Codable, Equatable {
     let id: String
     let label: String
-    let url: String
+    let url: String?
     let icon: String
+    let children: [TopBarActionComponent]?
 }
 
 // MARK: - NativeUI Parser
