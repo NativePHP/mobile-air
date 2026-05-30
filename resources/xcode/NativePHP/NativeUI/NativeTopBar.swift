@@ -85,13 +85,14 @@ struct NativeTopBar: UIViewRepresentable {
         // Update right bar buttons (actions)
         if let actions = topBarData.children, !actions.isEmpty {
             var barButtonItems: [UIBarButtonItem] = []
+            context.coordinator.actionUrls.removeAll()
 
             for action in actions {
                 let image = !action.data.icon.isEmpty ? UIImage(systemName: getIconForName(action.data.icon)) : nil
                 let childActions = action.data.children ?? []
 
                 if !childActions.isEmpty {
-                    if #available(iOS 14.0, *) {
+                    if #available(iOS 26.0, *) {
                         let menuItems: [UIAction] = childActions.compactMap { child in
                             guard let childUrl = child.data.url, !childUrl.isEmpty else {
                                 return nil
@@ -126,7 +127,7 @@ struct NativeTopBar: UIViewRepresentable {
                 }
 
                 // Create button with both image and title when available
-                let button = TopBarButtonItem(
+                let button = UIBarButtonItem(
                     title: action.data.label,
                     image: image,
                     target: context.coordinator,
@@ -135,7 +136,9 @@ struct NativeTopBar: UIViewRepresentable {
 
                 button.accessibilityLabel = action.data.label
                 button.accessibilityIdentifier = action.data.id
-                button.actionUrl = actionUrl
+
+                // Store the URL in the button's tag by storing it in coordinator
+                context.coordinator.actionUrls[action.data.id] = actionUrl
                 barButtonItems.append(button)
             }
 
@@ -183,6 +186,7 @@ struct NativeTopBar: UIViewRepresentable {
     class Coordinator: NSObject, UINavigationBarDelegate {
         let uiState: NativeUIState
         let onNavigate: (String) -> Void
+        var actionUrls: [String: String] = [:]
 
         init(uiState: NativeUIState, onNavigate: @escaping (String) -> Void) {
             self.uiState = uiState
@@ -196,8 +200,8 @@ struct NativeTopBar: UIViewRepresentable {
         }
 
         @objc func actionTapped(_ sender: UIBarButtonItem) {
-                        guard let button = sender as? TopBarButtonItem,
-                                    let url = button.actionUrl else {
+            guard let actionId = sender.accessibilityIdentifier,
+                  let url = actionUrls[actionId] else {
                 return
             }
 
@@ -208,9 +212,5 @@ struct NativeTopBar: UIViewRepresentable {
         func navigate(to url: String) {
             onNavigate(url)
         }
-    }
-
-    final class TopBarButtonItem: UIBarButtonItem {
-        var actionUrl: String?
     }
 }
