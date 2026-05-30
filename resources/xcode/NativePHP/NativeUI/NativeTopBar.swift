@@ -92,7 +92,7 @@ struct NativeTopBar: UIViewRepresentable {
                 let childActions = action.data.children ?? []
 
                 if !childActions.isEmpty {
-                    if #available(iOS 26.0, *) {
+                    if #available(iOS 14.0, *) {
                         let menuItems: [UIAction] = childActions.compactMap { child in
                             guard let childUrl = child.data.url, !childUrl.isEmpty else {
                                 return nil
@@ -107,15 +107,23 @@ struct NativeTopBar: UIViewRepresentable {
 
                         if !menuItems.isEmpty {
                             let menu = UIMenu(title: "", children: menuItems)
-                            let button = UIBarButtonItem(
-                                title: action.data.label,
-                                image: image,
-                                primaryAction: nil,
-                                menu: menu
-                            )
-                            button.accessibilityLabel = action.data.label
-                            button.accessibilityIdentifier = action.data.id
-                            barButtonItems.append(button)
+                            if #available(iOS 15.0, *) {
+                                let button = UIBarButtonItem(
+                                    title: action.data.label,
+                                    image: image,
+                                    primaryAction: nil,
+                                    menu: menu
+                                )
+                                button.accessibilityLabel = action.data.label
+                                button.accessibilityIdentifier = action.data.id
+                                barButtonItems.append(button)
+                            } else {
+                                let menuButton = makeMenuButton(title: action.data.label, image: image, menu: menu)
+                                let buttonItem = UIBarButtonItem(customView: menuButton)
+                                buttonItem.accessibilityLabel = action.data.label
+                                buttonItem.accessibilityIdentifier = action.data.id
+                                barButtonItems.append(buttonItem)
+                            }
                         }
 
                         continue
@@ -181,6 +189,21 @@ struct NativeTopBar: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(uiState: uiState, onNavigate: onNavigate)
+    }
+
+    @available(iOS 14.0, *)
+    private func makeMenuButton(title: String?, image: UIImage?, menu: UIMenu) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        button.setImage(image, for: .normal)
+        button.menu = menu
+        button.showsMenuAsPrimaryAction = true
+        button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        button.titleLabel?.font = UIFont.preferredFont(forTextStyle: .body)
+        if image != nil && (title?.isEmpty == false) {
+            button.imageEdgeInsets = UIEdgeInsets(top: 0, left: -4, bottom: 0, right: 4)
+        }
+        return button
     }
 
     class Coordinator: NSObject, UINavigationBarDelegate {
