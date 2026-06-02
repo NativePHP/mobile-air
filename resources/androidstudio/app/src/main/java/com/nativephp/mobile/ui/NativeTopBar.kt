@@ -191,10 +191,10 @@ private fun ColumnScope.BuildMenuElements(
         if (component.type == "top_bar_section") {
             val section = component.data
             
-            // Section Title
-            section.title?.let { title ->
+            // Section Title - FIXED: Now checks for empty or blank strings
+            if (!section.title.isNullOrBlank()) {
                 Text(
-                    text = title,
+                    text = section.title,
                     style = MaterialTheme.typography.labelMedium,
                     color = (textColor ?: MaterialTheme.colorScheme.onSurface).copy(alpha = 0.6f),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -213,10 +213,10 @@ private fun ColumnScope.BuildMenuElements(
             val action = component.data
             val hasChildren = !action.children.isNullOrEmpty()
 
-            val iconContent: @Composable (() -> Unit)? = if (!action.icon.isNullOrEmpty()) {
+            val iconContent: @Composable (() -> Unit)? = if (!action.icon.isNullOrBlank()) {
                 {
                     MaterialIcon(
-                        name = action.icon,
+                        name = action.icon!!,
                         contentDescription = action.label ?: action.id,
                         tint = textColor ?: MaterialTheme.colorScheme.onSurface
                     )
@@ -266,7 +266,7 @@ private fun ActionTextContent(action: TopBarActionData, textColor: Color?) {
 /**
  * Check if a URL is external (not a relative path or localhost)
  */
-private fun isExternalUrl(url: String): Boolean {
+private fun isExternalUrl(url: String): Boolean {   
     return (url.startsWith("http://") || url.startsWith("https://"))
             && !url.contains("127.0.0.1")
             && !url.contains("localhost")
