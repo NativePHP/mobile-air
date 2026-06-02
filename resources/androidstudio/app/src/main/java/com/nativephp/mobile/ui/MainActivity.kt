@@ -329,7 +329,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             val route = if (scheme != null && scheme != "http" && scheme != "https") {
                 val host = uri.host ?: ""
                 val path = uri.path ?: ""
-                val query = uri.query?.let { "?$it" } ?: ""
+                val query = uri.encodedQuery?.let { "?$it" } ?: ""
                 if (host.isNotEmpty()) "/$host$path$query" else "$path$query"
             } else {
                 fcmUrl
@@ -370,7 +370,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
         }
 
-        val query = uri.query
+        val query = uri.encodedQuery
         val laravelUrl = if (uri.scheme != "http" && uri.scheme != "https") {
             // Custom scheme (e.g., myapp://profile/settings): treat host as first path segment
             // This matches iOS behavior where the entire URI after scheme:// is the path
