@@ -218,10 +218,6 @@ private func buildMenuElements(
 
     for component in components {
         switch component.data {
-        case .divider:
-            if let separator = menuSeparatorElement() {
-                elements.append(separator)
-            }
         case .section(let section):
             let sectionElements = buildMenuElements(from: section.children ?? [], context: context)
             if !sectionElements.isEmpty {
@@ -263,16 +259,4 @@ private func buildMenuElements(
     }
 
     return elements
-}
-
-private func menuSeparatorElement() -> UIMenuElement? {
-    let separatorSelector = NSSelectorFromString("separator")
-
-    guard let menuElementType = NSClassFromString("UIMenuElement") as? NSObject.Type,
-          menuElementType.responds(to: separatorSelector),
-          let result = menuElementType.perform(separatorSelector)?.takeUnretainedValue() as? UIMenuElement else {
-        return nil
-    }
-
-    return result
 }

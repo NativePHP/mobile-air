@@ -228,10 +228,6 @@ struct TopBarActionComponent: Codable, Equatable {
             } else {
                 data = nil
             }
-        case "horizontal_divider":
-            data = .divider
-        case "top_bar_spacer":
-            data = .spacer
         default:
             if let action = try? container.decode(TopBarAction.self, forKey: .data) {
                 data = .action(action)
@@ -250,7 +246,7 @@ struct TopBarActionComponent: Codable, Equatable {
             try container.encode(action, forKey: .data)
         case .section(let section):
             try container.encode(section, forKey: .data)
-        case .divider, .spacer, .none:
+        case .none:
             try container.encodeNil(forKey: .data)
         }
     }
@@ -274,8 +270,6 @@ struct TopBarSection: Codable, Equatable {
 enum TopBarActionData: Equatable {
     case action(TopBarAction)
     case section(TopBarSection)
-    case divider
-    case spacer
 }
 
 // MARK: - NativeUI Parser
