@@ -211,15 +211,71 @@ struct TopBarData: Codable, Equatable {
 
 struct TopBarActionComponent: Codable, Equatable {
     let type: String
-    let data: TopBarAction
+    let data: TopBarActionData?
+
+    enum CodingKeys: String, CodingKey {
+        case type, data
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+
+        switch type {
+        case "top_bar_section":
+            if let section = try? container.decode(TopBarSection.self, forKey: .data) {
+                data = .section(section)
+            } else {
+                data = nil
+            }
+        case "horizontal_divider":
+            data = .divider
+        case "top_bar_spacer":
+            data = .spacer
+        default:
+            if let action = try? container.decode(TopBarAction.self, forKey: .data) {
+                data = .action(action)
+            } else {
+                data = nil
+            }
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(type, forKey: .type)
+
+        switch data {
+        case .action(let action):
+            try container.encode(action, forKey: .data)
+        case .section(let section):
+            try container.encode(section, forKey: .data)
+        case .divider, .spacer, .none:
+            try container.encodeNil(forKey: .data)
+        }
+    }
 }
 
 struct TopBarAction: Codable, Equatable {
     let id: String
     let label: String
+    let subtitle: String?
     let url: String?
     let icon: String
+    let role: String?
     let children: [TopBarActionComponent]?
+}
+
+struct TopBarSection: Codable, Equatable {
+    let title: String
+    let children: [TopBarActionComponent]?
+}
+
+enum TopBarActionData: Equatable {
+    case action(TopBarAction)
+    case section(TopBarSection)
+    case divider
+    case spacer
 }
 
 // MARK: - NativeUI Parser

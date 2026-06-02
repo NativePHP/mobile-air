@@ -14,8 +14,10 @@ class TopBarAction extends EdgeComponent
         public ?string $id = null,
         public ?string $icon = null,
         public ?string $label = null,
+        public ?string $subtitle = null,
         public ?string $url = null,
         public ?string $event = null,
+        public ?string $role = null,
     ) {}
 
     protected function requiredProps(): array
@@ -29,8 +31,10 @@ class TopBarAction extends EdgeComponent
             'id' => $this->id,
             'icon' => $this->icon,
             'label' => $this->label,
+            'subtitle' => $this->subtitle,
             'url' => $this->url,
             'event' => $this->event,
+            'role' => $this->role,
         ];
     }
 }

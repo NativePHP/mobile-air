@@ -88,58 +88,53 @@ struct NativeTopBar: UIViewRepresentable {
             context.coordinator.actionUrls.removeAll()
 
             for action in actions {
-                let image = !action.data.icon.isEmpty ? UIImage(systemName: getIconForName(action.data.icon)) : nil
-                let childActions = action.data.children ?? []
+                switch action.data {
+                case .action(let actionData):
+                    let image = !actionData.icon.isEmpty ? UIImage(systemName: getIconForName(actionData.icon)) : nil
+                    let childActions = actionData.children ?? []
 
-                if !childActions.isEmpty {
-                    if #available(iOS 26.0, *) {
-                        let menuItems: [UIAction] = childActions.compactMap { child in
-                            guard let childUrl = child.data.url, !childUrl.isEmpty else {
-                                return nil
+                    if !childActions.isEmpty {
+                        if #available(iOS 26.0, *) {
+                            let menuElements = buildMenuElements(from: childActions, context: context)
+
+                            if !menuElements.isEmpty {
+                                let menu = UIMenu(title: "", children: menuElements)
+                                let button = UIBarButtonItem(
+                                    title: actionData.label,
+                                    image: image,
+                                    primaryAction: nil,
+                                    menu: menu
+                                )
+                                button.accessibilityLabel = actionData.label
+                                button.accessibilityIdentifier = actionData.id
+                                barButtonItems.append(button)
                             }
 
-                            let childImage = !child.data.icon.isEmpty ? UIImage(systemName: getIconForName(child.data.icon)) : nil
-
-                            return UIAction(title: child.data.label, image: childImage) { _ in
-                                context.coordinator.navigate(to: childUrl)
-                            }
+                            continue
                         }
+                    }
 
-                        if !menuItems.isEmpty {
-                            let menu = UIMenu(title: "", children: menuItems)
-                            let button = UIBarButtonItem(
-                                title: action.data.label,
-                                image: image,
-                                primaryAction: nil,
-                                menu: menu
-                            )
-                            button.accessibilityLabel = action.data.label
-                            button.accessibilityIdentifier = action.data.id
-                            barButtonItems.append(button)
-                        }
-
+                    guard let actionUrl = actionData.url, !actionUrl.isEmpty else {
                         continue
                     }
-                }
 
-                guard let actionUrl = action.data.url, !actionUrl.isEmpty else {
+                    // Create button with both image and title when available
+                    let button = UIBarButtonItem(
+                        title: actionData.label,
+                        image: image,
+                        target: context.coordinator,
+                        action: #selector(Coordinator.actionTapped(_:))
+                    )
+
+                    button.accessibilityLabel = actionData.label
+                    button.accessibilityIdentifier = actionData.id
+
+                    // Store the URL in the button's tag by storing it in coordinator
+                    context.coordinator.actionUrls[actionData.id] = actionUrl
+                    barButtonItems.append(button)
+                default:
                     continue
                 }
-
-                // Create button with both image and title when available
-                let button = UIBarButtonItem(
-                    title: action.data.label,
-                    image: image,
-                    target: context.coordinator,
-                    action: #selector(Coordinator.actionTapped(_:))
-                )
-
-                button.accessibilityLabel = action.data.label
-                button.accessibilityIdentifier = action.data.id
-
-                // Store the URL in the button's tag by storing it in coordinator
-                context.coordinator.actionUrls[action.data.id] = actionUrl
-                barButtonItems.append(button)
             }
 
             navItem.rightBarButtonItems = barButtonItems
@@ -213,4 +208,71 @@ struct NativeTopBar: UIViewRepresentable {
             onNavigate(url)
         }
     }
+}
+
+private func buildMenuElements(
+    from components: [TopBarActionComponent],
+    context: NativeTopBar.Context
+) -> [UIMenuElement] {
+    var elements: [UIMenuElement] = []
+
+    for component in components {
+        switch component.data {
+        case .divider:
+            if let separator = menuSeparatorElement() {
+                elements.append(separator)
+            }
+        case .section(let section):
+            let sectionElements = buildMenuElements(from: section.children ?? [], context: context)
+            if !sectionElements.isEmpty {
+                let sectionMenu = UIMenu(title: section.title, options: .displayInline, children: sectionElements)
+                elements.append(sectionMenu)
+            }
+        case .action(let action):
+            guard let url = action.url, !url.isEmpty else {
+                continue
+            }
+
+            let image = !action.icon.isEmpty ? UIImage(systemName: getIconForName(action.icon)) : nil
+            var attributes: UIMenuElement.Attributes = []
+            if action.role == "destructive" {
+                attributes.insert(.destructive)
+            }
+
+            let menuAction = UIAction(
+                title: action.label,
+                image: image,
+                identifier: nil,
+                discoverabilityTitle: nil,
+                attributes: attributes,
+                state: .off
+            ) { _ in
+                context.coordinator.navigate(to: url)
+            }
+
+            if #available(iOS 15.0, *),
+               let subtitle = action.subtitle,
+               !subtitle.isEmpty {
+                menuAction.subtitle = subtitle
+            }
+
+            elements.append(menuAction)
+        default:
+            continue
+        }
+    }
+
+    return elements
+}
+
+private func menuSeparatorElement() -> UIMenuElement? {
+    let separatorSelector = NSSelectorFromString("separator")
+
+    guard let menuElementType = NSClassFromString("UIMenuElement") as? NSObject.Type,
+          menuElementType.responds(to: separatorSelector),
+          let result = menuElementType.perform(separatorSelector)?.takeUnretainedValue() as? UIMenuElement else {
+        return nil
+    }
+
+    return result
 }
