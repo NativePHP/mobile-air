@@ -88,53 +88,52 @@ struct NativeTopBar: UIViewRepresentable {
             context.coordinator.actionUrls.removeAll()
 
             for action in actions {
-                switch action.data {
-                case .action(let actionData):
-                    let image = !actionData.icon.isEmpty ? UIImage(systemName: getIconForName(actionData.icon)) : nil
-                    let childActions = actionData.children ?? []
-
-                    if !childActions.isEmpty {
-                        if #available(iOS 26.0, *) {
-                            let menuElements = buildMenuElements(from: childActions, context: context)
-
-                            if !menuElements.isEmpty {
-                                let menu = UIMenu(title: "", children: menuElements)
-                                let button = UIBarButtonItem(
-                                    title: actionData.label,
-                                    image: image,
-                                    primaryAction: nil,
-                                    menu: menu
-                                )
-                                button.accessibilityLabel = actionData.label
-                                button.accessibilityIdentifier = actionData.id
-                                barButtonItems.append(button)
-                            }
-
-                            continue
-                        }
-                    }
-
-                    guard let actionUrl = actionData.url, !actionUrl.isEmpty else {
-                        continue
-                    }
-
-                    // Create button with both image and title when available
-                    let button = UIBarButtonItem(
-                        title: actionData.label,
-                        image: image,
-                        target: context.coordinator,
-                        action: #selector(Coordinator.actionTapped(_:))
-                    )
-
-                    button.accessibilityLabel = actionData.label
-                    button.accessibilityIdentifier = actionData.id
-
-                    // Store the URL in the button's tag by storing it in coordinator
-                    context.coordinator.actionUrls[actionData.id] = actionUrl
-                    barButtonItems.append(button)
-                default:
+                guard case let .action(actionData) = action.data else {
                     continue
                 }
+
+                let image = !actionData.icon.isEmpty ? UIImage(systemName: getIconForName(actionData.icon)) : nil
+                let childActions = actionData.children ?? []
+
+                if !childActions.isEmpty {
+                    if #available(iOS 26.0, *) {
+                        let menuElements = buildMenuElements(from: childActions, context: context)
+
+                        if !menuElements.isEmpty {
+                            let menu = UIMenu(title: "", children: menuElements)
+                            let button = UIBarButtonItem(
+                                title: actionData.label,
+                                image: image,
+                                primaryAction: nil,
+                                menu: menu
+                            )
+                            button.accessibilityLabel = actionData.label
+                            button.accessibilityIdentifier = actionData.id
+                            barButtonItems.append(button)
+                        }
+
+                        continue
+                    }
+                }
+
+                guard let actionUrl = actionData.url, !actionUrl.isEmpty else {
+                    continue
+                }
+
+                // Create button with both image and title when available
+                let button = UIBarButtonItem(
+                    title: actionData.label,
+                    image: image,
+                    target: context.coordinator,
+                    action: #selector(Coordinator.actionTapped(_:))
+                )
+
+                button.accessibilityLabel = actionData.label
+                button.accessibilityIdentifier = actionData.id
+
+                // Store the URL in the button's tag by storing it in coordinator
+                context.coordinator.actionUrls[actionData.id] = actionUrl
+                barButtonItems.append(button)
             }
 
             navItem.rightBarButtonItems = barButtonItems
