@@ -8,8 +8,6 @@ class TopBarAction extends EdgeComponent
 {
     protected string $type = 'top_bar_action';
 
-    protected bool $hasChildren = true;
-
     public function __construct(
         public ?string $id = null,
         public ?string $icon = null,
