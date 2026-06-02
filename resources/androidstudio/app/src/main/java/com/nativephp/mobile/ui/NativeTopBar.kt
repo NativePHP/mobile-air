@@ -4,7 +4,9 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.*
@@ -12,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 private const val TAG = "NativeTopBar"
@@ -37,8 +40,11 @@ fun NativeTopBar(
     val data = topBarData!!
     val backgroundColor = data.backgroundColor?.let { parseColor(it) }
     val textColor = data.textColor?.let { parseColor(it) }
-    val actions = data.children?.mapNotNull { it.data } ?: emptyList()
-    val handleActionClick: (TopBarAction) -> Unit = { action ->
+    
+    // Filter out top-level sections as standard action bar icons cannot logically be sections
+    val topLevelComponents = data.children?.filter { it.type != "top_bar_section" } ?: emptyList()
+    
+    val handleActionClick: (TopBarActionData) -> Unit = { action ->
         Log.d(TAG, "⚡ Action clicked: ${action.label ?: action.id}")
         action.url?.let { url ->
             if (isExternalUrl(url)) {
@@ -61,8 +67,8 @@ fun NativeTopBar(
     }
 
     // Split actions into visible (max 3) and overflow
-    val visibleActions = actions.take(3)
-    val overflowActions = actions.drop(3)
+    val visibleComponents = topLevelComponents.take(3)
+    val overflowComponents = topLevelComponents.drop(3)
     val showOverflowMenu = remember { mutableStateOf(false) }
 
     TopAppBar(
@@ -103,15 +109,16 @@ fun NativeTopBar(
         },
         actions = {
             // Render visible actions (max 3)
-            visibleActions.forEach { action ->
-                val actionChildren = action.children?.mapNotNull { it.data } ?: emptyList()
+            visibleComponents.forEach { component ->
+                val action = component.data
+                val actionChildren = action.children ?: emptyList()
 
                 if (actionChildren.isNotEmpty()) {
                     val showActionMenu = remember(action.id) { mutableStateOf(false) }
 
                     IconButton(onClick = { showActionMenu.value = true }) {
                         MaterialIcon(
-                            name = action.icon,
+                            name = action.icon ?: "menu",
                             contentDescription = action.label ?: action.id,
                             tint = textColor ?: MaterialTheme.colorScheme.onSurface
                         )
@@ -121,26 +128,17 @@ fun NativeTopBar(
                         expanded = showActionMenu.value,
                         onDismissRequest = { showActionMenu.value = false }
                     ) {
-                        actionChildren.forEach { child ->
-                            DropdownMenuItem(
-                                text = { Text(child.label ?: child.id) },
-                                onClick = {
-                                    showActionMenu.value = false
-                                    handleActionClick(child)
-                                },
-                                leadingIcon = {
-                                    MaterialIcon(
-                                        name = child.icon,
-                                        contentDescription = child.label ?: child.id
-                                    )
-                                }
-                            )
-                        }
+                        BuildMenuElements(
+                            components = actionChildren,
+                            textColor = textColor,
+                            onDismiss = { showActionMenu.value = false },
+                            handleActionClick = handleActionClick
+                        )
                     }
                 } else {
                     IconButton(onClick = { handleActionClick(action) }) {
                         MaterialIcon(
-                            name = action.icon,
+                            name = action.icon ?: "error",
                             contentDescription = action.label ?: action.id,
                             tint = textColor ?: MaterialTheme.colorScheme.onSurface
                         )
@@ -149,7 +147,7 @@ fun NativeTopBar(
             }
 
             // Overflow menu if more than 3 actions
-            if (overflowActions.isNotEmpty()) {
+            if (overflowComponents.isNotEmpty()) {
                 IconButton(onClick = { showOverflowMenu.value = true }) {
                     MaterialIcon(
                         name = "more_vert",
@@ -162,53 +160,12 @@ fun NativeTopBar(
                     expanded = showOverflowMenu.value,
                     onDismissRequest = { showOverflowMenu.value = false }
                 ) {
-                    overflowActions.forEach { action ->
-                        val actionChildren = action.children?.mapNotNull { it.data } ?: emptyList()
-
-                        if (actionChildren.isNotEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text(action.label ?: action.id) },
-                                onClick = {},
-                                enabled = false,
-                                leadingIcon = {
-                                    MaterialIcon(
-                                        name = action.icon,
-                                        contentDescription = action.label ?: action.id
-                                    )
-                                }
-                            )
-
-                            actionChildren.forEach { child ->
-                                DropdownMenuItem(
-                                    text = { Text(child.label ?: child.id) },
-                                    onClick = {
-                                        showOverflowMenu.value = false
-                                        handleActionClick(child)
-                                    },
-                                    leadingIcon = {
-                                        MaterialIcon(
-                                            name = child.icon,
-                                            contentDescription = child.label ?: child.id
-                                        )
-                                    }
-                                )
-                            }
-                        } else {
-                            DropdownMenuItem(
-                                text = { Text(action.label ?: action.id) },
-                                onClick = {
-                                    showOverflowMenu.value = false
-                                    handleActionClick(action)
-                                },
-                                leadingIcon = {
-                                    MaterialIcon(
-                                        name = action.icon,
-                                        contentDescription = action.label ?: action.id
-                                    )
-                                }
-                            )
-                        }
-                    }
+                    BuildMenuElements(
+                        components = overflowComponents,
+                        textColor = textColor,
+                        onDismiss = { showOverflowMenu.value = false },
+                        handleActionClick = handleActionClick
+                    )
                 }
             }
         },
@@ -218,6 +175,92 @@ fun NativeTopBar(
             navigationIconContentColor = textColor ?: MaterialTheme.colorScheme.onSurface
         )
     )
+}
+
+/**
+ * Recursively builds dropdown menu elements handling Sections and Action groupings.
+ */
+@Composable
+private fun ColumnScope.BuildMenuElements(
+    components: List<TopBarActionComponent>,
+    textColor: Color?,
+    onDismiss: () -> Unit,
+    handleActionClick: (TopBarActionData) -> Unit
+) {
+    components.forEach { component ->
+        if (component.type == "top_bar_section") {
+            val section = component.data
+            
+            // Section Title
+            section.title?.let { title ->
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = (textColor ?: MaterialTheme.colorScheme.onSurface).copy(alpha = 0.6f),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+            
+            // Section Children
+            section.children?.let { children ->
+                BuildMenuElements(children, textColor, onDismiss, handleActionClick)
+            }
+            
+            // Appends a subtle divider after groups for cleaner structure
+            Divider(color = (textColor ?: MaterialTheme.colorScheme.onSurface).copy(alpha = 0.1f))
+            
+        } else {
+            val action = component.data
+            val hasChildren = !action.children.isNullOrEmpty()
+
+            val iconContent: @Composable (() -> Unit)? = if (!action.icon.isNullOrEmpty()) {
+                {
+                    MaterialIcon(
+                        name = action.icon,
+                        contentDescription = action.label ?: action.id,
+                        tint = textColor ?: MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            } else null
+
+            if (hasChildren) {
+                // Render an unclickable header, then recursively append its children.
+                DropdownMenuItem(
+                    text = { ActionTextContent(action, textColor) },
+                    onClick = {},
+                    enabled = false,
+                    leadingIcon = iconContent
+                )
+                BuildMenuElements(action.children!!, textColor, onDismiss, handleActionClick)
+            } else {
+                DropdownMenuItem(
+                    text = { ActionTextContent(action, textColor) },
+                    onClick = {
+                        onDismiss()
+                        handleActionClick(action)
+                    },
+                    leadingIcon = iconContent
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Text renderer component supporting trailing subtitles natively in the DropdownMenuItem.
+ */
+@Composable
+private fun ActionTextContent(action: TopBarActionData, textColor: Color?) {
+    Column {
+        Text(action.label ?: action.id ?: "")
+        action.subtitle?.let { subtitle ->
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = (textColor ?: MaterialTheme.colorScheme.onSurface).copy(alpha = 0.7f)
+            )
+        }
+    }
 }
 
 /**

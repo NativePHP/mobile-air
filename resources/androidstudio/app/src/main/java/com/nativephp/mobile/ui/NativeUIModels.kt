@@ -66,9 +66,6 @@ data class SideNavData(
 
 /**
  * Side nav child component - can be an item, group, or divider
- * For items: type="side_nav_item", data contains SideNavItem
- * For groups: type="side_nav_group", data contains SideNavGroup
- * For dividers: type="horizontal_divider", data is null/empty
  */
 data class SideNavChild(
     val type: String,
@@ -143,22 +140,26 @@ data class TopBarData(
 )
 
 /**
- * Top bar action as a component (wraps TopBarAction data)
+ * Top bar action as a component (wraps TopBarActionData)
  */
 data class TopBarActionComponent(
     val type: String,
-    val data: TopBarAction
+    val data: TopBarActionData
 )
 
 /**
- * Top bar action item data
+ * Universal data class to support both standard Actions and nested Sections.
+ * Properties not relevant to a specific component type (like 'title' for actions) simply decode as null.
  */
-data class TopBarAction(
-    val id: String,
-    val icon: String,
+data class TopBarActionData(
+    val id: String? = null,
+    val icon: String? = null,
     val label: String? = null,
+    val subtitle: String? = null,
+    val title: String? = null, // Used primarily by sections
     val url: String? = null,
     val event: String? = null,
+    val role: String? = null, // Parsed but safely ignored by UI as requested
     val children: List<TopBarActionComponent>? = null
 )
 
@@ -170,13 +171,13 @@ data class FabData(
     val icon: String,
     val url: String? = null,
     val event: String? = null,
-    val size: String? = "regular",  // "small", "regular", "large", "extended"
-    val position: String? = "end",  // "end", "center", "start"
+    val size: String? = "regular",
+    val position: String? = "end",
     @SerializedName("bottom_offset")
-    val bottomOffset: Int? = null,  // Offset from bottom in dp
-    val elevation: Int? = null,  // Elevation in dp
+    val bottomOffset: Int? = null,
+    val elevation: Int? = null,
     @SerializedName("corner_radius")
-    val cornerRadius: Int? = null,  // Corner radius in dp (default: circular)
+    val cornerRadius: Int? = null,
     @SerializedName("container_color")
     val containerColor: String? = null,
     @SerializedName("content_color")
@@ -201,21 +202,16 @@ object NativeUIParser {
         return try {
             Log.d("NativeUIParser", "parseFromObject called with type: ${obj.javaClass.name}")
 
-            // Convert the object to JsonElement
-            // Handle org.json types (from bridge) separately from Gson types
             val jsonTree = when (obj) {
                 is JSONArray -> {
-                    // Convert org.json.JSONArray to Gson JsonElement
                     Log.d("NativeUIParser", "Converting JSONArray: ${obj.toString()}")
                     JsonParser.parseString(obj.toString())
                 }
                 is JSONObject -> {
-                    // Convert org.json.JSONObject to Gson JsonElement
                     Log.d("NativeUIParser", "Converting JSONObject: ${obj.toString()}")
                     JsonParser.parseString(obj.toString())
                 }
                 else -> {
-                    // For other types, use Gson's toJsonTree
                     Log.d("NativeUIParser", "Using toJsonTree for: ${obj.javaClass.name}")
                     gson.toJsonTree(obj)
                 }
