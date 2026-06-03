@@ -50,9 +50,14 @@ class AppUpdateManager {
     }
 
     private func hasApp() -> Bool {
-        let envFile = appPath + "/.env"
+        // Use installed.version as the readiness marker: it is written only AFTER a
+        // fully successful extraction. A partial/interrupted extraction may have
+        // written .env (and some vendor files) but not all of them, so keying off
+        // .env would treat a broken half-install as complete and crash on a missing
+        // require. The marker is only present when extraction finished cleanly.
+        let marker = appPath + "/installed.version"
 
-        if FileManager.default.fileExists(atPath: envFile) {
+        if FileManager.default.fileExists(atPath: marker) {
             print("📦 An app bundle has already been extracted");
             return true
         }
@@ -93,6 +98,12 @@ class AppUpdateManager {
             runMigrationsAndClearCaches()
         } catch {
             print("❌ Failed to extract bundled app: \(error)")
+
+            // Never leave a half-extracted bundle behind. Without this, a partial app
+            // (e.g. .env present but vendor files missing) survives on disk and the next
+            // launch treats it as installed, crashing forever on a missing require.
+            // Removing it forces a clean re-extraction on the next launch (self-healing).
+            try? FileManager.default.removeItem(atPath: appPath)
         }
     }
 
@@ -137,12 +148,26 @@ class AppUpdateManager {
             }
         }
 
-        // Phase 2: Create all directories (sequential, fast)
+        // Phase 2: Create all directories (sequential, fast). Include every file's
+        // parent directory up front so the concurrent writers in Phase 3 never race
+        // to create the same intermediate directories. Concurrent
+        // createDirectory(withIntermediateDirectories:) on overlapping paths is a
+        // TOCTOU race on APFS that can spuriously fail and abort the whole extraction,
+        // leaving a partial app on disk.
+        var directoriesToCreate = Set<String>()
         for dirPath in directoryPaths {
-            try FileManager.default.createDirectory(at: dirPath, withIntermediateDirectories: true)
+            directoriesToCreate.insert(dirPath.path)
+        }
+        for (path, _) in fileDataMap {
+            directoriesToCreate.insert(path.deletingLastPathComponent().path)
+        }
+        for dir in directoriesToCreate {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         }
 
-        // Phase 3: Write all files in parallel (the slow part)
+        // Phase 3: Write all files in parallel (the slow part). All parent directories
+        // already exist, so each writer only touches its own leaf file, with no shared
+        // mutable filesystem state.
         let queue = DispatchQueue(label: "zip.write", attributes: .concurrent)
         let group = DispatchGroup()
         let errorLock = NSLock()
@@ -154,8 +179,6 @@ class AppUpdateManager {
                 defer { group.leave() }
 
                 do {
-                    // Ensure parent directory exists
-                    try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try data.write(to: path, options: .atomic)
                 } catch {
                     errorLock.lock()
@@ -171,6 +194,20 @@ class AppUpdateManager {
 
         if let error = writeError {
             throw error
+        }
+
+        // Phase 4: Verify every expected file actually landed on disk. Guards against
+        // silent truncation or a jetsam-killed writer so that a missing file aborts
+        // extraction (and triggers cleanup + retry) instead of being mistaken for a
+        // complete install.
+        for (path, _) in fileDataMap {
+            if !FileManager.default.fileExists(atPath: path.path) {
+                throw NSError(
+                    domain: "AppUpdateManager",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Extraction incomplete: missing \(path.lastPathComponent)"]
+                )
+            }
         }
     }
 
