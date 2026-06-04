@@ -843,19 +843,64 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     jstring jLaravelPath = (jstring)(*env)->CallObjectMethod(env, thiz, method);
     const char *cLaravelPath = (*env)->GetStringUTFChars(env, jLaravelPath, NULL);
 
-    // Full init per artisan command
-    setup_embed_module();
-    php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
-    if (php_embed_init(0, NULL) != SUCCESS) {
-        LOGE("Failed to initialize PHP for artisan");
+    // PHP startup must respect any already-initialized TSRM context. When the
+    // persistent runtime (or the queue worker) is alive — e.g. a WorkManager
+    // scheduler job firing while the app process is still up — php_embed_init()
+    // has already run tsrm_startup() process-wide. Calling it again re-runs
+    // php_tsrm_startup_ex → zend_ini_refresh_caches → OnUpdateBool against
+    // half-initialized globals and SIGSEGVs. Mirror ephemeral_embed_init():
+    // hot path attaches to the existing TSRM, cold path does a full embed init.
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("runArtisanCommand: timed out waiting for persistent boot to settle");
         pthread_mutex_unlock(&g_ephemeral_mutex);
         (*env)->ReleaseStringUTFChars(env, jcommand, command);
         (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
         (*env)->DeleteLocalRef(env, jLaravelPath);
         return (*env)->NewStringUTF(env, "");
     }
-    sapi_module.header_handler = android_header_handler;
-    php_initialized = 1;
+
+    int artisan_hot_path = php_initialized;
+    if (artisan_hot_path) {
+        // Hot path: a PHP runtime is already live on another thread. Allocate a
+        // thread-local TSRM context instead of re-running global startup.
+        LOGI("runArtisanCommand: hot path — attaching to existing TSRM");
+        ts_resource(0);
+        setup_embed_module();
+        if (php_embed_module.startup(&php_embed_module) == FAILURE) {
+            LOGE("runArtisanCommand: hot-path module startup failed");
+            pthread_mutex_unlock(&g_ephemeral_mutex);
+            (*env)->ReleaseStringUTFChars(env, jcommand, command);
+            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+            (*env)->DeleteLocalRef(env, jLaravelPath);
+            return (*env)->NewStringUTF(env, "");
+        }
+        if (php_request_startup() == FAILURE) {
+            LOGE("runArtisanCommand: hot-path request startup failed");
+            php_request_shutdown(NULL);
+            ts_free_thread();
+            pthread_mutex_unlock(&g_ephemeral_mutex);
+            (*env)->ReleaseStringUTFChars(env, jcommand, command);
+            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+            (*env)->DeleteLocalRef(env, jLaravelPath);
+            return (*env)->NewStringUTF(env, "");
+        }
+        sapi_module.header_handler = android_header_handler;
+    } else {
+        // Cold path: no live runtime (e.g. install-time setup, or a WorkManager
+        // cold start after the app was killed) — full embed init is safe.
+        setup_embed_module();
+        php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
+        if (php_embed_init(0, NULL) != SUCCESS) {
+            LOGE("Failed to initialize PHP for artisan");
+            pthread_mutex_unlock(&g_ephemeral_mutex);
+            (*env)->ReleaseStringUTFChars(env, jcommand, command);
+            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+            (*env)->DeleteLocalRef(env, jLaravelPath);
+            return (*env)->NewStringUTF(env, "");
+        }
+        sapi_module.header_handler = android_header_handler;
+        php_initialized = 1;
+    }
 
     char artisanPath[1024];
     snprintf(artisanPath, sizeof(artisanPath), "%s/../artisan.php", cLaravelPath);
@@ -903,8 +948,15 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     zend_stream_init_filename(&file_handle, artisanPath);
     php_execute_script(&file_handle);
 
-    safe_php_embed_shutdown();
-    php_initialized = 0;
+    if (artisan_hot_path) {
+        // Tear down only this thread's context — leave the live runtime's
+        // global TSRM (and php_initialized) intact.
+        php_request_shutdown(NULL);
+        ts_free_thread();
+    } else {
+        safe_php_embed_shutdown();
+        php_initialized = 0;
+    }
 
     pthread_mutex_unlock(&g_ephemeral_mutex);
 
@@ -915,6 +967,17 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     char *cmd_output = get_collected_output();
     return (*env)->NewStringUTF(env, cmd_output ? cmd_output : "");
+}
+
+/**
+ * Report whether the persistent PHP runtime is currently booted in this process.
+ * Process-wide signal (the C global is the single source of truth across the
+ * MainActivity thread and any WorkManager worker thread, which each hold their
+ * own PHPBridge instance). Lets the background path skip install-time artisan
+ * commands that the live app already ran at boot.
+ */
+JNIEXPORT jboolean JNICALL native_is_persistent_runtime_live(JNIEnv *env, jobject thiz) {
+    return persistent_initialized ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL native_get_laravel_root_path(JNIEnv *env, jobject thiz) {
@@ -1423,6 +1486,7 @@ static JNINativeMethod gMethods[] = {
         {"runArtisanCommand", "(Ljava/lang/String;)Ljava/lang/String;", (void *) native_run_artisan_command},
         {"getLaravelPublicPath", "()Ljava/lang/String;", (void *) native_get_laravel_public_path},
         {"getLaravelRootPath", "()Ljava/lang/String;", (void *) native_get_laravel_root_path},
+        {"nativeIsPersistentRuntimeLive", "()Z", (void *) native_is_persistent_runtime_live},
 
         // LaravelEnvironment
         {"nativeSetEnv", "(Ljava/lang/String;Ljava/lang/String;I)I", (void *) native_set_env},

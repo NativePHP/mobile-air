@@ -949,9 +949,17 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             // do the extraction ourselves before the ephemeral runtime touches vendor/.
             val didExtract = extractLaravelBundle()
             setupEnvironment()
-            if (didExtract) {
+            // Only run install-time artisan commands when we actually extracted AND no
+            // persistent runtime is already live. In a warm process the live app booted
+            // by MainActivity already ran these at startup; re-running them here would
+            // route through the classic native_run_artisan_command path and, worse,
+            // re-migrate/relink under a running interpreter. (In DEBUG builds every
+            // extraction reports a change, so this guard fires on every background tick.)
+            if (didExtract && !phpBridge.nativeIsPersistentRuntimeLive()) {
                 Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
                 runBaseArtisanCommands()
+            } else if (didExtract) {
+                Log.i(TAG, "⏭️ Skipping base artisan commands — persistent runtime already live (handled at app boot)")
             }
             Log.d(TAG, "Background environment initialized")
         } catch (e: Exception) {

@@ -60,6 +60,9 @@ class PHPBridge(private val context: Context) {
     external fun nativePersistentShutdown()
     external fun nativePersistentReboot(): Int
 
+    /** True when the persistent PHP runtime is booted anywhere in this process. */
+    external fun nativeIsPersistentRuntimeLive(): Boolean
+
     // Worker (background queue) JNI methods — runs on a separate thread with its own TSRM context
     external fun nativeWorkerBoot(bootstrapPath: String): Int
     external fun nativeWorkerArtisan(command: String): String
