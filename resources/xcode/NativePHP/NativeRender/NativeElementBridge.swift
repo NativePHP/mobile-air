@@ -2,6 +2,7 @@
 import Foundation
 import UIKit // needed for UIScreen.main, UIApplication
 import os
+import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags (Phase 0 format check)
 
 /// Element Runtime bridge — reads flat buffer from PHP shared memory, posts tree to main thread.
 ///
@@ -25,8 +26,19 @@ import os
 /// 142: border_color      146: opacity             150: elevation
 /// 154: prop_offset       158: prop_size (u16)
 final class NativeElementBridge {
-    /// Node stride: 160 bytes (Yoga-aware). Legacy 108-byte nodes are not supported.
-    private static let nodeSize = 160
+    /// Node stride: 161 bytes — Yoga-aware base (160) plus the Phase 2
+    /// appended `flags` byte at offset 160. Bumped in lockstep with
+    /// NPHP_FORMAT_VERSION = 2. Legacy 108-byte and 160-byte nodes are
+    /// not supported (format-version guard rejects mismatched producers).
+    private static let nodeSize = 161
+
+    /// Offset of the flags byte appended in format_version 2.
+    private static let nodeFlagsOffset = 160
+
+    /// Phase 2 — bit 0 in nphp_flat_node_t::flags. Marks a subtree as
+    /// identical to the previous frame; this reader splices the prior
+    /// node by id instead of parsing absent children.
+    private static let nodeFlagReuse: UInt8 = 0x01
 
     // MARK: - Region struct offsets (arm64 Darwin, computed via offsetof)
     // Must match nphp_element_region_t in nphp_element.h
@@ -50,6 +62,31 @@ final class NativeElementBridge {
 
     private static let elementMagic: UInt32 = 0x4E504845  // "NPHE"
     private static let eventMagic: UInt32   = 0x4E504556  // "NPEV"
+
+    /// Phase 0 — wire-format version this reader was compiled against.
+    /// Must match what the PHP extension reports via `nphp_get_format_version()`;
+    /// a mismatch means libphp.a in the embedded PHP and this reader were
+    /// built from divergent NPHP_FORMAT_VERSION values, and parsing the
+    /// flat buffer would render garbage. Bump in lockstep with
+    /// NPHP_FORMAT_VERSION in nphp_element.h (§5.4).
+    ///
+    /// v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
+    private static let expectedFormatVersion: UInt32 = 2
+
+    /// Phase 0 — latched after the one-shot check in `postTreeUpdateFromRegion()`.
+    /// NPHP_FLAG_* bitfield in nphp_element.h.
+    static private(set) var runtimeFlags: UInt32 = 0
+
+    /// Phase 0 — one-shot guard. Reset on `stopWatching()` so a new region
+    /// registration (hot reload) re-verifies. Can't put the check only in
+    /// `startWatching()` because publishes can arrive before the shadow
+    /// thread is fully spun up — we need a guarantee that mismatched bytes
+    /// never reach the parser (§5.4).
+    private static var versionChecked: Bool = false
+
+    /// Phase 0 — latched if a producer/reader format mismatch is detected.
+    /// Once set, `postTreeUpdateFromRegion()` short-circuits.
+    private static var versionMismatch: Bool = false
 
     /// Shared memory region pointer registered by PHP's nphp_element_init()
     private static var regionPtr: UnsafeMutableRawPointer?
@@ -124,6 +161,26 @@ final class NativeElementBridge {
             return
         }
 
+        // Phase 0 — one-shot wire-format check. Mirrors the Kotlin guard:
+        // every publish path lands here, so this is the only spot that catches
+        // mismatches regardless of how the shadow thread came up.
+        if !versionChecked {
+            let producerVersion = nphp_get_format_version()
+            if producerVersion != expectedFormatVersion {
+                print("NativeElementBridge: FORMAT VERSION MISMATCH — reader expects " +
+                      "\(expectedFormatVersion) but PHP extension reports \(producerVersion). " +
+                      "Rebuild libphp.a and this reader from matching sources " +
+                      "(REFACTOR-native-ui-performance.md §5.4). Dropping all tree updates.")
+                versionMismatch = true
+            } else {
+                runtimeFlags = nphp_get_runtime_flags()
+                print(String(format: "NativeElementBridge: first publish — format_version=%u runtime_flags=0x%08x",
+                             producerVersion, runtimeFlags))
+            }
+            versionChecked = true
+        }
+        if versionMismatch { return }
+
         let raw = UnsafeRawPointer(ptr)
 
         let magic = raw.load(fromByteOffset: RegionOffset.magic, as: UInt32.self)
@@ -133,12 +190,20 @@ final class NativeElementBridge {
         }
 
         let nodeCount = Int(raw.load(fromByteOffset: RegionOffset.nodeCount, as: UInt32.self))
-        let flatSize  = Int(raw.load(fromByteOffset: RegionOffset.flatBufferSize, as: UInt32.self))
-        let propSize  = Int(raw.load(fromByteOffset: RegionOffset.propBufferSize, as: UInt32.self))
 
-        // flat_buffer and prop_buffer are heap-allocated pointers stored in the region
-        let flatBufPtr = raw.load(fromByteOffset: RegionOffset.flatBuffer, as: UnsafePointer<UInt8>?.self)
-        let propBufPtr = raw.load(fromByteOffset: RegionOffset.propBuffer, as: UnsafePointer<UInt8>?.self)
+        // Phase 3 — pull the active half of the A/B ring through the C
+        // extension's accessor. The acquire-load on `active_buf` inside
+        // those functions pairs with the producer's release-store at
+        // the end of publish, so the buffer + size we see are guaranteed
+        // to be the latest fully-written pair. When the double-buffer
+        // flag is off, these still resolve to the original buffer A —
+        // i.e. behavior is identical to pre-Phase-3.
+        var flatSize32: UInt32 = 0
+        var propSize32: UInt32 = 0
+        let flatBufPtr = nphp_get_active_flat_buffer(&flatSize32)
+        let propBufPtr = nphp_get_active_prop_buffer(&propSize32)
+        let flatSize = Int(flatSize32)
+        let propSize = Int(propSize32)
 
         guard nodeCount > 0, flatSize > 0, let flatBuf = flatBufPtr else {
             print("NativeElementBridge: empty tree (nodes=\(nodeCount) flat=\(flatSize))")
@@ -189,12 +254,40 @@ final class NativeElementBridge {
         propPtr: UnsafeRawPointer?, propSize: Int,
         typeTable: [String], nodeCount: Int
     ) {
-        // Copy buffers off PHP thread (heap copy required for thread safety)
-        let flatData = Data(bytes: flatPtr, count: flatSize)
-        let propData: Data? = if let propPtr, propSize > 0 {
-            Data(bytes: propPtr, count: propSize)
+        // Phase 3 — when NPHP_FLAG_DOUBLE_BUFFER is on, wrap the C-side
+        // buffer pointer as a no-copy Data view. The producer alternates
+        // between buffer A and B, so the buffer we're viewing is
+        // guaranteed to be untouched until the publish AFTER the next
+        // one — safe as long as parse < 2× average publish interval.
+        // Single-buffer + zero-copy would be use-after-overwrite unsafe,
+        // hence the flag gate. Re-read runtime_flags each call so the
+        // toggle takes effect on the next frame.
+        let zeroCopy = (nphp_get_runtime_flags() & 0x04) != 0
+
+        let flatData: Data
+        let propData: Data?
+        if zeroCopy {
+            flatData = Data(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: flatPtr),
+                count: flatSize,
+                deallocator: .none
+            )
+            propData = if let propPtr, propSize > 0 {
+                Data(
+                    bytesNoCopy: UnsafeMutableRawPointer(mutating: propPtr),
+                    count: propSize,
+                    deallocator: .none
+                )
+            } else {
+                nil
+            }
         } else {
-            nil
+            flatData = Data(bytes: flatPtr, count: flatSize)
+            propData = if let propPtr, propSize > 0 {
+                Data(bytes: propPtr, count: propSize)
+            } else {
+                nil
+            }
         }
 
         let isNav = NativeUIBridge.shared.navigationPending
@@ -542,12 +635,28 @@ final class NativeElementBridge {
     }
 
     private static func writeEvent(type: Int, callbackId: Int, nodeId: Int, data: Data?) {
-        if let data {
+        // nodeId carries an FNV-1a 32-bit hash widened to Int — when bit
+        // 31 is set the value exceeds Int32.max and the checked
+        // `Int32(nodeId)` initializer traps. Use `truncatingIfNeeded`
+        // so the 32-bit wire pattern survives intact (C reads it as
+        // int32_t and treats it as an opaque id either way).
+        let t = Int32(truncatingIfNeeded: type)
+        let c = Int32(truncatingIfNeeded: callbackId)
+        let n = Int32(truncatingIfNeeded: nodeId)
+        if let data, data.count > 0 {
             data.withUnsafeBytes { ptr in
-                nativeElementWriteEvent(Int32(type), Int32(callbackId), Int32(nodeId), ptr.baseAddress!.assumingMemoryBound(to: UInt8.self), Int32(data.count))
+                if let base = ptr.baseAddress {
+                    nativeElementWriteEvent(
+                        t, c, n,
+                        base.assumingMemoryBound(to: UInt8.self),
+                        Int32(truncatingIfNeeded: data.count)
+                    )
+                } else {
+                    nativeElementWriteEvent(t, c, n, nil, 0)
+                }
             }
         } else {
-            nativeElementWriteEvent(Int32(type), Int32(callbackId), Int32(nodeId), nil, 0)
+            nativeElementWriteEvent(t, c, n, nil, 0)
         }
     }
 
@@ -558,22 +667,62 @@ final class NativeElementBridge {
 
         let perNode = flatData.count / nodeCount
         guard perNode >= nodeSize else {
-            print("NativeElementBridge: ERROR node size \(perNode) < \(nodeSize) — rebuild PHP binaries with 160-byte struct (flat=\(flatData.count) nodes=\(nodeCount))")
+            print("NativeElementBridge: ERROR node size \(perNode) < \(nodeSize) — rebuild PHP binaries with \(nodeSize)-byte struct (flat=\(flatData.count) nodes=\(nodeCount))")
             return nil
         }
         let stride = nodeSize
 
         guard flatData.count >= nodeCount * stride else { return nil }
 
+        // Phase 2 — flatten the previous tree into an id → node map so
+        // REUSE markers in this frame splice prior subtrees in O(1).
+        let prevIndex = buildIdNodeIndex(previousTree)
+
         var offset = 0
-        guard let root = readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset) else {
+        guard let root = readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset, prevIndex: prevIndex) else {
             return nil
         }
         return NativeUITree(version: 0, callbackCount: 0, root: root)
     }
 
-    private static func readNodeDFS(_ flatData: Data, propData: Data?, typeTable: [String], stride: Int, offset: inout Int) -> NativeUINode? {
+    /// Phase 2 — DFS-flatten the previous tree into id → node so REUSE
+    /// node parsing can splice prior subtrees by id in O(1).
+    private static func buildIdNodeIndex(_ tree: NativeUITree?) -> [Int: NativeUINode] {
+        guard let tree else { return [:] }
+        var out: [Int: NativeUINode] = [:]
+        out.reserveCapacity(64)
+        func walk(_ n: NativeUINode) {
+            out[n.id] = n
+            for c in n.children { walk(c) }
+        }
+        walk(tree.root)
+        return out
+    }
+
+    private static func readNodeDFS(_ flatData: Data, propData: Data?, typeTable: [String], stride: Int, offset: inout Int, prevIndex: [Int: NativeUINode]) -> NativeUINode? {
         guard offset + stride <= flatData.count else { return nil }
+
+        // Phase 2 — peek the flag byte at offset 160 BEFORE advancing
+        // past this node. If REUSE, splice the prior subtree and skip
+        // the rest of the parse for this node.
+        let nodeStart = offset
+        let reuseFlag = flatData.withUnsafeBytes { buf -> UInt8 in
+            buf.baseAddress!.advanced(by: nodeStart).load(fromByteOffset: nodeFlagsOffset, as: UInt8.self)
+        }
+        if reuseFlag & nodeFlagReuse != 0 {
+            let reuseId = flatData.withUnsafeBytes { buf -> Int in
+                Int(buf.baseAddress!.advanced(by: nodeStart).loadUnaligned(fromByteOffset: 0, as: UInt32.self).littleEndian)
+            }
+            offset += stride
+            if let prior = prevIndex[reuseId] {
+                return prior
+            }
+            // PHP shouldn't emit REUSE for an id we haven't seen — that's a
+            // forceFullFrame oversight. Drop the subtree and let the empty
+            // hole make the bug visible.
+            print("NativeElementBridge: REUSE flag set for id=\(reuseId) but no prior node in index — skipping")
+            return nil
+        }
 
         return flatData.withUnsafeBytes { buf in
             let base = buf.baseAddress!.advanced(by: offset)
@@ -684,7 +833,7 @@ final class NativeElementBridge {
             var children: [NativeUINode] = []
             children.reserveCapacity(childCount)
             for _ in 0..<childCount {
-                guard let child = readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset) else { break }
+                guard let child = readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset, prevIndex: prevIndex) else { break }
                 children.append(child)
             }
 
@@ -836,6 +985,8 @@ final class NativeElementBridge {
         os_unfair_lock_lock(&pendingLock)
         pendingUpdate = nil
         os_unfair_lock_unlock(&pendingLock)
+        // Format-version check lives in postTreeUpdateFromRegion() — it covers
+        // every publish path, not just startWatching().
     }
 
     /// Stop the shadow thread and clear all bridge-internal caches. The
@@ -857,6 +1008,12 @@ final class NativeElementBridge {
         os_unfair_lock_lock(&pendingLock)
         pendingUpdate = nil
         os_unfair_lock_unlock(&pendingLock)
+
+        // Phase 0 — re-verify wire format on next region registration.
+        // A hot-reload cycle can swap libphp.a out from under us.
+        versionChecked = false
+        versionMismatch = false
+
         if !preserveTree {
             DispatchQueue.main.async {
                 NativeUIBridge.shared.isActive = false

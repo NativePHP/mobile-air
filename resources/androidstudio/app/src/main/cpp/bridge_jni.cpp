@@ -32,7 +32,23 @@ static jobject element_get_flat_buffer(JNIEnv*, jclass);
 static jobject element_get_prop_buffer(JNIEnv*, jclass);
 static jobjectArray element_get_type_table(JNIEnv*, jclass);
 static jint element_get_node_count(JNIEnv*, jclass);
+static jint element_get_format_version(JNIEnv*, jclass);
+static jint element_get_runtime_flags(JNIEnv*, jclass);
+static void element_set_runtime_flags(JNIEnv*, jclass, jint);
 static void element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
+
+// Phase 0 — symbols exported by the PHP nativephp extension (libphp.a)
+// Linked into the same .so as this JNI bridge.
+extern "C" uint32_t nphp_get_format_version(void);
+extern "C" uint32_t nphp_get_runtime_flags(void);
+extern "C" void     nphp_set_runtime_flags(uint32_t flags);
+
+// Phase 3 — active-buffer accessors. These do the acquire-load on the
+// A/B `active_buf` index and return whichever half the producer most
+// recently published. Replace direct `region->flat_buffer` access here
+// so we honor the double-buffer flip without growing the mirror struct.
+extern "C" uint8_t *nphp_get_active_flat_buffer(uint32_t *size_out);
+extern "C" uint8_t *nphp_get_active_prop_buffer(uint32_t *size_out);
 
 // Initialization function to be called from php_bridge.c's JNI_OnLoad
 extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
@@ -81,6 +97,9 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
         {(char*)"nativeGetPropBuffer",     (char*)"()Ljava/nio/ByteBuffer;",   (void*)element_get_prop_buffer},
         {(char*)"nativeGetTypeTable",      (char*)"()[Ljava/lang/String;",     (void*)element_get_type_table},
         {(char*)"nativeGetNodeCount",      (char*)"()I",                       (void*)element_get_node_count},
+        {(char*)"nativeGetFormatVersion",  (char*)"()I",                       (void*)element_get_format_version},
+        {(char*)"nativeGetRuntimeFlags",   (char*)"()I",                       (void*)element_get_runtime_flags},
+        {(char*)"nativeSetRuntimeFlags",   (char*)"(I)V",                      (void*)element_set_runtime_flags},
         {(char*)"nativeElementWriteEvent", (char*)"(III[B)V",                  (void*)element_write_event},
     };
 
@@ -406,23 +425,30 @@ static jint element_wait_update(JNIEnv*, jclass, jint current_version, jint /*ti
 static jobject element_get_flat_buffer(JNIEnv* env, jclass) {
     auto* region = get_element_region();
     if (!region) return nullptr;
-
-    uint32_t size = region->flat_buffer_size.load(std::memory_order_acquire);
-    if (size == 0 || !region->flat_buffer) return nullptr;
     if (region->shutdown.load(std::memory_order_acquire)) return nullptr;
 
-    return env->NewDirectByteBuffer(region->flat_buffer, size);
+    // Phase 3 — `nphp_get_active_flat_buffer` does the acquire-load on
+    // `active_buf` and returns whichever half the producer most recently
+    // published. When the double-buffer flag is off the producer never
+    // flips, so this returns the original `flat_buffer` and behavior is
+    // identical to pre-Phase-3.
+    uint32_t size = 0;
+    uint8_t *ptr = nphp_get_active_flat_buffer(&size);
+    if (size == 0 || ptr == nullptr) return nullptr;
+
+    return env->NewDirectByteBuffer(ptr, size);
 }
 
 static jobject element_get_prop_buffer(JNIEnv* env, jclass) {
     auto* region = get_element_region();
     if (!region) return nullptr;
-
-    uint32_t size = region->prop_buffer_size.load(std::memory_order_acquire);
-    if (size == 0 || !region->prop_buffer) return nullptr;
     if (region->shutdown.load(std::memory_order_acquire)) return nullptr;
 
-    return env->NewDirectByteBuffer(region->prop_buffer, size);
+    uint32_t size = 0;
+    uint8_t *ptr = nphp_get_active_prop_buffer(&size);
+    if (size == 0 || ptr == nullptr) return nullptr;
+
+    return env->NewDirectByteBuffer(ptr, size);
 }
 
 static jobjectArray element_get_type_table(JNIEnv* env, jclass) {
@@ -463,6 +489,23 @@ static jint element_get_node_count(JNIEnv*, jclass) {
     auto* region = get_element_region();
     if (!region) return 0;
     return (jint)region->node_count.load(std::memory_order_acquire);
+}
+
+/* Phase 0 — wire-format version. Kotlin compares this against its compiled
+ * expectation at region register time and fails loud on mismatch. */
+static jint element_get_format_version(JNIEnv*, jclass) {
+    return (jint)nphp_get_format_version();
+}
+
+/* Phase 0 — runtime feature flag bitfield (NPHP_FLAG_* in nphp_element.h).
+ * Returns 0 when the region is not initialized. */
+static jint element_get_runtime_flags(JNIEnv*, jclass) {
+    return (jint)nphp_get_runtime_flags();
+}
+
+/* Phase 0 — override the runtime feature flag bitfield (for tests/benchmarks). */
+static void element_set_runtime_flags(JNIEnv*, jclass, jint flags) {
+    nphp_set_runtime_flags((uint32_t)flags);
 }
 
 static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {

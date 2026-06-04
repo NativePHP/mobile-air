@@ -18,6 +18,25 @@ class NativeElementCollector
 
     protected static ?CallbackRegistry $callbacks = null;
 
+    /**
+     * Phase 1 — Blade-side key-path stack for the streaming render path.
+     *
+     * `<native:row native:key="row-{{ $i }}">` works the same way
+     * `Element::row(...)->key('row-$i')` does in the programmatic path:
+     * an explicit `native:key` attr derives a stable node id via
+     * FNV-1a hash of `(parent_path . '/' . key)`, so the native diff
+     * sees the same id for the same logical row across renders even
+     * when siblings reorder/insert.
+     *
+     * The stack holds one entry per currently-open container; the top
+     * is the parent path used when hashing the next opened/leaf node.
+     * `openStreaming` pushes, `closeStreaming` pops, `leafStreaming`
+     * computes-but-doesn't-push. Empty string at the root means
+     * "unkeyed parent" — children without `native:key` then fall
+     * through to the streaming writer's auto-generated positional id.
+     */
+    protected static array $keyPathStack = [];
+
     // ── Streaming control ────────────────────────────
 
     public static function setStreaming(bool $enabled): void
@@ -35,6 +54,42 @@ class NativeElementCollector
         static::$callbacks = $callbacks;
     }
 
+    /**
+     * Phase 1 — pull the `native:key` attribute off an attrs array and
+     * derive the {nodeId, myKeyPath} pair to publish.
+     *
+     * Returns [id, myKeyPath]:
+     *   - id = 0           → no key set; let the C streaming writer
+     *                        auto-generate (legacy positional id).
+     *   - id = u32 hash    → caller passes this as the `$id` argument
+     *                        to nphp_node_open/_leaf to override the
+     *                        auto-id.
+     *   - myKeyPath = string for the depth-stack (the parent path of
+     *                 this node's children). Inherits the parent path
+     *                 when no `native:key` is set, so a keyed
+     *                 great-grandparent still informs descendants
+     *                 that *do* key themselves.
+     *
+     * Mutates `$attrs` to strip the `native:key` entry so it doesn't
+     * leak into props/layout/style downstream.
+     */
+    protected static function resolveStreamingKey(array &$attrs): array
+    {
+        $parentPath = empty(static::$keyPathStack)
+            ? ''
+            : end(static::$keyPathStack);
+
+        $key = $attrs['native:key'] ?? null;
+        if ($key === null) {
+            return [0, $parentPath];
+        }
+
+        unset($attrs['native:key']);
+        $myKeyPath = $parentPath.'/'.((string) $key);
+
+        return [Element::fnv1a32($myKeyPath), $myKeyPath];
+    }
+
     // ── Streaming methods (write directly to C) ──────
 
     public static function openStreaming(string $type, array $attrs): void
@@ -44,6 +99,9 @@ class NativeElementCollector
             $attrs = array_merge($classAttrs, $attrs);
             unset($attrs['class']);
         }
+
+        [$nodeId, $myKeyPath] = static::resolveStreamingKey($attrs);
+        static::$keyPathStack[] = $myKeyPath;
 
         $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
@@ -66,6 +124,7 @@ class NativeElementCollector
                 ! empty($props) ? $props : null,
                 $onPress,
                 $onLongPress,
+                $nodeId,
             );
         } else {
             // Plugin element — instantiate for resolveProps/applyAttributes
@@ -97,6 +156,7 @@ class NativeElementCollector
                 ! empty($props) ? $props : null,
                 $onPress,
                 $onLongPress,
+                $nodeId,
             );
         }
     }
@@ -104,6 +164,8 @@ class NativeElementCollector
     public static function closeStreaming(): void
     {
         nphp_node_close();
+        // Phase 1 — pop the matching key-path entry pushed by openStreaming.
+        array_pop(static::$keyPathStack);
     }
 
     public static function leafStreaming(string $type, array $attrs): void
@@ -113,6 +175,10 @@ class NativeElementCollector
             $attrs = array_merge($classAttrs, $attrs);
             unset($attrs['class']);
         }
+
+        // Phase 1 — leaves derive an id from `native:key` but don't
+        // push onto the path stack (no children to inherit it).
+        [$nodeId, /* $myKeyPath unused for leaves */] = static::resolveStreamingKey($attrs);
 
         $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
@@ -130,6 +196,7 @@ class NativeElementCollector
                 ! empty($props) ? $props : null,
                 $onPress,
                 $onLongPress,
+                $nodeId,
             );
         } else {
             // Plugin element — instantiate for resolveProps/applyAttributes
@@ -161,6 +228,7 @@ class NativeElementCollector
                 ! empty($props) ? $props : null,
                 $onPress,
                 $onLongPress,
+                $nodeId,
             );
         }
     }
@@ -520,6 +588,10 @@ class NativeElementCollector
         static::$stack = [];
         static::$roots = [];
         static::$streaming = false;
+        // Phase 1 — clear any leftover key-path entries between frames
+        // (e.g. an error thrown mid-render that skipped the matching
+        // closeStreaming pops).
+        static::$keyPathStack = [];
     }
 
     protected static function createElement(string $type, array $attrs): Element
@@ -529,6 +601,15 @@ class NativeElementCollector
             $classAttrs = TailwindParser::parse($attrs['class']);
             $attrs = array_merge($classAttrs, $attrs);
             unset($attrs['class']);
+        }
+
+        // Phase 1 — pull `native:key` off here so applyAttributes
+        // downstream doesn't see it and route it as a prop. Element's
+        // toArray() turns the key into a stable hashed nodeId via the
+        // same FNV-1a path the streaming collector uses.
+        $key = $attrs['native:key'] ?? null;
+        if ($key !== null) {
+            unset($attrs['native:key']);
         }
 
         $element = match ($type) {
@@ -546,6 +627,13 @@ class NativeElementCollector
 
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
+
+        // Phase 1 — apply `native:key` after attrs so an Element subclass
+        // can't accidentally swallow it. Toggles the Element's id
+        // derivation in toArray() to hash(parentKeyPath/'/'/$key).
+        if ($key !== null) {
+            $element->key((string) $key);
+        }
 
         static::applyLayout($element, $attrs);
         static::applyStyle($element, $attrs);

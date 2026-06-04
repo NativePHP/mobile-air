@@ -45,7 +45,18 @@ class NativeElementBridge private constructor() {
         // `nphp_element` struct on the PHP-extension side. If the producer
         // emits a different stride, the binaries are out of sync and we
         // hard-fail rather than guess at a legacy layout.
-        private const val NODE_SIZE = 160
+        //
+        // v1 = 160 bytes. v2 (Phase 2) = 161 — appended `uint8_t flags` at
+        // offset 160 for REUSE markers and future per-node bits.
+        private const val NODE_SIZE = 161
+
+        /** Offset of the flags byte appended in format_version 2. */
+        private const val NODE_FLAGS_OFFSET = 160
+
+        /** Phase 2 — bit 0 in nphp_flat_node_t::flags. Marks a subtree as
+         *  identical to the previous frame; this reader splices the prior
+         *  node by id instead of parsing absent children. */
+        private const val NODE_FLAG_REUSE = 0x01
 
         /* ── JNI native methods (registered by bridge_jni.cpp) ── */
 
@@ -56,6 +67,42 @@ class NativeElementBridge private constructor() {
         @JvmStatic external fun nativeGetTypeTable(): Array<String>?
         @JvmStatic external fun nativeGetNodeCount(): Int
         @JvmStatic external fun nativeElementWriteEvent(type: Int, callbackId: Int, nodeId: Int, data: ByteArray?)
+
+        /* Phase 0 — wire-format version + runtime feature flags
+         * (NPHP_FORMAT_VERSION / NPHP_FLAG_* in nphp_element.h). */
+        @JvmStatic external fun nativeGetFormatVersion(): Int
+        @JvmStatic external fun nativeGetRuntimeFlags(): Int
+        @JvmStatic external fun nativeSetRuntimeFlags(flags: Int)
+
+        /**
+         * Wire-format version this reader was compiled against. Must match
+         * what the PHP extension reports via nativeGetFormatVersion(); a
+         * mismatch means the libphp.a in the .so is out of sync with this
+         * reader and parsing would render garbage (§5.4). Bump this in
+         * lockstep with NPHP_FORMAT_VERSION in nphp_element.h.
+         *
+         * v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
+         */
+        private const val EXPECTED_FORMAT_VERSION = 2
+
+        /** Latched at startWatching(). 0 until then. Readable for telemetry. */
+        @JvmStatic
+        @Volatile
+        var runtimeFlags: Int = 0
+            private set
+
+        /** One-shot guard for the format-version check. Reset on stopWatching()
+         *  so a new region registration (hot reload) re-verifies. We can't put
+         *  the check only in startWatching() because postTreeUpdate() has an
+         *  auto-start path that bypasses it. */
+        @Volatile
+        private var versionChecked: Boolean = false
+
+        /** Set true if a producer/reader format mismatch was detected. Once set,
+         *  postTreeUpdate() short-circuits — parsing the flat buffer with a
+         *  mismatched layout would render garbage (§5.4). */
+        @Volatile
+        private var versionMismatch: Boolean = false
 
         private val mainHandler = Handler(Looper.getMainLooper())
         private var cachedTypeTable: Array<String>? = null
@@ -101,6 +148,35 @@ class NativeElementBridge private constructor() {
          */
         @JvmStatic
         fun postTreeUpdate() {
+            // Phase 0 — one-shot wire-format check. Both register-region (which
+            // calls startWatching via JNI) and the auto-start path inside this
+            // function converge here, so checking here is the only spot that
+            // catches every code path. On mismatch we latch versionMismatch and
+            // short-circuit every subsequent publish: parsing the flat buffer
+            // with a mismatched layout would render garbage (§5.4).
+            if (!versionChecked) {
+                val producerVersion = nativeGetFormatVersion()
+                if (producerVersion != EXPECTED_FORMAT_VERSION) {
+                    Log.e(
+                        TAG,
+                        "FORMAT VERSION MISMATCH — reader expects $EXPECTED_FORMAT_VERSION " +
+                            "but PHP extension reports $producerVersion. " +
+                            "Rebuild libphp.a and this reader from matching sources " +
+                            "(REFACTOR-native-ui-performance.md §5.4). Dropping all tree updates."
+                    )
+                    versionMismatch = true
+                } else {
+                    runtimeFlags = nativeGetRuntimeFlags()
+                    Log.i(
+                        TAG,
+                        "postTreeUpdate: first publish — format_version=$producerVersion " +
+                            "runtime_flags=0x${"%08x".format(runtimeFlags)}"
+                    )
+                }
+                versionChecked = true
+            }
+            if (versionMismatch) return
+
             try {
                 val t0 = System.nanoTime()
                 PerformanceTracker.onTreeUpdateReceived()
@@ -126,15 +202,37 @@ class NativeElementBridge private constructor() {
                 }
                 val propDirect = nativeGetPropBuffer()
 
-                // Bulk-copy DirectByteBuffer → heap (must happen on PHP thread)
-                val flatBytes = ByteArray(flatDirect.capacity())
-                flatDirect.get(flatBytes)
-                val flatBuf = ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
+                // Phase 3 — when NPHP_FLAG_DOUBLE_BUFFER is on, skip the
+                // heap copy entirely. The producer alternates between
+                // buffer A and B per publish, so the buffer we're about
+                // to parse is guaranteed to be untouched until the
+                // publish AFTER the next one — plenty of time for the
+                // shadow thread to finish parse, assuming parse < 2×
+                // average publish interval. Re-read runtime_flags here
+                // (not the latched startWatching value) so the toggle
+                // takes effect on the next frame.
+                //
+                // When the flag is off, fall back to the original byte[]
+                // copy — single-buffer + zero-copy is use-after-overwrite
+                // unsafe.
+                val zeroCopy = (nativeGetRuntimeFlags() and 0x04) != 0
+
+                val flatBuf = if (zeroCopy) {
+                    flatDirect.order(ByteOrder.LITTLE_ENDIAN)
+                } else {
+                    val flatBytes = ByteArray(flatDirect.capacity())
+                    flatDirect.get(flatBytes)
+                    ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
+                }
 
                 val propBuf = if (propDirect != null && propDirect.capacity() > 0) {
-                    val propBytes = ByteArray(propDirect.capacity())
-                    propDirect.get(propBytes)
-                    ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
+                    if (zeroCopy) {
+                        propDirect.order(ByteOrder.LITTLE_ENDIAN)
+                    } else {
+                        val propBytes = ByteArray(propDirect.capacity())
+                        propDirect.get(propBytes)
+                        ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
+                    }
                 } else null
 
                 // Snapshot navigation flag on PHP thread (avoid race with next update)
@@ -358,6 +456,11 @@ class NativeElementBridge private constructor() {
             clearEvents()
             cachedTypeTable = null
             previousTree = null
+
+            // Phase 0 — re-verify wire format on next region registration.
+            // A hot-reload cycle can swap libphp.a out from under us.
+            versionChecked = false
+            versionMismatch = false
             if (!preserveTreeOnStop) {
                 mainHandler.post {
                     NativeUIBridge.isActive.value = false
@@ -386,17 +489,58 @@ class NativeElementBridge private constructor() {
 
             if (flatBuf.remaining() < nodeCount * NODE_SIZE) return null
 
-            val root = readNodeDFS(flatBuf, propBuf, typeTable, NODE_SIZE) ?: return null
+            // Phase 2 — build an id → node index of the previous tree so
+            // REUSE markers in this frame can splice prior subtrees in O(1).
+            // Built lazily / cheaply: a single DFS walk over the prev tree.
+            val prevIndex = buildIdNodeIndex(previousTree)
+
+            val root = readNodeDFS(flatBuf, propBuf, typeTable, NODE_SIZE, prevIndex) ?: return null
             return NativeUITree(0, 0, root)
+        }
+
+        /** Phase 2 — flatten the previous tree into an id → node map so
+         *  the parser can splice REUSE subtrees in O(1) by id. Empty on
+         *  the first frame and after a hot reload / region reset. */
+        private fun buildIdNodeIndex(tree: NativeUITree?): Map<Int, NativeUINode> {
+            if (tree == null) return emptyMap()
+            val out = HashMap<Int, NativeUINode>(64)
+            fun walk(n: NativeUINode) {
+                out[n.id] = n
+                for (c in n.children) walk(c)
+            }
+            walk(tree.root)
+            return out
         }
 
         private fun readNodeDFS(
             buf: ByteBuffer,
             propBuf: ByteBuffer?,
             typeTable: Array<String>,
-            stride: Int
+            stride: Int,
+            prevIndex: Map<Int, NativeUINode>
         ): NativeUINode? {
             if (buf.remaining() < stride) return null
+
+            // Phase 2 — peek the flag byte at offset 160 (absolute read,
+            // doesn't advance position). If REUSE, we don't need to parse
+            // any fields beyond the id; splice the prior subtree from the
+            // index and skip ahead.
+            val nodeStart = buf.position()
+            val flags = buf.get(nodeStart + NODE_FLAGS_OFFSET).toInt() and 0xFF
+            if (flags and NODE_FLAG_REUSE != 0) {
+                val reuseId = buf.int                       // advances by 4
+                buf.position(nodeStart + stride)            // skip the rest of this node
+                val prior = prevIndex[reuseId]
+                if (prior != null) {
+                    return prior
+                }
+                // PHP shouldn't emit REUSE for an id that wasn't in the
+                // previous tree — that's a forceFullFrame oversight. Log
+                // and drop this subtree; renders an empty hole as a
+                // visible "something went wrong" signal.
+                Log.w(TAG, "REUSE flag set for id=$reuseId but no prior node in index — skipping")
+                return null
+            }
 
             val id = buf.int
             val typeIdx = buf.short.toInt() and 0xFFFF
@@ -476,9 +620,15 @@ class NativeElementBridge private constructor() {
                 GenericProps()
             }
 
+            // Phase 2 — sequential field reads above consume 160 bytes
+            // (id..propSize), but the node stride is 161 (flag byte at 160).
+            // Skip the flag byte before recursing into children so their
+            // first u32 lands on the next node's id, not the flag byte.
+            buf.position(nodeStart + stride)
+
             val children = ArrayList<NativeUINode>(childCount)
             for (i in 0 until childCount) {
-                val child = readNodeDFS(buf, propBuf, typeTable, stride) ?: break
+                val child = readNodeDFS(buf, propBuf, typeTable, stride, prevIndex) ?: break
                 children.add(child)
             }
 

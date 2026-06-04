@@ -47,6 +47,40 @@ abstract class NativeComponent
     /** Imperative tabbar overrides — merged onto layout's TabBar at render time. */
     protected array $pendingTabBarState = [];
 
+    /**
+     * Phase 2 — per-id content hashes from the previously-published frame.
+     * Element::toArray() consults this to emit compact REUSE markers for
+     * subtrees whose hash hasn't changed, instead of re-serializing them.
+     *
+     * Only maintained across frames when NPHP_FLAG_SUBTREE_MEMO is set in
+     * the runtime flags (see Phase 0). When the bit is clear we pass an
+     * empty array (and discard the populated one toArray hands back), so
+     * every node is emitted FULL — identical wire bytes as pre-Phase-2.
+     *
+     * Also force-cleared every NPHP_FORCE_FULL_FRAME_EVERY frames as a
+     * self-healing heartbeat against hash collisions / missed updates
+     * (§3 Phase 2 pitfalls). Cleared on screen change via the natural
+     * component-instance lifetime.
+     */
+    private array $lastNodeHashes = [];
+
+    /** Publish counter for the forceFullFrame heartbeat. */
+    private int $publishCount = 0;
+
+    /** Last-seen value of the region's `force_full_frame_epoch` atomic.
+     *  When the bridge or framework bumps that atomic (on
+     *  nativephp_element_reset(), screen-stop, hot reload, navigation
+     *  away/back), the next memoizedToArray() call notices the epoch
+     *  shifted and discards $lastNodeHashes — so we never emit REUSE
+     *  markers that reference ids the native reader's previousTree
+     *  no longer has, which would otherwise truncate the rendered tree
+     *  (and silently strip on_press from spliced children). */
+    private int $lastSeenForceFullFrameEpoch = 0;
+
+    /** Heartbeat period — every Nth publish, drop the hash store so the
+     *  next frame re-validates the whole tree. ~2s at 60fps publish rate. */
+    private const NPHP_FORCE_FULL_FRAME_EVERY = 120;
+
     public function render(): Element|\Illuminate\View\View
     {
         return $this->view(static::inferViewName());
@@ -68,6 +102,69 @@ abstract class NativeComponent
         return $result instanceof \Illuminate\View\View
             ? $this->fromView($result)
             : $result;
+    }
+
+    /**
+     * Phase 2 — serialize the rendered Element to its wire array, with
+     * subtree-memo (REUSE markers) enabled when the runtime flag is on.
+     *
+     * When NPHP_FLAG_SUBTREE_MEMO is set:
+     *   - `$lastNodeHashes` is threaded through `toArray()` and updated
+     *     after each FULL emit. Next frame compares against it and emits
+     *     REUSE markers for unchanged subtrees.
+     *   - Every NPHP_FORCE_FULL_FRAME_EVERY frames the hash store is
+     *     dropped on entry, forcing a clean re-validation (defense-in-
+     *     depth against hash collisions / missed updates).
+     *
+     * When the flag is clear: pass a throwaway hashes array — toArray()
+     * never finds a matching prior, so every node is emitted FULL.
+     * Wire bytes are identical to pre-Phase-2.
+     */
+    private function memoizedToArray(Element $element): array
+    {
+        $this->publishCount++;
+
+        $memoEnabled = (nativephp_runtime_flags() & 0x02) !== 0;
+        $nextId = 1;
+        $emitted = [];
+
+        if (! $memoEnabled) {
+            // Throwaway array — never read across frames.
+            $throwaway = [];
+
+            return $element->toArray($this->callbacks, $nextId, '', 0, $emitted, $throwaway);
+        }
+
+        // Explicit invalidation: when the C extension bumps the region's
+        // force_full_frame_epoch (nativephp_element_reset, screen
+        // teardown, hot reload — anything that swaps the native
+        // previousTree out from under us), drop the hash store so the
+        // next publish emits FULL across the whole tree. Without this,
+        // PHP-side REUSE markers would reference ids that the native
+        // reader's index can no longer resolve, silently truncating the
+        // rendered tree and stripping on_press handlers from spliced
+        // children (= why nav links appear broken after going to a sub-
+        // screen and back).
+        $epoch = nativephp_force_full_frame_epoch();
+        if ($epoch !== $this->lastSeenForceFullFrameEpoch) {
+            $this->lastNodeHashes = [];
+            $this->lastSeenForceFullFrameEpoch = $epoch;
+        }
+
+        // forceFullFrame heartbeat. Resets one frame in 120; the cost is
+        // amortized across frames and self-heals any stale entries.
+        if ($this->publishCount % self::NPHP_FORCE_FULL_FRAME_EVERY === 1) {
+            $this->lastNodeHashes = [];
+        }
+
+        return $element->toArray(
+            $this->callbacks,
+            $nextId,
+            '',
+            0,
+            $emitted,
+            $this->lastNodeHashes,
+        );
     }
 
     /**
@@ -871,6 +968,11 @@ abstract class NativeComponent
         $this->callbacks = new CallbackRegistry;
         $this->registerNativeEventListeners();
 
+        // Phase 2 — every (re-)entry is a fresh session from the native
+        // reader's perspective; discard any prior memo hashes.
+        $this->lastNodeHashes = [];
+        $this->publishCount = 0;
+
         nativephp_element_init();
 
         try {
@@ -889,7 +991,7 @@ abstract class NativeComponent
                 try {
                     if (! $this->renderStreaming()) {
                         $element = $this->renderToElement();
-                        $tree = $element->toArray($this->callbacks);
+                        $tree = $this->memoizedToArray($element);
                         nativephp_element_publish($tree);
                     }
                 } catch (NativeDumpException $e) {
@@ -976,6 +1078,14 @@ abstract class NativeComponent
         $this->running = true;
         $this->navigationIntent = null;
 
+        // Phase 2 — every (re-)entry is a fresh session from the native
+        // reader's perspective; discard any prior memo hashes. The
+        // epoch handshake in memoizedToArray() handles mid-session
+        // resets too, but clearing here ensures the very first publish
+        // of this session can't emit REUSE.
+        $this->lastNodeHashes = [];
+        $this->publishCount = 0;
+
         if (empty($this->nativeEventListeners)) {
             $this->registerNativeEventListeners();
         }
@@ -999,7 +1109,7 @@ abstract class NativeComponent
                         $element = $this->renderToElement();
 
                         $t1 = microtime(true);
-                        $tree = $element->toArray($this->callbacks);
+                        $tree = $this->memoizedToArray($element);
                         $t2 = microtime(true);
 
                         $this->router?->flushDeferredTransition();
