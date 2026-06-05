@@ -65,10 +65,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private var queueWorker: PHPQueueWorker? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
+    // Last applied system-bar insets, used to skip redundant safe-area JS injection
+    // on every keyboard-animation frame (the IME inset changes each frame, but the
+    // system bars do not).
+    private var lastSystemBars: Insets? = null
     private var showSplash by mutableStateOf(true)
 
     // Status bar style configuration - replaced during build
-    private val statusBarStyle = "REPLACE_STATUS_BAR_STYLE"
+    private val statusBarStyle = "auto"
 
     companion object {
         // Static instance holder for accessing MainActivity from other activities
@@ -91,8 +95,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             pendingInsets = systemBars
 
-            // Inject CSS custom properties into WebView if ready
-            if (::webViewManager.isInitialized) {
+            // Inject CSS custom properties into WebView if ready.
+            // Only re-inject when the system bars actually change. This listener fires
+            // on EVERY frame of the keyboard (IME) animation; without this guard the
+            // heavy evaluateJavascript below would run ~60x per keyboard open/close,
+            // making the keyboard feel slow and janky.
+            if (::webViewManager.isInitialized && systemBars != lastSystemBars) {
+                lastSystemBars = systemBars
                 injectSafeAreaInsets(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             }
 
@@ -112,6 +121,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             settings.mediaPlaybackRequiresUserGesture = false
+            // Transparent so that during a reflow/keyboard transition the themed
+            // background behind the WebView shows through instead of a white flash.
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
         }
 
         LaravelCookieStore.init(applicationContext)
@@ -825,9 +837,16 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      * Main Compose UI screen with WebView, navigation, and overlays
      * Side drawer wraps everything to avoid touch blocking issues
      */
+    @OptIn(ExperimentalLayoutApi::class)
     @Composable
     private fun MainScreen() {
-        Box(Modifier.fillMaxSize()) {
+        // Solid themed backdrop behind the (transparent) WebView so any keyboard/
+        // reflow gap shows a matching color instead of a bright white flash.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(if (isSystemInDarkTheme()) Color.Black else Color.White)
+        ) {
             // Side drawer wraps the main content (correct ModalNavigationDrawer usage)
             SideDrawerContent(
                 content = {
@@ -887,7 +906,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 .fillMaxSize()
                                 .padding(paddingValues)
                                 .consumeWindowInsets(paddingValues)
-                                .windowInsetsPadding(WindowInsets.ime),
+                                // Use imeAnimationTarget (final keyboard height) instead of
+                                // ime (per-frame animated value) so the WebView resizes ONCE
+                                // when the keyboard toggles, rather than reflowing the web page
+                                // on every animation frame. The system still animates the
+                                // keyboard sliding over the content.
+                                .windowInsetsPadding(WindowInsets.imeAnimationTarget),
                             update = { view ->
                                 // Force layout recalculation when Compose size changes
                                 // This ensures viewport units (100vh, 100vw) work correctly
@@ -961,16 +985,19 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      */
     @Composable
     private fun BottomNavigationContent() {
-        val isKeyboardVisible by NativeUIState.isKeyboardVisible
         val bottomNavData by NativeUIState.bottomNavData
 
         val systemInDarkMode = isSystemInDarkTheme()
         val useDarkTheme = bottomNavData?.dark ?: systemInDarkMode
         val colorScheme = if (useDarkTheme) darkColorScheme() else lightColorScheme()
 
-        // Animate bottom nav visibility - slide down when keyboard opens
+        // Keep the bottom nav in place during keyboard transitions. Previously it
+        // slid out the instant the keyboard became visible (150ms), but the keyboard
+        // takes ~185ms to appear, leaving an empty white gap that made the keyboard
+        // look slow/glitchy. Keeping it visible lets the keyboard slide up over it
+        // as a single, continuous motion.
         AnimatedVisibility(
-            visible = !isKeyboardVisible,
+            visible = true,
             enter = slideInVertically(
                 initialOffsetY = { it },
                 animationSpec = tween(150)
