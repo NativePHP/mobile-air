@@ -4,6 +4,7 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Str;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\intro;
@@ -15,7 +16,7 @@ class RemoveNativeComponentCommand extends Command
     protected $signature = 'native:rm
                             {name? : The name of the component to remove (e.g. Counter, Settings/Profile)}';
 
-    protected $description = 'Remove a NativeComponent class';
+    protected $description = 'Remove a NativeComponent class and its Blade view';
 
     protected Filesystem $files;
 
@@ -48,25 +49,56 @@ class RemoveNativeComponentCommand extends Command
             return self::FAILURE;
         }
 
-        if (! confirm("Delete {$relativePath}?", default: false)) {
+        // ── Mirror MakeNativeComponentCommand's view path resolution ──
+        $parts = explode('\\', $name);
+        $className = array_pop($parts);
+        $subNamespace = implode('\\', $parts);
+
+        $viewName = Str::kebab($className);
+        $viewSubDir = $subNamespace
+            ? collect(explode('\\', $subNamespace))
+                ->map(fn ($p) => Str::kebab($p))
+                ->implode('/')
+            : '';
+
+        $viewDirectory = resource_path('views/native');
+        if ($viewSubDir) {
+            $viewDirectory .= '/'.$viewSubDir;
+        }
+
+        $viewPath = $viewDirectory.'/'.$viewName.'.blade.php';
+        $viewExists = $this->files->exists($viewPath);
+        $relativeViewPath = str_replace(base_path().'/', '', $viewPath);
+
+        $targets = $relativePath.($viewExists ? " and {$relativeViewPath}" : '');
+        if (! confirm("Delete {$targets}?", default: false)) {
             $this->components->info('Cancelled.');
 
             return self::SUCCESS;
         }
 
         $this->files->delete($filePath);
+        if ($viewExists) {
+            $this->files->delete($viewPath);
+        }
 
         // Clean up empty parent directories
-        $directory = dirname($filePath);
-        $baseDir = app_path('NativeComponents');
+        $this->cleanupEmptyDirs(dirname($filePath), app_path('NativeComponents'));
+        if ($viewExists) {
+            $this->cleanupEmptyDirs(dirname($viewPath), resource_path('views/native'));
+        }
+
+        outro("Removed {$targets}");
+
+        return self::SUCCESS;
+    }
+
+    protected function cleanupEmptyDirs(string $directory, string $baseDir): void
+    {
         while ($directory !== $baseDir && $this->files->isDirectory($directory) && empty($this->files->files($directory)) && empty($this->files->directories($directory))) {
             $this->files->deleteDirectory($directory);
             $directory = dirname($directory);
         }
-
-        outro("Removed {$relativePath}");
-
-        return self::SUCCESS;
     }
 
     protected function selectComponent(): ?string

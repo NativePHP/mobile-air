@@ -2,13 +2,13 @@
 
 namespace {{ NAMESPACE }};
 
-use Native\Mobile\Edge\Element;
+use Illuminate\View\View;
 use Native\Mobile\Edge\NativeComponent;
 
 class {{ CLASS }} extends NativeComponent
 {
-    public function render(): Element
+    public function render(): View
     {
-        return $this->view('{{ VIEW_NAME }}');
+        return view('native.{{ VIEW_NAME }}');
     }
 }

@@ -37,6 +37,13 @@ class NativeElementCollector
      */
     protected static array $keyPathStack = [];
 
+    /**
+     * Frame-level re-render intervals (ms) collected from `native:poll`
+     * attributes during the current render. Drained by the component via
+     * takePollIntervals() before the tree is collected/published.
+     */
+    protected static array $pollIntervals = [];
+
     // ── Streaming control ────────────────────────────
 
     public static function setStreaming(bool $enabled): void
@@ -515,6 +522,8 @@ class NativeElementCollector
 
     public static function open(string $type, array $attrs): void
     {
+        $attrs = static::extractPoll($attrs);
+
         if (static::$streaming) {
             static::openStreaming($type, $attrs);
 
@@ -523,6 +532,34 @@ class NativeElementCollector
 
         $element = static::createElement($type, $attrs);
         static::$stack[] = $element;
+    }
+
+    /**
+     * Pull a compiled `native-poll="<ms>"` attribute off the bag and
+     * register it as a frame-level re-render interval. Returns the attrs
+     * with the entry stripped so it never leaks into props/layout.
+     */
+    protected static function extractPoll(array $attrs): array
+    {
+        if (array_key_exists('native-poll', $attrs)) {
+            $ms = (int) $attrs['native-poll'];
+            unset($attrs['native-poll']);
+
+            if ($ms > 0) {
+                static::$pollIntervals[] = $ms;
+            }
+        }
+
+        return $attrs;
+    }
+
+    /** Read and clear the poll intervals registered during this render. */
+    public static function takePollIntervals(): array
+    {
+        $intervals = array_values(array_unique(static::$pollIntervals));
+        static::$pollIntervals = [];
+
+        return $intervals;
     }
 
     public static function close(): void
@@ -544,6 +581,8 @@ class NativeElementCollector
 
     public static function leaf(string $type, array $attrs): void
     {
+        $attrs = static::extractPoll($attrs);
+
         if (static::$streaming) {
             static::leafStreaming($type, $attrs);
 
@@ -588,6 +627,7 @@ class NativeElementCollector
         static::$stack = [];
         static::$roots = [];
         static::$streaming = false;
+        static::$pollIntervals = [];
         // Phase 1 — clear any leftover key-path entries between frames
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).

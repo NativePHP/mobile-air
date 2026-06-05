@@ -105,6 +105,26 @@ class NativeTagPrecompiler
             $value
         );
 
+        // Expand `native:poll` into a `native-poll="<ms>"` attribute. The
+        // attribute parser doesn't accept ':' in names, so the directive
+        // is normalized here (compile-time) to a plain hyphenated attr the
+        // collector reads to register a frame-level re-render timer:
+        //
+        //     native:poll              — default 2s
+        //     native:poll="1s"         — value form (1s / 500ms / 1500)
+        //     native:poll.2s           — Livewire-style modifier form
+        //
+        // Re-rendering is whole-screen (like Livewire's wire:poll), so the
+        // value is the cadence at which this screen re-renders; any live
+        // expression inside (e.g. {{ now() }}) refreshes on each tick.
+        $value = preg_replace_callback(
+            '/native:poll\b(?:\.([a-zA-Z0-9.]+))?(?:=["\']([^"\']*)["\'])?/',
+            fn ($m) => 'native-poll="'.self::pollMsFromSpec(
+                ($m[2] ?? '') !== '' ? $m[2] : ($m[1] ?? '')
+            ).'"',
+            $value
+        );
+
         // Expand @navigate directives into :_navigate dynamic attribute
         // Short style:  @navigate.fade='/route'  or  @navigate='/route'
         // Paren style:  @navigate.fade('/route', ['data' => 'val'])
@@ -407,6 +427,30 @@ class NativeTagPrecompiler
     public static function nav(string $type, ?string $transition, string $uri = '', array $data = []): array
     {
         return compact('type', 'transition', 'uri', 'data');
+    }
+
+    /**
+     * Parse a `native:poll` duration spec into milliseconds.
+     *   ''      → 2000 (default 2s)
+     *   '500ms' → 500
+     *   '1s' / '1.5s' → 1000 / 1500
+     *   '750'   → 750 (bare number = ms, matching #[Poll(ms)])
+     */
+    private static function pollMsFromSpec(string $spec): int
+    {
+        $spec = trim($spec);
+
+        if ($spec === '') {
+            return 2000;
+        }
+        if (str_ends_with($spec, 'ms')) {
+            return max(1, (int) round((float) substr($spec, 0, -2)));
+        }
+        if (str_ends_with($spec, 's')) {
+            return max(1, (int) round((float) substr($spec, 0, -1) * 1000));
+        }
+
+        return max(1, (int) round((float) $spec));
     }
 
     private function compileAttributes(string $rawAttrs): string

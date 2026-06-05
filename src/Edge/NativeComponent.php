@@ -2,7 +2,12 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Attributes\Computed;
+use Native\Mobile\Attributes\Lazy;
 use Native\Mobile\Attributes\OnNative;
+use Native\Mobile\Attributes\Poll;
+use Native\Mobile\Edge\Elements\ActivityIndicator;
+use Native\Mobile\Edge\Elements\Column;
 use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
@@ -23,6 +28,24 @@ abstract class NativeComponent
 
     /** @var array<string, string> event name → method name */
     private array $nativeEventListeners = [];
+
+    /** #[Computed] map: property name → ['method' => string, 'persist' => bool]. Null until reflected. */
+    private ?array $computedMeta = null;
+
+    /** Memoized #[Computed] results for the current frame (persist entries survive across frames). */
+    private array $computedCache = [];
+
+    /** #[Poll] definitions: list of ['method' => ?string, 'ms' => int, 'next' => float(ms)]. Null until reflected. */
+    private ?array $pollDefinitions = null;
+
+    /** Blade `native:poll` re-render timers: interval(ms) → next deadline(ms). Rebuilt from the template each frame. */
+    private array $bladePollDeadlines = [];
+
+    /** Whether this component class carries #[Lazy]. Null until reflected. */
+    private ?bool $lazy = null;
+
+    /** Guards publishPlaceholder() so a lazy screen paints its placeholder at most once. */
+    private bool $placeholderPublished = false;
 
     protected CallbackRegistry $callbacks;
 
@@ -195,6 +218,8 @@ abstract class NativeComponent
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
+        $this->syncBladePolls(NativeElementCollector::takePollIntervals());
+
         $content = NativeElementCollector::collect();
 
         return $this->wrapWithChrome($content);
@@ -249,6 +274,8 @@ abstract class NativeComponent
         NativeElementCollector::setCallbacks($this->callbacks);
 
         $this->renderBladeBoundToSelf($view->getName(), $viewData);
+
+        $this->syncBladePolls(NativeElementCollector::takePollIntervals());
 
         $content = NativeElementCollector::collect();
 
@@ -793,6 +820,7 @@ abstract class NativeComponent
         try {
             $t0 = microtime(true);
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
+            $this->syncBladePolls(NativeElementCollector::takePollIntervals());
             $t1 = microtime(true);
 
             nphp_frame_end();
@@ -819,6 +847,245 @@ abstract class NativeComponent
         }
 
         return $props;
+    }
+
+    // ── Computed properties (#[Computed]) ────────────
+
+    /**
+     * Lazily reflect #[Computed] methods into a name → metadata map.
+     * The method name IS the property name (Livewire-style): a method
+     * `revenue()` is read as `$this->revenue`.
+     */
+    private function computedMeta(): array
+    {
+        if ($this->computedMeta !== null) {
+            return $this->computedMeta;
+        }
+
+        $meta = [];
+        $reflect = new \ReflectionClass($this);
+
+        foreach ($reflect->getMethods() as $method) {
+            $attrs = $method->getAttributes(Computed::class);
+            if ($attrs) {
+                $name = $method->getName();
+                $meta[$name] = [
+                    'method' => $name,
+                    'persist' => $attrs[0]->newInstance()->persist,
+                ];
+            }
+        }
+
+        return $this->computedMeta = $meta;
+    }
+
+    /**
+     * Drop memoized computed values at the start of a frame, keeping any
+     * declared `persist: true`. Called once per render-loop iteration.
+     */
+    private function resetComputedCache(): void
+    {
+        if (empty($this->computedCache)) {
+            return;
+        }
+
+        $meta = $this->computedMeta();
+        foreach (array_keys($this->computedCache) as $name) {
+            if (! ($meta[$name]['persist'] ?? false)) {
+                unset($this->computedCache[$name]);
+            }
+        }
+    }
+
+    /** Resolve `$this->foo` to a #[Computed] method (memoized per frame). */
+    public function __get($name)
+    {
+        $meta = $this->computedMeta();
+
+        if (isset($meta[$name])) {
+            if (! array_key_exists($name, $this->computedCache)) {
+                $this->computedCache[$name] = $this->{$meta[$name]['method']}();
+            }
+
+            return $this->computedCache[$name];
+        }
+
+        trigger_error(
+            'Undefined property: '.static::class.'::$'.$name,
+            E_USER_WARNING
+        );
+
+        return null;
+    }
+
+    /** So `isset($this->foo)` / Blade null-coalescing see computed props. */
+    public function __isset($name): bool
+    {
+        return isset($this->computedMeta()[$name]);
+    }
+
+    /** `unset($this->foo)` busts a computed value (incl. persisted ones). */
+    public function __unset($name): void
+    {
+        unset($this->computedCache[$name]);
+    }
+
+    // ── Polling (#[Poll]) ────────────────────────────
+
+    /**
+     * Lazily reflect #[Poll] attributes (class- and method-level) into a
+     * list of due-tracked timers. Class-level polls have a null method
+     * (re-render only); method-level polls invoke the method then re-render.
+     */
+    private function pollDefinitions(): array
+    {
+        if ($this->pollDefinitions !== null) {
+            return $this->pollDefinitions;
+        }
+
+        $defs = [];
+        $now = microtime(true) * 1000;
+        $reflect = new \ReflectionClass($this);
+
+        foreach ($reflect->getAttributes(Poll::class) as $attr) {
+            $ms = $attr->newInstance()->ms;
+            $defs[] = ['method' => null, 'ms' => $ms, 'next' => $now + $ms];
+        }
+
+        foreach ($reflect->getMethods() as $method) {
+            foreach ($method->getAttributes(Poll::class) as $attr) {
+                $ms = $attr->newInstance()->ms;
+                $defs[] = ['method' => $method->getName(), 'ms' => $ms, 'next' => $now + $ms];
+            }
+        }
+
+        return $this->pollDefinitions = $defs;
+    }
+
+    /**
+     * Reconcile the Blade `native:poll` timers with the intervals declared
+     * in the template this frame. New intervals get a fresh deadline;
+     * intervals no longer present are dropped. Existing deadlines are left
+     * intact so re-rendering (poll or user event) doesn't reset the clock.
+     */
+    private function syncBladePolls(array $intervals): void
+    {
+        $now = microtime(true) * 1000;
+
+        foreach ($intervals as $ms) {
+            if ($ms > 0 && ! isset($this->bladePollDeadlines[$ms])) {
+                $this->bladePollDeadlines[$ms] = $now + $ms;
+            }
+        }
+
+        foreach (array_keys($this->bladePollDeadlines) as $ms) {
+            if (! in_array($ms, $intervals, true)) {
+                unset($this->bladePollDeadlines[$ms]);
+            }
+        }
+    }
+
+    /**
+     * Timeout (ms) to pass to `nativephp_element_wait_event`. Returns -1
+     * (block indefinitely) when there are no polls (class #[Poll] or Blade
+     * native:poll); otherwise the time until the soonest-due timer,
+     * floored at 1ms.
+     */
+    private function nextEventTimeout(): int
+    {
+        $deadlines = array_map(fn ($def) => $def['next'], $this->pollDefinitions());
+        foreach ($this->bladePollDeadlines as $next) {
+            $deadlines[] = $next;
+        }
+
+        if (empty($deadlines)) {
+            return -1;
+        }
+
+        return max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
+    }
+
+    /**
+     * Fire any polls whose interval has elapsed, then reschedule them.
+     * Called on an idle tick (wait_event returned null) before the loop
+     * re-renders. Blade native:poll timers carry no callback — they just
+     * trigger the re-render. Rescheduling off `$now` (not the prior
+     * deadline) avoids catch-up storms after a long-blocked frame.
+     */
+    private function runDuePolls(): void
+    {
+        $now = microtime(true) * 1000;
+
+        if (! empty($this->pollDefinitions)) {
+            foreach ($this->pollDefinitions as $i => $def) {
+                if ($now < $def['next']) {
+                    continue;
+                }
+
+                if ($def['method'] !== null && method_exists($this, $def['method'])) {
+                    $this->{$def['method']}();
+                }
+
+                $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
+            }
+        }
+
+        foreach ($this->bladePollDeadlines as $ms => $next) {
+            if ($now >= $next) {
+                $this->bladePollDeadlines[$ms] = $now + $ms;
+            }
+        }
+    }
+
+    // ── Lazy placeholder (#[Lazy]) ───────────────────
+
+    /** Whether this component class is marked #[Lazy]. */
+    private function isLazy(): bool
+    {
+        if ($this->lazy !== null) {
+            return $this->lazy;
+        }
+
+        return $this->lazy = ! empty((new \ReflectionClass($this))->getAttributes(Lazy::class));
+    }
+
+    /**
+     * The frame shown while a #[Lazy] component's mount() runs. Override
+     * to provide a skeleton; the default is a centered activity indicator
+     * wrapped in the screen's layout chrome.
+     */
+    protected function placeholder(): Element|\Illuminate\View\View
+    {
+        return $this->wrapWithChrome(
+            Column::make(ActivityIndicator::make())->fill()->center()
+        );
+    }
+
+    /**
+     * Publish the placeholder for a #[Lazy] component. Called by the
+     * router (and standalone run()) right before mount(), so the screen
+     * paints instantly while the heavy mount work proceeds. No-op for
+     * non-lazy components, and runs at most once per instance.
+     */
+    public function publishPlaceholder(): void
+    {
+        if (! $this->isLazy() || $this->placeholderPublished) {
+            return;
+        }
+
+        $this->placeholderPublished = true;
+        $this->callbacks ??= new CallbackRegistry;
+        $this->callbacks->reset();
+
+        try {
+            $result = $this->placeholder();
+            $element = $result instanceof \Illuminate\View\View
+                ? $this->fromView($result)
+                : $result;
+            nativephp_element_publish($this->memoizedToArray($element));
+        } catch (\Throwable $e) {
+            NativeRouter::debugLog('placeholder() FAILED in '.static::class.': '.$e->getMessage());
+        }
     }
 
     /**
@@ -975,6 +1242,10 @@ abstract class NativeComponent
 
         nativephp_element_init();
 
+        // For #[Lazy] screens, paint the placeholder before the
+        // (potentially slow) mount() so the first frame is instant.
+        $this->publishPlaceholder();
+
         try {
             $this->mount();
         } catch (NativeDumpException $e) {
@@ -986,6 +1257,7 @@ abstract class NativeComponent
 
         while ($this->running) {
             $this->callbacks->reset();
+            $this->resetComputedCache();
 
             if (! $this->hasError) {
                 try {
@@ -1002,9 +1274,12 @@ abstract class NativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event(-1);
+            $event = nativephp_element_wait_event($this->nextEventTimeout());
 
             if ($event === null) {
+                // Idle tick (poll interval elapsed, or no event yet) —
+                // fire any due polls, then loop back to re-render.
+                $this->runDuePolls();
                 continue;
             }
 
@@ -1092,6 +1367,7 @@ abstract class NativeComponent
 
         while ($this->running) {
             $this->callbacks->reset();
+            $this->resetComputedCache();
 
             if (! $this->hasError) {
                 try {
@@ -1131,9 +1407,12 @@ abstract class NativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event(-1);
+            $event = nativephp_element_wait_event($this->nextEventTimeout());
 
             if ($event === null) {
+                // Idle tick (poll interval elapsed, or no event yet) —
+                // fire any due polls, then loop back to re-render.
+                $this->runDuePolls();
                 continue;
             }
 
@@ -1580,6 +1859,10 @@ abstract class NativeComponent
         }
 
         $this->{$property} = $value;
+
+        // A state change can invalidate any computed value (incl.
+        // persisted ones) — drop the whole memo so they recompute.
+        $this->computedCache = [];
 
         $hook = 'updated'.ucfirst($property);
 

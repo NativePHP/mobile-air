@@ -336,6 +336,9 @@ class NativeRouter
 
             try {
                 if ($freshPush) {
+                    // For #[Lazy] screens, paint the placeholder before the
+                    // (potentially slow) mount() so navigation feels instant.
+                    $component->publishPlaceholder();
                     static::debugLog("loop: calling mount() on " . get_class($component));
                     $component->mount();
                 } else {
