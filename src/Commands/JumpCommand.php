@@ -359,6 +359,10 @@ class JumpCommand extends Command
         $logFile = $logDir.'/jump-bridge.log';
         @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort} vite_proxy={$viteProxyPort}) ===\n", FILE_APPEND);
 
+        $watchPaths = config('nativephp.hot_reload.watch_paths', [
+            'app', 'resources', 'routes', 'config',
+        ]);
+
         // Run in background (not Workerman daemon mode — it breaks the event loop).
         if (PHP_OS_FAMILY === 'Windows') {
             // `&` is a command separator on Windows (not "background"), and the
@@ -390,10 +394,15 @@ class JumpCommand extends Command
             // mid-command (proc_close blocks waiting for the long-lived child).
             // On Ctrl+C the PHP process is hard-terminated by Windows and the
             // bridge stays running, matching Mac/Linux behaviour.
-            $this->bridgeProcess = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
+            $env = array_merge(getenv() ?: [], [
+                'JUMP_WATCH_PATHS' => json_encode($watchPaths),
+            ]);
+            $this->bridgeProcess = @proc_open($cmd, $desc, $pipes, base_path(), $env, ['bypass_shell' => true]);
         } else {
+            $envPrefix = 'JUMP_WATCH_PATHS='.escapeshellarg(json_encode($watchPaths));
             $cmd = sprintf(
-                '%s %s %s %d %d %d start >> %s 2>&1 &',
+                '%s %s %s %s %d %d %d start >> %s 2>&1 &',
+                $envPrefix,
                 escapeshellarg($phpBinary),
                 escapeshellarg($serverPath),
                 escapeshellarg(base_path()),

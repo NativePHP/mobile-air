@@ -189,7 +189,8 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
     // page props, scroll position). Only watch them when Vite isn't running.
     $lastModTimes = [];
     $lastReloadTime = 0;
-    $watchPaths = ['app', 'resources', 'routes', 'config'];
+    $watchPaths = jumpResolveWatchPaths();
+    jumpLog('File watcher paths: '.implode(', ', $watchPaths));
     $serverExtensions = ['php', 'blade.php'];
     $clientExtensions = ['js', 'jsx', 'ts', 'tsx', 'vue', 'css', 'scss', 'sass', 'less'];
 
@@ -250,6 +251,20 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
 function jumpLog($message)
 {
     fwrite(STDERR, '['.date('H:i:s').'] [Jump] '.$message."\n");
+}
+
+function jumpResolveWatchPaths(): array
+{
+    $defaults = ['app', 'resources', 'routes', 'config'];
+    $fromEnv = getenv('JUMP_WATCH_PATHS');
+    if ($fromEnv !== false) {
+        $decoded = json_decode($fromEnv, true);
+        if (is_array($decoded) && $decoded !== []) {
+            return $decoded;
+        }
+    }
+
+    return $defaults;
 }
 
 /**
