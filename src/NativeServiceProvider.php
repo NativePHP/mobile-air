@@ -386,8 +386,9 @@ class NativeServiceProvider extends PackageServiceProvider
                 continue;
             }
 
-            // Get relative path from Components directory
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            // Get relative path from Components directory (normalize separators for Windows compatibility)
+            $normalizedBase = str_replace('\\', '/', $componentPath).'/';
+            $relativePath = substr(str_replace('\\', '/', $file->getPathname()), strlen($normalizedBase));
 
             // Remove .php extension
             $classPath = substr($relativePath, 0, -4);
