@@ -232,12 +232,16 @@ trait PreparesBuild
                 default => config('nativephp.cleanup_exclude_files'),
             };
 
+            $excludedDirs[] = 'bootstrap/cache';
+
             $this->logToFile('  Excluded directories: '.implode(', ', $excludedDirs));
 
             $srcDir = base_path('vendor/nativephp/mobile/bootstrap/android');
 
             $this->logToFile('  Copying Laravel source...');
             $this->components->task('Copying Laravel source', fn () => $this->platformOptimizedCopy($source, $tempDir, $excludedDirs));
+
+            File::ensureDirectoryExists($tempDir.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache');
 
             $composerArgs = $excludeDevDependencies ? '--no-dev --no-interaction' : '--no-interaction';
 
