@@ -26,6 +26,18 @@ enum EdgeFunctions {
                 return ["error": "No components array provided"]
             }
 
+            // Extract _meta.rtl_support flag
+            if let meta = parameters["_meta"] as? [String: Any],
+               let rtlSupport = meta["rtl_support"] as? Bool {
+                if Thread.isMainThread {
+                    NativeUIState.shared.rtlSupport = rtlSupport
+                } else {
+                    DispatchQueue.main.sync {
+                        NativeUIState.shared.rtlSupport = rtlSupport
+                    }
+                }
+            }
+
             print("🎨 Edge.Set called with \(components.count) component(s)")
 
             // Convert components back to JSON string for NativeUIState

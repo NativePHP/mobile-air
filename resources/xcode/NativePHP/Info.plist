@@ -15,6 +15,9 @@
 			</array>
 		</dict>
 	</array>
+    <key>CFBundleLocalizations</key>
+    <array>
+    </array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>

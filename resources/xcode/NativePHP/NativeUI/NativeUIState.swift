@@ -13,6 +13,22 @@ class NativeUIState: ObservableObject {
     // Cache to prevent unnecessary updates
     private var lastJsonString: String?
 
+    // RTL support flag — controlled by nativephp.rtl_support config
+    @Published var rtlSupport: Bool = false {
+        didSet {
+            // Re-apply UIKit appearance when rtlSupport changes
+            AppDelegate.applyRTLAppearance(isRTL)
+        }
+    }
+
+    /// Whether the app should use RTL layout direction.
+    /// Returns true only when rtlSupport is enabled AND the device locale is an RTL language.
+    var isRTL: Bool {
+        guard rtlSupport else { return false }
+        let language = Locale.preferredLanguages.first ?? "en"
+        return Locale.characterDirection(forLanguage: language) == .rightToLeft
+    }
+
     // Sidebar presentation control (for JavaScript access)
     @Published var shouldPresentSidebar = false
 

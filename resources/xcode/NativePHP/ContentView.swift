@@ -250,6 +250,9 @@ struct WebView: UIViewRepresentable {
             let isDarkMode = windowScene?.windows.first?.traitCollection.userInterfaceStyle == .dark
             let colorScheme = isDarkMode ? "dark" : "light"
 
+            let isRTL = NativeUIState.shared.isRTL
+            let dir = isRTL ? "rtl" : "ltr"
+
             let js = """
             (function() {
                 // Set CSS variables directly on documentElement for immediate availability
@@ -259,6 +262,7 @@ struct WebView: UIViewRepresentable {
                     document.documentElement.style.setProperty('--inset-bottom', '\(insets.bottom)px');
                     document.documentElement.style.setProperty('--inset-left', '\(insets.left)px');
                     document.documentElement.style.setProperty('--native-color-scheme', '\(colorScheme)');
+                    document.documentElement.setAttribute('dir', '\(dir)');
                 }
             })();
             """

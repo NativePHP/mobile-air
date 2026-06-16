@@ -32,6 +32,14 @@ object EdgeFunctions {
                 return mapOf("error" to "No components provided")
             }
 
+            // Extract _meta.rtl_support flag
+            @Suppress("UNCHECKED_CAST")
+            val meta = parameters["_meta"] as? Map<String, Any>
+            val rtlSupport = meta?.get("rtl_support") as? Boolean
+            if (rtlSupport != null) {
+                NativeUIState.setRtlSupport(rtlSupport)
+            }
+
             Log.d("EdgeFunctions.Set", "🎨 Edge.Set called")
 
             try {

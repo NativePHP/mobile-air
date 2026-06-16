@@ -129,7 +129,13 @@ class Edge
         }
 
         if (function_exists('nativephp_call')) {
-            nativephp_call('Edge.Set', json_encode(['components' => $nativeUIData]));
+            $payload = [
+                'components' => $nativeUIData,
+                '_meta' => [
+                    'rtl_support' => config('nativephp.rtl_support', false),
+                ],
+            ];
+            nativephp_call('Edge.Set', json_encode($payload));
         }
 
         self::reset();
@@ -138,7 +144,13 @@ class Edge
     public static function clear(): void
     {
         if (function_exists('nativephp_call')) {
-            nativephp_call('Edge.Set', json_encode(['components' => []]));
+            $payload = [
+                'components' => [],
+                '_meta' => [
+                    'rtl_support' => config('nativephp.rtl_support', false),
+                ],
+            ];
+            nativephp_call('Edge.Set', json_encode($payload));
         }
     }
 }

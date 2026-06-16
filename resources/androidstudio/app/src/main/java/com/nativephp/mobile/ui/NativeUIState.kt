@@ -27,6 +27,10 @@ object NativeUIState {
     private val _topBarData = mutableStateOf<TopBarData?>(null)
     val topBarData: State<TopBarData?> = _topBarData
 
+    // RTL support flag — controlled by nativephp.rtl_support config
+    private val _rtlSupport = mutableStateOf(false)
+    val rtlSupport: State<Boolean> = _rtlSupport
+
     // Keyboard visibility state - used to hide bottom nav when keyboard is open
     private val _isKeyboardVisible = mutableStateOf(false)
     val isKeyboardVisible: State<Boolean> = _isKeyboardVisible
@@ -34,6 +38,14 @@ object NativeUIState {
     // Drawer state for side nav - accessible globally to open/close drawer
     var drawerState: DrawerState? = null
     var drawerScope: CoroutineScope? = null
+
+    /**
+     * Update RTL support flag from Edge.Set _meta payload
+     */
+    fun setRtlSupport(enabled: Boolean) {
+        _rtlSupport.value = enabled
+        Log.d(TAG, "RTL support set to: $enabled")
+    }
 
     /**
      * Update keyboard visibility state

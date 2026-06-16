@@ -401,6 +401,31 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | RTL Support
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, the app will respect the device locale for RTL languages
+    | (Arabic, Hebrew, etc.) and automatically mirror the layout direction.
+    | When disabled (default), the app always uses LTR regardless of locale.
+    |
+    */
+    'rtl_support' => false,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Localizations
+    |--------------------------------------------------------------------------
+    |
+    | The list of language codes your app supports. These values populate the
+    | CFBundleLocalizations array in Info.plist for iOS builds, telling the
+    | system which localizations your app provides.
+    |
+    */
+
+    'localizations' => ['en'],
+
+    /*
+    |--------------------------------------------------------------------------
     | Device Orientation Support
     |--------------------------------------------------------------------------
     |

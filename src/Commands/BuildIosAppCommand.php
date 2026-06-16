@@ -490,6 +490,19 @@ class BuildIosAppCommand extends Command
             // Handle UIBackgroundModes
             $this->updateBackgroundModes($rootDict, $plistData, $pushNotificationsEnabled);
 
+            // Update CFBundleLocalizations from config
+            $localizations = config('nativephp.localizations', ['en']);
+            if (isset($plistData['CFBundleLocalizations'])) {
+                $locArray = $plistData['CFBundleLocalizations']['valueNode'];
+                while ($locArray->firstChild) {
+                    $locArray->removeChild($locArray->firstChild);
+                }
+                foreach ($localizations as $locale) {
+                    $stringNode = $locArray->ownerDocument->createElement('string', $locale);
+                    $locArray->appendChild($stringNode);
+                }
+            }
+
             // Handle BIFROST_APP_ID
             $bifrostAppId = env('BIFROST_APP_ID');
             if ($bifrostAppId) {

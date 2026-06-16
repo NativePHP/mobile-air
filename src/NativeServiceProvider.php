@@ -174,6 +174,21 @@ class NativeServiceProvider extends PackageServiceProvider
         Blade::if('android', function () {
             return Facades\System::isAndroid();
         });
+
+        Blade::directive('nativeHead', function () {
+            return '<?php
+                $__locale = str_replace("_", "-", app()->getLocale());
+                $__dir = "ltr";
+                if (config("nativephp.rtl_support", false)) {
+                    $__rtlLangs = ["ar", "he", "fa", "ur", "ps", "ku", "sd", "yi", "dv", "ckb"];
+                    $__langPrefix = explode("-", $__locale)[0];
+                    if (in_array($__langPrefix, $__rtlLangs)) {
+                        $__dir = "rtl";
+                    }
+                }
+                echo "lang=\"{$__locale}\" dir=\"{$__dir}\"";
+            ?>';
+        });
     }
 
     protected function registerMiddleware(): void

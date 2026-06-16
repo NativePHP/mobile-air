@@ -31,11 +31,31 @@ extension Notification.Name {
 class AppDelegate: NSObject, UIApplicationDelegate {
     static let shared = AppDelegate()
 
+    /// Apply or remove RTL appearance for all UIKit components.
+    /// Called from NativeUIState when rtlSupport changes.
+    static func applyRTLAppearance(_ isRTL: Bool) {
+        let direction: UISemanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
+
+        UIView.appearance().semanticContentAttribute = direction
+        UINavigationBar.appearance().semanticContentAttribute = direction
+        UITabBar.appearance().semanticContentAttribute = direction
+        UITableView.appearance().semanticContentAttribute = direction
+        UICollectionView.appearance().semanticContentAttribute = direction
+        UITextField.appearance().textAlignment = .natural
+        UILabel.appearance().textAlignment = .natural
+    }
+
     // Called when the app is launched
     func application(
-        _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+
+        // RTL appearance is applied conditionally via applyRTLAppearance()
+        // when NativeUIState.rtlSupport is set from the Edge.Set payload.
+        // Initial state is LTR until the config flag arrives.
+        AppDelegate.applyRTLAppearance(false)
+
         // Check if the app was launched from a URL (custom scheme)
         if let url = launchOptions?[UIApplication.LaunchOptionsKey.url] as? URL {
             DebugLogger.shared.log("📱 AppDelegate: Cold start with custom scheme URL: \(url)")
@@ -45,9 +65,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
         // Check if the app was launched from a Universal Link
         if let userActivityDictionary = launchOptions?[UIApplication.LaunchOptionsKey.userActivityDictionary] as? [String: Any],
-           let userActivity = userActivityDictionary["UIApplicationLaunchOptionsUserActivityKey"] as? NSUserActivity,
-           userActivity.activityType == NSUserActivityTypeBrowsingWeb,
-           let url = userActivity.webpageURL {
+        let userActivity = userActivityDictionary["UIApplicationLaunchOptionsUserActivityKey"] as? NSUserActivity,
+        userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+        let url = userActivity.webpageURL {
             DebugLogger.shared.log("📱 AppDelegate: Cold start with Universal Link: \(url)")
             // Pass the URL to the DeepLinkRouter
             DeepLinkRouter.shared.handle(url: url)
@@ -58,13 +78,13 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     // Called for Universal Links
     func application(
-        _ application: UIApplication,
-        continue userActivity: NSUserActivity,
-        restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+    _ application: UIApplication,
+    continue userActivity: NSUserActivity,
+    restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
     ) -> Bool {
         // Check if this is a Universal Link
         if userActivity.activityType == NSUserActivityTypeBrowsingWeb,
-           let url = userActivity.webpageURL {
+        let url = userActivity.webpageURL {
             // Pass the URL to the DeepLinkRouter
             DeepLinkRouter.shared.handle(url: url)
             return true
@@ -76,8 +96,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     // MARK: - Push Notification Token Handling (forwards to plugins via NotificationCenter)
 
     func application(
-        _ application: UIApplication,
-        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         NotificationCenter.default.post(
             name: .didRegisterForRemoteNotifications,
@@ -87,8 +107,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func application(
-        _ application: UIApplication,
-        didFailToRegisterForRemoteNotificationsWithError error: Error
+    _ application: UIApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
         NotificationCenter.default.post(
             name: .didFailToRegisterForRemoteNotifications,
@@ -99,9 +119,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     // Handle deeplinks
     func application(
-        _ app: UIApplication,
-        open url: URL,
-        options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
     ) -> Bool {
         // Pass the URL to the DeepLinkRouter
         DeepLinkRouter.shared.handle(url: url)

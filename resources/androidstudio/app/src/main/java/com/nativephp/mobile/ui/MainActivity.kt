@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -125,7 +126,21 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         // Set up Compose UI
         setContent {
-            MainScreen()
+            val rtlSupport by NativeUIState.rtlSupport
+            val layoutDirection = if (rtlSupport) {
+                // Let the system determine direction from locale
+                androidx.compose.ui.unit.LayoutDirection.Rtl.takeIf {
+                    resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
+                } ?: androidx.compose.ui.unit.LayoutDirection.Ltr
+            } else {
+                androidx.compose.ui.unit.LayoutDirection.Ltr
+            }
+
+            CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalLayoutDirection provides layoutDirection
+            ) {
+                MainScreen()
+            }
         }
 
         initializeEnvironmentAsync {
