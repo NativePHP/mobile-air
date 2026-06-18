@@ -496,6 +496,9 @@ class AndroidPluginCompiler
         // Handle different value types
         if (is_bool($value)) {
             $value = $value ? 'true' : 'false';
+        } elseif (is_string($value)) {
+            // Substitute ${ENV_VAR} placeholders, mirroring iOS info_plist handling
+            $value = $this->substituteEnvPlaceholders($value);
         }
 
         return "<meta-data android:name=\"{$name}\" android:value=\"{$value}\" />";
@@ -648,6 +651,9 @@ class AndroidPluginCompiler
             } elseif ($value !== null) {
                 if (is_bool($value)) {
                     $value = $value ? 'true' : 'false';
+                } elseif (is_string($value)) {
+                    // Substitute ${ENV_VAR} placeholders, mirroring iOS info_plist handling
+                    $value = $this->substituteEnvPlaceholders($value);
                 }
                 $xml .= "            <meta-data android:name=\"{$name}\" android:value=\"{$value}\" />\n";
             }

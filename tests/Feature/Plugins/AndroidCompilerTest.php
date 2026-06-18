@@ -696,6 +696,90 @@ object TestFunctions {
     /**
      * @test
      *
+     * Application-level meta-data values should have ${ENV_VAR} placeholders
+     * substituted from the environment, matching iOS info_plist handling.
+     */
+    public function it_substitutes_env_placeholders_in_application_meta_data(): void
+    {
+        putenv('NATIVEPHP_TEST_META_KEY=resolved-secret');
+        $_ENV['NATIVEPHP_TEST_META_KEY'] = 'resolved-secret';
+
+        try {
+            $plugin = $this->createTestPlugin([
+                'android' => [
+                    'permissions' => [],
+                    'dependencies' => [],
+                    'meta_data' => [
+                        ['name' => 'com.example.API_KEY', 'value' => '${NATIVEPHP_TEST_META_KEY}'],
+                    ],
+                ],
+            ]);
+
+            $this->mockRegistry
+                ->shouldReceive('all')
+                ->andReturn(collect([$plugin]));
+
+            $this->compiler->compile();
+
+            $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+            $content = $this->files->get($manifestPath);
+
+            $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="resolved-secret" />', $content);
+            $this->assertStringNotContainsString('${NATIVEPHP_TEST_META_KEY}', $content);
+        } finally {
+            putenv('NATIVEPHP_TEST_META_KEY');
+            unset($_ENV['NATIVEPHP_TEST_META_KEY']);
+        }
+    }
+
+    /**
+     * @test
+     *
+     * Component-level (service) meta-data values should also have ${ENV_VAR}
+     * placeholders substituted from the environment.
+     */
+    public function it_substitutes_env_placeholders_in_service_meta_data(): void
+    {
+        putenv('NATIVEPHP_TEST_META_KEY=resolved-secret');
+        $_ENV['NATIVEPHP_TEST_META_KEY'] = 'resolved-secret';
+
+        try {
+            $plugin = $this->createTestPlugin([
+                'android' => [
+                    'permissions' => [],
+                    'dependencies' => [],
+                    'services' => [
+                        [
+                            'name' => 'com.example.MyService',
+                            'exported' => false,
+                            'meta_data' => [
+                                ['name' => 'com.example.API_KEY', 'value' => '${NATIVEPHP_TEST_META_KEY}'],
+                            ],
+                        ],
+                    ],
+                ],
+            ]);
+
+            $this->mockRegistry
+                ->shouldReceive('all')
+                ->andReturn(collect([$plugin]));
+
+            $this->compiler->compile();
+
+            $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+            $content = $this->files->get($manifestPath);
+
+            $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="resolved-secret" />', $content);
+            $this->assertStringNotContainsString('${NATIVEPHP_TEST_META_KEY}', $content);
+        } finally {
+            putenv('NATIVEPHP_TEST_META_KEY');
+            unset($_ENV['NATIVEPHP_TEST_META_KEY']);
+        }
+    }
+
+    /**
+     * @test
+     *
      * Should add meta-data entries inside a service component using resource attribute.
      */
     public function it_adds_meta_data_with_resource_inside_service(): void
