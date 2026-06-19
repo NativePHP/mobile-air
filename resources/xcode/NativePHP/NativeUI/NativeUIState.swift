@@ -10,6 +10,9 @@ class NativeUIState: ObservableObject {
     @Published var sideNavData: SideNavData?
     @Published var topBarData: TopBarData?
 
+    // Standard UINavigationBar height + padding below
+    static let topBarHeight: CGFloat = 52
+
     // Cache to prevent unnecessary updates
     private var lastJsonString: String?
 

@@ -13,13 +13,18 @@ struct ContentView: View {
 
     var body: some View {
         NativeSideNavigation(onNavigate: handleNavigation) {
-            WebViewLayoutContainer(onTabSelected: handleNavigation)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if uiState.hasTopBar() {
+            ZStack(alignment: .top) {
+                WebViewLayoutContainer(onTabSelected: handleNavigation)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Top bar overlay — inside side nav so it doesn't cover the drawer
+                if uiState.hasTopBar() {
+                    VStack(spacing: 0) {
                         NativeTopBar(onNavigate: handleNavigation)
+                        Spacer()
                     }
                 }
+            }
         }
     }
 
@@ -130,7 +135,7 @@ struct WebViewLayoutContainer: View {
                     // Single WebView instance - fills available space
                     WebView(shared: SharedWebView.shared, horizontalSizeClass: horizontalSizeClass)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .ignoresSafeArea(.all, edges: uiState.hasTopBar() ? .horizontal : .all)
+                        .ignoresSafeArea()
 
                     // Bottom navigation at bottom
                     NativeBottomNavigation(onTabSelected: onTabSelected)
@@ -140,7 +145,7 @@ struct WebViewLayoutContainer: View {
             // No bottom nav - WebView fills entire screen
             WebView(shared: SharedWebView.shared, horizontalSizeClass: horizontalSizeClass)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(.all, edges: uiState.hasTopBar() ? [.horizontal, .bottom] : .all)
+                .ignoresSafeArea()
         }
     }
 }
@@ -246,6 +251,9 @@ struct WebView: UIViewRepresentable {
 
             let insets = windowScene?.windows.first?.safeAreaInsets ?? webView.window?.safeAreaInsets ?? .zero
 
+            // When top bar overlays the webview, add its height to the top inset
+            let topInset = insets.top + (NativeUIState.shared.hasTopBar() ? NativeUIState.topBarHeight : 0)
+
             // Also get color scheme for CSS variable
             let isDarkMode = windowScene?.windows.first?.traitCollection.userInterfaceStyle == .dark
             let colorScheme = isDarkMode ? "dark" : "light"
@@ -254,7 +262,7 @@ struct WebView: UIViewRepresentable {
             (function() {
                 // Set CSS variables directly on documentElement for immediate availability
                 if (document.documentElement) {
-                    document.documentElement.style.setProperty('--inset-top', '\(insets.top)px');
+                    document.documentElement.style.setProperty('--inset-top', '\(topInset)px');
                     document.documentElement.style.setProperty('--inset-right', '\(insets.right)px');
                     document.documentElement.style.setProperty('--inset-bottom', '\(insets.bottom)px');
                     document.documentElement.style.setProperty('--inset-left', '\(insets.left)px');
@@ -614,7 +622,7 @@ struct WebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // No manual insets needed - safeAreaInset handles topbar automatically
+        // Top bar overlays via ZStack; --inset-top includes its height when present
         // Bottom nav uses its own safeAreaInset in WebViewLayoutContainer
     }
 }
