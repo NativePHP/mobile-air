@@ -80,6 +80,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         super.onCreate(savedInstanceState)
         instance = this
 
+        // Reset the dispatch readiness gate. Without this, a cold boot triggered by
+        // Android killing the app (e.g. after the user opened Settings from a
+        // permission flow) inherits a stale "ready" flag from the previous process
+        // and dispatches against a WebView that hasn't loaded its URL yet.
+        NativeActionCoordinator.markWebViewNotReady()
+
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
@@ -569,50 +575,64 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private fun injectJavaScript(view: WebView) {
         val jsCode = """
         (function() {
-            // Add platform identifier class
-            document.body.classList.add('nativephp-android');
-
-            // 🌐 Native event bridge
-            const listeners = {};
-
-            const Native = {
-                on: function(eventName, callback) {
-                    if (!listeners[eventName]) {
-                        listeners[eventName] = [];
-                    }
-                    listeners[eventName].push(callback);
-                },
-                off: function(eventName, callback) {
-                    if (listeners[eventName]) {
-                        listeners[eventName] = listeners[eventName].filter(cb => cb !== callback);
-                    }
-                },
-                dispatch: function(eventName, payload) {
-                    const cbs = listeners[eventName] || [];
-                    cbs.forEach(cb => cb(payload, eventName));
-                },
-                openDrawer: function() {
-                    if (window.AndroidBridge) {
-                        window.AndroidBridge.openDrawer();
-                    }
+            function nativephpSetup() {
+                // document.body may be null if this runs before DOM parsing begins
+                // (e.g. against about:blank while the real URL is still loading).
+                if (!document.body) {
+                    return false;
                 }
-            };
 
-            window.Native = Native;
+                // Add platform identifier class
+                document.body.classList.add('nativephp-android');
 
-            document.addEventListener("native-event", function (e) {
-                // Normalize event names by removing leading backslashes
-                let eventName = e.detail.event.replace(/^(\\\\)+/, '');
-                const payload = e.detail.payload;
+                // 🌐 Native event bridge
+                const listeners = {};
 
-                // Dispatch with normalized event name
-                Native.dispatch(eventName, payload);
+                const Native = {
+                    on: function(eventName, callback) {
+                        if (!listeners[eventName]) {
+                            listeners[eventName] = [];
+                        }
+                        listeners[eventName].push(callback);
+                    },
+                    off: function(eventName, callback) {
+                        if (listeners[eventName]) {
+                            listeners[eventName] = listeners[eventName].filter(cb => cb !== callback);
+                        }
+                    },
+                    dispatch: function(eventName, payload) {
+                        const cbs = listeners[eventName] || [];
+                        cbs.forEach(cb => cb(payload, eventName));
+                    },
+                    openDrawer: function() {
+                        if (window.AndroidBridge) {
+                            window.AndroidBridge.openDrawer();
+                        }
+                    }
+                };
 
-                // Also dispatch to Livewire if available
-                if (window.Livewire && typeof window.Livewire.dispatch === 'function') {
-                    window.Livewire.dispatch('native:' + eventName, payload);
-                }
-            });
+                window.Native = Native;
+
+                document.addEventListener("native-event", function (e) {
+                    // Normalize event names by removing leading backslashes
+                    let eventName = e.detail.event.replace(/^(\\\\)+/, '');
+                    const payload = e.detail.payload;
+
+                    // Dispatch with normalized event name
+                    Native.dispatch(eventName, payload);
+
+                    // Also dispatch to Livewire if available
+                    if (window.Livewire && typeof window.Livewire.dispatch === 'function') {
+                        window.Livewire.dispatch('native:' + eventName, payload);
+                    }
+                });
+
+                return true;
+            }
+
+            if (!nativephpSetup()) {
+                document.addEventListener('DOMContentLoaded', nativephpSetup);
+            }
         })();
         """
         view.evaluateJavascript(jsCode, null)

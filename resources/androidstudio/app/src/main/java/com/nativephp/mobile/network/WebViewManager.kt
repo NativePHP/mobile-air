@@ -16,6 +16,7 @@ import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
 import com.nativephp.mobile.ui.NativeUIState
+import com.nativephp.mobile.utils.NativeActionCoordinator
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
 
@@ -350,6 +351,15 @@ class WebViewManager(
 
                 // Inject JavaScript to capture form submissions and AJAX requests
                 injectJavaScript(view)
+
+                // Open the dispatch gate now that a NativePHP page is loaded and the
+                // native-event listener / fetch wrappers are installed. Queued events
+                // from native code that fired during cold boot will replay here.
+                if (url.contains("127.0.0.1")) {
+                    (context as? MainActivity)?.let {
+                        NativeActionCoordinator.markWebViewReady(it)
+                    }
+                }
             }
         }
     }

@@ -54,40 +54,56 @@ class NativeActionCoordinator : Fragment() {
     }
 
     private fun dispatch(event: String, payloadJson: String) {
+            // Queue if the WebView hasn't loaded a NativePHP page yet. Without this gate,
+            // dispatches during cold boot run against about:blank — the relative fetch
+            // fails to parse, the native-event listener isn't attached, and the event
+            // is silently dropped (or worse, leaves the WebView in a broken state).
+            if (!webViewReady) {
+                Log.d("NativeActionCoordinator", "⏳ WebView not ready — queueing event: $event")
+                synchronized(pendingEvents) {
+                    pendingEvents.add(event to payloadJson)
+                }
+                return
+            }
+
             Log.d("JSFUNC", "native:$event");
             Log.d("JSFUNC", "$payloadJson");
             val eventForJs = event.replace("\\", "\\\\")
             val js = """
                 (function () {
-                    const payload = $payloadJson;
+                    try {
+                        const payload = $payloadJson;
 
-                    const detail = { event: "$eventForJs", payload };
+                        const detail = { event: "$eventForJs", payload };
 
-                    document.dispatchEvent(new CustomEvent("native-event", { detail }));
+                        document.dispatchEvent(new CustomEvent("native-event", { detail }));
 
-                    if (window.Livewire && typeof window.Livewire.dispatch === 'function') {
-                        window.Livewire.dispatch("native:$eventForJs", payload);
+                        if (window.Livewire && typeof window.Livewire.dispatch === 'function') {
+                            window.Livewire.dispatch("native:$eventForJs", payload);
+                        }
+
+                        fetch('http://127.0.0.1/_native/api/events', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            body: JSON.stringify({
+                                event: "$eventForJs",
+                                payload: payload
+                            })
+                        }).then(response => response.json())
+                          .then(data => {
+                              if (data.message && data.message.includes("Unknown named parameter")) {
+                                  console.log("API Event Dispatch: Parameter issue detected");
+                              } else {
+                                  console.log("API Event Dispatch Success");
+                              }
+                          })
+                          .catch(error => console.error("API Event Dispatch Error:", error && error.message));
+                    } catch (e) {
+                        console.error("API Event Dispatch threw:", e && e.message);
                     }
-
-                    fetch('/_native/api/events', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
-                        },
-                        body: JSON.stringify({
-                            event: "$eventForJs",
-                            payload: payload
-                        })
-                    }).then(response => response.json())
-                      .then(data => {
-                          if (data.message && data.message.includes("Unknown named parameter")) {
-                              console.log("API Event Dispatch: Parameter issue detected");
-                          } else {
-                              console.log("API Event Dispatch Success");
-                          }
-                      })
-                      .catch(error => console.error("API Event Dispatch Error:", error.message));
                 })();
             """.trimIndent()
 
@@ -98,6 +114,14 @@ class NativeActionCoordinator : Fragment() {
 
 
     companion object {
+        // Events dispatched before the first NativePHP page has finished loading are
+        // queued here and replayed once the WebView is ready. The flag is reset in
+        // MainActivity.onCreate so cold boots start in the "not ready" state.
+        private val pendingEvents = mutableListOf<Pair<String, String>>()
+
+        @Volatile
+        private var webViewReady: Boolean = false
+
         fun install(activity: FragmentActivity): NativeActionCoordinator =
             activity.supportFragmentManager.findFragmentByTag("NativeActionCoordinator") as? NativeActionCoordinator
                 ?: NativeActionCoordinator().also {
@@ -114,6 +138,37 @@ class NativeActionCoordinator : Fragment() {
             Log.d("NativeActionCoordinator", "📢 Static dispatch event: $event")
             val coordinator = install(activity)
             coordinator.dispatch(event, payloadJson)
+        }
+
+        /**
+         * Signal that the WebView has finished loading a NativePHP page and is safe
+         * to receive dispatches. Queued events from before this point are replayed.
+         */
+        fun markWebViewReady(activity: FragmentActivity) {
+            webViewReady = true
+
+            val toReplay = synchronized(pendingEvents) {
+                val copy = pendingEvents.toList()
+                pendingEvents.clear()
+                copy
+            }
+
+            if (toReplay.isEmpty()) return
+
+            Log.d("NativeActionCoordinator", "▶️ Replaying ${toReplay.size} queued event(s)")
+            val coordinator = install(activity)
+            toReplay.forEach { (event, payloadJson) ->
+                coordinator.dispatch(event, payloadJson)
+            }
+        }
+
+        /**
+         * Mark the WebView as not ready. Called from MainActivity.onCreate so that
+         * a cold boot — including the one triggered when Android kills the app while
+         * the user is in Settings — restarts in the queueing state.
+         */
+        fun markWebViewNotReady() {
+            webViewReady = false
         }
     }
 }
