@@ -119,6 +119,11 @@ class NativeElementCollector
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
+            // Double-tap rides the props dict (not a dedicated node field).
+            if (($doubleTap = static::resolveOnDoubleTap($attrs)) !== 0) {
+                $props['on_double_tap'] = $doubleTap;
+            }
+
             // ScrollView needs overflow: scroll so Yoga doesn't constrain children
             if ($type === 'scroll_view' && ! isset($layout['overflow'])) {
                 $layout['overflow'] = 2;
@@ -195,6 +200,11 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
+
+            // Double-tap rides the props dict (not a dedicated node field).
+            if (($doubleTap = static::resolveOnDoubleTap($attrs)) !== 0) {
+                $props['on_double_tap'] = $doubleTap;
+            }
 
             nphp_node_leaf(
                 $type,
@@ -329,6 +339,9 @@ class NativeElementCollector
         }
         if (isset($attrs['flexBasis'])) {
             $layout['flex_basis'] = (float) $attrs['flexBasis'];
+        }
+        if (isset($attrs['aspectRatio'])) {
+            $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
         }
         if (isset($attrs['alignSelf'])) {
             $layout['align_self'] = (int) $attrs['alignSelf'];
@@ -513,6 +526,22 @@ class NativeElementCollector
     {
         if (isset($attrs['_longPress']) && static::$callbacks) {
             return static::$callbacks->register($attrs['_longPress']);
+        }
+
+        return 0;
+    }
+
+    /**
+     * Double-tap callback id. Unlike press/long-press (dedicated binary node
+     * fields), this travels in the props dict as `on_double_tap` — the same
+     * channel as `on_change` / `on_swipe_delete` — so it needs no change to
+     * the `nphp_node_*` signatures or the binary wire format. Returns 0 when
+     * no `@doubleTap` handler is set.
+     */
+    protected static function resolveOnDoubleTap(array $attrs): int
+    {
+        if (isset($attrs['_doubleTap']) && static::$callbacks) {
+            return static::$callbacks->register($attrs['_doubleTap']);
         }
 
         return 0;
@@ -779,6 +808,9 @@ class NativeElementCollector
         if (isset($attrs['flexShrink'])) {
             $element->flexShrink((float) $attrs['flexShrink']);
         }
+        if (isset($attrs['aspectRatio'])) {
+            $element->aspectRatio((float) $attrs['aspectRatio']);
+        }
         if (isset($attrs['alignSelf'])) {
             $element->alignSelf((int) $attrs['alignSelf']);
         }
@@ -838,6 +870,9 @@ class NativeElementCollector
         if (isset($attrs['_longPress'])) {
             $element->onLongPress($attrs['_longPress']);
         }
+        if (isset($attrs['_doubleTap'])) {
+            $element->onDoubleTap($attrs['_doubleTap']);
+        }
         if (isset($attrs['_change']) && method_exists($element, 'onChange')) {
             $element->onChange($attrs['_change']);
         }
@@ -874,8 +909,11 @@ class NativeElementCollector
             }
             // 'vertical' (or unset) is the default — no method call needed.
 
-            if (isset($attrs['showsIndicators'])) {
-                $element->showsIndicators((bool) $attrs['showsIndicators']);
+            // Accept both kebab (`shows-indicators`) and camel
+            // (`showsIndicators`) — the precompiler keeps attribute names
+            // verbatim, and the rest of the API takes either form.
+            if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
+                $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
             }
         }
     }

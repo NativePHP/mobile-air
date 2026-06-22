@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge;
 
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
+use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
@@ -1097,7 +1098,14 @@ abstract class NativeComponent
         $reflect = new \ReflectionClass($this);
 
         foreach ($reflect->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
-            $attributes = $method->getAttributes(OnNative::class);
+            // `On` is the Livewire-free attribute; `OnNative` is kept for
+            // backward compatibility (only instantiated when actually
+            // present, so projects without Livewire never trip its
+            // BaseOn parent).
+            $attributes = [
+                ...$method->getAttributes(On::class),
+                ...$method->getAttributes(OnNative::class),
+            ];
 
             foreach ($attributes as $attribute) {
                 $instance = $attribute->newInstance();

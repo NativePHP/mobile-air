@@ -188,16 +188,43 @@ struct NodeView: View, Equatable {
 private struct NodeGestureModifier: ViewModifier {
     let node: NativeUINode
 
+    // Double-tap is carried in the props dict (`on_double_tap`) rather than a
+    // dedicated node field like onPress/onLongPress, so it needs no binary
+    // wire-format change. 0 = no handler.
+    private var doubleTapId: Int { node.props.getInt("on_double_tap") }
+
     private var hasGesture: Bool {
-        node.onPress != 0 || node.onLongPress != 0
+        node.onPress != 0 || node.onLongPress != 0 || doubleTapId != 0
     }
 
     func body(content: Content) -> some View {
         if hasGesture {
             content
                 .contentShape(Rectangle())
+                // Double-tap attached before single-tap so the 2-count
+                // recognizer gets first claim on the gesture. Combining
+                // @press + @doubleTap on one node incurs SwiftUI's usual
+                // tap-arbitration delay on the single tap.
+                .modifier(DoubleTapModifier(callbackId: doubleTapId, nodeId: node.id))
                 .modifier(TapModifier(callbackId: node.onPress, nodeId: node.id))
                 .modifier(LongPressModifier(callbackId: node.onLongPress, nodeId: node.id))
+        } else {
+            content
+        }
+    }
+}
+
+private struct DoubleTapModifier: ViewModifier {
+    let callbackId: Int
+    let nodeId: Int
+
+    func body(content: Content) -> some View {
+        if callbackId != 0 {
+            content.onTapGesture(count: 2) {
+                // Reuses the Press event type — the callback id alone routes
+                // to the @doubleTap handler, and Press dispatch passes no args.
+                NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+            }
         } else {
             content
         }

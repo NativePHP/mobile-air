@@ -141,9 +141,9 @@ class BladeTemplateAnalyzer
         $stripped = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
         $stripped = preg_replace('/<!--.*?-->/s', '', $stripped);
 
-        // Match @press="method", @longPress="method", @change="method", @submit="method"
+        // Match @press="method", @longPress="method", @doubleTap="method", @change="method", @submit="method"
         // Also match the precompiled _press="method" form
-        $pattern = '/[_@](press|longPress|change|submit)\s*=\s*["\']([^"\']+)["\']/';
+        $pattern = '/[_@](press|longPress|doubleTap|change|submit)\s*=\s*["\']([^"\']+)["\']/';
 
         if (preg_match_all($pattern, $stripped, $matches, PREG_OFFSET_CAPTURE)) {
             foreach ($matches[0] as $i => $match) {

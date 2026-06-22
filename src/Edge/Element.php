@@ -35,6 +35,8 @@ abstract class Element
 
     protected ?string $longPressMethod = null;
 
+    protected ?string $doubleTapMethod = null;
+
     protected ?string $swipeDeleteMethod = null;
 
     protected ?array $navigateConfig = null;
@@ -436,6 +438,18 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Double-tap handler. Carried in the props dict as `on_double_tap`
+     * (see getResolvedProps) rather than as a dedicated node field, so it
+     * needs no binary wire-format change.
+     */
+    public function onDoubleTap(string $method): static
+    {
+        $this->doubleTapMethod = $method;
+
+        return $this;
+    }
+
     public function setNavigateConfig(array $config): static
     {
         $this->navigateConfig = $config;
@@ -542,6 +556,10 @@ abstract class Element
 
         if ($this->swipeDeleteMethod !== null) {
             $props['on_swipe_delete'] = $registry->register($this->swipeDeleteMethod);
+        }
+
+        if ($this->doubleTapMethod !== null) {
+            $props['on_double_tap'] = $registry->register($this->doubleTapMethod);
         }
 
         if (! empty($this->darkProps)) {

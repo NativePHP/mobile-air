@@ -1,8 +1,11 @@
 package com.nativephp.mobile.ui
 
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.Looper
 import android.os.Handler
@@ -74,6 +77,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
     private var showSplash by mutableStateOf(true)
+
+    // Device-shake detection — registered in onResume, unregistered in onPause.
+    private var sensorManager: SensorManager? = null
+    private var shakeDetector: ShakeDetector? = null
 
     // Status bar style configuration - replaced during build
     private val statusBarStyle = "REPLACE_STATUS_BAR_STYLE"
@@ -318,11 +325,33 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     override fun onResume() {
         super.onResume()
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_RESUME)
+        registerShakeDetector()
     }
 
     override fun onPause() {
         super.onPause()
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_PAUSE)
+        sensorManager?.unregisterListener(shakeDetector)
+    }
+
+    /**
+     * Lazily wires the accelerometer shake detector. On shake it forwards a
+     * native event to PHP — `Native\Mobile\Events\Motion\ShakeDetected`,
+     * consumed via `#[On(ShakeDetected::class)]`.
+     */
+    private fun registerShakeDetector() {
+        if (sensorManager == null) {
+            sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+            shakeDetector = ShakeDetector {
+                NativeElementBridge.sendNativeEvent(
+                    "Native\\Mobile\\Events\\Motion\\ShakeDetected",
+                    "{}"
+                )
+            }
+        }
+        sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { accelerometer ->
+            sensorManager?.registerListener(shakeDetector, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        }
     }
 
     private fun handleDeepLinkIntent(intent: Intent?) {

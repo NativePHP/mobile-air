@@ -392,6 +392,20 @@ class TailwindParser
             str_starts_with($class, 'justify-') => self::parseJustifyContent(substr($class, 8)),
             str_starts_with($class, 'self-') => self::parseAlignSelf(substr($class, 5)),
 
+            // Object fit (images) — mirrors CSS `object-fit`, mapped to the
+            // `fit` prop the image renderer reads (0 none, 1 contain/fit,
+            // 2 cover/crop, 3 fill/stretch).
+            $class === 'object-none' => ['fit' => 0],
+            $class === 'object-contain' => ['fit' => 1],
+            $class === 'object-cover' => ['fit' => 2],
+            $class === 'object-fill' => ['fit' => 3],
+            $class === 'object-scale-down' => ['fit' => 1],
+
+            // Aspect ratio — sets Yoga's `aspect_ratio` layout field
+            // (applied natively via AspectRatioModifier on iOS/Android).
+            $class === 'aspect-square' => ['aspectRatio' => 1.0],
+            $class === 'aspect-video' => ['aspectRatio' => 16 / 9],
+
             default => null,
         };
     }
@@ -563,6 +577,25 @@ class TailwindParser
         }
 
         return null;
+    }
+
+    /**
+     * Parse an aspect-ratio token — either `W/H` (e.g. `16/9`) or a plain
+     * decimal (e.g. `1.5`). A plain `(float)` cast can't be used for the
+     * `W/H` form because PHP would stop at the slash (`"16/9"` casts to
+     * `16.0`). Returns 0.0 for malformed input; the native AspectRatio
+     * modifiers ignore any non-positive ratio.
+     */
+    private static function parseRatio(string $value): float
+    {
+        if (str_contains($value, '/')) {
+            [$w, $h] = array_pad(explode('/', $value, 2), 2, '1');
+            $h = (float) $h;
+
+            return $h != 0.0 ? (float) $w / $h : 0.0;
+        }
+
+        return (float) $value;
     }
 
     private static function parseBgColor(string $value): ?array
@@ -784,6 +817,7 @@ class TailwindParser
             'rounded' => ['borderRadius' => (float) $value],
             'border' => $isColor ? ['borderColor' => self::normalizeHex($value)] : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
+            'aspect' => ['aspectRatio' => self::parseRatio($value)],
             'top'    => ['positionTop'    => (float) $value],
             'right'  => ['positionRight'  => (float) $value],
             'bottom' => ['positionBottom' => (float) $value],

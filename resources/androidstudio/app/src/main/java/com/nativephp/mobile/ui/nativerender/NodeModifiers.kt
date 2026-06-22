@@ -189,50 +189,63 @@ fun Modifier.nodeGestures(
     node: NativeUINode,
     interactionSource: androidx.compose.foundation.interaction.MutableInteractionSource? = null,
 ): Modifier {
-    if (node.onPress == 0 && node.onLongPress == 0) return this
-
     val callbackId = node.onPress
     val longPressId = node.onLongPress
+    // Double-tap is carried in props (`on_double_tap`), not a dedicated node
+    // field like onPress/onLongPress, so it needs no binary wire-format change.
+    val doubleTapId = node.props.getInt("on_double_tap")
+
+    if (callbackId == 0 && longPressId == 0 && doubleTapId == 0) return this
+
     val nodeId = node.id
 
+    val onClickAction: () -> Unit = {
+        if (callbackId != 0) {
+            NativeElementBridge.sendPressEvent(callbackId, nodeId)
+        }
+    }
+    val onLongClickAction: (() -> Unit)? = if (longPressId != 0) {
+        { NativeElementBridge.sendLongPressEvent(longPressId, nodeId) }
+    } else {
+        null
+    }
+    // Double-tap reuses the press event type — the callback id alone routes
+    // to the @doubleTap handler on the PHP side.
+    val onDoubleClickAction: (() -> Unit)? = if (doubleTapId != 0) {
+        { NativeElementBridge.sendPressEvent(doubleTapId, nodeId) }
+    } else {
+        null
+    }
+
+    // `clickable` only handles single tap; long-press / double-tap require
+    // `combinedClickable`.
+    val needCombined = onLongClickAction != null || onDoubleClickAction != null
+
     return if (interactionSource != null) {
-        if (longPressId != 0) {
+        if (needCombined) {
             this.combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = {
-                    if (callbackId != 0) {
-                        NativeElementBridge.sendPressEvent(callbackId, nodeId)
-                    }
-                },
-                onLongClick = {
-                    NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
-                }
+                onLongClick = onLongClickAction,
+                onDoubleClick = onDoubleClickAction,
+                onClick = onClickAction,
             )
         } else {
             this.clickable(
                 interactionSource = interactionSource,
                 indication = null,
-            ) {
-                NativeElementBridge.sendPressEvent(callbackId, nodeId)
-            }
+                onClick = onClickAction,
+            )
         }
     } else {
-        if (longPressId != 0) {
+        if (needCombined) {
             this.combinedClickable(
-                onClick = {
-                    if (callbackId != 0) {
-                        NativeElementBridge.sendPressEvent(callbackId, nodeId)
-                    }
-                },
-                onLongClick = {
-                    NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
-                }
+                onLongClick = onLongClickAction,
+                onDoubleClick = onDoubleClickAction,
+                onClick = onClickAction,
             )
         } else {
-            this.clickable {
-                NativeElementBridge.sendPressEvent(callbackId, nodeId)
-            }
+            this.clickable(onClick = onClickAction)
         }
     }
 }

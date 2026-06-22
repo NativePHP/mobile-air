@@ -56,6 +56,13 @@ it('rewrites @longPress to _longPress', function () {
     expect($result)->not->toContain('@longPress');
 });
 
+it('rewrites @doubleTap to _doubleTap', function () {
+    $result = ($this->precompiler)('<native:column @doubleTap="handleDouble">x</native:column>');
+
+    expect($result)->toContain("'_doubleTap' => 'handleDouble'");
+    expect($result)->not->toContain('@doubleTap');
+});
+
 it('rewrites @change and @submit', function () {
     $result = ($this->precompiler)('<native:text-input @change="onTextChange" @submit="onTextSubmit" />');
 

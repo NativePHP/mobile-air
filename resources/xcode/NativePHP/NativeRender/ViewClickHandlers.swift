@@ -15,6 +15,20 @@ private struct ClickHandlerModifier: ViewModifier {
     func body(content: Content) -> some View {
         var view = AnyView(content)
 
+        // Double-tap is carried in props (`on_double_tap`), not a dedicated
+        // node field. Attached before the single tap so the 2-count gesture
+        // gets first claim. Reuses the Press event type — the callback id
+        // routes to the @doubleTap handler.
+        let doubleTapId = node.props.getInt("on_double_tap")
+        if doubleTapId != 0 {
+            let nodeId = node.id
+            view = AnyView(
+                view.onTapGesture(count: 2) {
+                    NativeUIBridge.sendPressEvent(doubleTapId, nodeId: nodeId)
+                }
+            )
+        }
+
         if node.onPress != 0 {
             let cbId = node.onPress
             let nodeId = node.id
