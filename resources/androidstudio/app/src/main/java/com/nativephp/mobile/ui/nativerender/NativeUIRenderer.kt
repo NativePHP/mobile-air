@@ -82,7 +82,7 @@ fun NativeUIContent() {
             // AnimatedContent keyed off screenKey transitions when PHP signals
             // a navigation. The transition spec maps Edge\Transition string
             // values (slide_from_right, fade, etc.) to Compose's enter/exit
-            // pairs, mirroring the iOS NativeUITransitionFunctions mapper.
+            // pairs, mirroring the iOS nativeScreenTransition(for:) mapper.
             AnimatedContent(
                 targetState = screenKey,
                 transitionSpec = { transitionFor(pendingTransition) },
@@ -105,8 +105,8 @@ fun NativeUIContent() {
 
 /**
  * Map a PHP-side Edge\Transition value to a Compose AnimatedContent
- * ContentTransform. Mirrors NativeUITransitionFunctions.transition(for:)
- * on the iOS side.
+ * ContentTransform. Mirrors core's iOS nativeScreenTransition(for:)
+ * (ScreenTransitions.swift).
  *
  * `internal` so other renderers (NativeRootTabsRenderer's within-tab
  * push animation, future stack renderers) can share the same mapper

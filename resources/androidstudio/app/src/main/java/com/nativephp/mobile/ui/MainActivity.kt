@@ -46,8 +46,6 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import com.nativephp.plugins.native_ui.NativeUITheme
-import com.nativephp.plugins.native_ui.toMaterialColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -140,11 +138,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         handleDeepLinkIntent(intent)
 
-        // Set up Compose UI. The outer MaterialTheme threads the plugin's
-        // theme tokens (`NativeUITheme.light` / `.dark` — driven by PHP
-        // `Theme::merge`) into M3's color scheme so native chrome
-        // (TopAppBar, Scaffold, dialogs, vanilla M3 controls) stays in
-        // brand instead of falling back to the M3 baseline lavender.
+        // Set up Compose UI. The outer MaterialTheme gets its color scheme via
+        // NativeUIThemeProvider (a seam): a UI plugin supplies brand tokens
+        // (native-ui threads PHP `Theme::merge` values), and with no UI plugin
+        // installed it falls back to the M3 baseline so core still builds/runs.
         setContent {
             val isDark = isSystemInDarkTheme()
             MaterialTheme(colorScheme = nativeUiMaterialColorScheme(isDark)) {
@@ -1226,15 +1223,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     /**
-     * Derive an M3 [ColorScheme] from the active plugin theme tokens.
-     * Reads from [NativeUITheme.light] / [NativeUITheme.dark] reactively
-     * so PHP-side `Theme::merge` updates flow through to chrome (top
-     * bar, drawers, M3 controls) on the next recomposition.
+     * The app's M3 [ColorScheme]. Resolved through [NativeUIThemeProvider] so
+     * core doesn't depend on any UI plugin: a plugin (native-ui) registers a
+     * provider that maps its PHP-driven theme tokens reactively; with no UI
+     * plugin installed this falls back to Material defaults and still builds.
      */
     @Composable
     private fun nativeUiMaterialColorScheme(isDark: Boolean): ColorScheme {
-        val tokens = if (isDark) NativeUITheme.dark else NativeUITheme.light
-        return tokens.toMaterialColorScheme(isDark)
+        return NativeUIThemeProvider.resolve(isDark)
     }
 
     /**

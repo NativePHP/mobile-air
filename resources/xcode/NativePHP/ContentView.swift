@@ -27,7 +27,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(.systemBackground))
                     .id(nativeUIBridge.screenKey)
-                    .transition(NativeUITransitionFunctions.transition(for: nativeUIBridge.pendingTransition))
+                    .transition(nativeScreenTransition(for: nativeUIBridge.pendingTransition))
             } else {
                 NativeSideNavigation(onNavigate: handleNavigation) {
                     WebViewLayoutContainer(onTabSelected: handleNavigation)
