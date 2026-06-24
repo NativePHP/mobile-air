@@ -89,7 +89,14 @@ fun NativeUIContent() {
                 label = "screen-transition"
             ) { _ ->
                 tree?.let { t ->
-                    NodeView(node = t.root)
+                    // Fold any plugin-registered root hosts (side drawers,
+                    // global overlays, …) around the rendered tree. A host
+                    // pulls its own sentinel child out of `t.root` and renders
+                    // nothing when absent. A no-op pass-through when none are
+                    // registered, so trees using no plugin chrome pay nothing.
+                    NativeRootHostRegistry.Wrap(root = t.root) {
+                        NodeView(node = t.root)
+                    }
                 }
             }
         }

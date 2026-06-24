@@ -42,6 +42,17 @@ struct NativeTreeRenderer: View {
     let tree: NativeUITree
 
     var body: some View {
+        // Fold any plugin-registered root hosts (side drawers, global overlays,
+        // …) around the rendered tree. A host pulls its own sentinel child out
+        // of `tree.root` and renders nothing when absent. When no hosts are
+        // registered this returns `rootContent` unchanged, so trees that use no
+        // plugin chrome pay nothing — preserving the minimal-wrapping guarantee
+        // below (for the iOS 26 tabs Liquid Glass capsule).
+        NativeRootHostRegistry.shared.wrap(root: tree.root, content: AnyView(rootContent))
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
         // Native chrome sentinels (`native_root_tabs`,
         // `native_root_stack`) need the TabView / NavigationStack to
         // sit AS CLOSE TO THE ROOT as possible. Going through `NodeView`

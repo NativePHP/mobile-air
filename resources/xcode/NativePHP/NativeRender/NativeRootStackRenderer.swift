@@ -92,6 +92,7 @@ struct NativeRootStackRenderer: View {
         let bottomBar = root.children.first { $0.type == "bottom_bar" }
         let screenContent = root.children.first {
             $0.type != "top_bar_action" && $0.type != "bottom_bar"
+                && !NativeRootHostRegistry.shared.consumes($0.type)
         }
 
         let textColor: Color = textArgb != 0 ? Color(argb: textArgb) : .primary

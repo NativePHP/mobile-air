@@ -91,6 +91,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             && it.type != "top_bar_action"
             && it.type != "tab_accessory"
             && it.type != "search_item"
+            && !NativeRootHostRegistry.consumes(it.type)
     }
 
     // Activeness flows from `BottomNavItem.active` (TabBar::highlight() set it).

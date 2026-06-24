@@ -396,6 +396,7 @@ private struct PerTabContent: View {
                 && $0.type != "top_bar_action"
                 && $0.type != "tab_accessory"
                 && $0.type != "bottom_bar"
+                && !NativeRootHostRegistry.shared.consumes($0.type)
         }
 
         // Inline search field — Apple HIG pattern. iOS attaches
@@ -442,6 +443,7 @@ private struct PerTabContent: View {
                 && $0.type != "top_bar_action"
                 && $0.type != "tab_accessory"
                 && $0.type != "bottom_bar"
+                && !NativeRootHostRegistry.shared.consumes($0.type)
         }
         if let content {
             NodeView(node: content)

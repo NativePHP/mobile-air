@@ -86,7 +86,9 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     // Filter children for actions and the screen content body.
     val actions = activeNode.children.filter { it.type == "top_bar_action" }
-    val screenContent = activeNode.children.firstOrNull { it.type != "top_bar_action" }
+    val screenContent = activeNode.children.firstOrNull {
+        it.type != "top_bar_action" && !NativeRootHostRegistry.consumes(it.type)
+    }
 
     // Inline search field config (NavBar::searchBar() — Apple HIG /
     // Expo pattern). When set, replaces the title slot with a search
@@ -188,7 +190,9 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 .padding(padding)
         ) { uri ->
             val levelNode = coordinator.rootNodeCache[uri]
-            val levelContent = levelNode?.children?.firstOrNull { it.type != "top_bar_action" }
+            val levelContent = levelNode?.children?.firstOrNull {
+                it.type != "top_bar_action" && !NativeRootHostRegistry.consumes(it.type)
+            }
             if (levelContent != null) {
                 NodeView(node = levelContent)
             } else if (uri == currentUri && screenContent != null) {
