@@ -152,7 +152,8 @@ class PluginDiscovery
         }
 
         if (! $this->files->exists($manifestPath)) {
-            // Log warning: Plugin missing manifest
+            $this->warnPluginSkipped($package['name'] ?? '?', "manifest not found at {$manifestPath}");
+
             return null;
         }
 
@@ -171,10 +172,28 @@ class PluginDiscovery
                 serviceProvider: $serviceProvider,
                 composerType: $package['type'] ?? 'nativephp-plugin'
             );
-        } catch (\Exception $e) {
-            // Log error: Failed to load plugin
+        } catch (\Throwable $e) {
+            $this->warnPluginSkipped(
+                $package['name'] ?? '?',
+                $e->getMessage().' ('.basename($e->getFile()).':'.$e->getLine().')'
+            );
+
             return null;
         }
+    }
+
+    /**
+     * Surface a skipped plugin. A missing/malformed manifest makes the WHOLE
+     * plugin vanish from discovery — which otherwise shows up only as a
+     * baffling downstream failure (e.g. an iOS build error about missing
+     * native symbols, because the plugin's renderers were never copied in).
+     * Write to the PHP error log / stderr so it's visible during `native:run`
+     * instead of being silently swallowed. We still skip the offending plugin
+     * (return null) so one bad manifest doesn't take down the whole build.
+     */
+    protected function warnPluginSkipped(string $name, string $reason): void
+    {
+        error_log("[NativePHP] Skipping plugin '{$name}': {$reason}");
     }
 
     /**
