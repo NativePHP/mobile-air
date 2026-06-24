@@ -321,56 +321,75 @@ abstract class NativeComponent
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        if ($this->layout === null || ! class_exists($this->layout)) {
-            return $content;
-        }
+        $layout = ($this->layout !== null && class_exists($this->layout))
+            ? new ($this->layout)()
+            : null;
 
-        /** @var \Native\Mobile\Edge\Layouts\NativeLayout $layout */
-        $layout = new ($this->layout)();
+        // Base case: no layout (or no bars) → the screen content is the root,
+        // and it is the dev's own tree, so we must NOT append siblings to it
+        // directly. `$rootOwnsChildren` tracks whether the root is a container
+        // we built (and may freely append hoistable chrome to) vs. raw content.
+        $root = $content;
+        $rootOwnsChildren = false;
 
-        // If the screen blade already contains TopBar / BottomNav at the
-        // root level, the dev took manual control — skip layout chrome
-        // for those slots.
-        $hasInlineNavBar = $this->treeContainsType($content, 'top_bar');
-        $hasInlineTabBar = $this->treeContainsType($content, 'bottom_nav');
+        if ($layout !== null) {
+            // If the screen blade already contains TopBar / BottomNav at the
+            // root level, the dev took manual control — skip layout chrome
+            // for those slots.
+            $hasInlineNavBar = $this->treeContainsType($content, 'top_bar');
+            $hasInlineTabBar = $this->treeContainsType($content, 'bottom_nav');
 
-        $navBar = null;
-        if (! $hasInlineNavBar) {
-            $navBar = $layout->navBar($this);
-            if ($navBar !== null) {
-                $navBar->mergeOptions($this->navigationOptions());
-                if (! empty($this->pendingNavBarState)) {
-                    $navBar->mergeState($this->pendingNavBarState);
+            $navBar = null;
+            if (! $hasInlineNavBar) {
+                $navBar = $layout->navBar($this);
+                if ($navBar !== null) {
+                    $navBar->mergeOptions($this->navigationOptions());
+                    if (! empty($this->pendingNavBarState)) {
+                        $navBar->mergeState($this->pendingNavBarState);
+                    }
                 }
+            }
+
+            $tabBar = null;
+            if (! $hasInlineTabBar) {
+                $tabBar = $layout->tabBar($this);
+                if ($tabBar !== null) {
+                    $currentUri = $this->router?->currentUri();
+                    if ($currentUri !== null) {
+                        $tabBar->highlight($currentUri);
+                    }
+                }
+            }
+
+            if ($navBar !== null || $tabBar !== null) {
+                if ($layout->usesNativeChrome()) {
+                    // Native chrome path: when a layout opts in via
+                    // `usesNativeChrome()`, emit a `native_root_*` sentinel
+                    // element carrying the bar config as serialized props
+                    // instead of a Column of [navBar, content, tabBar]. The
+                    // native iOS / Android renderers for those types take over
+                    // and use NavigationStack / TabView / NavHost / Scaffold to
+                    // render chrome system-natively.
+                    $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
+                } else {
+                    $root = $this->buildChromeColumn($content, $navBar, $tabBar);
+                }
+                $rootOwnsChildren = true;
             }
         }
 
-        $tabBar = null;
-        if (! $hasInlineTabBar) {
-            $tabBar = $layout->tabBar($this);
-            if ($tabBar !== null) {
-                $currentUri = $this->router?->currentUri();
-                if ($currentUri !== null) {
-                    $tabBar->highlight($currentUri);
-                }
-            }
-        }
+        return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
 
-        // Nothing to inject — return the screen content untouched.
-        if ($navBar === null && $tabBar === null) {
-            return $content;
-        }
-
-        // Native chrome path: when a layout opts in via
-        // `usesNativeChrome()`, emit a `native_root_*` sentinel element
-        // carrying the bar config as serialized props instead of a
-        // Column of [navBar, content, tabBar]. The native iOS / Android
-        // renderers for those types take over and use NavigationStack /
-        // TabView / NavHost / Scaffold to render chrome system-natively.
-        if ($layout->usesNativeChrome()) {
-            return $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
-        }
-
+    /**
+     * Build the custom `Column` wrapper for the non-native chrome path:
+     * [navBar?, content, tabBar?] with the right safe-area edges freed.
+     */
+    private function buildChromeColumn(
+        Element $content,
+        ?\Native\Mobile\Edge\Layouts\Builders\NavBar $navBar,
+        ?\Native\Mobile\Edge\Layouts\Builders\TabBar $tabBar,
+    ): Element {
         // Pick the right safe-area variant based on which bars own which
         // edges. When a TabBar exists at the bottom, it handles its own
         // home-indicator inset internally so its bg can reach the screen
@@ -383,8 +402,6 @@ abstract class NativeComponent
             $wrapper->safeAreaBottom();   // navBar owns top, wrapper owns bottom
         } elseif ($tabBar !== null && $navBar === null) {
             $wrapper->safeAreaTop();      // tabBar owns bottom, wrapper owns top
-        } elseif ($navBar === null && $tabBar === null) {
-            $wrapper->safeArea();         // no chrome — wrapper handles both
         }
         // Both bars present: neither edge applied at the wrapper level.
 
@@ -411,6 +428,43 @@ abstract class NativeComponent
         }
 
         return $wrapper;
+    }
+
+    /**
+     * Run plugin-registered chrome contributors (the PHP half of the chrome
+     * seam) and append any hoistable sentinel elements they produce to the
+     * published root. Core stays chrome-agnostic — it never knows what the
+     * sentinels are; a native root host pulls them out and renders the chrome.
+     *
+     * When the root is the dev's own content (no chrome wrapper built), append
+     * would mutate their tree, so we wrap content + sentinels in a minimal
+     * safe-area Column instead. This only happens when a contributor actually
+     * produces something, so chrome-less, contributor-less screens are
+     * returned untouched — preserving existing behavior exactly.
+     */
+    private function applyChromeContributors(Element $root, ?\Native\Mobile\Edge\Layouts\NativeLayout $layout, bool $rootOwnsChildren): Element
+    {
+        $renderPartial = fn (\Illuminate\View\View $view): Element => $this->fromViewPartial($view);
+
+        $extras = ChromeContributorRegistry::collect($this, $layout, $renderPartial);
+        if (empty($extras)) {
+            return $root;
+        }
+
+        if (! $rootOwnsChildren) {
+            // Root is the dev's raw content — wrap it so the hoistable
+            // sentinels ride alongside without altering the content's layout.
+            $wrapper = \Native\Mobile\Edge\Elements\Column::make()->fill()->safeArea();
+            $root->flexGrow(1);
+            $wrapper->addChild($root);
+            $root = $wrapper;
+        }
+
+        foreach ($extras as $extra) {
+            $root->addChild($extra);
+        }
+
+        return $root;
     }
 
     /**
