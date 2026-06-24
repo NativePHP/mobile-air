@@ -147,6 +147,11 @@ struct NativeSideNavigation<Content: View>: View {
                 if uiState.hasSideNav() {
                     drawerContent
                         .frame(width: drawerWidth)
+                        // The drawer renders edge-to-edge; pad the top by the
+                        // safe-area inset so the header clears the status bar /
+                        // notch instead of being drawn underneath it. Placed
+                        // before .background so the drawer fill still covers it.
+                        .padding(.top, geometry.safeAreaInsets.top)
                         .background(Color(.systemBackground))
                         .offset(x: drawerXOffset)
                         .zIndex(2)

@@ -90,7 +90,10 @@ fun NativeSideDrawer(
         gesturesEnabled = hasData && gesturesEnabled,  // Controlled via Laravel
         drawerContent = {
             ModalDrawerSheet {
-                Column(modifier = Modifier.fillMaxHeight()) {
+                // The activity is edge-to-edge (setDecorFitsSystemWindows(false)),
+                // so without statusBarsPadding the drawer content — including the
+                // pinned header — is drawn underneath the status bar and clipped.
+                Column(modifier = Modifier.fillMaxHeight().statusBarsPadding()) {
                     // Render pinned headers at the top (non-scrollable)
                     pinnedHeaders.forEach { child ->
                         if (child.type == "side_nav_header") {
