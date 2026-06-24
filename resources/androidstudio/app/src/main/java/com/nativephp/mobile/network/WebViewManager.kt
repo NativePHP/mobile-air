@@ -290,6 +290,13 @@ class WebViewManager(
                 super.onPageStarted(view, url, favicon)
                 Log.d(TAG, "🚀 Page started loading: $url")
 
+                // A WebView page load means we are (back) in WebView mode. For a
+                // Route::native screen the response's native-tree publish re-sets
+                // isActive = true (NativeElementBridge), so this is safe; for a
+                // plain web route it stays false. Without this, exit-to-web leaves
+                // the frozen native tree on screen over the loaded WebView page.
+                com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
+
                 // Inject safe area insets IMMEDIATELY when page starts loading
                 // This ensures CSS variables are available before DOM parsing
                 (context as? MainActivity)?.injectSafeAreaInsetsToWebView()

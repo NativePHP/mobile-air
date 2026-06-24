@@ -286,6 +286,13 @@ struct WebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            // A committed WebView page load means we are back in WebView mode
+            // (a Route::native screen never commits — its request blocks in the
+            // PHP event loop and only returns a redirect/empty body on exit).
+            // Without this, exit-to-web leaves `isActive == true`, so the frozen
+            // native tree stays on screen over the loaded WebView page.
+            NativeUIBridge.shared.isActive = false
+
             // Inject safe area insets IMMEDIATELY when navigation commits (before rendering)
             // This is the iOS equivalent of Android's onPageStarted
             injectSafeAreaInsets(webView)
