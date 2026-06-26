@@ -71,6 +71,11 @@ class TabBar
     /**
      * Color for inactive tab icons + labels. Overrides the gray defaults
      * picked by `dark()`. Active tabs continue to use `activeColor()`.
+     *
+     * Android: fully honored. iOS: the unselected-item tint is only
+     * settable via `UITabBarAppearance`, which iOS 26 ignores for Liquid
+     * Glass tab bars — so on iOS 26 inactive tabs keep the system color
+     * and this is effectively a no-op.
      */
     public function textColor(string $color): self
     {

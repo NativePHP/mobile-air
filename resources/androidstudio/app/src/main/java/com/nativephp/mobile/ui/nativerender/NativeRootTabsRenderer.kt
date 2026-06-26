@@ -105,6 +105,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
 
     val activeColorArgb = node.props.getColor("active_color", 0)
+    val textColorArgb = node.props.getColor("text_color", 0)
     val bgArgb = node.props.getColor("background_color", 0)
 
     // Per-screen explicit signal from PHP (`$hidesTabBar` shortcut or
@@ -261,15 +262,28 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                 }
                             },
                             label = { Text(label) },
-                            colors = if (activeColorArgb != 0) {
-                                val active = argbToComposeColor(activeColorArgb)
-                                NavigationBarItemDefaults.colors(
-                                    selectedIconColor = active,
-                                    selectedTextColor = active,
-                                    indicatorColor = active.copy(alpha = 0.16f)
-                                )
-                            } else {
-                                NavigationBarItemDefaults.colors()
+                            // `active_color` (TabBar::activeColor) tints the selected
+                            // tab; `text_color` (TabBar::textColor) tints the inactive
+                            // icons + labels. Layer both onto the M3 defaults via copy()
+                            // so anything PHP doesn't supply keeps the themed default.
+                            colors = run {
+                                var c = NavigationBarItemDefaults.colors()
+                                if (activeColorArgb != 0) {
+                                    val active = argbToComposeColor(activeColorArgb)
+                                    c = c.copy(
+                                        selectedIconColor = active,
+                                        selectedTextColor = active,
+                                        selectedIndicatorColor = active.copy(alpha = 0.16f),
+                                    )
+                                }
+                                if (textColorArgb != 0) {
+                                    val inactive = argbToComposeColor(textColorArgb)
+                                    c = c.copy(
+                                        unselectedIconColor = inactive,
+                                        unselectedTextColor = inactive,
+                                    )
+                                }
+                                c
                             }
                         )
                     }
@@ -603,6 +617,7 @@ internal fun InlineNavSearchField(
     callbackId: Int,
     nodeId: Int,
     debounceMs: Int,
+    modifier: Modifier = Modifier,
 ) {
     var text by remember { mutableStateOf("") }
     var hasInteracted by remember { mutableStateOf(false) }
@@ -619,7 +634,7 @@ internal fun InlineNavSearchField(
         NativeUIBridge.sendTextChangeEvent(callbackId, nodeId, text)
     }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         MaterialIcon(
             name = "search",
             contentDescription = null,
