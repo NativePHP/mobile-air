@@ -6,10 +6,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.DropdownMenu
@@ -18,6 +21,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -31,8 +35,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import com.nativephp.mobile.ui.MaterialIcon
 
 /**
@@ -110,69 +117,126 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         }
     }
 
+    val hasTitle = title.isNotEmpty() || subtitle.isNotEmpty()
+    val barContainerColor = if (hasExplicitBg) argbToComposeColor(bgArgb)
+        else MaterialTheme.colorScheme.surface
+
+    // `display_mode` mirrors iOS's `navigationBarTitleDisplayMode`. `large`
+    // gets Material's `LargeTopAppBar`: a big left-aligned title that
+    // collapses to the small bar as the screen content scrolls under it —
+    // the Android analogue of iOS's large-title behavior. Other modes use
+    // the standard small bar.
+    val displayMode = activeNode.props.getString("display_mode", "")
+    val useLargeTitle = displayMode == "large" && hasTitle
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
+    // Shared bar slots so the small and large variants are identical apart
+    // from collapse behavior.
+    val titleContent: @Composable () -> Unit = {
+        if (hasSearch && !hasTitle) {
+            InlineNavSearchField(
+                placeholder = searchPlaceholder,
+                callbackId = searchOnQueryCb,
+                nodeId = activeNode.id,
+                debounceMs = searchDebounceMs,
+            )
+        } else if (subtitle.isNotEmpty()) {
+            Column {
+                // Large mode lets the bar drive the headline title style;
+                // inline mode shrinks it to titleMedium so title + subtitle
+                // fit the single-row bar.
+                if (useLargeTitle) {
+                    Text(title, fontWeight = FontWeight.SemiBold)
+                } else {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Text(subtitle, style = MaterialTheme.typography.labelSmall)
+            }
+        } else {
+            Text(title, fontWeight = FontWeight.SemiBold)
+        }
+    }
+    val navIconContent: @Composable () -> Unit = {
+        if (showBack) {
+            IconButton(onClick = {
+                // Manual back chevron always defers to system back —
+                // shrinks path if pushed, otherwise tells PHP.
+                if (path.isNotEmpty()) {
+                    path.removeLast()
+                    coordinator.onPathChange(path.toList())
+                } else {
+                    NativeElementBridge.sendSystemBackEvent()
+                }
+            }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+        }
+    }
+    val barColors = if (hasExplicitBg) {
+        val bg = argbToComposeColor(bgArgb)
+        val fg = if (hasExplicitText) argbToComposeColor(textArgb) else Color.White
+        TopAppBarDefaults.topAppBarColors(
+            containerColor = bg,
+            scrolledContainerColor = bg,
+            titleContentColor = fg,
+            navigationIconContentColor = fg,
+            actionIconContentColor = fg
+        )
+    } else {
+        TopAppBarDefaults.topAppBarColors()
+    }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    if (hasSearch) {
-                        InlineNavSearchField(
-                            placeholder = searchPlaceholder,
-                            callbackId = searchOnQueryCb,
-                            nodeId = activeNode.id,
-                            debounceMs = searchDebounceMs,
-                        )
-                    } else if (subtitle.isNotEmpty()) {
-                        Column {
-                            Text(
-                                title,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                subtitle,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    } else {
-                        Text(title, fontWeight = FontWeight.SemiBold)
-                    }
-                },
-                navigationIcon = {
-                    if (showBack) {
-                        IconButton(onClick = {
-                            // Manual back chevron always defers to system back —
-                            // shrinks path if pushed, otherwise tells PHP.
-                            if (path.isNotEmpty()) {
-                                path.removeLast()
-                                coordinator.onPathChange(path.toList())
-                            } else {
-                                NativeElementBridge.sendSystemBackEvent()
-                            }
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    }
-                },
-                actions = {
-                    actions.forEach { action ->
-                        TopBarActionView(action)
-                    }
-                },
-                colors = if (hasExplicitBg) {
-                    val bg = argbToComposeColor(bgArgb)
-                    val fg = if (hasExplicitText) argbToComposeColor(textArgb) else Color.White
-                    TopAppBarDefaults.topAppBarColors(
-                        containerColor = bg,
-                        titleContentColor = fg,
-                        navigationIconContentColor = fg,
-                        actionIconContentColor = fg
-                    )
-                } else {
-                    TopAppBarDefaults.topAppBarColors()
-                }
-            )
+          // iOS renders `searchBar()` BELOW the navigation title. Mirror that:
+          // keep the title in the bar and stack the search field underneath.
+          // Only when there's no title at all does search take the title slot
+          // (avoids an otherwise-empty bar row).
+          Column(modifier = Modifier.background(barContainerColor)) {
+            if (useLargeTitle) {
+                LargeTopAppBar(
+                    title = titleContent,
+                    navigationIcon = navIconContent,
+                    actions = { actions.forEach { action -> TopBarActionView(action) } },
+                    colors = barColors,
+                    scrollBehavior = scrollBehavior,
+                )
+            } else {
+                TopAppBar(
+                    title = titleContent,
+                    navigationIcon = navIconContent,
+                    actions = { actions.forEach { action -> TopBarActionView(action) } },
+                    colors = barColors,
+                )
+            }
+            // Search field stacked under a titled bar (iOS-parity). When
+            // there's no title, the field already lives in the bar's title
+            // slot above, so this is skipped.
+            if (hasSearch && hasTitle) {
+                // M3 "search bar below a title" pattern: a full-width filled
+                // pill (https://m3.material.io/components/search/guidelines).
+                InlineNavSearchField(
+                    placeholder = searchPlaceholder,
+                    callbackId = searchOnQueryCb,
+                    nodeId = activeNode.id,
+                    debounceMs = searchDebounceMs,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
+          }
         },
-        modifier = modifier.fillMaxSize()
+        modifier = modifier
+            .fillMaxSize()
+            .let { if (useLargeTitle) it.nestedScroll(scrollBehavior.nestedScrollConnection) else it }
     ) { padding ->
         // AnimatedContent slides between stack levels. Direction
         // discrimination (push vs pop) would need state we don't have
