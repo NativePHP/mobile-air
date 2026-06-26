@@ -7,8 +7,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -55,7 +58,18 @@ fun MaterialIcon(
             fontFamily = MaterialIconsFont,
             fontSize = 24.sp,
             color = tint,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            // Icons are rendered as an icon-font glyph; like regular text, Android's
+            // default font padding pushes the glyph off-center inside its box, so it
+            // doesn't vertically align with adjacent text (e.g. the X engagement row).
+            // Strip the padding/line-height so the glyph sits centered in the box.
+            style = TextStyle(
+                platformStyle = PlatformTextStyle(includeFontPadding = false),
+                lineHeightStyle = LineHeightStyle(
+                    alignment = LineHeightStyle.Alignment.Center,
+                    trim = LineHeightStyle.Trim.Both
+                )
+            )
         )
     }
 }
@@ -80,7 +94,18 @@ fun MaterialIcon(
             fontFamily = MaterialIconsFont,
             fontSize = size.value.sp,
             color = tint,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            // Icons are rendered as an icon-font glyph; like regular text, Android's
+            // default font padding pushes the glyph off-center inside its box, so it
+            // doesn't vertically align with adjacent text (e.g. the X engagement row).
+            // Strip the padding/line-height so the glyph sits centered in the box.
+            style = TextStyle(
+                platformStyle = PlatformTextStyle(includeFontPadding = false),
+                lineHeightStyle = LineHeightStyle(
+                    alignment = LineHeightStyle.Alignment.Center,
+                    trim = LineHeightStyle.Trim.Both
+                )
+            )
         )
     }
 }
@@ -375,6 +400,14 @@ private fun getManualMapping(iconName: String): String? {
         "sun.max", "sun.max.fill" -> "light_mode"
         "cloud", "cloud.fill" -> "cloud"
         "location.fill" -> "my_location"
+
+        // SF Symbols — Gestures, effects & misc (added for the demo launcher)
+        "hand.tap", "hand.tap.fill" -> "touch_app"
+        "sparkles" -> "auto_awesome"
+        "drop", "drop.fill" -> "water_drop"
+        "list.bullet.rectangle" -> "list_alt"
+        "square.on.square" -> "filter_none"
+        "arrow.left.arrow.right", "arrow.left.and.right" -> "swap_horiz"
 
         else -> null  // No mapping, will use normalized name
     }
