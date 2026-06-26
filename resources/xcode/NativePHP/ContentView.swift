@@ -28,6 +28,13 @@ struct ContentView: View {
                     .background(Color(.systemBackground))
                     .id(nativeUIBridge.screenKey)
                     .transition(nativeScreenTransition(for: nativeUIBridge.pendingTransition))
+                    // Each new screen sits above the previous one during the
+                    // `.id`-driven swap. Without this the two full-screen,
+                    // opaque trees share the same z-position, so an `.opacity`
+                    // (fade) cross-dissolve has no defined front/back and reads
+                    // as an instant cut. Slides are unaffected (incoming on top
+                    // is the correct push ordering).
+                    .zIndex(Double(nativeUIBridge.screenKey))
             } else {
                 NativeSideNavigation(onNavigate: handleNavigation) {
                     WebViewLayoutContainer(onTabSelected: handleNavigation)

@@ -437,14 +437,36 @@ final class NativeElementBridge {
                 // to drive SwiftUI. The next CADisplayLink tick is T3.
                 InteractionTracker.shared.onTreePostedToMain()
                 let bridge = NativeUIBridge.shared
+                let wasActive = bridge.isActive
                 bridge.isActive = true
-                if isNav && !nativeChromeContinuation { bridge.screenKey += 1 }
-                bridge.currentTree = finalTree
-                // First publish after a hot-reload dismisses the
-                // "Reloading…" pill. Set by `ContentView.reloadWebView`
-                // at the start of the reboot; cleared here when the
-                // fresh tree from the rebooted PHP runtime lands.
-                if bridge.isReloading { bridge.isReloading = false }
+
+                // Router-level swap between two native screens. The OUTGOING
+                // screen must commit the transition staged by
+                // `NativeUI.Transition.Set` (pendingTransition) for its
+                // REMOVAL before we bump screenKey. If the stage + the
+                // screenKey bump land in the same SwiftUI transaction, SwiftUI
+                // removes the old screen using its LAST committed transition —
+                // the PREVIOUS nav's — so e.g. a fade nav shows the old screen
+                // sliding out (its earlier slide-in) while the new one fades
+                // in, and a parallax nav's outgoing screen never drifts.
+                // Deferring the swap one runloop lets SwiftUI render the old
+                // screen once with the new pendingTransition, so its exit
+                // matches the entrance.
+                if isNav && !nativeChromeContinuation && wasActive {
+                    DispatchQueue.main.async {
+                        bridge.screenKey += 1
+                        bridge.currentTree = finalTree
+                        if bridge.isReloading { bridge.isReloading = false }
+                    }
+                } else {
+                    if isNav && !nativeChromeContinuation { bridge.screenKey += 1 }
+                    bridge.currentTree = finalTree
+                    // First publish after a hot-reload dismisses the
+                    // "Reloading…" pill. Set by `ContentView.reloadWebView`
+                    // at the start of the reboot; cleared here when the
+                    // fresh tree from the rebooted PHP runtime lands.
+                    if bridge.isReloading { bridge.isReloading = false }
+                }
             }
         }
     }

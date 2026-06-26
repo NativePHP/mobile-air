@@ -124,7 +124,16 @@ internal fun transitionFor(type: String?): ContentTransform {
             slideOutVertically(intSpec) { -it }
         "fade" -> fadeIn(spec) togetherWith fadeOut(spec)
         "fade_from_bottom" -> (slideInVertically(intSpec) { it } + fadeIn(spec)) togetherWith fadeOut(spec)
-        "scale_from_center" -> (scaleIn(spec) + fadeIn(spec)) togetherWith (scaleOut(spec) + fadeOut(spec))
+        // Scale the incoming screen in from 50% while it stays fully opaque
+        // (no fadeIn) so the whole zoom is visible; the outgoing screen fades
+        // out beneath it. Combining scaleIn with fadeIn previously hid the
+        // small-scale half of the zoom, making it read as a faint pop.
+        "scale_from_center" -> scaleIn(spec, initialScale = 0.1f) togetherWith fadeOut(spec)
+        // iOS-style parallax push: incoming slides fully from the right while
+        // the outgoing screen drifts only ~1/3 of its width to the left,
+        // staying visible beneath the incoming screen for a layered depth cue.
+        "parallax_push" -> (slideInHorizontally(intSpec) { it }) togetherWith
+            slideOutHorizontally(intSpec) { -it / 3 }
         "none" -> fadeIn(tween(0)) togetherWith fadeOut(tween(0))
         else -> fadeIn(spec) togetherWith fadeOut(spec)
     }

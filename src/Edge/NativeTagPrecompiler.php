@@ -38,6 +38,7 @@ class NativeTagPrecompiler
         'slideFromBottom' => 'slide_from_bottom',
         'fadeFromBottom' => 'fade_from_bottom',
         'scaleFromCenter' => 'scale_from_center',
+        'parallaxPush' => 'parallax_push',
         'none' => 'none',
     ];
 
