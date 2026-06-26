@@ -340,6 +340,9 @@ class NativeElementCollector
         if (isset($attrs['flexBasis'])) {
             $layout['flex_basis'] = (float) $attrs['flexBasis'];
         }
+        if (isset($attrs['flexWrap'])) {
+            $layout['flex_wrap'] = (int) $attrs['flexWrap'];
+        }
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
         }
@@ -807,6 +810,9 @@ class NativeElementCollector
         }
         if (isset($attrs['flexShrink'])) {
             $element->flexShrink((float) $attrs['flexShrink']);
+        }
+        if (isset($attrs['flexWrap'])) {
+            $element->flexWrap((int) $attrs['flexWrap']);
         }
         if (isset($attrs['aspectRatio'])) {
             $element->aspectRatio((float) $attrs['aspectRatio']);

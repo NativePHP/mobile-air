@@ -296,6 +296,7 @@ fun DefaultContainerNode(node: NativeUINode, modifier: Modifier = Modifier) {
             justify = node.layout?.justifyContent ?: JustifyContent.START,
             align = node.layout?.alignItems ?: AlignItems.STRETCH,
             gap = node.layout?.gap ?: 0f,
+            wrap = node.layout?.flexWrap ?: 0,
             childNodes = node.children,
             modifier = modifier
         ) {

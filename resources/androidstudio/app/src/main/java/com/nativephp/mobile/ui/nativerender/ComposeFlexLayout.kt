@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -68,6 +69,7 @@ fun FlexContainer(
     justify: Int = JustifyContent.START,
     align: Int = AlignItems.STRETCH,
     gap: Float = 0f,
+    wrap: Int = 0,
     childNodes: List<NativeUINode>,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
@@ -79,7 +81,7 @@ fun FlexContainer(
         Box(modifier = modifier) {
             // Render flow children in Column/Row
             if (direction == FlexDirection.ROW) {
-                FlexRow(justify, align, gap, childNodes, Modifier.matchParentSize(), content)
+                FlexRow(justify, align, gap, wrap, childNodes, Modifier.matchParentSize(), content)
             } else {
                 FlexColumn(justify, align, gap, childNodes, Modifier.matchParentSize(), content)
             }
@@ -117,7 +119,7 @@ fun FlexContainer(
         }
     } else {
         if (direction == FlexDirection.ROW) {
-            FlexRow(justify, align, gap, childNodes, modifier, content)
+            FlexRow(justify, align, gap, wrap, childNodes, modifier, content)
         } else {
             FlexColumn(justify, align, gap, childNodes, modifier, content)
         }
@@ -168,6 +170,7 @@ private fun FlexRow(
     justify: Int,
     align: Int,
     gap: Float,
+    wrap: Int,
     childNodes: List<NativeUINode>,
     modifier: Modifier,
     content: @Composable () -> Unit
@@ -185,6 +188,25 @@ private fun FlexRow(
         AlignItems.CENTER -> Alignment.CenterVertically
         AlignItems.END -> Alignment.Bottom
         else -> Alignment.Top
+    }
+
+    // flex-wrap: children flow onto additional lines instead of overflowing /
+    // clipping off the row's edge (no-wrap = 0). The line gap mirrors the
+    // item gap.
+    if (wrap != 0) {
+        FlowRow(
+            modifier = modifier,
+            horizontalArrangement = arrangement,
+            verticalArrangement = if (gap > 0f) Arrangement.spacedBy(gap.dp) else Arrangement.Top
+        ) {
+            childNodes.forEach { node ->
+                if ((node.layout?.display ?: 0) == Display.NONE) return@forEach
+                if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEach
+                val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
+                NodeView(node = node, overrideModifier = childMod)
+            }
+        }
+        return
     }
 
     Row(
@@ -277,11 +299,38 @@ private fun buildChildModifier(
             layout?.heightMode == SizeMode.FILL -> mod = mod.fillMaxHeight()
         }
     } else {
+        // Cross-axis width fill, mirroring iOS (which proposes the full cross
+        // width to column children but lets each decide). Applied only to column
+        // children and never when explicitly center/end-aligned:
+        //   - text  → fills so text-align (center/right) works, matching the iOS
+        //             text renderer's `.frame(maxWidth: .infinity)`.
+        //   - row   → fills ONLY when it must distribute its children
+        //             (justify space-between/around/evenly, e.g. a label/value
+        //             row). A default/justify-start row content-sizes — e.g. a
+        //             chip pill — so it doesn't swallow the whole width.
+        //   - other → content-sizes; columns/cards opt into full width with w-full.
+        val justify = layout?.justifyContent ?: JustifyContent.START
+        val stretchesWidth = (effectiveAlign != AlignItems.CENTER && effectiveAlign != AlignItems.END) &&
+            when (node.type) {
+                // Text fills the column width ONLY when it's center/right-aligned —
+                // that's when the alignment needs a wider box to take effect (e.g.
+                // a centered value pill). Left/default text is identical filled or
+                // content-sized, so we leave it content-sized; that way a content-
+                // sized column wrapping just a label (a chip/Subscribe button) keeps
+                // hugging its text instead of stretching to the full row width.
+                "text" -> node.props.getInt("text_align").let { it == 1 || it == 2 }
+                // A row fills only when it must distribute its children.
+                "row" -> justify == JustifyContent.SPACE_BETWEEN ||
+                    justify == JustifyContent.SPACE_AROUND ||
+                    justify == JustifyContent.SPACE_EVENLY
+                else -> false
+            }
         when {
             layout?.widthMode == SizeMode.FIXED && (layout.width) > 0f -> mod = mod.width(layout.width.dp)
             layout?.widthMode == SizeMode.PERCENT && (layout.width) > 0f ->
                 mod = mod.fillMaxWidth((layout.width / 100f).coerceIn(0f, 1f))
-            layout?.widthMode == SizeMode.FILL || effectiveAlign == AlignItems.STRETCH -> mod = mod.fillMaxWidth()
+            layout?.widthMode == SizeMode.FILL || effectiveAlign == AlignItems.STRETCH || stretchesWidth ->
+                mod = mod.fillMaxWidth()
         }
     }
 
