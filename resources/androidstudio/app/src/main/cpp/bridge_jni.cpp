@@ -515,8 +515,11 @@ static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id
         return;
     }
 
-    /* Build event in stack buffer — same NPEV format */
-    uint8_t event_buf[512];
+    /* Build event in stack buffer — same NPEV format.
+     * Sized to match region->event_buffer[4096]; the old 512 truncated larger
+     * native event payloads (e.g. a gallery MediaSelected with several file
+     * paths), corrupting the JSON before PHP could decode it. */
+    uint8_t event_buf[4096];
     size_t pos = 0;
 
     auto write_u8  = [&](uint8_t  v) { if (pos + 1 <= sizeof(event_buf)) { event_buf[pos++] = v; } };

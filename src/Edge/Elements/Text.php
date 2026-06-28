@@ -32,6 +32,24 @@ class Text extends Element
         if (isset($attrs['fontWeight'])) {
             $this->fontWeight((int) $attrs['fontWeight']);
         }
+        if (isset($attrs['fontStyle'])) {
+            $this->fontStyle((int) $attrs['fontStyle']);
+        }
+        if (isset($attrs['fontFamily'])) {
+            $this->textProps['font_family'] = (int) $attrs['fontFamily'];
+        }
+        if (isset($attrs['underline'])) {
+            $this->textProps['underline'] = (int) $attrs['underline'];
+        }
+        if (isset($attrs['lineThrough'])) {
+            $this->textProps['line_through'] = (int) $attrs['lineThrough'];
+        }
+        if (isset($attrs['textTransform'])) {
+            $this->textProps['text_transform'] = (int) $attrs['textTransform'];
+        }
+        if (isset($attrs['letterSpacing'])) {
+            $this->textProps['letter_spacing'] = (float) $attrs['letterSpacing'];
+        }
         if (isset($attrs['color'])) {
             $this->color($attrs['color']);
         }
@@ -53,6 +71,21 @@ class Text extends Element
     public function fontWeight(int $weight): static
     {
         $this->textProps['font_weight'] = $weight;
+
+        return $this;
+    }
+
+    /** Font style: 1 = italic, 0 = normal. */
+    public function fontStyle(int $style): static
+    {
+        $this->textProps['font_style'] = $style;
+
+        return $this;
+    }
+
+    public function italic(): static
+    {
+        $this->textProps['font_style'] = 1;
 
         return $this;
     }

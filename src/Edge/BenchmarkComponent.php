@@ -357,15 +357,15 @@ class BenchmarkComponent extends NativeComponent
 
     public function runLoop(): void
     {
-        $this->callbacks = new CallbackRegistry;
-        $this->running = true;
-        $this->navigationIntent = null;
-        $this->hasError = false;
+        $this->nativeCallbacks = new CallbackRegistry;
+        $this->nativeRunning = true;
+        $this->nativeNavigationIntent = null;
+        $this->nativeHasError = false;
 
         // Set window background to match dark theme behind system bars
         nativephp_call('UI.SetBackground', json_encode(['color' => '#0F172A']));
 
-        while ($this->running) {
+        while ($this->nativeRunning) {
             switch ($this->phase) {
                 case 'menu':
                     $this->runMenuLoop();
@@ -385,9 +385,9 @@ class BenchmarkComponent extends NativeComponent
 
     protected function runMenuLoop(): void
     {
-        while ($this->running && $this->phase === 'menu') {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->render()->toArray($this->callbacks);
+        while ($this->nativeRunning && $this->phase === 'menu') {
+            $this->nativeCallbacks = new CallbackRegistry;
+            $tree = $this->render()->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
 
             $event = nativephp_element_wait_event(-1);
@@ -395,12 +395,12 @@ class BenchmarkComponent extends NativeComponent
                 continue;
             }
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             if (($event['type'] ?? -1) === 8) {
                 $this->back();
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             $this->dispatch($event);
@@ -415,9 +415,9 @@ class BenchmarkComponent extends NativeComponent
 
     protected function runResultsLoop(): void
     {
-        while ($this->running && $this->phase === 'results') {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->render()->toArray($this->callbacks);
+        while ($this->nativeRunning && $this->phase === 'results') {
+            $this->nativeCallbacks = new CallbackRegistry;
+            $tree = $this->render()->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
 
             $event = nativephp_element_wait_event(-1);
@@ -425,7 +425,7 @@ class BenchmarkComponent extends NativeComponent
                 continue;
             }
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             if (($event['type'] ?? -1) === 8) {
@@ -438,7 +438,7 @@ class BenchmarkComponent extends NativeComponent
 
     protected function runNextScenario(): void
     {
-        while (! empty($this->scenarioQueue) && $this->running) {
+        while (! empty($this->scenarioQueue) && $this->nativeRunning) {
             $scenario = array_shift($this->scenarioQueue);
             $this->currentScenario = self::SCENARIOS[$scenario] ?? $scenario;
             $this->scenarioSkipped = false;
@@ -576,20 +576,20 @@ class BenchmarkComponent extends NativeComponent
 
         nativephp_call('Perf.Enable', '{}');
 
-        while ($this->running && $this->interactionCount < self::TAP_ITERATIONS) {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->render()->toArray($this->callbacks);
+        while ($this->nativeRunning && $this->interactionCount < self::TAP_ITERATIONS) {
+            $this->nativeCallbacks = new CallbackRegistry;
+            $tree = $this->render()->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
 
             usleep(20_000); // Let Compose render the frame
 
-            $cbId = $this->callbacks->lookup('onTap');
+            $cbId = $this->nativeCallbacks->lookup('onTap');
             if ($cbId === null) break;
 
             $event = $this->simulatePress($cbId);
             if ($event === null) continue;
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             $this->dispatch($event);
@@ -661,20 +661,20 @@ class BenchmarkComponent extends NativeComponent
 
         nativephp_call('Perf.Enable', '{}');
 
-        while ($this->running && $this->interactionCount < self::LARGE_TREE_TAP_ITERATIONS) {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->render()->toArray($this->callbacks);
+        while ($this->nativeRunning && $this->interactionCount < self::LARGE_TREE_TAP_ITERATIONS) {
+            $this->nativeCallbacks = new CallbackRegistry;
+            $tree = $this->render()->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
 
             usleep(20_000);
 
-            $cbId = $this->callbacks->lookup('onTap');
+            $cbId = $this->nativeCallbacks->lookup('onTap');
             if ($cbId === null) break;
 
             $event = $this->simulatePress($cbId);
             if ($event === null) continue;
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             $this->dispatch($event);
@@ -731,14 +731,14 @@ class BenchmarkComponent extends NativeComponent
 
         nativephp_call('Perf.Enable', '{}');
 
-        while ($this->running && $this->interactionCount < self::TEXT_INPUT_ITERATIONS) {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->render()->toArray($this->callbacks);
+        while ($this->nativeRunning && $this->interactionCount < self::TEXT_INPUT_ITERATIONS) {
+            $this->nativeCallbacks = new CallbackRegistry;
+            $tree = $this->render()->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
 
             usleep(20_000);
 
-            $cbId = $this->callbacks->lookup('onTextChange');
+            $cbId = $this->nativeCallbacks->lookup('onTextChange');
             if ($cbId === null) break;
 
             // Simulate typing one character at a time
@@ -746,7 +746,7 @@ class BenchmarkComponent extends NativeComponent
             $event = $this->simulateTextChange($cbId, $nextText);
             if ($event === null) continue;
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             $this->dispatch($event);
@@ -808,7 +808,7 @@ class BenchmarkComponent extends NativeComponent
         // Rapidly re-render the 1000-item list with changing content
         // to force Compose to diff and re-render each frame
         for ($frame = 0; $frame < self::LIST_RERENDER_ITERATIONS; $frame++) {
-            $this->callbacks = new CallbackRegistry;
+            $this->nativeCallbacks = new CallbackRegistry;
 
             $root = Column::make()->fill()->safeArea();
             $root->addChild(
@@ -829,7 +829,7 @@ class BenchmarkComponent extends NativeComponent
             $scroll->addChild($content);
             $root->addChild($scroll);
 
-            $tree = $root->toArray($this->callbacks);
+            $tree = $root->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
             usleep(16_000);
         }
@@ -894,7 +894,7 @@ class BenchmarkComponent extends NativeComponent
         $renderTimes = [];
         for ($iter = 0; $iter < 5; $iter++) {
             $decoded = json_decode($jsonString, true);
-            $this->callbacks = new CallbackRegistry;
+            $this->nativeCallbacks = new CallbackRegistry;
 
             $t0 = microtime(true);
             $root = Column::make()->fill()->safeArea();
@@ -913,7 +913,7 @@ class BenchmarkComponent extends NativeComponent
             $scroll->addChild($content);
             $root->addChild($scroll);
 
-            $tree = $root->toArray($this->callbacks);
+            $tree = $root->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
             $renderTimes[] = (microtime(true) - $t0) * 1000;
         }
@@ -986,14 +986,14 @@ class BenchmarkComponent extends NativeComponent
         usleep(100_000); // Let Compose render the progress screen
 
         // Phase 1: Build + publish the auto-scrolling 10k list
-        $this->callbacks = new CallbackRegistry;
+        $this->nativeCallbacks = new CallbackRegistry;
 
         $buildStart = microtime(true);
         $element = $this->renderLargeListFpsScreen();
         $buildMs = (microtime(true) - $buildStart) * 1000;
 
         $toArrayStart = microtime(true);
-        $tree = $element->toArray($this->callbacks);
+        $tree = $element->toArray($this->nativeCallbacks);
         $toArrayMs = (microtime(true) - $toArrayStart) * 1000;
 
         // Start FPS capture before publishing so we catch the initial render
@@ -1008,7 +1008,7 @@ class BenchmarkComponent extends NativeComponent
         $scrollTimeout = 7.5;
         $startTime = microtime(true);
 
-        while ($this->running && (microtime(true) - $startTime) < $scrollTimeout) {
+        while ($this->nativeRunning && (microtime(true) - $startTime) < $scrollTimeout) {
             $remaining = $scrollTimeout - (microtime(true) - $startTime);
             $timeoutMs = (int) ($remaining * 1000);
             if ($timeoutMs <= 0) break;
@@ -1017,7 +1017,7 @@ class BenchmarkComponent extends NativeComponent
             if ($event === null) continue;
 
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             if (($event['type'] ?? -1) === 8) {
@@ -1052,13 +1052,13 @@ class BenchmarkComponent extends NativeComponent
 
         $timings = [];
         for ($i = 0; $i < self::RAPID_FIRE_ITERATIONS; $i++) {
-            $this->callbacks = new CallbackRegistry;
+            $this->nativeCallbacks = new CallbackRegistry;
 
             $t0 = microtime(true);
             $element = $this->generateRapidFireTree($i);
             $t1 = microtime(true);
 
-            $tree = $element->toArray($this->callbacks);
+            $tree = $element->toArray($this->nativeCallbacks);
             $t2 = microtime(true);
 
             nativephp_element_publish($tree);
@@ -1111,7 +1111,7 @@ class BenchmarkComponent extends NativeComponent
 
         $timings = [];
         for ($i = 0; $i < self::NAVIGATION_ITERATIONS; $i++) {
-            $this->callbacks = new CallbackRegistry;
+            $this->nativeCallbacks = new CallbackRegistry;
 
             $t0 = microtime(true);
 
@@ -1123,12 +1123,12 @@ class BenchmarkComponent extends NativeComponent
                 Text::make("Navigation benchmark iteration {$i}")->fontSize(14)->color('#6B7280'),
             )->fill()->center()->safeArea();
 
-            $tree = $element->toArray($this->callbacks);
+            $tree = $element->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
             $t1 = microtime(true);
 
             // Simulate pop: reset buffers, publish original tree (no transition)
-            $this->callbacks = new CallbackRegistry;
+            $this->nativeCallbacks = new CallbackRegistry;
             nativephp_element_reset();
 
             $element = Column::make(
@@ -1136,7 +1136,7 @@ class BenchmarkComponent extends NativeComponent
                 Text::make("Returning from iteration {$i}")->fontSize(14)->color('#6B7280'),
             )->fill()->center()->safeArea();
 
-            $tree = $element->toArray($this->callbacks);
+            $tree = $element->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
             $t2 = microtime(true);
 
@@ -1229,14 +1229,14 @@ class BenchmarkComponent extends NativeComponent
 
         nativephp_call('Perf.Enable', '{}');
 
-        while ($this->running && $this->interactionCount < self::TOGGLE_TREE_ITERATIONS) {
-            $this->callbacks = new CallbackRegistry;
-            $tree = $this->render()->toArray($this->callbacks);
+        while ($this->nativeRunning && $this->interactionCount < self::TOGGLE_TREE_ITERATIONS) {
+            $this->nativeCallbacks = new CallbackRegistry;
+            $tree = $this->render()->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
 
             usleep(20_000);
 
-            $cbId = $this->callbacks->lookup('onToggle');
+            $cbId = $this->nativeCallbacks->lookup('onToggle');
             if ($cbId === null) break;
 
             // Alternate toggle state each iteration
@@ -1244,7 +1244,7 @@ class BenchmarkComponent extends NativeComponent
             $event = $this->simulateToggle($cbId, $nextValue);
             if ($event === null) continue;
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
-                $this->running = false;
+                $this->nativeRunning = false;
                 break;
             }
             $this->dispatch($event);
@@ -1260,14 +1260,14 @@ class BenchmarkComponent extends NativeComponent
     protected function publishProgressScreen(string $label, string $detail): void
     {
         $this->phase = 'running';
-        $this->callbacks = new CallbackRegistry;
+        $this->nativeCallbacks = new CallbackRegistry;
         $tree = Column::make(
             Text::make('RUNNING')->fontSize(13)->fontWeight(7)->color('#38BDF8'),
             Spacer::make()->height(8),
             Text::make($label)->fontSize(24)->fontWeight(7)->color('#F1F5F9'),
             Spacer::make()->height(6),
             Text::make($detail)->fontSize(15)->color('#94A3B8'),
-        )->fill()->center()->safeArea()->bg('#0F172A')->toArray($this->callbacks);
+        )->fill()->center()->safeArea()->bg('#0F172A')->toArray($this->nativeCallbacks);
         nativephp_element_publish($tree);
     }
 
@@ -1424,13 +1424,13 @@ class BenchmarkComponent extends NativeComponent
         $timings = [];
 
         for ($i = 0; $i < self::ITERATIONS; $i++) {
-            $this->callbacks = new CallbackRegistry;
+            $this->nativeCallbacks = new CallbackRegistry;
 
             $t0 = microtime(true);
             $element = $this->generateTree($targetNodes, $i);
             $t1 = microtime(true);
 
-            $tree = $element->toArray($this->callbacks);
+            $tree = $element->toArray($this->nativeCallbacks);
             $t2 = microtime(true);
 
             nativephp_element_publish($tree);

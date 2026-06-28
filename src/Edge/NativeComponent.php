@@ -9,6 +9,7 @@ use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Support\NativeCallbacks;
 use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
@@ -48,28 +49,31 @@ abstract class NativeComponent
     /** Guards publishPlaceholder() so a lazy screen paints its placeholder at most once. */
     private bool $placeholderPublished = false;
 
-    protected CallbackRegistry $callbacks;
+    // Internal component state — prefixed `native*` so a user component's own
+    // public props (e.g. $running, $params, $layout) can never shadow and crash
+    // the render loop. Do not name a public prop with one of these.
+    protected CallbackRegistry $nativeCallbacks;
 
-    protected bool $hasError = false;
+    protected bool $nativeHasError = false;
 
-    protected bool $running = true;
+    protected bool $nativeRunning = true;
 
-    protected ?NavigationIntent $navigationIntent = null;
+    protected ?NavigationIntent $nativeNavigationIntent = null;
 
-    protected ?NativeRouter $router = null;
+    protected ?NativeRouter $nativeRouter = null;
 
-    protected array $params = [];
+    protected array $nativeParams = [];
 
-    protected array $navigationData = [];
+    protected array $nativeNavigationData = [];
 
     /** Layout class for this screen (set by router from route metadata). */
-    protected ?string $layout = null;
+    protected ?string $nativeLayout = null;
 
     /** Imperative navbar overrides — merged onto layout's NavBar at render time. */
-    protected array $pendingNavBarState = [];
+    protected array $nativePendingNavBarState = [];
 
     /** Imperative tabbar overrides — merged onto layout's TabBar at render time. */
-    protected array $pendingTabBarState = [];
+    protected array $nativePendingTabBarState = [];
 
     /**
      * Phase 2 — per-id content hashes from the previously-published frame.
@@ -156,7 +160,7 @@ abstract class NativeComponent
             // Throwaway array — never read across frames.
             $throwaway = [];
 
-            return $element->toArray($this->callbacks, $nextId, '', 0, $emitted, $throwaway);
+            return $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
         }
 
         // Explicit invalidation: when the C extension bumps the region's
@@ -182,7 +186,7 @@ abstract class NativeComponent
         }
 
         return $element->toArray(
-            $this->callbacks,
+            $this->nativeCallbacks,
             $nextId,
             '',
             0,
@@ -215,7 +219,7 @@ abstract class NativeComponent
         $viewData = array_merge($this->getPublicProperties(), $data);
 
         NativeElementCollector::reset();
-        NativeElementCollector::setCallbacks($this->callbacks);
+        NativeElementCollector::setCallbacks($this->nativeCallbacks);
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
@@ -245,7 +249,7 @@ abstract class NativeComponent
         $viewData = array_merge($this->getPublicProperties(), $data);
 
         NativeElementCollector::reset();
-        NativeElementCollector::setCallbacks($this->callbacks);
+        NativeElementCollector::setCallbacks($this->nativeCallbacks);
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
@@ -272,7 +276,7 @@ abstract class NativeComponent
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
         NativeElementCollector::reset();
-        NativeElementCollector::setCallbacks($this->callbacks);
+        NativeElementCollector::setCallbacks($this->nativeCallbacks);
 
         $this->renderBladeBoundToSelf($view->getName(), $viewData);
 
@@ -301,7 +305,7 @@ abstract class NativeComponent
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
         NativeElementCollector::reset();
-        NativeElementCollector::setCallbacks($this->callbacks);
+        NativeElementCollector::setCallbacks($this->nativeCallbacks);
 
         $this->renderBladeBoundToSelf($view->getName(), $viewData);
 
@@ -321,8 +325,8 @@ abstract class NativeComponent
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        $layout = ($this->layout !== null && class_exists($this->layout))
-            ? new ($this->layout)()
+        $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
+            ? new ($this->nativeLayout)()
             : null;
 
         // Base case: no layout (or no bars) → the screen content is the root,
@@ -344,8 +348,8 @@ abstract class NativeComponent
                 $navBar = $layout->navBar($this);
                 if ($navBar !== null) {
                     $navBar->mergeOptions($this->navigationOptions());
-                    if (! empty($this->pendingNavBarState)) {
-                        $navBar->mergeState($this->pendingNavBarState);
+                    if (! empty($this->nativePendingNavBarState)) {
+                        $navBar->mergeState($this->nativePendingNavBarState);
                     }
                 }
             }
@@ -354,7 +358,7 @@ abstract class NativeComponent
             if (! $hasInlineTabBar) {
                 $tabBar = $layout->tabBar($this);
                 if ($tabBar !== null) {
-                    $currentUri = $this->router?->currentUri();
+                    $currentUri = $this->nativeRouter?->currentUri();
                     if ($currentUri !== null) {
                         $tabBar->highlight($currentUri);
                     }
@@ -498,7 +502,7 @@ abstract class NativeComponent
             }
             // Active tab's screen URI — used by the iOS bridge's per-URI
             // diff to keep tab-switch animations smooth.
-            $attrs['currentUri'] = $this->router?->currentUri() ?? '';
+            $attrs['currentUri'] = $this->nativeRouter?->currentUri() ?? '';
 
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
@@ -605,7 +609,7 @@ abstract class NativeComponent
             // The per-URI tree cache on iOS keys off this so the
             // NavigationCoordinator can route push / pop / no-op
             // correctly across publishes.
-            $attrs['currentUri'] = $this->router?->currentUri() ?? '';
+            $attrs['currentUri'] = $this->nativeRouter?->currentUri() ?? '';
             $root->applyAttributes($attrs);
             foreach ($navBar->getActions() as $action) {
                 $root->addChild($action->toElement());
@@ -791,7 +795,7 @@ abstract class NativeComponent
      */
     public function setNavBar(array $options): void
     {
-        $this->pendingNavBarState = array_merge($this->pendingNavBarState, $options);
+        $this->nativePendingNavBarState = array_merge($this->nativePendingNavBarState, $options);
     }
 
     /**
@@ -799,7 +803,7 @@ abstract class NativeComponent
      */
     public function setTabBar(array $options): void
     {
-        $this->pendingTabBarState = array_merge($this->pendingTabBarState, $options);
+        $this->nativePendingTabBarState = array_merge($this->nativePendingTabBarState, $options);
     }
 
     /**
@@ -808,7 +812,7 @@ abstract class NativeComponent
      */
     public function setLayout(?string $layoutClass): void
     {
-        $this->layout = $layoutClass;
+        $this->nativeLayout = $layoutClass;
     }
 
     /**
@@ -867,7 +871,7 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $data);
 
-        NativeElementCollector::setCallbacks($this->callbacks);
+        NativeElementCollector::setCallbacks($this->nativeCallbacks);
         NativeElementCollector::setStreaming(true);
 
         nphp_frame_begin();
@@ -1129,8 +1133,8 @@ abstract class NativeComponent
         }
 
         $this->placeholderPublished = true;
-        $this->callbacks ??= new CallbackRegistry;
-        $this->callbacks->reset();
+        $this->nativeCallbacks ??= new CallbackRegistry;
+        $this->nativeCallbacks->reset();
 
         try {
             $result = $this->placeholder();
@@ -1176,6 +1180,11 @@ abstract class NativeComponent
         $eventName = $event['event'] ?? '';
         $payload = $event['payload'] ?? [];
 
+        // Fire any fluent callback registered for this event
+        // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
+        // run even when the component declares no listener for this event.
+        $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
+
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
             ?? null;
@@ -1215,6 +1224,86 @@ abstract class NativeComponent
         }
     }
 
+    /**
+     * Resolve and invoke a fluent callback (then()/catch()) correlated by the
+     * event's `id`. Fires once, then drops the registration. Runs in the active
+     * component's event loop, so the component re-renders afterward.
+     */
+    private function fireNativeCallback(string $eventName, array $payload): void
+    {
+        $id = $payload['id'] ?? null;
+
+        // The incoming name is the raw event FQCN (the #[On] map adds the
+        // native: prefix); normalise just in case it arrives prefixed.
+        $eventClass = str_starts_with($eventName, 'native:')
+            ? substr($eventName, 7)
+            : $eventName;
+
+        if (! class_exists($eventClass)) {
+            return;
+        }
+
+        // Exact correlation by id (camera). If that misses — either no id came
+        // back (some native paths drop it across a lifecycle bounce, e.g. the
+        // gallery picker) or it didn't match — fall back to the single in-flight
+        // callback for this event class.
+        $callback = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass) : null;
+
+        if ($callback === null) {
+            [$id, $callback] = NativeCallbacks::resolveByEvent($eventClass) ?? [null, null];
+        }
+
+        if ($callback === null) {
+            return;
+        }
+
+        if (is_string($callback) && class_exists($callback)) {
+            $callback = app($callback);
+        }
+
+        // Bind the closure to this live component so then()/catch() can use
+        // $this (e.g. $this->images[] = ...). Static closures can't be bound, so
+        // they keep running without $this.
+        if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
+            $callback = \Closure::bind($callback, $this, static::class);
+        }
+
+        try {
+            call_user_func($callback, $this->makeEventInstance($eventClass, $payload));
+        } finally {
+            // One outcome per capture — drop success/cancel/denied siblings too.
+            NativeCallbacks::forget($id, $eventClass);
+        }
+    }
+
+    /**
+     * Build an event object from a native payload, binding constructor
+     * parameters by name and tolerating extra/missing keys.
+     */
+    private function makeEventInstance(string $eventClass, array $payload): object
+    {
+        $constructor = (new \ReflectionClass($eventClass))->getConstructor();
+
+        if ($constructor === null) {
+            return new $eventClass;
+        }
+
+        $args = [];
+        foreach ($constructor->getParameters() as $param) {
+            $name = $param->getName();
+
+            if (array_key_exists($name, $payload)) {
+                $args[] = $payload[$name];
+            } elseif ($param->isDefaultValueAvailable()) {
+                $args[] = $param->getDefaultValue();
+            } elseif ($param->allowsNull()) {
+                $args[] = null;
+            }
+        }
+
+        return new $eventClass(...$args);
+    }
+
     public function mount(): void
     {
         //
@@ -1232,7 +1321,7 @@ abstract class NativeComponent
 
     public function stop(): void
     {
-        $this->running = false;
+        $this->nativeRunning = false;
     }
 
     /**
@@ -1294,7 +1383,7 @@ abstract class NativeComponent
     {
         static::registerDumpHandler();
 
-        $this->callbacks = new CallbackRegistry;
+        $this->nativeCallbacks = new CallbackRegistry;
         $this->registerNativeEventListeners();
 
         // Phase 2 — every (re-)entry is a fresh session from the native
@@ -1317,11 +1406,11 @@ abstract class NativeComponent
             $this->renderErrorScreen($e);
         }
 
-        while ($this->running) {
-            $this->callbacks->reset();
+        while ($this->nativeRunning) {
+            $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
-            if (! $this->hasError) {
+            if (! $this->nativeHasError) {
                 try {
                     if (! $this->renderStreaming()) {
                         $element = $this->renderToElement();
@@ -1353,13 +1442,13 @@ abstract class NativeComponent
                 // over `request()->path()` (the original HTTP entry-
                 // point URI, typically `/`). Otherwise hot reload always
                 // lands the user back on the root screen.
-                $uri = $this->router?->currentUri()
+                $uri = $this->nativeRouter?->currentUri()
                     ?? '/'.ltrim(request()->path(), '/');
                 // Serialize the full stack so back-button history
                 // survives the reboot. `Route::native`'s handler reads
                 // this on the way back in and preloads entries below
                 // the top via `NativeRouter::preloadStack`.
-                $stack = $this->router?->getStackEntries() ?? [];
+                $stack = $this->nativeRouter?->getStackEntries() ?? [];
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
@@ -1384,7 +1473,7 @@ abstract class NativeComponent
 
             // Don't dispatch UI events while showing the error/dump screen
             // (except overlay controls like font size buttons)
-            if (! $this->hasError) {
+            if (! $this->nativeHasError) {
                 try {
                     $this->dispatch($event);
                 } catch (NativeDumpException $e) {
@@ -1409,11 +1498,42 @@ abstract class NativeComponent
      */
     public function runLoop(): void
     {
+        // The native runloop holds a single request open for the entire
+        // lifetime of the screen — it blocks in `nativephp_element_wait_event()`
+        // between user interactions and re-renders on every event. Under the
+        // Jump dev server (`artisan serve`) the request inherits PHP's default
+        // `max_execution_time = 30`, which counts the request's accumulated
+        // run time. So a busy session (rapid taps, slider drags, navigation)
+        // burns through 30s and PHP fatals mid-loop — at the blocking bridge
+        // read in JumpBridge::readExact() — killing the request and freezing
+        // the app. On-device there is no Symfony request lifecycle, so this
+        // never bites there. Disable the limit: this loop is intentionally
+        // long-running, exactly like the on-device runloop.
+        @set_time_limit(0);
+
+        // Jump hybrid mode only. The immortal request above is necessary on the
+        // dev server but creates a hazard unique to Jump: when a WebView reload
+        // or a re-scan opens a new `GET /`, the previous runloop's request is
+        // abandoned by the client yet keeps running forever, publishing over the
+        // SHARED device bridge and ping-ponging WaitEvents with the new session.
+        // Claim this runloop as the current native session; the check at the top
+        // of the loop makes any older, superseded runloop bail out so exactly one
+        // ever drives the device.
+        //
+        // Gate on JUMP_BRIDGE_PORT (set only by `native:jump`). NOT on
+        // `function_exists('nativephp_call')` — in Jump mode the PHP fallback
+        // DEFINES that function, so it exists on both device and dev server and
+        // would gate this off everywhere.
+        $jumpSessionToken = null;
+        if (getenv('JUMP_BRIDGE_PORT') !== false) {
+            $jumpSessionToken = $this->claimJumpSession();
+        }
+
         static::registerDumpHandler();
 
-        $this->callbacks ??= new CallbackRegistry;
-        $this->running = true;
-        $this->navigationIntent = null;
+        $this->nativeCallbacks ??= new CallbackRegistry;
+        $this->nativeRunning = true;
+        $this->nativeNavigationIntent = null;
 
         // Phase 2 — every (re-)entry is a fresh session from the native
         // reader's perspective; discard any prior memo hashes. The
@@ -1427,17 +1547,31 @@ abstract class NativeComponent
             $this->registerNativeEventListeners();
         }
 
-        while ($this->running) {
-            $this->callbacks->reset();
+        while ($this->nativeRunning) {
+            // Superseded by a newer Jump native session — this runloop is an
+            // orphan (its WebView is gone). The device-side bridge wakes us from
+            // wait_event() via supersession; bail WITHOUT touching the bridge so
+            // our teardown (unmount → element_shutdown) can't wipe the live
+            // session's tree. mute() turns every subsequent bridge call into a
+            // no-op; the null navigation intent then unwinds the stack quietly.
+            if ($jumpSessionToken !== null && ! $this->isCurrentJumpSession($jumpSessionToken)) {
+                if (class_exists(\Native\Mobile\JumpBridge::class)) {
+                    \Native\Mobile\JumpBridge::instance()->mute();
+                }
+                $this->nativeRunning = false;
+                break;
+            }
+
+            $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
-            if (! $this->hasError) {
+            if (! $this->nativeHasError) {
                 try {
                     $t0 = microtime(true);
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
-                        $this->router?->flushDeferredTransition();
+                        $this->nativeRouter?->flushDeferredTransition();
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
                             'PERF [%s] streaming total=%.1fms',
@@ -1450,7 +1584,7 @@ abstract class NativeComponent
                         $tree = $this->memoizedToArray($element);
                         $t2 = microtime(true);
 
-                        $this->router?->flushDeferredTransition();
+                        $this->nativeRouter?->flushDeferredTransition();
 
                         nativephp_element_publish($tree);
 
@@ -1486,19 +1620,19 @@ abstract class NativeComponent
                 // over `request()->path()` (the original HTTP entry-
                 // point URI, typically `/`). Otherwise hot reload always
                 // lands the user back on the root screen.
-                $uri = $this->router?->currentUri()
+                $uri = $this->nativeRouter?->currentUri()
                     ?? '/'.ltrim(request()->path(), '/');
                 // Serialize the full stack so back-button history
                 // survives the reboot. `Route::native`'s handler reads
                 // this on the way back in and preloads entries below
                 // the top via `NativeRouter::preloadStack`.
-                $stack = $this->router?->getStackEntries() ?? [];
+                $stack = $this->nativeRouter?->getStackEntries() ?? [];
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
                 );
                 NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri (stack depth=" . count($stack) . ")");
-                $this->navigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
+                $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
                 $this->stop();
 
                 continue;
@@ -1506,9 +1640,9 @@ abstract class NativeComponent
 
             // System back button (type 8)
             if (($event['type'] ?? -1) === 8) {
-                if ($this->hasError) {
+                if ($this->nativeHasError) {
                     // Dismiss error/dump screen and re-render the component
-                    $this->hasError = false;
+                    $this->nativeHasError = false;
                     $this->dumpException = null;
                     $this->errorException = null;
                     $this->overlayCallbackIds = [];
@@ -1533,7 +1667,7 @@ abstract class NativeComponent
 
             // Don't dispatch UI events while showing the error/dump screen
             // (except overlay controls like font size buttons)
-            if (! $this->hasError) {
+            if (! $this->nativeHasError) {
                 try {
                     $this->dispatch($event);
                 } catch (NativeDumpException $e) {
@@ -1550,14 +1684,47 @@ abstract class NativeComponent
 
     public function getNavigationIntent(): ?NavigationIntent
     {
-        return $this->navigationIntent;
+        return $this->nativeNavigationIntent;
+    }
+
+    /**
+     * Shared marker naming the most recently started Jump native session.
+     * One dev server drives one device, so a single file is sufficient.
+     */
+    protected function jumpSessionFile(): string
+    {
+        return sys_get_temp_dir().'/nativephp_jump_session';
+    }
+
+    /**
+     * Stamp this runloop as the current Jump native session and return its
+     * unique token. The last writer wins, so the newest `GET /` supersedes
+     * every older runloop (which then exits via isCurrentJumpSession()).
+     */
+    protected function claimJumpSession(): string
+    {
+        $token = getmypid().'-'.hrtime(true).'-'.mt_rand(1000, 9999);
+        @file_put_contents($this->jumpSessionFile(), $token, LOCK_EX);
+
+        return $token;
+    }
+
+    /**
+     * True while this runloop still owns the session marker. Fails open: a
+     * missing/unreadable marker never kills the loop.
+     */
+    protected function isCurrentJumpSession(string $token): bool
+    {
+        $current = @file_get_contents($this->jumpSessionFile());
+
+        return $current === false || $current === '' || $current === $token;
     }
 
     // ── Navigation methods ──────────────────────────
 
     public function navigate(string $uri, array $data = []): static
     {
-        $this->navigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
 
@@ -1566,7 +1733,7 @@ abstract class NativeComponent
 
     public function back(): static
     {
-        $this->navigationIntent = new NavigationIntent(NavigationIntent::BACK);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
         $this->publishFinalState();
         $this->stop();
 
@@ -1575,7 +1742,7 @@ abstract class NativeComponent
 
     public function replace(string $uri, array $data = []): static
     {
-        $this->navigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
 
@@ -1605,12 +1772,12 @@ abstract class NativeComponent
      */
     protected function publishFinalState(): void
     {
-        if ($this->hasError) {
+        if ($this->nativeHasError) {
             return;
         }
         try {
             $element = $this->renderToElement();
-            $tree = $element->toArray($this->callbacks);
+            $tree = $element->toArray($this->nativeCallbacks);
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             // Render failure on the way out — outgoing component is
@@ -1621,11 +1788,11 @@ abstract class NativeComponent
 
     public function transition(Transition $type): static
     {
-        if ($this->navigationIntent) {
-            $this->navigationIntent = new NavigationIntent(
-                $this->navigationIntent->type,
-                $this->navigationIntent->uri,
-                $this->navigationIntent->data,
+        if ($this->nativeNavigationIntent) {
+            $this->nativeNavigationIntent = new NavigationIntent(
+                $this->nativeNavigationIntent->type,
+                $this->nativeNavigationIntent->uri,
+                $this->nativeNavigationIntent->data,
                 $type,
             );
         }
@@ -1635,7 +1802,7 @@ abstract class NativeComponent
 
     public function exitToWeb(string $uri): void
     {
-        $this->navigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
         $this->stop();
     }
 
@@ -1655,29 +1822,29 @@ abstract class NativeComponent
 
     public function param(string $key, $default = null)
     {
-        return $this->params[$key] ?? $default;
+        return $this->nativeParams[$key] ?? $default;
     }
 
     public function data(string $key, $default = null)
     {
-        return $this->navigationData[$key] ?? $default;
+        return $this->nativeNavigationData[$key] ?? $default;
     }
 
     // ── Injection (called by NativeRouter) ──────────
 
     public function setRouter(NativeRouter $router): void
     {
-        $this->router = $router;
+        $this->nativeRouter = $router;
     }
 
     public function setParams(array $params): void
     {
-        $this->params = $params;
+        $this->nativeParams = $params;
     }
 
     public function setData(array $data): void
     {
-        $this->navigationData = $data;
+        $this->nativeNavigationData = $data;
     }
 
     // ── Element resolution helper ──────────────────
@@ -1697,9 +1864,9 @@ abstract class NativeComponent
 
     public function renderErrorScreen(\Throwable $e): void
     {
-        $this->hasError = true;
+        $this->nativeHasError = true;
         $this->errorException = $e;
-        $this->callbacks ??= new CallbackRegistry;
+        $this->nativeCallbacks ??= new CallbackRegistry;
 
         try {
             $screen = Elements\ScrollView::make()
@@ -1763,13 +1930,13 @@ abstract class NativeComponent
 
             $screen->addChild($content);
 
-            $errorTree = $screen->toArray($this->callbacks);
+            $errorTree = $screen->toArray($this->nativeCallbacks);
 
             $this->overlayCallbackIds = array_filter([
-                $this->callbacks->lookup('__overlaySetFontSize'),
+                $this->nativeCallbacks->lookup('__overlaySetFontSize'),
             ]);
 
-            $this->router?->flushDeferredTransition();
+            $this->nativeRouter?->flushDeferredTransition();
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog("Error screen render failed: " . $renderError->getMessage());
@@ -1780,9 +1947,9 @@ abstract class NativeComponent
 
     public function renderDumpScreen(NativeDumpException $e): void
     {
-        $this->hasError = true;
+        $this->nativeHasError = true;
         $this->dumpException = $e;
-        $this->callbacks ??= new CallbackRegistry;
+        $this->nativeCallbacks ??= new CallbackRegistry;
 
         try {
             $screen = Elements\ScrollView::make()
@@ -1827,13 +1994,13 @@ abstract class NativeComponent
 
             $screen->addChild($content);
 
-            $dumpTree = $screen->toArray($this->callbacks);
+            $dumpTree = $screen->toArray($this->nativeCallbacks);
 
             $this->overlayCallbackIds = array_filter([
-                $this->callbacks->lookup('__overlaySetFontSize'),
+                $this->nativeCallbacks->lookup('__overlaySetFontSize'),
             ]);
 
-            $this->router?->flushDeferredTransition();
+            $this->nativeRouter?->flushDeferredTransition();
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog("Dump screen render failed: " . $renderError->getMessage());
@@ -1894,7 +2061,7 @@ abstract class NativeComponent
 
     public function __navigate(string $key): void
     {
-        $config = $this->callbacks->resolveNavigation($key);
+        $config = $this->nativeCallbacks->resolveNavigation($key);
 
         if ($config === null) {
             return;
@@ -1937,7 +2104,7 @@ abstract class NativeComponent
 
     protected function dispatch(array $event): void
     {
-        $callback = $this->callbacks->resolve($event['callback_id'] ?? 0);
+        $callback = $this->nativeCallbacks->resolve($event['callback_id'] ?? 0);
 
         if ($callback === null) {
             return;
@@ -1966,7 +2133,7 @@ abstract class NativeComponent
         // `search_query` kind captures the `array` return into
         // `$pendingSearchResults`, which the next publish reads as
         // the new `nav_search_items` corpus.
-        $kind = $this->callbacks->kind($event['callback_id'] ?? 0);
+        $kind = $this->nativeCallbacks->kind($event['callback_id'] ?? 0);
 
         if ($kind === 'search_query') {
             $result = $this->$method(...[...$args, ...$eventArgs]);

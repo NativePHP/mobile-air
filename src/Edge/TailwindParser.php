@@ -382,7 +382,38 @@ class TailwindParser
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
+
+            // Font family. Exact matches MUST precede the `font-` weight branch.
+            // Sent as int: 0 = sans (default), 1 = serif, 2 = mono.
+            $class === 'font-sans' => ['fontFamily' => 0],
+            $class === 'font-serif' => ['fontFamily' => 1],
+            $class === 'font-mono' => ['fontFamily' => 2],
+
             str_starts_with($class, 'font-') => self::parseFontWeight(substr($class, 5)),
+
+            // Font style (italic). Sent as int: 1 = italic, 0 = normal.
+            $class === 'italic' => ['fontStyle' => 1],
+            $class === 'not-italic' => ['fontStyle' => 0],
+
+            // Text decoration. Independent flags so `underline line-through`
+            // combines. `no-underline` clears both lines.
+            $class === 'underline' => ['underline' => 1],
+            $class === 'line-through' => ['lineThrough' => 1],
+            $class === 'no-underline' => ['underline' => 0, 'lineThrough' => 0],
+
+            // Text transform. Sent as int: 0 none, 1 upper, 2 lower, 3 capitalize.
+            $class === 'uppercase' => ['textTransform' => 1],
+            $class === 'lowercase' => ['textTransform' => 2],
+            $class === 'capitalize' => ['textTransform' => 3],
+            $class === 'normal-case' => ['textTransform' => 0],
+
+            // Letter spacing (tracking), in em (relative to font size).
+            $class === 'tracking-tighter' => ['letterSpacing' => -0.05],
+            $class === 'tracking-tight' => ['letterSpacing' => -0.025],
+            $class === 'tracking-normal' => ['letterSpacing' => 0],
+            $class === 'tracking-wide' => ['letterSpacing' => 0.025],
+            $class === 'tracking-wider' => ['letterSpacing' => 0.05],
+            $class === 'tracking-widest' => ['letterSpacing' => 0.1],
 
             // Borders and visual
             str_starts_with($class, 'border-') => self::parseBorder(substr($class, 7)),

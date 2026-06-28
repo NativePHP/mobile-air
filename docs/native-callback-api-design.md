@@ -307,11 +307,175 @@ common iOS path zero-I/O and zero-cleanup.
 - `native_callbacks` store in `config/cache.php` + a migration for the table
 - Generalize to the other `Pending*` builders once proven on camera
 
+---
+
+## POC status (✅ VERIFIED ON-DEVICE — camera + gallery, Android)
+
+> **API UPDATE (current):** the generic `then()`/`catch()` shown throughout the earlier
+> narrative below were **replaced by event-named handler methods**. Each outcome event gets a
+> fluent method named `lcfirst(class_basename($eventClass))`. `then()`/`catch()` no longer exist;
+> a generic `on(EventClass::class, $cb)` remains as the escape hatch for custom events.
+>
+> ```php
+> Camera::getPhoto()
+>     ->photoTaken(fn ($e) => $this->images[] = ['path' => $e->path])
+>     ->photoCancelled(fn () => ...)
+>     ->permissionDenied(fn () => ...);
+>
+> Camera::pickImages('images', true)->mediaSelected(fn ($e) => ...);
+> Camera::recordVideo()->videoRecorded(fn ($e) => ...);
+>
+> // custom event set via ->event(MyEvent::class):
+> ->on(MyEvent::class, fn ($e) => ...);
+> ```
+>
+> Method names are derived at call time from the builder's `namedEvents()` (success event +
+> `failureEvents()`) via a `__call` dispatcher; `@method` PHPDoc on each builder keeps IDE
+> autocomplete. The handler closure receives the event object positionally
+> (`call_user_func($cb, $event)`), so — since the method name already identifies the event — the
+> parameter can simply be `$event`; a type-hint (`function (PhotoTaken $e)`) is optional and only
+> buys IDE autocomplete on the event's properties. Everything else below (registry,
+> `$this`-rebind, delivery paths, fallback) is unchanged — named methods are pure
+> registration-side sugar that funnel into the same `NativeCallbacks::register()`.
+
+Implemented in the `nativephp/mobile` package:
+
+- `src/Support/NativeCallbacks.php` — the two-tier registry (in-memory static + best-effort `SerializableClosure` → cache) + `resolveByEvent()` (event-class fallback, see Finding 5).
+- `src/Concerns/HandlesNativeCallbacks.php` — shared trait: `on($eventClass, $cb)` primitive/escape-hatch, `namedEvents()` (default = success + `failureEvents()`), and a `__call` that maps `lcfirst(class_basename())` → `on()`. Unknown method → `BadMethodCallException`; non-callback arg → `InvalidArgumentException`.
+- **All `Pending*` builders** use the trait with `@method` docblocks: PhotoCapture (`photoTaken`/`photoCancelled`/`permissionDenied`), MediaPicker (`mediaSelected`), VideoRecorder (`videoRecorded`/`videoCancelled`/`permissionDenied`), Microphone (`microphoneRecorded`/`microphoneCancelled`), Push (`tokenGenerated`), Biometric (`completed`), Geolocation (`locationReceived`/`permissionStatusReceived`/`permissionRequestResult` — action-specific), Alert (`buttonPressed`; `$eventClass` defaulted to `ButtonPressed`), Scanner (`codeScanned`/`scannerCancelled`; `getId()` now generates a uuid + sends `event`).
+- `src/Edge/NativeComponent.php` — **the delivery point that matters for Edge apps.** `dispatchNativeEvent()` calls `fireNativeCallback()` *before* the `#[On]` early-return, so a callback fires even when the component declares no listener. Also rebinds `$this` and rebuilds the event object (`makeEventInstance`).
+- `src/Http/Controllers/DispatchEventFromAppController.php` — same resolve+fire for WebView-mode delivery; peeks and refuses to consume `$this`-bound closures (only the Edge loop can fire those correctly).
+- `resources/androidstudio/app/src/main/cpp/bridge_jni.cpp` — native event buffer 512 → 4096 (Finding 4).
+
+Off-device harnesses pass against the real `Laravel\SerializableClosure`
+(9/9 + 5/5 + 4/4 + 8/8): process-kill survival, captured vars preserved, one-shot `pull`,
+`$this`-rebinding, `$this`-closures correctly memory-only, event-class fallback, and the
+named-method dispatcher (correct event mapping, `on()` escape hatch, unknown-method + bad-arg
+throws, callable-array/class-string accepted).
+
+### Finding 1 — delivery path is mode-specific (this was the "nothing happens" bug)
+
+NativePHP has **two** native-event delivery paths and the callback must hook both:
+
+- **Edge / `NativeComponent`** (native UI): events arrive as type-20 events pulled by the
+  component loop → `dispatchNativeEvent()` → `#[On]`. The HTTP route is **not** used. This is the
+  path kitchensink3 uses; hooking only the controller meant the callback never fired.
+- **WebView**: native injects a `fetch('/_native/api/events')` → `DispatchEventFromAppController`.
+
+Both now resolve callbacks by `(id, eventClass)`.
+
+### Finding 2 — `$this` access, and the static-vs-regular dichotomy
+
+Because `fireNativeCallback()` runs *on the live component instance*, it rebinds the callback to
+`$this` (`Closure::bind($cb, $this, static::class)`) before invoking. So `then()`/`catch()`
+closures can mutate the live component directly — `$this->images[] = …` — exactly like a `#[On]`
+handler, and the component re-renders right after.
+
+The catch: a closure that uses `$this` **cannot be made durable**. PHP forbids unbinding `$this`
+from a closure that uses it (`Closure::bind(..., null)` returns `null`), and the bound component
+isn't serializable. So `register()` detects an instance-bound closure (`getClosureThis() !== null`)
+and quietly skips the durable copy. This yields a clean, teachable rule:
+
+| You write | Gets `$this` (live component) | Survives an app kill |
+|---|---|---|
+| `function (...) { $this->… }` | ✅ | ❌ in-memory only |
+| `static function (...) { … }` | ❌ | ✅ durable side-effect |
+
+Use a **regular** closure to update component state (the common UI case); use a **`static`**
+closure for a detached side-effect (save/upload/notify) that must survive the OS reclaiming the
+app while the camera Activity is foregrounded.
+
+### Finding 3 — `serialize()` does not fail-loud on a bad capture
+
+A `static` closure capturing a resource serializes *without throwing* and stores a copy that's
+broken only on restore — same footgun as Laravel queued closures. The `try/catch` in `register()`
+is a backstop, not a guarantee: keep `static` callbacks to scalar / serializable captures.
+
+---
+
+## The gallery saga — three more findings (all pre-existing native limits, not callback-API bugs)
+
+Camera worked first try. Gallery (`Camera::pickImages(...)->then(...)`) did **not** — and chasing it
+surfaced three issues that also affect the old `#[On]` path. Worth remembering because the next
+person to wire a multi-result native call will hit them.
+
+### Finding 4 — the Edge native-event channel had a ~491-byte cap
+
+`bridge_jni.cpp`'s `element_write_event` built events in a **512-byte stack buffer** (`event_buf[512]`)
+while the shared-memory destination (`region->event_buffer`) was already **4096**. A gallery
+`MediaSelected` with several file paths overflowed 512 and was **truncated**, corrupting the JSON
+before PHP could decode it (`Element: Event data too large (604 bytes, max 491) — truncating`).
+Fix: size the stack buffer to match the region (`event_buf[4096]`). One line, no ABI change —
+the destination was always 4096. **This affected any large native event, `#[On]` included.**
+
+### Finding 5 — native can drop the correlation `id`; fix it in PHP, not native
+
+The gallery result came back to PHP with **no `id`** (`{"success":true,"files":[…],"count":N}`),
+so id-based correlation found nothing. The native cause is the camera plugin losing `pendingGalleryId`
+across the photopicker's activity lifecycle. The **wrong** fix is patching native lifecycle
+(`onSaveInstanceState` / `SharedPreferences`) — it's fragile and lives in the wrong layer.
+
+The **right** fix is in the PHP registry: a native operation (a photo, a gallery pick) is **modal
+and single-in-flight**, so when an event arrives with no usable `id`, fire *the one pending callback
+for that event class*. `NativeCallbacks::resolveByEvent($eventClass)` does this; `fireNativeCallback()`
+tries exact `id` first (camera), then falls back to it (gallery). The native `id` becomes an
+optimization, not a requirement — **zero native changes for correlation.**
+
+> This is the layer distinction from the cache discussion: the SQLite cache is the *PHP* durable
+> store for the closure; correlation is *also* a PHP concern. Kotlin can't reach Laravel's DB, so
+> don't push correlation down into native — keep it in the registry.
+
+### Finding 6 — the trait rollout, and a `@press` gotcha that looks unrelated
+
+The callback API is a shared trait (`HandlesNativeCallbacks`); adding it to a builder is one
+`use` line, a `failureEvents()` declaration (when there are distinct cancel/denied events), and an
+`@method` docblock. Gallery has **no distinct cancel event** — `MediaSelected` carries
+`cancelled`/`success` itself — so its only named method is `mediaSelected()`; inspect the event
+inside it for cancellation. (Camera/video *do* have distinct cancel events, hence
+`photoCancelled()` / `videoCancelled()`.)
+
+Gotcha that cost real time: **every `@press="method"` in the Blade view must have a matching method
+on the component.** A view referencing `@press="openVideo"` while `Home` had no `openVideo()`
+*looked* like the whole tile row failed to render — but `@press` resolves at **tap time**, not
+render, so a missing handler crashes on tap, it doesn't blank the row. (The actual blank-row was a
+stale hot-reload state, fixed by a full relaunch.) When pruning component methods, grep the view
+for `@press`/`@doubleTap`/`@change` first.
+
+### How to test in kitchensink3 (Android)
+
+`~/Herd/kitchensink3` symlinks `vendor/nativephp/mobile` → `mobile-air` and (via a composer `path`
+repo) `vendor/nativephp/mobile-camera` → `Plugins/nativephp/camera`. The device build **bundles**
+package PHP into the APK and **compiles** the native C++/Kotlin — so after a core change run `install`
++ a full rebuild (the `bridge_jni.cpp` truncation fix needs the native recompile; PHP is bundled).
+
+`Home` uses the callback API with **no `#[On]`**, via event-named methods:
+`openCamera()` → `getPhoto()->photoTaken()->photoCancelled()->permissionDenied()`,
+`openVideo()` → `recordVideo()->videoRecorded()`,
+`openGallery()` → `pickImages()->mediaSelected()` (handles cancel/empty inside it). Confirmed
+working: photos and a multi-image gallery pick land straight into `$this->images` and render.
+
+### Process rules learned the hard way
+
+- **Never edit `~/Herd/native`** — it's a build target. Native-runtime changes go in
+  `mobile-air/resources/androidstudio/...`; `install` copies them. Plugin changes go in
+  `~/Herd/Plugins/nativephp/<plugin>` (symlinked into the app via a composer `path` repo).
+- A `path` repo + `composer update` **symlinks** the package — edits are live, but Kotlin/C++ still
+  needs a rebuild to reach the APK.
+
 ### Key files
 
-- `vendor/nativephp/mobile/src/PendingPhotoCapture.php` — the builder
-- `vendor/nativephp/mobile/src/Http/Controllers/DispatchEventFromAppController.php` — dispatch chokepoint
-- `vendor/nativephp/mobile/src/Events/Camera/*.php` — `PhotoTaken` / `PhotoCancelled` / `PermissionDenied` (all carry `?string $id`)
-- `vendor/nativephp/mobile/src/Attributes/On.php` + `NativeComponent.php` — existing `#[On]` mechanism
-- `build-scripts/shared/nativephp/nativephp.c` — `nativephp_call` extension entry
+- `src/Support/NativeCallbacks.php` — registry (register / resolve / resolveByEvent / forget)
+- `src/Concerns/HandlesNativeCallbacks.php` — the named-method trait (`on()` + `namedEvents()` + `__call`)
+- All `src/Pending*.php` builders — use the trait; each has `@method` docblocks for its events
+- `src/Edge/NativeComponent.php` — `fireNativeCallback()` + `makeEventInstance()`; Edge delivery, `$this` rebind, event-class fallback
+- `src/Http/Controllers/DispatchEventFromAppController.php` — WebView delivery chokepoint (skips `$this`-bound closures)
+- `resources/androidstudio/app/src/main/cpp/bridge_jni.cpp` — native event buffer (512 → 4096)
+- `src/Events/Camera/*.php`, `src/Events/Gallery/MediaSelected.php` — result events (carry `?string $id`; `MediaSelected` encodes cancel in-band)
+- `src/Attributes/On.php` — existing `#[On]` mechanism (coexists, untouched)
 - `config/cache.php`, `config/database.php` — SQLite-backed defaults
+
+### Remaining cleanup (not blockers)
+
+- Strip the diagnostic logging if any remains in `fireNativeCallback()`.
+- Roll the trait onto the rest of the `Pending*` builders (alert, biometric, geolocation, microphone, push, scanner — scanner needs a small touch-up, see earlier note).
+- Decide whether to also give the camera plugin a best-effort native `id` persistence (optional now that PHP correlates by event class).

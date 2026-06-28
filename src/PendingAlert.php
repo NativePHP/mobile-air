@@ -4,12 +4,19 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Native\Mobile\Concerns\HandlesNativeCallbacks;
+use Native\Mobile\Events\Alert\ButtonPressed;
 
+/**
+ * @method $this buttonPressed(\Closure|array|string $callback)
+ */
 class PendingAlert
 {
+    use HandlesNativeCallbacks;
+
     protected ?string $id = null;
 
-    protected ?string $eventClass = null;
+    protected ?string $eventClass = ButtonPressed::class;
 
     protected bool $shown = false;
 

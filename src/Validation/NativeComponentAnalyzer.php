@@ -83,6 +83,9 @@ class NativeComponentAnalyzer
             return;
         }
 
+        // Check no property shadows NativeComponent's internal state
+        $this->validateReservedProperties($className, $relPath, $result);
+
         // Resolve the view name from render() method
         $viewName = $this->resolveViewName($className);
 
@@ -110,6 +113,47 @@ class NativeComponentAnalyzer
 
         // Validate callbacks reference real methods on the component
         $this->validateCallbacks($className, $viewContent, $viewRelPath, $result);
+    }
+
+    /**
+     * Flag any property a component declares that shadows NativeComponent's
+     * internal state. The reserved set is derived from NativeComponent's own
+     * non-private properties (private ones are class-scoped and can't collide),
+     * so it self-maintains: only names the base class actually reserves are
+     * flagged — names it has freed up (e.g. a renamed-away $running) are fine.
+     *
+     * Shadowing a reserved prop breaks the render loop: an incompatible type
+     * fatals at class load, a compatible one silently clobbers internal state.
+     */
+    protected function validateReservedProperties(string $className, string $relPath, ValidationResult $result): void
+    {
+        try {
+            $component = new \ReflectionClass($className);
+            $base = new \ReflectionClass(NativeComponent::class);
+        } catch (\ReflectionException $e) {
+            return;
+        }
+
+        $reserved = [];
+        foreach ($base->getProperties() as $prop) {
+            if ($prop->getDeclaringClass()->getName() === NativeComponent::class && ! $prop->isPrivate()) {
+                $reserved[$prop->getName()] = true;
+            }
+        }
+
+        foreach ($component->getProperties() as $prop) {
+            // Only properties declared on the component's own class.
+            if ($prop->getDeclaringClass()->getName() !== $className) {
+                continue;
+            }
+
+            if (isset($reserved[$prop->getName()])) {
+                $result->error(
+                    $relPath,
+                    "Property \${$prop->getName()} is reserved by NativeComponent (internal render-loop state) — rename it; shadowing it crashes the screen."
+                );
+            }
+        }
     }
 
     protected function validateCallbacks(string $className, string $viewContent, string $viewRelPath, ValidationResult $result): void
