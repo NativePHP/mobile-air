@@ -1118,6 +1118,12 @@ function patchViteClient(string $body): string
  */
 function proxyToLaravel($laravelPort)
 {
+    // The router process waits (via cURL below) for the proxied response. For a
+    // native UI route that wait lasts the whole screen lifetime, so the router
+    // script must not be killed by its own execution-time limit — otherwise it
+    // dies ~30s in, closes the proxy connection, and the native app freezes.
+    @set_time_limit(0);
+
     $method = $_SERVER['REQUEST_METHOD'];
     $uri = $_SERVER['REQUEST_URI'];
     $laravelUrl = "http://127.0.0.1:{$laravelPort}{$uri}";
@@ -1158,7 +1164,14 @@ function proxyToLaravel($laravelPort)
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    // No total-request timeout: a native UI route (`Route::native`) holds its
+    // `GET /` open for the ENTIRE lifetime of the screen — the PHP runloop
+    // blocks in `nativephp_element_wait_event()` between interactions and only
+    // returns when the screen exits. A finite timeout here (was 30s) cuts off
+    // that long-lived request mid-session, killing the native app exactly 30s
+    // in regardless of activity. The connect timeout still guards against the
+    // Laravel server being down; only the total duration is unbounded.
+    curl_setopt($ch, CURLOPT_TIMEOUT, 0);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
 
     if ($body !== null) {
