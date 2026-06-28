@@ -218,14 +218,27 @@ class NativeServiceProvider extends PackageServiceProvider
                 $restartPath = storage_path('framework/.hot_restart');
                 if (is_file($restartPath)) {
                     $raw = @file_get_contents($restartPath);
-                    @unlink($restartPath);
                     $data = $raw ? @json_decode($raw, true) : null;
+                    $age = time() - (int) ($data['ts'] ?? 0);
+
+                    // The hot-reload re-exec lands on the WebView's URL (almost
+                    // always "/"), but the user may have navigated deeper before
+                    // saving. Redirect to the saved top screen so ITS route
+                    // restores onto it — otherwise the entry screen ("/") gets
+                    // pushed on top of the restored stack and the user is dumped
+                    // back at root. Leave .hot_restart in place; the target
+                    // route is the sole consumer. Normalize for a stable compare
+                    // so we can't redirect-loop.
+                    $savedTop = is_array($data) ? ($data['uri'] ?? null) : null;
+                    $savedTopNorm = $savedTop !== null ? '/'.ltrim($savedTop, '/') : null;
+                    if ($age <= 30 && $savedTopNorm && $savedTopNorm !== $path) {
+                        return redirect($savedTopNorm);
+                    }
+
+                    @unlink($restartPath);
                     $stack = is_array($data['stack'] ?? null) ? $data['stack'] : [];
                     // Drop the entry matching the current request URI —
-                    // `start()` will push that as the top itself. Also
-                    // ignore stale data older than 30s (e.g. left over
-                    // from a previous crash).
-                    $age = time() - (int) ($data['ts'] ?? 0);
+                    // `start()` will push that as the top itself.
                     if ($age <= 30 && ! empty($stack)) {
                         $last = end($stack);
                         if (is_array($last) && ($last['uri'] ?? null) === $path) {

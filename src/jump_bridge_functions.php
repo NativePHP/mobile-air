@@ -74,10 +74,35 @@ if (! function_exists('nativephp_element_wait_event')) {
 
         $decoded = json_decode($result, true);
 
-        if (! is_array($decoded) || isset($decoded['status']) && $decoded['status'] === 'error') {
-            // Actual error (device disconnected, bridge failed)
+        if (! is_array($decoded) || (isset($decoded['status']) && $decoded['status'] === 'error')) {
+            // Bridge error — almost always the device WebSocket briefly
+            // dropped (app backgrounded, Wi-Fi blip, dev-server reconnect).
+            // The iOS / Android client auto-reconnects within ~2s, so this
+            // is a TRANSIENT idle tick, NOT a user "back" press.
+            //
+            // Emitting a system-back (type 8) here is what was ejecting the
+            // user clean out of the app: at the root stack a back press pops
+            // the only component and ends the session, so the device snaps
+            // back to Jump's home screen the instant the socket hiccups.
+            // Ride the outage out instead — keep the component alive and
+            // resume publishing once the socket is back. Only give up after
+            // a long *continuous* outage so a genuinely-gone device doesn't
+            // pin an artisan-serve worker forever.
             $consecutiveErrors++;
-            if ($consecutiveErrors >= 2) {
+            usleep(200_000); // 200ms — throttle the spin while disconnected
+            // The client auto-reconnects within ~2s (≈10 ticks), so ride
+            // out short outages. But the runloop is holding the GET /
+            // request open on the single-threaded `php -S` server the whole
+            // time it spins here — so if the device is genuinely gone we
+            // must give up fairly quickly and let the runloop return,
+            // freeing the worker. Otherwise a dropped session pins the
+            // server and every later scan / re-scan just hangs (which is
+            // exactly the "restart jump, same thing again" loop). ~8s is a
+            // comfortable margin over the 2s reconnect without locking the
+            // server up for long.
+            if ($consecutiveErrors >= 40) { // ~8s of unbroken failure
+                $consecutiveErrors = 0;
+
                 return ['type' => 8, 'callback_id' => 0, 'node_id' => 0];
             }
 
@@ -87,30 +112,59 @@ if (! function_exists('nativephp_element_wait_event')) {
         // Reset on success
         $consecutiveErrors = 0;
 
-        // In Jump mode, handle hot reload in-place: flush compiled views
-        // and return null so the component re-renders without stopping.
+        // Hot reload (EVENT_HOT_RELOAD = 15): PASS IT THROUGH to the runloop
+        // instead of handling in-place. A long-running runloop can't re-render
+        // a changed view in place — Laravel's CompilerEngine marks each view
+        // "compiled" for the life of the request (so deleting the compiled file
+        // doesn't force a recompile), and edited PHP classes are already loaded.
+        // So the runloop's HOT_RELOAD handler writes `.hot_restart` (preserving
+        // the nav stack) and exits via a RESTART intent; the device's relay
+        // re-executes on the resulting Element.Shutdown, and the FRESH request
+        // restores the stack silently — picking up Blade AND PHP changes with no
+        // slide. Debounced only to swallow a burst of duplicate saves.
         if (($decoded['type'] ?? -1) === 15) { // EVENT_HOT_RELOAD
             static $lastHotReload = 0;
             $now = time();
-
-            // Debounce: ignore rapid-fire hot reload events (within 2 seconds)
             if ($now - $lastHotReload < 2) {
-                return null;
+                return null; // swallow rapid-fire duplicate reloads
             }
             $lastHotReload = $now;
-
-            $compiledDir = storage_path('framework/views');
-            if (is_dir($compiledDir)) {
-                foreach (glob("{$compiledDir}/*.php") as $file) {
-                    @unlink($file);
-                }
-            }
-            clearstatcache(true);
-
-            return null; // loop continues → render() picks up fresh views
+            // fall through → return the event so the runloop restarts.
         }
 
         return $decoded;
+    }
+}
+
+if (! function_exists('nativephp_runtime_flags')) {
+    /**
+     * Runtime feature-flag bitmask exposed by the C extension on-device.
+     *
+     * In Jump hybrid mode there is no C extension, so we report 0:
+     * every flag clear. Most importantly NPHP_FLAG_SUBTREE_MEMO (0x02)
+     * stays off, so NativeComponent emits FULL frames every publish —
+     * wire bytes identical to pre-Phase-2. REUSE markers depend on a
+     * native reader maintaining a previousTree index keyed by node id;
+     * the Jump bridge serializes the whole tree as JSON over TCP, so we
+     * never want to emit REUSE here.
+     */
+    function nativephp_runtime_flags(): int
+    {
+        return 0;
+    }
+}
+
+if (! function_exists('nativephp_force_full_frame_epoch')) {
+    /**
+     * The region's force_full_frame epoch counter, bumped by the C
+     * extension whenever the native previousTree is swapped out.
+     *
+     * In Jump mode subtree-memo is disabled (see nativephp_runtime_flags),
+     * so this is never consulted on a hot path. Return a constant 0.
+     */
+    function nativephp_force_full_frame_epoch(): int
+    {
+        return 0;
     }
 }
 
@@ -124,10 +178,20 @@ if (! function_exists('nativephp_element_reset')) {
 if (! function_exists('nativephp_element_shutdown')) {
     function nativephp_element_shutdown(): void
     {
-        // In Jump mode, clean up .hot_restart so the next WebView request
-        // starts a fresh component instead of returning 204.
-        // On-device, Kotlin/Swift handles this cleanup — in Jump, we do it here.
-        @unlink(storage_path('framework/.hot_restart'));
+        // Clean up a STALE .hot_restart so a normal next scan starts fresh —
+        // but NOT a fresh one. A hot-reload exit writes .hot_restart and then
+        // runs straight through this shutdown; the file must survive so the
+        // re-executed request can restore the nav stack. Only a stale leftover
+        // (old `ts`, e.g. from a crash or a real session that ended) is removed.
+        $restartPath = storage_path('framework/.hot_restart');
+        if (is_file($restartPath)) {
+            $raw = @file_get_contents($restartPath);
+            $data = $raw ? @json_decode($raw, true) : null;
+            $age = time() - (int) ($data['ts'] ?? 0);
+            if ($age > 5) {
+                @unlink($restartPath);
+            }
+        }
 
         \Native\Mobile\JumpBridge::instance()->call('Element.Shutdown');
     }
