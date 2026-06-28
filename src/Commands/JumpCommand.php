@@ -32,6 +32,9 @@ class JumpCommand extends Command
 
     private bool $verbose = false;
 
+    /** Handle to the mDNS/Bonjour advertiser subprocess (LAN discovery). */
+    private $mdnsProcess = null;
+
     public function handle()
     {
         $this->verbose = $this->output->isVerbose();
@@ -119,6 +122,13 @@ class JumpCommand extends Command
         $this->components->twoColumnDetail('Bridge TCP', "tcp://127.0.0.1:{$bridgePort}");
         $this->components->twoColumnDetail('Vite HMR proxy', "ws://{$this->displayHost}:{$viteProxyPort}/");
 
+        // Register this instance (PID + ports) so a later `native:jump` start
+        // can distinguish this live server from a crashed one. Cleaned up on
+        // exit — register_shutdown_function fires on normal return, exit() from
+        // the signal handler, and fatals alike.
+        $this->writeInstanceRegistry($httpPort, $this->laravelPort, $wsPort, $bridgePort, $viteProxyPort);
+        register_shutdown_function([$this, 'removeInstanceRegistry']);
+
         // Start PHP built-in server (serves QR page + proxies to Laravel)
         $this->startPhpServer($host, $httpPort, $openQr, $bridgePort, $wsPort, $viteProxyPort);
 
@@ -149,6 +159,12 @@ class JumpCommand extends Command
             'JUMP_VITE_PROXY_PORT' => (string) $viteProxyPort,
             'JUMP_BASE_PATH' => base_path(),
             'APP_NAME' => config('app.name', 'Laravel'),
+            // The router proxies `GET /` to Laravel via a blocking curl, so it
+            // is held open for the entire native-screen lifetime too. Same
+            // single-worker starvation as the Laravel server — give the router
+            // its own worker pool so /jump/info, /jump/qr and asset proxying
+            // stay responsive while a native runloop request is in flight.
+            'PHP_CLI_SERVER_WORKERS' => (string) max(4, (int) config('nativephp.server.workers', 10)),
         ];
 
         // Merge with current environment
@@ -159,6 +175,9 @@ class JumpCommand extends Command
 
         $this->displayServerInfo($host, $httpPort, $this->laravelPort);
         $this->displayTerminalQrCode($this->displayHost, $httpPort);
+
+        // Advertise on the LAN so the app can discover this server without a QR.
+        $this->advertiseOnNetwork($httpPort);
 
         // Build the PHP server command
         $phpBinary = PHP_BINARY;
@@ -199,6 +218,9 @@ class JumpCommand extends Command
                 $this->newLine();
                 $this->components->info('Shutting down...');
                 $this->stopLaravelServer();
+                if (is_resource($this->mdnsProcess)) {
+                    proc_terminate($this->mdnsProcess);
+                }
                 if (is_resource($pipes[1])) {
                     fclose($pipes[1]);
                 }
@@ -344,17 +366,35 @@ class JumpCommand extends Command
             2 => ['pipe', 'w'],
         ];
 
+        // --no-reload is REQUIRED for artisan serve to honour
+        // PHP_CLI_SERVER_WORKERS (Laravel only spins up the multi-worker
+        // built-in server with that flag — otherwise it warns and falls back
+        // to a single worker, re-introducing the native-runloop starvation).
+        // Jump runs its own file watcher in websocket-server.php, so artisan
+        // serve's built-in .env reload is redundant here anyway.
         $cmd = sprintf(
-            '%s %s serve --port=%d --host=127.0.0.1 --no-interaction',
+            '%s %s serve --port=%d --host=127.0.0.1 --no-interaction --no-reload',
             escapeshellarg($phpBinary),
             escapeshellarg($artisan),
             $port
         );
 
         // Pass bridge ports so nativephp_call() (JumpBridge) in Laravel dials the right TCP port.
+        //
+        // PHP_CLI_SERVER_WORKERS is critical for native-UI apps: a native
+        // screen's `GET /` runs the element runloop, which BLOCKS the request
+        // for the whole lifetime of the screen. With the built-in server's
+        // default single worker, that one blocked request starves every other
+        // request (asset loads, /jump/info health checks, the next screen's
+        // GET /) — the device's 10s health check then times out and the
+        // session is torn down (the "scan → bounced home", "re-scan hangs"
+        // loop). WebView (v3) apps never hit this because their `GET /`
+        // returns immediately. Give the server a worker pool so the blocking
+        // runloop request only occupies one of them.
         $env = array_merge($_ENV, $_SERVER, [
             'JUMP_BRIDGE_PORT' => (string) $bridgePort,
             'JUMP_WS_PORT' => (string) $wsPort,
+            'PHP_CLI_SERVER_WORKERS' => (string) max(4, (int) config('nativephp.server.workers', 10)),
         ]);
         $env = array_filter($env, fn ($v) => is_string($v) || is_numeric($v));
 
@@ -564,6 +604,66 @@ class JumpCommand extends Command
         return $ips[0] ?? null;
     }
 
+    /**
+     * Publish an mDNS/Bonjour service (`_jump._tcp`) so the app can discover
+     * this dev server on the LAN and connect by tapping it — no QR scan. This
+     * is purely additive: it advertises the SAME host + port the QR encodes, so
+     * the app's connect flow is unchanged, and if no advertiser is available we
+     * just skip (the QR still works). Best-effort, killed on shutdown.
+     */
+    private function advertiseOnNetwork(int $httpPort): void
+    {
+        $ip = $this->getLocalIpAddress() ?: '127.0.0.1';
+        $label = basename(base_path());
+
+        // TXT records carry the reachable LAN IP, port and a friendly name, so
+        // the app never has to resolve a flaky `.local` hostname (and iOS can
+        // read host+port straight from the browse metadata, no resolve step).
+        $txtHost = 'host='.$ip;
+        $txtPort = 'port='.$httpPort;
+        $txtName = 'name='.$label;
+
+        $dnssd = trim((string) @shell_exec('command -v dns-sd 2>/dev/null'));
+        $avahi = $dnssd === '' ? trim((string) @shell_exec('command -v avahi-publish-service 2>/dev/null')) : '';
+
+        if ($dnssd !== '') {
+            // macOS / Bonjour: dns-sd -R <name> <type> <domain> <port> [k=v ...]
+            $cmd = sprintf(
+                '%s -R %s _jump._tcp local %d %s %s %s',
+                escapeshellarg($dnssd),
+                escapeshellarg($label),
+                $httpPort,
+                escapeshellarg($txtHost),
+                escapeshellarg($txtPort),
+                escapeshellarg($txtName),
+            );
+        } elseif ($avahi !== '') {
+            // Linux / Avahi: avahi-publish-service <name> <type> <port> [k=v ...]
+            $cmd = sprintf(
+                '%s %s _jump._tcp %d %s %s %s',
+                escapeshellarg($avahi),
+                escapeshellarg($label),
+                $httpPort,
+                escapeshellarg($txtHost),
+                escapeshellarg($txtPort),
+                escapeshellarg($txtName),
+            );
+        } else {
+            return; // no advertiser on this platform — QR-only, no harm
+        }
+
+        $spec = [
+            0 => ['pipe', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
+        $proc = @proc_open($cmd, $spec, $pipes);
+        if (is_resource($proc)) {
+            $this->mdnsProcess = $proc;
+            $this->components->info("Discoverable on this network as \"{$label}\" — open the app to connect without scanning.");
+        }
+    }
+
     private function openBrowser($host, $port)
     {
         $displayHost = $host === '0.0.0.0' ? 'localhost' : $host;
@@ -679,30 +779,155 @@ APPLESCRIPT;
                 }
             }
         } else {
-            // Unix: Kill WebSocket bridge servers and Workerman workers
-            exec("pkill -9 -f 'websocket-server.php' 2>/dev/null");
-            exec("pkill -9 -f 'WorkerMan:' 2>/dev/null");
-            usleep(300000);
+            // Unix: reap only DEAD jump instances (and orphaned advertisers),
+            // leaving any live sibling server running. This is what lets you
+            // serve multiple projects at once on different ports — each fresh
+            // start auto-finds free ports (findAvailablePort) and only cleans up
+            // the leftovers of runs whose master process is gone.
+            $this->cleanupDeadInstances();
+        }
+    }
 
-            // Unix: Kill PHP servers running the jump router
-            $output = shell_exec("pgrep -f 'router.php' 2>/dev/null");
+    /** Directory holding one JSON file per live native:jump instance. */
+    private function jumpRegistryDir(): string
+    {
+        $dir = sys_get_temp_dir().'/nativephp-jump-instances';
+        if (! is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
 
-            if ($output) {
-                $pids = array_filter(explode("\n", trim($output)));
-                $pids = array_filter($pids, function ($pid) use ($currentPid) {
-                    return $pid != $currentPid && ! empty($pid);
-                });
+        return $dir;
+    }
 
-                if (count($pids) > 0) {
-                    $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
-                        foreach ($pids as $pid) {
-                            exec("kill -9 {$pid} 2>/dev/null");
-                        }
-                        usleep(500000);
+    private function instanceRegistryFile(): string
+    {
+        return $this->jumpRegistryDir().'/'.getmypid().'.json';
+    }
 
-                        return true;
-                    });
+    /**
+     * Record this instance's PID + ports so a future `native:jump` start can
+     * tell a live sibling (leave it alone) from a crashed one (reap its ports).
+     */
+    private function writeInstanceRegistry(int $httpPort, int $laravelPort, int $wsPort, int $bridgePort, int $viteProxyPort): void
+    {
+        @file_put_contents($this->instanceRegistryFile(), json_encode([
+            'master_pid' => getmypid(),
+            'http_port' => $httpPort,
+            'laravel_port' => $laravelPort,
+            'ws_port' => $wsPort,
+            'bridge_port' => $bridgePort,
+            'vite_port' => $viteProxyPort,
+        ]));
+    }
+
+    public function removeInstanceRegistry(): void
+    {
+        @unlink($this->instanceRegistryFile());
+    }
+
+    private function isPidAlive(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return false;
+        }
+        if (function_exists('posix_kill')) {
+            return @posix_kill($pid, 0);
+        }
+
+        return trim((string) @shell_exec('ps -p '.$pid.' -o pid= 2>/dev/null')) !== '';
+    }
+
+    private function killListenersOnPort(int $port): void
+    {
+        if ($port <= 0) {
+            return;
+        }
+        $out = trim((string) @shell_exec('lsof -nP -iTCP:'.$port.' -sTCP:LISTEN -t 2>/dev/null'));
+        if ($out === '') {
+            return;
+        }
+        foreach (preg_split('/\s+/', $out) as $pid) {
+            if (is_numeric($pid) && (int) $pid !== getmypid()) {
+                @exec('kill -9 '.(int) $pid.' 2>/dev/null');
+            }
+        }
+    }
+
+    /**
+     * Reap leftovers from PREVIOUS jump runs without touching live siblings.
+     * A registry entry whose master PID is still alive is a concurrent server —
+     * leave it (and its ports) running. An entry whose master is gone is a
+     * crash: kill whatever still listens on its recorded ports and drop the
+     * file. Finally sweep orphaned mDNS advertisers (PPID 1) that a crashed run
+     * leaves advertising a phantom "server nearby".
+     */
+    private function cleanupDeadInstances(): void
+    {
+        $portKeys = ['http_port', 'laravel_port', 'ws_port', 'bridge_port', 'vite_port'];
+
+        $entries = [];
+        foreach (glob($this->jumpRegistryDir().'/*.json') ?: [] as $file) {
+            $data = json_decode((string) @file_get_contents($file), true);
+            if (is_array($data)) {
+                $entries[$file] = $data;
+            } else {
+                @unlink($file);
+            }
+        }
+
+        $isLive = function (array $data): bool {
+            $pid = (int) ($data['master_pid'] ?? 0);
+
+            return $pid > 0 && $pid !== getmypid() && $this->isPidAlive($pid);
+        };
+
+        // Ports a LIVE sibling owns — never reap these, even if a stale entry
+        // from a crashed run happens to name the same (since-reused) port.
+        $livePorts = [];
+        foreach ($entries as $data) {
+            if ($isLive($data)) {
+                foreach ($portKeys as $key) {
+                    if (! empty($data[$key])) {
+                        $livePorts[(int) $data[$key]] = true;
+                    }
                 }
+            }
+        }
+
+        foreach ($entries as $file => $data) {
+            if ($isLive($data)) {
+                continue; // live sibling server — leave it (and its ports) alone
+            }
+
+            foreach ($portKeys as $key) {
+                $port = (int) ($data[$key] ?? 0);
+                if ($port > 0 && ! isset($livePorts[$port])) {
+                    $this->killListenersOnPort($port);
+                }
+            }
+            @unlink($file);
+        }
+
+        $this->killOrphanedAdvertisers();
+    }
+
+    /**
+     * Kill `dns-sd -R` / avahi advertisers for `_jump._tcp` orphaned to launchd
+     * (PPID 1). A live server's advertiser is a direct child of its native:jump
+     * process, so PPID 1 reliably means "owner crashed" — never a running server.
+     */
+    private function killOrphanedAdvertisers(): void
+    {
+        $ps = (string) @shell_exec('ps -Ao pid,ppid,command 2>/dev/null');
+        foreach (preg_split('/\n/', $ps) as $line) {
+            if (! preg_match('/_jump\._tcp/', $line)) {
+                continue;
+            }
+            if (! preg_match('/dns-sd -R|avahi-publish-service/', $line)) {
+                continue;
+            }
+            if (preg_match('/^\s*(\d+)\s+(\d+)\s/', $line, $m) && (int) $m[2] === 1) {
+                @exec('kill -9 '.(int) $m[1].' 2>/dev/null');
             }
         }
     }
