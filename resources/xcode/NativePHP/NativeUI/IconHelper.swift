@@ -116,14 +116,16 @@ private func getManualMapping(_ iconName: String) -> String? {
     case "phone":
         return "phone.fill"
 
-    // Navigation arrows
-    case "back":
+    // Navigation arrows. The `chevron_*` aliases are mapped explicitly because
+    // tryAutoConvertIcon strips the underscore (→ `chevronright`), which is NOT
+    // a valid SF Symbol — the correct names are dotted (`chevron.right`).
+    case "back", "chevron_left":
         return "chevron.left"
-    case "forward":
+    case "forward", "chevron_right":
         return "chevron.right"
-    case "up":
+    case "up", "chevron_up":
         return "chevron.up"
-    case "down":
+    case "down", "chevron_down":
         return "chevron.down"
     case "expand_less":
         return "chevron.up"
