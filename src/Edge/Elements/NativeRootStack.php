@@ -35,27 +35,55 @@ class NativeRootStack extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        if (isset($attrs['title']))           $this->props['title']            = $attrs['title'];
-        if (isset($attrs['subtitle']))        $this->props['subtitle']         = $attrs['subtitle'];
-        if (isset($attrs['back']))            $this->props['back']             = (bool) $attrs['back'];
-        if (isset($attrs['backgroundColor'])) $this->props['background_color'] = $attrs['backgroundColor'];
-        if (isset($attrs['textColor']))       $this->props['text_color']       = $attrs['textColor'];
-        if (isset($attrs['elevation']))       $this->props['elevation']        = (int) $attrs['elevation'];
+        if (isset($attrs['title'])) {
+            $this->props['title'] = $attrs['title'];
+        }
+        if (isset($attrs['subtitle'])) {
+            $this->props['subtitle'] = $attrs['subtitle'];
+        }
+        if (isset($attrs['back'])) {
+            $this->props['back'] = (bool) $attrs['back'];
+        }
+        if (isset($attrs['backgroundColor'])) {
+            $this->props['background_color'] = $attrs['backgroundColor'];
+        }
+        if (isset($attrs['textColor'])) {
+            $this->props['text_color'] = $attrs['textColor'];
+        }
+        if (isset($attrs['elevation'])) {
+            $this->props['elevation'] = (int) $attrs['elevation'];
+        }
         // Title display mode for the iOS NavigationStack toolbar — `large`,
         // `inline` (default), or `automatic`.
-        if (isset($attrs['displayMode']))     $this->props['display_mode']     = $attrs['displayMode'];
+        if (isset($attrs['displayMode'])) {
+            $this->props['display_mode'] = $attrs['displayMode'];
+        }
+        // Top-bar scroll behavior — `collapse` | `pinned` | `enterAlways`.
+        // Android maps to a Material 3 TopAppBarScrollBehavior; iOS uses it
+        // to pin or tuck the `.searchable` field.
+        if (isset($attrs['scrollBehavior'])) {
+            $this->props['scroll_behavior'] = $attrs['scrollBehavior'];
+        }
         // The URI of the screen currently being published. The iOS
         // NavigationCoordinator keys per-URI tree caches off this so it
         // can render the correct content during NavigationStack push /
         // pop transitions.
-        if (isset($attrs['currentUri']))      $this->props['current_uri']      = $attrs['currentUri'];
+        if (isset($attrs['currentUri'])) {
+            $this->props['current_uri'] = $attrs['currentUri'];
+        }
 
         // Inline NavBar search field — Apple HIG / Expo pattern.
         // iOS attaches `.searchable` to the destination view; Android
         // shows an M3 search field in the top app bar slot.
-        if (isset($attrs['searchPlaceholder'])) $this->props['search_placeholder'] = $attrs['searchPlaceholder'];
-        if (isset($attrs['searchOnQuery']))     $this->searchOnQueryMethod        = $attrs['searchOnQuery'];
-        if (isset($attrs['searchDebounceMs']))  $this->props['search_debounce_ms'] = (int) $attrs['searchDebounceMs'];
+        if (isset($attrs['searchPlaceholder'])) {
+            $this->props['search_placeholder'] = $attrs['searchPlaceholder'];
+        }
+        if (isset($attrs['searchOnQuery'])) {
+            $this->searchOnQueryMethod = $attrs['searchOnQuery'];
+        }
+        if (isset($attrs['searchDebounceMs'])) {
+            $this->props['search_debounce_ms'] = (int) $attrs['searchDebounceMs'];
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

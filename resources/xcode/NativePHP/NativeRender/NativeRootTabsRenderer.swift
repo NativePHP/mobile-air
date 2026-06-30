@@ -745,16 +745,27 @@ struct SearchableNavBarModifier: ViewModifier {
     let callbackId: Int
     let nodeId: Int
     let debounceMs: Int
+    /// When true, pin the search field so it stays visible as content
+    /// scrolls (`.navigationBarDrawer(displayMode: .always)`) — the
+    /// counterpart to Android's `collapse`/`pinned` scroll behaviors,
+    /// where the large title collapses but search remains. When false
+    /// (default), use `.automatic` so the field tucks under the large
+    /// title until pulled down.
+    var alwaysVisible: Bool = false
 
     @State private var text: String = ""
     @State private var debounceTask: Task<Void, Never>? = nil
+
+    private var placement: SearchFieldPlacement {
+        alwaysVisible ? .navigationBarDrawer(displayMode: .always) : .automatic
+    }
 
     func body(content: Content) -> some View {
         if placeholder.isEmpty {
             content
         } else {
             content
-                .searchable(text: $text, prompt: placeholder)
+                .searchable(text: $text, placement: placement, prompt: placeholder)
                 .onChange(of: text) { _, newValue in
                     guard callbackId != 0 else { return }
                     debounceTask?.cancel()

@@ -33,6 +33,9 @@ class NavBarOptions
     /** Title display mode — `large` | `inline` | `automatic`. See NavBar::displayMode(). */
     public ?string $displayMode = null;
 
+    /** Top-bar scroll behavior — `collapse` | `pinned` | `enterAlways`. See NavBar::scrollBehavior(). */
+    public ?string $scrollBehavior = null;
+
     /** @var NavAction[] */
     public array $actions = [];
 
@@ -103,6 +106,21 @@ class NavBarOptions
         return $this;
     }
 
+    /**
+     * How the top bar responds to content scrolling. See
+     * [NavBar::scrollBehavior] for the full doc and platform mapping.
+     *
+     *   ->scrollBehavior('collapse')    // large title collapses, search pins
+     *   ->scrollBehavior('pinned')      // nothing collapses (default-feel)
+     *   ->scrollBehavior('enterAlways') // bar slides off on scroll-down
+     */
+    public function scrollBehavior(string $mode): self
+    {
+        $this->scrollBehavior = $mode;
+
+        return $this;
+    }
+
     public function action(NavAction $action): self
     {
         $this->actions[] = $action;
@@ -145,8 +163,8 @@ class NavBarOptions
     ): self {
         $this->searchBar = [
             'placeholder' => $placeholder,
-            'onQuery'     => $onQuery,
-            'debounceMs'  => $debounceMs,
+            'onQuery' => $onQuery,
+            'debounceMs' => $debounceMs,
         ];
 
         return $this;

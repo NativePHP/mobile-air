@@ -175,7 +175,12 @@ struct NativeRootStackRenderer: View {
                 placeholder: root.props.getString("search_placeholder", default: ""),
                 callbackId: Int(root.props.getCallbackId("search_on_query")),
                 nodeId: root.id,
-                debounceMs: root.props.getInt("search_debounce_ms", default: 300)
+                debounceMs: root.props.getInt("search_debounce_ms", default: 300),
+                // `collapse`/`pinned` keep the search field pinned while the
+                // large title collapses; `enterAlways`/unset let it tuck away.
+                alwaysVisible: ["collapse", "pinned"].contains(
+                    root.props.getString("scroll_behavior", default: "")
+                )
             ))
     }
 

@@ -128,7 +128,22 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // the standard small bar.
     val displayMode = activeNode.props.getString("display_mode", "")
     val useLargeTitle = displayMode == "large" && hasTitle
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
+    // `scroll_behavior` (NavBar::scrollBehavior()) selects the Material 3
+    // TopAppBarScrollBehavior. Empty preserves the legacy default: large
+    // titles collapse, everything else is pinned. The search field lives
+    // in the pinned topBar Column below the bar, so `collapse` yields the
+    // iOS pattern — big title scrolls away, search stays pinned.
+    val scrollMode = activeNode.props.getString("scroll_behavior", "")
+        .ifEmpty { if (useLargeTitle) "collapse" else "pinned" }
+    val scrollBehavior = when (scrollMode) {
+        "enterAlways" -> TopAppBarDefaults.enterAlwaysScrollBehavior()
+        "pinned"      -> TopAppBarDefaults.pinnedScrollBehavior()
+        else          -> TopAppBarDefaults.exitUntilCollapsedScrollBehavior() // "collapse"
+    }
+    // Only wire nested scroll when the bar actually reacts; a truly pinned
+    // bar should not consume the content's scroll offset.
+    val barReactsToScroll = scrollMode != "pinned"
 
     // Shared bar slots so the small and large variants are identical apart
     // from collapse behavior.
@@ -211,6 +226,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     navigationIcon = navIconContent,
                     actions = { actions.forEach { action -> TopBarActionView(action) } },
                     colors = barColors,
+                    scrollBehavior = scrollBehavior,
                 )
             }
             // Search field stacked under a titled bar (iOS-parity). When
@@ -234,9 +250,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             }
           }
         },
-        modifier = modifier
-            .fillMaxSize()
-            .let { if (useLargeTitle) it.nestedScroll(scrollBehavior.nestedScrollConnection) else it }
+        modifier = modifier.fillMaxSize()
     ) { padding ->
         // AnimatedContent slides between stack levels. Direction
         // discrimination (push vs pop) would need state we don't have
@@ -253,16 +267,30 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 .fillMaxSize()
                 .padding(padding)
         ) { uri ->
-            val levelNode = coordinator.rootNodeCache[uri]
-            val levelContent = levelNode?.children?.firstOrNull {
-                it.type != "top_bar_action" && !NativeRootHostRegistry.consumes(it.type)
-            }
-            if (levelContent != null) {
-                NodeView(node = levelContent)
-            } else if (uri == currentUri && screenContent != null) {
-                NodeView(node = screenContent)
+            // The TopAppBar's nested-scroll connection is attached HERE —
+            // directly wrapping the screen content — rather than on the
+            // Scaffold modifier. With the connection on the Scaffold, the
+            // AnimatedContent transition boundary sat between it and the
+            // scrolling list, so the list's scroll deltas never reached the
+            // bar and `collapse`/`enterAlways` never fired. Wrapping the
+            // content keeps the connection a direct ancestor of the list.
+            val scrollModifier = if (barReactsToScroll) {
+                Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
             } else {
-                Box(modifier = Modifier.fillMaxSize())
+                Modifier
+            }
+            Box(modifier = scrollModifier.fillMaxSize()) {
+                val levelNode = coordinator.rootNodeCache[uri]
+                val levelContent = levelNode?.children?.firstOrNull {
+                    it.type != "top_bar_action" && !NativeRootHostRegistry.consumes(it.type)
+                }
+                if (levelContent != null) {
+                    NodeView(node = levelContent)
+                } else if (uri == currentUri && screenContent != null) {
+                    NodeView(node = screenContent)
+                } else {
+                    Box(modifier = Modifier.fillMaxSize())
+                }
             }
         }
     }

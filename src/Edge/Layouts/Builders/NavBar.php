@@ -40,6 +40,17 @@ class NavBar
      */
     private ?string $displayMode = null;
 
+    /**
+     * How the top bar reacts to content scrolling. Valid: `collapse`
+     * (large title shrinks to the small bar as content scrolls under
+     * it, leaving the search field pinned), `pinned` (bar is fixed —
+     * nothing collapses), `enterAlways` (the whole bar slides off on
+     * scroll-down and returns on any scroll-up). Null falls back to the
+     * legacy default: `collapse` when `displayMode('large')`, else
+     * `pinned`.
+     */
+    private ?string $scrollBehavior = null;
+
     /** @var NavAction[] */
     private array $actions = [];
 
@@ -119,6 +130,30 @@ class NavBar
         return $this;
     }
 
+    /**
+     * Control how the bar responds to content scrolling.
+     *
+     *   ->scrollBehavior('collapse')    // large title collapses to the
+     *                                   // small bar; search field stays
+     *                                   // pinned beneath it (iOS large-
+     *                                   // title parity).
+     *   ->scrollBehavior('pinned')      // bar is fixed — nothing moves.
+     *   ->scrollBehavior('enterAlways') // bar slides off on scroll-down,
+     *                                   // returns on any scroll-up.
+     *
+     * Android: maps to Material 3 `exitUntilCollapsed` / `pinned` /
+     * `enterAlways` `TopAppBarScrollBehavior`s. iOS: drives whether the
+     * `.searchable` field stays pinned (`.navigationBarDrawer(.always)`)
+     * or tucks away (`.automatic`); the large title's own collapse is
+     * the system default for `displayMode('large')`.
+     */
+    public function scrollBehavior(string $mode): self
+    {
+        $this->scrollBehavior = $mode;
+
+        return $this;
+    }
+
     public function action(NavAction $action): self
     {
         $this->actions[] = $action;
@@ -137,8 +172,8 @@ class NavBar
     ): self {
         $this->searchBar = [
             'placeholder' => $placeholder,
-            'onQuery'     => $onQuery,
-            'debounceMs'  => $debounceMs,
+            'onQuery' => $onQuery,
+            'debounceMs' => $debounceMs,
         ];
 
         return $this;
@@ -153,14 +188,33 @@ class NavBar
         if ($opts === null) {
             return $this;
         }
-        if ($opts->title !== null)           $this->title = $opts->title;
-        if ($opts->subtitle !== null)        $this->subtitle = $opts->subtitle;
-        if ($opts->back !== null)            $this->back = $opts->back;
-        if ($opts->backgroundColor !== null) $this->backgroundColor = $opts->backgroundColor;
-        if ($opts->textColor !== null)       $this->textColor = $opts->textColor;
-        if ($opts->elevation !== null)       $this->elevation = $opts->elevation;
-        if ($opts->displayMode !== null)     $this->displayMode = $opts->displayMode;
-        if ($opts->searchBar !== null)       $this->searchBar = $opts->searchBar;
+        if ($opts->title !== null) {
+            $this->title = $opts->title;
+        }
+        if ($opts->subtitle !== null) {
+            $this->subtitle = $opts->subtitle;
+        }
+        if ($opts->back !== null) {
+            $this->back = $opts->back;
+        }
+        if ($opts->backgroundColor !== null) {
+            $this->backgroundColor = $opts->backgroundColor;
+        }
+        if ($opts->textColor !== null) {
+            $this->textColor = $opts->textColor;
+        }
+        if ($opts->elevation !== null) {
+            $this->elevation = $opts->elevation;
+        }
+        if ($opts->displayMode !== null) {
+            $this->displayMode = $opts->displayMode;
+        }
+        if ($opts->scrollBehavior !== null) {
+            $this->scrollBehavior = $opts->scrollBehavior;
+        }
+        if ($opts->searchBar !== null) {
+            $this->searchBar = $opts->searchBar;
+        }
         foreach ($opts->actions as $action) {
             $this->actions[] = $action;
         }
@@ -174,13 +228,30 @@ class NavBar
      */
     public function mergeState(array $state): self
     {
-        if (isset($state['title']))            $this->title = $state['title'];
-        if (isset($state['subtitle']))         $this->subtitle = $state['subtitle'];
-        if (isset($state['back']))             $this->back = (bool) $state['back'];
-        if (isset($state['backgroundColor']))  $this->backgroundColor = $state['backgroundColor'];
-        if (isset($state['textColor']))        $this->textColor = $state['textColor'];
-        if (isset($state['elevation']))        $this->elevation = (int) $state['elevation'];
-        if (isset($state['displayMode']))      $this->displayMode = $state['displayMode'];
+        if (isset($state['title'])) {
+            $this->title = $state['title'];
+        }
+        if (isset($state['subtitle'])) {
+            $this->subtitle = $state['subtitle'];
+        }
+        if (isset($state['back'])) {
+            $this->back = (bool) $state['back'];
+        }
+        if (isset($state['backgroundColor'])) {
+            $this->backgroundColor = $state['backgroundColor'];
+        }
+        if (isset($state['textColor'])) {
+            $this->textColor = $state['textColor'];
+        }
+        if (isset($state['elevation'])) {
+            $this->elevation = (int) $state['elevation'];
+        }
+        if (isset($state['displayMode'])) {
+            $this->displayMode = $state['displayMode'];
+        }
+        if (isset($state['scrollBehavior'])) {
+            $this->scrollBehavior = $state['scrollBehavior'];
+        }
 
         return $this;
     }
@@ -195,12 +266,27 @@ class NavBar
     public function toRootProps(): array
     {
         $attrs = ['back' => $this->back];
-        if ($this->title !== null)           $attrs['title']           = $this->title;
-        if ($this->subtitle !== null)        $attrs['subtitle']        = $this->subtitle;
-        if ($this->backgroundColor !== null) $attrs['backgroundColor'] = $this->backgroundColor;
-        if ($this->textColor !== null)       $attrs['textColor']       = $this->textColor;
-        if ($this->elevation !== null)       $attrs['elevation']       = $this->elevation;
-        if ($this->displayMode !== null)     $attrs['displayMode']     = $this->displayMode;
+        if ($this->title !== null) {
+            $attrs['title'] = $this->title;
+        }
+        if ($this->subtitle !== null) {
+            $attrs['subtitle'] = $this->subtitle;
+        }
+        if ($this->backgroundColor !== null) {
+            $attrs['backgroundColor'] = $this->backgroundColor;
+        }
+        if ($this->textColor !== null) {
+            $attrs['textColor'] = $this->textColor;
+        }
+        if ($this->elevation !== null) {
+            $attrs['elevation'] = $this->elevation;
+        }
+        if ($this->displayMode !== null) {
+            $attrs['displayMode'] = $this->displayMode;
+        }
+        if ($this->scrollBehavior !== null) {
+            $attrs['scrollBehavior'] = $this->scrollBehavior;
+        }
         if ($this->searchBar !== null) {
             $attrs['searchPlaceholder'] = $this->searchBar['placeholder'] ?? '';
             if (! empty($this->searchBar['onQuery'])) {
@@ -212,6 +298,7 @@ class NavBar
             }
             $attrs['searchDebounceMs'] = $this->searchBar['debounceMs'] ?? 300;
         }
+
         return $attrs;
     }
 
@@ -226,11 +313,21 @@ class NavBar
         $bar = TopBar::make();
 
         $attrs = ['showNavigationIcon' => $this->back];
-        if ($this->title !== null)           $attrs['title']           = $this->title;
-        if ($this->subtitle !== null)        $attrs['subtitle']        = $this->subtitle;
-        if ($this->backgroundColor !== null) $attrs['backgroundColor'] = $this->backgroundColor;
-        if ($this->textColor !== null)       $attrs['textColor']       = $this->textColor;
-        if ($this->elevation !== null)       $attrs['elevation']       = $this->elevation;
+        if ($this->title !== null) {
+            $attrs['title'] = $this->title;
+        }
+        if ($this->subtitle !== null) {
+            $attrs['subtitle'] = $this->subtitle;
+        }
+        if ($this->backgroundColor !== null) {
+            $attrs['backgroundColor'] = $this->backgroundColor;
+        }
+        if ($this->textColor !== null) {
+            $attrs['textColor'] = $this->textColor;
+        }
+        if ($this->elevation !== null) {
+            $attrs['elevation'] = $this->elevation;
+        }
 
         $bar->applyAttributes($attrs);
 
