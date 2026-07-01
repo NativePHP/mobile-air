@@ -4,6 +4,21 @@ use Native\Mobile\Edge\NativeTagPrecompiler;
 
 beforeEach(function () {
     $this->precompiler = new NativeTagPrecompiler;
+    // The precompiler only transforms while a native view is being compiled;
+    // enable it for these unit tests, which exercise that transformation.
+    NativeTagPrecompiler::setActive(true);
+});
+
+afterEach(function () {
+    NativeTagPrecompiler::setActive(false);
+});
+
+it('is a no-op unless native compilation is active', function () {
+    NativeTagPrecompiler::setActive(false);
+
+    $input = '<button :class="{ \'text-blue-500\': expanded }">Toggle</button>';
+
+    expect(($this->precompiler)($input))->toBe($input);
 });
 
 $collector = '\\Native\\Mobile\\Edge\\NativeElementCollector';
@@ -24,7 +39,7 @@ it('compiles container open and close tags', function () use ($collector) {
     );
 });
 
-it('compiles text elements with slot capture', function () use ($collector) {
+it('compiles text elements with slot capture', function () {
     $result = ($this->precompiler)('<native:text class="text-lg">Hello World</native:text>');
 
     expect($result)->toContain('ob_start();');
@@ -33,7 +48,7 @@ it('compiles text elements with slot capture', function () use ($collector) {
     expect($result)->toContain("\$__nativeSlotAttrs['text'] = \$__nativeSlot");
 });
 
-it('compiles button elements with label slot capture', function () use ($collector) {
+it('compiles button elements with label slot capture', function () {
     $result = ($this->precompiler)('<native:button _press="doIt">Click me</native:button>');
 
     expect($result)->toContain('ob_start();');
@@ -70,14 +85,14 @@ it('rewrites @change and @submit', function () {
     expect($result)->toContain("'_submit' => 'onTextSubmit'");
 });
 
-it('handles hyphenated component names like scroll-view', function () use ($collector) {
+it('handles hyphenated component names like scroll-view', function () {
     $result = ($this->precompiler)('<native:scroll-view fillWidth>content</native:scroll-view>');
 
     expect($result)->toContain("::open('scroll_view', ['fillWidth' => true])");
-    expect($result)->toContain("::close()");
+    expect($result)->toContain('::close()');
 });
 
-it('handles text-input hyphenated name', function () use ($collector) {
+it('handles text-input hyphenated name', function () {
     $result = ($this->precompiler)('<native:text-input placeholder="Search..." />');
 
     expect($result)->toContain("::leaf('text_input', ['placeholder' => 'Search...'])");
@@ -91,14 +106,14 @@ it('preserves Blade directives like @foreach', function () {
     expect($result)->toContain('@endforeach');
 });
 
-it('handles dynamic attributes with colon prefix', function () use ($collector) {
+it('handles dynamic attributes with colon prefix', function () {
     $result = ($this->precompiler)('<native:text :fontSize="$size" :color="$theme->color" />');
 
     expect($result)->toContain("'fontSize' => (\$size)");
     expect($result)->toContain("'color' => (\$theme->color)");
 });
 
-it('handles multiple native tags in one template', function () use ($collector) {
+it('handles multiple native tags in one template', function () {
     $input = '<native:column fill><native:text :fontSize="20">Hi</native:text><native:button label="OK" @press="ok" /></native:column>';
     $result = ($this->precompiler)($input);
 
@@ -106,7 +121,7 @@ it('handles multiple native tags in one template', function () use ($collector) 
     expect($result)->toContain("::leaf('button',");
     expect($result)->toContain("'label' => 'OK'");
     expect($result)->toContain("'_press' => 'ok'");
-    expect($result)->toContain("::close()");
+    expect($result)->toContain('::close()');
 });
 
 it('handles self-closing tags without attributes', function () use ($collector) {
@@ -115,7 +130,7 @@ it('handles self-closing tags without attributes', function () use ($collector) 
     expect($result)->toBe("<?php {$collector}::leaf('divider', []); ?>");
 });
 
-it('handles boolean attributes', function () use ($collector) {
+it('handles boolean attributes', function () {
     $result = ($this->precompiler)('<native:column fill center safeArea />');
 
     expect($result)->toContain("'fill' => true");

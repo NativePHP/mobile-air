@@ -2,14 +2,30 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Support\Facades\URL;
+use Illuminate\Support\Str;
+use Illuminate\View\Engines\CompilerEngine;
+use Illuminate\View\View;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
+use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\NativeRootStack;
+use Native\Mobile\Edge\Elements\NativeRootTabs;
+use Native\Mobile\Edge\Elements\TabAccessory;
+use Native\Mobile\Edge\Layouts\Builders\NavBar;
+use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
+use Native\Mobile\Edge\Layouts\Builders\TabBar;
+use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
+use Native\Mobile\Edge\Layouts\NativeLayout;
+use Native\Mobile\JumpBridge;
 use Native\Mobile\Support\NativeCallbacks;
+use Symfony\Component\VarDumper\Cloner\VarCloner;
+use Symfony\Component\VarDumper\Dumper\CliDumper;
 use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
@@ -109,7 +125,7 @@ abstract class NativeComponent
      *  next frame re-validates the whole tree. ~2s at 60fps publish rate. */
     private const NPHP_FORCE_FULL_FRAME_EVERY = 120;
 
-    public function render(): Element|\Illuminate\View\View
+    public function render(): Element|View
     {
         return $this->view(static::inferViewName());
     }
@@ -127,7 +143,7 @@ abstract class NativeComponent
     {
         $result = $this->render();
 
-        return $result instanceof \Illuminate\View\View
+        return $result instanceof View
             ? $this->fromView($result)
             : $result;
     }
@@ -201,7 +217,7 @@ abstract class NativeComponent
      */
     public static function inferViewName(): string
     {
-        return \Illuminate\Support\Str::kebab(class_basename(static::class));
+        return Str::kebab(class_basename(static::class));
     }
 
     /**
@@ -271,7 +287,7 @@ abstract class NativeComponent
      * `view()` helper). The runloop calls this when `render()` returns
      * a `View`; devs don't usually invoke it directly.
      */
-    protected function fromView(\Illuminate\View\View $view): Element
+    protected function fromView(View $view): Element
     {
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
@@ -300,7 +316,7 @@ abstract class NativeComponent
      * `wrapWithNativeChrome` calls this automatically when it spots a
      * `View` instance in a screen's search-items list.
      */
-    protected function fromViewPartial(\Illuminate\View\View $view): Element
+    protected function fromViewPartial(View $view): Element
     {
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
@@ -391,8 +407,8 @@ abstract class NativeComponent
      */
     private function buildChromeColumn(
         Element $content,
-        ?\Native\Mobile\Edge\Layouts\Builders\NavBar $navBar,
-        ?\Native\Mobile\Edge\Layouts\Builders\TabBar $tabBar,
+        ?NavBar $navBar,
+        ?TabBar $tabBar,
     ): Element {
         // Pick the right safe-area variant based on which bars own which
         // edges. When a TabBar exists at the bottom, it handles its own
@@ -401,7 +417,7 @@ abstract class NativeComponent
         // Same logic mirrored for the top edge when a NavBar exists.
         // When both bars exist, the wrapper applies neither edge — both
         // bars handle their own.
-        $wrapper = \Native\Mobile\Edge\Elements\Column::make()->fill();
+        $wrapper = Column::make()->fill();
         if ($navBar !== null && $tabBar === null) {
             $wrapper->safeAreaBottom();   // navBar owns top, wrapper owns bottom
         } elseif ($tabBar !== null && $navBar === null) {
@@ -446,9 +462,9 @@ abstract class NativeComponent
      * produces something, so chrome-less, contributor-less screens are
      * returned untouched — preserving existing behavior exactly.
      */
-    private function applyChromeContributors(Element $root, ?\Native\Mobile\Edge\Layouts\NativeLayout $layout, bool $rootOwnsChildren): Element
+    private function applyChromeContributors(Element $root, ?NativeLayout $layout, bool $rootOwnsChildren): Element
     {
-        $renderPartial = fn (\Illuminate\View\View $view): Element => $this->fromViewPartial($view);
+        $renderPartial = fn (View $view): Element => $this->fromViewPartial($view);
 
         $extras = ChromeContributorRegistry::collect($this, $layout, $renderPartial);
         if (empty($extras)) {
@@ -458,7 +474,7 @@ abstract class NativeComponent
         if (! $rootOwnsChildren) {
             // Root is the dev's raw content — wrap it so the hoistable
             // sentinels ride alongside without altering the content's layout.
-            $wrapper = \Native\Mobile\Edge\Elements\Column::make()->fill()->safeArea();
+            $wrapper = Column::make()->fill()->safeArea();
             $root->flexGrow(1);
             $wrapper->addChild($root);
             $root = $wrapper;
@@ -485,19 +501,19 @@ abstract class NativeComponent
      */
     protected function wrapWithNativeChrome(
         Element $content,
-        ?\Native\Mobile\Edge\Layouts\Builders\NavBar $navBar,
-        ?\Native\Mobile\Edge\Layouts\Builders\TabBar $tabBar,
-        \Native\Mobile\Edge\Layouts\NativeLayout $layout,
+        ?NavBar $navBar,
+        ?TabBar $tabBar,
+        NativeLayout $layout,
     ): Element {
         if ($tabBar !== null) {
-            $root = \Native\Mobile\Edge\Elements\NativeRootTabs::make();
+            $root = NativeRootTabs::make();
             $attrs = $tabBar->toRootProps();
 
             // Fold NavBar config in via nav-prefixed keys when both exist
             // (each tab hosts its own NavigationStack natively).
             if ($navBar !== null) {
                 foreach ($navBar->toRootProps() as $key => $value) {
-                    $attrs['nav' . ucfirst($key)] = $value;
+                    $attrs['nav'.ucfirst($key)] = $value;
                 }
             }
             // Active tab's screen URI — used by the iOS bridge's per-URI
@@ -513,9 +529,15 @@ abstract class NativeComponent
             }
             $tabOptions = $this->tabBarOptions();
             if ($tabOptions !== null) {
-                if ($tabOptions->highlight !== null)       $attrs['tabHighlight']     = $tabOptions->highlight;
-                if ($tabOptions->activeColor !== null)     $attrs['activeColor']      = $tabOptions->activeColor;
-                if ($tabOptions->backgroundColor !== null) $attrs['backgroundColor']  = $tabOptions->backgroundColor;
+                if ($tabOptions->highlight !== null) {
+                    $attrs['tabHighlight'] = $tabOptions->highlight;
+                }
+                if ($tabOptions->activeColor !== null) {
+                    $attrs['activeColor'] = $tabOptions->activeColor;
+                }
+                if ($tabOptions->backgroundColor !== null) {
+                    $attrs['backgroundColor'] = $tabOptions->backgroundColor;
+                }
             }
 
             // Two sources contribute to the search corpus on the
@@ -546,7 +568,7 @@ abstract class NativeComponent
             // further down.
             if (is_array($screenSearchItems)) {
                 $screenSearchItems = array_map(
-                    fn ($item) => $item instanceof \Illuminate\View\View
+                    fn ($item) => $item instanceof View
                         ? $this->fromViewPartial($item)
                         : $item,
                     $screenSearchItems
@@ -584,7 +606,7 @@ abstract class NativeComponent
             // alongside tabs and screen content.
             $accessory = $layout->tabBarAccessory($this);
             if ($accessory !== null) {
-                $wrapper = \Native\Mobile\Edge\Elements\TabAccessory::make();
+                $wrapper = TabAccessory::make();
                 $wrapper->addChild($accessory);
                 $root->addChild($wrapper);
             }
@@ -593,7 +615,7 @@ abstract class NativeComponent
             // renderer can pick it out and pin via `.safeAreaInset(.bottom)`.
             $bottomBar = $layout->bottomBar($this);
             if ($bottomBar !== null) {
-                $bottomWrapper = \Native\Mobile\Edge\Elements\BottomBar::make();
+                $bottomWrapper = BottomBar::make();
                 $bottomWrapper->addChild($bottomBar);
                 $root->addChild($bottomWrapper);
             }
@@ -604,7 +626,7 @@ abstract class NativeComponent
         }
 
         if ($navBar !== null) {
-            $root = \Native\Mobile\Edge\Elements\NativeRootStack::make();
+            $root = NativeRootStack::make();
             $attrs = $navBar->toRootProps();
             // The per-URI tree cache on iOS keys off this so the
             // NavigationCoordinator can route push / pop / no-op
@@ -619,7 +641,7 @@ abstract class NativeComponent
             // pin a chat input / search bar above the keyboard.
             $bottomBar = $layout->bottomBar($this);
             if ($bottomBar !== null) {
-                $bottomWrapper = \Native\Mobile\Edge\Elements\BottomBar::make();
+                $bottomWrapper = BottomBar::make();
                 $bottomWrapper->addChild($bottomBar);
                 $root->addChild($bottomWrapper);
             }
@@ -742,7 +764,7 @@ abstract class NativeComponent
      * Override to provide structured per-screen NavBar overrides that
      * merge onto the layout's NavBar.
      */
-    public function navigationOptions(): ?\Native\Mobile\Edge\Layouts\Builders\NavBarOptions
+    public function navigationOptions(): ?NavBarOptions
     {
         return null;
     }
@@ -768,7 +790,7 @@ abstract class NativeComponent
      *           ->highlight('chats');
      *   }
      */
-    public function tabBarOptions(): ?\Native\Mobile\Edge\Layouts\Builders\TabBarOptions
+    public function tabBarOptions(): ?TabBarOptions
     {
         return null;
     }
@@ -833,7 +855,7 @@ abstract class NativeComponent
         $view = view($name, $data);
         $engine = $view->getEngine();
 
-        if (! $engine instanceof \Illuminate\View\Engines\CompilerEngine) {
+        if (! $engine instanceof CompilerEngine) {
             // Non-blade engine — fall back to the standard render path.
             // $this won't be bound, but at least the view still runs.
             $view->render();
@@ -844,23 +866,34 @@ abstract class NativeComponent
         $compiler = $engine->getCompiler();
         $bladePath = $view->getPath();
 
-        if ($compiler->isExpired($bladePath)) {
-            $compiler->compile($bladePath);
+        // Enable native-tag precompilation only for the duration of this native
+        // render. Both the initial compile and any nested compiles triggered
+        // during execution (native partials, `<native:virtual-list>` items)
+        // must run under the flag; everything outside stays plain HTML. Restore
+        // the previous state so nested native renders unwind cleanly.
+        $wasActive = NativeTagPrecompiler::setActive(true);
+
+        try {
+            if ($compiler->isExpired($bladePath)) {
+                $compiler->compile($bladePath);
+            }
+            $compiledPath = $compiler->getCompiledPath($bladePath);
+
+            // Use the View's full data set — Factory injects `$__env` and other
+            // helpers compiled views depend on (`@include`, `@yield`, the loop
+            // stack, etc.). Skipping that produces "Undefined variable $__env".
+            $viewData = $view->gatherData();
+
+            // Closure::bind ties `$this` inside the include to the component
+            // instance and grants access to protected/private members via the
+            // class-scope second argument.
+            \Closure::bind(function () use ($compiledPath, $viewData) {
+                extract($viewData, EXTR_SKIP);
+                include $compiledPath;
+            }, $this, static::class)();
+        } finally {
+            NativeTagPrecompiler::setActive($wasActive);
         }
-        $compiledPath = $compiler->getCompiledPath($bladePath);
-
-        // Use the View's full data set — Factory injects `$__env` and other
-        // helpers compiled views depend on (`@include`, `@yield`, the loop
-        // stack, etc.). Skipping that produces "Undefined variable $__env".
-        $viewData = $view->gatherData();
-
-        // Closure::bind ties `$this` inside the include to the component
-        // instance and grants access to protected/private members via the
-        // class-scope second argument.
-        \Closure::bind(function () use ($compiledPath, $viewData) {
-            extract($viewData, EXTR_SKIP);
-            include $compiledPath;
-        }, $this, static::class)();
     }
 
     /**
@@ -1113,7 +1146,7 @@ abstract class NativeComponent
      * to provide a skeleton; the default is a centered activity indicator
      * wrapped in the screen's layout chrome.
      */
-    protected function placeholder(): Element|\Illuminate\View\View
+    protected function placeholder(): Element|View
     {
         return $this->wrapWithChrome(
             Column::make(ActivityIndicator::make())->fill()->center()
@@ -1138,7 +1171,7 @@ abstract class NativeComponent
 
         try {
             $result = $this->placeholder();
-            $element = $result instanceof \Illuminate\View\View
+            $element = $result instanceof View
                 ? $this->fromView($result)
                 : $result;
             nativephp_element_publish($this->memoizedToArray($element));
@@ -1363,15 +1396,15 @@ abstract class NativeComponent
             }
 
             // Plain dump() call — log to file without throwing
-            $cloner = new \Symfony\Component\VarDumper\Cloner\VarCloner;
-            $dumper = new \Symfony\Component\VarDumper\Dumper\CliDumper;
+            $cloner = new VarCloner;
+            $dumper = new CliDumper;
             $dumper->setColors(false);
 
             $data = $cloner->cloneVar($var);
             $formatted = $dumper->dump($data, true);
 
             $logPath = storage_path('logs/edge-nav.log');
-            @file_put_contents($logPath, "[dump] " . $formatted . "\n", FILE_APPEND);
+            @file_put_contents($logPath, '[dump] '.$formatted."\n", FILE_APPEND);
         });
     }
 
@@ -1402,7 +1435,7 @@ abstract class NativeComponent
         } catch (NativeDumpException $e) {
             $this->renderDumpScreen($e);
         } catch (\Throwable $e) {
-            NativeRouter::debugLog("mount() FAILED in " . static::class . ": " . $e->getMessage());
+            NativeRouter::debugLog('mount() FAILED in '.static::class.': '.$e->getMessage());
             $this->renderErrorScreen($e);
         }
 
@@ -1420,7 +1453,7 @@ abstract class NativeComponent
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage());
+                    NativeRouter::debugLog('render() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
             }
@@ -1431,6 +1464,7 @@ abstract class NativeComponent
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
                 $this->runDuePolls();
+
                 continue;
             }
 
@@ -1465,9 +1499,10 @@ abstract class NativeComponent
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog("dispatchNativeEvent() FAILED in " . static::class . ": " . $e->getMessage());
+                    NativeRouter::debugLog('dispatchNativeEvent() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
+
                 continue;
             }
 
@@ -1479,7 +1514,7 @@ abstract class NativeComponent
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog("dispatch() FAILED in " . static::class . ": " . $e->getMessage());
+                    NativeRouter::debugLog('dispatch() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
             } elseif (in_array($event['callback_id'] ?? 0, $this->overlayCallbackIds)) {
@@ -1555,8 +1590,8 @@ abstract class NativeComponent
             // session's tree. mute() turns every subsequent bridge call into a
             // no-op; the null navigation intent then unwinds the stack quietly.
             if ($jumpSessionToken !== null && ! $this->isCurrentJumpSession($jumpSessionToken)) {
-                if (class_exists(\Native\Mobile\JumpBridge::class)) {
-                    \Native\Mobile\JumpBridge::instance()->mute();
+                if (class_exists(JumpBridge::class)) {
+                    JumpBridge::instance()->mute();
                 }
                 $this->nativeRunning = false;
                 break;
@@ -1598,7 +1633,7 @@ abstract class NativeComponent
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog("render() FAILED in " . static::class . ": " . $e->getMessage() . "\n" . $e->getTraceAsString());
+                    NativeRouter::debugLog('render() FAILED in '.static::class.': '.$e->getMessage()."\n".$e->getTraceAsString());
                     $this->renderErrorScreen($e);
                 }
             }
@@ -1609,6 +1644,7 @@ abstract class NativeComponent
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
                 $this->runDuePolls();
+
                 continue;
             }
 
@@ -1631,7 +1667,7 @@ abstract class NativeComponent
                     storage_path('framework/.hot_restart'),
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
                 );
-                NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri (stack depth=" . count($stack) . ")");
+                NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri (stack depth=".count($stack).')');
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
                 $this->stop();
 
@@ -1646,9 +1682,11 @@ abstract class NativeComponent
                     $this->dumpException = null;
                     $this->errorException = null;
                     $this->overlayCallbackIds = [];
+
                     continue;
                 }
                 $this->onBackPressed();
+
                 continue;
             }
 
@@ -1659,9 +1697,10 @@ abstract class NativeComponent
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog("dispatchNativeEvent() FAILED in " . static::class . ": " . $e->getMessage());
+                    NativeRouter::debugLog('dispatchNativeEvent() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
+
                 continue;
             }
 
@@ -1673,7 +1712,7 @@ abstract class NativeComponent
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog("dispatch() FAILED in " . static::class . ": " . $e->getMessage());
+                    NativeRouter::debugLog('dispatch() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
             } elseif (in_array($event['callback_id'] ?? 0, $this->overlayCallbackIds)) {
@@ -1815,7 +1854,7 @@ abstract class NativeComponent
      */
     public function route(string $name, mixed $parameters = []): string
     {
-        return \Illuminate\Support\Facades\URL::route($name, $parameters, absolute: false);
+        return URL::route($name, $parameters, absolute: false);
     }
 
     // ── Parameter / data access ─────────────────────
@@ -1874,7 +1913,7 @@ abstract class NativeComponent
                 ->bg('#FEF2F2')
                 ->safeArea();
 
-            $content = Elements\Column::make()
+            $content = Column::make()
                 ->fillWidth()
                 ->padding(20, 20, 40, 20)
                 ->gap(10);
@@ -1884,7 +1923,7 @@ abstract class NativeComponent
                 $content->addChild($title);
             }
 
-            $file = str_replace(base_path() . '/', '', $e->getFile());
+            $file = str_replace(base_path().'/', '', $e->getFile());
             $location = $this->resolveElement('text', ['text' => "{$file}:{$e->getLine()}", 'fontSize' => 12, 'color' => '#9CA3AF']);
             if ($location) {
                 $content->addChild($location);
@@ -1916,11 +1955,11 @@ abstract class NativeComponent
 
             // Show a condensed stack trace
             $trace = $e->getTraceAsString();
-            $trace = str_replace(base_path() . '/', '', $trace);
+            $trace = str_replace(base_path().'/', '', $trace);
             $traceLines = explode("\n", $trace);
             $shortTrace = implode("\n", array_slice($traceLines, 0, 15));
             if (count($traceLines) > 15) {
-                $shortTrace .= "\n... (" . count($traceLines) . " frames total)";
+                $shortTrace .= "\n... (".count($traceLines).' frames total)';
             }
 
             $traceText = $this->resolveElement('text', ['text' => $shortTrace, 'fontSize' => $this->overlayFontSize, 'color' => '#6B7280']);
@@ -1939,7 +1978,7 @@ abstract class NativeComponent
             $this->nativeRouter?->flushDeferredTransition();
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
-            NativeRouter::debugLog("Error screen render failed: " . $renderError->getMessage());
+            NativeRouter::debugLog('Error screen render failed: '.$renderError->getMessage());
         }
     }
 
@@ -1957,7 +1996,7 @@ abstract class NativeComponent
                 ->bg('#0F172A')
                 ->safeArea();
 
-            $content = Elements\Column::make()
+            $content = Column::make()
                 ->fillWidth()
                 ->padding(20, 20, 40, 20)
                 ->gap(10);
@@ -1967,7 +2006,7 @@ abstract class NativeComponent
                 $content->addChild($title);
             }
 
-            $file = str_replace(base_path() . '/', '', $e->getSourceFile());
+            $file = str_replace(base_path().'/', '', $e->getSourceFile());
             $location = $this->resolveElement('text', ['text' => "{$file}:{$e->getSourceLine()}", 'fontSize' => 12, 'color' => '#64748B']);
             if ($location) {
                 $content->addChild($location);
@@ -2003,7 +2042,7 @@ abstract class NativeComponent
             $this->nativeRouter?->flushDeferredTransition();
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
-            NativeRouter::debugLog("Dump screen render failed: " . $renderError->getMessage());
+            NativeRouter::debugLog('Dump screen render failed: '.$renderError->getMessage());
         }
     }
 
@@ -2120,11 +2159,11 @@ abstract class NativeComponent
         $type = $event['type'] ?? -1;
 
         $eventArgs = match ($type) {
-            2, 4    => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
-            3, 10   => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
-            9       => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
-            11, 12  => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
-            13      => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
+            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
+            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
+            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
+            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
+            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
             default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
         };
 
@@ -2140,6 +2179,7 @@ abstract class NativeComponent
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
+
             return;
         }
 
@@ -2153,6 +2193,7 @@ abstract class NativeComponent
             $from = (int) ($parts[0] ?? 0);
             $to = (int) ($parts[1] ?? 0);
             $this->$method(...[...$args, $from, $to]);
+
             return;
         }
 

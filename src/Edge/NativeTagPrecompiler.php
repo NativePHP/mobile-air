@@ -45,6 +45,39 @@ class NativeTagPrecompiler
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
     /**
+     * Whether native-tag transformation is currently active.
+     *
+     * The precompiler is registered globally on the Blade compiler, so it is
+     * invoked while compiling *every* view — including plain web pages,
+     * Livewire components, Flux, and Laravel's own exception renderer. Bare
+     * short-form tags like `<button>` collide with real HTML, so transforming
+     * those views would rewrite legitimate markup (e.g. an Alpine
+     * `<button :class="{ ... }">` becomes invalid PHP and fatals).
+     *
+     * Native views are only ever compiled from `NativeComponent`'s render path,
+     * which flips this flag on for the duration of the compile. Everywhere else
+     * the precompiler is a no-op. See NativeComponent::renderBladeBoundToSelf().
+     */
+    private static bool $active = false;
+
+    public static function active(): bool
+    {
+        return self::$active;
+    }
+
+    /**
+     * Toggle native-tag transformation, returning the previous state so callers
+     * can restore it (the render path can re-enter for nested partials).
+     */
+    public static function setActive(bool $active): bool
+    {
+        $previous = self::$active;
+        self::$active = $active;
+
+        return $previous;
+    }
+
+    /**
      * Bare tag names (without the `native:` prefix) that should also be
      * recognized as native elements. Populated by the service provider
      * from `ElementRegistry::all()` (types converted snake_case →
@@ -79,6 +112,13 @@ class NativeTagPrecompiler
 
     public function __invoke(string $value): string
     {
+        // Only rewrite native tags when compiling a native view. For every
+        // other view (web pages, Livewire, Flux, the exception renderer) leave
+        // the source untouched so bare `<button>`/`<text>` etc. stay as HTML.
+        if (! self::$active) {
+            return $value;
+        }
+
         // Expand `native:model="propName"` (with optional Livewire-style
         // modifiers) into the equivalent `:value` + `_change` + `sync-mode`
         // attribute set. Supported shapes:
