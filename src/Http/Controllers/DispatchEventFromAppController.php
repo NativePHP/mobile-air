@@ -43,7 +43,17 @@ class DispatchEventFromAppController
     {
         $id = $payload['id'] ?? null;
 
-        if ($id === null) {
+        // Exact correlation by id first. If that misses — either no id came back
+        // (some native paths drop it across a lifecycle bounce, and some events
+        // never carry one) or it didn't match — fall back to the single
+        // in-flight callback for this event class, mirroring the Edge loop.
+        $peek = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass, consume: false) : null;
+
+        if ($peek === null) {
+            [$id, $peek] = NativeCallbacks::resolveByEvent($eventClass) ?? [null, null];
+        }
+
+        if ($peek === null) {
             return false;
         }
 
@@ -52,12 +62,6 @@ class DispatchEventFromAppController
         // app the same event also arrives here via the WebView fetch; if we
         // consumed it we'd run it against a dead instance (and race the Edge
         // path for the one-shot registration). Peek without consuming and bail.
-        $peek = NativeCallbacks::resolve($id, $eventClass, consume: false);
-
-        if ($peek === null) {
-            return false;
-        }
-
         if ($peek instanceof Closure && (new ReflectionFunction($peek))->getClosureThis() !== null) {
             return false;
         }

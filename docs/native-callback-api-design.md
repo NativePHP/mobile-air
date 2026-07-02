@@ -344,7 +344,7 @@ Implemented in the `nativephp/mobile` package:
 - `src/Concerns/HandlesNativeCallbacks.php` — shared trait: `on($eventClass, $cb)` primitive/escape-hatch, `namedEvents()` (default = success + `failureEvents()`), and a `__call` that maps `lcfirst(class_basename())` → `on()`. Unknown method → `BadMethodCallException`; non-callback arg → `InvalidArgumentException`.
 - **All `Pending*` builders** use the trait with `@method` docblocks: PhotoCapture (`photoTaken`/`photoCancelled`/`permissionDenied`), MediaPicker (`mediaSelected`), VideoRecorder (`videoRecorded`/`videoCancelled`/`permissionDenied`), Microphone (`microphoneRecorded`/`microphoneCancelled`), Push (`tokenGenerated`), Biometric (`completed`), Geolocation (`locationReceived`/`permissionStatusReceived`/`permissionRequestResult` — action-specific), Alert (`buttonPressed`; `$eventClass` defaulted to `ButtonPressed`), Scanner (`codeScanned`/`scannerCancelled`; `getId()` now generates a uuid + sends `event`).
 - `src/Edge/NativeComponent.php` — **the delivery point that matters for Edge apps.** `dispatchNativeEvent()` calls `fireNativeCallback()` *before* the `#[On]` early-return, so a callback fires even when the component declares no listener. Also rebinds `$this` and rebuilds the event object (`makeEventInstance`).
-- `src/Http/Controllers/DispatchEventFromAppController.php` — same resolve+fire for WebView-mode delivery; peeks and refuses to consume `$this`-bound closures (only the Edge loop can fire those correctly).
+- `src/Http/Controllers/DispatchEventFromAppController.php` — same resolve+fire for WebView-mode delivery; peeks and refuses to consume `$this`-bound closures (only the Edge loop can fire those correctly). Now also falls back to `resolveByEvent()` when the payload carries no usable `id`, mirroring the Edge loop (needed for id-less events like local-notifications' `PermissionGranted`, and the gallery id-drop case in WebView apps).
 - `resources/androidstudio/app/src/main/cpp/bridge_jni.cpp` — native event buffer 512 → 4096 (Finding 4).
 
 Off-device harnesses pass against the real `Laravel\SerializableClosure`
@@ -477,5 +477,12 @@ working: photos and a multi-image gallery pick land straight into `$this->images
 ### Remaining cleanup (not blockers)
 
 - Strip the diagnostic logging if any remains in `fireNativeCallback()`.
-- Roll the trait onto the rest of the `Pending*` builders (alert, biometric, geolocation, microphone, push, scanner — scanner needs a small touch-up, see earlier note).
+- ~~Roll the trait onto the rest of the `Pending*` builders~~ — done; all nine core builders use it.
 - Decide whether to also give the camera plugin a best-effort native `id` persistence (optional now that PHP correlates by event class).
+- On-device verification of the named methods beyond camera/gallery (biometric, geolocation, microphone, push, scanner, alert), and iOS generally.
+
+### Plugin rollout (2026-07-01)
+
+- Callback API documented in each affected plugin's README + boost guideline: camera, biometrics, geolocation, microphone, scanner, dialog, firebase (enroll → `tokenGenerated()`).
+- `nativephp/mobile-local-notifications`: `requestPermission()` now returns a `PendingPermissionRequest` (plugin-local builder using the core trait) with a `permissionGranted()` callback. Native sends `PermissionGranted` with no `id`, so delivery relies on the `resolveByEvent()` fallback — which the WebView controller now implements too (see above). Off-device harness: 13/13.
+- Streaming/uncorrelated events deliberately NOT given callbacks: continuous scanner sessions, firebase `PushNotificationReceived`, local-notifications `NotificationTapped` (no initiating call / repeating results — the one-shot registry doesn't fit).
