@@ -929,10 +929,22 @@ abstract class NativeComponent
             // Closure::bind ties `$this` inside the include to the component
             // instance and grants access to protected/private members via the
             // class-scope second argument.
-            \Closure::bind(function () use ($compiledPath, $viewData) {
-                extract($viewData, EXTR_SKIP);
-                include $compiledPath;
-            }, $this, static::class)();
+            //
+            // Buffer and discard the include's textual output: a native view
+            // builds its element tree via collector side effects, so anything
+            // echoed is just the literal whitespace between <native:*> tags in
+            // the template. Unbuffered, that leaks to stdout — harmless on
+            // device, but it litters test runs and Jump's dev server output
+            // with blank lines.
+            ob_start();
+            try {
+                \Closure::bind(function () use ($compiledPath, $viewData) {
+                    extract($viewData, EXTR_SKIP);
+                    include $compiledPath;
+                }, $this, static::class)();
+            } finally {
+                ob_end_clean();
+            }
         } finally {
             NativeTagPrecompiler::setActive($wasActive);
         }

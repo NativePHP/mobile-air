@@ -219,6 +219,18 @@ class NativeServiceProvider extends PackageServiceProvider
             NativeRouter::register($uri, $componentClass);
 
             return Route::get($uri, function () use ($componentClass) {
+                // HTTP feature tests ($this->get('/')) must never enter the
+                // runloop: it blocks in wait_event against the REAL bridge —
+                // with a live Jump session that's ~90s of reconnect spinning
+                // per request. Answer 200 so route-level smoke tests pass,
+                // and point at the component harness for actual coverage.
+                if (app()->runningUnitTests()) {
+                    return response(
+                        "Native screen [{$componentClass}] — test it with Native::test() / Native::visit().",
+                        200
+                    );
+                }
+
                 $router = new NativeRouter;
                 $path = '/'.ltrim(request()->path(), '/');
                 $resolved = NativeRouter::resolve($path);
