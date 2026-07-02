@@ -7,9 +7,6 @@ use Native\Mobile\Edge\TailwindParser;
 beforeEach(function () {
     TailwindParser::clearCache();
     ElementRegistry::reset();
-    if (class_exists(\Nativephp\NativeUi\Elements\Button::class)) {
-        ElementRegistry::register('button', \Nativephp\NativeUi\Elements\Button::class);
-    }
     ElementRegistry::register('text', Text::class);
 });
 
@@ -82,7 +79,8 @@ it('parses height from spacing scale', function () {
 // ── Flex & Alignment ────────────────────────────────
 
 it('parses flex utilities', function () {
-    expect(TailwindParser::parse('flex-1'))->toBe(['flexGrow' => 1]);
+    // flex-1 is `flex: 1 1 0%` in Tailwind — grow, shrink, AND zero basis.
+    expect(TailwindParser::parse('flex-1'))->toBe(['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0]);
     expect(TailwindParser::parse('flex-grow'))->toBe(['flexGrow' => 1]);
     expect(TailwindParser::parse('flex-grow-0'))->toBe(['flexGrow' => 0]);
     expect(TailwindParser::parse('flex-shrink'))->toBe(['flexShrink' => 1]);
@@ -285,6 +283,8 @@ it('parses multiple classes into merged attributes', function () {
 
     expect($result)->toBe([
         'flexGrow' => 1,
+        'flexShrink' => 1,
+        'flexBasis' => 0,
         'padding' => 16,
         'gap' => 8,
         'bg' => '#3B82F6',
@@ -308,6 +308,8 @@ it('parses a full layout string', function () {
 
     expect($result)->toBe([
         'flexGrow' => 1,
+        'flexShrink' => 1,
+        'flexBasis' => 0,
         'alignItems' => 1,
         'justifyContent' => 3,
         'gap' => 16,
@@ -530,26 +532,6 @@ it('works end-to-end with collector for column', function () {
     expect($text['props']['color'])->toBe('#111827');
 });
 
-it('works end-to-end with collector for button', function () {
-    \Native\Mobile\Edge\NativeElementCollector::reset();
-    \Native\Mobile\Edge\NativeElementCollector::leaf('button', [
-        'label' => 'Sign In',
-        'class' => 'bg-blue-500 text-white rounded-lg py-3',
-        '_press' => 'login',
-    ]);
-
-    $registry = new \Native\Mobile\Edge\CallbackRegistry;
-    $tree = \Native\Mobile\Edge\NativeElementCollector::collect()->toArray($registry);
-
-    expect($tree['type'])->toBe('button');
-    expect($tree['props']['label'])->toBe('Sign In');
-    expect($tree['props']['color'])->toBe('#3B82F6');
-    expect($tree['props']['label_color'])->toBe('#FFFFFF');
-    expect($tree['style']['border_radius'])->toBe(8.0);
-    expect($tree['layout']['padding'])->toBeArray();
-    expect($registry->resolve($tree['props']['on_press']))->toBe('login');
-});
-
 it('applies directional padding correctly through collector', function () {
     \Native\Mobile\Edge\NativeElementCollector::reset();
     \Native\Mobile\Edge\NativeElementCollector::leaf('column', [
@@ -585,18 +567,4 @@ it('explicit attrs override class attrs', function () {
 
     // explicit fontSize=32 should override text-xl (20)
     expect($tree['props']['font_size'])->toBe(32.0);
-});
-
-it('preserves backward compat with explicit button color attr', function () {
-    \Native\Mobile\Edge\NativeElementCollector::reset();
-    \Native\Mobile\Edge\NativeElementCollector::leaf('button', [
-        'label' => 'Click',
-        'color' => '#4CAF50',
-        'labelColor' => '#FFFFFF',
-    ]);
-
-    $tree = \Native\Mobile\Edge\NativeElementCollector::collect()->toArray(new \Native\Mobile\Edge\CallbackRegistry);
-
-    expect($tree['props']['color'])->toBe('#4CAF50');
-    expect($tree['props']['label_color'])->toBe('#FFFFFF');
 });

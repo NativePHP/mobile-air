@@ -1,61 +1,22 @@
 <?php
 
 use Native\Mobile\Edge\CallbackRegistry;
-use Native\Mobile\Edge\ElementRegistry;
-use Nativephp\NativeUi\Elements\ActivityIndicator;
-use Nativephp\NativeUi\Elements\Button;
-use Nativephp\NativeUi\Elements\Checkbox;
-use Nativephp\NativeUi\Elements\Divider;
-use Nativephp\NativeUi\Elements\Icon;
-use Nativephp\NativeUi\Elements\Image;
-use Nativephp\NativeUi\Elements\ProgressBar;
-use Nativephp\NativeUi\Elements\Radio;
-use Nativephp\NativeUi\Elements\RadioGroup;
-use Nativephp\NativeUi\Elements\Select;
-use Nativephp\NativeUi\Elements\Slider;
-use Nativephp\NativeUi\Elements\Spacer;
-use Nativephp\NativeUi\Elements\Text;
-use Nativephp\NativeUi\Elements\TextInput;
-use Nativephp\NativeUi\Elements\Toggle;
-use Nativephp\NativeUi\Elements\Badge;
-use Nativephp\NativeUi\Elements\BottomSheet;
-use Nativephp\NativeUi\Elements\Card;
-use Nativephp\NativeUi\Elements\Chip;
-use Nativephp\NativeUi\Elements\ListItem;
-use Nativephp\NativeUi\Elements\Tab;
-use Nativephp\NativeUi\Elements\TabRow;
-use Nativephp\NativeUi\Elements\ButtonGroup;
-use Nativephp\NativeUi\Elements\Carousel;
 use Native\Mobile\Edge\NativeElementCollector;
+use Native\Mobile\Edge\NativeTagPrecompiler;
 
+/**
+ * Blade → precompiler → collector integration, on element types core
+ * registers itself. Native-tag transformation only happens while the
+ * precompiler is ACTIVE (it is registered globally on the Blade compiler
+ * but must not rewrite `<button>`/`<text>` in ordinary web views), so
+ * these tests activate it the same way NativeComponent's render path
+ * does. Plugin-owned tags (button, toggle, text-input, …) are covered
+ * in the nativephp/native-ui repo and end-to-end in the kitchen-sink app.
+ */
 beforeEach(function () {
     NativeElementCollector::reset();
-    ElementRegistry::register('button', Button::class);
-    ElementRegistry::register('text', Text::class);
-    ElementRegistry::register('spacer', Spacer::class);
-    ElementRegistry::register('divider', Divider::class);
-    ElementRegistry::register('image', Image::class);
-    ElementRegistry::register('progress_bar', ProgressBar::class);
-    ElementRegistry::register('activity_indicator', ActivityIndicator::class);
-    ElementRegistry::register('icon', Icon::class);
-    ElementRegistry::register('text_input', TextInput::class);
-    ElementRegistry::register('toggle', Toggle::class);
-    ElementRegistry::register('checkbox', Checkbox::class);
-    ElementRegistry::register('slider', Slider::class);
-    ElementRegistry::register('select', Select::class);
-    ElementRegistry::register('radio_group', RadioGroup::class);
-    ElementRegistry::register('radio', Radio::class);
-    ElementRegistry::register('badge', Badge::class);
-    ElementRegistry::register('card', Card::class);
-    ElementRegistry::register('chip', Chip::class);
-    ElementRegistry::register('list_item', ListItem::class);
-    ElementRegistry::register('tab_row', TabRow::class);
-    ElementRegistry::register('tab', Tab::class);
-    ElementRegistry::register('bottom_sheet', BottomSheet::class);
-    ElementRegistry::register('button_group', ButtonGroup::class);
-    ElementRegistry::register('carousel', Carousel::class);
+    NativeTagPrecompiler::setActive(true);
 
-    // Register a view path for test templates
     $testViewPath = __DIR__.'/views';
     if (! is_dir($testViewPath)) {
         mkdir($testViewPath, 0755, true);
@@ -70,6 +31,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
+    NativeTagPrecompiler::setActive(false);
     NativeElementCollector::reset();
 
     // Clean up test views
@@ -111,12 +73,12 @@ it('renders a simple column with text via Blade', function () {
     expect($tree['children'][0]['props']['font_size'])->toBe(24.0);
 });
 
-it('renders buttons with press callbacks', function () {
-    $viewPath = __DIR__.'/views/test-buttons.blade.php';
-    file_put_contents($viewPath, '<native:row gap="16"><native:button label="OK" @press="confirm" color="#4CAF50" /><native:button label="Cancel" @press="cancel" color="#FF5722" /></native:row>');
+it('renders press callbacks from Blade attributes', function () {
+    $viewPath = __DIR__.'/views/test-press.blade.php';
+    file_put_contents($viewPath, '<native:row gap="16"><native:text @press="confirm">OK</native:text><native:text @press="cancel">Cancel</native:text></native:row>');
 
     NativeElementCollector::reset();
-    view('test-buttons')->render();
+    view('test-press')->render();
     $element = NativeElementCollector::collect();
 
     $registry = new CallbackRegistry;
@@ -126,11 +88,11 @@ it('renders buttons with press callbacks', function () {
     expect($tree['layout']['gap'])->toBe(16.0);
     expect($tree['children'])->toHaveCount(2);
 
-    expect($tree['children'][0]['props']['label'])->toBe('OK');
-    expect($registry->resolve($tree['children'][0]['props']['on_press']))->toBe('confirm');
+    expect($tree['children'][0]['props']['text'])->toBe('OK');
+    expect($registry->resolve($tree['children'][0]['on_press']))->toBe(['method' => 'confirm', 'args' => []]);
 
-    expect($tree['children'][1]['props']['label'])->toBe('Cancel');
-    expect($registry->resolve($tree['children'][1]['props']['on_press']))->toBe('cancel');
+    expect($tree['children'][1]['props']['text'])->toBe('Cancel');
+    expect($registry->resolve($tree['children'][1]['on_press']))->toBe(['method' => 'cancel', 'args' => []]);
 });
 
 it('renders nested containers', function () {
@@ -199,112 +161,13 @@ it('renders conditionals', function () {
     expect($tree['children'][0]['props']['text'])->toBe('Always');
 });
 
-it('renders a complete counter component template', function () {
-    $viewPath = __DIR__.'/views/test-counter.blade.php';
-    file_put_contents($viewPath, <<<'BLADE'
-<native:column fill center bg="#FFFFFF">
-    <native:text :fontSize="32" fontWeight="7" color="#1a1a2e">Count: {{ $count }}</native:text>
-    <native:row gap="16">
-        <native:button label="-" @press="decrement" color="#FF5722" labelColor="#FFFFFF" />
-        <native:button label="+" @press="increment" color="#4CAF50" labelColor="#FFFFFF" />
-    </native:row>
-</native:column>
-BLADE);
-
-    NativeElementCollector::reset();
-    view('test-counter', ['count' => 5])->render();
-    $element = NativeElementCollector::collect();
-
-    $registry = new CallbackRegistry;
-    $tree = $element->toArray($registry);
-
-    // Root column
-    expect($tree['type'])->toBe('column');
-    expect($tree['layout']['width'])->toBe('fill');
-    expect($tree['layout']['height'])->toBe('fill');
-    expect($tree['style']['bg_color'])->toBe('#FFFFFF');
-
-    // Text
-    expect($tree['children'][0]['type'])->toBe('text');
-    expect($tree['children'][0]['props']['text'])->toBe('Count: 5');
-    expect($tree['children'][0]['props']['font_size'])->toBe(32.0);
-    expect($tree['children'][0]['props']['font_weight'])->toBe(7);
-    expect($tree['children'][0]['props']['color'])->toBe('#1a1a2e');
-
-    // Row with buttons
-    $row = $tree['children'][1];
-    expect($row['type'])->toBe('row');
-    expect($row['layout']['gap'])->toBe(16.0);
-    expect($row['children'])->toHaveCount(2);
-
-    expect($row['children'][0]['props']['label'])->toBe('-');
-    expect($registry->resolve($row['children'][0]['props']['on_press']))->toBe('decrement');
-    expect($row['children'][1]['props']['label'])->toBe('+');
-    expect($registry->resolve($row['children'][1]['props']['on_press']))->toBe('increment');
-});
-
-it('matches programmatic API output for counter template', function () {
-    $viewPath = __DIR__.'/views/test-counter-match.blade.php';
-    file_put_contents($viewPath, <<<'BLADE'
-<native:column fill center bg="#FFFFFF">
-    <native:text :fontSize="32" fontWeight="7" color="#1a1a2e">Count: 5</native:text>
-    <native:row gap="16">
-        <native:button label="-" @press="decrement" color="#FF5722" labelColor="#FFFFFF" />
-        <native:button label="+" @press="increment" color="#4CAF50" labelColor="#FFFFFF" />
-    </native:row>
-</native:column>
-BLADE);
-
-    // Blade rendering
-    NativeElementCollector::reset();
-    view('test-counter-match')->render();
-    $bladeElement = NativeElementCollector::collect();
-    $bladeRegistry = new CallbackRegistry;
-    $bladeTree = $bladeElement->toArray($bladeRegistry);
-
-    // Programmatic API
-    $programmatic = \Native\Mobile\Edge\Elements\Column::make(
-        \Nativephp\NativeUi\Elements\Text::make('Count: 5')->fontSize(32)->fontWeight(7)->color('#1a1a2e'),
-        \Native\Mobile\Edge\Elements\Row::make(
-            \Nativephp\NativeUi\Elements\Button::make('-')->onPress('decrement')->color('#FF5722')->labelColor('#FFFFFF'),
-            \Nativephp\NativeUi\Elements\Button::make('+')->onPress('increment')->color('#4CAF50')->labelColor('#FFFFFF'),
-        )->gap(16),
-    )->fill()->center()->bg('#FFFFFF');
-
-    $progRegistry = new CallbackRegistry;
-    $progTree = $programmatic->toArray($progRegistry);
-
-    // Compare structure (callback IDs will differ but method names should match)
-    expect($bladeTree['type'])->toBe($progTree['type']);
-    expect($bladeTree['layout'])->toBe($progTree['layout']);
-    expect($bladeTree['style'])->toBe($progTree['style']);
-
-    // Text props
-    expect($bladeTree['children'][0]['props'])->toBe($progTree['children'][0]['props']);
-
-    // Row layout
-    expect($bladeTree['children'][1]['layout'])->toBe($progTree['children'][1]['layout']);
-
-    // Button props (excluding on_press IDs)
-    $bladeBtn0 = $bladeTree['children'][1]['children'][0]['props'];
-    $progBtn0 = $progTree['children'][1]['children'][0]['props'];
-    expect($bladeBtn0['label'])->toBe($progBtn0['label']);
-    expect($bladeBtn0['color'])->toBe($progBtn0['color']);
-    expect($bladeBtn0['label_color'])->toBe($progBtn0['label_color']);
-
-    // Callback method names resolve the same
-    expect($bladeRegistry->resolve($bladeBtn0['on_press']))->toBe($progRegistry->resolve($progBtn0['on_press']));
-});
-
-it('renders all self-closing element types', function () {
+it('renders all core self-closing element types', function () {
     $viewPath = __DIR__.'/views/test-all-leaf.blade.php';
     file_put_contents($viewPath, <<<'BLADE'
 <native:column>
     <native:text>Hello</native:text>
-    <native:button label="Click" />
-    <native:text-input placeholder="Type..." />
-    <native:toggle />
     <native:image src="test.png" />
+    <native:icon name="star" />
     <native:spacer />
     <native:divider />
 </native:column>
@@ -315,14 +178,12 @@ BLADE);
     $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
 
     expect($tree['type'])->toBe('column');
-    expect($tree['children'])->toHaveCount(7);
+    expect($tree['children'])->toHaveCount(5);
     expect($tree['children'][0]['type'])->toBe('text');
-    expect($tree['children'][1]['type'])->toBe('button');
-    expect($tree['children'][2]['type'])->toBe('text_input');
-    expect($tree['children'][3]['type'])->toBe('toggle');
-    expect($tree['children'][4]['type'])->toBe('image');
-    expect($tree['children'][5]['type'])->toBe('spacer');
-    expect($tree['children'][6]['type'])->toBe('divider');
+    expect($tree['children'][1]['type'])->toBe('image');
+    expect($tree['children'][2]['type'])->toBe('icon');
+    expect($tree['children'][3]['type'])->toBe('spacer');
+    expect($tree['children'][4]['type'])->toBe('divider');
 });
 
 it('renders all container element types', function () {
