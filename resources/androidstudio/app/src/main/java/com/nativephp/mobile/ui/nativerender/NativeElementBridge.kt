@@ -82,8 +82,10 @@ class NativeElementBridge private constructor() {
          * lockstep with NPHP_FORMAT_VERSION in nphp_element.h.
          *
          * v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
+         * v3 — event-channel framing widened uint16 → uint32 (header data_size
+         *      + body string length prefixes); lifts the 64KB native→PHP cap.
          */
-        private const val EXPECTED_FORMAT_VERSION = 2
+        private const val EXPECTED_FORMAT_VERSION = 3
 
         /** Latched at startWatching(). 0 until then. Readable for telemetry. */
         @JvmStatic
@@ -725,8 +727,8 @@ class NativeElementBridge private constructor() {
         fun sendTextChangeEvent(callbackId: Int, nodeId: Int, text: String) {
             PerformanceTracker.onInteractionStart(callbackId, "text_change")
             val textBytes = text.toByteArray(Charsets.UTF_8)
-            val buf = ByteBuffer.allocate(2 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
-            buf.putShort(textBytes.size.toShort())
+            val buf = ByteBuffer.allocate(4 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putInt(textBytes.size)
             buf.put(textBytes)
             nativeElementWriteEvent(EventType.TEXT_CHANGE, callbackId, nodeId, buf.array())
         }
@@ -740,8 +742,8 @@ class NativeElementBridge private constructor() {
 
         fun sendSubmitEvent(callbackId: Int, nodeId: Int, text: String) {
             val textBytes = text.toByteArray(Charsets.UTF_8)
-            val buf = ByteBuffer.allocate(2 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
-            buf.putShort(textBytes.size.toShort())
+            val buf = ByteBuffer.allocate(4 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putInt(textBytes.size)
             buf.put(textBytes)
             nativeElementWriteEvent(EventType.SUBMIT, callbackId, nodeId, buf.array())
         }
@@ -767,8 +769,8 @@ class NativeElementBridge private constructor() {
         fun sendRadioChangeEvent(callbackId: Int, nodeId: Int, value: String) {
             PerformanceTracker.onInteractionStart(callbackId, "radio_change")
             val textBytes = value.toByteArray(Charsets.UTF_8)
-            val buf = ByteBuffer.allocate(2 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
-            buf.putShort(textBytes.size.toShort())
+            val buf = ByteBuffer.allocate(4 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putInt(textBytes.size)
             buf.put(textBytes)
             nativeElementWriteEvent(EventType.RADIO_CHANGE, callbackId, nodeId, buf.array())
         }
@@ -796,8 +798,8 @@ class NativeElementBridge private constructor() {
         fun sendSelectChangeEvent(callbackId: Int, nodeId: Int, value: String) {
             PerformanceTracker.onInteractionStart(callbackId, "select_change")
             val textBytes = value.toByteArray(Charsets.UTF_8)
-            val buf = ByteBuffer.allocate(2 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
-            buf.putShort(textBytes.size.toShort())
+            val buf = ByteBuffer.allocate(4 + textBytes.size).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putInt(textBytes.size)
             buf.put(textBytes)
             nativeElementWriteEvent(EventType.SELECT_CHANGE, callbackId, nodeId, buf.array())
         }
@@ -810,11 +812,11 @@ class NativeElementBridge private constructor() {
         fun sendNativeEvent(eventName: String, payloadJson: String) {
             val nameBytes = eventName.toByteArray(Charsets.UTF_8)
             val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8)
-            val buf = ByteBuffer.allocate(2 + nameBytes.size + 2 + payloadBytes.size)
+            val buf = ByteBuffer.allocate(4 + nameBytes.size + 4 + payloadBytes.size)
                 .order(ByteOrder.LITTLE_ENDIAN)
-            buf.putShort(nameBytes.size.toShort())
+            buf.putInt(nameBytes.size)
             buf.put(nameBytes)
-            buf.putShort(payloadBytes.size.toShort())
+            buf.putInt(payloadBytes.size)
             buf.put(payloadBytes)
             nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
         }

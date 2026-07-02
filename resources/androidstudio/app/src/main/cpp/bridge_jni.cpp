@@ -42,6 +42,8 @@ static void element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
 extern "C" uint32_t nphp_get_format_version(void);
 extern "C" uint32_t nphp_get_runtime_flags(void);
 extern "C" void     nphp_set_runtime_flags(uint32_t flags);
+extern "C" void     nphp_element_post_event(int type, int callback_id, int node_id,
+                                            const uint8_t *data, uint32_t data_len);
 
 // Phase 3 — active-buffer accessors. These do the acquire-load on the
 // A/B `active_buf` index and return whichever half the producer most
@@ -509,57 +511,18 @@ static void element_set_runtime_flags(JNIEnv*, jclass, jint flags) {
 }
 
 static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
-    auto* region = get_element_region();
-    if (!region) {
-        LOGE("Element: Event DROPPED — region is NULL (type=%d cb=%d node=%d)", type, callback_id, node_id);
-        return;
-    }
-
-    /* Build event in stack buffer — same NPEV format.
-     * Sized to match region->event_buffer[4096]; the old 512 truncated larger
-     * native event payloads (e.g. a gallery MediaSelected with several file
-     * paths), corrupting the JSON before PHP could decode it. */
-    uint8_t event_buf[4096];
-    size_t pos = 0;
-
-    auto write_u8  = [&](uint8_t  v) { if (pos + 1 <= sizeof(event_buf)) { event_buf[pos++] = v; } };
-    auto write_u16 = [&](uint16_t v) { if (pos + 2 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 2); pos += 2; } };
-    auto write_u32 = [&](uint32_t v) { if (pos + 4 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 4); pos += 4; } };
-    auto write_u64 = [&](uint64_t v) { if (pos + 8 <= sizeof(event_buf)) { memcpy(event_buf + pos, &v, 8); pos += 8; } };
-
-    write_u32(NPHP_EVENT_MAGIC_EL);
-    write_u8((uint8_t)type);
-    write_u32((uint32_t)callback_id);
-    write_u32((uint32_t)node_id);
-
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    uint64_t timestamp = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
-    write_u64(timestamp);
-
+    // Hand the body bytes to the PHP extension, which owns the event mutex, the
+    // growable heap buffer and the header framing (nphp_element_post_event in
+    // nphp_element.c). No more inline buffer / truncation here.
     jsize data_len = data ? env->GetArrayLength(data) : 0;
-    if (data_len > 0 && pos + data_len > sizeof(event_buf)) {
-        LOGE("Element: Event data too large (%d bytes, max %zu) — truncating",
-             data_len, sizeof(event_buf) - pos);
-        data_len = (jsize)(sizeof(event_buf) - pos);
+    if (data_len > 0) {
+        jbyte* bytes = env->GetByteArrayElements(data, nullptr);
+        nphp_element_post_event(type, callback_id, node_id,
+                                reinterpret_cast<const uint8_t*>(bytes), (uint32_t)data_len);
+        env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
+    } else {
+        nphp_element_post_event(type, callback_id, node_id, nullptr, 0);
     }
-    write_u16((uint16_t)data_len);
-    if (data_len > 0 && pos + data_len <= sizeof(event_buf)) {
-        env->GetByteArrayRegion(data, 0, data_len, (jbyte*)(event_buf + pos));
-        pos += data_len;
-    }
-
-    /* Write to inline event buffer under lock */
-    pthread_mutex_lock(&region->event_mutex);
-
-    memcpy(region->event_buffer, event_buf, pos);
-    region->event_size.store((uint32_t)pos, std::memory_order_release);
-    region->event_count.store(1, std::memory_order_release);
-
-    pthread_cond_signal(&region->event_cond);
-    pthread_mutex_unlock(&region->event_mutex);
-
-    LOGI("Element: Event written — type=%d cb=%d node=%d size=%zu", type, callback_id, node_id, pos);
 }
 
 /* ═══════════════════════════════════════════════════════════

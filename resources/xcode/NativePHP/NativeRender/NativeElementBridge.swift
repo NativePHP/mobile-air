@@ -71,7 +71,9 @@ final class NativeElementBridge {
     /// NPHP_FORMAT_VERSION in nphp_element.h (§5.4).
     ///
     /// v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
-    private static let expectedFormatVersion: UInt32 = 2
+    /// v3 — event-channel framing widened uint16 → uint32 (header data_size +
+    ///      body string length prefixes); lifts the 64KB native→PHP cap.
+    private static let expectedFormatVersion: UInt32 = 3
 
     /// Phase 0 — latched after the one-shot check in `postTreeUpdateFromRegion()`.
     /// NPHP_FLAG_* bitfield in nphp_element.h.
@@ -476,59 +478,11 @@ final class NativeElementBridge {
     /// Write event to PHP shared memory event ring buffer.
     /// Event format: [magic:u32][type:u8][callback_id:u32][node_id:u32][timestamp:u64][data_size:u16][data...]
     static func nativeElementWriteEvent(_ type: Int32, _ callbackId: Int32, _ nodeId: Int32, _ data: UnsafePointer<UInt8>?, _ dataSize: Int32) {
-        guard let ptr = regionPtr else { return }
-
-        // Event header: magic(4) + type(1) + callback_id(4) + node_id(4) + timestamp(8) + data_size(2) = 23 bytes
-        let headerSize = 23
-        let totalSize = headerSize + Int(dataSize)
-
-        // Get pointers to the mutex/cond via raw offsets
-        let mutexPtr = ptr.advanced(by: RegionOffset.eventMutex)
-            .assumingMemoryBound(to: pthread_mutex_t.self)
-        let condPtr = ptr.advanced(by: RegionOffset.eventCond)
-            .assumingMemoryBound(to: pthread_cond_t.self)
-        let eventSizePtr = ptr.advanced(by: RegionOffset.eventSize)
-            .assumingMemoryBound(to: UInt32.self)
-        let eventCountPtr = ptr.advanced(by: RegionOffset.eventCount)
-            .assumingMemoryBound(to: UInt32.self)
-
-        pthread_mutex_lock(mutexPtr)
-        defer {
-            pthread_cond_signal(condPtr)
-            pthread_mutex_unlock(mutexPtr)
-        }
-
-        let currentSize = Int(eventSizePtr.pointee)
-        guard currentSize + totalSize <= 4096 else {
-            print("NativeElementBridge: event buffer full (\(currentSize)/4096)")
-            return
-        }
-
-        let evBufBase = ptr.advanced(by: RegionOffset.eventBuffer)
-        let base = evBufBase.advanced(by: currentSize)
-
-        // Magic (4 bytes)
-        base.storeBytes(of: eventMagic.littleEndian, as: UInt32.self)
-        // Type (1 byte)
-        base.storeBytes(of: UInt8(type), toByteOffset: 4, as: UInt8.self)
-        // Callback ID (4 bytes)
-        base.storeBytes(of: UInt32(bitPattern: callbackId).littleEndian, toByteOffset: 5, as: UInt32.self)
-        // Node ID (4 bytes)
-        base.storeBytes(of: UInt32(bitPattern: nodeId).littleEndian, toByteOffset: 9, as: UInt32.self)
-        // Timestamp (8 bytes)
-        var tv = timeval()
-        gettimeofday(&tv, nil)
-        let timestampMs = UInt64(tv.tv_sec) * 1000 + UInt64(tv.tv_usec) / 1000
-        base.storeBytes(of: timestampMs.littleEndian, toByteOffset: 13, as: UInt64.self)
-        // Data size (2 bytes)
-        base.storeBytes(of: UInt16(dataSize).littleEndian, toByteOffset: 21, as: UInt16.self)
-        // Data payload
-        if let data, dataSize > 0 {
-            base.advanced(by: headerSize).copyMemory(from: data, byteCount: Int(dataSize))
-        }
-
-        eventSizePtr.pointee = UInt32(currentSize + totalSize)
-        eventCountPtr.pointee += 1
+        // Hand the body bytes to the PHP extension, which owns the event mutex,
+        // the growable heap buffer, and the header framing
+        // (nphp_element_post_event in nphp_element.c). No more region poking by
+        // offset, no 4KB cap, no hand-rolled framing.
+        nphp_element_post_event(type, callbackId, nodeId, data, UInt32(max(0, dataSize)))
     }
 
     static func sendPressEvent(_ callbackId: Int, nodeId: Int) {
@@ -554,11 +508,11 @@ final class NativeElementBridge {
     static func sendTextChangeEvent(_ callbackId: Int, nodeId: Int, text: String) {
         InteractionTracker.shared.onInteractionStart(callbackId: callbackId, type: "text_change")
         let textBytes = Array(text.utf8)
-        var buf = Data(count: 2 + textBytes.count)
+        var buf = Data(count: 4 + textBytes.count)
         buf.withUnsafeMutableBytes { ptr in
-            ptr.storeBytes(of: UInt16(textBytes.count).littleEndian, toByteOffset: 0, as: UInt16.self)
+            ptr.storeBytes(of: UInt32(textBytes.count).littleEndian, toByteOffset: 0, as: UInt32.self)
             if !textBytes.isEmpty {
-                ptr.baseAddress!.advanced(by: 2).copyMemory(from: textBytes, byteCount: textBytes.count)
+                ptr.baseAddress!.advanced(by: 4).copyMemory(from: textBytes, byteCount: textBytes.count)
             }
         }
         writeEvent(type: EventType.textChange, callbackId: callbackId, nodeId: nodeId, data: buf)
@@ -571,11 +525,11 @@ final class NativeElementBridge {
 
     static func sendSubmitEvent(_ callbackId: Int, nodeId: Int, text: String) {
         let textBytes = Array(text.utf8)
-        var buf = Data(count: 2 + textBytes.count)
+        var buf = Data(count: 4 + textBytes.count)
         buf.withUnsafeMutableBytes { ptr in
-            ptr.storeBytes(of: UInt16(textBytes.count).littleEndian, toByteOffset: 0, as: UInt16.self)
+            ptr.storeBytes(of: UInt32(textBytes.count).littleEndian, toByteOffset: 0, as: UInt32.self)
             if !textBytes.isEmpty {
-                ptr.baseAddress!.advanced(by: 2).copyMemory(from: textBytes, byteCount: textBytes.count)
+                ptr.baseAddress!.advanced(by: 4).copyMemory(from: textBytes, byteCount: textBytes.count)
             }
         }
         writeEvent(type: EventType.submit, callbackId: callbackId, nodeId: nodeId, data: buf)
@@ -595,11 +549,11 @@ final class NativeElementBridge {
 
     static func sendRadioChangeEvent(_ callbackId: Int, nodeId: Int, value: String) {
         let textBytes = Array(value.utf8)
-        var buf = Data(count: 2 + textBytes.count)
+        var buf = Data(count: 4 + textBytes.count)
         buf.withUnsafeMutableBytes { ptr in
-            ptr.storeBytes(of: UInt16(textBytes.count).littleEndian, toByteOffset: 0, as: UInt16.self)
+            ptr.storeBytes(of: UInt32(textBytes.count).littleEndian, toByteOffset: 0, as: UInt32.self)
             if !textBytes.isEmpty {
-                ptr.baseAddress!.advanced(by: 2).copyMemory(from: textBytes, byteCount: textBytes.count)
+                ptr.baseAddress!.advanced(by: 4).copyMemory(from: textBytes, byteCount: textBytes.count)
             }
         }
         writeEvent(type: EventType.radioChange, callbackId: callbackId, nodeId: nodeId, data: buf)
@@ -607,11 +561,11 @@ final class NativeElementBridge {
 
     static func sendSelectChangeEvent(_ callbackId: Int, nodeId: Int, value: String) {
         let textBytes = Array(value.utf8)
-        var buf = Data(count: 2 + textBytes.count)
+        var buf = Data(count: 4 + textBytes.count)
         buf.withUnsafeMutableBytes { ptr in
-            ptr.storeBytes(of: UInt16(textBytes.count).littleEndian, toByteOffset: 0, as: UInt16.self)
+            ptr.storeBytes(of: UInt32(textBytes.count).littleEndian, toByteOffset: 0, as: UInt32.self)
             if !textBytes.isEmpty {
-                ptr.baseAddress!.advanced(by: 2).copyMemory(from: textBytes, byteCount: textBytes.count)
+                ptr.baseAddress!.advanced(by: 4).copyMemory(from: textBytes, byteCount: textBytes.count)
             }
         }
         writeEvent(type: EventType.selectChange, callbackId: callbackId, nodeId: nodeId, data: buf)
@@ -646,12 +600,12 @@ final class NativeElementBridge {
     static func sendNativeEvent(eventName: String, payloadJson: String) {
         let nameBytes = Array(eventName.utf8)
         let payloadBytes = Array(payloadJson.utf8)
-        var buf = Data(capacity: 2 + nameBytes.count + 2 + payloadBytes.count)
-        var nameLen = UInt16(nameBytes.count).littleEndian
-        buf.append(Data(bytes: &nameLen, count: 2))
+        var buf = Data(capacity: 4 + nameBytes.count + 4 + payloadBytes.count)
+        var nameLen = UInt32(nameBytes.count).littleEndian
+        buf.append(Data(bytes: &nameLen, count: 4))
         buf.append(contentsOf: nameBytes)
-        var payloadLen = UInt16(payloadBytes.count).littleEndian
-        buf.append(Data(bytes: &payloadLen, count: 2))
+        var payloadLen = UInt32(payloadBytes.count).littleEndian
+        buf.append(Data(bytes: &payloadLen, count: 4))
         buf.append(contentsOf: payloadBytes)
         writeEvent(type: EventType.native, callbackId: 0, nodeId: 0, data: buf)
     }

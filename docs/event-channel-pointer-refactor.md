@@ -24,6 +24,42 @@ cross-process serialization is fundamentally required. The region **already** st
 this way (`flat_buffer`/`prop_buffer`, the 512KB render buffers). Events are the lone holdout still
 inline.
 
+## ⚠️ Approach revised after reading the code (centralized C function)
+
+Two findings changed the design from the original mirror+offset sketch below:
+
+1. **Two `uint16_t` framing caps, not just the buffer.** A native event's `data_size` is u16, and
+   inside it the JSON payload is written/read via `npui_*_str` with a u16 length prefix. So a
+   growable buffer alone lifts the cap from **4KB → ~64KB**, not to infinity. Split the work:
+   - **Phase 1 (now):** growable heap buffer → ~64KB per event. Covers realistic payloads.
+   - **Phase 2 (later, optional):** widen `data_size` + the payload `npui_*_str` length to u32 on
+     both sides → truly unlimited.
+
+2. **Centralize the write in one C function — don't mirror/offset on the native side.** Today the
+   header framing + buffer write is duplicated in `bridge_jni.cpp` (C++) and `NativeElementBridge.swift`
+   (poking the region by hardcoded offset). Replace both with a single extension function:
+
+   ```c
+   void nphp_element_post_event(int type, int callback_id, int node_id,
+                                const uint8_t *data, uint32_t data_len);
+   ```
+
+   It owns the `event_mutex`, the growable buffer, and the header framing (single source of truth for
+   the wire format). The native producers become thin:
+   - **Android** `element_write_event` (JNI) → extract the `jbyteArray` and call `nphp_element_post_event`.
+     No stack buffer, no truncation, no event-field poking. The bridge's mirror struct needs **no
+     change** (it no longer reads event fields; appended struct fields don't move existing offsets).
+   - **iOS** `NativeElementBridge.swift` event write → call `nphp_element_post_event` via
+     `@_silgen_name` (same mechanism already used for `_persistent_php_boot`). **No hand-computed
+     struct offset** — this removes the riskiest part of the original plan.
+
+   Only the **consumer** (`nphp_element_wait_event`) + region init/teardown touch the new appended
+   struct fields.
+
+This keeps the struct change append-only (below), but the producers never see the struct layout.
+
+---
+
 ## Design — region-owned growable heap buffer, appended
 
 Replace the *use* of the inline buffer with a single **region-owned, growable heap buffer**:
@@ -132,3 +168,35 @@ of it testing and the iOS offset/allocator details, not code volume.
 - `build-scripts/shared/nativephp/nphp_element.c` — `nphp_element_wait_event`, region init/teardown
 - `mobile-air/resources/androidstudio/app/src/main/cpp/bridge_jni.cpp` — region mirror + `element_write_event`
 - `mobile-air/resources/xcode/NativePHP/NativeRender/NativeElementBridge.swift` — `RegionOffset` + event write
+
+---
+
+## Phase 2 — uint16 → uint32 framing (unlimited payloads), format_version 3
+
+Phase 1 made the *transport* growable (pointer+length into a realloc-doubling
+shm heap), but two `uint16` length **fields** still capped the channel at 65,535
+bytes — and on iOS `UInt16(text.count)` *traps* (crashes the app) past that;
+Android silently wraps/corrupts. Phase 2 widens both to `uint32` (~4 GB,
+RAM-bound = effectively unlimited). This is a wire-format change → `format_version`
+bumped 2 → 3 (native readers hard-fail on mismatch, so all layers move in lockstep).
+
+Widened (event channel only — render-direction flat/prop buffers untouched):
+1. **Header `data_size`** — `nphp_element_post_event` writes u32; `nphp_element_wait_event`
+   reads u32. No more `0xFFFF` clamp.
+2. **Body string length prefixes** — new `npui_read_str32`/`npui_write_str32`
+   (u32) in `nativephp_ui.h`, used by the consumer for TEXT_CHANGE / SUBMIT /
+   RADIO_CHANGE / SELECT_CHANGE / NATIVE(name+payload). Generic `npui_*_str`
+   (u16) stays the node/prop codec.
+3. **Native body builders** — iOS `NativeElementBridge.swift` (`UInt16`→`UInt32`,
+   2→4 byte prefix) and Android `NativeElementBridge.kt` (`putShort(...toShort())`
+   →`putInt(...)`, `allocate(2+…)`→`allocate(4+…)`) across the 5 send*Event funcs.
+4. **Version handshake** — `NPHP_FORMAT_VERSION` (nphp_element.h),
+   `expectedFormatVersion` (Swift), `EXPECTED_FORMAT_VERSION` (Kotlin) all → 3.
+
+`tabChange` keeps its u16 (it's an index, not a length).
+
+Render-direction caps (`npui_write_str` u16, node `prop_size`/`raw_children` u16)
+are unchanged — they bound a single rendered node's props at 64KB, a separate
+concern from the native→PHP event channel.
+
+Requires a PHP-bins rebuild (`build-scripts`) + app rebuild.
