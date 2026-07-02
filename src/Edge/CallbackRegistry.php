@@ -70,6 +70,17 @@ class CallbackRegistry
     }
 
     /**
+     * All registered expressions, keyed by expression → id. Used by the
+     * testing harness to resolve a method name to its callback id.
+     *
+     * @return array<string, int>
+     */
+    public function expressions(): array
+    {
+        return $this->expressionMap;
+    }
+
+    /**
      * Soft reset — keep ID mappings stable across frames.
      * Same expression always gets the same ID.
      */

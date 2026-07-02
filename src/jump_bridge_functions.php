@@ -7,6 +7,11 @@
  * These functions are only loaded when the C extension versions
  * don't exist (i.e., when running on the developer's machine,
  * not on the mobile device).
+ *
+ * Each function consults \Native\Mobile\Testing\FakeBridge first: when a
+ * test has bound one (via Native::test() / FakeBridge::enable()), bridge
+ * traffic is captured in-process instead of hitting the Jump TCP relay.
+ * Outside tests current() is null and behavior is unchanged.
  */
 if (! function_exists('nativephp_call')) {
     /**
@@ -22,6 +27,10 @@ if (! function_exists('nativephp_call')) {
      */
     function nativephp_call(string $method, string $params = '{}'): ?string
     {
+        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+            return $fake->call($method, $params);
+        }
+
         return \Native\Mobile\JumpBridge::instance()->call($method, $params);
     }
 }
@@ -42,6 +51,12 @@ if (! function_exists('nativephp_can')) {
 if (! function_exists('nativephp_element_init')) {
     function nativephp_element_init(): void
     {
+        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+            $fake->elementInit();
+
+            return;
+        }
+
         \Native\Mobile\JumpBridge::instance()->call('Element.Init');
     }
 }
@@ -49,6 +64,12 @@ if (! function_exists('nativephp_element_init')) {
 if (! function_exists('nativephp_element_publish')) {
     function nativephp_element_publish(array $tree): void
     {
+        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+            $fake->elementPublish($tree);
+
+            return;
+        }
+
         $json = json_encode($tree);
         $hash = substr(md5($json), 0, 8);
         @file_put_contents(
@@ -63,6 +84,10 @@ if (! function_exists('nativephp_element_publish')) {
 if (! function_exists('nativephp_element_wait_event')) {
     function nativephp_element_wait_event(int $timeoutMs): ?array
     {
+        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+            return $fake->elementWaitEvent($timeoutMs);
+        }
+
         static $consecutiveErrors = 0;
 
         $result = \Native\Mobile\JumpBridge::instance()->call('Element.WaitEvent', json_encode(['timeout' => $timeoutMs]));
@@ -150,6 +175,10 @@ if (! function_exists('nativephp_runtime_flags')) {
      */
     function nativephp_runtime_flags(): int
     {
+        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+            return $fake->runtimeFlags();
+        }
+
         return 0;
     }
 }
@@ -171,6 +200,12 @@ if (! function_exists('nativephp_force_full_frame_epoch')) {
 if (! function_exists('nativephp_element_reset')) {
     function nativephp_element_reset(): void
     {
+        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+            $fake->elementReset();
+
+            return;
+        }
+
         \Native\Mobile\JumpBridge::instance()->call('Element.Reset');
     }
 }
@@ -178,6 +213,12 @@ if (! function_exists('nativephp_element_reset')) {
 if (! function_exists('nativephp_element_shutdown')) {
     function nativephp_element_shutdown(): void
     {
+        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+            $fake->elementShutdown();
+
+            return;
+        }
+
         // Clean up a STALE .hot_restart so a normal next scan starts fresh —
         // but NOT a fresh one. A hot-reload exit writes .hot_restart and then
         // runs straight through this shutdown; the file must survive so the

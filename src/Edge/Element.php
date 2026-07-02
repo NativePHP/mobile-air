@@ -27,6 +27,15 @@ abstract class Element
      */
     protected ?string $key = null;
 
+    /**
+     * Test-targeting handle, set via `->ref('save-btn')` or a Blade
+     * `ref="save-btn"` attribute. Emitted on the wire node so the
+     * testing harness can locate elements without depending on visible
+     * text or method names (the `data-testid` equivalent). Renderers
+     * ignore it.
+     */
+    protected ?string $elementRef = null;
+
     protected array $layout = [];
 
     protected array $style = [];
@@ -577,6 +586,16 @@ abstract class Element
      * a stable *domain* id (e.g. `$todo->id`), not the loop index — see
      * the docblock on `$key` and Phase 1 in the perf refactor doc.
      */
+    /**
+     * Set the test-targeting ref for this node (see $elementRef).
+     */
+    public function ref(string $ref): static
+    {
+        $this->elementRef = $ref;
+
+        return $this;
+    }
+
     public function key(string|int $key): static
     {
         $this->key = (string) $key;
@@ -740,6 +759,7 @@ abstract class Element
             $props,
             $onPress,
             $onLongPress,
+            $this->elementRef,
             $childHashes,
         ]));
 
@@ -783,6 +803,9 @@ abstract class Element
         }
         if ($onLongPress !== null) {
             $node['on_long_press'] = $onLongPress;
+        }
+        if ($this->elementRef !== null) {
+            $node['ref'] = $this->elementRef;
         }
         if (! empty($childNodes)) {
             $node['children'] = $childNodes;

@@ -150,6 +150,17 @@ class NativeCallbacks
             || Cache::has(static::key($id, $eventClass));
     }
 
+    /**
+     * Drop every in-memory pending callback. The static tier survives
+     * across tests in one process, so the testing harness flushes it at
+     * the start of each test for isolation. Durable cache copies belong
+     * to the per-test application and reset with it.
+     */
+    public static function flush(): void
+    {
+        static::$memory = [];
+    }
+
     protected static function key(string $id, string $eventClass): string
     {
         return 'native_cb:'.$id.':'.$eventClass;

@@ -30,11 +30,13 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Commands\MakeNativeComponentCommand;
+use Native\Mobile\Commands\MakeNativeTestCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\NativeAwareCompilerEngine;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
@@ -79,6 +81,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 PluginUninstallCommand::class,
                 PluginValidateCommand::class,
                 MakeNativeComponentCommand::class,
+                MakeNativeTestCommand::class,
                 RemoveNativeComponentCommand::class,
                 ValidateCommand::class,
             ]);
@@ -198,6 +201,19 @@ class NativeServiceProvider extends PackageServiceProvider
         );
 
         $blade->precompiler(new NativeTagPrecompiler($shortFormTags));
+
+        // Swap the stock Blade engine for a subclass whose only addition
+        // is: during a native render, force-recompile any view whose
+        // cached compiled file wasn't produced with the native
+        // precompiler active (no marker — e.g. a web render or
+        // `view:cache` compiled it first). Covers nested @includes; the
+        // root view gets the same check in renderBladeBoundToSelf().
+        // Everywhere outside a native render this behaves exactly like
+        // the engine it replaces.
+        $this->app->make('view.engine.resolver')->register(
+            'blade',
+            fn () => new NativeAwareCompilerEngine($this->app['blade.compiler'], $this->app['files'])
+        );
 
         Route::macro('native', function (string $uri, string $componentClass) {
             NativeRouter::register($uri, $componentClass);
@@ -419,6 +435,14 @@ class NativeServiceProvider extends PackageServiceProvider
     private function applyFpsOverlayConfig(): void
     {
         if (! function_exists('nativephp_call')) {
+            return;
+        }
+
+        // Never at test boot: on a dev machine nativephp_call is the Jump
+        // TCP polyfill, and with a live Jump session this call blocks on a
+        // real device round-trip — adding ~1s to EVERY test's app boot
+        // (the FakeBridge can't intercept it; tests bind it after boot).
+        if ($this->app->runningUnitTests()) {
             return;
         }
 
