@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\View\Engines\CompilerEngine;
 use Illuminate\View\View;
+use Livewire\Features\SupportEvents\BaseOn;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
 use Native\Mobile\Attributes\On;
@@ -111,6 +112,14 @@ abstract class NativeComponent
     /** Publish counter for the forceFullFrame heartbeat. */
     private int $publishCount = 0;
 
+    /**
+     * Opt out of subtree memoization for this component — every publish emits
+     * all nodes FULL (no REUSE markers), sidestepping the PHP↔native id desync
+     * that can truncate a growing/reordering dynamic list. Set to true in a
+     * subclass whose screen mutates a list frequently (e.g. a live roster).
+     */
+    protected bool $forceFullFrames = false;
+
     /** Last-seen value of the region's `force_full_frame_epoch` atomic.
      *  When the bridge or framework bumps that atomic (on
      *  nativephp_element_reset(), screen-stop, hot reload, navigation
@@ -164,16 +173,30 @@ abstract class NativeComponent
      * never finds a matching prior, so every node is emitted FULL.
      * Wire bytes are identical to pre-Phase-2.
      */
+    /**
+     * Whether the native runtime advertises NPHP_FLAG_SUBTREE_MEMO.
+     * Seam for tests — off-device the polyfilled flags are always 0,
+     * so the memoized path could never be exercised otherwise.
+     */
+    protected function subtreeMemoEnabled(): bool
+    {
+        return (nativephp_runtime_flags() & 0x02) !== 0;
+    }
+
     private function memoizedToArray(Element $element): array
     {
         $this->publishCount++;
 
-        $memoEnabled = (nativephp_runtime_flags() & 0x02) !== 0;
+        $memoEnabled = $this->subtreeMemoEnabled();
         $nextId = 1;
         $emitted = [];
 
-        if (! $memoEnabled) {
-            // Throwaway array — never read across frames.
+        if (! $memoEnabled || $this->forceFullFrames) {
+            // Throwaway array — never read across frames. Emits every node FULL
+            // (no REUSE markers), so there's no PHP↔native id desync to truncate
+            // the tree. Components with heavy dynamic lists opt in via
+            // $forceFullFrames to trade a little serialization cost for
+            // correctness while the keyed/positional REUSE desync is unsolved.
             $throwaway = [];
 
             return $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
@@ -201,7 +224,7 @@ abstract class NativeComponent
             $this->lastNodeHashes = [];
         }
 
-        return $element->toArray(
+        $tree = $element->toArray(
             $this->nativeCallbacks,
             $nextId,
             '',
@@ -209,6 +232,18 @@ abstract class NativeComponent
             $emitted,
             $this->lastNodeHashes,
         );
+
+        // Prune hashes for ids absent from this frame. When a conditional
+        // subtree unmounts (e.g. `@if(count($photos))` going empty), the
+        // native reader drops those nodes from its previousTree — but their
+        // hashes lingered here. If the subtree later remounts with identical
+        // content (same positional ids, same hash), toArray() would emit
+        // REUSE markers the native side can no longer splice, silently
+        // truncating the remounted subtree. Keeping only ids emitted this
+        // frame guarantees a remounting node always re-emits FULL.
+        $this->lastNodeHashes = array_intersect_key($this->lastNodeHashes, $emitted);
+
+        return $tree;
     }
 
     /**
@@ -874,10 +909,17 @@ abstract class NativeComponent
         $wasActive = NativeTagPrecompiler::setActive(true);
 
         try {
-            if ($compiler->isExpired($bladePath)) {
+            $compiledPath = $compiler->getCompiledPath($bladePath);
+
+            // Recompile when stale — or when the cached compiled file was
+            // produced WITHOUT the native precompiler (a web render or
+            // `view:cache` got there first), which would include as plain
+            // HTML and collect zero elements. Nested @includes get the
+            // same guard via NativeAwareCompilerEngine.
+            if ($compiler->isExpired($bladePath)
+                || ! NativeTagPrecompiler::compiledFileIsNative($compiledPath)) {
                 $compiler->compile($bladePath);
             }
-            $compiledPath = $compiler->getCompiledPath($bladePath);
 
             // Use the View's full data set — Factory injects `$__env` and other
             // helpers compiled views depend on (`@include`, `@yield`, the loop
@@ -1190,12 +1232,17 @@ abstract class NativeComponent
 
         foreach ($reflect->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
             // `On` is the Livewire-free attribute; `OnNative` is kept for
-            // backward compatibility (only instantiated when actually
-            // present, so projects without Livewire never trip its
-            // BaseOn parent).
+            // backward compatibility. IS_INSTANCEOF autoloads the filter
+            // class itself, and OnNative extends Livewire's BaseOn — so the
+            // legacy scan must be skipped entirely when Livewire isn't
+            // installed or every component fatals with "BaseOn not found".
+            // IS_INSTANCEOF so plugin attributes that extend On (e.g. the vibe
+            // plugin's #[OnEcho]) are discovered, not just literal #[On].
             $attributes = [
-                ...$method->getAttributes(On::class),
-                ...$method->getAttributes(OnNative::class),
+                ...$method->getAttributes(On::class, \ReflectionAttribute::IS_INSTANCEOF),
+                ...(class_exists(BaseOn::class)
+                    ? $method->getAttributes(OnNative::class, \ReflectionAttribute::IS_INSTANCEOF)
+                    : []),
             ];
 
             foreach ($attributes as $attribute) {
@@ -1203,6 +1250,39 @@ abstract class NativeComponent
                 $this->nativeEventListeners[$instance->event] = $method->getName();
             }
         }
+    }
+
+    /**
+     * Persistent closure listeners registered via the fluent ->on('Event', fn)
+     * API (e.g. Vibe::subscribe($ch)->on('Msg', fn ($e) => ...)). Keyed by event
+     * name; fired every time the event arrives, then cleared on unmount.
+     *
+     * @var array<string, array<int, \Closure>>
+     */
+    protected array $nativeEventClosures = [];
+
+    /**
+     * Register a persistent closure listener for a native event by name. The
+     * closure fires (rebound to this component) every time the event arrives.
+     * This is the generic primitive behind fluent APIs like Vibe's ->on().
+     */
+    public function registerNativeEventListener(string $event, \Closure $callback): void
+    {
+        $this->nativeEventClosures[$event][] = $callback;
+    }
+
+    /**
+     * Cleanup hooks run when this component unmounts (navigates away). Plugins
+     * like vibe register one to unsubscribe from channels / presence rooms so a
+     * screen exit also leaves the room.
+     *
+     * @var array<int, \Closure>
+     */
+    protected array $cleanupCallbacks = [];
+
+    public function registerCleanup(\Closure $callback): void
+    {
+        $this->cleanupCallbacks[] = $callback;
     }
 
     /**
@@ -1217,6 +1297,24 @@ abstract class NativeComponent
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
         $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
+
+        // Fluent closure listeners registered via ->on('Event', fn) — persistent
+        // and keyed by event name, so they fire every time the event arrives
+        // (unlike the one-shot camera callbacks above). The payload is exposed as
+        // a plain object so handlers can read $event->someField.
+        $closures = $this->nativeEventClosures[$eventName]
+            ?? $this->nativeEventClosures['native:'.$eventName]
+            ?? [];
+
+        if ($closures !== []) {
+            $eventObject = is_array($payload) ? (object) $payload : $payload;
+            foreach ($closures as $closure) {
+                $bound = ($closure instanceof \Closure && ! (new \ReflectionFunction($closure))->isStatic())
+                    ? \Closure::bind($closure, $this, static::class)
+                    : $closure;
+                $bound($eventObject);
+            }
+        }
 
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
@@ -1344,7 +1442,20 @@ abstract class NativeComponent
 
     public function unmount(): void
     {
-        //
+        // Run cleanup hooks (e.g. vibe unsubscribing from channels/presence
+        // rooms) before dropping listeners, so leaving a screen also leaves its
+        // channels. Best-effort — a failing hook must not break teardown.
+        foreach ($this->cleanupCallbacks as $cleanup) {
+            try {
+                $cleanup();
+            } catch (\Throwable $e) {
+                NativeRouter::debugLog('unmount cleanup failed: '.$e->getMessage());
+            }
+        }
+        $this->cleanupCallbacks = [];
+
+        // Drop fluent ->on() listeners so they don't leak onto the next screen.
+        $this->nativeEventClosures = [];
     }
 
     public function onResume(): void
@@ -1567,6 +1678,14 @@ abstract class NativeComponent
         static::registerDumpHandler();
 
         $this->nativeCallbacks ??= new CallbackRegistry;
+
+        // A navigation intent set during mount() — e.g. an auth gate calling
+        // $this->replace('/login') — must be honored: don't clear it and don't
+        // enter the loop, so the router navigates immediately.
+        if ($this->nativeNavigationIntent !== null) {
+            return;
+        }
+
         $this->nativeRunning = true;
         $this->nativeNavigationIntent = null;
 
@@ -1724,6 +1843,18 @@ abstract class NativeComponent
     public function getNavigationIntent(): ?NavigationIntent
     {
         return $this->nativeNavigationIntent;
+    }
+
+    /**
+     * Clear a consumed navigation intent. The router calls this after reading the
+     * intent so a component that STAYS on the stack (e.g. the launcher below a
+     * pushed screen) doesn't retain a stale intent that would re-fire when it's
+     * resumed — runLoop() honors an already-set intent (to support redirects from
+     * mount()), so a leftover one would bounce the user straight back.
+     */
+    public function resetNavigationIntent(): void
+    {
+        $this->nativeNavigationIntent = null;
     }
 
     /**

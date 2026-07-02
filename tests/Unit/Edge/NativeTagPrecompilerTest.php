@@ -23,17 +23,22 @@ it('is a no-op unless native compilation is active', function () {
 
 $collector = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
-it('compiles self-closing leaf elements', function () use ($collector) {
+// Every native compile is prefixed with the compiled-view marker, so the
+// render path can detect (and recompile) views cached by a web compile.
+$marker = '<?php '.NativeTagPrecompiler::COMPILED_MARKER.' ?>';
+
+it('compiles self-closing leaf elements', function () use ($collector, $marker) {
     $result = ($this->precompiler)('<native:spacer class="h-4" />');
 
-    expect($result)->toBe("<?php {$collector}::leaf('spacer', ['class' => 'h-4']); ?>");
+    expect($result)->toBe($marker."<?php {$collector}::leaf('spacer', ['class' => 'h-4']); ?>");
 });
 
-it('compiles container open and close tags', function () use ($collector) {
+it('compiles container open and close tags', function () use ($collector, $marker) {
     $result = ($this->precompiler)('<native:column fill class="p-4">content</native:column>');
 
     expect($result)->toBe(
-        "<?php {$collector}::open('column', ['fill' => true, 'class' => 'p-4']); ?>"
+        $marker
+        ."<?php {$collector}::open('column', ['fill' => true, 'class' => 'p-4']); ?>"
         .'content'
         ."<?php {$collector}::close(); ?>"
     );
@@ -124,10 +129,10 @@ it('handles multiple native tags in one template', function () {
     expect($result)->toContain('::close()');
 });
 
-it('handles self-closing tags without attributes', function () use ($collector) {
+it('handles self-closing tags without attributes', function () use ($collector, $marker) {
     $result = ($this->precompiler)('<native:divider />');
 
-    expect($result)->toBe("<?php {$collector}::leaf('divider', []); ?>");
+    expect($result)->toBe($marker."<?php {$collector}::leaf('divider', []); ?>");
 });
 
 it('handles boolean attributes', function () {

@@ -2,7 +2,6 @@
 
 namespace Native\Mobile\Edge;
 
-use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
@@ -86,12 +85,15 @@ class NativeElementCollector
             ? ''
             : end(static::$keyPathStack);
 
-        $key = $attrs['native:key'] ?? null;
+        // `native-key` is the precompiled form of `native:key` (the attr parser
+        // rejects ':' in names, so NativeTagPrecompiler renames it). Accept the
+        // raw colon form too for the programmatic/streaming paths.
+        $key = $attrs['native-key'] ?? $attrs['native:key'] ?? null;
         if ($key === null) {
             return [0, $parentPath];
         }
 
-        unset($attrs['native:key']);
+        unset($attrs['native-key'], $attrs['native:key']);
         $myKeyPath = $parentPath.'/'.((string) $key);
 
         return [Element::fnv1a32($myKeyPath), $myKeyPath];
@@ -190,7 +192,7 @@ class NativeElementCollector
 
         // Phase 1 — leaves derive an id from `native:key` but don't
         // push onto the path stack (no children to inherit it).
-        [$nodeId, /* $myKeyPath unused for leaves */] = static::resolveStreamingKey($attrs);
+        [$nodeId/* $myKeyPath unused for leaves */] = static::resolveStreamingKey($attrs);
 
         $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
@@ -362,10 +364,10 @@ class NativeElementCollector
             || isset($attrs['positionBottom']) || isset($attrs['positionLeft'])) {
             // [top, right, bottom, left] — same order as Element::insets()
             $layout['position'] = [
-                (float) ($attrs['positionTop']    ?? 0),
-                (float) ($attrs['positionRight']  ?? 0),
+                (float) ($attrs['positionTop'] ?? 0),
+                (float) ($attrs['positionRight'] ?? 0),
                 (float) ($attrs['positionBottom'] ?? 0),
-                (float) ($attrs['positionLeft']   ?? 0),
+                (float) ($attrs['positionLeft'] ?? 0),
             ];
         }
 
@@ -440,7 +442,9 @@ class NativeElementCollector
         // fallback) AND a companion `{key}_sv` string that the native
         // renderer parses to subscribe to live updates.
         foreach (['translate-x', 'translate-y', 'scale', 'rotate'] as $key) {
-            if (! isset($attrs[$key])) continue;
+            if (! isset($attrs[$key])) {
+                continue;
+            }
             $value = $attrs[$key];
             if ($value instanceof SharedValue) {
                 $props[$key] = $value->value();         // initial / current snapshot
@@ -675,13 +679,14 @@ class NativeElementCollector
             unset($attrs['class']);
         }
 
-        // Phase 1 — pull `native:key` off here so applyAttributes
-        // downstream doesn't see it and route it as a prop. Element's
-        // toArray() turns the key into a stable hashed nodeId via the
+        // Phase 1 — pull the key off here so applyAttributes downstream doesn't
+        // see it and route it as a prop. `native-key` is the precompiled form of
+        // `native:key` (the attr parser rejects ':'); accept the colon form too.
+        // Element's toArray() turns the key into a stable hashed nodeId via the
         // same FNV-1a path the streaming collector uses.
-        $key = $attrs['native:key'] ?? null;
+        $key = $attrs['native-key'] ?? $attrs['native:key'] ?? null;
         if ($key !== null) {
-            unset($attrs['native:key']);
+            unset($attrs['native-key'], $attrs['native:key']);
         }
 
         $element = match ($type) {
@@ -832,10 +837,10 @@ class NativeElementCollector
         if (isset($attrs['positionTop']) || isset($attrs['positionRight'])
             || isset($attrs['positionBottom']) || isset($attrs['positionLeft'])) {
             $element->insets(
-                (float) ($attrs['positionTop']    ?? 0),
-                (float) ($attrs['positionRight']  ?? 0),
+                (float) ($attrs['positionTop'] ?? 0),
+                (float) ($attrs['positionRight'] ?? 0),
                 (float) ($attrs['positionBottom'] ?? 0),
-                (float) ($attrs['positionLeft']   ?? 0),
+                (float) ($attrs['positionLeft'] ?? 0),
             );
         }
     }
@@ -870,6 +875,12 @@ class NativeElementCollector
 
     protected static function applyCallbacks(Element $element, array $attrs): void
     {
+        // Test-targeting handle (`ref="save-btn"`) — generic across all
+        // element types, like the callback attrs below.
+        if (isset($attrs['ref'])) {
+            $element->ref((string) $attrs['ref']);
+        }
+
         if (isset($attrs['_press'])) {
             $element->onPress($attrs['_press']);
         }

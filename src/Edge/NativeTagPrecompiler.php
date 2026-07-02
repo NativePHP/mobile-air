@@ -45,6 +45,44 @@ class NativeTagPrecompiler
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
     /**
+     * Marker stamped into every natively-compiled view (prepended to the
+     * template as a raw PHP block, so it survives Blade compilation into
+     * the compiled file's first bytes).
+     *
+     * Blade's compiled-view cache is keyed by path + mtime only — whether
+     * THIS precompiler was active is not part of the key. So a view first
+     * compiled by a web render (or `artisan view:cache`) is cached with
+     * its native tags untouched, and a later native render would include
+     * that poisoned file and collect zero elements ("No root element was
+     * built by the Blade template"). The marker makes compiled output
+     * self-describing: the native render path force-recompiles any
+     * compiled file that lacks it. See compiledFileIsNative().
+     */
+    public const COMPILED_MARKER = '/*nphp:native*/';
+
+    /**
+     * Whether the compiled file at $compiledPath was produced with this
+     * precompiler active. Missing files return false; the caller's
+     * compile() handles both cases identically.
+     *
+     * Deliberately unmemoized: in a long-lived dev-server process a web
+     * request can recompile the same view without the marker between
+     * native frames, so a cached "marked" answer could go stale. The
+     * marker sits in the file's first bytes — a 256-byte head read per
+     * view per frame is noise next to the render itself.
+     */
+    public static function compiledFileIsNative(string $compiledPath): bool
+    {
+        if (! is_file($compiledPath)) {
+            return false;
+        }
+
+        $head = @file_get_contents($compiledPath, false, null, 0, 256);
+
+        return $head !== false && str_contains($head, self::COMPILED_MARKER);
+    }
+
+    /**
      * Whether native-tag transformation is currently active.
      *
      * The precompiler is registered globally on the Blade compiler, so it is
@@ -119,6 +157,10 @@ class NativeTagPrecompiler
             return $value;
         }
 
+        // Stamp the compiled output as natively-compiled (see COMPILED_MARKER).
+        // No trailing newline — line numbers in compile errors stay unchanged.
+        $value = '<?php '.self::COMPILED_MARKER.' ?>'.$value;
+
         // Expand `native:model="propName"` (with optional Livewire-style
         // modifiers) into the equivalent `:value` + `_change` + `sync-mode`
         // attribute set. Supported shapes:
@@ -165,6 +207,15 @@ class NativeTagPrecompiler
             ).'"',
             $value
         );
+
+        // Rename `native:key="…"` → `native-key="…"` so the attribute parser
+        // (which rejects ':' in names) preserves it. This is a pure name rename
+        // (value untouched, so blade expressions like "{{ $m['id'] }}" survive),
+        // giving list items a stable node id (FNV-1a hash of parent_path/key) —
+        // the blade equivalent of ->key() in the programmatic path. Keyed items
+        // keep their identity as a list grows/reorders, instead of falling back
+        // to positional ids that shift following siblings.
+        $value = str_replace('native:key=', 'native-key=', $value);
 
         // Expand @navigate directives into :_navigate dynamic attribute
         // Short style:  @navigate.fade='/route'  or  @navigate='/route'

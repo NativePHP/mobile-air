@@ -12,8 +12,8 @@ class NativeRouter
     {
         $logPath = function_exists('storage_path')
             ? storage_path('logs/edge-nav.log')
-            : sys_get_temp_dir() . '/edge-nav.log';
-        @file_put_contents($logPath, date('[H:i:s.') . substr(microtime(), 2, 3) . '] ' . $msg . "\n", FILE_APPEND);
+            : sys_get_temp_dir().'/edge-nav.log';
+        @file_put_contents($logPath, date('[H:i:s.').substr(microtime(), 2, 3).'] '.$msg."\n", FILE_APPEND);
     }
 
     /**
@@ -268,7 +268,8 @@ class NativeRouter
                 }
                 $component->mount();
             } catch (\Throwable $e) {
-                static::debugLog("preloadStack: skipped $uri — " . $e->getMessage());
+                static::debugLog("preloadStack: skipped $uri — ".$e->getMessage());
+
                 continue;
             }
 
@@ -286,7 +287,7 @@ class NativeRouter
      * Entry point. Init shared memory, run the navigation loop,
      * shutdown when done.
      *
-     * @return string|null  Exit URI for redirect, or null
+     * @return string|null Exit URI for redirect, or null
      */
     public function start(string $class, array $params = [], string $uri = ''): ?string
     {
@@ -313,7 +314,8 @@ class NativeRouter
 
             return $this->loop();
         } catch (\Throwable $e) {
-            static::debugLog("start EXCEPTION: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+            static::debugLog('start EXCEPTION: '.$e->getMessage()."\n".$e->getTraceAsString());
+
             return null;
         } finally {
             nativephp_element_shutdown();
@@ -332,34 +334,40 @@ class NativeRouter
             $entry = &$this->stack[count($this->stack) - 1];
             $component = $entry['component'];
 
-            static::debugLog("loop: top, component=" . get_class($component) . " freshPush=" . ($freshPush ? 'Y' : 'N') . " stack=" . count($this->stack));
+            static::debugLog('loop: top, component='.get_class($component).' freshPush='.($freshPush ? 'Y' : 'N').' stack='.count($this->stack));
 
             try {
                 if ($freshPush) {
                     // For #[Lazy] screens, paint the placeholder before the
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
-                    static::debugLog("loop: calling mount() on " . get_class($component));
+                    static::debugLog('loop: calling mount() on '.get_class($component));
                     $component->mount();
                 } else {
-                    static::debugLog("loop: calling onResume() on " . get_class($component));
+                    static::debugLog('loop: calling onResume() on '.get_class($component));
                     $component->onResume();
                 }
             } catch (NativeDumpException $e) {
                 $component->renderDumpScreen($e);
             } catch (\Throwable $e) {
-                static::debugLog("mount/onResume FAILED in " . get_class($component) . ": " . $e->getMessage());
+                static::debugLog('mount/onResume FAILED in '.get_class($component).': '.$e->getMessage());
                 $component->renderErrorScreen($e);
             }
 
-            static::debugLog("loop: entering runLoop() on " . get_class($component));
+            static::debugLog('loop: entering runLoop() on '.get_class($component));
             $component->runLoop();
-            static::debugLog("loop: runLoop() returned on " . get_class($component));
+            static::debugLog('loop: runLoop() returned on '.get_class($component));
 
             $intent = $component->getNavigationIntent();
 
+            // Consume it: a component that stays on the stack (the one below a
+            // push) must not keep a stale intent, or runLoop()'s "honor an
+            // intent set during mount()" path would re-fire it on resume and
+            // bounce the user forward again.
+            $component->resetNavigationIntent();
+
             if ($intent === null) {
-                static::debugLog("loop: no intent, popping " . get_class($component));
+                static::debugLog('loop: no intent, popping '.get_class($component));
                 $component->unmount();
                 array_pop($this->stack);
                 $freshPush = false;
@@ -371,7 +379,7 @@ class NativeRouter
                 continue;
             }
 
-            static::debugLog("loop: intent type={$intent->type} uri={$intent->uri} stack=" . count($this->stack));
+            static::debugLog("loop: intent type={$intent->type} uri={$intent->uri} stack=".count($this->stack));
 
             switch ($intent->type) {
                 case NavigationIntent::NAVIGATE:
@@ -379,7 +387,7 @@ class NativeRouter
                     $resolved = static::resolve($intent->uri);
 
                     if ($resolved === null) {
-                        static::debugLog("NAVIGATE: unresolved, exiting to web");
+                        static::debugLog('NAVIGATE: unresolved, exiting to web');
                         $component->unmount();
                         $this->stack = [];
 
@@ -398,7 +406,7 @@ class NativeRouter
                     if (! empty($resolved['layout'])) {
                         $next->setLayout($resolved['layout']);
                     }
-                    static::debugLog("NAVIGATE: component created, pushing to stack");
+                    static::debugLog('NAVIGATE: component created, pushing to stack');
 
                     $this->stack[] = [
                         'component' => $next,
@@ -410,17 +418,18 @@ class NativeRouter
                     break;
 
                 case NavigationIntent::BACK:
-                    static::debugLog("BACK: popping " . get_class($component));
+                    static::debugLog('BACK: popping '.get_class($component));
                     $component->unmount();
                     array_pop($this->stack);
                     $freshPush = false;
 
                     if (empty($this->stack)) {
-                        static::debugLog("BACK: stack empty, returning null");
+                        static::debugLog('BACK: stack empty, returning null');
+
                         return null;
                     }
 
-                    static::debugLog("BACK: deferring transition, stack=" . count($this->stack));
+                    static::debugLog('BACK: deferring transition, stack='.count($this->stack));
                     $this->deferredTransition = $intent->transition ?? Transition::SlideFromLeft;
                     break;
 
@@ -429,7 +438,7 @@ class NativeRouter
                     $resolved = static::resolve($intent->uri);
 
                     if ($resolved === null) {
-                        static::debugLog("REPLACE: unresolved, exiting to web");
+                        static::debugLog('REPLACE: unresolved, exiting to web');
                         $component->unmount();
                         $this->stack = [];
 
@@ -440,7 +449,7 @@ class NativeRouter
                     $component->unmount();
                     array_pop($this->stack);
 
-                    static::debugLog("REPLACE: deferring transition, stack=" . count($this->stack));
+                    static::debugLog('REPLACE: deferring transition, stack='.count($this->stack));
                     $this->deferredTransition = $intent->transition ?? Transition::Fade;
 
                     try {
@@ -460,9 +469,10 @@ class NativeRouter
                             'params' => $resolved['params'],
                         ];
 
-                        static::debugLog("REPLACE: pushed " . get_class($next) . " to stack");
+                        static::debugLog('REPLACE: pushed '.get_class($next).' to stack');
                     } catch (\Throwable $e) {
-                        static::debugLog("REPLACE FAILED: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+                        static::debugLog('REPLACE FAILED: '.$e->getMessage()."\n".$e->getTraceAsString());
+
                         return null;
                     }
 
@@ -477,7 +487,7 @@ class NativeRouter
                     return $intent->uri;
 
                 case NavigationIntent::RESTART:
-                    static::debugLog("RESTART: hot reload — PHP will exit, Kotlin handles re-execution");
+                    static::debugLog('RESTART: hot reload — PHP will exit, Kotlin handles re-execution');
                     // Unmount the entire stack — clean exit
                     while (! empty($this->stack)) {
                         $this->stack[count($this->stack) - 1]['component']->unmount();
@@ -489,7 +499,8 @@ class NativeRouter
             }
         }
 
-        static::debugLog("loop: stack empty, returning null");
+        static::debugLog('loop: stack empty, returning null');
+
         return null;
     }
 
