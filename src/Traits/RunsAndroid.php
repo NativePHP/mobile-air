@@ -527,7 +527,9 @@ XML;
             $apkPath = base_path('nativephp/android/app/build/outputs/apk/debug/app-debug.apk');
             $installCmd = "$adbCommand -s $targetDeviceId install -r \"$apkPath\"";
             $this->logToFile("Installing APK: $installCmd");
-            $installResult = Process::run($installCmd);
+            // Debug APKs are large (~200MB+); a cold emulator can exceed the
+            // default 60s Process timeout mid-install. Give it room.
+            $installResult = Process::timeout(300)->run($installCmd);
 
             if (! $installResult->successful()) {
                 $this->logToFile('ERROR: APK installation failed');
