@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Commands;
 
+use Endroid\QrCode\Builder\Builder;
 use Illuminate\Console\Command;
 
 use function Laravel\Prompts\intro;
@@ -176,9 +177,6 @@ class JumpCommand extends Command
         $this->displayServerInfo($host, $httpPort, $this->laravelPort);
         $this->displayTerminalQrCode($this->displayHost, $httpPort);
 
-        // Advertise on the LAN so the app can discover this server without a QR.
-        $this->advertiseOnNetwork($httpPort);
-
         // Build the PHP server command
         $phpBinary = PHP_BINARY;
         $serverHost = $host === '0.0.0.0' ? '0.0.0.0' : $host;
@@ -212,15 +210,34 @@ class JumpCommand extends Command
         // Close stdin - we don't need to write to the server
         fclose($pipes[0]);
 
+        // Advertise on the LAN only once the router actually answers — an ad
+        // for a server that failed to start manufactures phantom "server
+        // nearby" pills that time out on tap.
+        for ($i = 0; $i < 50; $i++) { // 5s max
+            if ($this->isPortInUse($httpPort)) {
+                $this->advertiseOnNetwork($httpPort);
+                break;
+            }
+            usleep(100000);
+        }
+        if (! is_resource($this->mdnsProcess)) {
+            $this->warn($this->isPortInUse($httpPort)
+                ? 'LAN discovery unavailable (no dns-sd/avahi) — use the QR code.'
+                : "Server did not start on port {$httpPort} — not advertising on the network.");
+        }
+
+        // The advertiser must never outlive the server: an orphaned dns-sd
+        // keeps announcing a phantom server until some future run sweeps it.
+        // register_shutdown_function covers normal return, exit() and fatals.
+        register_shutdown_function([$this, 'stopAdvertiser']);
+
         // Handle signals for graceful shutdown
         if (function_exists('pcntl_signal')) {
-            $shutdown = function () use ($process, &$pipes) {
+            $shutdown = function () use ($process, &$pipes, $httpPort, $wsPort, $bridgePort, $viteProxyPort) {
                 $this->newLine();
                 $this->components->info('Shutting down...');
                 $this->stopLaravelServer();
-                if (is_resource($this->mdnsProcess)) {
-                    proc_terminate($this->mdnsProcess);
-                }
+                $this->stopAdvertiser();
                 if (is_resource($pipes[1])) {
                     fclose($pipes[1]);
                 }
@@ -228,6 +245,7 @@ class JumpCommand extends Command
                     fclose($pipes[2]);
                 }
                 proc_terminate($process);
+                $this->reapOwnedPorts($httpPort, $wsPort, $bridgePort, $viteProxyPort);
                 exit(0);
             };
             pcntl_signal(SIGINT, $shutdown);
@@ -299,11 +317,53 @@ class JumpCommand extends Command
             usleep(10000); // 10ms
         }
 
-        // Cleanup
+        // Cleanup (router died on its own — crash or external kill). Stop the
+        // advertiser FIRST: leaving it running orphans `dns-sd -R` to launchd,
+        // which keeps announcing a phantom server the app can discover but
+        // never reach.
+        $this->stopAdvertiser();
         $this->stopLaravelServer();
         fclose($pipes[1]);
         fclose($pipes[2]);
         proc_close($process);
+        $this->reapOwnedPorts($httpPort, $wsPort, $bridgePort, $viteProxyPort);
+    }
+
+    /**
+     * Terminate the mDNS/Bonjour advertiser subprocess. When `dns-sd -R`
+     * exits, mDNSResponder deregisters the service and multicasts goodbye
+     * packets, so browsing devices drop the entry within seconds instead of
+     * caching it for the record TTL (up to 75 minutes).
+     */
+    public function stopAdvertiser(): void
+    {
+        if (is_resource($this->mdnsProcess)) {
+            proc_terminate($this->mdnsProcess);
+            proc_close($this->mdnsProcess);
+            $this->mdnsProcess = null;
+        }
+    }
+
+    /**
+     * Kill every process still listening on this instance's ports — the same
+     * reap cleanupDeadInstances() performs for crashed runs, applied at our own
+     * shutdown. proc_terminate() only signals direct children: it misses the
+     * php -S workers artisan serve leaves behind (SIGTERM kills artisan serve
+     * before its Process destructor stops them) and the bridge server, which
+     * runs fully detached. In --no-serve mode the Laravel server belongs to the
+     * user, so its port is left alone.
+     */
+    private function reapOwnedPorts(int $httpPort, int $wsPort, int $bridgePort, int $viteProxyPort): void
+    {
+        $ports = [$httpPort, $wsPort, $bridgePort, $viteProxyPort];
+
+        if (! $this->option('no-serve')) {
+            $ports[] = $this->laravelPort;
+        }
+
+        foreach ($ports as $port) {
+            $this->killListenersOnPort($port);
+        }
     }
 
     /**
@@ -497,13 +557,13 @@ class JumpCommand extends Command
     private function displayTerminalQrCode(string $host, int $port): void
     {
         try {
-            if (! class_exists(\Endroid\QrCode\Builder\Builder::class)) {
+            if (! class_exists(Builder::class)) {
                 return;
             }
 
             $qrData = "jump://connect?host={$host}&port={$port}";
 
-            $result = (new \Endroid\QrCode\Builder\Builder(
+            $result = (new Builder(
                 data: $qrData,
                 size: 300,
                 margin: 2,
@@ -613,7 +673,11 @@ class JumpCommand extends Command
      */
     private function advertiseOnNetwork(int $httpPort): void
     {
-        $ip = $this->getLocalIpAddress() ?: '127.0.0.1';
+        // Advertise the SAME host the QR encodes ($displayHost is the
+        // user-selected interface on multi-homed machines). Falling back to
+        // getLocalIpAddress() here could point the pill at an interface the
+        // phone can't reach while the QR works.
+        $ip = $this->displayHost ?: ($this->getLocalIpAddress() ?: '127.0.0.1');
         $label = basename(base_path());
 
         // TXT records carry the reachable LAN IP, port and a friendly name, so
@@ -837,6 +901,13 @@ APPLESCRIPT;
         return trim((string) @shell_exec('ps -p '.$pid.' -o pid= 2>/dev/null')) !== '';
     }
 
+    /**
+     * Kill jump-owned processes still listening on a port. IDENTITY-CHECKED:
+     * a port recorded by a crashed instance may have since been re-bound by a
+     * completely unrelated process (any `artisan serve`, a docker proxy, …) —
+     * blindly `kill -9`-ing by port number executes innocents. Only processes
+     * whose command line is recognizably part of a jump run are killed.
+     */
     private function killListenersOnPort(int $port): void
     {
         if ($port <= 0) {
@@ -846,11 +917,55 @@ APPLESCRIPT;
         if ($out === '') {
             return;
         }
-        foreach (preg_split('/\s+/', $out) as $pid) {
-            if (is_numeric($pid) && (int) $pid !== getmypid()) {
-                @exec('kill -9 '.(int) $pid.' 2>/dev/null');
+        foreach (array_unique(preg_split('/\s+/', $out)) as $pid) {
+            if (! is_numeric($pid) || (int) $pid === getmypid()) {
+                continue;
             }
+
+            $info = trim((string) @shell_exec('ps -p '.(int) $pid.' -o ppid=,command= 2>/dev/null'));
+            if ($info === '' || ! preg_match('/^\s*(\d+)\s+(.*)$/s', $info, $m)) {
+                continue;
+            }
+            $ppid = (int) $m[1];
+            $command = trim($m[2]);
+
+            if (! $this->isJumpOwnedProcess($command, $ppid)) {
+                $this->warn("Port {$port} is held by an unrelated process (pid {$pid}) — leaving it alone.");
+
+                continue;
+            }
+
+            @exec('kill -9 '.(int) $pid.' 2>/dev/null');
         }
+    }
+
+    /**
+     * Does this command line belong to a process a `native:jump` run spawns?
+     * Matches the jump router, the bridge server, mDNS advertisers, the
+     * MANAGED `artisan serve` (identified by the `--no-reload` flag jump
+     * always passes — a user's own `artisan serve` doesn't have it), and
+     * ORPHANED `php -S … server.php` workers (PPID 1 — a live user server's
+     * workers still have their artisan parent).
+     */
+    private function isJumpOwnedProcess(string $command, int $ppid): bool
+    {
+        if (str_contains($command, 'resources/jump/router.php')
+            || str_contains($command, 'resources/jump/websocket-server.php')
+            || str_contains($command, '_jump._tcp')) {
+            return true;
+        }
+
+        if (preg_match('/artisan[\'"]? serve/', $command) && str_contains($command, '--no-reload')) {
+            return true;
+        }
+
+        if ($ppid === 1
+            && preg_match('/php[^ ]* -S 127\.0\.0\.1:\d+/', $command)
+            && str_contains($command, 'server.php')) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
