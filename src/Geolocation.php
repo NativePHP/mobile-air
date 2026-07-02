@@ -28,6 +28,38 @@ class Geolocation
     }
 
     /**
+     * Stream continuous location updates (the web watchPosition() equivalent).
+     * Each native fix dispatches a LocationUpdated event correlated by the
+     * watch id; attach a persistent handler with ->locationUpdated().
+     *
+     * Example:
+     *   $this->watchId = Geolocation::watchPosition(fineAccuracy: true)
+     *       ->minDistance(5)
+     *       ->locationUpdated(fn ($e) => [$this->lat, $this->lng] = [$e->latitude, $e->longitude])
+     *       ->getId();
+     *
+     * The watch stops when the component unmounts, or earlier via
+     * Geolocation::clearWatch($watchId). Foreground-only.
+     *
+     * @param  bool  $fineAccuracy  Whether to use high accuracy mode (GPS vs network)
+     */
+    public function watchPosition(bool $fineAccuracy = false): PendingLocationWatch
+    {
+        return (new PendingLocationWatch)
+            ->fineAccuracy($fineAccuracy);
+    }
+
+    /**
+     * Stop a location watch started with watchPosition(). No-op for unknown ids.
+     */
+    public function clearWatch(string $id): void
+    {
+        if (function_exists('nativephp_call')) {
+            nativephp_call('Geolocation.ClearWatch', json_encode(['id' => $id]));
+        }
+    }
+
+    /**
      * Check current location permissions status.
      * Returns a PendingGeolocation instance for fluent API usage.
      *
