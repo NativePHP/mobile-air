@@ -24,19 +24,39 @@ class Platform
     private static ?string $platform = null;
     private static bool $detected = false;
 
+    /** Throttle re-detection after a failed attempt (see current()). */
+    private static ?float $lastFailedAttempt = null;
+
     /**
-     * Return `'ios'` / `'android'` / `null`. Cached after first call.
+     * Return `'ios'` / `'android'` / `null`. Cached after first SUCCESSFUL
+     * detection.
+     *
+     * Failure is deliberately NOT cached: detection is a bridge round-trip
+     * (Device.GetInfo), and in Jump dev mode the first render of a session
+     * can race the device's WebSocket attach — the call fails once, and a
+     * cached failure would poison this long-lived `php -S` worker (and the
+     * element runloop request, which lives for the whole screen) so every
+     * platform-resolved icon/variant it ever renders comes out null/blank.
+     * Instead, failed attempts are retried, throttled to one bridge probe
+     * every 2s so hot paths (Tailwind parser, icon resolver) never pay a
+     * bridge timeout per call.
      */
     public static function current(): ?string
     {
         if (self::$detected) {
             return self::$platform;
         }
-        self::$detected = true;
 
         // Defensive — no bridge available outside the mobile runtime.
         if (! function_exists('nativephp_call')
             || ! class_exists(\Native\Mobile\Facades\System::class)) {
+            self::$detected = true;
+
+            return self::$platform;
+        }
+
+        if (self::$lastFailedAttempt !== null
+            && (microtime(true) - self::$lastFailedAttempt) < 2.0) {
             return self::$platform;
         }
 
@@ -48,6 +68,13 @@ class Platform
             }
         } catch (\Throwable) {
             // Leave null — System wasn't ready.
+        }
+
+        if (self::$platform !== null) {
+            self::$detected = true;
+            self::$lastFailedAttempt = null;
+        } else {
+            self::$lastFailedAttempt = microtime(true);
         }
 
         return self::$platform;
@@ -75,5 +102,6 @@ class Platform
     {
         self::$platform = $platform;
         self::$detected = $platform !== null;
+        self::$lastFailedAttempt = null;
     }
 }
