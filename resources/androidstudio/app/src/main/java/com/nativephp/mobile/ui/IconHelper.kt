@@ -289,8 +289,8 @@ private fun getManualMapping(iconName: String): String? {
         "minus.circle", "minus.circle.fill" -> "remove_circle"
         "pencil", "pencil.circle" -> "edit"
         "trash", "trash.fill" -> "delete"
-        "square.and.arrow.up" -> "share"
-        "square.and.arrow.down" -> "download"
+        "square.and.arrow.up", "square.and.arrow.up.fill" -> "share"
+        "square.and.arrow.down", "square.and.arrow.down.fill" -> "download"
         "magnifyingglass" -> "search"
         "arrow.clockwise" -> "refresh"
         "arrow.2.circlepath" -> "sync"
@@ -400,6 +400,37 @@ private fun getManualMapping(iconName: String): String? {
         "sun.max", "sun.max.fill" -> "light_mode"
         "cloud", "cloud.fill" -> "cloud"
         "location.fill" -> "my_location"
+
+        // SF Symbols — Notifications & messaging
+        "bell.badge", "bell.badge.fill" -> "notifications_active"
+        "bell.slash", "bell.slash.fill" -> "notifications_off"
+        "tray.full", "tray.full.fill" -> "inbox"
+        "exclamationmark.bubble", "exclamationmark.bubble.fill" -> "feedback"
+        "text.bubble", "text.bubble.fill" -> "sms"
+
+        // SF Symbols — System & hardware (extended)
+        "iphone.radiowaves.left.and.right" -> "vibration"
+        "safari", "safari.fill" -> "explore"
+        "faceid" -> "face"
+        "checkmark.shield", "checkmark.shield.fill" -> "verified_user"
+        "creditcard", "creditcard.fill" -> "credit_card"
+
+        // SF Symbols — Location (extended)
+        "location.north.line", "location.north.line.fill" -> "navigation"
+        "location.viewfinder" -> "gps_fixed"
+
+        // SF Symbols — Media transport
+        "play", "play.fill" -> "play_arrow"
+        "pause", "pause.fill" -> "pause"
+        "stop", "stop.fill" -> "stop"
+        "photo.on.rectangle", "photo.on.rectangle.angled" -> "photo_library"
+
+        // SF Symbols — Time & misc (extended)
+        "calendar.badge.plus" -> "event"
+        "clock.arrow.circlepath" -> "history"
+        "rectangle.and.hand.point.up.left", "rectangle.and.hand.point.up.left.fill" -> "touch_app"
+        "infinity" -> "all_inclusive"
+        "zzz" -> "bedtime"
 
         // SF Symbols — Gestures, effects & misc (added for the demo launcher)
         "hand.tap", "hand.tap.fill" -> "touch_app"
