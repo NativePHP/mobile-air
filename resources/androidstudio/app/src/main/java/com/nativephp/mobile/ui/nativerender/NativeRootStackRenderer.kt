@@ -9,6 +9,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -255,6 +256,17 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // AnimatedContent slides between stack levels. Direction
         // discrimination (push vs pop) would need state we don't have
         // handy here; the symmetric slide is acceptable for now.
+        //
+        // The Scaffold padding tracks the CURRENT bar, which swaps
+        // instantly when activeUri changes. Applying it to the
+        // AnimatedContent wrapper re-anchored both sliding levels to the
+        // new bar height mid-slide, so a push between levels whose bars
+        // differ in height (large title + search vs small bar) read as a
+        // diagonal slide. Each level is padded individually instead: the
+        // entering level uses the live padding, the exiting level keeps
+        // the padding it was last laid out with, and each level's
+        // vertical origin stays fixed for the whole slide.
+        val levelPaddings = remember { HashMap<String, PaddingValues>() }
         AnimatedContent(
             targetState = activeUri,
             transitionSpec = {
@@ -263,9 +275,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     slideOutHorizontally(intSpec) { -it }
             },
             label = "stack-level",
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+            modifier = Modifier.fillMaxSize()
         ) { uri ->
             // The TopAppBar's nested-scroll connection is attached HERE —
             // directly wrapping the screen content — rather than on the
@@ -279,7 +289,13 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 Modifier
             }
-            Box(modifier = scrollModifier.fillMaxSize()) {
+            val levelPadding = if (uri == activeUri) {
+                levelPaddings[uri] = padding
+                padding
+            } else {
+                levelPaddings[uri] ?: padding
+            }
+            Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
                 val levelNode = coordinator.rootNodeCache[uri]
                 val levelContent = levelNode?.children?.firstOrNull {
                     it.type != "top_bar_action" && !NativeRootHostRegistry.consumes(it.type)

@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -316,6 +317,15 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         val pendingTransition by NativeUIBridge.pendingTransition
         val targetKey = "$activeTabIdx|$currentUri"
 
+        // Scaffold padding follows the current screen's bars (nav bar
+        // presence, hidden tab bar), which swap instantly on navigation.
+        // Padding the AnimatedContent wrapper re-anchored both sliding
+        // screens to the new bar heights mid-transition, turning a
+        // horizontal push into a diagonal slide whenever the two screens'
+        // bars differ. Pad each screen individually instead: entering
+        // uses the live padding, exiting keeps the padding it was last
+        // laid out with.
+        val screenPaddings = remember { HashMap<String, PaddingValues>() }
         AnimatedContent(
             targetState = targetKey,
             transitionSpec = {
@@ -328,12 +338,20 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 }
             },
             label = "tab-content",
-            modifier = Modifier.fillMaxSize().padding(padding)
-        ) { _ ->
-            if (screenContent != null) {
-                NodeView(node = screenContent)
+            modifier = Modifier.fillMaxSize()
+        ) { key ->
+            val screenPadding = if (key == targetKey) {
+                screenPaddings[key] = padding
+                padding
             } else {
-                Box(modifier = Modifier.fillMaxSize())
+                screenPaddings[key] ?: padding
+            }
+            Box(modifier = Modifier.fillMaxSize().padding(screenPadding)) {
+                if (screenContent != null) {
+                    NodeView(node = screenContent)
+                } else {
+                    Box(modifier = Modifier.fillMaxSize())
+                }
             }
         }
     }
