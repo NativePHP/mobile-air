@@ -899,9 +899,23 @@ class BuildIosAppCommand extends Command
         $escapedAppPath = escapeshellarg($this->appPath);
         $escapedZipPath = escapeshellarg($zipPath);
 
-        $command = $this->option('release')
-            ? "cd {$escapedAppPath} && zip -9 -r {$escapedZipPath} . -x '*.DS_Store' '*/.*'"
-            : "cd {$escapedAppPath} && zip -0 -r {$escapedZipPath} . -x '*.DS_Store' '*/.*'";
+        // Build-time-only artifacts that don't belong in the runtime bundle —
+        // mirrors the Android packer's exclusions (see PreparesBuild). Biggest
+        // win is the native project templates/headers under mobile/resources
+        // (~11 MB of Android C/PHP headers alone), which the runtime app never
+        // reads. The `vendor/*/vendor/...` glob also drops nested duplicates
+        // that slip in when a plugin ships its own vendor/ dir. In `zip`'s
+        // matcher `*` spans `/`, so each prefix excludes the whole subtree.
+        $excludes = "-x '*.DS_Store' '*/.*'"
+            ." 'vendor/nativephp/mobile/resources/*'"
+            ." 'vendor/*/vendor/nativephp/mobile/resources/*'"
+            ." 'vendor/nativephp/mobile/vendor/*'"
+            ." 'vendor/endroid/*'";
+
+        // -9 max compression for release; -0 (stored) in debug for faster
+        // build + boot at the cost of on-disk size.
+        $level = $this->option('release') ? '-9' : '-0';
+        $command = "cd {$escapedAppPath} && zip {$level} -r {$escapedZipPath} . {$excludes}";
 
         $result = Process::run($command);
 
