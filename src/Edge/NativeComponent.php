@@ -1809,10 +1809,7 @@ abstract class NativeComponent
             if (($event['type'] ?? -1) === 8) {
                 if ($this->nativeHasError) {
                     // Dismiss error/dump screen and re-render the component
-                    $this->nativeHasError = false;
-                    $this->dumpException = null;
-                    $this->errorException = null;
-                    $this->overlayCallbackIds = [];
+                    $this->clearOverlayState();
 
                     continue;
                 }
@@ -2051,71 +2048,81 @@ abstract class NativeComponent
         $this->nativeCallbacks ??= new CallbackRegistry;
 
         try {
-            $screen = Elements\ScrollView::make()
-                ->fill()
-                ->bg('#FEF2F2')
-                ->safeArea();
+            $screen = Column::make()->fill()->bg('#FEF2F2')->safeArea();
 
-            $content = Column::make()
-                ->fillWidth()
-                ->padding(20, 20, 40, 20)
-                ->gap(10);
+            // ── Fixed header ──
+            $header = Column::make()->fillWidth()->padding(24, 20, 12, 20)->gap(4);
+            $this->overlayAddText($header, 'Something went wrong', ['fontSize' => 22, 'fontWeight' => 7, 'color' => '#7F1D1D']);
+            $this->overlayAddText($header, class_basename($e).' · '.class_basename(static::class), ['fontSize' => 13, 'color' => '#B91C1C']);
 
-            $title = $this->resolveElement('text', ['text' => 'Exception', 'fontSize' => 22, 'fontWeight' => 7, 'color' => '#991B1B']);
-            if ($title) {
-                $content->addChild($title);
-            }
-
-            $file = str_replace(base_path().'/', '', $e->getFile());
-            $location = $this->resolveElement('text', ['text' => "{$file}:{$e->getLine()}", 'fontSize' => 12, 'color' => '#9CA3AF']);
-            if ($location) {
-                $content->addChild($location);
-            }
-
-            // Font size slider
-            $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#DC2626', 'trackColor' => '#991B1B']);
+            $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#DC2626', 'trackColor' => '#FECACA']);
             if ($slider) {
                 if (method_exists($slider, 'onChange')) {
                     $slider->onChange('__overlaySetFontSize');
                 }
-                $content->addChild($slider->fillWidth());
+                $header->addChild($slider->fillWidth());
             }
 
-            $divider = $this->resolveElement('divider');
-            if ($divider) {
-                $content->addChild($divider->fillWidth());
-            }
+            $screen->addChild($header);
 
-            $className = $this->resolveElement('text', ['text' => static::class, 'fontSize' => 13, 'color' => '#B91C1C']);
-            if ($className) {
-                $content->addChild($className);
-            }
+            // ── Scrollable detail ──
+            $scroll = Elements\ScrollView::make()->fillWidth()->flexGrow(1);
+            $body = Column::make()->fillWidth()->padding(4, 20, 12, 20)->gap(12);
 
-            $message = $this->resolveElement('text', ['text' => $e->getMessage(), 'fontSize' => $this->overlayFontSize, 'fontWeight' => 5, 'color' => '#DC2626']);
-            if ($message) {
-                $content->addChild($message);
-            }
+            // What happened — the message, then where it points in the
+            // developer's own code (the origin can be deep in vendor).
+            $card = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
+            $message = $e->getMessage() !== '' ? $e->getMessage() : get_class($e);
+            $this->overlayAddText($card, $message, ['fontSize' => max(15, $this->overlayFontSize + 3), 'fontWeight' => 6, 'color' => '#B91C1C']);
 
-            // Show a condensed stack trace
-            $trace = $e->getTraceAsString();
-            $trace = str_replace(base_path().'/', '', $trace);
+            $origin = str_replace(base_path().'/', '', $e->getFile()).':'.$e->getLine();
+            $appFrame = $this->firstApplicationFrame($e);
+
+            if ($appFrame === $origin) {
+                $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                $this->overlayAddText($card, $origin, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+            } else {
+                $this->overlayAddText($card, 'THROWN AT', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                $this->overlayAddText($card, $origin, ['fontSize' => 12, 'color' => '#57534E']);
+                if ($appFrame !== null) {
+                    $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                    $this->overlayAddText($card, $appFrame, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+                }
+            }
+            $body->addChild($card);
+
+            // Stack trace, condensed and vendor-path-stripped.
+            $traceCard = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
+            $this->overlayAddText($traceCard, 'STACK TRACE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+
+            $trace = str_replace(base_path().'/', '', $e->getTraceAsString());
             $traceLines = explode("\n", $trace);
             $shortTrace = implode("\n", array_slice($traceLines, 0, 15));
             if (count($traceLines) > 15) {
-                $shortTrace .= "\n... (".count($traceLines).' frames total)';
+                $shortTrace .= "\n… (".count($traceLines).' frames total)';
             }
+            $this->overlayAddText($traceCard, $shortTrace, ['fontSize' => $this->overlayFontSize, 'color' => '#78716C']);
+            $body->addChild($traceCard);
 
-            $traceText = $this->resolveElement('text', ['text' => $shortTrace, 'fontSize' => $this->overlayFontSize, 'color' => '#6B7280']);
-            if ($traceText) {
-                $content->addChild($traceText);
-            }
+            $scroll->addChild($body);
+            $screen->addChild($scroll);
 
-            $screen->addChild($content);
+            // ── Always-visible actions ──
+            $screen->addChild($this->overlayActions(
+                dismissLabel: 'Try again',
+                primaryBg: '#7F1D1D',
+                primaryText: '#FFFFFF',
+                secondaryBg: '#FFFFFF',
+                secondaryText: '#7F1D1D',
+                secondaryBorder: '#FECACA',
+            ));
 
             $errorTree = $screen->toArray($this->nativeCallbacks);
 
             $this->overlayCallbackIds = array_filter([
                 $this->nativeCallbacks->lookup('__overlaySetFontSize'),
+                $this->nativeCallbacks->lookup('__overlayBack'),
+                $this->nativeCallbacks->lookup('__overlayDismiss'),
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
@@ -2134,52 +2141,50 @@ abstract class NativeComponent
         $this->nativeCallbacks ??= new CallbackRegistry;
 
         try {
-            $screen = Elements\ScrollView::make()
-                ->fill()
-                ->bg('#0F172A')
-                ->safeArea();
+            $screen = Column::make()->fill()->bg('#0F172A')->safeArea();
 
-            $content = Column::make()
-                ->fillWidth()
-                ->padding(20, 20, 40, 20)
-                ->gap(10);
-
-            $title = $this->resolveElement('text', ['text' => 'dd()', 'fontSize' => 22, 'fontWeight' => 7, 'color' => '#22D3EE']);
-            if ($title) {
-                $content->addChild($title);
-            }
-
+            // ── Fixed header ──
+            $header = Column::make()->fillWidth()->padding(24, 20, 12, 20)->gap(4);
+            $this->overlayAddText($header, 'dd()', ['fontSize' => 22, 'fontWeight' => 7, 'color' => '#22D3EE']);
             $file = str_replace(base_path().'/', '', $e->getSourceFile());
-            $location = $this->resolveElement('text', ['text' => "{$file}:{$e->getSourceLine()}", 'fontSize' => 12, 'color' => '#64748B']);
-            if ($location) {
-                $content->addChild($location);
-            }
+            $this->overlayAddText($header, "{$file}:{$e->getSourceLine()}", ['fontSize' => 13, 'color' => '#64748B']);
+            $screen->addChild($header);
 
-            // Font size slider
+            // ── Scrollable dumps ──
+            $scroll = Elements\ScrollView::make()->fillWidth()->flexGrow(1);
+            $body = Column::make()->fillWidth()->padding(4, 20, 12, 20)->gap(12);
+
+            $card = Column::make()->fillWidth()->bg('#1E293B')->borderRadius(16)->border(1, '#334155')->padding(16, 16, 16, 16)->gap(8);
+            $this->overlayAddText($card, $e->getFormattedDumps(), ['fontSize' => $this->overlayFontSize, 'color' => '#E2E8F0']);
+
             $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#22D3EE', 'trackColor' => '#164E63']);
             if ($slider) {
                 if (method_exists($slider, 'onChange')) {
                     $slider->onChange('__overlaySetFontSize');
                 }
-                $content->addChild($slider->fillWidth());
+                $card->addChild($slider->fillWidth());
             }
+            $body->addChild($card);
 
-            $divider = $this->resolveElement('divider');
-            if ($divider) {
-                $content->addChild($divider->fillWidth());
-            }
+            $scroll->addChild($body);
+            $screen->addChild($scroll);
 
-            $dumpText = $this->resolveElement('text', ['text' => $e->getFormattedDumps(), 'fontSize' => $this->overlayFontSize, 'color' => '#E2E8F0']);
-            if ($dumpText) {
-                $content->addChild($dumpText);
-            }
-
-            $screen->addChild($content);
+            // ── Always-visible actions ──
+            $screen->addChild($this->overlayActions(
+                dismissLabel: 'Continue',
+                primaryBg: '#22D3EE',
+                primaryText: '#0F172A',
+                secondaryBg: '#1E293B',
+                secondaryText: '#94A3B8',
+                secondaryBorder: '#334155',
+            ));
 
             $dumpTree = $screen->toArray($this->nativeCallbacks);
 
             $this->overlayCallbackIds = array_filter([
                 $this->nativeCallbacks->lookup('__overlaySetFontSize'),
+                $this->nativeCallbacks->lookup('__overlayBack'),
+                $this->nativeCallbacks->lookup('__overlayDismiss'),
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
@@ -2189,7 +2194,112 @@ abstract class NativeComponent
         }
     }
 
-    // ── Overlay font size control (shared by dump + error screens) ──
+    // ── Overlay chrome shared by the error + dump screens ──
+
+    /**
+     * Append a text element to $parent via the element registry (a UI
+     * plugin may own the `text` renderer); silently skipped when the
+     * type is unavailable so the overlay can never itself fatal.
+     */
+    private function overlayAddText(Element $parent, string $text, array $attrs = []): void
+    {
+        $el = $this->resolveElement('text', ['text' => $text] + $attrs);
+        if ($el) {
+            $parent->addChild($el);
+        }
+    }
+
+    /**
+     * The overlay's bottom action row: "Go back" whenever there is a
+     * screen below this one on the stack, plus a dismiss action that
+     * clears the overlay and lets the runloop re-render. Built from core
+     * elements (pressable + text) so it renders without any UI plugin.
+     */
+    private function overlayActions(
+        string $dismissLabel,
+        string $primaryBg,
+        string $primaryText,
+        string $secondaryBg,
+        string $secondaryText,
+        string $secondaryBorder,
+    ): Element {
+        $row = Elements\Row::make()->fillWidth()->gap(10)->padding(12, 20, 20, 20);
+
+        if ($this->nativeRouter !== null && ! $this->nativeRouter->isRootScreen()) {
+            $row->addChild($this->overlayButton('Go back', '__overlayBack', $primaryBg, $primaryText));
+        }
+
+        $row->addChild($this->overlayButton($dismissLabel, '__overlayDismiss', $secondaryBg, $secondaryText, $secondaryBorder));
+
+        return $row;
+    }
+
+    private function overlayButton(string $label, string $method, string $bg, string $color, ?string $border = null): Element
+    {
+        $button = Elements\Pressable::make()
+            ->onPress($method)
+            ->flexGrow(1)
+            ->flexBasis(0)
+            ->bg($bg)
+            ->borderRadius(14)
+            ->padding(14, 12, 14, 12)
+            ->alignItems(1)
+            ->justifyContent(1);
+
+        if ($border !== null) {
+            $button->border(1, $border);
+        }
+
+        $this->overlayAddText($button, $label, ['fontSize' => 15, 'fontWeight' => 6, 'color' => $color]);
+
+        return $button;
+    }
+
+    /**
+     * The first stack frame inside the app's own code — the line the
+     * developer actually wants to look at when the throw site is buried
+     * in vendor internals. Null when the whole trace is framework code.
+     */
+    private function firstApplicationFrame(\Throwable $e): ?string
+    {
+        $base = base_path();
+        $vendor = DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR;
+
+        if (str_starts_with($e->getFile(), $base) && ! str_contains($e->getFile(), $vendor)) {
+            return str_replace($base.'/', '', $e->getFile()).':'.$e->getLine();
+        }
+
+        foreach ($e->getTrace() as $frame) {
+            $file = $frame['file'] ?? null;
+            if ($file !== null && str_starts_with($file, $base) && ! str_contains($file, $vendor)) {
+                return str_replace($base.'/', '', $file).':'.($frame['line'] ?? 0);
+            }
+        }
+
+        return null;
+    }
+
+    /** Clear the error/dump overlay so the next frame renders the component. */
+    private function clearOverlayState(): void
+    {
+        $this->nativeHasError = false;
+        $this->dumpException = null;
+        $this->errorException = null;
+        $this->overlayCallbackIds = [];
+    }
+
+    /** Overlay "Go back" — leave the broken screen for the one below it. */
+    public function __overlayBack(): void
+    {
+        $this->clearOverlayState();
+        $this->back();
+    }
+
+    /** Overlay "Try again" / "Continue" — dismiss and re-render in place. */
+    public function __overlayDismiss(): void
+    {
+        $this->clearOverlayState();
+    }
 
     public function __overlaySetFontSize(float $size): void
     {
