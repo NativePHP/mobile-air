@@ -234,8 +234,15 @@ class JumpCommand extends Command
         // Handle signals for graceful shutdown
         if (function_exists('pcntl_signal')) {
             $shutdown = function () use ($process, &$pipes, $httpPort, $wsPort, $bridgePort, $viteProxyPort) {
-                $this->newLine();
-                $this->components->info('Shutting down...');
+                // The terminal may already be gone (SIGHUP from a closed
+                // tab) — a write to the dead tty must not abort the
+                // cleanup that follows it.
+                try {
+                    $this->newLine();
+                    $this->components->info('Shutting down...');
+                } catch (\Throwable) {
+                    // tty gone — proceed silently
+                }
                 $this->stopLaravelServer();
                 $this->stopAdvertiser();
                 if (is_resource($pipes[1])) {
@@ -250,6 +257,11 @@ class JumpCommand extends Command
             };
             pcntl_signal(SIGINT, $shutdown);
             pcntl_signal(SIGTERM, $shutdown);
+            // Closing the terminal tab/window delivers SIGHUP. Unhandled, it
+            // kills this process WITHOUT running shutdown functions — the
+            // daemonized WorkerMan bridge (PPID 1) survives and squats on the
+            // ws/bridge/vite ports until some future run reaps it.
+            pcntl_signal(SIGHUP, $shutdown);
         }
 
         // Main loop - read output from the server
@@ -849,6 +861,58 @@ APPLESCRIPT;
             // start auto-finds free ports (findAvailablePort) and only cleans up
             // the leftovers of runs whose master process is gone.
             $this->cleanupDeadInstances();
+
+            // A live sibling serving THIS project is different: the newest
+            // invocation should own the session (otherwise a forgotten
+            // terminal tab holds 3000-3003 forever and every new run walks
+            // up through 3004+, breaking the ports the device already knows).
+            $this->takeOverSameProjectInstances();
+        }
+    }
+
+    /**
+     * Stop any LIVE jump instance serving this same project so this run can
+     * claim the canonical ports. Graceful first — SIGINT lets the sibling's
+     * own shutdown handler stop its Laravel server, advertiser, bridge and
+     * registry entry — with a force-reap fallback if it doesn't die in time.
+     * Instances of OTHER projects are untouched.
+     */
+    private function takeOverSameProjectInstances(): void
+    {
+        foreach (glob($this->jumpRegistryDir().'/*.json') ?: [] as $file) {
+            $data = json_decode((string) @file_get_contents($file), true);
+            if (! is_array($data)) {
+                continue;
+            }
+
+            $pid = (int) ($data['master_pid'] ?? 0);
+            $project = $data['project'] ?? null;
+
+            if ($project !== base_path() || $pid <= 0 || $pid === getmypid() || ! $this->isPidAlive($pid)) {
+                continue;
+            }
+
+            $this->components->task("Stopping previous Jump for this project (pid {$pid})", function () use ($pid, $file, $data) {
+                $this->signalPid($pid, 2); // SIGINT — run its graceful shutdown
+
+                // Give its shutdown handler up to 5s to clean up after itself.
+                for ($i = 0; $i < 50 && $this->isPidAlive($pid); $i++) {
+                    usleep(100_000);
+                }
+
+                if ($this->isPidAlive($pid)) {
+                    $this->signalPid($pid, 9); // SIGKILL
+                    foreach (['http_port', 'laravel_port', 'ws_port', 'bridge_port', 'vite_port'] as $key) {
+                        if (! empty($data[$key])) {
+                            $this->killListenersOnPort((int) $data[$key]);
+                        }
+                    }
+                }
+
+                @unlink($file);
+
+                return true;
+            });
         }
     }
 
@@ -876,6 +940,7 @@ APPLESCRIPT;
     {
         @file_put_contents($this->instanceRegistryFile(), json_encode([
             'master_pid' => getmypid(),
+            'project' => base_path(),
             'http_port' => $httpPort,
             'laravel_port' => $laravelPort,
             'ws_port' => $wsPort,
@@ -887,6 +952,19 @@ APPLESCRIPT;
     public function removeInstanceRegistry(): void
     {
         @unlink($this->instanceRegistryFile());
+    }
+
+    /** Send a signal by number, with or without the posix extension. */
+    private function signalPid(int $pid, int $signal): void
+    {
+        if ($pid <= 0) {
+            return;
+        }
+        if (function_exists('posix_kill')) {
+            @posix_kill($pid, $signal);
+        } else {
+            @exec('kill -'.$signal.' '.$pid.' 2>/dev/null');
+        }
     }
 
     private function isPidAlive(int $pid): bool
@@ -952,6 +1030,15 @@ APPLESCRIPT;
         if (str_contains($command, 'resources/jump/router.php')
             || str_contains($command, 'resources/jump/websocket-server.php')
             || str_contains($command, '_jump._tcp')) {
+            return true;
+        }
+
+        // The bridge server runs under Workerman, which REWRITES its process
+        // title (`WorkerMan: worker process JumpBridge websocket://…`,
+        // `… JumpViteProxy …`) — the original websocket-server.php command
+        // line is not visible in ps output. Match any Workerman process whose
+        // worker name carries our Jump prefix (JumpBridge, JumpViteProxy, …).
+        if (str_contains($command, 'WorkerMan') && str_contains($command, 'Jump')) {
             return true;
         }
 
