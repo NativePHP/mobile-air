@@ -33,6 +33,15 @@ abstract class NativeComponent
 {
     const EVENT_HOT_RELOAD = 15;
 
+    /**
+     * App teardown (activity destroyed while the process lives on — e.g. a
+     * plugin foreground service pins it). The Kotlin side posts this before
+     * waiting on persistent-runtime shutdown so the runloop exits and frees
+     * the PHP executor thread; without it, shutdown queues behind a wait
+     * that never returns and the main thread hangs (ANR).
+     */
+    const EVENT_SHUTDOWN = 16;
+
     const EVENT_NATIVE = 20;
 
     private static bool $dumpHandlerRegistered = false;
@@ -1615,6 +1624,15 @@ abstract class NativeComponent
                 continue;
             }
 
+            // App teardown: exit the loop (no hot-restart state) so the
+            // persistent runtime can shut down or park.
+            if (($event['type'] ?? -1) === self::EVENT_SHUTDOWN) {
+                NativeRouter::debugLog('SHUTDOWN event received — exiting runloop in '.static::class);
+                $this->stop();
+
+                continue;
+            }
+
             // Native event from bridge function — dispatch to #[OnNative] listeners
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
@@ -1800,6 +1818,16 @@ abstract class NativeComponent
                 );
                 NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri (stack depth=".count($stack).')');
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
+                $this->stop();
+
+                continue;
+            }
+
+            // App teardown: exit the loop (no hot-restart state, no
+            // navigation intent) so the persistent runtime can shut down
+            // or park.
+            if (($event['type'] ?? -1) === self::EVENT_SHUTDOWN) {
+                NativeRouter::debugLog('SHUTDOWN event received — exiting runloop in '.static::class);
                 $this->stop();
 
                 continue;

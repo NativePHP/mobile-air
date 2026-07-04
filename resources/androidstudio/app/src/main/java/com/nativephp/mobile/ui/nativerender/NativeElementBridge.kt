@@ -786,6 +786,19 @@ class NativeElementBridge private constructor() {
             nativeElementWriteEvent(EventType.SHEET_DISMISS, callbackId, nodeId, null)
         }
 
+        /**
+         * Wake the PHP runloop out of `nativephp_element_wait_event` and
+         * make it exit cleanly (no hot-restart state). Required before
+         * waiting on persistent-runtime shutdown: the runloop occupies the
+         * single PHP executor thread, so a shutdown task queued behind it
+         * never runs until the loop exits — with a foreground service
+         * keeping the process alive past onDestroy, that was a permanent
+         * main-thread hang (ANR).
+         */
+        fun sendShutdownEvent() {
+            nativeElementWriteEvent(EventType.SHUTDOWN, 0, 0, null)
+        }
+
         fun sendHotReloadEvent() {
             val ready = nativeElementIsReady()
             Log.d(TAG, "sendHotReloadEvent: elementReady=$ready")
