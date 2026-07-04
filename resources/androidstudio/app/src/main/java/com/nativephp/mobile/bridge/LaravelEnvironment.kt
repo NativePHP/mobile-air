@@ -42,6 +42,16 @@ class LaravelEnvironment(private val context: Context) {
         // `Class "Native\Mobile\Runtime" not found`.
         private val extractionLock = ReentrantLock()
 
+        // Classic (embed-per-command) artisan cannot run a second time in a
+        // process where the persistent PHP runtime has been shut down — the
+        // TSRM re-init SEGVs in ts_resource_ex. That happens when an activity
+        // is re-created in a process a plugin foreground service kept alive.
+        // The base commands are idempotent per install, so run them at most
+        // once per process; the re-created activity skips straight to the
+        // persistent boot (the same shutdown→boot cycle hot reload already
+        // exercises safely).
+        @Volatile private var baseArtisanRanThisProcess = false
+
         private const val TAG = "LaravelEnvironment"
 
         // File and directory names
@@ -158,6 +168,18 @@ class LaravelEnvironment(private val context: Context) {
 
     fun initialize() {
         try {
+            // Process reuse: a live/parked persistent runtime means this
+            // process was started by the current APK install (a new install
+            // always kills the process), so the extracted tree is already
+            // this build's. Re-extracting would rm -rf vendor/ + views
+            // UNDER the running PHP runtime, poisoning its realpath/stat
+            // caches — the next request dies with "PHP Startup: stat
+            // failed" on files that exist on disk. Skip entirely.
+            if (phpBridge.isPersistentMode()) {
+                Log.d(TAG, "⚡ Persistent runtime alive — skipping bundle extraction (process reuse)")
+                return
+            }
+
             setupDirectories()
 
             // OTA check commented out — adds ~300ms network latency on every cold boot
@@ -734,6 +756,12 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     private fun runBaseArtisanCommands() {
+        if (baseArtisanRanThisProcess) {
+            Log.d(TAG, "⚡ Base artisan already ran in this process — skipping (classic embed can't re-init after persistent shutdown)")
+            return
+        }
+        baseArtisanRanThisProcess = true
+
         val dbFile = File(appStorageDir, "persisted_data/database/database.sqlite")
         if (!dbFile.exists()) {
             Log.d(TAG, "📄 Creating empty SQLite file: ${dbFile.absolutePath}")
@@ -941,6 +969,13 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
      */
     fun initializeForBackground() {
         try {
+            // Same process-reuse guard as initialize(): never re-extract
+            // under a live persistent runtime (poisons its stat caches).
+            if (phpBridge.isPersistentMode()) {
+                Log.d(TAG, "⚡ Persistent runtime alive — skipping background extraction (process reuse)")
+                return
+            }
+
             setupDirectories()
             // Run extraction too. If MainActivity already extracted, the isUpToDate
             // check returns false (no work). If MainActivity is mid-extract, the
