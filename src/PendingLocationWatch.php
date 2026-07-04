@@ -31,9 +31,13 @@ use ReflectionFunction;
  * with Geolocation::clearWatch($this->watchId). Multiple concurrent watches
  * are supported — each handler only receives its own watch's updates.
  *
- * Streaming is foreground-only: the OS suspends location delivery when the
- * app is backgrounded (background location needs entitlements this plugin
- * doesn't request).
+ * Streaming is foreground-only by default: the OS suspends location delivery
+ * when the app is backgrounded. Chain ->background() to run the watch as a
+ * native background stream instead — it survives component unmount, app
+ * backgrounding, process death and reboot, buffering every fix natively
+ * until Geolocation::drainWatch($id, $cursor) collects it. Live updates
+ * still reach ->locationUpdated() handlers while the app is foregrounded.
+ * Stop with Geolocation::stopBackgroundWatch($id).
  */
 class PendingLocationWatch
 {
@@ -48,6 +52,8 @@ class PendingLocationWatch
     protected float $minDistanceMeters = 0;
 
     protected bool $started = false;
+
+    protected bool $background = false;
 
     protected bool $cleanupRegistered = false;
 
@@ -136,6 +142,26 @@ class PendingLocationWatch
     }
 
     /**
+     * Run the watch as a native background stream (foreground service on
+     * Android, background CLLocationManager on iOS) instead of a
+     * foreground-only stream.
+     *
+     * A background watch deliberately does NOT stop when the component
+     * unmounts — store getId() somewhere durable (session, cache, database)
+     * and stop it explicitly with Geolocation::stopBackgroundWatch($id).
+     * While PHP isn't running, fixes accumulate in a native buffer; drain
+     * them with Geolocation::drainWatch($id, $cursor). On Android this
+     * shows the OS-mandated persistent notification; on iOS the blue
+     * location indicator.
+     */
+    public function background(bool $background = true): self
+    {
+        $this->background = $background;
+
+        return $this;
+    }
+
+    /**
      * Run $callback for EVERY update of this watch. The callback is written
      * inside a component method (bound to $this), so the component is recovered
      * from it and the listener registered there — persistent across renders,
@@ -169,16 +195,19 @@ class PendingLocationWatch
             }
         );
 
-        // Leaving the screen stops the stream.
-        $this->registerCleanup($component);
+        // Remember the component for start()'s unmount-cleanup decision —
+        // the closure-bound component wins over the backtrace-detected one.
+        $this->component = $component;
 
         return $this;
     }
 
     /**
-     * Stop the watch when the component unmounts. Once per watch, and the
-     * closure must be static — a bound one would capture this builder and
-     * keep the auto-starting __destruct from ever firing.
+     * Stop the watch when the component unmounts. Called from start() (not
+     * earlier) so a ->background() anywhere in the fluent chain is final by
+     * the time the decision is made. Once per watch, and the closure must be
+     * static — a bound one would capture this builder and keep the
+     * auto-starting __destruct from ever firing.
      */
     private function registerCleanup(NativeComponent $component): void
     {
@@ -221,14 +250,20 @@ class PendingLocationWatch
 
         $this->started = true;
 
-        // Attribute-only usage never calls locationUpdated(), so register the
-        // unmount cleanup here with the component captured at construction.
-        if ($this->component !== null) {
+        // Foreground watches die with their screen (unmount cleanup, also
+        // covering attribute-only usage that never calls locationUpdated()).
+        // Background watches deliberately outlive it — the caller owns the
+        // id and stops via Geolocation::stopBackgroundWatch().
+        if (! $this->background && $this->component !== null) {
             $this->registerCleanup($this->component);
         }
 
         if (function_exists('nativephp_call')) {
-            nativephp_call('Geolocation.WatchPosition', json_encode([
+            $function = $this->background
+                ? 'Geolocation.StartBackgroundWatch'
+                : 'Geolocation.WatchPosition';
+
+            nativephp_call($function, json_encode([
                 'id' => $this->getId(),
                 'event' => $this->eventClass,
                 'fineAccuracy' => $this->fineAccuracy,
@@ -247,7 +282,11 @@ class PendingLocationWatch
      */
     public function stop(): void
     {
-        app(Geolocation::class)->clearWatch($this->getId());
+        if ($this->background) {
+            app(Geolocation::class)->stopBackgroundWatch($this->getId());
+        } else {
+            app(Geolocation::class)->clearWatch($this->getId());
+        }
     }
 
     public function __destruct()
