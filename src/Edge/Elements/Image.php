@@ -32,6 +32,21 @@ class Image extends Element
         if (isset($attrs['tintColor'])) {
             $this->tintColor($attrs['tintColor']);
         }
+        if (isset($attrs['alt'])) {
+            $this->alt($attrs['alt']);
+        }
+    }
+
+    /**
+     * Accessibility alt text. When set, screen readers announce the image
+     * with this label; when absent, renderers treat the image as decorative
+     * and hide it from VoiceOver/TalkBack.
+     */
+    public function alt(string $text): static
+    {
+        $this->imageProps['alt'] = $text;
+
+        return $this;
     }
 
     public function fit(int $mode): static
