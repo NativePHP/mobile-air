@@ -468,6 +468,23 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         super.onDestroy()
         instance = null
 
+        // PARK the persistent runtime instead of tearing it down — and do
+        // it FIRST, while the element region is still intact, or the
+        // SHUTDOWN wake event has nowhere to land and the runloop parks
+        // forever. The process can outlive this activity (plugin
+        // foreground services pin it), and native PHP does not survive
+        // teardown + re-init in the same process: classic embed re-init
+        // SEGVs in ts_resource_ex, and nativePersistentBoot after
+        // nativePersistentShutdown hangs. Parking just ends the element
+        // runloop; a re-created activity reuses the booted runtime
+        // (bootPersistentRuntime's guard), and when nothing pins the
+        // process the OS reclaims it all anyway — the old explicit
+        // teardown (shutdownPersistentRuntime + cleanup + shutdown)
+        // bought nothing but the wedge.
+        if (phpBridge.isPersistentMode()) {
+            phpBridge.parkPersistentRuntime()
+        }
+
         PerformanceTracker.detachFrameMetrics(window)
 
         // Post lifecycle event for plugins
@@ -494,16 +511,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Stop native UI tree watcher
         NativeUIBridge.stopWatching()
 
-        // Stop background queue worker before persistent runtime shutdown
+        // Stop background queue worker
         queueWorker?.stop()
-
-        // Shutdown persistent runtime before cleanup
-        if (phpBridge.isPersistentMode()) {
-            phpBridge.shutdownPersistentRuntime()
-        }
-
-        laravelEnv.cleanup()
-        phpBridge.shutdown()
     }
 
     override fun getWebView(): WebView {

@@ -14,7 +14,6 @@ class PHPBridge(private val context: Context) {
     private var lastPostData: String? = null
     private val requestDataMap = ConcurrentHashMap<String, String>()
     private val postDataByKey = ConcurrentHashMap<String, String>()
-    private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private val nativePhpScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/native.php"
@@ -69,15 +68,6 @@ class PHPBridge(private val context: Context) {
     external fun nativeEphemeralArtisan(command: String): String
     external fun nativeEphemeralShutdown()
 
-    @Volatile
-    private var runtimeInitialized = false
-
-    @Volatile
-    private var persistentMode = false
-
-    @Volatile
-    private var persistentBooted = false
-
     fun ensureRuntimeInitialized() {
         if (!runtimeInitialized) {
             nativeRuntimeInit()
@@ -90,6 +80,27 @@ class PHPBridge(private val context: Context) {
         private const val TAG = "PHPBridge"
         private const val MAX_REQUEST_AGE = 5 * 60 * 1000L
 
+        // ── PROCESS-level runtime state ──────────────────────────────
+        // MainActivity constructs a fresh PHPBridge per activity, but the
+        // native PHP runtime, its single executor thread, and the
+        // booted/initialized flags belong to the PROCESS. When a plugin
+        // foreground service keeps the process alive across activity
+        // re-creation, a new activity's bridge instance must see (and
+        // reuse) the runtime the previous one booted — instance-level
+        // flags made it boot a SECOND runtime beside the live one, which
+        // hangs in native code. Park/reuse only works with this state
+        // shared here.
+        private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+        @Volatile
+        private var runtimeInitialized = false
+
+        @Volatile
+        private var persistentMode = false
+
+        @Volatile
+        private var persistentBooted = false
+
         init {
             System.loadLibrary("php_wrapper")
         }
@@ -100,6 +111,15 @@ class PHPBridge(private val context: Context) {
      * PHP interpreter stays alive — no init/shutdown per request.
      */
     fun bootPersistentRuntime(): Boolean {
+        // Process reuse: a plugin foreground service kept the process alive
+        // past the previous activity, which parked (not tore down) the
+        // runtime. Reuse it — native PHP re-init in a used process is
+        // exactly what SEGVs/hangs.
+        if (persistentBooted) {
+            Log.i(TAG, "Persistent runtime already booted — reusing (process outlived its activity)")
+            return true
+        }
+
         val future = phpExecutor.submit<Boolean> {
             val start = System.currentTimeMillis()
 
@@ -123,16 +143,66 @@ class PHPBridge(private val context: Context) {
     }
 
     /**
-     * Shut down the persistent runtime. Called before hot reload reboot or app destroy.
+     * Park the persistent runtime: end the element runloop (freeing the
+     * single PHP executor thread) but leave the runtime booted and all
+     * native PHP state untouched. Used at activity destroy — the process
+     * may outlive the activity (plugin foreground services), and native
+     * PHP does not survive a full teardown + re-init in the same process
+     * (TSRM SEGV in ts_resource_ex; nativePersistentBoot hangs). A
+     * re-created activity reuses the parked runtime via
+     * bootPersistentRuntime()'s already-booted guard; when nothing pins
+     * the process, the OS reclaims everything anyway.
+     *
+     * No blocking wait: the loop exits asynchronously, and any work a new
+     * activity queues on phpExecutor is naturally serialized behind it.
+     */
+    fun parkPersistentRuntime() {
+        if (!persistentBooted) return
+        Log.i(TAG, "Parking persistent runtime — asking runloop to exit")
+        try {
+            com.nativephp.mobile.ui.nativerender.NativeElementBridge.sendShutdownEvent()
+        } catch (t: Throwable) {
+            Log.d(TAG, "park wake skipped: ${t.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Shut down the persistent runtime. Called before hot reload reboot,
+     * which re-boots immediately afterwards on the same executor — the one
+     * teardown/re-init cycle native PHP handles reliably.
+     *
+     * The PHP runloop occupies the single phpExecutor thread, parked inside
+     * `nativephp_element_wait_event`, so a shutdown task queued here can only
+     * run after the loop exits. Post a SHUTDOWN event first to wake the loop
+     * and make it return (hot reload already worked because it posts its own
+     * HOT_RELOAD event; a plain activity destroy posted nothing and hung the
+     * main thread forever once a foreground service kept the process alive).
+     * The bounded get() is a backstop: an unkillable runtime must not take
+     * the main thread down with it — worst case we leak the runtime thread
+     * in a process that is already tearing down.
      */
     fun shutdownPersistentRuntime() {
         if (!persistentBooted) return
+
+        try {
+            com.nativephp.mobile.ui.nativerender.NativeElementBridge.sendShutdownEvent()
+        } catch (t: Throwable) {
+            // No element region (webview-only screen) or JNI unavailable —
+            // the executor may already be free; fall through to the wait.
+            Log.d(TAG, "shutdown wake skipped: ${t.javaClass.simpleName}")
+        }
+
         val future = phpExecutor.submit<Unit> {
             nativePersistentShutdown()
             persistentBooted = false
             Log.i(TAG, "Persistent runtime shut down")
         }
-        future.get()
+        try {
+            future.get(5, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            Log.e(TAG, "Persistent runtime shutdown timed out — runloop did not exit; abandoning")
+            future.cancel(true)
+        }
     }
 
     /**
