@@ -4,6 +4,8 @@ namespace Native\Mobile\Edge;
 
 abstract class Element
 {
+    use Concerns\HasA11y;
+
     protected string $type;
 
     protected ?int $nodeId = null;

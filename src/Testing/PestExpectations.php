@@ -63,5 +63,11 @@ class PestExpectations
 
             return $this;
         });
+
+        expect()->extend('toBeAccessible', function () {
+            $this->value->assertAccessible();
+
+            return $this;
+        });
     }
 }

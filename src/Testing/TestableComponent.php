@@ -849,6 +849,163 @@ class TestableComponent
         return $this;
     }
 
+    // ── Accessibility assertions ────────────────────
+
+    /**
+     * Assert the rendered tree contains no screen-reader accessibility
+     * violations. Walks the wire tree the way the a11y audit rules read
+     * it — the same props VoiceOver/TalkBack get:
+     *
+     *   - icon-only buttons, chips, tabs, and top-bar actions without an
+     *     `a11y-label`
+     *   - clickable icons and images without `a11y-label` / `alt`
+     *   - pressables with neither visible text nor an `a11y-label`
+     *   - gesture areas without an `a11y-label`
+     *   - form controls (inputs, toggle, checkbox, radio, select, slider)
+     *     with no label, placeholder, or `a11y-label`
+     *   - list items whose trailing icon button has no `trailing-a11y-label`
+     *
+     * The failure message lists every violation with the offending node's
+     * identity (ref, icon name, or nearest text) so it can be located in
+     * the Blade view.
+     */
+    public function assertAccessible(): static
+    {
+        $violations = $this->accessibilityViolations();
+
+        Assert::assertTrue(
+            $violations === [],
+            "Accessibility violations in the rendered tree:\n  - ".implode("\n  - ", $violations)
+                ."\nAdd a11y-label / alt / trailing-a11y-label attributes (see the native-ui Accessibility docs)."
+        );
+
+        return $this;
+    }
+
+    /**
+     * The a11y violations in the current tree, as human-readable strings.
+     * Public so tests can allow-list known exceptions before asserting.
+     */
+    public function accessibilityViolations(): array
+    {
+        $violations = [];
+        $this->collectA11yViolations($this->tree(), $violations);
+
+        return $violations;
+    }
+
+    /** Apply the audit rules to one node, then recurse. */
+    protected function collectA11yViolations(array $node, array &$violations): void
+    {
+        $type = $node['type'] ?? '';
+        $props = $node['props'] ?? [];
+
+        $prop = fn (string $key): string => is_string($props[$key] ?? null) ? $props[$key] : '';
+        $hasA11yLabel = $prop('a11y_label') !== '';
+        $interactive = false;
+
+        foreach (['on_press', 'on_long_press', 'on_double_tap'] as $key) {
+            if (is_int($node[$key] ?? $props[$key] ?? null)) {
+                $interactive = true;
+                break;
+            }
+        }
+
+        $where = $this->a11yNodeIdentity($node);
+
+        switch ($type) {
+            case 'button':
+                $iconOnly = $prop('label') === ''
+                    && ($prop('leading_icon') !== '' || $prop('trailing_icon') !== '');
+                if ($iconOnly && ! $hasA11yLabel) {
+                    $violations[] = "icon-only <button>{$where} has no a11y-label";
+                }
+                break;
+
+            case 'chip':
+            case 'tab':
+            case 'top_bar_action':
+                if ($prop('label') === '' && $prop('title') === '' && ! $hasA11yLabel) {
+                    $violations[] = "icon-only <{$type}>{$where} has no a11y-label";
+                }
+                break;
+
+            case 'icon':
+                if ($interactive && ! $hasA11yLabel) {
+                    $violations[] = "clickable <icon>{$where} has no a11y-label";
+                }
+                break;
+
+            case 'image':
+                if ($interactive && $prop('alt') === '' && ! $hasA11yLabel) {
+                    $violations[] = "clickable <image>{$where} has no alt text";
+                }
+                break;
+
+            case 'pressable':
+                if ($interactive && ! $hasA11yLabel && $this->collectText($node) === []) {
+                    $violations[] = "<pressable>{$where} has neither visible text nor an a11y-label";
+                }
+                break;
+
+            case 'gesture_area':
+                if (! $hasA11yLabel) {
+                    $violations[] = "<gesture_area>{$where} has no a11y-label";
+                }
+                break;
+
+            case 'text_input':
+            case 'bare_text_input':
+            case 'filled_text_input':
+            case 'outlined_text_input':
+                if ($prop('label') === '' && $prop('placeholder') === '' && ! $hasA11yLabel) {
+                    $violations[] = "<{$type}>{$where} has no label, placeholder, or a11y-label";
+                }
+                break;
+
+            case 'toggle':
+            case 'checkbox':
+            case 'radio':
+            case 'select':
+            case 'slider':
+            case 'radio_group':
+                if ($prop('label') === '' && ! $hasA11yLabel) {
+                    $violations[] = "<{$type}>{$where} has no label or a11y-label";
+                }
+                break;
+
+            case 'list_item':
+                if ($prop('trailing_type') === 'icon_button' && $prop('trailing_a11y_label') === '') {
+                    $violations[] = "<list_item>{$where} trailing icon button has no trailing-a11y-label";
+                }
+                break;
+        }
+
+        foreach ($node['children'] ?? [] as $child) {
+            $this->collectA11yViolations($child, $violations);
+        }
+    }
+
+    /** A short locator for a violating node: ref, icon, or nearby text. */
+    protected function a11yNodeIdentity(array $node): string
+    {
+        $props = $node['props'] ?? [];
+
+        if (is_string($node['ref'] ?? null) && $node['ref'] !== '') {
+            return " [ref={$node['ref']}]";
+        }
+
+        foreach (['leading_icon', 'trailing_icon', 'name', 'icon', 'src', 'headline', 'trailing_value'] as $key) {
+            if (is_string($props[$key] ?? null) && $props[$key] !== '') {
+                return " [{$key}={$props[$key]}]";
+            }
+        }
+
+        $text = $this->collectText($node);
+
+        return $text === [] ? '' : ' [near "'.substr($text[0], 0, 40).'"]';
+    }
+
     // ── Snapshots ───────────────────────────────────
 
     /**

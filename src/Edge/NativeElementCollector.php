@@ -730,6 +730,17 @@ class NativeElementCollector
             $element->setProp($key, $value);
         }
 
+        // Accessibility props — same central path, so every element honors
+        // `a11y-label` / `a11y-hint` even without per-element wiring (the
+        // HasA11y trait covers the fluent API; setProp is idempotent when
+        // an element already parsed these in applyAttributes).
+        if (isset($attrs['a11y-label']) || isset($attrs['a11yLabel'])) {
+            $element->setProp('a11y_label', (string) ($attrs['a11y-label'] ?? $attrs['a11yLabel']));
+        }
+        if (isset($attrs['a11y-hint']) || isset($attrs['a11yHint'])) {
+            $element->setProp('a11y_hint', (string) ($attrs['a11y-hint'] ?? $attrs['a11yHint']));
+        }
+
         return $element;
     }
 
