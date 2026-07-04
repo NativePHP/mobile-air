@@ -51,6 +51,8 @@ class A11yScreen extends NativeComponent
             Icon::make('gear')->a11yLabel('Settings')->onPress('noop'),
             Image::make('https://example.com/tap.png')->alt('Tap target')->onPress('noop'),
             Pressable::make(Text::make('Open'))->onPress('noop'),
+            // Labeled through its child: the alt-text image announces the tile.
+            Pressable::make(Image::make('https://example.com/tile.png')->alt('Photo tile'))->onPress('noop'),
             TextInput::make()->placeholder('Search')->onChange("__syncProperty('accessible')"),
             Toggle::make()->setProp('label', 'Enabled')->onChange('noop'),
         );

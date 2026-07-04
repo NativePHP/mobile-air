@@ -23,6 +23,8 @@ class NavAction
 
     private ?string $label = null;
 
+    private ?string $a11yLabel = null;
+
     private ?string $url = null;
 
     private ?string $event = null;
@@ -75,6 +77,18 @@ class NavAction
     public function label(string $label): self
     {
         $this->label = $label;
+
+        return $this;
+    }
+
+    /**
+     * Screen-reader label for icon-only actions (wire key `a11y_label`).
+     * Icon-only top-bar buttons are otherwise unlabeled for VoiceOver /
+     * TalkBack — set this whenever no visible `label()` is given.
+     */
+    public function a11yLabel(string $label): self
+    {
+        $this->a11yLabel = $label;
 
         return $this;
     }
@@ -165,6 +179,10 @@ class NavAction
         if ($this->destructive)    $attrs['destructive'] = true;
 
         $action->applyAttributes($attrs);
+
+        if ($this->a11yLabel !== null) {
+            $action->a11yLabel($this->a11yLabel);
+        }
 
         if ($this->press !== null) {
             $action->onPress($this->press);

@@ -925,6 +925,10 @@ class TestableComponent
             case 'chip':
             case 'tab':
             case 'top_bar_action':
+                // Divider sentinels render as separator lines, not buttons.
+                if (! empty($props['divider'])) {
+                    break;
+                }
                 if ($prop('label') === '' && $prop('title') === '' && ! $hasA11yLabel) {
                     $violations[] = "icon-only <{$type}>{$where} has no a11y-label";
                 }
@@ -943,7 +947,9 @@ class TestableComponent
                 break;
 
             case 'pressable':
-                if ($interactive && ! $hasA11yLabel && $this->collectText($node) === []) {
+                if ($interactive && ! $hasA11yLabel
+                    && $this->collectText($node) === []
+                    && ! $this->subtreeHasA11yContent($node)) {
                     $violations[] = "<pressable>{$where} has neither visible text nor an a11y-label";
                 }
                 break;
@@ -984,6 +990,24 @@ class TestableComponent
         foreach ($node['children'] ?? [] as $child) {
             $this->collectA11yViolations($child, $violations);
         }
+    }
+
+    /** True when any descendant carries an a11y_label or alt — the
+     *  container is announced through its child (e.g. a pressable
+     *  wrapping an image with alt text). */
+    protected function subtreeHasA11yContent(array $node): bool
+    {
+        foreach ($node['children'] ?? [] as $child) {
+            $props = $child['props'] ?? [];
+            if (($props['a11y_label'] ?? '') !== '' || ($props['alt'] ?? '') !== '') {
+                return true;
+            }
+            if ($this->subtreeHasA11yContent($child)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** A short locator for a violating node: ref, icon, or nearby text. */
