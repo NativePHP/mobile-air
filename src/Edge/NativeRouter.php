@@ -116,6 +116,17 @@ class NativeRouter
     }
 
     /**
+     * Every registered native route, keyed by URI pattern — each value a
+     * ['class' => ..., 'layout' => ...] pair. Powers app-wide test sweeps
+     * (smoke tests, accessibility audits) that should cover new screens
+     * automatically as they are registered.
+     */
+    public static function registeredRoutes(): array
+    {
+        return static::$routes;
+    }
+
+    /**
      * Update the layout for an already-registered route. Used by the
      * Route::native(...)->layout(...) fluent chain.
      */
