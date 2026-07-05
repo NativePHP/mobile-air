@@ -8,6 +8,7 @@ use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\TailwindParser;
+use Native\Mobile\Edge\Transition;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 
@@ -656,6 +657,31 @@ class TestableComponent
     public function assertExitedToWeb(string $uri): static
     {
         return $this->assertIntent(NavigationIntent::EXIT_WEB, $uri);
+    }
+
+    /**
+     * Assert the pending navigation carries the given transition. Accepts a
+     * Transition case or its backing string value (e.g. 'slide_from_bottom').
+     */
+    public function assertTransition(Transition|string $transition): static
+    {
+        $expected = $transition instanceof Transition ? $transition : Transition::from($transition);
+
+        $intent = $this->component->getNavigationIntent();
+
+        Assert::assertNotNull($intent, 'Expected a navigation carrying a transition, but none occurred.');
+
+        $actual = $intent->transition instanceof Transition
+            ? $intent->transition
+            : ($intent->transition !== null ? Transition::from($intent->transition) : null);
+
+        Assert::assertSame(
+            $expected,
+            $actual,
+            "Expected transition [{$expected->value}], got [".($actual?->value ?? 'none').'].'
+        );
+
+        return $this;
     }
 
     public function assertNoNavigation(): static

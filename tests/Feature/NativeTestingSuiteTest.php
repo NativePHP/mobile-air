@@ -1,11 +1,14 @@
 <?php
 
+use Illuminate\Support\Facades\Route;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\Transition;
 use Native\Mobile\Testing\Native;
 use PHPUnit\Framework\AssertionFailedError;
 use Tests\Fixtures\Edge\CounterScreen;
 use Tests\Fixtures\Edge\DetailScreen;
 use Tests\Fixtures\Edge\GateScreen;
+use Tests\Fixtures\Edge\NavScreen;
 use Tests\Fixtures\Edge\PingReceived;
 
 beforeEach(function () {
@@ -134,6 +137,42 @@ it('refuses interaction after the component navigated away', function () {
 it('honors a redirect set during mount without rendering', function () {
     Native::test(GateScreen::class)
         ->assertReplacedWith('/detail/1');
+});
+
+it('carries a custom transition on a push', function () {
+    Native::test(NavScreen::class)
+        ->tap('Push with transition')
+        ->assertNavigatedTo('/detail/7')
+        ->assertTransition(Transition::SlideFromBottom);
+});
+
+it('carries a custom transition on a replace', function () {
+    Native::test(NavScreen::class)
+        ->tap('Replace with transition')
+        ->assertReplacedWith('/login')
+        ->assertTransition('fade');
+});
+
+it('resolves a named route for navigation', function () {
+    Route::native('/listing/{id}', DetailScreen::class)->name('listing.show');
+
+    Native::test(NavScreen::class)
+        ->tap('Push named')
+        ->assertNavigatedTo('/listing/5');
+});
+
+it('pops the stack on a default device-back press', function () {
+    Native::test(NavScreen::class)
+        ->pressBack()
+        ->assertWentBack();
+});
+
+it('lets onBackPressed intercept the device-back press', function () {
+    Native::test(NavScreen::class)
+        ->set('dirty', true)
+        ->pressBack()
+        ->assertNoNavigation()
+        ->assertSet('discardShown', true);
 });
 
 it('finds elements by wire type with an optional matcher', function () {
