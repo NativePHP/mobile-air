@@ -1,7 +1,9 @@
 <?php
 
+use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\Text;
+use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\TailwindParser;
 
 beforeEach(function () {
@@ -506,18 +508,18 @@ it('returns cached result for same class string', function () {
 // ── Integration with NativeElementCollector ─────────
 
 it('works end-to-end with collector for column', function () {
-    \Native\Mobile\Edge\NativeElementCollector::reset();
-    \Native\Mobile\Edge\NativeElementCollector::open('column', [
+    NativeElementCollector::reset();
+    NativeElementCollector::open('column', [
         'class' => 'flex-1 p-6 gap-4 bg-white safe-area',
     ]);
-    \Native\Mobile\Edge\NativeElementCollector::leaf('text', [
+    NativeElementCollector::leaf('text', [
         'text' => 'Hello',
         'class' => 'text-2xl font-bold text-gray-900',
     ]);
-    \Native\Mobile\Edge\NativeElementCollector::close();
+    NativeElementCollector::close();
 
-    $registry = new \Native\Mobile\Edge\CallbackRegistry;
-    $tree = \Native\Mobile\Edge\NativeElementCollector::collect()->toArray($registry);
+    $registry = new CallbackRegistry;
+    $tree = NativeElementCollector::collect()->toArray($registry);
 
     expect($tree['type'])->toBe('column');
     expect($tree['layout']['flex_grow'])->toBe(1.0);
@@ -533,37 +535,37 @@ it('works end-to-end with collector for column', function () {
 });
 
 it('applies directional padding correctly through collector', function () {
-    \Native\Mobile\Edge\NativeElementCollector::reset();
-    \Native\Mobile\Edge\NativeElementCollector::leaf('column', [
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', [
         'class' => 'px-4 py-2',
     ]);
 
-    $tree = \Native\Mobile\Edge\NativeElementCollector::collect()->toArray(new \Native\Mobile\Edge\CallbackRegistry);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
 
     expect($tree['layout']['padding'])->toBe([8.0, 16.0, 8.0, 16.0]);
 });
 
 it('combines uniform and directional padding through collector', function () {
-    \Native\Mobile\Edge\NativeElementCollector::reset();
-    \Native\Mobile\Edge\NativeElementCollector::leaf('column', [
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', [
         'class' => 'p-4 pt-8',
     ]);
 
-    $tree = \Native\Mobile\Edge\NativeElementCollector::collect()->toArray(new \Native\Mobile\Edge\CallbackRegistry);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
 
     // p-4 = 16 uniform, pt-8 = 32 top override
     expect($tree['layout']['padding'])->toBe([32.0, 16.0, 16.0, 16.0]);
 });
 
 it('explicit attrs override class attrs', function () {
-    \Native\Mobile\Edge\NativeElementCollector::reset();
-    \Native\Mobile\Edge\NativeElementCollector::leaf('text', [
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('text', [
         'text' => 'Hello',
         'class' => 'text-xl text-blue-500',
         'fontSize' => '32',
     ]);
 
-    $tree = \Native\Mobile\Edge\NativeElementCollector::collect()->toArray(new \Native\Mobile\Edge\CallbackRegistry);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
 
     // explicit fontSize=32 should override text-xl (20)
     expect($tree['props']['font_size'])->toBe(32.0);

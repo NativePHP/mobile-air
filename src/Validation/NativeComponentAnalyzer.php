@@ -78,7 +78,7 @@ class NativeComponentAnalyzer
 
         // Check extends NativeComponent
         if (! is_subclass_of($className, NativeComponent::class)) {
-            $result->error($relPath, "Class does not extend NativeComponent");
+            $result->error($relPath, 'Class does not extend NativeComponent');
 
             return;
         }
@@ -90,7 +90,7 @@ class NativeComponentAnalyzer
         $viewName = $this->resolveViewName($className);
 
         if ($viewName === null) {
-            $result->warning($relPath, "Could not determine view name from render() method");
+            $result->warning($relPath, 'Could not determine view name from render() method');
 
             return;
         }

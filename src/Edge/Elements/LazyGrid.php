@@ -21,10 +21,12 @@ use Native\Mobile\Edge\Element;
  * with explicit sizing if you need uniform cell heights.
  *
  *   <native:lazy-grid :columns="4" :gap="12">
+ *
  *       @foreach ($icons as $icon)
  *           <native:column class="items-center gap-1 p-3 rounded-lg">
  *               <native:icon :ios="$icon" :size="28" />
  *           </native:column>
+ *
  *       @endforeach
  *   </native:lazy-grid>
  *
@@ -48,9 +50,15 @@ class LazyGrid extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        if (isset($attrs['columns']))    { $this->columns((int) $attrs['columns']); }
-        if (isset($attrs['gap']))        { $this->gap((float) $attrs['gap']); }
-        if (isset($attrs['horizontal'])) { $this->horizontal((bool) $attrs['horizontal']); }
+        if (isset($attrs['columns'])) {
+            $this->columns((int) $attrs['columns']);
+        }
+        if (isset($attrs['gap'])) {
+            $this->gap((float) $attrs['gap']);
+        }
+        if (isset($attrs['horizontal'])) {
+            $this->horizontal((bool) $attrs['horizontal']);
+        }
     }
 
     public function columns(int $count): static

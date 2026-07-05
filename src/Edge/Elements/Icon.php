@@ -15,7 +15,9 @@ class Icon extends Element
     protected array $iconProps = [];
 
     private ?string $shared = null;
+
     private IosSymbol|string|null $iosOverride = null;
+
     private AndroidSymbol|string|null $androidOverride = null;
 
     public static function make(
@@ -33,12 +35,22 @@ class Icon extends Element
         // Blade `:ios="Ios::Bell"` / `:android="Android::Bell"` binds the
         // enum case directly — accept either an enum instance or a raw
         // string. The plain `name` attr is the cross-platform fallback.
-        if (isset($attrs['name']))    { $this->name($attrs['name']); }
-        if (isset($attrs['ios']))     { $this->name(ios: $attrs['ios']); }
-        if (isset($attrs['android'])) { $this->name(android: $attrs['android']); }
+        if (isset($attrs['name'])) {
+            $this->name($attrs['name']);
+        }
+        if (isset($attrs['ios'])) {
+            $this->name(ios: $attrs['ios']);
+        }
+        if (isset($attrs['android'])) {
+            $this->name(android: $attrs['android']);
+        }
 
-        if (isset($attrs['size']))  { $this->size((float) $attrs['size']); }
-        if (isset($attrs['color'])) { $this->color($attrs['color']); }
+        if (isset($attrs['size'])) {
+            $this->size((float) $attrs['size']);
+        }
+        if (isset($attrs['color'])) {
+            $this->color($attrs['color']);
+        }
 
         if (isset($attrs['dark-color']) || isset($attrs['darkColor'])) {
             $this->darkColor($attrs['dark-color'] ?? $attrs['darkColor']);
@@ -62,9 +74,15 @@ class Icon extends Element
         IosSymbol|string|null $ios = null,
         AndroidSymbol|string|null $android = null,
     ): static {
-        if ($name !== null)    { $this->shared = $name; }
-        if ($ios !== null)     { $this->iosOverride = $ios; }
-        if ($android !== null) { $this->androidOverride = $android; }
+        if ($name !== null) {
+            $this->shared = $name;
+        }
+        if ($ios !== null) {
+            $this->iosOverride = $ios;
+        }
+        if ($android !== null) {
+            $this->androidOverride = $android;
+        }
 
         return $this;
     }

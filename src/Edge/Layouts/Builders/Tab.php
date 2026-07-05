@@ -63,7 +63,7 @@ class Tab
 
     private int $searchDebounceMs = 250;
 
-    /** @var list<mixed>|null  Mixed shapes: string | array | Element (see SearchItem). */
+    /** @var list<mixed>|null Mixed shapes: string | array | Element (see SearchItem). */
     private ?array $searchItems = null;
 
     private ?string $pressMethod = null;
@@ -250,10 +250,18 @@ class Tab
                 $attrs['material_variant'] = $variant;
             }
         }
-        if ($this->badge !== null)       $attrs['badge']      = $this->badge;
-        if ($this->badgeColor !== null)  $attrs['badgeColor'] = $this->badgeColor;
-        if ($this->news)                 $attrs['news']       = true;
-        if ($this->search)               $attrs['search']     = true;
+        if ($this->badge !== null) {
+            $attrs['badge'] = $this->badge;
+        }
+        if ($this->badgeColor !== null) {
+            $attrs['badgeColor'] = $this->badgeColor;
+        }
+        if ($this->news) {
+            $attrs['news'] = true;
+        }
+        if ($this->search) {
+            $attrs['search'] = true;
+        }
         if ($this->searchPlaceholder !== null) {
             $attrs['search_placeholder'] = $this->searchPlaceholder;
         }

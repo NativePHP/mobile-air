@@ -18,7 +18,7 @@ function attachStack($screen, int $count): void
     $router = new NativeRouter;
     $component = $screen->instance();
 
-    \Closure::bind(function () use ($component, $count) {
+    Closure::bind(function () use ($component, $count) {
         /** @var NativeRouter $this */
         for ($i = 0; $i < $count; $i++) {
             $this->stack[] = ['component' => $component, 'uri' => '/screen-'.$i, 'params' => []];

@@ -5,9 +5,13 @@ namespace Native\Mobile\Edge;
 class NavigationIntent
 {
     const NAVIGATE = 'navigate';
+
     const BACK = 'back';
+
     const REPLACE = 'replace';
+
     const EXIT_WEB = 'exit_web';
+
     const RESTART = 'restart';
 
     public function __construct(

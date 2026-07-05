@@ -322,6 +322,7 @@ class PluginValidateCommand extends Command
         }
 
         $flatPath = $basePath.'/resources/ios/'.$class.'.swift';
+
         return $this->files->exists($flatPath) ? $flatPath : null;
     }
 

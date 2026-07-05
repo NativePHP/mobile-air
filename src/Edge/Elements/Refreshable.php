@@ -9,8 +9,10 @@ use Native\Mobile\Edge\Element;
  * Wraps content in a scrolling container with native pull-to-refresh.
  *
  *     <native:refreshable @refresh="loadMore">
+ *
  *         @foreach ($items as $item)
  *             <native:row>...</native:row>
+ *
  *         @endforeach
  *     </native:refreshable>
  *

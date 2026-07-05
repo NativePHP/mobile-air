@@ -33,6 +33,7 @@ class GestureArea extends Element
      *  time so the renderer can seed its store before the gesture
      *  starts). */
     private ?int $panYId = null;
+
     private float $panYInitial = 0.0;
 
     public static function make(): static

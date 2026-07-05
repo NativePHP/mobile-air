@@ -41,19 +41,31 @@ class BenchmarkComponent extends NativeComponent
     protected array $scenarioQueue = [];
 
     const SIZES = [10, 50, 100, 500];
+
     const ITERATIONS = 100;
+
     const WARMUP = 10;
+
     const TAP_ITERATIONS = 100;
+
     const LARGE_TREE_TAP_ITERATIONS = 100;
+
     const TEXT_INPUT_ITERATIONS = 50;
+
     const RAPID_FIRE_ITERATIONS = 500;
+
     const NAVIGATION_ITERATIONS = 20;
+
     const TOGGLE_TREE_ITERATIONS = 50;
+
     const LARGE_TREE_NODE_COUNT = 200;
+
     const LIST_SCROLL_ITEM_COUNT = 1000;
 
     const JSON_RECORD_COUNT = 10_000;
+
     const JSON_PARSE_ITERATIONS = 20;
+
     const LARGE_LIST_ITEM_COUNT = 10_000;
 
     /**
@@ -68,17 +80,17 @@ class BenchmarkComponent extends NativeComponent
      * scope in the label.
      */
     const SCENARIOS = [
-        'counter_tap'    => 'Counter Tap',
+        'counter_tap' => 'Counter Tap',
         'large_tree_tap' => 'Large Tree Tap',
-        'text_input'     => 'Text Input',
-        'list_scroll'    => 'Large List Render',
-        'json_parse'     => 'JSON 10k Parse',
+        'text_input' => 'Text Input',
+        'list_scroll' => 'Large List Render',
+        'json_parse' => 'JSON 10k Parse',
         'large_list_fps' => 'List 10k FPS',
-        'rapid_fire'     => 'Rapid-Fire',
-        'navigation'     => 'Tree Replace (push/pop sim)',
-        'toggle_tree'    => 'Toggle Tree',
-        'render'         => 'PHP Render (tree builder)',
-        'stream_render'  => 'PHP Render (streaming)',
+        'rapid_fire' => 'Rapid-Fire',
+        'navigation' => 'Tree Replace (push/pop sim)',
+        'toggle_tree' => 'Toggle Tree',
+        'render' => 'PHP Render (tree builder)',
+        'stream_render' => 'PHP Render (streaming)',
     ];
 
     /**
@@ -263,17 +275,17 @@ class BenchmarkComponent extends NativeComponent
      * methodology. Keep concise; full detail belongs in commit / docs.
      */
     const SCENARIO_DESCRIPTIONS = [
-        'counter_tap'    => '100 simulated taps on a minimal screen — measures press→render round-trip',
+        'counter_tap' => '100 simulated taps on a minimal screen — measures press→render round-trip',
         'large_tree_tap' => '100 taps with a 200-node tree mounted — RTT under build/diff load',
-        'text_input'     => '50 simulated text changes — measures text-event RTT through the bridge',
-        'list_scroll'    => 'Re-renders a 1000-item list 100× back to back — diff/publish cost',
-        'json_parse'     => 'PHP-only: encode 10k records, decode 20×, filter, render first 1000',
+        'text_input' => '50 simulated text changes — measures text-event RTT through the bridge',
+        'list_scroll' => 'Re-renders a 1000-item list 100× back to back — diff/publish cost',
+        'json_parse' => 'PHP-only: encode 10k records, decode 20×, filter, render first 1000',
         'large_list_fps' => 'Publishes a 10000-item list with auto-scroll — captures FPS during scroll',
-        'rapid_fire'     => '500 publishes with no event wait — PHP throughput + events/sec',
-        'navigation'     => '20 cycles of tree-reset → publish A → reset → publish B (NOT real router nav)',
-        'toggle_tree'    => '50 toggles flipping a 200-node subtree on/off',
-        'render'         => 'PHP-only: build & toArray() trees of 10/50/100/500 nodes (no native publish)',
-        'stream_render'  => 'PHP-only: same as Render but streaming directly into the bridge buffer',
+        'rapid_fire' => '500 publishes with no event wait — PHP throughput + events/sec',
+        'navigation' => '20 cycles of tree-reset → publish A → reset → publish B (NOT real router nav)',
+        'toggle_tree' => '50 toggles flipping a 200-node subtree on/off',
+        'render' => 'PHP-only: build & toArray() trees of 10/50/100/500 nodes (no native publish)',
+        'stream_render' => 'PHP-only: same as Render but streaming directly into the bridge buffer',
     ];
 
     public function render(): Element
@@ -322,7 +334,7 @@ class BenchmarkComponent extends NativeComponent
             Text::make('NativePHP Performance Suite')->fontSize(26)->fontWeight(7)->color('#F1F5F9')
         );
         $content->addChild(
-            Text::make(count(self::SCENARIOS) . ' scenarios available')->fontSize(15)->color('#94A3B8')
+            Text::make(count(self::SCENARIOS).' scenarios available')->fontSize(15)->color('#94A3B8')
         );
         $content->addChild(Spacer::make()->height(4));
 
@@ -446,18 +458,18 @@ class BenchmarkComponent extends NativeComponent
             NativeRouter::debugLog("BENCH starting scenario: {$scenario}");
 
             match ($scenario) {
-                'counter_tap'    => $this->runCounterTap(),
+                'counter_tap' => $this->runCounterTap(),
                 'large_tree_tap' => $this->runLargeTreeTap(),
-                'text_input'     => $this->runTextInput(),
-                'list_scroll'    => $this->runListScroll(),
-                'json_parse'     => $this->runJsonParse(),
+                'text_input' => $this->runTextInput(),
+                'list_scroll' => $this->runListScroll(),
+                'json_parse' => $this->runJsonParse(),
                 'large_list_fps' => $this->runLargeListFps(),
-                'rapid_fire'     => $this->runRapidFire(),
-                'navigation'     => $this->runNavigation(),
-                'toggle_tree'    => $this->runToggleTree(),
-                'render'         => $this->runRenderBenchmark(),
-                'stream_render'  => $this->runStreamRenderBenchmark(),
-                default          => null,
+                'rapid_fire' => $this->runRapidFire(),
+                'navigation' => $this->runNavigation(),
+                'toggle_tree' => $this->runToggleTree(),
+                'render' => $this->runRenderBenchmark(),
+                'stream_render' => $this->runStreamRenderBenchmark(),
+                default => null,
             };
 
             if ($this->scenarioSkipped) {
@@ -466,6 +478,7 @@ class BenchmarkComponent extends NativeComponent
                 NativeRouter::debugLog("BENCH skipped scenario: {$scenario}");
                 // scenarioQueue was already cleared by skipScenario()
                 $this->phase = 'menu';
+
                 return;
             }
 
@@ -489,6 +502,7 @@ class BenchmarkComponent extends NativeComponent
     protected function simulatePress(int $callbackId): ?array
     {
         nativephp_call('Perf.SimulatePress', json_encode(['callback_id' => $callbackId, 'node_id' => 0]));
+
         return nativephp_element_wait_event(500);
     }
 
@@ -500,6 +514,7 @@ class BenchmarkComponent extends NativeComponent
             'node_id' => 0,
             'text' => $text,
         ]));
+
         return nativephp_element_wait_event(500);
     }
 
@@ -511,6 +526,7 @@ class BenchmarkComponent extends NativeComponent
             'node_id' => 0,
             'value' => $value,
         ]));
+
         return nativephp_element_wait_event(500);
     }
 
@@ -554,7 +570,7 @@ class BenchmarkComponent extends NativeComponent
             Row::make(
                 Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                 Spacer::make()->flexGrow(1),
-                Text::make("{$this->interactionCount}/" . self::TAP_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
+                Text::make("{$this->interactionCount}/".self::TAP_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
             )->fillWidth()->padding(12)->gap(8),
             Spacer::make()->height(1)->flexGrow(1),
             Text::make('COUNTER TAP')->fontSize(11)->fontWeight(7)->color('#38BDF8'),
@@ -584,10 +600,14 @@ class BenchmarkComponent extends NativeComponent
             usleep(20_000); // Let Compose render the frame
 
             $cbId = $this->nativeCallbacks->lookup('onTap');
-            if ($cbId === null) break;
+            if ($cbId === null) {
+                break;
+            }
 
             $event = $this->simulatePress($cbId);
-            if ($event === null) continue;
+            if ($event === null) {
+                continue;
+            }
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->nativeRunning = false;
                 break;
@@ -611,7 +631,7 @@ class BenchmarkComponent extends NativeComponent
                 Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                 Text::make('LARGE TREE TAP')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
                 Spacer::make()->flexGrow(1),
-                Text::make("{$this->interactionCount}/" . self::LARGE_TREE_TAP_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
+                Text::make("{$this->interactionCount}/".self::LARGE_TREE_TAP_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
             )->fillWidth()->padding(12)->gap(8)
         );
 
@@ -669,10 +689,14 @@ class BenchmarkComponent extends NativeComponent
             usleep(20_000);
 
             $cbId = $this->nativeCallbacks->lookup('onTap');
-            if ($cbId === null) break;
+            if ($cbId === null) {
+                break;
+            }
 
             $event = $this->simulatePress($cbId);
-            if ($event === null) continue;
+            if ($event === null) {
+                continue;
+            }
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->nativeRunning = false;
                 break;
@@ -703,7 +727,7 @@ class BenchmarkComponent extends NativeComponent
             Row::make(
                 Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                 Spacer::make()->flexGrow(1),
-                Text::make("{$this->interactionCount}/" . self::TEXT_INPUT_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
+                Text::make("{$this->interactionCount}/".self::TEXT_INPUT_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
             )->fillWidth()->padding(12)->gap(8),
             Spacer::make()->height(1)->flexGrow(1),
             Text::make('TEXT INPUT')->fontSize(11)->fontWeight(7)->color('#38BDF8'),
@@ -739,12 +763,16 @@ class BenchmarkComponent extends NativeComponent
             usleep(20_000);
 
             $cbId = $this->nativeCallbacks->lookup('onTextChange');
-            if ($cbId === null) break;
+            if ($cbId === null) {
+                break;
+            }
 
             // Simulate typing one character at a time
             $nextText = substr($sampleText, 0, $this->interactionCount + 1);
             $event = $this->simulateTextChange($cbId, $nextText);
-            if ($event === null) continue;
+            if ($event === null) {
+                continue;
+            }
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->nativeRunning = false;
                 break;
@@ -812,7 +840,7 @@ class BenchmarkComponent extends NativeComponent
 
             $root = Column::make()->fill()->safeArea();
             $root->addChild(
-                Text::make("Large List Re-render {$frame}/" . self::LIST_RERENDER_ITERATIONS)
+                Text::make("Large List Re-render {$frame}/".self::LIST_RERENDER_ITERATIONS)
                     ->fontSize(16)->fontWeight(6)->color('#1F2937')->padding(12)
             );
 
@@ -822,7 +850,7 @@ class BenchmarkComponent extends NativeComponent
             $bullets = ['●', '★', '◆', '▶', '■', '▲'];
             for ($i = 0; $i < self::LIST_SCROLL_ITEM_COUNT; $i++) {
                 $content->addChild(
-                    $this->makeListItem("Item #" . (($i + $frame) % self::LIST_SCROLL_ITEM_COUNT), "Frame {$frame}", $bullets[$i % 6])
+                    $this->makeListItem('Item #'.(($i + $frame) % self::LIST_SCROLL_ITEM_COUNT), "Frame {$frame}", $bullets[$i % 6])
                 );
             }
 
@@ -843,7 +871,7 @@ class BenchmarkComponent extends NativeComponent
 
     protected function runJsonParse(): void
     {
-        $this->publishProgressScreen('JSON 10k Parse', 'Generating ' . self::JSON_RECORD_COUNT . ' records...');
+        $this->publishProgressScreen('JSON 10k Parse', 'Generating '.self::JSON_RECORD_COUNT.' records...');
         usleep(50_000);
 
         // Generate a realistic JSON dataset: 10k records with nested fields
@@ -856,7 +884,7 @@ class BenchmarkComponent extends NativeComponent
                 'age' => 18 + ($i % 60),
                 'active' => $i % 3 !== 0,
                 'score' => round($i * 1.7 % 100, 2),
-                'tags' => ['tag_' . ($i % 5), 'tag_' . ($i % 7)],
+                'tags' => ['tag_'.($i % 5), 'tag_'.($i % 7)],
                 'address' => [
                     'city' => ['NYC', 'LA', 'CHI', 'HOU', 'PHX'][$i % 5],
                     'zip' => str_pad((string) ($i % 99999), 5, '0', STR_PAD_LEFT),
@@ -870,7 +898,7 @@ class BenchmarkComponent extends NativeComponent
         $encodeMs = (microtime(true) - $t0) * 1000;
         $jsonSize = strlen($jsonString);
 
-        $this->publishProgressScreen('JSON 10k Parse', 'Parsing ' . round($jsonSize / 1024) . 'KB...');
+        $this->publishProgressScreen('JSON 10k Parse', 'Parsing '.round($jsonSize / 1024).'KB...');
 
         // Benchmark: decode JSON multiple times
         $decodeTimes = [];
@@ -906,7 +934,7 @@ class BenchmarkComponent extends NativeComponent
             for ($i = 0; $i < $renderCount; $i++) {
                 $r = $decoded[$i];
                 $content->addChild(
-                    $this->makeListItem($r['name'], $r['email'] . ' · ' . $r['address']['city'])
+                    $this->makeListItem($r['name'], $r['email'].' · '.$r['address']['city'])
                 );
             }
 
@@ -957,7 +985,7 @@ class BenchmarkComponent extends NativeComponent
                     Text::make('AUTO-SCROLLING...')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
                 )->fillWidth()->gap(8),
                 Text::make('LIST 10K FPS')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
-                Text::make('Auto-scrolling through ' . number_format($itemCount) . ' items')->fontSize(12)->color('#64748B'),
+                Text::make('Auto-scrolling through '.number_format($itemCount).' items')->fontSize(12)->color('#64748B'),
             )->fillWidth()->padding(12)->gap(6)
         );
 
@@ -982,7 +1010,7 @@ class BenchmarkComponent extends NativeComponent
         $this->phase = 'large_list_fps';
 
         $itemCount = self::LARGE_LIST_ITEM_COUNT;
-        $this->publishProgressScreen('List ' . number_format($itemCount) . ' FPS', "Building {$itemCount}-item list...");
+        $this->publishProgressScreen('List '.number_format($itemCount).' FPS', "Building {$itemCount}-item list...");
         usleep(100_000); // Let Compose render the progress screen
 
         // Phase 1: Build + publish the auto-scrolling 10k list
@@ -1011,10 +1039,14 @@ class BenchmarkComponent extends NativeComponent
         while ($this->nativeRunning && (microtime(true) - $startTime) < $scrollTimeout) {
             $remaining = $scrollTimeout - (microtime(true) - $startTime);
             $timeoutMs = (int) ($remaining * 1000);
-            if ($timeoutMs <= 0) break;
+            if ($timeoutMs <= 0) {
+                break;
+            }
 
             $event = nativephp_element_wait_event(min($timeoutMs, 500));
-            if ($event === null) continue;
+            if ($event === null) {
+                continue;
+            }
 
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->nativeRunning = false;
@@ -1046,7 +1078,7 @@ class BenchmarkComponent extends NativeComponent
 
     protected function runRapidFire(): void
     {
-        $this->publishProgressScreen('Rapid-Fire', self::RAPID_FIRE_ITERATIONS . ' publishes');
+        $this->publishProgressScreen('Rapid-Fire', self::RAPID_FIRE_ITERATIONS.' publishes');
 
         nativephp_call('Perf.Enable', '{}');
 
@@ -1092,7 +1124,7 @@ class BenchmarkComponent extends NativeComponent
 
         return Column::make(
             Text::make("Frame #{$seed}")->fontSize(18)->fontWeight(6)->color($colors[$seed % count($colors)]),
-            Text::make("Value: " . ($seed * 7 % 1000))->fontSize(14)->color('#6B7280'),
+            Text::make('Value: '.($seed * 7 % 1000))->fontSize(14)->color('#6B7280'),
             Row::make(
                 Text::make('A')->fontSize(12)->color('#374151'),
                 Text::make('B')->fontSize(12)->color('#374151'),
@@ -1105,7 +1137,7 @@ class BenchmarkComponent extends NativeComponent
 
     protected function runNavigation(): void
     {
-        $this->publishProgressScreen('Navigation', self::NAVIGATION_ITERATIONS . ' push/pop cycles');
+        $this->publishProgressScreen('Navigation', self::NAVIGATION_ITERATIONS.' push/pop cycles');
 
         nativephp_call('Perf.Enable', '{}');
 
@@ -1184,7 +1216,7 @@ class BenchmarkComponent extends NativeComponent
                 Row::make(
                     Pressable::make(Text::make('Back')->fontSize(13)->fontWeight(5)->color('#94A3B8'))->bg('#334155')->borderRadius(8)->padding(8, 14)->onPress('skipScenario'),
                     Spacer::make()->flexGrow(1),
-                    Text::make("{$this->interactionCount}/" . self::TOGGLE_TREE_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
+                    Text::make("{$this->interactionCount}/".self::TOGGLE_TREE_ITERATIONS)->fontSize(12)->fontWeight(6)->color('#38BDF8'),
                 )->fillWidth()->gap(8),
                 Text::make('TOGGLE TREE')->fontSize(12)->fontWeight(7)->color('#38BDF8'),
                 Spacer::make()->height(8),
@@ -1237,12 +1269,16 @@ class BenchmarkComponent extends NativeComponent
             usleep(20_000);
 
             $cbId = $this->nativeCallbacks->lookup('onToggle');
-            if ($cbId === null) break;
+            if ($cbId === null) {
+                break;
+            }
 
             // Alternate toggle state each iteration
-            $nextValue = !$this->toggleState;
+            $nextValue = ! $this->toggleState;
             $event = $this->simulateToggle($cbId, $nextValue);
-            if ($event === null) continue;
+            if ($event === null) {
+                continue;
+            }
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->nativeRunning = false;
                 break;
@@ -1627,7 +1663,7 @@ class BenchmarkComponent extends NativeComponent
             );
         }
 
-        if (!empty($info['metric_meaning'])) {
+        if (! empty($info['metric_meaning'])) {
             $parent->addChild(Spacer::make()->height(8));
             $parent->addChild(
                 Text::make('Reading the numbers')->fontSize(11)->fontWeight(7)->color('#475569')
@@ -1642,7 +1678,7 @@ class BenchmarkComponent extends NativeComponent
             }
         }
 
-        if (!empty($info['reference'])) {
+        if (! empty($info['reference'])) {
             $parent->addChild(Spacer::make()->height(8));
             $parent->addChild(
                 Text::make('Compared to other frameworks')->fontSize(11)->fontWeight(7)->color('#475569')
@@ -2047,14 +2083,16 @@ class BenchmarkComponent extends NativeComponent
         $droppedCount = 0;
         $cov = 0.0;
 
-        if (is_array($rawFrames) && !empty($rawFrames)) {
-            $totals = array_map(fn($f) => (float) ($f['total_ms'] ?? 0), $rawFrames);
+        if (is_array($rawFrames) && ! empty($rawFrames)) {
+            $totals = array_map(fn ($f) => (float) ($f['total_ms'] ?? 0), $rawFrames);
             foreach ($totals as $ms) {
-                if ($ms > 16.67) $droppedCount++;
+                if ($ms > 16.67) {
+                    $droppedCount++;
+                }
             }
             $mean = array_sum($totals) / count($totals);
             if ($mean > 0) {
-                $variance = array_sum(array_map(fn($x) => ($x - $mean) ** 2, $totals)) / count($totals);
+                $variance = array_sum(array_map(fn ($x) => ($x - $mean) ** 2, $totals)) / count($totals);
                 $cov = sqrt($variance) / $mean;
             }
         } else {
@@ -2082,7 +2120,7 @@ class BenchmarkComponent extends NativeComponent
 
         $parent->addChild(Spacer::make()->height(8));
         $parent->addChild(
-            Text::make('VS REFERENCE (' . strtoupper($platform) . ', PUBLISHED)')->fontSize(12)->fontWeight(7)->color('#64748B')
+            Text::make('VS REFERENCE ('.strtoupper($platform).', PUBLISHED)')->fontSize(12)->fontWeight(7)->color('#64748B')
         );
 
         // "Ours" row first for visual comparison.
@@ -2093,11 +2131,11 @@ class BenchmarkComponent extends NativeComponent
 
         foreach ($refs as $name => $ref) {
             $label = match ($name) {
-                'native_swift'  => 'Native (Swift)',
+                'native_swift' => 'Native (Swift)',
                 'native_kotlin' => 'Native (Kotlin)',
-                'flutter'       => 'Flutter',
-                'react_native'  => 'React Native',
-                default         => $name,
+                'flutter' => 'Flutter',
+                'react_native' => 'React Native',
+                default => $name,
             };
             $parent->addChild($this->referenceRow(
                 $label,
@@ -2114,11 +2152,11 @@ class BenchmarkComponent extends NativeComponent
     {
         return Row::make(
             Text::make($label)->fontSize(13)->color($accent)->flexGrow(1),
-            Text::make(number_format($avg, 1) . 'ms')->fontSize(12)->color('#94A3B8'),
+            Text::make(number_format($avg, 1).'ms')->fontSize(12)->color('#94A3B8'),
             Spacer::make()->width(8),
-            Text::make('p95 ' . number_format($p95, 1))->fontSize(12)->color('#94A3B8'),
+            Text::make('p95 '.number_format($p95, 1))->fontSize(12)->color('#94A3B8'),
             Spacer::make()->width(8),
-            Text::make(number_format($fps, 0) . 'fps')->fontSize(12)->color('#94A3B8'),
+            Text::make(number_format($fps, 0).'fps')->fontSize(12)->color('#94A3B8'),
         )->fillWidth()->gap(0);
     }
 
@@ -2130,7 +2168,7 @@ class BenchmarkComponent extends NativeComponent
             Text::make('Rapid-Fire Throughput')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
         );
         $cardContent->addChild(
-            Text::make(self::RAPID_FIRE_ITERATIONS . ' iterations, no event wait')->fontSize(14)->color('#94A3B8')
+            Text::make(self::RAPID_FIRE_ITERATIONS.' iterations, no event wait')->fontSize(14)->color('#94A3B8')
         );
 
         $eventsPerSec = (float) ($stats['events_per_sec'] ?? 0);
@@ -2166,7 +2204,7 @@ class BenchmarkComponent extends NativeComponent
             Text::make('Navigation Transitions')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
         );
         $cardContent->addChild(
-            Text::make(($stats['iterations'] ?? 0) . ' push/pop cycles')->fontSize(14)->color('#94A3B8')
+            Text::make(($stats['iterations'] ?? 0).' push/pop cycles')->fontSize(14)->color('#94A3B8')
         );
 
         $cardContent->addChild(Spacer::make()->height(4));
@@ -2306,7 +2344,7 @@ class BenchmarkComponent extends NativeComponent
             Text::make('JSON 10k Parse')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
         );
         $cardContent->addChild(
-            Text::make(($stats['record_count'] ?? 0) . ' records · ' . ($stats['json_size_kb'] ?? 0) . 'KB')->fontSize(14)->color('#94A3B8')
+            Text::make(($stats['record_count'] ?? 0).' records · '.($stats['json_size_kb'] ?? 0).'KB')->fontSize(14)->color('#94A3B8')
         );
 
         $cardContent->addChild(Spacer::make()->height(4));
@@ -2372,7 +2410,7 @@ class BenchmarkComponent extends NativeComponent
 
         $filterCount = (int) ($stats['filter_result_count'] ?? 0);
         $cardContent->addChild(
-            Text::make("Filter matched {$filterCount} of " . ($stats['record_count'] ?? 0) . ' records')->fontSize(12)->color('#64748B')
+            Text::make("Filter matched {$filterCount} of ".($stats['record_count'] ?? 0).' records')->fontSize(12)->color('#64748B')
         );
 
         return $cardContent;
@@ -2386,7 +2424,7 @@ class BenchmarkComponent extends NativeComponent
             Text::make('List 10k FPS')->fontSize(20)->fontWeight(7)->color('#F1F5F9')
         );
         $cardContent->addChild(
-            Text::make(($stats['item_count'] ?? 0) . ' items · scroll FPS capture')->fontSize(14)->color('#94A3B8')
+            Text::make(($stats['item_count'] ?? 0).' items · scroll FPS capture')->fontSize(14)->color('#94A3B8')
         );
 
         // Initial render pipeline

@@ -36,7 +36,7 @@ class SideNavItem extends Element
 
     protected function resolveProps(CallbackRegistry $registry): array
     {
-        if (!empty($this->props['url']) && $this->pressMethod === null) {
+        if (! empty($this->props['url']) && $this->pressMethod === null) {
             $this->setNavigateConfig([
                 'type' => 'navigate',
                 'uri' => $this->props['url'],

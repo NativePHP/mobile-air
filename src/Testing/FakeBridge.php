@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -55,7 +56,7 @@ class FakeBridge
 
         // First bridge of this test: drop pending fluent callbacks left in
         // NativeCallbacks' static tier by earlier tests in this process.
-        \Native\Mobile\Support\NativeCallbacks::flush();
+        NativeCallbacks::flush();
 
         $bridge = new static;
         app()->instance(static::class, $bridge);

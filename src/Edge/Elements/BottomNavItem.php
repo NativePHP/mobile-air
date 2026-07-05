@@ -115,7 +115,7 @@ class BottomNavItem extends Element
         // search UI locally with items injected from the active
         // screen's `searchItems()`.
         if (
-            !empty($this->props['url'])
+            ! empty($this->props['url'])
             && $this->pressMethod === null
             && empty($this->props['search'])
         ) {

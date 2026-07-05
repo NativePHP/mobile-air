@@ -12,6 +12,4 @@ namespace Native\Mobile\Icon;
  * Implementing enums must be string-backed; the icon resolver reads
  * `->value` to get the canonical SF Symbol name.
  */
-interface IosSymbol
-{
-}
+interface IosSymbol {}

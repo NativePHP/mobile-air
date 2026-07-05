@@ -173,10 +173,18 @@ class NavAction
                 $attrs['material_variant'] = $variant;
             }
         }
-        if ($this->label !== null) $attrs['label']       = $this->label;
-        if ($this->url !== null)   $attrs['url']         = $this->url;
-        if ($this->event !== null) $attrs['event']       = $this->event;
-        if ($this->destructive)    $attrs['destructive'] = true;
+        if ($this->label !== null) {
+            $attrs['label'] = $this->label;
+        }
+        if ($this->url !== null) {
+            $attrs['url'] = $this->url;
+        }
+        if ($this->event !== null) {
+            $attrs['event'] = $this->event;
+        }
+        if ($this->destructive) {
+            $attrs['destructive'] = true;
+        }
 
         $action->applyAttributes($attrs);
 

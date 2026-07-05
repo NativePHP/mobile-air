@@ -55,7 +55,9 @@ use Native\Mobile\Icon\IosSymbol;
 trait HasPlatformIcon
 {
     private ?string $iconName = null;
+
     private IosSymbol|string|null $iconIos = null;
+
     private AndroidSymbol|string|null $iconAndroid = null;
 
     /**

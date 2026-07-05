@@ -6,6 +6,7 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
@@ -14,6 +15,8 @@ use Native\Mobile\Commands\DebugCommand;
 use Native\Mobile\Commands\InstallCommand;
 use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\LaunchEmulatorCommand;
+use Native\Mobile\Commands\MakeNativeComponentCommand;
+use Native\Mobile\Commands\MakeNativeTestCommand;
 use Native\Mobile\Commands\OpenProjectCommand;
 use Native\Mobile\Commands\PackageCommand;
 use Native\Mobile\Commands\PluginBoostCommand;
@@ -25,19 +28,17 @@ use Native\Mobile\Commands\PluginRegisterCommand;
 use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
+use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\SimCommand;
 use Native\Mobile\Commands\TailCommand;
+use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
-use Native\Mobile\Commands\MakeNativeComponentCommand;
-use Native\Mobile\Commands\MakeNativeTestCommand;
-use Native\Mobile\Commands\RemoveNativeComponentCommand;
-use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
-use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeAwareCompilerEngine;
+use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
@@ -45,7 +46,6 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
-use Illuminate\Support\Facades\Route;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -621,7 +621,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
             // Gesture / interaction
             'gesture_area' => Elements\GestureArea::class,
-            'refreshable'  => Elements\Refreshable::class,
+            'refreshable' => Elements\Refreshable::class,
 
             // Canvas/shapes
             'canvas' => Elements\Canvas::class,

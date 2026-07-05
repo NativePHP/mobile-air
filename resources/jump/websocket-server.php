@@ -159,7 +159,7 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
                     // loop stays free to accept the new device, and the
                     // runloop's epoch check gets a chance to kill it cleanly
                     // when the next session starts. One-shot timer per call.
-                    \Workerman\Timer::add(1, function () use ($connection, $packed) {
+                    Timer::add(1, function () use ($connection, $packed) {
                         $connection->send($packed);
                     }, [], false);
 

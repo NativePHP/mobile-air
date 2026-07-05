@@ -38,9 +38,9 @@ class IconResolver
         $platform = Platform::current();
 
         $override = match ($platform) {
-            Platform::IOS     => $ios,
+            Platform::IOS => $ios,
             Platform::ANDROID => $android,
-            default           => null,
+            default => null,
         };
 
         if ($override === null) {

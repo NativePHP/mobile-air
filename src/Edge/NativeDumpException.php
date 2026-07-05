@@ -47,7 +47,7 @@ class NativeDumpException extends \RuntimeException
 
         foreach ($this->variables as $i => $var) {
             if (count($this->variables) > 1) {
-                $output .= "--- Variable #" . ($i + 1) . " ---\n";
+                $output .= '--- Variable #'.($i + 1)." ---\n";
             }
 
             $data = $cloner->cloneVar($var);

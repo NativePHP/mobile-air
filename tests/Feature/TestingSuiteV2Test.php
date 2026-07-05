@@ -267,7 +267,7 @@ it('scaffolds a test file for a component', function () {
     $path = base_path('tests/Feature/CounterScreenTest.php');
     @unlink($path);
 
-    $this->artisan('native:make-test', ['name' => \Tests\Fixtures\Edge\CounterScreen::class])
+    $this->artisan('native:make-test', ['name' => CounterScreen::class])
         ->assertExitCode(0);
 
     expect(file_exists($path))->toBeTrue();

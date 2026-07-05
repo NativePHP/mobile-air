@@ -2,6 +2,8 @@
 
 namespace Native\Mobile;
 
+use Native\Mobile\Facades\System;
+
 /**
  * Cached, process-scoped current-platform detection.
  *
@@ -19,9 +21,11 @@ namespace Native\Mobile;
 class Platform
 {
     public const IOS = 'ios';
+
     public const ANDROID = 'android';
 
     private static ?string $platform = null;
+
     private static bool $detected = false;
 
     /** Throttle re-detection after a failed attempt (see current()). */
@@ -49,7 +53,7 @@ class Platform
 
         // Defensive — no bridge available outside the mobile runtime.
         if (! function_exists('nativephp_call')
-            || ! class_exists(\Native\Mobile\Facades\System::class)) {
+            || ! class_exists(System::class)) {
             self::$detected = true;
 
             return self::$platform;
@@ -61,9 +65,9 @@ class Platform
         }
 
         try {
-            if (\Native\Mobile\Facades\System::isIos()) {
+            if (System::isIos()) {
                 self::$platform = self::IOS;
-            } elseif (\Native\Mobile\Facades\System::isAndroid()) {
+            } elseif (System::isAndroid()) {
                 self::$platform = self::ANDROID;
             }
         } catch (\Throwable) {

@@ -618,7 +618,7 @@ abstract class Element
      */
     public static function fnv1a32(string $s): int
     {
-        $hash = 0x811c9dc5;
+        $hash = 0x811C9DC5;
         $len = strlen($s);
         for ($i = 0; $i < $len; $i++) {
             $hash ^= ord($s[$i]);
@@ -654,7 +654,7 @@ abstract class Element
         // pathological case doesn't hang; in practice we exit on the
         // first or second salt.
         for ($salt = 1; $salt < 64; $salt++) {
-            $id = self::fnv1a32($keyPath . "\x00" . $salt);
+            $id = self::fnv1a32($keyPath."\x00".$salt);
             if (! isset($emittedIds[$id])) {
                 error_log("Element::toArray — key collision at '{$keyPath}', resolved with salt={$salt}");
                 $emittedIds[$id] = true;

@@ -1,6 +1,7 @@
 <?php
 
 use Native\Mobile\JumpBridge;
+use Native\Mobile\Testing\FakeBridge;
 
 /**
  * Fallback implementations of nativephp_call() and nativephp_can()
@@ -29,11 +30,11 @@ if (! function_exists('nativephp_call')) {
      */
     function nativephp_call(string $method, string $params = '{}'): ?string
     {
-        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+        if ($fake = FakeBridge::current()) {
             return $fake->call($method, $params);
         }
 
-        return \Native\Mobile\JumpBridge::instance()->call($method, $params);
+        return JumpBridge::instance()->call($method, $params);
     }
 }
 
@@ -53,20 +54,20 @@ if (! function_exists('nativephp_can')) {
 if (! function_exists('nativephp_element_init')) {
     function nativephp_element_init(): void
     {
-        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+        if ($fake = FakeBridge::current()) {
             $fake->elementInit();
 
             return;
         }
 
-        \Native\Mobile\JumpBridge::instance()->call('Element.Init');
+        JumpBridge::instance()->call('Element.Init');
     }
 }
 
 if (! function_exists('nativephp_element_publish')) {
     function nativephp_element_publish(array $tree): void
     {
-        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+        if ($fake = FakeBridge::current()) {
             $fake->elementPublish($tree);
 
             return;
@@ -86,7 +87,7 @@ if (! function_exists('nativephp_element_publish')) {
 if (! function_exists('nativephp_element_wait_event')) {
     function nativephp_element_wait_event(int $timeoutMs): ?array
     {
-        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+        if ($fake = FakeBridge::current()) {
             return $fake->elementWaitEvent($timeoutMs);
         }
 
@@ -177,7 +178,7 @@ if (! function_exists('nativephp_runtime_flags')) {
      */
     function nativephp_runtime_flags(): int
     {
-        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+        if ($fake = FakeBridge::current()) {
             return $fake->runtimeFlags();
         }
 
@@ -202,20 +203,20 @@ if (! function_exists('nativephp_force_full_frame_epoch')) {
 if (! function_exists('nativephp_element_reset')) {
     function nativephp_element_reset(): void
     {
-        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+        if ($fake = FakeBridge::current()) {
             $fake->elementReset();
 
             return;
         }
 
-        \Native\Mobile\JumpBridge::instance()->call('Element.Reset');
+        JumpBridge::instance()->call('Element.Reset');
     }
 }
 
 if (! function_exists('nativephp_element_shutdown')) {
     function nativephp_element_shutdown(): void
     {
-        if ($fake = \Native\Mobile\Testing\FakeBridge::current()) {
+        if ($fake = FakeBridge::current()) {
             $fake->elementShutdown();
 
             return;

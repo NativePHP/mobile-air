@@ -121,7 +121,7 @@ class CallbackRegistry
         }
 
         // Convert single quotes to double for JSON compatibility
-        $json = '[' . str_replace("'", '"', $argsString) . ']';
+        $json = '['.str_replace("'", '"', $argsString).']';
         $args = json_decode($json, true);
 
         return ['method' => $method, 'args' => $args ?? []];

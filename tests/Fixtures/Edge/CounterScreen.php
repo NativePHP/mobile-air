@@ -12,6 +12,7 @@ use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\Elements\TextInput;
 use Native\Mobile\Edge\Elements\Toggle;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Support\NativeCallbacks;
 
 class CounterScreen extends NativeComponent
 {
@@ -90,7 +91,7 @@ class CounterScreen extends NativeComponent
      */
     public function awaitPing(): void
     {
-        \Native\Mobile\Support\NativeCallbacks::register(
+        NativeCallbacks::register(
             'ping-capture',
             PingReceived::class,
             function ($event) {

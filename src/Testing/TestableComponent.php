@@ -11,6 +11,7 @@ use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\TestCase;
 
 /**
  * Livewire-style test harness for NativeComponent screens.
@@ -1476,7 +1477,7 @@ class TestableComponent
             }
 
             $object = $frame['object'] ?? null;
-            if ($object instanceof \PHPUnit\Framework\TestCase) {
+            if ($object instanceof TestCase) {
                 $testName = method_exists($object, 'name') ? $object->name() : $object->getName();
                 break;
             }

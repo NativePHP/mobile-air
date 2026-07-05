@@ -26,14 +26,14 @@ class BenchmarkReferenceData
      */
     public const LIST_SCROLL = [
         'ios_60hz' => [
-            'native_swift'    => ['avg_ms' => 17.2, 'p95_ms' => 16.7, 'fps' => 58.5, 'dropped_pct' => 1.6, 'jank_pct' => 1.4, 'ttff_ms' => 41.4,  'memory_mb' => 9.7],
-            'flutter'         => ['avg_ms' => 1.7,  'p95_ms' => 2.5,  'fps' => 59.3, 'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 16.7,  'memory_mb' => 25.3],
-            'react_native'    => ['avg_ms' => 16.7, 'p95_ms' => 16.8, 'fps' => 57.5, 'dropped_pct' => 15.5,'jank_pct' => 1.8, 'ttff_ms' => 33.0,  'memory_mb' => 45.1],
+            'native_swift' => ['avg_ms' => 17.2, 'p95_ms' => 16.7, 'fps' => 58.5, 'dropped_pct' => 1.6, 'jank_pct' => 1.4, 'ttff_ms' => 41.4,  'memory_mb' => 9.7],
+            'flutter' => ['avg_ms' => 1.7,  'p95_ms' => 2.5,  'fps' => 59.3, 'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 16.7,  'memory_mb' => 25.3],
+            'react_native' => ['avg_ms' => 16.7, 'p95_ms' => 16.8, 'fps' => 57.5, 'dropped_pct' => 15.5, 'jank_pct' => 1.8, 'ttff_ms' => 33.0,  'memory_mb' => 45.1],
         ],
         'android_120hz' => [
-            'native_kotlin'   => ['avg_ms' => 8.3,  'p95_ms' => 8.3,  'fps' => 119.8,'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 16.0,  'memory_mb' => 6.3],
-            'flutter'         => ['avg_ms' => 4.0,  'p95_ms' => 5.1,  'fps' => 117.8,'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 10.3,  'memory_mb' => 14.0],
-            'react_native'    => ['avg_ms' => 8.3,  'p95_ms' => 8.3,  'fps' => 115.0,'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 15.3,  'memory_mb' => 33.0],
+            'native_kotlin' => ['avg_ms' => 8.3,  'p95_ms' => 8.3,  'fps' => 119.8, 'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 16.0,  'memory_mb' => 6.3],
+            'flutter' => ['avg_ms' => 4.0,  'p95_ms' => 5.1,  'fps' => 117.8, 'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 10.3,  'memory_mb' => 14.0],
+            'react_native' => ['avg_ms' => 8.3,  'p95_ms' => 8.3,  'fps' => 115.0, 'dropped_pct' => 0.0, 'jank_pct' => 0.0, 'ttff_ms' => 15.3,  'memory_mb' => 33.0],
         ],
     ];
 
@@ -43,7 +43,7 @@ class BenchmarkReferenceData
      * useful as an order-of-magnitude check.
      */
     public const COLD_START_MS = [
-        'ios'     => ['native_swift'  => 800, 'flutter' => 1100, 'react_native' => 2400],
+        'ios' => ['native_swift' => 800, 'flutter' => 1100, 'react_native' => 2400],
         'android' => ['native_kotlin' => 700, 'flutter' => 950,  'react_native' => 2100],
     ];
 
@@ -52,10 +52,10 @@ class BenchmarkReferenceData
      * MB. From the same article. Build-time, not measurable at runtime.
      */
     public const BUNDLE_SIZE_MB = [
-        'native_swift'   => 1.2,
-        'native_kotlin'  => 2.8,
-        'flutter'        => 17.4,
-        'react_native'   => 11.6,
+        'native_swift' => 1.2,
+        'native_kotlin' => 2.8,
+        'flutter' => 17.4,
+        'react_native' => 11.6,
     ];
 
     /**
@@ -67,7 +67,7 @@ class BenchmarkReferenceData
     {
         return match (strtolower($platform)) {
             'ios', 'darwin' => self::LIST_SCROLL['ios_60hz'],
-            default          => self::LIST_SCROLL['android_120hz'],
+            default => self::LIST_SCROLL['android_120hz'],
         };
     }
 }

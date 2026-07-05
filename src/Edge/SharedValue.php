@@ -121,10 +121,10 @@ class SharedValue
         foreach ($this->formula as $step) {
             $v = match ($step['op']) {
                 'interp' => self::evalInterp($v, $step['in'], $step['out']),
-                'clamp'  => max($step['min'], min($step['max'], $v)),
-                'mul'    => $v * $step['by'],
-                'add'    => $v + $step['by'],
-                default  => $v,
+                'clamp' => max($step['min'], min($step['max'], $v)),
+                'mul' => $v * $step['by'],
+                'add' => $v + $step['by'],
+                default => $v,
             };
         }
 
@@ -149,10 +149,10 @@ class SharedValue
         foreach ($this->formula as $step) {
             $parts[] = match ($step['op']) {
                 'interp' => 'interp:'.implode(',', $step['in']).':'.implode(',', $step['out']),
-                'clamp'  => 'clamp:'.$step['min'].','.$step['max'],
-                'mul'    => 'mul:'.$step['by'],
-                'add'    => 'add:'.$step['by'],
-                default  => '',
+                'clamp' => 'clamp:'.$step['min'].','.$step['max'],
+                'mul' => 'mul:'.$step['by'],
+                'add' => 'add:'.$step['by'],
+                default => '',
             };
         }
 
@@ -163,8 +163,12 @@ class SharedValue
     {
         [$inLow, $inHigh] = [$input[0], $input[1]];
         [$outLow, $outHigh] = [$output[0], $output[1]];
-        if ($v <= $inLow)  return $outLow;
-        if ($v >= $inHigh) return $outHigh;
+        if ($v <= $inLow) {
+            return $outLow;
+        }
+        if ($v >= $inHigh) {
+            return $outHigh;
+        }
         $t = ($v - $inLow) / ($inHigh - $inLow);
 
         return $outLow + $t * ($outHigh - $outLow);

@@ -142,8 +142,8 @@ class TabBar
                 continue;
             }
 
-            $isExact  = $tabUrl === $currentUrl;
-            $isPrefix = str_starts_with($currentUrl, $tabUrl . '/');
+            $isExact = $tabUrl === $currentUrl;
+            $isPrefix = str_starts_with($currentUrl, $tabUrl.'/');
 
             if (($isExact || $isPrefix) && strlen($tabUrl) > $bestLen) {
                 $bestTab = $tab;
@@ -168,12 +168,25 @@ class TabBar
     public function toRootProps(): array
     {
         $attrs = [];
-        if ($this->dark)                       $attrs['dark']             = true;
-        if ($this->labelVisibility !== null)   $attrs['labelVisibility']  = $this->labelVisibility;
-        if ($this->activeColor !== null)       $attrs['activeColor']      = $this->activeColor;
-        if ($this->backgroundColor !== null)   $attrs['backgroundColor']  = $this->backgroundColor;
-        if ($this->textColor !== null)         $attrs['textColor']        = $this->textColor;
-        if ($this->minimizeOnScroll)           $attrs['minimizeOnScroll'] = true;
+        if ($this->dark) {
+            $attrs['dark'] = true;
+        }
+        if ($this->labelVisibility !== null) {
+            $attrs['labelVisibility'] = $this->labelVisibility;
+        }
+        if ($this->activeColor !== null) {
+            $attrs['activeColor'] = $this->activeColor;
+        }
+        if ($this->backgroundColor !== null) {
+            $attrs['backgroundColor'] = $this->backgroundColor;
+        }
+        if ($this->textColor !== null) {
+            $attrs['textColor'] = $this->textColor;
+        }
+        if ($this->minimizeOnScroll) {
+            $attrs['minimizeOnScroll'] = true;
+        }
+
         return $attrs;
     }
 
@@ -188,11 +201,21 @@ class TabBar
         $nav = BottomNav::make();
 
         $attrs = [];
-        if ($this->dark)                       $attrs['dark']            = true;
-        if ($this->labelVisibility !== null)   $attrs['labelVisibility'] = $this->labelVisibility;
-        if ($this->activeColor !== null)       $attrs['activeColor']     = $this->activeColor;
-        if ($this->backgroundColor !== null)   $attrs['backgroundColor'] = $this->backgroundColor;
-        if ($this->textColor !== null)         $attrs['textColor']       = $this->textColor;
+        if ($this->dark) {
+            $attrs['dark'] = true;
+        }
+        if ($this->labelVisibility !== null) {
+            $attrs['labelVisibility'] = $this->labelVisibility;
+        }
+        if ($this->activeColor !== null) {
+            $attrs['activeColor'] = $this->activeColor;
+        }
+        if ($this->backgroundColor !== null) {
+            $attrs['backgroundColor'] = $this->backgroundColor;
+        }
+        if ($this->textColor !== null) {
+            $attrs['textColor'] = $this->textColor;
+        }
 
         $nav->applyAttributes($attrs);
 

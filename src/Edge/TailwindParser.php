@@ -338,8 +338,7 @@ class TailwindParser
             //
             // Unknown segments (typos like `glass:thicc`) are silently
             // ignored; the base `glass` flag still applies.
-            $class === 'glass' || str_starts_with($class, 'glass:')
-                => self::parseGlassClass($class),
+            $class === 'glass' || str_starts_with($class, 'glass:') => self::parseGlassClass($class),
 
             // Position
             $class === 'absolute' => ['positionType' => 1],
@@ -367,17 +366,17 @@ class TailwindParser
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
-            str_starts_with($class, 'left-')   => self::parseSpacingUniform('positionLeft',   substr($class, 5)),
-            str_starts_with($class, 'top-')    => self::parseSpacingUniform('positionTop',    substr($class, 4)),
-            str_starts_with($class, 'right-')  => self::parseSpacingUniform('positionRight',  substr($class, 6)),
+            str_starts_with($class, 'left-') => self::parseSpacingUniform('positionLeft', substr($class, 5)),
+            str_starts_with($class, 'top-') => self::parseSpacingUniform('positionTop', substr($class, 4)),
+            str_starts_with($class, 'right-') => self::parseSpacingUniform('positionRight', substr($class, 6)),
             str_starts_with($class, 'bottom-') => self::parseSpacingUniform('positionBottom', substr($class, 7)),
 
             // Colors and text
             // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
             // Checked BEFORE the generic bg-/text- branches so e.g. `bg-theme-*`
             // doesn't fall into the color-palette parser as `theme-primary`.
-            str_starts_with($class, 'bg-theme-')     => self::parseThemeBg(substr($class, 9)),
-            str_starts_with($class, 'text-theme-')   => self::parseThemeText(substr($class, 11)),
+            str_starts_with($class, 'bg-theme-') => self::parseThemeBg(substr($class, 9)),
+            str_starts_with($class, 'text-theme-') => self::parseThemeText(substr($class, 11)),
             str_starts_with($class, 'border-theme-') => self::parseThemeBorder(substr($class, 13)),
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
@@ -443,7 +442,6 @@ class TailwindParser
             default => null,
         };
     }
-
 
     /**
      * Pull a trailing `/N` (or `/[N]`) opacity modifier off a color class.
@@ -515,6 +513,7 @@ class TailwindParser
         foreach ($result as $key => $val) {
             if ($key === 'dark' && is_array($val)) {
                 $result[$key] = self::applyAlphaToColorResult($val, $alphaHex);
+
                 continue;
             }
             if (! is_string($val)) {
@@ -538,7 +537,6 @@ class TailwindParser
 
         return null;
     }
-
 
     /**
      * Parse a `glass` token (with optional colon-chained modifiers) into a
@@ -663,7 +661,7 @@ class TailwindParser
             return null;
         }
         $dark = self::resolveThemeToken($token, true);
-        $out  = ['bg' => $light];
+        $out = ['bg' => $light];
         if ($dark !== null && $dark !== $light) {
             $out['dark'] = ['bg' => $dark];
         }
@@ -678,7 +676,7 @@ class TailwindParser
             return null;
         }
         $dark = self::resolveThemeToken($token, true);
-        $out  = ['color' => $light];
+        $out = ['color' => $light];
         if ($dark !== null && $dark !== $light) {
             $out['dark'] = ['color' => $dark];
         }
@@ -693,7 +691,7 @@ class TailwindParser
             return null;
         }
         $dark = self::resolveThemeToken($token, true);
-        $out  = ['borderColor' => $light, 'borderWidth' => 1];
+        $out = ['borderColor' => $light, 'borderWidth' => 1];
         if ($dark !== null && $dark !== $light) {
             $out['dark'] = ['borderColor' => $dark];
         }
@@ -852,10 +850,10 @@ class TailwindParser
             'border' => $isColor ? ['borderColor' => self::normalizeHex($value)] : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
-            'top'    => ['positionTop'    => (float) $value],
-            'right'  => ['positionRight'  => (float) $value],
+            'top' => ['positionTop' => (float) $value],
+            'right' => ['positionRight' => (float) $value],
             'bottom' => ['positionBottom' => (float) $value],
-            'left'   => ['positionLeft'   => (float) $value],
+            'left' => ['positionLeft' => (float) $value],
             default => null,
         };
     }
@@ -887,9 +885,9 @@ class TailwindParser
     {
         $hex = ltrim($hex, '#');
         if (strlen($hex) === 3) {
-            $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+            $hex = $hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2];
         }
 
-        return '#' . strtoupper($hex);
+        return '#'.strtoupper($hex);
     }
 }
