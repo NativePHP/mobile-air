@@ -183,11 +183,11 @@ if ($path === '/jump/qr' || $path === '/jump') {
         $qrData = "jump://connect?host={$displayHost}&port={$httpPort}";
 
         // Generate QR code
-        $result = (new Builder(
-            data: $qrData,
-            size: 300,
-            margin: 10,
-        ))->build();
+        $result = Builder::create()
+            ->data($qrData)
+            ->size(300)
+            ->margin(10)
+            ->build();
 
         $qrCodeDataUri = $result->getDataUri();
 
