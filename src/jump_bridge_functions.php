@@ -1,5 +1,7 @@
 <?php
 
+use Native\Mobile\JumpBridge;
+
 /**
  * Fallback implementations of nativephp_call() and nativephp_can()
  * for Jump hybrid mode (dev machine execution).
@@ -77,7 +79,7 @@ if (! function_exists('nativephp_element_publish')) {
             date('[H:i:s] ')."Publish: hash={$hash} size=".strlen($json)."\n",
             FILE_APPEND
         );
-        \Native\Mobile\JumpBridge::instance()->call('Element.Publish', $json);
+        JumpBridge::instance()->call('Element.Publish', $json);
     }
 }
 
@@ -90,7 +92,7 @@ if (! function_exists('nativephp_element_wait_event')) {
 
         static $consecutiveErrors = 0;
 
-        $result = \Native\Mobile\JumpBridge::instance()->call('Element.WaitEvent', json_encode(['timeout' => $timeoutMs]));
+        $result = JumpBridge::instance()->call('Element.WaitEvent', json_encode(['timeout' => $timeoutMs]));
 
         if ($result === null) {
             // TCP timeout — not an error, just no interaction yet. Retry.
@@ -234,6 +236,6 @@ if (! function_exists('nativephp_element_shutdown')) {
             }
         }
 
-        \Native\Mobile\JumpBridge::instance()->call('Element.Shutdown');
+        JumpBridge::instance()->call('Element.Shutdown');
     }
 }

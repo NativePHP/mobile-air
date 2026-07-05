@@ -3,6 +3,7 @@
 namespace Native\Mobile\Commands;
 
 use Endroid\QrCode\Builder\Builder;
+use Endroid\QrCode\ErrorCorrectionLevel;
 use Illuminate\Console\Command;
 
 use function Laravel\Prompts\intro;
@@ -19,7 +20,8 @@ class JumpCommand extends Command
                             {--vite-proxy-port= : The port Jump uses to proxy Vite HMR to the phone}
                             {--no-serve : Do not start artisan serve automatically (use if running your own server)}
                             {--laravel-port= : The Laravel dev server port (auto-detected when artisan serve is managed)}
-                            {--no-mdns : Disable mDNS service advertisement}';
+                            {--no-mdns : Disable mDNS service advertisement}
+                            {--browser : Open the QR code page in the default browser (useful when terminal rendering is unreliable)}';
 
     protected $description = 'Start the NativePHP development server for testing mobile apps';
 
@@ -31,6 +33,12 @@ class JumpCommand extends Command
 
     private array $laravelPipes = [];
 
+    private $bridgeProcess = null;
+
+    // Windows-only: separate process for the Vite HMR proxy because
+    // Workerman can't fork two Workers from one file on Windows.
+    private $viteHmrProcess = null;
+
     private bool $verbose = false;
 
     /** Handle to the mDNS/Bonjour advertiser subprocess (LAN discovery). */
@@ -41,9 +49,6 @@ class JumpCommand extends Command
         $this->verbose = $this->output->isVerbose();
 
         intro('NativePHP Jump Server');
-
-        // Kill existing servers
-        $this->killExistingServers();
 
         // Configuration
         $host = $this->option('host');
@@ -92,8 +97,14 @@ class JumpCommand extends Command
             $this->startLaravelServer($this->laravelPort, $bridgePort, $wsPort);
         }
 
-        // Check if we should open browser
-        $openQr = config('nativephp.server.open_browser', true);
+        // Open the browser-rendered QR page only when --browser is passed.
+        // Terminal QR is the default; the browser page is the fallback for
+        // environments where terminal rendering can't produce a scannable
+        // image (font/line-height issues, narrow viewports, etc.).
+        // Intentionally ignore config('nativephp.server.open_browser') —
+        // published consumer configs default it to true, which would
+        // override the flag-driven UX we want here.
+        $openQr = (bool) $this->option('browser');
 
         // Get the local IP for dev server config
         $ipOption = $this->option('ip');
@@ -141,10 +152,25 @@ class JumpCommand extends Command
      */
     private function startPhpServer(string $host, int $httpPort, bool $openQr, int $bridgePort = 3002, int $wsPort = 3001, int $viteProxyPort = 3003): void
     {
-        $routerPath = __DIR__.'/../../resources/jump/router.php';
+        // On Windows we run a Workerman-based HTTP proxy instead of `php -S`.
+        // `php -S` on Windows holds dead HTTP/1.1 keep-alive sockets in
+        // Established state for the OS's full 2-hour TCP keepalive window
+        // (no SO_KEEPALIVE on the listen socket), and a few of those exhaust
+        // the single-threaded server's accept loop — browser visits and
+        // subsequent phone scans hang. Workerman manages connection
+        // lifecycle correctly and closes after each response.
+        //
+        // macOS/Linux keep using `php -S` + router.php because they don't
+        // hit the dead-socket pathology and we don't want to introduce a
+        // new code path on platforms that already work.
+        $useWorkerman = PHP_OS_FAMILY === 'Windows';
 
-        if (! file_exists($routerPath)) {
-            $this->error("Router script not found at: {$routerPath}");
+        $routerPath = __DIR__.'/../../resources/jump/router.php';
+        $workermanServerPath = __DIR__.'/../../resources/jump/http-server.php';
+        $serverScriptPath = $useWorkerman ? $workermanServerPath : $routerPath;
+
+        if (! file_exists($serverScriptPath)) {
+            $this->error("Server script not found at: {$serverScriptPath}");
 
             return;
         }
@@ -187,13 +213,29 @@ class JumpCommand extends Command
             2 => ['pipe', 'w'],  // stderr
         ];
 
-        $cmd = sprintf(
-            '%s -S %s:%d %s',
-            escapeshellarg($phpBinary),
-            $serverHost,
-            $httpPort,
-            escapeshellarg($routerPath)
-        );
+        if ($useWorkerman) {
+            // Workerman script takes positional args: base_path, host, port,
+            // then the Workerman `start` token. Env vars are also read by
+            // the script for everything beyond host/port.
+            $cmd = sprintf(
+                '%s %s %s %s %d start',
+                escapeshellarg($phpBinary),
+                escapeshellarg($serverScriptPath),
+                escapeshellarg(base_path()),
+                escapeshellarg($serverHost),
+                $httpPort
+            );
+
+            $this->components->twoColumnDetail('HTTP proxy', '<fg=cyan>workerman</> (windows: avoids `php -S` dead-socket wedge)');
+        } else {
+            $cmd = sprintf(
+                '%s -S %s:%d %s',
+                escapeshellarg($phpBinary),
+                $serverHost,
+                $httpPort,
+                escapeshellarg($serverScriptPath)
+            );
+        }
 
         $process = proc_open($cmd, $descriptorSpec, $pipes, base_path(), $fullEnv);
 
@@ -262,6 +304,22 @@ class JumpCommand extends Command
             // daemonized WorkerMan bridge (PPID 1) survives and squats on the
             // ws/bridge/vite ports until some future run reaps it.
             pcntl_signal(SIGHUP, $shutdown);
+        }
+
+        // Open the browser-rendered QR page once the HTTP server is up.
+        // Terminal-rendered QR codes are unreliable across font/terminal
+        // combinations (line-height gaps in half-blocks, or oversized
+        // full-block renderings that don't fit the visible viewport), so the
+        // browser page at /jump/qr is the canonical scan target. The
+        // terminal QR above is a best-effort fallback for headless/SSH use.
+        if ($openQr) {
+            for ($i = 0; $i < 50; $i++) {
+                if ($this->isPortInUse($httpPort)) {
+                    break;
+                }
+                usleep(100000); // 100ms; up to 5s total
+            }
+            $this->openBrowser($host, $httpPort);
         }
 
         // Main loop - read output from the server
@@ -404,24 +462,112 @@ class JumpCommand extends Command
         $logFile = $logDir.'/jump-bridge.log';
         @file_put_contents($logFile, '=== '.date('Y-m-d H:i:s')." bridge server starting (ws={$wsPort} tcp={$bridgePort} vite_proxy={$viteProxyPort}) ===\n", FILE_APPEND);
 
-        // Run in background (not Workerman daemon mode — it breaks the event loop)
-        $cmd = sprintf(
-            '%s %s %s %d %d %d start >> %s 2>&1 &',
-            escapeshellarg($phpBinary),
-            escapeshellarg($serverPath),
-            escapeshellarg(base_path()),
-            $wsPort,
-            $bridgePort,
-            $viteProxyPort,
-            escapeshellarg($logFile)
-        );
-
-        exec($cmd);
+        // Run in background (not Workerman daemon mode — it breaks the event loop).
+        if (PHP_OS_FAMILY === 'Windows') {
+            // `&` is a command separator on Windows (not "background"), and the
+            // previous `pclose(popen("start /B ..."))` approach hangs: cmd.exe's
+            // stdout pipe (created by popen) gets inherited by the grandchild
+            // PHP via CreateProcess(bInheritHandles=TRUE) and the pipe never
+            // sees EOF, so pclose blocks until the long-lived bridge exits.
+            //
+            // Use proc_open with explicit file handles (no inheritable pipes)
+            // and bypass_shell so no cmd.exe sits in the middle. Intentionally
+            // do NOT proc_close the resource — that would wait on the
+            // long-running child. The OS process is independent and the PHP
+            // resource is cleaned up at script shutdown.
+            $cmd = sprintf(
+                '%s %s %s %d %d %d start',
+                escapeshellarg($phpBinary),
+                escapeshellarg($serverPath),
+                escapeshellarg(base_path()),
+                $wsPort,
+                $bridgePort,
+                $viteProxyPort
+            );
+            $desc = [
+                0 => ['file', 'NUL', 'r'],
+                1 => ['file', $logFile, 'a'],
+                2 => ['file', $logFile, 'a'],
+            ];
+            // Keep the resource on the instance so its destructor doesn't fire
+            // mid-command (proc_close blocks waiting for the long-lived child).
+            // On Ctrl+C the PHP process is hard-terminated by Windows and the
+            // bridge stays running, matching Mac/Linux behaviour.
+            $this->bridgeProcess = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
+        } else {
+            $cmd = sprintf(
+                '%s %s %s %d %d %d start >> %s 2>&1 &',
+                escapeshellarg($phpBinary),
+                escapeshellarg($serverPath),
+                escapeshellarg(base_path()),
+                $wsPort,
+                $bridgePort,
+                $viteProxyPort,
+                escapeshellarg($logFile)
+            );
+            exec($cmd);
+        }
 
         // Give it a moment to start
         usleep(500000);
 
         $this->components->twoColumnDetail('Bridge log', "tail -f {$logFile}");
+
+        // On Windows, Workerman cannot start multiple Worker instances from
+        // one PHP file (no fork() — the second Worker is silently dropped
+        // with the "multi workers init in one php file are not support"
+        // warning). websocket-server.php declares both JumpBridge (this
+        // process) and JumpViteProxy, so on Windows the Vite HMR proxy
+        // never binds and `npm run dev` file changes never reach the phone.
+        // Launch the Vite HMR proxy as its own process to work around that.
+        // macOS/Linux don't need this — fork in websocket-server.php starts
+        // both Workers correctly.
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->startViteHmrProxyForWindows($viteProxyPort, $logFile);
+        }
+    }
+
+    /**
+     * Launch the standalone Vite HMR proxy Workerman process. Windows only —
+     * see startBridgeServer for the multi-worker-in-one-file rationale.
+     */
+    private function startViteHmrProxyForWindows(int $viteProxyPort, string $logFile): void
+    {
+        $serverPath = __DIR__.'/../../resources/jump/vite-hmr-server.php';
+
+        if (! file_exists($serverPath)) {
+            $this->warn('Vite HMR proxy script not found, HMR will not work on Windows.');
+
+            return;
+        }
+
+        $phpBinary = PHP_BINARY;
+        $cmd = sprintf(
+            '%s %s %s %d start',
+            escapeshellarg($phpBinary),
+            escapeshellarg($serverPath),
+            escapeshellarg(base_path()),
+            $viteProxyPort
+        );
+        $desc = [
+            0 => ['file', 'NUL', 'r'],
+            1 => ['file', $logFile, 'a'],
+            2 => ['file', $logFile, 'a'],
+        ];
+
+        // Same proc_open pattern as the bridge: keep the resource alive on
+        // the instance so its destructor doesn't proc_close (which would
+        // block waiting on the long-lived child). The OS process is
+        // independent and Windows hard-terminates everything on Ctrl+C.
+        $this->viteHmrProcess = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
+
+        usleep(500000);
+
+        if ($this->isPortInUse($viteProxyPort)) {
+            $this->components->twoColumnDetail('Vite HMR proxy', "ws://0.0.0.0:{$viteProxyPort}/ (windows: separate process)");
+        } else {
+            $this->warn("Vite HMR proxy did not bind to port {$viteProxyPort} — file changes will not hot-reload on the phone.");
+        }
     }
 
     /**
@@ -438,10 +584,16 @@ class JumpCommand extends Command
             2 => ['pipe', 'w'],
         ];
 
-        // --no-reload is REQUIRED for artisan serve to honour
-        // PHP_CLI_SERVER_WORKERS (Laravel only spins up the multi-worker
-        // built-in server with that flag — otherwise it warns and falls back
-        // to a single worker, re-introducing the native-runloop starvation).
+        // --no-reload is REQUIRED for two reasons:
+        //  1. It lets artisan serve honour PHP_CLI_SERVER_WORKERS — Laravel only
+        //     spins up the multi-worker built-in server with that flag; otherwise
+        //     it warns and falls back to a single worker, re-introducing the
+        //     native-runloop starvation.
+        //  2. On Windows/Herd, without it Laravel's ServeCommand strips most env
+        //     vars from the spawned `php -S` child (only a small allowlist
+        //     survives), which can break PHP's socket initialization and produce
+        //     the opaque "Failed to listen on 127.0.0.1:<port> (reason: ?)" error
+        //     across every port it tries.
         // Jump runs its own file watcher in websocket-server.php, so artisan
         // serve's built-in .env reload is redundant here anyway.
         $cmd = sprintf(
@@ -497,6 +649,58 @@ class JumpCommand extends Command
         }
 
         $this->components->twoColumnDetail('Laravel server', "http://127.0.0.1:{$port}");
+
+        // Warm Laravel before the phone arrives. PHP's first request is cold:
+        // opcache empty, Wayfinder/Inertia/service-provider boot, autoload
+        // scan — easily >30s on Windows + Herd for an Inertia app. The
+        // router's curl proxy has a fixed transfer timeout, so a cold first
+        // request lands in the phone as "Could not connect to Laravel on
+        // port 8000". Pre-warming here trades a one-time delay during
+        // startup (where it's expected) for a fast first scan.
+        $this->warmLaravelServer($port);
+    }
+
+    /**
+     * Issue a single throwaway GET / to the managed Laravel server so the
+     * opcache, Inertia/Wayfinder bootstrap, and config caching are primed
+     * before the device proxies its first request.
+     */
+    private function warmLaravelServer(int $port): void
+    {
+        if (! function_exists('curl_init')) {
+            return;
+        }
+
+        $start = microtime(true);
+        $ch = curl_init("http://127.0.0.1:{$port}/");
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_NOBODY, false);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+        // Identify ourselves so logs can attribute the warmup hit.
+        curl_setopt($ch, CURLOPT_USERAGENT, 'NativePHP-Jump-Warmup/1.0');
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        $elapsed = round(microtime(true) - $start, 2);
+
+        if ($response === false) {
+            $this->components->twoColumnDetail(
+                'Laravel warmup',
+                "<fg=yellow>failed after {$elapsed}s: {$error}</>"
+            );
+
+            return;
+        }
+
+        $this->components->twoColumnDetail(
+            'Laravel warmup',
+            "<fg=green>ready in {$elapsed}s (HTTP {$httpCode})</>"
+        );
     }
 
     /**
@@ -575,10 +779,20 @@ class JumpCommand extends Command
 
             $qrData = "jump://connect?host={$host}&port={$port}";
 
+            // High error correction is required when we pack the QR into
+            // terminal half-blocks: font line-height variations on Windows
+            // cmd/PowerShell can cause individual modules to be misread by
+            // scanners. The QR still decodes "successfully" (it doesn't
+            // checksum-fail), but the data is wrong, so the receiving app
+            // gets a garbage host/port and hangs trying to connect. High EC
+            // adds redundancy that fixes those flipped modules in-scanner.
+            // Margin stays at 1 since the surrounding terminal background
+            // gives the scanner additional effective quiet zone.
             $result = (new Builder(
                 data: $qrData,
+                errorCorrectionLevel: ErrorCorrectionLevel::High,
                 size: 300,
-                margin: 2,
+                margin: 1,
             ))->build();
 
             $matrix = $result->getMatrix();
@@ -588,11 +802,16 @@ class JumpCommand extends Command
             $this->line('  <fg=white;bg=black>Scan with your camera to open in Jump</>');
             $this->newLine();
 
-            // Render two rows at a time using Unicode half-block characters:
-            // ▀ (upper half) = top black, bottom white
-            // ▄ (lower half) = top white, bottom black
-            // █ (full block) = both black
-            //   (space)      = both white
+            // Half-block packing: each terminal row carries TWO QR matrix
+            // rows. ▀ = top module on, ▄ = bottom module on, █ = both on,
+            // space = both off. Cuts the rendered height in half and gives
+            // approximately square cells (most terminal cells are ~1:2
+            // aspect, so 1 char wide × 0.5 char tall ≈ square).
+            //
+            // Caveat: depends on the font drawing half-blocks with no
+            // vertical gap. Modern Windows Terminal (Cascadia Code) and most
+            // monospace fonts on macOS/Linux handle this correctly. Older
+            // cmd.exe with Consolas may leave a thin gap between rows.
             for ($y = 0; $y < $size; $y += 2) {
                 $line = '  '; // left margin
                 for ($x = 0; $x < $size; $x++) {
@@ -617,6 +836,11 @@ class JumpCommand extends Command
             $this->newLine();
             $this->line('  <fg=green>iOS</>  Scan with Camera app or Jump app');
             $this->line('  <fg=blue>Android</>  Scan from within the Jump app');
+            $this->newLine();
+            $browserHost = $host === '0.0.0.0' ? 'localhost' : $host;
+            $browserUrl = "http://{$browserHost}:{$port}/jump/qr";
+            $this->line("  <fg=yellow>Can't scan the QR code? Try it in the browser: <fg=cyan>{$browserUrl}</></>");
+            $this->line('  <fg=gray>Use the --browser option to auto-open your default browser on future runs.</>');
             $this->newLine();
         } catch (\Throwable $e) {
             // QR display is optional — don't break the server
@@ -1136,12 +1360,23 @@ APPLESCRIPT;
 
     private function isPortInUse($port)
     {
+        // Connect-test: does anything accept on this port right now?
         $connection = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
         if ($connection) {
             fclose($connection);
 
             return true;
         }
+
+        // Bind-test: catches ports held by a process that isn't accepting
+        // (stuck/half-dead Windows servers, TIME_WAIT, bound-but-not-listening).
+        // fsockopen alone missed these, which is why a previous run's artisan
+        // serve on 8000 could fool us into picking 8000 again.
+        $socket = @stream_socket_server("tcp://127.0.0.1:{$port}", $errno, $errstr);
+        if ($socket === false) {
+            return true;
+        }
+        fclose($socket);
 
         return false;
     }

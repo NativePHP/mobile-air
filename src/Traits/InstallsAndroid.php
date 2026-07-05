@@ -15,11 +15,6 @@ trait InstallsAndroid
 {
     use PlatformFileOperations;
 
-    private function getBinaryBranch(): string
-    {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
-    }
-
     protected ?bool $includeIcu = null;
 
     public function promptAndroidOptions(): void
@@ -35,6 +30,7 @@ trait InstallsAndroid
     public function setupAndroid(): void
     {
         $this->createAndroidStudioProject();
+        $this->writeAndroidTheme();
 
         // Skip PHP installation if --skip-php is passed, unless --force/--fresh is also passed
         $shouldSkipPhp = $this->option('skip-php') && ! $this->forcing;
@@ -61,52 +57,68 @@ trait InstallsAndroid
         $this->components->task('Creating Android project', fn () => $this->platformOptimizedCopy($source, $androidPath));
     }
 
-    private function detectPhpVersion(): string
+    private function writeAndroidTheme(): void
     {
-        $composerPath = base_path('composer.json');
+        $androidRoot = base_path('nativephp/android');
+        $valuesPath = "{$androidRoot}/app/src/main/res/values/themes.xml";
+        $valuesNightPath = "{$androidRoot}/app/src/main/res/values-night/themes.xml";
 
-        if (! file_exists($composerPath)) {
-            return '8.3';
+        $primary = $this->normalizeThemeColor(config('nativephp.android.theme.color_primary') ?: '#000000');
+        $primaryNight = $this->normalizeThemeColor(config('nativephp.android.theme.color_primary_night') ?: '#FFFFFF');
+        $onPrimary = $this->normalizeThemeColor(config('nativephp.android.theme.color_on_primary') ?: '#FFFFFF');
+
+        File::ensureDirectoryExists(dirname($valuesNightPath));
+
+        $this->components->task('Applying Android theme', function () use ($valuesPath, $valuesNightPath, $primary, $primaryNight, $onPrimary) {
+            File::put($valuesPath, $this->renderThemeXml($primary, $onPrimary));
+            File::put($valuesNightPath, $this->renderThemeXml($primaryNight, $onPrimary));
+
+            return true;
+        });
+    }
+
+    private function normalizeThemeColor(string $value): string
+    {
+        if (! preg_match('/^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/', $value)) {
+            warning("Invalid hex color '{$value}' in nativephp.android.theme — falling back to #000000.");
+            $value = '#000000';
         }
 
-        $composer = json_decode(file_get_contents($composerPath), true);
-        $constraint = $composer['require']['php'] ?? '';
+        $hex = strtoupper(ltrim($value, '#'));
 
-        // Check from highest to lowest — first match wins
-        if (preg_match('/(?:\^|>=|~)?8\.5/', $constraint)) {
-            return '8.5';
-        }
+        return '#'.(strlen($hex) === 6 ? 'FF'.$hex : $hex);
+    }
 
-        if (preg_match('/(?:\^|>=|~)?8\.4/', $constraint)) {
-            return '8.4';
-        }
+    private function renderThemeXml(string $primary, string $onPrimary): string
+    {
+        return <<<XML
+            <?xml version="1.0" encoding="utf-8"?>
+            <resources>
+                <style name="Theme.AndroidPHP" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+                    <item name="colorPrimary">{$primary}</item>
+                    <item name="colorPrimaryVariant">{$primary}</item>
+                    <item name="colorOnPrimary">{$onPrimary}</item>
+                    <item name="colorAccent">{$primary}</item>
+                    <item name="android:colorAccent">{$primary}</item>
+                    <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+                    <item name="android:statusBarColor">@android:color/transparent</item>
+                    <item name="android:navigationBarColor">@android:color/transparent</item>
+                    <item name="android:enforceStatusBarContrast">false</item>
+                    <item name="android:enforceNavigationBarContrast">false</item>
+                </style>
+            </resources>
 
-        return '8.3';
+            XML;
     }
 
     private function installPHPAndroid(): void
     {
         $includeIcu = $this->includeIcu ?? false;
-        $phpVersion = $this->detectPhpVersion();
+        $phpVersion = $this->phpVersion;
+        $versions = $this->versionsManifest;
 
-        $branch = $this->getBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
-
-        $client = new Client;
-
-        try {
-            $versions = json_decode(
-                $client->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
-        } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
-
-            return;
-        }
-
-        if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries not available in {$branch} branch");
+        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries not available");
 
             return;
         }
@@ -139,7 +151,8 @@ trait InstallsAndroid
         $zipFile = $cacheDir.DIRECTORY_SEPARATOR.$zipFilename;
         $extractPath = storage_path('android-temp');
 
-        $this->components->twoColumnDetail('PHP version', $phpVersion.'.x');
+        $fullVersion = $versions['versions'][$phpVersion]['php_version'] ?? $phpVersion;
+        $this->components->twoColumnDetail('PHP version', $fullVersion);
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
         if (file_exists($zipFile)) {
@@ -260,14 +273,6 @@ trait InstallsAndroid
                 $this->platformOptimizedCopy($includeSrc, $includeDst);
             }
         });
-
-        // Store ICU preference for run command
-        $icuFlagFile = base_path('nativephp/android/.icu-enabled');
-        if ($includeIcu) {
-            File::put($icuFlagFile, '1');
-        } elseif (File::exists($icuFlagFile)) {
-            File::delete($icuFlagFile);
-        }
 
         try {
             $this->removeDirectory($extractPath);

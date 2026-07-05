@@ -94,6 +94,11 @@ export function nativephpMobile() {
 
         config.server = {
             host: localIP,
+            https: false,
+            hmr: {
+                host: localIP,
+                protocol: 'ws',
+            },
             cors: {
                 origin: ['php://127.0.0.1'],
             },
@@ -143,6 +148,11 @@ export const mergeConfig = axios.mergeConfig;
 
         config.server = {
             host: localIP,
+            https: false,
+            hmr: {
+                host: localIP,
+                protocol: 'ws',
+            },
             cors: {
                 origin: ['http://127.0.0.1'],
             },
@@ -158,7 +168,17 @@ export const mergeConfig = axios.mergeConfig;
     const mainPlugin = {
         name: 'nativephp',
         enforce: 'pre',
-        config() {
+        config(userConfig) {
+            // laravel-vite-plugin runs with enforce: 'post' and reads
+            // userConfig.server.host / userConfig.server.https / userConfig.server.hmr
+            // to decide whether to apply its Herd/Valet TLS auto-detection.
+            // Mutate userConfig here so its fallbacks see our values and skip
+            // substituting Herd's hostname + self-signed cert — which the
+            // Android emulator can't validate and which breaks asset loading.
+            if (config.server) {
+                userConfig.server = userConfig.server || {};
+                Object.assign(userConfig.server, config.server);
+            }
             return config;
         },
         closeBundle() {

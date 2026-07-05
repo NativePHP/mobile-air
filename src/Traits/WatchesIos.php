@@ -177,10 +177,12 @@ trait WatchesIos
             $this->line("<fg=green>Synced to iOS:</fg=green> {$relativePath}");
         }
 
-        // Trigger reload only if Vite hot reloading is not active
-        if (! file_exists($viteHotFile)) {
-            $this->triggerIosReload();
+        // Skip reload for files that Vite handles via HMR
+        if (file_exists($viteHotFile) && $this->isViteHandledIosFile($relativePath)) {
+            return;
         }
+
+        $this->triggerIosReload();
     }
 
     private function triggerIosReload(): void
@@ -229,6 +231,20 @@ trait WatchesIos
         register_shutdown_function(function () use ($pid) {
             @exec("kill {$pid} 2>/dev/null");
         });
+
+        // register_shutdown_function does NOT run when the watcher is stopped
+        // with Ctrl-C (SIGINT) — the usual way — so iproxy would be orphaned
+        // and keep holding port 9999, breaking the next run's hot reload.
+        // Install signal handlers that tear it down before exiting.
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+            $teardown = function () use ($pid) {
+                @exec("kill {$pid} 2>/dev/null");
+                exit(0);
+            };
+            pcntl_signal(SIGINT, $teardown);
+            pcntl_signal(SIGTERM, $teardown);
+        }
 
         // Give iproxy time to start and check it's still running
         usleep(500000);
@@ -337,6 +353,22 @@ trait WatchesIos
 
             return $path;
         }, $paths);
+    }
+
+    private function isViteHandledIosFile(string $relativePath): bool
+    {
+        $vitePatterns = [
+            '/^resources\/js\/.*\.(vue|js|ts|jsx|tsx)$/i',
+            '/^resources\/css\/.*\.(css|scss|sass|less)$/i',
+        ];
+
+        foreach ($vitePatterns as $pattern) {
+            if (preg_match($pattern, $relativePath)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function getIosExcludePatterns(): array

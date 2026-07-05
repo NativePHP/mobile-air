@@ -18,6 +18,24 @@ trait InstallsSplashScreen
             'splash-dark@3x.png' => ['filename' => 'splash-dark@3x.png', 'idiom' => 'universal', 'scale' => '3x', 'appearances' => [['appearance' => 'luminosity', 'value' => 'dark']]],
         ];
 
+        // Xcode's asset compiler rejects Image Sets that mix entries with no
+        // `scale` key ("Any" scale) and entries with specific scales (1x/2x/3x)
+        // when the "Any" entries reference bitmap content. If the project ships
+        // any scaled variants, drop the unscaled ones so the generated
+        // Contents.json doesn't trigger:
+        //   error: Image set has a child with bitmap content and the "Any"
+        //   scale. The image set also has children with specific scales...
+        $hasScaledVariants = false;
+        foreach (['splash@2x.png', 'splash-dark@2x.png', 'splash@3x.png', 'splash-dark@3x.png'] as $scaledFilename) {
+            if (File::exists(public_path($scaledFilename))) {
+                $hasScaledVariants = true;
+                break;
+            }
+        }
+        if ($hasScaledVariants) {
+            unset($splashVariants['splash.png'], $splashVariants['splash-dark.png']);
+        }
+
         $foundVariants = [];
         $images = [];
 

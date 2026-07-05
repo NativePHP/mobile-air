@@ -203,8 +203,10 @@ class PluginValidateCommand extends Command
         ];
 
         $optionalDirs = [
-            'resources/android/src' => 'Android Kotlin sources',
-            'resources/ios/Sources' => 'iOS Swift sources',
+            'resources/android/src' => 'Android Kotlin sources (nested)',
+            'resources/android' => 'Android Kotlin sources (flat)',
+            'resources/ios/Sources' => 'iOS Swift sources (nested)',
+            'resources/ios' => 'iOS Swift sources (flat)',
         ];
 
         foreach ($requiredDirs as $dir => $description) {
@@ -278,8 +280,20 @@ class PluginValidateCommand extends Command
         }
 
         // Search recursively for the Kotlin file
-        $androidSrc = $basePath.'/resources/android/src';
-        if (! is_dir($androidSrc)) {
+        $searchPaths = [
+            $basePath.'/resources/android/src',
+            $basePath.'/resources/android',
+        ];
+
+        $androidSrc = null;
+        foreach ($searchPaths as $path) {
+            if (is_dir($path)) {
+                $androidSrc = $path;
+                break;
+            }
+        }
+
+        if (! $androidSrc) {
             return null;
         }
 
@@ -302,9 +316,13 @@ class PluginValidateCommand extends Command
         $parts = explode('.', $className);
         $class = $parts[0];
 
-        $swiftPath = $basePath.'/resources/ios/Sources/'.$class.'.swift';
+        $nestedPath = $basePath.'/resources/ios/Sources/'.$class.'.swift';
+        if ($this->files->exists($nestedPath)) {
+            return $nestedPath;
+        }
 
-        return $this->files->exists($swiftPath) ? $swiftPath : null;
+        $flatPath = $basePath.'/resources/ios/'.$class.'.swift';
+        return $this->files->exists($flatPath) ? $flatPath : null;
     }
 
     protected function validateHooks(string $path): void

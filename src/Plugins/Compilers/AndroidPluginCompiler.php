@@ -675,7 +675,6 @@ class AndroidPluginCompiler
         }
         if (isset($service['foregroundServiceType'])) {
             $type = $service['foregroundServiceType'];
-            // Support both array and string formats
             if (is_array($type)) {
                 $type = implode('|', $type);
             }
@@ -684,15 +683,51 @@ class AndroidPluginCompiler
 
         $attrString = implode("\n            ", $attrs);
 
-        // Support both snake_case and kebab-case
+        // Build nested content (intent-filters and meta-data)
+        $nestedContent = '';
+
+        // Support both snake_case and kebab-case for intent filters
         $intentFilters = $service['intent_filters'] ?? $service['intent-filters'] ?? [];
         if (! empty($intentFilters)) {
-            $filters = $this->buildIntentFilters($intentFilters);
+            $nestedContent .= $this->buildIntentFilters($intentFilters);
+        }
 
-            return "<service\n            {$attrString}>\n{$filters}        </service>";
+        // Add meta-data support at service level
+        $metaData = $service['meta_data'] ?? $service['meta-data'] ?? [];
+        if (! empty($metaData)) {
+            $nestedContent .= $this->buildComponentMetaData($metaData);
+        }
+
+        if (! empty($nestedContent)) {
+            return "<service\n            {$attrString}>\n{$nestedContent}        </service>";
         }
 
         return "<service\n            {$attrString} />";
+    }
+
+    /**
+     * Build meta-data XML entries for use inside manifest components
+     */
+    protected function buildComponentMetaData(array $metaDataEntries): string
+    {
+        $xml = '';
+
+        foreach ($metaDataEntries as $metaData) {
+            $name = $metaData['name'];
+            $value = $metaData['value'] ?? null;
+            $resource = $metaData['resource'] ?? null;
+
+            if ($resource !== null) {
+                $xml .= "            <meta-data android:name=\"{$name}\" android:resource=\"{$resource}\" />\n";
+            } elseif ($value !== null) {
+                if (is_bool($value)) {
+                    $value = $value ? 'true' : 'false';
+                }
+                $xml .= "            <meta-data android:name=\"{$name}\" android:value=\"{$value}\" />\n";
+            }
+        }
+
+        return $xml;
     }
 
     /**
@@ -712,12 +747,22 @@ class AndroidPluginCompiler
 
         $attrString = implode("\n            ", $attrs);
 
+        $nestedContent = '';
+
         // Support both snake_case and kebab-case
         $intentFilters = $receiver['intent_filters'] ?? $receiver['intent-filters'] ?? [];
         if (! empty($intentFilters)) {
-            $filters = $this->buildIntentFilters($intentFilters);
+            $nestedContent .= $this->buildIntentFilters($intentFilters);
+        }
 
-            return "<receiver\n            {$attrString}>\n{$filters}        </receiver>";
+        // Add meta-data support at receiver level (e.g. for AppWidgetProvider)
+        $metaData = $receiver['meta_data'] ?? $receiver['meta-data'] ?? [];
+        if (! empty($metaData)) {
+            $nestedContent .= $this->buildComponentMetaData($metaData);
+        }
+
+        if (! empty($nestedContent)) {
+            return "<receiver\n            {$attrString}>\n{$nestedContent}        </receiver>";
         }
 
         return "<receiver\n            {$attrString} />";
@@ -1025,7 +1070,7 @@ class AndroidPluginCompiler
 
             $authBlock = '';
             if ($authentication === 'basic') {
-                $authBlock = <<<KOTLIN
+                $authBlock = <<<'KOTLIN'
 
                 authentication {
                     create<BasicAuthentication>("basic")

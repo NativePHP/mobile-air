@@ -88,6 +88,11 @@ let package = Package(
 
     protected function tearDown(): void
     {
+        // Reset any config touched by individual tests so we don't leak state
+        // into later tests in the same process.
+        config()->set('nativephp.permissions', []);
+        config()->set('nativephp.permission_localizations', []);
+
         $this->files->deleteDirectory($this->testBasePath);
         Mockery::close();
         parent::tearDown();
@@ -641,6 +646,207 @@ class NestedClass {}');
 
         $this->assertStringContainsString('iOSOnly.Func', $content);
         $this->assertStringContainsString('iOSOnlyFunctions.Func', $content);
+    }
+
+    /**
+     * @test
+     *
+     * App-level permission_localizations are written to {locale}.lproj/InfoPlist.strings
+     * inside the synced NativePHP group so iOS picks them up at runtime.
+     */
+    public function it_writes_app_level_info_plist_localizations(): void
+    {
+        config()->set('nativephp.permission_localizations', [
+            'nl' => [
+                'NSCameraUsageDescription' => 'Camera-toegang nodig.',
+                'NSMicrophoneUsageDescription' => 'Microfoon-toegang nodig.',
+            ],
+            'fr' => [
+                'NSCameraUsageDescription' => 'Accès caméra requis.',
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$this->createTestPlugin()]));
+
+        $this->compiler->compile();
+
+        $nlPath = $this->testBasePath.'/ios/NativePHP/nl.lproj/InfoPlist.strings';
+        $frPath = $this->testBasePath.'/ios/NativePHP/fr.lproj/InfoPlist.strings';
+
+        $this->assertFileExists($nlPath);
+        $this->assertFileExists($frPath);
+
+        $nl = $this->files->get($nlPath);
+        $this->assertStringContainsString('"NSCameraUsageDescription" = "Camera-toegang nodig.";', $nl);
+        $this->assertStringContainsString('"NSMicrophoneUsageDescription" = "Microfoon-toegang nodig.";', $nl);
+
+        $fr = $this->files->get($frPath);
+        $this->assertStringContainsString('"NSCameraUsageDescription" = "Accès caméra requis.";', $fr);
+
+        config()->set('nativephp.permission_localizations', []);
+    }
+
+    /**
+     * @test
+     *
+     * Plugins can ship their own per-locale permission strings via
+     * `ios.info_plist_localizations`; the app-level config wins on collisions.
+     */
+    public function it_merges_plugin_localizations_with_app_overrides(): void
+    {
+        config()->set('nativephp.permission_localizations', [
+            'nl' => [
+                'NSCameraUsageDescription' => 'App-level NL string.',
+            ],
+        ]);
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [],
+                'info_plist_localizations' => [
+                    'nl' => [
+                        'NSCameraUsageDescription' => 'Plugin NL string.',
+                        'NSMicrophoneUsageDescription' => 'Plugin NL microfoon.',
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $nl = $this->files->get($this->testBasePath.'/ios/NativePHP/nl.lproj/InfoPlist.strings');
+
+        // App override wins for the camera key, plugin string is gone.
+        $this->assertStringContainsString('"NSCameraUsageDescription" = "App-level NL string.";', $nl);
+        $this->assertStringNotContainsString('Plugin NL string.', $nl);
+
+        // Plugin-only keys still come through.
+        $this->assertStringContainsString('"NSMicrophoneUsageDescription" = "Plugin NL microfoon.";', $nl);
+
+        config()->set('nativephp.permission_localizations', []);
+    }
+
+    /**
+     * @test
+     *
+     * When permission_localizations is empty, no .lproj folders should be created
+     * — this is the default-config case and we don't want spurious files.
+     */
+    public function it_does_not_write_localizations_when_config_is_empty(): void
+    {
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$this->createTestPlugin()]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($this->testBasePath.'/ios/NativePHP/en.lproj/InfoPlist.strings');
+        $this->assertFileDoesNotExist($this->testBasePath.'/ios/NativePHP/nl.lproj/InfoPlist.strings');
+    }
+
+    /**
+     * @test
+     *
+     * Quotes, backslashes, and newlines in localized strings must be escaped
+     * so the resulting .strings file remains valid.
+     */
+    public function it_escapes_special_characters_in_localized_strings(): void
+    {
+        config()->set('nativephp.permission_localizations', [
+            'nl' => [
+                'NSCameraUsageDescription' => "Camera \"toegang\" \\nodig\nop regel 2",
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$this->createTestPlugin()]));
+
+        $this->compiler->compile();
+
+        $nl = $this->files->get($this->testBasePath.'/ios/NativePHP/nl.lproj/InfoPlist.strings');
+
+        $this->assertStringContainsString(
+            '"NSCameraUsageDescription" = "Camera \\"toegang\\" \\\\nodig\\nop regel 2";',
+            $nl
+        );
+
+        config()->set('nativephp.permission_localizations', []);
+    }
+
+    /**
+     * @test
+     *
+     * Locales used in permission_localizations must be added to the pbxproj's
+     * `knownRegions` list so Xcode bundles the .lproj folders as resources.
+     */
+    public function it_registers_new_locales_in_pbxproj_known_regions(): void
+    {
+        // Minimal pbxproj fragment with the same knownRegions block shape
+        // the real project uses.
+        $pbxprojPath = $this->testBasePath.'/ios/NativePHP.xcodeproj/project.pbxproj';
+        $this->files->ensureDirectoryExists(dirname($pbxprojPath));
+        $this->files->put($pbxprojPath, "// !\$*UTF8\$*!\n{\n\tobjects = {\n\t\t95BD5DBB /* Project object */ = {\n\t\t\tisa = PBXProject;\n\t\t\tdevelopmentRegion = en;\n\t\t\tknownRegions = (\n\t\t\t\ten,\n\t\t\t\tBase,\n\t\t\t);\n\t\t};\n\t};\n}\n");
+
+        config()->set('nativephp.permission_localizations', [
+            'nl' => ['NSCameraUsageDescription' => 'NL'],
+            'fr' => ['NSCameraUsageDescription' => 'FR'],
+            'en' => ['NSCameraUsageDescription' => 'EN (already known)'],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$this->createTestPlugin()]));
+
+        $this->compiler->compile();
+
+        $pbxproj = $this->files->get($pbxprojPath);
+
+        // New locales are inserted before the closing paren.
+        $this->assertMatchesRegularExpression('/knownRegions\s*=\s*\(\s*en,\s*Base,\s*nl,\s*fr,\s*\)/s', $pbxproj);
+
+        // Existing `en` not duplicated.
+        $this->assertEquals(1, substr_count($pbxproj, "\ten,"));
+
+        config()->set('nativephp.permission_localizations', []);
+    }
+
+    /**
+     * @test
+     *
+     * Re-running compile should be idempotent for localizations — no duplicate
+     * lines in the .strings file, no duplicate entries in knownRegions.
+     */
+    public function it_is_idempotent_for_localizations_on_recompile(): void
+    {
+        $pbxprojPath = $this->testBasePath.'/ios/NativePHP.xcodeproj/project.pbxproj';
+        $this->files->ensureDirectoryExists(dirname($pbxprojPath));
+        $this->files->put($pbxprojPath, "// !\$*UTF8\$*!\n{\n\tknownRegions = (\n\t\ten,\n\t\tBase,\n\t);\n}\n");
+
+        config()->set('nativephp.permission_localizations', [
+            'nl' => ['NSCameraUsageDescription' => 'NL'],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$this->createTestPlugin()]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $nl = $this->files->get($this->testBasePath.'/ios/NativePHP/nl.lproj/InfoPlist.strings');
+        $this->assertEquals(1, substr_count($nl, 'NSCameraUsageDescription'));
+
+        $pbxproj = $this->files->get($pbxprojPath);
+        $this->assertEquals(1, substr_count($pbxproj, "\tnl,"));
+
+        config()->set('nativephp.permission_localizations', []);
     }
 
     /**
