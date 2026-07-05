@@ -151,8 +151,10 @@ class PendingLocationWatch
      * and stop it explicitly with Geolocation::stopBackgroundWatch($id).
      * While PHP isn't running, fixes accumulate in a native buffer; drain
      * them with Geolocation::drainWatch($id, $cursor). On Android this
-     * shows the OS-mandated persistent notification; on iOS the blue
-     * location indicator.
+     * shows the OS-mandated persistent notification; on iOS only the
+     * standard status-bar location arrow (the prominent background
+     * indicator pill is deliberately disabled — Always authorization
+     * doesn't require it).
      */
     public function background(bool $background = true): self
     {
