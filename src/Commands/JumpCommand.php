@@ -788,12 +788,12 @@ class JumpCommand extends Command
             // adds redundancy that fixes those flipped modules in-scanner.
             // Margin stays at 1 since the surrounding terminal background
             // gives the scanner additional effective quiet zone.
-            $result = Builder::create()
-                ->data($qrData)
-                ->errorCorrectionLevel(ErrorCorrectionLevel::High)
-                ->size(300)
-                ->margin(1)
-                ->build();
+            $result = (new Builder(
+                data: $qrData,
+                errorCorrectionLevel: ErrorCorrectionLevel::High,
+                size: 300,
+                margin: 1,
+            ))->build();
 
             $matrix = $result->getMatrix();
             $size = $matrix->getBlockCount();

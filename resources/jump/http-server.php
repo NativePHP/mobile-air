@@ -245,11 +245,11 @@ function jumpRenderQrPage(string $method, string $uri): Response
 
         $qrData = "jump://connect?host={$JUMP['displayHost']}&port={$JUMP['httpPort']}";
 
-        $result = Builder::create()
-            ->data($qrData)
-            ->size(300)
-            ->margin(10)
-            ->build();
+        $result = (new Builder(
+            data: $qrData,
+            size: 300,
+            margin: 10,
+        ))->build();
 
         $qrCodeDataUri = $result->getDataUri();
 

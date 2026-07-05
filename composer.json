@@ -22,7 +22,7 @@
         }
     ],
     "require": {
-        "php": "^8.3",
+        "php": "^8.4",
         "ext-dom": "*",
         "ext-simplexml": "*",
         "workerman/workerman": "^4.1",
