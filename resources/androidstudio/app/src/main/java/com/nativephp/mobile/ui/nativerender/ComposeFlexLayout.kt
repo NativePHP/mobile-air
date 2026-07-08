@@ -79,11 +79,16 @@ fun FlexContainer(
 
     if (hasAbsolute) {
         Box(modifier = modifier) {
-            // Render flow children in Column/Row
+            // Render flow children in Column/Row. They must size NORMALLY so the
+            // flow content DETERMINES the Box's size; the absolute children then
+            // overlay on top via `.align`. Using `matchParentSize()` here is the
+            // opposite — it makes the flow content match the Box, whose size is
+            // then driven only by the (typically tiny) absolute child, clipping
+            // the real content to the badge/button's size.
             if (direction == FlexDirection.ROW) {
-                FlexRow(justify, align, gap, wrap, childNodes, Modifier.matchParentSize(), content)
+                FlexRow(justify, align, gap, wrap, childNodes, Modifier, content)
             } else {
-                FlexColumn(justify, align, gap, childNodes, Modifier.matchParentSize(), content)
+                FlexColumn(justify, align, gap, childNodes, Modifier, content)
             }
             // Render absolute children on top — anchor to the appropriate
             // corner based on which edge insets are set, then offset inward.

@@ -83,6 +83,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // NavBar actions folded onto the tabs sentinel by `wrapWithNativeChrome`
     // when both bars are present — render trailing on the top bar.
     val actions = node.children.filter { it.type == "top_bar_action" }
+    // Custom principal-slot content (logo / titleView) — replaces the
+    // string title when present.
+    val titleNode = node.children.firstOrNull { it.type == "top_bar_title" }
     // Search items live as `search_item` children on the tabs root —
     // PHP can't carry the mixed string/object/element shapes through a
     // prop, so they ride the tree wire format instead.
@@ -92,8 +95,15 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             && it.type != "top_bar_action"
             && it.type != "tab_accessory"
             && it.type != "search_item"
+            && it.type != "top_bar_title"
+            && it.type != "bottom_bar"
             && !NativeRootHostRegistry.consumes(it.type)
     }
+    // Bottom-pinned content (inline `<native:bottom-bar>` or layout
+    // `bottomBar()`). Rendered below the screen content and above the tab
+    // bar; the root `.imePadding()` lifts it over the keyboard — the Android
+    // analogue of iOS's `.safeAreaInset(.bottom)`.
+    val bottomBarNode = node.children.firstOrNull { it.type == "bottom_bar" }
 
     // Activeness flows from `BottomNavItem.active` (TabBar::highlight() set it).
     val activeTabIdx = tabs.indexOfFirst { it.props.getBool("active") }.coerceAtLeast(0)
@@ -124,7 +134,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val navSubtitle = node.props.getString("nav_subtitle", "")
     val navBgArgb = node.props.getColor("nav_background_color", 0)
     val navTextArgb = node.props.getColor("nav_text_color", 0)
-    val hasNavBar = navBack || navTitle.isNotEmpty()
+    val hasNavBar = navBack || navTitle.isNotEmpty() || titleNode != null
 
     // Search-tab config — search-role tab plus its items live as children.
     // Show the search-role tab when any of:
@@ -151,6 +161,21 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     val isOnSearchTab = searchTabIdx >= 0 && selection == searchTabIdx
 
+    // A navigation changed the active URI (e.g. the user tapped a search
+    // result, which `navigate`s to its route). If we're parked on the search
+    // tab, snap back to the active tab so the pushed screen is revealed and the
+    // search UI dismisses. The `LaunchedEffect(activeTabIdx)` sync above is not
+    // enough: when the result's route is owned by the same tab that was active
+    // when the search ran (e.g. searching the docs from the Docs tab, then
+    // opening a docs page), `activeTabIdx` never changes, so that effect never
+    // fires — and the user is stranded on the search tab, which now shows an
+    // empty result set because the new publish carries no search items.
+    LaunchedEffect(currentUri) {
+        if (searchTabIdx >= 0 && selection == searchTabIdx && selection != activeTabIdx) {
+            selection = activeTabIdx
+        }
+    }
+
     // System back: defer to PHP (the tabs root has nowhere to pop within Compose).
     BackHandler(enabled = true) {
         NativeElementBridge.sendSystemBackEvent()
@@ -161,7 +186,11 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             if (hasNavBar && !isOnSearchTab) {
                 TopAppBar(
                     title = {
-                        if (navSubtitle.isNotEmpty()) {
+                        if (titleNode != null) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                titleNode.children.forEach { child -> NodeView(node = child) }
+                            }
+                        } else if (navSubtitle.isNotEmpty()) {
                             Column {
                                 Text(navTitle, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
                                 Text(navSubtitle, style = MaterialTheme.typography.labelSmall)
@@ -347,7 +376,17 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 screenPaddings[key] ?: padding
             }
             Box(modifier = Modifier.fillMaxSize().padding(screenPadding)) {
-                if (screenContent != null) {
+                if (bottomBarNode != null) {
+                    // Screen content fills the space above the pinned bar; the
+                    // bar sits at the bottom. Root `imePadding` shrinks this
+                    // column when the keyboard opens so the bar rides above it.
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            if (screenContent != null) NodeView(node = screenContent)
+                        }
+                        bottomBarNode.children.firstOrNull()?.let { NodeView(node = it) }
+                    }
+                } else if (screenContent != null) {
                     NodeView(node = screenContent)
                 } else {
                     Box(modifier = Modifier.fillMaxSize())
