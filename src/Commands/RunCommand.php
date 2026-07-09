@@ -27,7 +27,8 @@ class RunCommand extends Command
         {udid?}
         {--build=debug : debug|release|bundle}
         {--W|watch : Enable hot reloading during development}
-        {--no-vite : Skip Vite dev server (for native-only development)}
+        {--vite : Start the Vite dev server (opt-in; off by default)}
+        {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
         {--no-tty : Disable TTY mode for non-interactive environments}';
 

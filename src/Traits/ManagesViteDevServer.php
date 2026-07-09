@@ -11,6 +11,20 @@ trait ManagesViteDevServer
     protected ?string $currentPlatform = null;
 
     /**
+     * Whether the Vite dev server should run. Vite is OPT-IN: off by default,
+     * started only when `--vite` is passed (and never when `--no-vite` is).
+     * Guarded with hasOption() so commands that don't declare the flags simply
+     * get the default (off) rather than an "option does not exist" error.
+     */
+    protected function shouldRunVite(): bool
+    {
+        $optIn = $this->hasOption('vite') && $this->option('vite');
+        $disabled = $this->hasOption('no-vite') && $this->option('no-vite');
+
+        return $optIn && ! $disabled;
+    }
+
+    /**
      * Get the platform-specific hot file path
      */
     protected function getHotFilePath(?string $platform = null): string

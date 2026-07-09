@@ -94,7 +94,7 @@ trait RunsAndroid
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
-        if ($this->option('watch') && ! $this->option('no-vite')) {
+        if ($this->option('watch') && $this->shouldRunVite()) {
             $this->startViteDevServer('android');
         }
 

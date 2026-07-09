@@ -39,7 +39,7 @@ trait WatchesAndroid
             return;
         }
 
-        if (! $this->option('no-vite')) {
+        if ($this->shouldRunVite()) {
             // Start Vite dev server if the nativephpMobile plugin is installed
             $this->startViteDevServer('android');
 
@@ -164,7 +164,7 @@ trait WatchesAndroid
         $this->checkAdbConnection();
 
         // Check for Vite process output
-        if (! $this->option('no-vite')) {
+        if ($this->shouldRunVite()) {
             $this->checkViteProcessOutput();
         }
     }
@@ -195,7 +195,7 @@ trait WatchesAndroid
             return;
         }
 
-        if (! $this->option('no-vite') && $this->isViteHandledFile($relativePath)) {
+        if ($this->shouldRunVite() && $this->isViteHandledFile($relativePath)) {
             return;
         }
 

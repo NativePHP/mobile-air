@@ -48,7 +48,7 @@ trait WatchesIos
         $isSimulator = array_key_exists($target, $this->simulators);
 
         // Start Vite dev server if the nativephpMobile plugin is installed
-        if (! $this->option('no-vite')) {
+        if ($this->shouldRunVite()) {
             $this->startViteDevServer('ios');
         }
 
@@ -58,7 +58,7 @@ trait WatchesIos
 
         if ($viteRunning) {
             $this->info('Vite hot reloading detected - skipping full page reloads');
-        } elseif (! $this->option('no-vite')) {
+        } elseif ($this->shouldRunVite()) {
             $this->info('No Vite hot reloading detected - will trigger full page reloads');
         }
 
