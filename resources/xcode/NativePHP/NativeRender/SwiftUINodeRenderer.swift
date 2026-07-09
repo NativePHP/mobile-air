@@ -135,6 +135,11 @@ struct NodeView: View, Equatable {
                 safeAreaBottom: safeAreaBottom
             ))
             .modifier(NodeStyleModifier(style: node.style, props: node.props, nodeType: node.type))
+            // Opt-in text selection (`select-text` / `select-none`). Applied at
+            // the node level so it propagates to descendant Text (SwiftUI's
+            // `.textSelection` is inherited) — container-scoped like Android's
+            // SelectionContainer. No-op when the prop is absent.
+            .modifier(NodeTextSelectionModifier(props: node.props))
             // Animation modifier runs AFTER style so it sees the resolved
             // opacity. No-op when `animate-duration` is not set, so the
             // hot path is unchanged for non-animated nodes.
@@ -219,6 +224,26 @@ private struct NodeGestureModifier: ViewModifier {
                 .modifier(DoubleTapModifier(callbackId: doubleTapId, nodeId: node.id))
                 .modifier(TapModifier(callbackId: node.onPress, nodeId: node.id))
                 .modifier(LongPressModifier(callbackId: node.onLongPress, nodeId: node.id))
+        } else {
+            content
+        }
+    }
+}
+
+/// Opt-in native text selection. `selectable == 1` enables the long-press Copy
+/// menu for this node's whole subtree (SwiftUI `.textSelection` propagates to
+/// descendant Text); `== 0` opts a subtree back out inside a selectable
+/// ancestor. Absent → no modifier, so the node inherits its ancestor's setting.
+private struct NodeTextSelectionModifier: ViewModifier {
+    let props: GenericProps
+
+    func body(content: Content) -> some View {
+        if props.has("selectable"), #available(iOS 15.0, *) {
+            if props.getInt("selectable") == 1 {
+                content.textSelection(.enabled)
+            } else {
+                content.textSelection(.disabled)
+            }
         } else {
             content
         }

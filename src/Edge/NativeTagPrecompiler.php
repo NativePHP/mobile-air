@@ -411,6 +411,14 @@ class NativeTagPrecompiler
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
 
+        // <text> captures its slot as ordered inline runs (nested <text> +
+        // interleaved raw text, in document order) so the renderer composes one
+        // wrapping attributed string. Other text-capture elements (button) keep
+        // the flat-string slot path.
+        if ($tag === 'text') {
+            return '<?php '.self::C."::textOpen({$attrs}); ?>";
+        }
+
         // Text-capture elements: save attrs and start output buffering
         if (isset(self::TEXT_ELEMENTS[$tag])) {
             return "<?php \$__nativeSlotAttrs = {$attrs}; ob_start(); ?>";
@@ -431,6 +439,11 @@ class NativeTagPrecompiler
 
         if (in_array($tag, self::EDGE_LEAF_TAGS, true)) {
             return ''; // Leaf tags don't have closing tags in practice, but handle gracefully
+        }
+
+        // <text> close — emit its captured inline runs (see textOpen).
+        if ($tag === 'text') {
+            return '<?php '.self::C.'::textClose(); ?>';
         }
 
         if (isset(self::TEXT_ELEMENTS[$tag])) {

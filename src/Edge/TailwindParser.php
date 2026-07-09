@@ -406,6 +406,13 @@ class TailwindParser
             $class === 'capitalize' => ['textTransform' => 3],
             $class === 'normal-case' => ['textTransform' => 0],
 
+            // Text selection (opt-in). Mirrors CSS `user-select`: `select-text`
+            // makes this node's subtree long-press-selectable (native Copy
+            // menu); `select-none` opts a subtree back out inside a selectable
+            // ancestor. Inherited/container-scoped on both platforms.
+            $class === 'select-text' => ['selectable' => 1],
+            $class === 'select-none' => ['selectable' => 0],
+
             // Letter spacing (tracking), in em (relative to font size).
             $class === 'tracking-tighter' => ['letterSpacing' => -0.05],
             $class === 'tracking-tight' => ['letterSpacing' => -0.025],

@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -269,10 +271,22 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             .nodeGestures(node, interactionSource)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
-        if (renderer != null) {
-            renderer.Render(node, modifier)
-        } else {
-            DefaultContainerNode(node, modifier)
+        val renderContent: @Composable () -> Unit = {
+            if (renderer != null) {
+                renderer.Render(node, modifier)
+            } else {
+                DefaultContainerNode(node, modifier)
+            }
+        }
+
+        // Opt-in text selection (`select-text` / `select-none`). SelectionContainer
+        // makes the whole wrapped subtree one selectable scope (drag handles +
+        // Copy toolbar); DisableSelection carves a subtree back out inside a
+        // selectable ancestor. Absent prop → rendered as-is (inherits ancestor).
+        when (if (node.props.has("selectable")) node.props.getInt("selectable") else -1) {
+            1 -> SelectionContainer { renderContent() }
+            0 -> DisableSelection { renderContent() }
+            else -> renderContent()
         }
     }
 }

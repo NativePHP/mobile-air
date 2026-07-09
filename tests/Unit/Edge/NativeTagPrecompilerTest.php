@@ -44,13 +44,13 @@ it('compiles container open and close tags', function () use ($collector, $marke
     );
 });
 
-it('compiles text elements with slot capture', function () {
+it('compiles text elements to the inline-run capture calls', function () {
+    // <text> routes through textOpen/textClose so nested <text> can emit as
+    // ordered inline runs (button still uses the flat slot-capture path below).
     $result = ($this->precompiler)('<native:text class="text-lg">Hello World</native:text>');
 
-    expect($result)->toContain('ob_start();');
-    expect($result)->toContain('ob_get_clean()');
-    expect($result)->toContain("::leaf('text',");
-    expect($result)->toContain("\$__nativeSlotAttrs['text'] = \$__nativeSlot");
+    expect($result)->toContain('::textOpen(');
+    expect($result)->toContain('::textClose()');
 });
 
 it('compiles button elements with label slot capture', function () {

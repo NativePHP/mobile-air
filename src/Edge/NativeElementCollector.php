@@ -43,6 +43,23 @@ class NativeElementCollector
      */
     protected static array $pollIntervals = [];
 
+    /**
+     * Stack of in-progress `<text>` frames used to capture inline runs.
+     *
+     * A `<text>` with nested `<text>` children must emit ordered inline runs
+     * (raw text + child runs, in document order) rather than a flattened
+     * string, so the renderer composes them into ONE wrapping AttributedString/
+     * AnnotatedString. Because raw text is echoed (buffered) while child runs
+     * are collector calls, we buffer per-`<text>` and record each segment as an
+     * ordered descriptor here; the outermost close emits the whole tree through
+     * open()/leaf()/close() (which already dispatch streaming vs Element-tree).
+     *
+     * Each frame: ['attrs' => array, 'children' => list<descriptor>].
+     * Descriptor: ['attrs' => array, 'children' => list<descriptor>|null]
+     * (children === null means a leaf run).
+     */
+    protected static array $textFrames = [];
+
     // ── Streaming control ────────────────────────────
 
     public static function setStreaming(bool $enabled): void
@@ -634,6 +651,119 @@ class NativeElementCollector
         }
     }
 
+    // ── Inline text runs (<text> with nested <text>) ─────
+
+    /**
+     * Begin capturing a `<text>` element's slot as ordered inline runs.
+     * Flushes the parent `<text>`'s pending raw text as a run first (so a
+     * nested run lands in document order), then buffers this element's content.
+     */
+    public static function textOpen(array $attrs): void
+    {
+        if (! empty(static::$textFrames)) {
+            static::captureRawRunIntoTopFrame();
+        }
+
+        static::$textFrames[] = ['attrs' => $attrs, 'children' => []];
+        ob_start();
+    }
+
+    /**
+     * Finish a `<text>` element. If it accumulated child runs it emits as a
+     * container of ordered run-nodes (own text empty); otherwise it stays a
+     * leaf with today's trimmed-string behavior. Nested elements become a run
+     * of their parent; the outermost one emits the whole tree via open()/leaf()/
+     * close() so streaming and the Element-tree path both work unchanged.
+     */
+    public static function textClose(): void
+    {
+        $buffer = ob_get_clean();
+        $frame = array_pop(static::$textFrames);
+        $isNested = ! empty(static::$textFrames);
+
+        if (! empty($frame['children'])) {
+            // Container: its own trailing buffer is a run; own text stays empty.
+            $tail = static::normalizeRunText($buffer);
+            if ($tail !== '') {
+                $frame['children'][] = ['attrs' => ['text' => $tail], 'children' => null];
+            }
+            $descriptor = ['attrs' => $frame['attrs'], 'children' => $frame['children']];
+        } else {
+            // Childless <text>: a RUN when nested (preserve meaningful edge
+            // spaces), but a top-level leaf keeps today's exact trimmed +
+            // whitespace-collapsed string so nothing else regresses.
+            $attrs = $frame['attrs'];
+            $text = $isNested ? static::normalizeRunText($buffer) : static::normalizeLeafText($buffer);
+            if ($text !== '') {
+                $attrs['text'] = $text;
+            }
+            $descriptor = ['attrs' => $attrs, 'children' => null];
+        }
+
+        if ($isNested) {
+            // Nested: this <text> is a run of its parent. Resume the parent's
+            // buffer for whatever raw text follows this child.
+            $top = count(static::$textFrames) - 1;
+            static::$textFrames[$top]['children'][] = $descriptor;
+            ob_start();
+        } else {
+            static::emitTextDescriptor($descriptor);
+        }
+    }
+
+    /** Flush the currently-buffered raw text as a run of the top frame. */
+    protected static function captureRawRunIntoTopFrame(): void
+    {
+        $text = static::normalizeRunText(ob_get_clean());
+        if ($text !== '') {
+            $top = count(static::$textFrames) - 1;
+            static::$textFrames[$top]['children'][] = ['attrs' => ['text' => $text], 'children' => null];
+        }
+    }
+
+    /**
+     * Whitespace policy for a raw run: drop pure-whitespace segments (inter-tag
+     * newlines/indentation are formatting, not content) so multiline markup
+     * doesn't inject spurious spaces; collapse internal runs of whitespace to a
+     * single space but PRESERVE meaningful leading/trailing spaces (a run may be
+     * `" / "`, or prose like `"Use "` before an inline chip).
+     */
+    protected static function normalizeRunText(string $raw): string
+    {
+        $s = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+        if (trim($s) === '') {
+            return '';
+        }
+
+        return preg_replace('/\s+/', ' ', $s);
+    }
+
+    /** Leaf `<text>` text: today's exact behavior (trim + collapse). */
+    protected static function normalizeLeafText(string $raw): string
+    {
+        return preg_replace('/\s+/', ' ', trim(html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8')));
+    }
+
+    /**
+     * Emit a text descriptor tree via the mode-agnostic open()/leaf()/close(),
+     * so it becomes an Element subtree (non-streaming) or streams (streaming)
+     * exactly like any other node.
+     */
+    protected static function emitTextDescriptor(array $descriptor): void
+    {
+        if ($descriptor['children'] === null) {
+            static::leaf('text', $descriptor['attrs']);
+
+            return;
+        }
+
+        static::open('text', $descriptor['attrs']);
+        foreach ($descriptor['children'] as $child) {
+            static::emitTextDescriptor($child);
+        }
+        static::close();
+    }
+
     public static function collect(): Element
     {
         $roots = static::$roots;
@@ -664,6 +794,7 @@ class NativeElementCollector
         static::$roots = [];
         static::$streaming = false;
         static::$pollIntervals = [];
+        static::$textFrames = [];
         // Phase 1 — clear any leftover key-path entries between frames
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).
@@ -881,6 +1012,19 @@ class NativeElementCollector
         // — no NodeStyle binary-layout change needed.
         if (isset($attrs['glass'])) {
             $element->setProp('glass', (int) $attrs['glass']);
+        }
+        // Text selection opt-in (`select-text` / `select-none`). Generic across
+        // element types — set on any node to make its subtree selectable (or
+        // exempt one inside a selectable ancestor). Renderers read it via
+        // `props.getInt('selectable')`: 1 = enable, 0 = disable.
+        if (isset($attrs['selectable'])) {
+            $element->setProp('selectable', (int) $attrs['selectable']);
+        }
+        // Scroll anchoring. `scroll-anchor="bottom"` makes a scroll_view / list
+        // stick to the bottom (chat behavior): opens at the latest item and
+        // auto-scrolls on new content when the user is already near the bottom.
+        if (isset($attrs['scroll-anchor'])) {
+            $element->setProp('scroll_anchor', (string) $attrs['scroll-anchor']);
         }
     }
 

@@ -104,6 +104,13 @@ abstract class Element
     public function class(string $classes): static
     {
         $attrs = TailwindParser::parse($classes);
+        // Same order the collector uses for blade elements (applyAttributes
+        // FIRST) so element-specific styling — Text font-size/weight/color,
+        // Image fit/tint, etc. — resolves identically whether an element is
+        // built from blade or programmatically. Without this, class strings
+        // that only carry element-specific keys silently no-op on directly
+        // built elements.
+        $this->applyAttributes($attrs);
         NativeElementCollector::applyLayout($this, $attrs);
         NativeElementCollector::applyStyle($this, $attrs);
         NativeElementCollector::applyElementProps($this, $attrs);
@@ -483,6 +490,19 @@ abstract class Element
     public function setProp(string $key, mixed $value): static
     {
         $this->extraProps[$key] = $value;
+
+        return $this;
+    }
+
+    /**
+     * Opt this node's subtree into native text selection (long-press → Copy
+     * menu). Programmatic mirror of the `select-text` / `select-none` Tailwind
+     * classes; container-scoped and inherited on both platforms. Pass `false`
+     * to carve a subtree back out of a selectable ancestor.
+     */
+    public function selectable(bool $on = true): static
+    {
+        $this->extraProps['selectable'] = $on ? 1 : 0;
 
         return $this;
     }

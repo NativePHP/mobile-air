@@ -68,9 +68,17 @@ class Text extends Element
         return $this;
     }
 
+    /**
+     * Font weight on a 1–7 ordinal scale: 1 thin, 2 light, 3 regular,
+     * 4 medium, 5 semibold, 6 bold, 7 heaviest (iOS `.heavy` / Android
+     * `ExtraBold`). Clamped to that range — both renderers fall back to
+     * regular for out-of-range ints, so an off-scale value (e.g. a CSS-style
+     * `900`, or `8`) would otherwise silently render unweighted. Clamping
+     * rounds to the nearest supported weight instead.
+     */
     public function fontWeight(int $weight): static
     {
-        $this->textProps['font_weight'] = $weight;
+        $this->textProps['font_weight'] = max(1, min(7, $weight));
 
         return $this;
     }
