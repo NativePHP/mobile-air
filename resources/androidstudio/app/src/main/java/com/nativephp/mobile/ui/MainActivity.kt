@@ -787,22 +787,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         hotReloadWatcherThread?.start()
     }
 
-    private fun isDebugVersion(): Boolean {
-        return try {
-            val appStorageDir = File(filesDir.parent, "app_storage")
-            val versionFile = File(appStorageDir, "laravel/.version")
-
-            if (versionFile.exists()) {
-                val version = versionFile.readText().trim().trim('"').trim('\'')
-                version.equals("DEBUG", ignoreCase = true)
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
-
     private fun injectJavaScript(view: WebView) {
         val jsCode = """
         (function() {
@@ -1064,9 +1048,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      */
     @Composable
     private fun MainScreen() {
-        var showDebugLog by remember { mutableStateOf(false) }
-        val isDebug = remember { isDebugVersion() }
-
         Box(Modifier.fillMaxSize()) {
             // Side drawer wraps the main content (correct ModalNavigationDrawer usage)
             SideDrawerContent(
@@ -1175,25 +1156,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                     }
                 }
             )
-
-            // Debug log FAB — only in DEBUG mode
-            if (isDebug) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.systemBars)
-                        .padding(end = 16.dp, bottom = 80.dp),
-                    contentAlignment = Alignment.BottomEnd
-                ) {
-                    DebugLogFab { showDebugLog = true }
-                }
-
-                DebugLogSheet(
-                    context = this@MainActivity,
-                    visible = showDebugLog,
-                    onDismiss = { showDebugLog = false }
-                )
-            }
 
             // Splash overlay with fade animation (full screen, no insets)
             AnimatedVisibility(
