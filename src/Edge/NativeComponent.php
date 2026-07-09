@@ -18,6 +18,7 @@ use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
+use Native\Mobile\Edge\Elements\TopBarTitle;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
@@ -643,6 +644,12 @@ abstract class NativeComponent
                 foreach ($navBar->getActions() as $action) {
                     $root->addChild($action->toElement());
                 }
+                // Optional custom principal-slot content (logo / titleView)
+                // wrapped in a `TopBarTitle` marker so the renderer renders it
+                // in place of the string title.
+                if (($titleEl = $this->topBarTitleElement($navBar)) !== null) {
+                    $root->addChild($titleEl);
+                }
             }
             // Optional persistent accessory pinned above the tab bar
             // (Apple's MiniPlayer pattern). Wrapped in a `TabAccessory`
@@ -655,13 +662,14 @@ abstract class NativeComponent
                 $root->addChild($wrapper);
             }
             // Optional bottom-pinned content (chat input, search bar,
-            // contextual menu). Wrapped in a `BottomBar` marker so the
-            // renderer can pick it out and pin via `.safeAreaInset(.bottom)`.
-            $bottomBar = $layout->bottomBar($this);
+            // contextual menu) — from an inline `<native:bottom-bar>` in the
+            // screen blade or the layout's `bottomBar()`. Pinned via
+            // `.safeAreaInset(.bottom)`, which keeps it above the keyboard.
+            // Resolved (and hoisted out of `$content`) BEFORE appending the
+            // screen content so an inline bar isn't rendered twice.
+            $bottomBar = $this->resolveBottomBar($content, $layout);
             if ($bottomBar !== null) {
-                $bottomWrapper = BottomBar::make();
-                $bottomWrapper->addChild($bottomBar);
-                $root->addChild($bottomWrapper);
+                $root->addChild($bottomBar);
             }
             // Active screen content as the final child.
             $root->addChild($content);
@@ -680,14 +688,18 @@ abstract class NativeComponent
             foreach ($navBar->getActions() as $action) {
                 $root->addChild($action->toElement());
             }
+            // Optional custom principal-slot content (logo / titleView).
+            if (($titleEl = $this->topBarTitleElement($navBar)) !== null) {
+                $root->addChild($titleEl);
+            }
             // Optional bottom-pinned content — same shape as the tabs
             // path above so a stack-only layout (no tab bar) can still
-            // pin a chat input / search bar above the keyboard.
-            $bottomBar = $layout->bottomBar($this);
+            // pin a chat input / search bar above the keyboard. Prefers an
+            // inline `<native:bottom-bar>` from the screen blade, else the
+            // layout's `bottomBar()`; hoisted out of `$content` here.
+            $bottomBar = $this->resolveBottomBar($content, $layout);
             if ($bottomBar !== null) {
-                $bottomWrapper = BottomBar::make();
-                $bottomWrapper->addChild($bottomBar);
-                $root->addChild($bottomWrapper);
+                $root->addChild($bottomBar);
             }
             $root->addChild($content);
 
@@ -695,6 +707,25 @@ abstract class NativeComponent
         }
 
         return $content;
+    }
+
+    /**
+     * Wrap a NavBar's `titleView()` / `logo()` content in a `TopBarTitle`
+     * marker for the native-chrome renderers to render in the bar's principal
+     * slot, or null when the bar uses a plain string title. A Blade view is
+     * rendered against this screen (so `@press` / bindings resolve) first.
+     */
+    protected function topBarTitleElement(NavBar $navBar): ?Element
+    {
+        $titleView = $navBar->getTitleView();
+        if ($titleView === null) {
+            return null;
+        }
+
+        $wrapper = TopBarTitle::make();
+        $wrapper->addChild($titleView instanceof View ? $this->fromViewPartial($titleView) : $titleView);
+
+        return $wrapper;
     }
 
     /**
@@ -717,6 +748,64 @@ abstract class NativeComponent
         }
 
         return false;
+    }
+
+    /**
+     * Find and REMOVE the first direct child of `$tree` matching `$type`,
+     * returning it (or null). Shallow by design — matches
+     * `treeContainsType`'s scope, and inline chrome sentinels like
+     * `<native:bottom-bar>` are authored as top-level children of the screen
+     * root. Used to hoist that sentinel out of the screen tree so it can be
+     * re-attached to the native-chrome root without also rendering inline.
+     */
+    protected function extractDirectChildOfType(Element $tree, string $type): ?Element
+    {
+        $found = null;
+        $remaining = [];
+        foreach ($tree->getChildren() as $child) {
+            if ($found === null && $child->getType() === $type) {
+                $found = $child;
+
+                continue;
+            }
+            $remaining[] = $child;
+        }
+        if ($found !== null) {
+            $tree->setChildren($remaining);
+        }
+
+        return $found;
+    }
+
+    /**
+     * Resolve the `bottom_bar` sentinel to attach to a native-chrome root.
+     *
+     * An inline `<native:bottom-bar>` in the screen blade wins — the dev
+     * placed it explicitly. It's already a `bottom_bar` marker (its content
+     * is its children), so it's hoisted out of `$content` and used as-is.
+     * Otherwise fall back to the layout's `bottomBar()` builder, wrapping its
+     * result in the same marker the renderers expect.
+     *
+     * Either way the renderers pin it via `.safeAreaInset(.bottom)` (iOS) /
+     * `Scaffold(bottomBar=)` + `imePadding()` (Android), which keeps it above
+     * the software keyboard using each platform's native mechanism.
+     */
+    protected function resolveBottomBar(Element $content, NativeLayout $layout): ?Element
+    {
+        $inline = $this->extractDirectChildOfType($content, 'bottom_bar');
+        if ($inline !== null) {
+            return $inline;
+        }
+
+        $layoutBar = $layout->bottomBar($this);
+        if ($layoutBar !== null) {
+            $wrapper = BottomBar::make();
+            $wrapper->addChild($layoutBar);
+
+            return $wrapper;
+        }
+
+        return null;
     }
 
     /**

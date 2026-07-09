@@ -65,10 +65,16 @@ struct NativeTreeRenderer: View {
         // activation works reliably.
         if tree.root.type == "native_root_tabs" {
             NativeRootTabsRenderer(node: tree.root)
-                .ignoresSafeArea()
+                // `.container` (not `.all`): stay edge-to-edge under the notch /
+                // home indicator, but RESPECT the keyboard region so SwiftUI's
+                // avoidance shifts the content up when the keyboard appears.
+                // In the clean column layout (inline input in the flex flow)
+                // this shifts the whole screen up by one keyboard height — no
+                // custom padding needed (which only doubled it).
+                .ignoresSafeArea(.container, edges: .all)
         } else if tree.root.type == "native_root_stack" {
             NativeRootStackRenderer(node: tree.root)
-                .ignoresSafeArea()
+                .ignoresSafeArea(.container, edges: .all)
         } else {
             GeometryReader { geo in
                 // Get safe area from the window — GeometryReader reports zero
@@ -80,7 +86,7 @@ struct NativeTreeRenderer: View {
                     .environment(\.availableWidth, geo.size.width)
                     .environment(\.availableHeight, geo.size.height)
             }
-            .ignoresSafeArea()
+            .ignoresSafeArea(.container, edges: .all)
             .simultaneousGesture(
                 TapGesture().onEnded {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)

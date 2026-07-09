@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -35,6 +36,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -94,9 +96,20 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     // Filter children for actions and the screen content body.
     val actions = activeNode.children.filter { it.type == "top_bar_action" }
+    // Custom principal-slot content (logo / titleView) — replaces the
+    // string title when present.
+    val titleNode = activeNode.children.firstOrNull { it.type == "top_bar_title" }
     val screenContent = activeNode.children.firstOrNull {
-        it.type != "top_bar_action" && !NativeRootHostRegistry.consumes(it.type)
+        it.type != "top_bar_action" && it.type != "top_bar_title" &&
+            it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
     }
+    // Bottom-pinned content (inline `<native:bottom-bar>` in the screen blade
+    // or the layout's `bottomBar()`). Rendered in the Scaffold `bottomBar`
+    // slot below; the root `.imePadding()` (NativeUIRenderer) then pushes the
+    // whole Scaffold up when the keyboard appears, so the bar rides above it
+    // and the content region shrinks — the Android analogue of iOS's
+    // `.safeAreaInset(.bottom)`.
+    val bottomBarNode = activeNode.children.firstOrNull { it.type == "bottom_bar" }
 
     // Inline search field config (NavBar::searchBar() — Apple HIG /
     // Expo pattern). When set, replaces the title slot with a search
@@ -149,7 +162,11 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // Shared bar slots so the small and large variants are identical apart
     // from collapse behavior.
     val titleContent: @Composable () -> Unit = {
-        if (hasSearch && !hasTitle) {
+        if (titleNode != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                titleNode.children.forEach { child -> NodeView(node = child) }
+            }
+        } else if (hasSearch && !hasTitle) {
             InlineNavSearchField(
                 placeholder = searchPlaceholder,
                 callbackId = searchOnQueryCb,
@@ -251,6 +268,12 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             }
           }
         },
+        bottomBar = {
+            // Render the bar's inner content (its first child). Kept in the
+            // Scaffold slot so content insets above it and `imePadding` lifts
+            // it over the keyboard.
+            bottomBarNode?.children?.firstOrNull()?.let { NodeView(node = it) }
+        },
         modifier = modifier.fillMaxSize()
     ) { padding ->
         // AnimatedContent slides between stack levels. Direction
@@ -298,7 +321,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
                 val levelNode = coordinator.rootNodeCache[uri]
                 val levelContent = levelNode?.children?.firstOrNull {
-                    it.type != "top_bar_action" && !NativeRootHostRegistry.consumes(it.type)
+                    it.type != "top_bar_action" && it.type != "top_bar_title" &&
+                        it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
                 }
                 if (levelContent != null) {
                     NodeView(node = levelContent)

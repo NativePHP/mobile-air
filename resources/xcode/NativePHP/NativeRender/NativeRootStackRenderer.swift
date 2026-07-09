@@ -86,12 +86,16 @@ struct NativeRootStackRenderer: View {
         let textArgb = root.props.getColor("text_color", default: 0)
         let displayModeStr = root.props.getString("display_mode", default: "inline")
         let actions = root.children.filter { $0.type == "top_bar_action" }
+        // Custom principal-slot content (logo / titleView) — replaces the
+        // string title when present.
+        let titleNode = root.children.first { $0.type == "top_bar_title" }
         // Bottom-pinned content (chat input, search bar, etc.) — extracted
         // out of children so it doesn't render inline; pinned via
         // `.safeAreaInset(.bottom)` below so the keyboard pushes it up.
         let bottomBar = root.children.first { $0.type == "bottom_bar" }
         let screenContent = root.children.first {
             $0.type != "top_bar_action" && $0.type != "bottom_bar"
+                && $0.type != "top_bar_title"
                 && !NativeRootHostRegistry.shared.consumes($0.type)
         }
 
@@ -103,6 +107,10 @@ struct NativeRootStackRenderer: View {
         //   `automatic` — iOS picks (large at root, inline after a push)
         //   else        — small centered title (previous default)
         let titleDisplayMode: NavigationBarItem.TitleDisplayMode = {
+            // A custom title view lives in the centered `.principal` slot,
+            // which only reads right in inline mode (large would stack it
+            // above the big string title).
+            if titleNode != nil { return .inline }
             switch displayModeStr {
             case "large":     return .large
             case "automatic": return .automatic
@@ -111,7 +119,7 @@ struct NativeRootStackRenderer: View {
         }()
 
         screenView(screenContent)
-            .navigationTitle(title)
+            .navigationTitle(titleNode != nil ? "" : title)
             .navigationBarTitleDisplayMode(titleDisplayMode)
             // iOS 18+ has a first-class `.navigationSubtitle(...)` that sits
             // with the title (next to it for inline, under the large title
@@ -139,14 +147,24 @@ struct NativeRootStackRenderer: View {
                         }
                     }
                 }
-                // Render subtitle as a `.principal` toolbar item ONLY when
-                // displayMode is inline. With `.large` (or `.automatic` at
-                // root), the principal slot duplicates content next to the
-                // big title — the user sees two stacked titles. iOS 18+
-                // exposes `.navigationSubtitle(...)` which sits with the
-                // large title naturally; until we adopt that path, we just
-                // suppress the principal subtitle for non-inline modes.
-                if !subtitle.isEmpty && titleDisplayMode == .inline {
+                // Custom title view (logo / titleView) owns the principal
+                // slot when present, replacing the string title entirely.
+                if let titleNode {
+                    ToolbarItem(placement: .principal) {
+                        HStack(spacing: 6) {
+                            ForEach(titleNode.children) { child in
+                                NodeView(node: child).equatable()
+                            }
+                        }
+                    }
+                } else if !subtitle.isEmpty && titleDisplayMode == .inline {
+                    // Render subtitle as a `.principal` toolbar item ONLY when
+                    // displayMode is inline. With `.large` (or `.automatic` at
+                    // root), the principal slot duplicates content next to the
+                    // big title — the user sees two stacked titles. iOS 18+
+                    // exposes `.navigationSubtitle(...)` which sits with the
+                    // large title naturally; until we adopt that path, we just
+                    // suppress the principal subtitle for non-inline modes.
                     ToolbarItem(placement: .principal) {
                         VStack(spacing: 0) {
                             Text(title)

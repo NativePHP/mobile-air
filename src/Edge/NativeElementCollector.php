@@ -829,6 +829,12 @@ class NativeElementCollector
             'divider' => Elements\Divider::make(),
             'pressable' => Elements\Pressable::make(),
             'canvas' => Elements\Canvas::make(),
+            // Inline `<native:bottom-bar>` — bottom-pinned content (chat input,
+            // search bar, …). Hoisted out of the screen tree to the
+            // native-chrome root in NativeComponent::wrapWithNativeChrome and
+            // pinned via `.safeAreaInset(.bottom)` (iOS) / `Scaffold(bottomBar=)`
+            // (Android), which keeps it above the software keyboard natively.
+            'bottom_bar' => Elements\BottomBar::make(),
             default => ElementRegistry::resolve($type)
                 ?? throw new \RuntimeException("Unknown native element type: {$type}"),
         };

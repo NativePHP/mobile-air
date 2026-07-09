@@ -2,6 +2,9 @@
 
 namespace Native\Mobile\Edge\Layouts\Builders;
 
+use Illuminate\View\View;
+use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\Elements\Image;
 use Native\Mobile\Edge\Elements\TopBar;
 
 /**
@@ -23,6 +26,16 @@ class NavBar
     private ?string $title = null;
 
     private ?string $subtitle = null;
+
+    /**
+     * Optional element / Blade view rendered in the bar's centered "principal"
+     * slot in place of the string title — a logo, wordmark, or any custom
+     * lockup. When set, it wins over {@see title()} (iOS renders it as a
+     * `.principal` toolbar item and suppresses `.navigationTitle`; Android
+     * renders it in the `TopAppBar` title slot). Best paired with inline
+     * display mode.
+     */
+    private Element|View|null $titleView = null;
 
     private bool $back = false;
 
@@ -76,6 +89,35 @@ class NavBar
         $this->title = $title;
 
         return $this;
+    }
+
+    /**
+     * Render a custom element / Blade view in the bar's centered principal slot
+     * instead of the string title — a logo lockup, wordmark, etc. Takes any
+     * element tree or a Blade view (rendered against the screen), so it's not
+     * limited to images.
+     *
+     *   ->titleView(Image::make('images/logo.png')->height(24))
+     *   ->titleView(view('native.brand-lockup'))
+     */
+    public function titleView(Element|View $content): self
+    {
+        $this->titleView = $content;
+
+        return $this;
+    }
+
+    /**
+     * Convenience over {@see titleView()} for the common case: a bundled logo
+     * image, sized to a sensible nav-bar height. `$src` is passed straight to
+     * the `Image` element (bundle an app asset rather than a remote URL so the
+     * bar doesn't flash-load).
+     *
+     *   ->logo('images/jump-logo.png')
+     */
+    public function logo(string $src, float $height = 28): self
+    {
+        return $this->titleView(Image::make($src)->height($height));
     }
 
     public function subtitle(?string $subtitle): self
@@ -306,6 +348,12 @@ class NavBar
     public function getActions(): array
     {
         return $this->actions;
+    }
+
+    /** The custom principal-slot content (element or Blade view), or null. */
+    public function getTitleView(): Element|View|null
+    {
+        return $this->titleView;
     }
 
     public function toElement(): TopBar

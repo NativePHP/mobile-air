@@ -87,6 +87,21 @@ abstract class Element
     }
 
     /**
+     * Replace this element's child list wholesale. Used when hoisting a
+     * sentinel out of the tree (e.g. an inline `<native:bottom-bar>` lifted
+     * up to the native-chrome root) so the extracted node isn't rendered
+     * twice.
+     *
+     * @param  Element[]  $children
+     */
+    public function setChildren(array $children): static
+    {
+        $this->children = array_values($children);
+
+        return $this;
+    }
+
+    /**
      * Apply a string of Tailwind utility classes to this element using
      * the same parser the blade collector uses. Lets layout-side
      * Element composition (e.g. `NativeLayout::bottomBar()`) read like
