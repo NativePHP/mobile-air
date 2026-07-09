@@ -1337,6 +1337,13 @@ abstract class NativeComponent
             }
         }
 
+        // System-level events tagged BroadcastsGlobally are ALSO pushed through
+        // Laravel's dispatcher so listeners anywhere in the app react — not just
+        // this component's #[On] handlers. Runs before the (early-returning)
+        // #[On] lookup below so it fires even when this component declares no
+        // listener for the event.
+        $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
+
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
             ?? null;
@@ -1373,6 +1380,69 @@ abstract class NativeComponent
             $this->$method(...$args);
         } else {
             $this->$method($payload);
+        }
+    }
+
+    /**
+     * If the event class implements BroadcastsGlobally, rebuild it from the
+     * payload and dispatch it through Laravel's event() so app-wide listeners
+     * (Event::listen / subscribers) react — in addition to component #[On].
+     */
+    private function dispatchGloballyIfMarked(string $eventName, array $payload): void
+    {
+        $class = str_starts_with($eventName, 'native:') ? substr($eventName, 7) : $eventName;
+
+        if (! class_exists($class)
+            || ! is_subclass_of($class, \Native\Mobile\Events\Concerns\BroadcastsGlobally::class)) {
+            return;
+        }
+
+        $instance = $this->buildEventInstance($class, $payload);
+        if ($instance !== null) {
+            event($instance);
+        }
+    }
+
+    /**
+     * Reconstruct an event object from a native payload, binding payload keys
+     * to constructor parameters by name (with the same scalar coercion the
+     * #[On] method path uses). Returns null if a required param is missing or
+     * construction throws.
+     */
+    private function buildEventInstance(string $class, array $payload): ?object
+    {
+        try {
+            $ctor = (new \ReflectionClass($class))->getConstructor();
+            if ($ctor === null) {
+                return new $class;
+            }
+
+            $args = [];
+            foreach ($ctor->getParameters() as $param) {
+                $name = $param->getName();
+                if (array_key_exists($name, $payload)) {
+                    $value = $payload[$name];
+                    $type = $param->getType();
+                    if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
+                        $value = match ($type->getName()) {
+                            'int' => (int) $value,
+                            'float' => (float) $value,
+                            'string' => (string) $value,
+                            'bool' => (bool) $value,
+                            default => $value,
+                        };
+                    }
+                    $args[$name] = $value;
+                } elseif ($param->isDefaultValueAvailable()) {
+                    $args[$name] = $param->getDefaultValue();
+                } elseif (! $param->allowsNull()) {
+                    return null; // required param with no payload value
+                }
+            }
+
+            return new $class(...$args);
+        } catch (\Throwable) {
+            return null;
         }
     }
 

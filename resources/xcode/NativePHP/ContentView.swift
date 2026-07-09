@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var phpOutput = ""
     @StateObject private var uiState = NativeUIState.shared
     @ObservedObject private var nativeUIBridge = NativeUIBridge.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         // When native UI is active, render JUST the native tree —
@@ -62,6 +63,14 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.25), value: nativeUIBridge.screenKey)
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isActive)
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
+        // Push a native AppearanceChanged event to PHP when the system theme
+        // flips (Control Center toggle, sunset auto-switch). Drives the
+        // reactive `System::appearance()` / `#[On(AppearanceChanged)]` path.
+        // ContentView is always mounted, so this observes every change.
+        .onChange(of: colorScheme) { newScheme in
+            let mode = newScheme == .dark ? "dark" : "light"
+            LaravelBridge.shared.send?("Native\\Mobile\\Events\\System\\AppearanceChanged", ["mode": mode])
+        }
     }
 
     /// Handle navigation from any UI component

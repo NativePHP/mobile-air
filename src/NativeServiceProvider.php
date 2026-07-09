@@ -91,9 +91,18 @@ class NativeServiceProvider extends PackageServiceProvider
 
     public function packageRegistered()
     {
+        // Load global helpers here too — not only via composer `autoload.files`.
+        // The dev sync copies src/ into an app's vendor without re-dumping the
+        // app autoloader, so the files-autoload entry wouldn't take effect until
+        // `composer dump-autoload`. Requiring it on boot makes isDark()/etc.
+        // available immediately after a sync. function_exists() guards inside
+        // keep it idempotent when the autoloader has already loaded it.
+        require_once __DIR__.'/helpers.php';
+
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
         $this->publishPluginsServiceProvider();
+        $this->registerCoreFacades();
         $this->registerPluginServices();
         $this->prepForIos();
         $this->registerJumpBridgeFallback();
@@ -115,6 +124,35 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->publishes([
             __DIR__.'/../resources/stubs/NativeServiceProvider.php.stub' => app_path('Providers/NativeServiceProvider.php'),
         ], 'nativephp-plugins-provider');
+    }
+
+    /**
+     * Bind facades that were previously supplied by standalone plugins and are
+     * now core built-ins (their native bridge functions ship in core's
+     * BridgeFunctionRegistration). Mirrors the singleton binding each plugin's
+     * ServiceProvider used to do — so `Device::…` resolves with no plugin
+     * installed. Dialog/File/System follow the same pattern as they migrate.
+     */
+    /**
+     * Keep query-side caches in sync with their push events. When the OS flips
+     * the theme, AppearanceChanged fires (and auto-dispatches globally); this
+     * listener updates System's cached appearance so `System::appearance()` /
+     * `isDark()` stay fresh without re-probing the bridge.
+     */
+    protected function registerSystemEventListeners(): void
+    {
+        \Illuminate\Support\Facades\Event::listen(
+            \Native\Mobile\Events\System\AppearanceChanged::class,
+            fn (\Native\Mobile\Events\System\AppearanceChanged $e) => System::rememberAppearance($e->mode),
+        );
+    }
+
+    protected function registerCoreFacades(): void
+    {
+        $this->app->singleton(Device::class, fn () => new Device);
+        $this->app->singleton(System::class, fn () => new System);
+        $this->app->singleton(\Native\Mobile\Dialog::class, fn () => new \Native\Mobile\Dialog);
+        $this->app->singleton(\Native\Mobile\File::class, fn () => new \Native\Mobile\File);
     }
 
     protected function registerPluginServices(): void
@@ -176,6 +214,7 @@ class NativeServiceProvider extends PackageServiceProvider
     public function packageBooted()
     {
         $this->setupComposerPostUpdateScript();
+        $this->registerSystemEventListeners();
         $this->registerNativeComponents();
         $this->registerCoreElements();
         $this->registerUiPluginComponents();

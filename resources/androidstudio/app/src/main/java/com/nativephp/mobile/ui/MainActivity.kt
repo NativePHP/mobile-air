@@ -74,6 +74,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     @Volatile private var nativeUIThread: Thread? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
+    // Last appearance pushed to PHP, so onConfigurationChanged (which also fires
+    // on rotation) only emits AppearanceChanged when the theme actually flips.
+    private var lastAppearance: String? = null
     private var showSplash by mutableStateOf(true)
 
     // Device-shake detection — registered in onResume, unregistered in onPause.
@@ -92,6 +95,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+
+        // Seed the appearance tracker so a later config change (e.g. rotation)
+        // only emits AppearanceChanged when the theme genuinely differs.
+        lastAppearance = if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
 
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -219,6 +227,19 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Reconfigure status bar on theme change
         if ((newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) != 0) {
             configureStatusBar()
+        }
+
+        // Push a native AppearanceChanged event to PHP when the theme flips.
+        // onConfigurationChanged also fires on rotation, so guard on an actual
+        // change. Drives reactive System::appearance() / #[On(AppearanceChanged)].
+        val mode = if ((newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
+        if (mode != lastAppearance) {
+            lastAppearance = mode
+            NativeElementBridge.sendNativeEvent(
+                "Native\\Mobile\\Events\\System\\AppearanceChanged",
+                org.json.JSONObject().put("mode", mode).toString()
+            )
         }
     }
 

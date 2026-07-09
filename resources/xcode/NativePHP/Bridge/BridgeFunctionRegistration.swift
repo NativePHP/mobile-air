@@ -8,6 +8,29 @@ func registerBridgeFunctions() {
 
     registry.register("Edge.Set", function: EdgeFunctions.Set())
 
+    // Device.* — core built-in (migrated from the nativephp/mobile-device
+    // plugin). Android twin: bridge/functions/DeviceFunctions.kt.
+    registry.register("Device.Vibrate",         function: DeviceFunctions.Vibrate())
+    registry.register("Device.ToggleFlashlight", function: DeviceFunctions.ToggleFlashlight())
+    registry.register("Device.GetId",           function: DeviceFunctions.GetId())
+    registry.register("Device.GetInfo",         function: DeviceFunctions.GetInfo())
+    registry.register("Device.GetBatteryInfo",  function: DeviceFunctions.GetBatteryInfo())
+
+    // System.* — core built-in (migrated from the nativephp/mobile-system
+    // plugin). Android twin: bridge/functions/SystemFunctions.kt.
+    registry.register("System.OpenAppSettings", function: SystemFunctions.OpenAppSettings())
+    registry.register("System.GetAppearance", function: SystemFunctions.GetAppearance())
+
+    // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog
+    // plugin). Android twin: bridge/functions/DialogFunctions.kt.
+    registry.register("Dialog.Alert", function: DialogFunctions.Alert())
+    registry.register("Dialog.Toast", function: DialogFunctions.Toast())
+
+    // File.* — core built-in (migrated from the nativephp/mobile-file plugin).
+    // Android twin: bridge/functions/FileFunctions.kt.
+    registry.register("File.Move", function: FileFunctions.Move())
+    registry.register("File.Copy", function: FileFunctions.Copy())
+
     // Perf.* — mirror of Android's `bridge/functions/PerfFunctions.kt`.
     // Used by `BenchmarkComponent` to drive each scenario. The
     // `Perf.Export` JSON shape matches Android's so PHP analysis is
