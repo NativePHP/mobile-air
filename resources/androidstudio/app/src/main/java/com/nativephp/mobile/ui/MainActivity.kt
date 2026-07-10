@@ -372,6 +372,30 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
     }
 
+    /**
+     * Navigate an already-running app to a deep-link route.
+     *
+     * In native-UI apps the single PHP event loop is blocked running the current
+     * screen, so webView.loadUrl() for a Route::native screen never routes — the
+     * request queues behind the running loop and the link is silently dropped.
+     * Instead wake the loop with a `__deeplink` native event carrying the route;
+     * NativeComponent::dispatchNativeEvent turns it into a NavigationIntent::NAVIGATE
+     * and NativeRouter pushes the screen (same path as an in-app @press navigate).
+     * WebView/Inertia apps keep the direct loadUrl().
+     */
+    private fun navigateWarm(route: String) {
+        if (NativeUIBridge.isActive.value) {
+            val escaped = route.replace("\\", "\\\\").replace("\"", "\\\"")
+            Log.d("DeepLink", "🚀 native-ui: dispatching __deeplink event: $route")
+            NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"}")
+        } else {
+            val fullUrl = "http://127.0.0.1$route"
+            Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
+            webView.loadUrl(fullUrl)
+        }
+        pendingDeepLink = null
+    }
+
     private fun handleDeepLinkIntent(intent: Intent?) {
         // Check for notification URL extra (from local notification taps or foreground push)
         val notificationUrl = intent?.getStringExtra("notification_url")
@@ -379,10 +403,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             Log.d("DeepLink", "🔔 Notification URL: $notificationUrl")
             pendingDeepLink = notificationUrl
             if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
-                val fullUrl = "http://127.0.0.1$notificationUrl"
-                Log.d("DeepLink", "🚀 Loading notification URL immediately: $fullUrl")
-                webView.loadUrl(fullUrl)
-                pendingDeepLink = null
+                navigateWarm(notificationUrl)
             }
             return
         }
@@ -403,10 +424,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
             pendingDeepLink = route
             if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
-                val fullUrl = "http://127.0.0.1$route"
-                Log.d("DeepLink", "🚀 Loading FCM deep link immediately: $fullUrl")
-                webView.loadUrl(fullUrl)
-                pendingDeepLink = null
+                navigateWarm(route)
             }
             return
         }
@@ -459,11 +477,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
         pendingDeepLink = laravelUrl
         if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
-            // Only load immediately if both Laravel environment AND WebView are ready
-            val fullUrl = "http://127.0.0.1$laravelUrl"
-            Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
-            webView.loadUrl(fullUrl)
-            pendingDeepLink = null
+            // Only navigate immediately if both Laravel environment AND WebView are ready
+            navigateWarm(laravelUrl)
         } else {
             Log.d("DeepLink", "⏳ Deep link saved, waiting for app initialization to complete")
         }
