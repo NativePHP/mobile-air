@@ -69,11 +69,30 @@ final class DeepLinkRouter {
         
         // 3. Either navigate immediately or store for later
         if isWebViewReady && isPhpReady {
-            // App is already running — use Inertia router for SPA navigation
-            // This prevents Inertia from returning raw JSON on subsequent navigations
-            // (e.g. second OAuth login after logout)
-            DebugLogger.shared.log("🔗 Both ready, navigating with Inertia")
-            navigateWithInertia(normalizedRoute)
+            // App is already running. How we navigate depends on the runtime:
+            if NativeUIBridge.shared.isActive {
+                // Native-UI (edge) app: the WebView is only the php:// transport,
+                // and its single PHP event loop is blocked running the current
+                // screen — a fresh webView.load(php://…) for a Route::native
+                // screen never commits (it queues behind the running loop), so
+                // warm deep/universal links would be silently dropped.
+                // Instead, wake the running loop with a native event carrying the
+                // target route; NativeComponent::dispatchNativeEvent turns it into
+                // a NavigationIntent::NAVIGATE and NativeRouter pushes the screen —
+                // the same path an in-app @press navigate uses.
+                let escaped = normalizedRoute
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+                let json = "{\"uri\":\"\(escaped)\"}"
+                DebugLogger.shared.log("🔗 Both ready (native-ui), dispatching __deeplink event: \(normalizedRoute)")
+                NativeElementBridge.sendNativeEvent(eventName: "__deeplink", payloadJson: json)
+            } else {
+                // Inertia/WebView SPA: use the SPA router to preserve state.
+                // This prevents Inertia from returning raw JSON on subsequent
+                // navigations (e.g. second OAuth login after logout).
+                DebugLogger.shared.log("🔗 Both ready, navigating with Inertia")
+                navigateWithInertia(normalizedRoute)
+            }
         } else {
             DebugLogger.shared.log("🔗 Not ready, storing as pending URL")
             // Store the URL to handle once both WebView and PHP are ready

@@ -1403,6 +1403,23 @@ abstract class NativeComponent
         $eventName = $event['event'] ?? '';
         $payload = $event['payload'] ?? [];
 
+        // Deep link / universal link arriving while the app is already running.
+        // The native shell (DeepLinkRouter) posts this to wake the blocked event
+        // loop — a warm php:// load can't route because this loop owns the PHP
+        // thread. Turn it into a NAVIGATE intent and exit; NativeRouter resolves
+        // the URI (with route params) and pushes the target screen, exactly like
+        // an in-app @press navigate.
+        if ($eventName === '__deeplink') {
+            $uri = is_array($payload) ? ($payload['uri'] ?? null) : null;
+            if (is_string($uri) && $uri !== '') {
+                NativeRouter::debugLog("DEEPLINK: navigating to $uri");
+                $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri);
+                $this->stop();
+            }
+
+            return;
+        }
+
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
