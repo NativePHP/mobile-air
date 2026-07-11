@@ -18,6 +18,12 @@ class SideNavHeader extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        foreach (['background-color' => 'backgroundColor', 'image-url' => 'imageUrl'] as $kebab => $camel) {
+            if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
+                $attrs[$camel] = $attrs[$kebab];
+            }
+        }
+
         foreach (['title', 'subtitle', 'icon', 'backgroundColor', 'imageUrl', 'event'] as $key) {
             if (isset($attrs[$key])) {
                 $snakeKey = strtolower(preg_replace('/[A-Z]/', '_$0', $key));
@@ -25,8 +31,9 @@ class SideNavHeader extends Element
             }
         }
 
-        if (isset($attrs['showCloseButton'])) {
-            $this->props['show_close_button'] = filter_var($attrs['showCloseButton'], FILTER_VALIDATE_BOOLEAN);
+        $showCloseButton = $attrs['show-close-button'] ?? $attrs['showCloseButton'] ?? null;
+        if ($showCloseButton !== null) {
+            $this->props['show_close_button'] = filter_var($showCloseButton, FILTER_VALIDATE_BOOLEAN);
         }
 
         if (isset($attrs['pinned'])) {

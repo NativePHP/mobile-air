@@ -18,6 +18,10 @@ class SideNavItem extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        if (isset($attrs['badge-color']) && ! isset($attrs['badgeColor'])) {
+            $attrs['badgeColor'] = $attrs['badge-color'];
+        }
+
         foreach (['id', 'label', 'url', 'icon', 'badge', 'badgeColor'] as $key) {
             if (isset($attrs[$key])) {
                 $snakeKey = strtolower(preg_replace('/[A-Z]/', '_$0', $key));
@@ -29,8 +33,9 @@ class SideNavItem extends Element
             $this->props['active'] = filter_var($attrs['active'], FILTER_VALIDATE_BOOLEAN);
         }
 
-        if (isset($attrs['openInBrowser'])) {
-            $this->props['open_in_browser'] = filter_var($attrs['openInBrowser'], FILTER_VALIDATE_BOOLEAN);
+        $openInBrowser = $attrs['open-in-browser'] ?? $attrs['openInBrowser'] ?? null;
+        if ($openInBrowser !== null) {
+            $this->props['open_in_browser'] = filter_var($openInBrowser, FILTER_VALIDATE_BOOLEAN);
         }
     }
 

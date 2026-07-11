@@ -22,12 +22,14 @@ class SideNav extends Element
             $this->props['dark'] = filter_var($attrs['dark'], FILTER_VALIDATE_BOOLEAN);
         }
 
-        if (isset($attrs['labelVisibility'])) {
-            $this->props['label_visibility'] = $attrs['labelVisibility'];
+        $labelVisibility = $attrs['label-visibility'] ?? $attrs['labelVisibility'] ?? null;
+        if ($labelVisibility !== null) {
+            $this->props['label_visibility'] = $labelVisibility;
         }
 
-        if (isset($attrs['gesturesEnabled'])) {
-            $this->props['gestures_enabled'] = filter_var($attrs['gesturesEnabled'], FILTER_VALIDATE_BOOLEAN);
+        $gesturesEnabled = $attrs['gestures-enabled'] ?? $attrs['gesturesEnabled'] ?? null;
+        if ($gesturesEnabled !== null) {
+            $this->props['gestures_enabled'] = filter_var($gesturesEnabled, FILTER_VALIDATE_BOOLEAN);
         }
     }
 
