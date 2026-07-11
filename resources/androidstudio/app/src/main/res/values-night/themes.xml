@@ -4,6 +4,9 @@
           <item name="colorPrimary">@android:color/white</item>
           <item name="colorPrimaryVariant">@android:color/white</item>
           <item name="colorOnPrimary">@android:color/black</item>
+          <!-- Keep the starting window black in night mode too — the splash
+               overlay's backdrop is always black (see values/themes.xml). -->
+          <item name="android:windowBackground">@color/black</item>
           <item name="android:windowDrawsSystemBarBackgrounds">true</item>
           <item name="android:statusBarColor">@android:color/transparent</item>
           <item name="android:navigationBarColor">@android:color/transparent</item>

@@ -4,6 +4,11 @@
         <item name="colorPrimary">@color/black</item>
         <item name="colorPrimaryVariant">@color/black</item>
         <item name="colorOnPrimary">@color/white</item>
+        <!-- Solid black starting window + activity window background. Matches the
+             splash overlay's black backdrop so cold start goes black → splash with
+             no white flash, and the first Compose frame can paint without waiting
+             on the splash bitmap decode (see MainActivity.SplashScreen). -->
+        <item name="android:windowBackground">@color/black</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

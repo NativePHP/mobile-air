@@ -78,9 +78,12 @@ object FrameTracker {
         }
     }
 
-    init {
-        start()
-    }
+    // NOTE: no init { start() }. The overlay composable reads `enabled` on every
+    // app's first composition, which class-loads this object — an unconditional
+    // start() here used to register a Choreographer callback and a forever-running
+    // 4Hz publish loop during cold start even with the overlay disabled. The
+    // `enabled` setter is the only entry point: opting in via
+    // `Perf.SetFpsOverlayEnabled` starts tracking, flipping it off stops it.
 
     private fun start() {
         if (running) return

@@ -12,7 +12,6 @@ import java.util.zip.ZipInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
-import java.security.MessageDigest
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -192,7 +191,7 @@ class LaravelEnvironment(private val context: Context) {
             // }
             val didExtract = extractLaravelBundle()
 
-            setupEnvironment()
+            setupEnvironment(didExtract)
 
             // Only run artisan commands when files were actually extracted/changed
             if (didExtract) {
@@ -692,22 +691,6 @@ class LaravelEnvironment(private val context: Context) {
         zis.close()
     }
 
-    /**
-     * Calculate MD5 checksum of an input stream
-     */
-    private fun calculateMD5(input: java.io.InputStream): String {
-        val md = MessageDigest.getInstance("MD5")
-        val buffer = ByteArray(8192)
-        var bytesRead: Int
-
-        while (input.read(buffer).also { bytesRead = it } != -1) {
-            md.update(buffer, 0, bytesRead)
-        }
-
-        val digest = md.digest()
-        return digest.joinToString("") { "%02x".format(it) }
-    }
-
     private fun copyAssetToInternalStorage(assetName: String, targetFileName: String, forceUpdate: Boolean = false): File {
         val outFile = File(context.filesDir, targetFileName)
 
@@ -716,25 +699,15 @@ class LaravelEnvironment(private val context: Context) {
             Log.d(TAG, "📋 Copying asset $assetName to ${outFile.absolutePath} (new file)")
             copyAssetFile(assetName, outFile)
         } else if (forceUpdate) {
-            // Force update requested, copy without checksum verification
+            // Forced refresh (DEBUG build, or the Laravel bundle was just
+            // re-extracted for an app update), copy without checksum verification
             Log.d(TAG, "📋 Force updating asset $assetName")
             copyAssetFile(assetName, outFile)
         } else {
-            // File exists and no force update - verify checksum
-            try {
-                val existingHash = FileInputStream(outFile).use { calculateMD5(it) }
-                val bundledHash = context.assets.open(assetName).use { calculateMD5(it) }
-
-                if (existingHash != bundledHash) {
-                    Log.d(TAG, "📋 Asset $assetName has changed (checksum mismatch), updating")
-                    copyAssetFile(assetName, outFile)
-                } else {
-                    Log.d(TAG, "📋 Asset $assetName already up to date (checksum match)")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Failed to verify checksum for $assetName, re-copying to be safe", e)
-                copyAssetFile(assetName, outFile)
-            }
+            // File exists and no forced refresh — trust it. This asset only changes
+            // with an app update, which re-extracts the bundle and forces a refresh
+            // above. Avoids MD5-hashing two ~200KB streams on every cold boot.
+            Log.d(TAG, "📋 Asset $assetName present — skipping (no forced refresh)")
         }
 
         return outFile
@@ -775,6 +748,18 @@ class LaravelEnvironment(private val context: Context) {
         phpBridge.runArtisanCommand("storage:unlink")
         phpBridge.runArtisanCommand("storage:link")
         phpBridge.runArtisanCommand("migrate --force")
+
+        // Cache the Laravel bootstrap so every subsequent cold boot skips config
+        // parsing, event discovery, and Blade compilation. Built HERE — once per app
+        // update, with the device's real paths — rather than at build time on the host
+        // (where the cached paths would be wrong, which is why we optimize:clear above
+        // first). This is the biggest Laravel-side cold-start lever; view:cache in
+        // particular precompiles every Blade view so the first page render doesn't have
+        // to. `route:cache` is intentionally omitted — NativePHP registers internal
+        // closure routes (e.g. /_native/api/events) that can't be serialized.
+        phpBridge.runArtisanCommand("config:cache")
+        phpBridge.runArtisanCommand("event:cache")
+        phpBridge.runArtisanCommand("view:cache")
     }
 
     private fun setupDirectories() {
@@ -798,7 +783,7 @@ class LaravelEnvironment(private val context: Context) {
         }
     }
 
-    private fun setupEnvironment() {
+    private fun setupEnvironment(forceCertRefresh: Boolean = false) {
         try {
             val appKeyFile = File(appStorageDir, APP_KEY_FILE)
             val appKey: String = if (appKeyFile.exists()) {
@@ -891,7 +876,11 @@ class LaravelEnvironment(private val context: Context) {
                 }
 
                 Log.d(TAG, "🔍 Certificate copy - DEBUG mode: $isDebugMode")
-                copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode)
+                // Force a refresh in DEBUG, or when the Laravel bundle was just
+                // re-extracted (app update). Otherwise trust the existing copy —
+                // see copyAssetToInternalStorage — so we don't MD5 two ~200KB
+                // streams on every cold boot.
+                copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode || forceCertRefresh)
 
                 val phpIni = """
 curl.cainfo="${context.filesDir.absolutePath}/$CACERT_FILE"
@@ -983,7 +972,7 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             // If we arrived first (WorkManager cold start after an app update), we
             // do the extraction ourselves before the ephemeral runtime touches vendor/.
             val didExtract = extractLaravelBundle()
-            setupEnvironment()
+            setupEnvironment(didExtract)
             if (didExtract) {
                 Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
                 runBaseArtisanCommands()

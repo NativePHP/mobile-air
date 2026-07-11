@@ -50,8 +50,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -60,11 +60,18 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.graphics.Insets
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : FragmentActivity(), WebViewProvider {
     private lateinit var webView: WebView
-    private val phpBridge = PHPBridge(this)
+    // Lazy so PHPBridge's static `System.loadLibrary("php_wrapper")` (loading the large
+    // embedded-PHP .so) runs on FIRST use — which is now the post-first-frame boot block —
+    // instead of during activity construction on the TTID critical path. First access is on
+    // the main thread (WebViewManager ctor) then the boot thread; the default synchronized
+    // lazy makes that safe.
+    private val phpBridge by lazy { PHPBridge(this) }
     private lateinit var laravelEnv: LaravelEnvironment
     private lateinit var webViewManager: WebViewManager
     private lateinit var coord: NativeActionCoordinator
@@ -78,6 +85,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     // on rotation) only emits AppearanceChanged when the theme actually flips.
     private var lastAppearance: String? = null
     private var showSplash by mutableStateOf(true)
+    // Gates composition of the heavy MainScreen tree (Scaffold + drawer + WebView)
+    // until the runtime is booted and the WebView is ready. Until then the first
+    // frame is just the splash overlay, keeping that composition off the critical
+    // path to first paint.
+    private var showContent by mutableStateOf(false)
 
     // Device-shake detection — registered in onResume, unregistered in onPause.
     private var sensorManager: SensorManager? = null
@@ -90,6 +102,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Static instance holder for accessing MainActivity from other activities
         var instance: MainActivity? = null
             private set
+
+        // Delay before the background queue worker boots. The worker spins up a
+        // second full Laravel runtime; deferring it keeps that off the cold-start
+        // critical path so it doesn't steal CPU from the first paint.
+        private const val WORKER_START_DELAY_MS = 2500L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -126,35 +143,23 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             insets
         }
 
-        // Initialize WebView before setContent so it's available for composition
-        webView = WebView(this).apply {
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            settings.mediaPlaybackRequiresUserGesture = false
-        }
-
-        LaravelCookieStore.init(applicationContext)
-
-        // Register bridge functions early, before PHP code can execute
-        Log.d("MainActivity", "🔌 Registering bridge functions...")
-        registerBridgeFunctions(this, applicationContext)
-        registerNativeChromeRenderers()
-        registerPluginRenderers()
-        Log.d("MainActivity", "✅ Bridge functions registered")
-
         handleDeepLinkIntent(intent)
 
-        // Set up Compose UI. The outer MaterialTheme gets its color scheme via
-        // NativeUIThemeProvider (a seam): a UI plugin supplies brand tokens
-        // (native-ui threads PHP `Theme::merge` values), and with no UI plugin
-        // installed it falls back to the M3 baseline so core still builds/runs.
+        // Set up Compose UI and PAINT THE SPLASH FIRST, from a minimal onCreate, so the
+        // first frame is on screen ASAP (TTID). Everything heavy — WebView (Chromium)
+        // init and the PHP boot — is deferred to AFTER the first frame (below), so neither
+        // the main-thread Chromium cost nor the boot thread's disk I/O blocks the path to
+        // first paint. (Measured: starting the boot before first paint cost ~160ms of
+        // uninterruptible I/O sleep on the main thread + Chromium init on the critical path.)
         setContent {
             val isDark = isSystemInDarkTheme()
             MaterialTheme(colorScheme = nativeUiMaterialColorScheme(isDark)) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    MainScreen()
+                    // The heavy MainScreen tree (Scaffold + drawer + WebView) is gated on
+                    // showContent; until boot is ready the first frame is just the splash.
+                    if (showContent) {
+                        MainScreen()
+                    }
                     // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
                     // Driven by Choreographer via FrameTracker. Recomposes at
                     // 4Hz only — no per-frame render cost. Toggle off in
@@ -164,34 +169,76 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
         }
 
-        initializeEnvironmentAsync {
-            // Setup WebView and managers FIRST
-            webViewManager = WebViewManager(this, webView, phpBridge)
-            webViewManager.setup()
-            coord = NativeActionCoordinator.install(this)
-
-            // Add JavaScript interface for drawer control
-            webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
-
-            // Inject safe area insets BEFORE loading any URL to prevent content shift
-            pendingInsets?.let {
-                injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
+        // Defer the expensive work until AFTER the first frame is laid out. The WebView
+        // and the boot thread's I/O previously sat on the critical path to first paint;
+        // running them here keeps the splash frame fast while still overlapping WebView
+        // init with the background Laravel boot.
+        window.decorView.post {
+            // WebView (Chromium first-init) — off the first-frame critical path now.
+            webView = WebView(this).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                settings.mediaPlaybackRequiresUserGesture = false
             }
 
-            // NOW load the URL after WebView is fully configured
-            val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
-            val fullUrl = "http://127.0.0.1$target"
-            Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
-            webView.loadUrl(fullUrl)
+            // Kick off the PHP boot pipeline. Bridge/renderer registration happens on that
+            // thread ahead of the PHP boot (see initializeEnvironmentAsync). It overlaps the
+            // WebView init above; both now run after first paint.
+            initializeEnvironmentAsync {
+                // Setup WebView and managers FIRST
+                webViewManager = WebViewManager(this, webView, phpBridge)
+                webViewManager.setup()
+                coord = NativeActionCoordinator.install(this)
 
-            pendingDeepLink = null
+                // Add JavaScript interface for drawer control
+                webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
 
-            // Hide splash screen after URL is loaded
-            showSplash = false
+                // Compose the real UI now (this attaches the WebView).
+                showContent = true
 
-            // Start hot reload watcher AFTER Laravel environment is initialized
-            startHotReloadWatcher()
-            injectJavaScript(webView)
+                // Inject safe area insets BEFORE loading any URL to prevent content shift
+                pendingInsets?.let {
+                    injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
+                }
+
+                // NOW load the URL after WebView is fully configured
+                val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
+                val fullUrl = "http://127.0.0.1$target"
+                Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
+                webView.loadUrl(fullUrl)
+
+                pendingDeepLink = null
+
+                // Hide splash screen after URL is loaded
+                showSplash = false
+
+                // Report the app as fully drawn so cold-start TTFD is measured against
+                // real content (Macrobenchmark / Play Console vitals) instead of an
+                // implicit first frame.
+                try {
+                    reportFullyDrawn()
+                } catch (t: Throwable) {
+                    Log.w("MainActivity", "reportFullyDrawn failed: ${t.message}")
+                }
+
+                // Defer the background queue worker — it boots a SECOND full Laravel
+                // runtime that would contend for CPU during first paint. Start it a
+                // couple of seconds after the UI is up. Guarded against a fast destroy
+                // and against double-starting if the activity was re-created.
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (!isFinishing && !isDestroyed &&
+                        phpBridge.isPersistentMode() && queueWorker == null) {
+                        Log.d("MainActivity", "▶️ Starting deferred background queue worker")
+                        queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    }
+                }, WORKER_START_DELAY_MS)
+
+                // Start hot reload watcher AFTER Laravel environment is initialized
+                startHotReloadWatcher()
+                injectJavaScript(webView)
+            }
         }
 
         onBackPressedDispatcher.addCallback(this) {
@@ -285,6 +332,23 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
     private fun initializeEnvironmentAsync(onReady: () -> Unit) {
         Thread {
+            // Hydrate the cookie store here rather than in onCreate: it's plain
+            // SharedPreferences disk I/O, and nothing reads cookies until the first
+            // PHP request — which can't happen before this thread's boot completes.
+            // Keeps a blocking prefs read off the main thread / TTID path.
+            LaravelCookieStore.init(applicationContext)
+
+            // Register bridge functions + renderers BEFORE booting PHP — a service
+            // provider may call a bridge function during boot, so registration must
+            // precede it. These are cheap registry inserts; running them here (off
+            // the main thread and ahead of the PHP boot) keeps them off the
+            // cold-start critical path while preserving ordering.
+            Log.d("MainActivity", "🔌 Registering bridge functions...")
+            registerBridgeFunctions(this, applicationContext)
+            registerNativeChromeRenderers()
+            registerPluginRenderers()
+            Log.d("MainActivity", "✅ Bridge functions registered")
+
             Log.d("LaravelInit", "Starting async Laravel extraction...")
             laravelEnv = LaravelEnvironment(this)
             laravelEnv.initialize()
@@ -306,8 +370,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 if (booted) {
                     Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
 
-                    // Start background queue worker after persistent runtime is ready
-                    queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    // NOTE: the background queue worker is NOT started here. It
+                    // boots a second full Laravel runtime that would contend for
+                    // CPU during first paint, so it's deferred to the onReady
+                    // callback (see WORKER_START_DELAY_MS).
                 } else {
                     Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
                 }
@@ -1195,20 +1261,53 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
         }
 
+        // Decode the full-screen splash bitmap OFF the main thread. painterResource
+        // decodes synchronously inside the first composition — directly on the TTID
+        // critical path (tens of ms for a full-screen PNG). The first frame paints
+        // solid black (identical to the theme's windowBackground, so there's no
+        // visible seam) and the image fades in as soon as the decode lands.
+        var splashBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+        LaunchedEffect(splashResourceId) {
+            if (splashResourceId != 0) {
+                splashBitmap = withContext(Dispatchers.IO) {
+                    try {
+                        android.graphics.BitmapFactory
+                            .decodeResource(resources, splashResourceId)
+                            ?.asImageBitmap()
+                    } catch (t: Throwable) {
+                        Log.w("Splash", "Failed to decode splash: ${t.message}")
+                        null
+                    }
+                }
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
-            if (splashResourceId != 0) {
-                Image(
-                    painter = painterResource(id = splashResourceId),
-                    contentDescription = "App splash screen",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
+            val bitmap = splashBitmap
+            if (bitmap != null) {
+                // MutableTransitionState(false) → targetState = true makes the
+                // fade-in play on the Image's FIRST composition (plain
+                // AnimatedVisibility(visible = true) would skip it).
+                val fadeInState = remember {
+                    androidx.compose.animation.core.MutableTransitionState(false)
+                }.apply { targetState = true }
+                AnimatedVisibility(
+                    visibleState = fadeInState,
+                    enter = fadeIn(animationSpec = tween(150))
+                ) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "App splash screen",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            } else if (splashResourceId == 0) {
                 SplashText()
             }
         }
