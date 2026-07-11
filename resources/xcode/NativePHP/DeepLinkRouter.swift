@@ -36,7 +36,53 @@ final class DeepLinkRouter {
     func handle(url: URL) {
         DebugLogger.shared.log("🔗 DeepLinkRouter.handle() called with: \(url)")
         DebugLogger.shared.log("🔗 Current state - WebView ready: \(isWebViewReady), PHP ready: \(isPhpReady)")
-        
+
+        // PROTOTYPE: jump://native — leave WebView mode and return to native-ui.
+        // The local native runloop kept running underneath (WebView sessions
+        // don't touch it), so re-showing its tree is immediately interactive.
+        if url.scheme == "jump", url.host == "native" {
+            DebugLogger.shared.log("🌐 jump://native — leaving WebView mode")
+            JumpWebViewSession.shared.stop()
+            DispatchQueue.main.async {
+                NativeUIBridge.shared.isActive = true
+            }
+            return
+        }
+
+        // PROTOTYPE: jump://webview?host=&port= — render a remote WebView app.
+        // Flip the shell into WebView mode and start forwarding php://127.0.0.1
+        // to the dev server (PHPSchemeHandler reads JumpWebViewSession). Loading
+        // php://127.0.0.1/ then renders the remote app's GET / through the
+        // existing WebView. Later this is started by the discovery relay.
+        // ?stop=1 leaves WebView mode (same as jump://native).
+        if url.scheme == "jump", url.host == "webview" {
+            let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            if comps?.queryItems?.first(where: { $0.name == "stop" })?.value == "1" {
+                DebugLogger.shared.log("🌐 jump://webview?stop=1 — leaving WebView mode")
+                JumpWebViewSession.shared.stop()
+                DispatchQueue.main.async {
+                    NativeUIBridge.shared.isActive = true
+                }
+                return
+            }
+            let host = comps?.queryItems?.first(where: { $0.name == "host" })?.value ?? ""
+            let port = comps?.queryItems?.first(where: { $0.name == "port" })?.value ?? "8000"
+            guard !host.isEmpty else {
+                DebugLogger.shared.log("🌐 jump://webview missing host — ignoring")
+                return
+            }
+            JumpWebViewSession.shared.start(host: host, port: port)
+            DispatchQueue.main.async {
+                NativeUIBridge.shared.isActive = false
+                NotificationCenter.default.post(
+                    name: .redirectToURLNotification,
+                    object: nil,
+                    userInfo: ["url": "php://127.0.0.1/"]
+                )
+            }
+            return
+        }
+
         // 1. Normalise the URL (strip scheme, keep host/path/query)
         var route = ""
 

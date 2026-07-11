@@ -592,6 +592,14 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private func getResponse(request: RequestData,
                               completion: @escaping (Result<Data, Error>) -> Void) {
+        // PROTOTYPE: in a Jump WebView session, forward to the remote dev server
+        // instead of the local embedded PHP. The WebView still believes it is
+        // loading php://127.0.0.1, so no origin/ATS/nav-policy change is needed.
+        if JumpWebViewSession.shared.isActive {
+            forwardToRemote(request: request, completion: completion)
+            return
+        }
+
         // Execute on dedicated PHP thread (same thread as php_embed_init for ZTS compatibility)
         PersistentPHPRuntime.shared.executeOnPHPThreadAsync {
             let mode = PersistentPHPRuntime.shared.isBooted ? "PERSISTENT" : "CLASSIC"
@@ -647,6 +655,102 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             }
         }
+    }
+
+    /// PROTOTYPE forward: proxy a php://127.0.0.1 request to the remote Jump dev
+    /// server over the LAN and return the response in the same raw-HTTP-string
+    /// format `getResponse` produces, so `forwardToPHP` parses it unchanged.
+    ///
+    /// v0 limitations (follow-ups): body is treated as UTF-8, so text responses
+    /// (HTML / Livewire / CSS / JS) work but binary assets (fonts / images) do
+    /// not yet; only the app route + text assets render. Remote Set-Cookies are
+    /// rebound to 127.0.0.1 so Livewire sessions/CSRF persist across forwards.
+    private func forwardToRemote(request: RequestData,
+                                 completion: @escaping (Result<Data, Error>) -> Void) {
+        let host = JumpWebViewSession.shared.host
+        let port = JumpWebViewSession.shared.port
+
+        var urlString = "http://\(host):\(port)\(request.uri)"
+        if let q = request.query, !q.isEmpty {
+            urlString += "?\(q)"
+        }
+        guard let url = URL(string: urlString) else {
+            completion(.failure(error(code: 400, description: "Bad remote URL \(urlString)")))
+            return
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = request.method
+        req.timeoutInterval = 15
+        // Copy client headers; drop hop-by-hop / length headers URLSession owns.
+        for (key, value) in request.headers {
+            let lk = key.lowercased()
+            if lk == "host" || lk == "content-length" { continue }
+            req.setValue(value, forHTTPHeaderField: key)
+        }
+        if let body = request.data, !body.isEmpty {
+            req.httpBody = body.data(using: .utf8)
+        }
+
+        NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] --> \(request.method) \(urlString)")
+
+        // Don't let URLSession auto-store cookies against the remote host; we
+        // rebind them to 127.0.0.1 ourselves so the WebView store (which the
+        // outgoing Cookie header is built from) stays the single source.
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        let session = URLSession(configuration: config)
+
+        session.dataTask(with: req) { data, response, err in
+            if let err = err {
+                completion(.failure(err))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data = data else {
+                completion(.failure(self.error(code: 502, description: "No response from remote dev server")))
+                return
+            }
+
+            NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] <-- \(http.statusCode) \(data.count) bytes")
+
+            // Flatten headers to [String:String] for cookie parsing + rebuild.
+            var headerFields: [String: String] = [:]
+            for (k, v) in http.allHeaderFields {
+                headerFields["\(k)"] = "\(v)"
+            }
+
+            // Rebind remote Set-Cookies to 127.0.0.1 and put them in the WebView
+            // store, matching the local path's behaviour.
+            let remoteCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
+            if !remoteCookies.isEmpty {
+                DispatchQueue.main.async {
+                    for c in remoteCookies {
+                        var props = c.properties ?? [:]
+                        props[.domain] = "127.0.0.1"
+                        if let rebound = HTTPCookie(properties: props) {
+                            WebView.dataStore.httpCookieStore.setCookie(rebound)
+                        }
+                    }
+                }
+            }
+
+            // Rebuild the raw HTTP string forwardToPHP expects:
+            // "<status line>\r\n<header lines>\r\n\r\n<body>".
+            var head = "HTTP/1.1 \(http.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: http.statusCode))\r\n"
+            for (k, v) in headerFields {
+                let lk = k.lowercased()
+                // Drop headers the WebView recomputes or that would corrupt the
+                // string body (we already decoded/te-decoded the payload).
+                if lk == "content-length" || lk == "transfer-encoding" || lk == "content-encoding" {
+                    continue
+                }
+                head += "\(k): \(v)\r\n"
+            }
+
+            let bodyString = String(data: data, encoding: .utf8) ?? ""
+            let full = head + "\r\n" + bodyString
+            completion(.success(Data(full.utf8)))
+        }.resume()
     }
 }
 

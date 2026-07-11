@@ -277,10 +277,22 @@ struct WebView: UIViewRepresentable {
             // http/https so redirect()->intended() and $request->fullUrl() will always
             // produce http:// URLs for the local server. Route through the scheme handler's
             // redirect path which handles cookie injection from WKHTTPCookieStore.
+            //
+            // PROTOTYPE: in a Jump WebView session, links the remote app emits point
+            // at the dev-server host (Laravel builds absolute URLs from the request
+            // Host). Treat that host like 127.0.0.1 — rewrite to php://127.0.0.1 and
+            // forward through the scheme handler — so navigations stay in the WebView
+            // instead of escaping to Safari. The forward's host:port comes from
+            // JumpWebViewSession, so the rewritten URL drops the remote host + port.
+            let isJumpHost = JumpWebViewSession.shared.isActive
+                && url.host == JumpWebViewSession.shared.host
+
             if (scheme == "http" || scheme == "https"),
-               url.host == "127.0.0.1" {
+               url.host == "127.0.0.1" || isJumpHost {
                 var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
                 components?.scheme = "php"
+                components?.host = "127.0.0.1"
+                components?.port = nil
                 if let phpURL = components?.url {
                     NotificationCenter.default.post(
                         name: .redirectToURLNotification,
