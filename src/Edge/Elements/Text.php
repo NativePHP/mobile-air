@@ -23,6 +23,27 @@ class Text extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        // Attributes arrive verbatim from the precompiler; Tailwind classes
+        // parse to the camelCase keys below, but hand-written attributes use
+        // the documented kebab spellings. Accept both, camelCase winning.
+        foreach ([
+            'font-size' => 'fontSize',
+            'font-weight' => 'fontWeight',
+            'font-style' => 'fontStyle',
+            'font-family' => 'fontFamily',
+            'line-through' => 'lineThrough',
+            'text-transform' => 'textTransform',
+            'letter-spacing' => 'letterSpacing',
+            'line-height' => 'lineHeight',
+            'line-height-px' => 'lineHeightPx',
+            'text-align' => 'textAlign',
+            'max-lines' => 'maxLines',
+        ] as $kebab => $camel) {
+            if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
+                $attrs[$camel] = $attrs[$kebab];
+            }
+        }
+
         if (isset($attrs['text'])) {
             $this->textProps['text'] = $attrs['text'];
         }
