@@ -19,6 +19,19 @@
     native <methods>;
 }
 
+# libphp_wrapper.so registers its JNI methods (RegisterNatives) against these classes at
+# System.loadLibrary time — R8 can't see JNI references, and removing/renaming ANY declared
+# `external fun` makes the whole library load throw NoSuchMethodError and crash the app on
+# boot. `-keepclasseswithmembernames` above only preserves names of things already kept; it
+# does NOT stop R8 deleting "unused" external declarations, so keep them all explicitly.
+# (NativeElementBridge lives under ui.nativerender, so the com.**.bridge.** rule misses it.)
+-keep class com.nativephp.mobile.ui.nativerender.NativeElementBridge { *; }
+-keep class com.nativephp.mobile.ui.nativerender.NativeElementBridge$Companion { *; }
+# Belt-and-braces: never strip or rename any class that declares native methods.
+-keepclasseswithmembers class * {
+    native <methods>;
+}
+
 # Firebase/Google Play Services
 -keep class com.google.firebase.** { *; }
 -keep class com.google.android.gms.** { *; }
