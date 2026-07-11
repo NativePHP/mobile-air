@@ -30,6 +30,10 @@ class BottomNavItem extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        if (isset($attrs['badge-color']) && ! isset($attrs['badgeColor'])) {
+            $attrs['badgeColor'] = $attrs['badge-color'];
+        }
+
         foreach (['id', 'icon', 'material_variant', 'url', 'label', 'badge', 'badgeColor'] as $key) {
             if (isset($attrs[$key])) {
                 $snakeKey = strtolower(preg_replace('/[A-Z]/', '_$0', $key));
