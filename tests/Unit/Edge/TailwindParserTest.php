@@ -170,6 +170,22 @@ it('parses font sizes', function () {
     expect(TailwindParser::parse('text-6xl'))->toBe(['fontSize' => 60]);
 });
 
+it('parses line height (leading) multipliers', function () {
+    expect(TailwindParser::parse('leading-none'))->toBe(['lineHeight' => 1.0]);
+    expect(TailwindParser::parse('leading-tight'))->toBe(['lineHeight' => 1.25]);
+    expect(TailwindParser::parse('leading-snug'))->toBe(['lineHeight' => 1.375]);
+    expect(TailwindParser::parse('leading-normal'))->toBe(['lineHeight' => 1.5]);
+    expect(TailwindParser::parse('leading-relaxed'))->toBe(['lineHeight' => 1.625]);
+    expect(TailwindParser::parse('leading-loose'))->toBe(['lineHeight' => 2.0]);
+});
+
+it('parses arbitrary line height (multiplier vs absolute px)', function () {
+    expect(TailwindParser::parse('leading-[1.4]'))->toBe(['lineHeight' => 1.4]);
+    expect(TailwindParser::parse('leading-[24px]'))->toBe(['lineHeightPx' => 24.0]);
+    // Non-numeric arbitrary values are ignored, not emitted.
+    expect(TailwindParser::parse('leading-[bogus]'))->toBe([]);
+});
+
 it('parses font weights', function () {
     expect(TailwindParser::parse('font-thin'))->toBe(['fontWeight' => 1]);
     expect(TailwindParser::parse('font-light'))->toBe(['fontWeight' => 2]);

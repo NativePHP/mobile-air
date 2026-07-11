@@ -38,6 +38,12 @@ class Text extends Element
         if (isset($attrs['fontFamily'])) {
             $this->textProps['font_family'] = (int) $attrs['fontFamily'];
         }
+        // Custom font by name (e.g. `font="Inter-Bold"`). The token is a font
+        // file (minus extension) bundled from the app's resources/fonts/ by the
+        // native-ui copy_assets hook; the native text renderers resolve it.
+        if (isset($attrs['font'])) {
+            $this->textProps['font_name'] = (string) $attrs['font'];
+        }
         if (isset($attrs['underline'])) {
             $this->textProps['underline'] = (int) $attrs['underline'];
         }
@@ -49,6 +55,15 @@ class Text extends Element
         }
         if (isset($attrs['letterSpacing'])) {
             $this->textProps['letter_spacing'] = (float) $attrs['letterSpacing'];
+        }
+        // Line height (leading). `line_height` is a unitless multiplier of the
+        // font size; `line_height_px` is an absolute override. Renderers apply
+        // px when present, else multiplier × font size.
+        if (isset($attrs['lineHeight'])) {
+            $this->textProps['line_height'] = (float) $attrs['lineHeight'];
+        }
+        if (isset($attrs['lineHeightPx'])) {
+            $this->textProps['line_height_px'] = (float) $attrs['lineHeightPx'];
         }
         if (isset($attrs['color'])) {
             $this->color($attrs['color']);
@@ -64,6 +79,18 @@ class Text extends Element
     public function fontSize(float $size): static
     {
         $this->textProps['font_size'] = $size;
+
+        return $this;
+    }
+
+    /**
+     * Render in a custom font. The name is a font file bundled from the app's
+     * resources/fonts/ (e.g. `Inter-Bold` for `Inter-Bold.ttf`). Unresolvable
+     * names fall back to the system font in the renderer.
+     */
+    public function font(string $name): static
+    {
+        $this->textProps['font_name'] = $name;
 
         return $this;
     }

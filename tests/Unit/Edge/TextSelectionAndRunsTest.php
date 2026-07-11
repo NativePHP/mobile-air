@@ -50,3 +50,18 @@ it('nests child text runs as text nodes carrying their own styling', function ()
     expect($node['children'][1]['style']['bg_color'])->toBe('#eeeeee');
     expect($node['children'][1]['props']['text'])->toBe('code');
 });
+
+it('maps leading classes to the line_height / line_height_px props', function () {
+    // Unitless multiplier of the font size.
+    expect(Text::make('hi')->class('leading-snug')->toArray(new CallbackRegistry)['props']['line_height'])->toBe(1.375);
+
+    // Arbitrary absolute px goes to its own prop, not the multiplier slot.
+    expect(Text::make('hi')->class('leading-[22px]')->toArray(new CallbackRegistry)['props']['line_height_px'])->toBe(22.0);
+});
+
+it('maps the font attribute to the font_name prop', function () {
+    $t = Text::make('hi');
+    $t->applyAttributes(['font' => 'Inter-Bold']);
+
+    expect($t->toArray(new CallbackRegistry)['props']['font_name'])->toBe('Inter-Bold');
+});

@@ -421,6 +421,16 @@ class TailwindParser
             $class === 'tracking-wider' => ['letterSpacing' => 0.05],
             $class === 'tracking-widest' => ['letterSpacing' => 0.1],
 
+            // Line height (leading), as a unitless multiplier of font size.
+            // Arbitrary forms — `leading-[1.4]` (multiplier) and
+            // `leading-[24px]` (absolute) — are handled in parseArbitrary.
+            $class === 'leading-none' => ['lineHeight' => 1.0],
+            $class === 'leading-tight' => ['lineHeight' => 1.25],
+            $class === 'leading-snug' => ['lineHeight' => 1.375],
+            $class === 'leading-normal' => ['lineHeight' => 1.5],
+            $class === 'leading-relaxed' => ['lineHeight' => 1.625],
+            $class === 'leading-loose' => ['lineHeight' => 2.0],
+
             // Borders and visual
             str_starts_with($class, 'border-') => self::parseBorder(substr($class, 7)),
             str_starts_with($class, 'rounded-') => self::parseRounded(substr($class, 8)),
@@ -857,6 +867,11 @@ class TailwindParser
             'border' => $isColor ? ['borderColor' => self::normalizeHex($value)] : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
+            // Line height: `leading-[24px]` → absolute; `leading-[1.4]` →
+            // unitless multiplier of the font size.
+            'leading' => str_ends_with($value, 'px')
+                ? ['lineHeightPx' => (float) substr($value, 0, -2)]
+                : (is_numeric($value) ? ['lineHeight' => (float) $value] : null),
             'top' => ['positionTop' => (float) $value],
             'right' => ['positionRight' => (float) $value],
             'bottom' => ['positionBottom' => (float) $value],
