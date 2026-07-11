@@ -1013,7 +1013,7 @@ abstract class NativeComponent
             // produced WITHOUT the native precompiler (a web render or
             // `view:cache` got there first), which would include as plain
             // HTML and collect zero elements. Nested @includes get the
-            // same guard via NativeAwareCompilerEngine.
+            // same guard via the view creator in NativeServiceProvider.
             if ($compiler->isExpired($bladePath)
                 || ! NativeTagPrecompiler::compiledFileIsNative($compiledPath)) {
                 $compiler->compile($bladePath);

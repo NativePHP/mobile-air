@@ -37,7 +37,6 @@ use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
-use Native\Mobile\Edge\NativeAwareCompilerEngine;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
@@ -243,18 +242,35 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $blade->precompiler(new NativeTagPrecompiler($shortFormTags));
 
-        // Swap the stock Blade engine for a subclass whose only addition
-        // is: during a native render, force-recompile any view whose
-        // cached compiled file wasn't produced with the native
-        // precompiler active (no marker — e.g. a web render or
-        // `view:cache` compiled it first). Covers nested @includes; the
-        // root view gets the same check in renderBladeBoundToSelf().
-        // Everywhere outside a native render this behaves exactly like
-        // the engine it replaces.
-        $this->app->make('view.engine.resolver')->register(
-            'blade',
-            fn () => new NativeAwareCompilerEngine($this->app['blade.compiler'], $this->app['files'])
-        );
+        // During a native render, force-recompile any view whose cached
+        // compiled file wasn't produced with the native precompiler active
+        // (no marker — e.g. a web render or `view:cache` compiled it
+        // first). Covers nested @includes; the root view gets the same
+        // check in renderBladeBoundToSelf().
+        //
+        // Registered as a view creator rather than a replacement 'blade'
+        // engine: the engine resolver is a single slot, and Livewire parks
+        // its ExtendedCompilerEngine there to bind `$this` inside component
+        // views — replacing it breaks every `$this->...` in Livewire blades.
+        // Creators are multi-listener and fire before each view (including
+        // nested @includes) evaluates, which is all this guard needs.
+        $this->app['view']->creator('*', function ($view) {
+            if (! NativeTagPrecompiler::active()) {
+                return;
+            }
+
+            $path = $view->getPath();
+
+            if (! str_ends_with($path, '.blade.php')) {
+                return;
+            }
+
+            $compiler = $this->app['blade.compiler'];
+
+            if (! NativeTagPrecompiler::compiledFileIsNative($compiler->getCompiledPath($path))) {
+                $compiler->compile($path);
+            }
+        });
 
         Route::macro('native', function (string $uri, string $componentClass) {
             NativeRouter::register($uri, $componentClass);
