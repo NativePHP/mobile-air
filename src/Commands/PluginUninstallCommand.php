@@ -14,11 +14,26 @@ use function Laravel\Prompts\warning;
 class PluginUninstallCommand extends Command
 {
     protected $signature = 'native:plugin:uninstall
-                            {plugin : The plugin package name (e.g., vendor/plugin-name)}
+                            {plugin? : The plugin package name (e.g., vendor/plugin-name)}
                             {--force : Skip confirmation prompts}
-                            {--keep-files : Do not delete the plugin source directory}';
+                            {--keep-files : Do not delete the plugin source directory}
+                            {--core-v4 : Uninstall the plugins that moved into core in v4 (device, dialog, file, system)}';
 
     protected $description = 'Uninstall a NativePHP Mobile plugin completely';
+
+    /**
+     * Plugins that were folded into the core package in v4, mapped to the
+     * service provider they registered. These are no longer needed once the
+     * app is on a core release that ships this functionality built-in.
+     *
+     * @var array<string, string>
+     */
+    protected array $coreV4Plugins = [
+        'nativephp/mobile-device' => 'Native\\Mobile\\Providers\\DeviceServiceProvider',
+        'nativephp/mobile-dialog' => 'Native\\Mobile\\Providers\\DialogServiceProvider',
+        'nativephp/mobile-file' => 'Native\\Mobile\\Providers\\FileServiceProvider',
+        'nativephp/mobile-system' => 'Native\\Mobile\\Providers\\SystemServiceProvider',
+    ];
 
     public function __construct(
         protected Filesystem $files,
@@ -29,7 +44,17 @@ class PluginUninstallCommand extends Command
 
     public function handle(): int
     {
+        if ($this->option('core-v4')) {
+            return $this->handleCoreV4();
+        }
+
         $pluginName = $this->argument('plugin');
+
+        if (! $pluginName) {
+            error('Provide a plugin package name, or pass --core-v4 to remove the plugins that moved into core.');
+
+            return self::FAILURE;
+        }
 
         // Find the plugin in installed packages
         $pluginInfo = $this->getPluginInfo($pluginName);
@@ -115,6 +140,83 @@ class PluginUninstallCommand extends Command
 
         $this->newLine();
         info("Plugin '{$pluginName}' has been uninstalled.");
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Uninstall the plugins that were folded into core in v4.
+     */
+    protected function handleCoreV4(): int
+    {
+        $composerJsonPath = base_path('composer.json');
+
+        if (! $this->files->exists($composerJsonPath)) {
+            error('No composer.json found in this project.');
+
+            return self::FAILURE;
+        }
+
+        $composerJson = json_decode($this->files->get($composerJsonPath), true);
+        $required = array_merge(
+            $composerJson['require'] ?? [],
+            $composerJson['require-dev'] ?? []
+        );
+
+        // Which of the four are actually present as direct requirements?
+        $present = array_filter(
+            $this->coreV4Plugins,
+            fn ($provider, $package) => isset($required[$package]),
+            ARRAY_FILTER_USE_BOTH
+        );
+
+        if (empty($present)) {
+            info('None of the core-v4 plugins (device, dialog, file, system) are installed. Nothing to do.');
+
+            return self::SUCCESS;
+        }
+
+        $this->newLine();
+        $this->components->info('Uninstalling plugins that moved into core in v4');
+        $this->newLine();
+
+        foreach ($present as $package => $provider) {
+            $this->components->twoColumnDetail($package, class_basename($provider));
+        }
+
+        $this->newLine();
+
+        if (! $this->option('force')) {
+            $confirmed = confirm(
+                label: 'Remove these packages and unregister their service providers?',
+                default: false,
+                hint: 'This functionality is now built into the core package'
+            );
+
+            if (! $confirmed) {
+                warning('Uninstall cancelled.');
+
+                return self::SUCCESS;
+            }
+        }
+
+        $this->newLine();
+
+        // Step 1: Unregister each provider from NativeServiceProvider
+        foreach ($present as $package => $provider) {
+            $this->components->task("Unregistering {$package}", function () use ($provider) {
+                return $this->unregisterPlugin($provider);
+            });
+        }
+
+        // Step 2: Remove all present packages in a single composer call
+        $packages = array_keys($present);
+        $this->components->task('Removing packages via Composer', function () use ($packages) {
+            return $this->removePackage(implode(' ', $packages));
+        });
+
+        $this->newLine();
+        info('Removed: '.implode(', ', $packages));
 
         return self::SUCCESS;
     }
@@ -219,7 +321,14 @@ class PluginUninstallCommand extends Command
 
         $content = $this->files->get($providerPath);
 
-        // Remove the service provider line from the plugins() array
+        // Drop the `use Vendor\Plugin\ServiceProvider;` import line entirely.
+        $newContent = preg_replace(
+            '/^use\s+\\\\?'.preg_quote($serviceProvider, '/').';[ \t]*\n/m',
+            '',
+            $content
+        );
+
+        // Remove the service provider entry from the plugins() array
         // Match patterns like: \Vendor\Plugin\ServiceProvider::class,
         $patterns = [
             // With leading backslash and ::class
@@ -230,7 +339,6 @@ class PluginUninstallCommand extends Command
             '/\s*'.preg_quote(class_basename($serviceProvider), '/').'::class,?\s*\n?/',
         ];
 
-        $newContent = $content;
         foreach ($patterns as $pattern) {
             $newContent = preg_replace($pattern, "\n", $newContent);
         }
