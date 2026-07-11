@@ -89,6 +89,18 @@ android {
                 debugSymbolLevel = "REPLACE_DEBUG_SYMBOLS"
             }
         }
+        // Release-optimized build that shell profilers (Macrobenchmark, simpleperf,
+        // Perfetto) can attach to. `isProfileable` injects <profileable shell="true">
+        // for THIS variant only, so it never leaks into the production release/bundle.
+        // Debug-signed so it installs with `adb install` — no release keystore, no
+        // manual zipalign/apksigner. Driven by `native:run --build=profileable`.
+        create("profileable") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isProfileable = true
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
 
     compileOptions {
@@ -160,6 +172,13 @@ dependencies {
 
     // Compose integration with Views
     implementation("androidx.compose.ui:ui-viewbinding")
+
+    // Installs the APK-embedded baseline profile (library-shipped Compose/activity
+    // rules merged by AGP, plus app/src/main/baseline-prof.txt if present) so ART
+    // AOT-compiles the startup path on first launch instead of JIT-ing it. Without
+    // this, adb-installed release builds run the whole first-frame path interpreted
+    // until background dexopt kicks in days later — a direct cold-start TTID hit.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
     // Debug tools
     debugImplementation("androidx.compose.ui:ui-tooling")
