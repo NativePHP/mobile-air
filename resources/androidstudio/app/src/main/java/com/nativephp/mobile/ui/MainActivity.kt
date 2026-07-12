@@ -163,6 +163,15 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                     if (showContent) {
                         MainScreen()
                     }
+                    // Splash overlay with fade animation (full screen, no insets).
+                    // Lives here — NOT inside the showContent gate — so it paints on the
+                    // first frame and covers the boot; MainScreen composes beneath it.
+                    AnimatedVisibility(
+                        visible = showSplash,
+                        exit = fadeOut(animationSpec = tween(300))
+                    ) {
+                        SplashScreen()
+                    }
                     // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
                     // Driven by Choreographer via FrameTracker. Recomposes at
                     // 4Hz only — no per-frame render cost. Toggle off in
@@ -214,8 +223,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
                 pendingDeepLink = null
 
-                // Hide splash screen after URL is loaded
-                showSplash = false
+                // The two lines below keep their original 12-space indent: splash-screen
+                // plugins (s2br/nativephp-mobile-splashscreen) patch them via exact-string
+                // match including that indentation. Do not re-indent.
+            // Hide splash screen after URL is loaded
+            showSplash = false
 
                 // Report the app as fully drawn so cold-start TTFD is measured against
                 // real content (Macrobenchmark / Play Console vitals) instead of an
@@ -1241,13 +1253,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 }
             )
 
-            // Splash overlay with fade animation (full screen, no insets)
-            AnimatedVisibility(
-                visible = showSplash,
-                exit = fadeOut(animationSpec = tween(300))
-            ) {
-                SplashScreen()
-            }
         }
     }
 
