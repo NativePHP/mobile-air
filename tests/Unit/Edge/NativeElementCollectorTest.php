@@ -225,3 +225,21 @@ it('resets state between collections', function () {
 
     expect($tree['type'])->toBe('divider');
 });
+
+// ── Programmatic Element::class() parity ────────────
+
+it('applies dark companion props from programmatic class()', function () {
+    // The collector splits the parser's `dark` sub-array into `dark_*`
+    // props for blade elements; Element::class() must do the same so
+    // PHP-built trees (Element-returning render()) keep dark styling.
+    $el = \Native\Mobile\Edge\Elements\Column::make()
+        ->class('bg-[#FFFFFF] dark:bg-[#050714]');
+    $el->addChild(\Native\Mobile\Edge\Elements\Text::make('hi')
+        ->class('text-[#272D48] dark:text-[#FFFFFF]'));
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['style']['bg_color'] ?? $tree['props']['bg_color'] ?? null)->not->toBeNull();
+    expect($tree['props']['dark_bg_color'])->toBe('#050714');
+    expect($tree['children'][0]['props']['dark_color'])->toBe('#FFFFFF');
+});

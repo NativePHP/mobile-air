@@ -129,6 +129,12 @@ abstract class Element
         NativeElementCollector::applyLayout($this, $attrs);
         NativeElementCollector::applyStyle($this, $attrs);
         NativeElementCollector::applyElementProps($this, $attrs);
+        // Dark companions — `dark:` variants and theme-token dark hexes
+        // parse into a `dark` sub-array that the collector splits into
+        // `dark_*` props for blade elements. Without the same split here,
+        // programmatically built elements silently dropped ALL dark-mode
+        // styling (light hexes rendered in both modes).
+        $this->mergeDarkProps(NativeElementCollector::buildDarkProps($attrs));
 
         return $this;
     }
