@@ -80,7 +80,6 @@ struct ContentView: View {
     /// Handle navigation from any UI component
     /// Uses Inertia router if available for SPA-like navigation, falls back to full page load
     private func handleNavigation(_ url: String) {
-        DebugLogger.shared.log("🧭 handleNavigation: url=\(url) sessionActive=\(JumpWebViewSession.shared.isActive)")
         // In a Jump WebView session, native-chrome / side-nav / tab links point at
         // the dev-server host (absolute URLs). Route them through the WebView
         // forward (php://127.0.0.1) exactly like anchor taps — otherwise
@@ -293,13 +292,6 @@ struct WebView: UIViewRepresentable {
 
             let scheme = url.scheme?.lowercased() ?? ""
 
-            // TEMP TRACE: every http(s) nav decision, so we can see exactly why a
-            // WebView-session link stays in-app vs escapes to the system browser.
-            if scheme == "http" || scheme == "https" {
-                let jh = JumpWebViewSession.shared
-                DebugLogger.shared.log("🧭 nav decide: url=\(url.absoluteString) host=\(url.host ?? "nil") sessionActive=\(jh.isActive) sessionHost=\(jh.host) targetFrame=\(navigationAction.targetFrame == nil ? "nil(newWindow)" : "main")")
-            }
-
             // Rewrite http(s)://127.0.0.1 to php:// scheme — PHP/Symfony only understands
             // http/https so redirect()->intended() and $request->fullUrl() will always
             // produce http:// URLs for the local server. Route through the scheme handler's
@@ -333,7 +325,6 @@ struct WebView: UIViewRepresentable {
 
             // Open external URLs and system schemes with the system handler
             if ["http", "https", "tel", "mailto", "sms", "facetime", "facetime-audio"].contains(scheme) {
-                DebugLogger.shared.log("🌐 external nav → system browser: urlHost=\(url.host ?? "nil") sessionHost=\(JumpWebViewSession.shared.host) sessionActive=\(JumpWebViewSession.shared.isActive) url=\(url.absoluteString)")
                 UIApplication.shared.open(url)
                 decisionHandler(.cancel)
             } else {
