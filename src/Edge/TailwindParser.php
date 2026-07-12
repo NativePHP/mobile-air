@@ -240,6 +240,63 @@ class TailwindParser
         self::$cache = [];
     }
 
+    /**
+     * Resolve a standalone color VALUE (not a utility class) to wire-format
+     * hex. This is the shared authoring-layer color grammar — theme config
+     * tokens, element color props, and arbitrary-value classes all accept
+     * the same inputs:
+     *
+     *  - Palette names, with optional opacity: `red-300`, `orange-800/50`
+     *  - Special names: `white`, `black`, `transparent`
+     *  - CSS hex, with optional opacity: `#F00`, `#F00C`, `#B91C1C`,
+     *    `#8B5CF680`, `#8B5CF6/50`
+     *
+     * Authored 8-digit hex is CSS order (#RRGGBBAA); the return value is
+     * `#RRGGBB` or `#AARRGGBB` — the ARGB byte order both native
+     * ColorParsers (Swift and Kotlin) read off the wire.
+     *
+     * Returns null when the value isn't recognized as a color, so callers
+     * can pass unknown strings through untouched.
+     */
+    public static function resolveColorValue(string $value): ?string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+
+        // Optional trailing `/N` (or `/[N]`) opacity modifier.
+        $alphaHex = null;
+        $slashPos = strrpos($value, '/');
+        if ($slashPos !== false) {
+            $alphaHex = self::opacityToAlphaHex(substr($value, $slashPos + 1));
+            if ($alphaHex === null) {
+                return null;
+            }
+            $value = substr($value, 0, $slashPos);
+        }
+
+        $hex = match ($value) {
+            'white' => '#FFFFFF',
+            'black' => '#000000',
+            'transparent' => '#00000000',
+            default => str_starts_with($value, '#')
+                ? self::normalizeHex($value)
+                : self::paletteHex($value),
+        };
+
+        if ($hex === null) {
+            return null;
+        }
+
+        if ($alphaHex !== null) {
+            $rgb = strlen($hex) === 9 ? substr($hex, 3) : substr($hex, 1);
+            $hex = '#'.$alphaHex.$rgb;
+        }
+
+        return $hex;
+    }
+
     private static function parseClass(string $class): ?array
     {
         // Pre-strip trailing `/N` opacity modifier (Tailwind v3+ syntax).
@@ -493,25 +550,37 @@ class TailwindParser
             return [$class, null];
         }
 
-        $tail = substr($class, $slashPos + 1);
+        $alphaHex = self::opacityToAlphaHex(substr($class, $slashPos + 1));
 
-        // Bracketed arbitrary alpha: bg-red-500/[27]
-        if (preg_match('/^\[(\d+)\]$/', $tail, $m)) {
-            $tail = $m[1];
-        }
-
-        if (! ctype_digit($tail)) {
+        if ($alphaHex === null) {
             // Slash followed by non-numeric — not an alpha modifier (e.g.
             // `border-l-2` doesn't have one but `bg-foo/bar` would land here
             // and we'd safely fall through). Leave the class intact.
             return [$class, null];
         }
 
+        return [substr($class, 0, $slashPos), $alphaHex];
+    }
+
+    /**
+     * Convert an opacity modifier tail (`50` or `[50]`, 0–100, clamped) to
+     * a two-char uppercase alpha hex byte. Null when non-numeric.
+     */
+    private static function opacityToAlphaHex(string $tail): ?string
+    {
+        // Bracketed arbitrary alpha: bg-red-500/[27]
+        if (preg_match('/^\[(\d+)\]$/', $tail, $m)) {
+            $tail = $m[1];
+        }
+
+        if (! ctype_digit($tail)) {
+            return null;
+        }
+
         $opacity = max(0, min(100, (int) $tail));
         $alphaByte = (int) round($opacity * 255 / 100);
-        $alphaHex = strtoupper(str_pad(dechex($alphaByte), 2, '0', STR_PAD_LEFT));
 
-        return [substr($class, 0, $slashPos), $alphaHex];
+        return strtoupper(str_pad(dechex($alphaByte), 2, '0', STR_PAD_LEFT));
     }
 
     /**
@@ -861,10 +930,10 @@ class TailwindParser
             'gap' => ['gap' => (float) $value],
             'w' => ['width' => (float) $value],
             'h' => ['height' => (float) $value],
-            'bg' => $isColor ? ['bg' => self::normalizeHex($value)] : null,
-            'text' => $isColor ? ['color' => self::normalizeHex($value)] : ['fontSize' => (float) $value],
+            'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
+            'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
-            'border' => $isColor ? ['borderColor' => self::normalizeHex($value)] : ['borderWidth' => (float) $value],
+            'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
             // Line height: `leading-[24px]` → absolute; `leading-[1.4]` →
@@ -882,6 +951,24 @@ class TailwindParser
 
     private static function resolveColor(string $value, string $key): ?array
     {
+        $hex = self::paletteHex($value);
+
+        return $hex === null ? null : [$key => $hex];
+    }
+
+    private static function arbitraryColor(string $key, string $value): ?array
+    {
+        $hex = self::normalizeHex($value);
+
+        return $hex === null ? null : [$key => $hex];
+    }
+
+    /**
+     * Look up a `family-shade` palette name (e.g. `red-300`) and return its
+     * hex, or null when the name isn't in the palette.
+     */
+    private static function paletteHex(string $value): ?string
+    {
         $lastDash = strrpos($value, '-');
         if ($lastDash === false) {
             return null;
@@ -894,22 +981,33 @@ class TailwindParser
             return null;
         }
 
-        $shade = (int) $shade;
-
-        if (isset(self::COLORS[$family][$shade])) {
-            return [$key => self::COLORS[$family][$shade]];
-        }
-
-        return null;
+        return self::COLORS[$family][(int) $shade] ?? null;
     }
 
-    private static function normalizeHex(string $hex): string
+    /**
+     * Normalize authored CSS hex to wire format.
+     *
+     * Authoring is CSS byte order — `#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA` —
+     * but the native ColorParsers read 8-digit hex as Android-style
+     * `#AARRGGBB`, so alpha-bearing inputs get their alpha byte moved to
+     * the front here. Returns null for invalid lengths or non-hex digits
+     * (previously such values shipped raw and rendered as the wrong color
+     * or fell back to black natively).
+     */
+    private static function normalizeHex(string $hex): ?string
     {
-        $hex = ltrim($hex, '#');
-        if (strlen($hex) === 3) {
-            $hex = $hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2];
+        $hex = strtoupper(ltrim($hex, '#'));
+
+        if (! ctype_xdigit($hex)) {
+            return null;
         }
 
-        return '#'.strtoupper($hex);
+        return match (strlen($hex)) {
+            3 => '#'.$hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2],
+            4 => '#'.$hex[3].$hex[3].$hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2],
+            6 => '#'.$hex,
+            8 => '#'.substr($hex, 6, 2).substr($hex, 0, 6),
+            default => null,
+        };
     }
 }

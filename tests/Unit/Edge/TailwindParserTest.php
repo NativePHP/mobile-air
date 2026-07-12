@@ -280,6 +280,63 @@ it('parses arbitrary colors', function () {
     expect(TailwindParser::parse('border-[#ccc]'))->toBe(['borderColor' => '#CCCCCC']);
 });
 
+it('converts arbitrary CSS alpha hex to wire ARGB order', function () {
+    // Authored #RRGGBBAA; native ColorParsers read #AARRGGBB.
+    expect(TailwindParser::parse('bg-[#8B5CF680]'))->toBe(['bg' => '#808B5CF6']);
+    expect(TailwindParser::parse('text-[#F00C]'))->toBe(['color' => '#CCFF0000']);
+});
+
+it('drops arbitrary colors with invalid hex', function () {
+    expect(TailwindParser::parse('bg-[#12345]'))->toBe([]);
+    expect(TailwindParser::parse('bg-[#GGHHII]'))->toBe([]);
+});
+
+it('applies slash opacity modifiers to color classes', function () {
+    expect(TailwindParser::parse('bg-red-500/50'))->toBe(['bg' => '#80EF4444']);
+    expect(TailwindParser::parse('text-red-300/20'))->toBe(['color' => '#33FCA5A5']);
+    expect(TailwindParser::parse('bg-red-500/[27]'))->toBe(['bg' => '#45EF4444']);
+});
+
+// ── Color value resolution (theme config / element props) ──
+
+it('resolves palette names to hex', function () {
+    expect(TailwindParser::resolveColorValue('red-300'))->toBe('#FCA5A5');
+    expect(TailwindParser::resolveColorValue('orange-800'))->toBe('#9A3412');
+    expect(TailwindParser::resolveColorValue('slate-950'))->toBe('#020617');
+});
+
+it('resolves palette names with opacity modifiers', function () {
+    expect(TailwindParser::resolveColorValue('red-300/20'))->toBe('#33FCA5A5');
+    expect(TailwindParser::resolveColorValue('orange-800/50'))->toBe('#809A3412');
+    expect(TailwindParser::resolveColorValue('red-300/[27]'))->toBe('#45FCA5A5');
+});
+
+it('resolves CSS hex values to wire format', function () {
+    expect(TailwindParser::resolveColorValue('#B91C1C'))->toBe('#B91C1C');
+    expect(TailwindParser::resolveColorValue('#f00'))->toBe('#FF0000');
+    // Authored CSS #RRGGBBAA / #RGBA → wire #AARRGGBB.
+    expect(TailwindParser::resolveColorValue('#8B5CF680'))->toBe('#808B5CF6');
+    expect(TailwindParser::resolveColorValue('#F00C'))->toBe('#CCFF0000');
+    // Slash opacity on hex; overwrites any authored alpha.
+    expect(TailwindParser::resolveColorValue('#8B5CF6/50'))->toBe('#808B5CF6');
+    expect(TailwindParser::resolveColorValue('#8B5CF680/100'))->toBe('#FF8B5CF6');
+});
+
+it('resolves special color names', function () {
+    expect(TailwindParser::resolveColorValue('white'))->toBe('#FFFFFF');
+    expect(TailwindParser::resolveColorValue('black/50'))->toBe('#80000000');
+    expect(TailwindParser::resolveColorValue('transparent'))->toBe('#00000000');
+});
+
+it('returns null for unrecognized color values', function () {
+    expect(TailwindParser::resolveColorValue('System'))->toBeNull();
+    expect(TailwindParser::resolveColorValue('red-9999'))->toBeNull();
+    expect(TailwindParser::resolveColorValue('#12345'))->toBeNull();
+    expect(TailwindParser::resolveColorValue('#GGHHII'))->toBeNull();
+    expect(TailwindParser::resolveColorValue('red-300/high'))->toBeNull();
+    expect(TailwindParser::resolveColorValue(''))->toBeNull();
+});
+
 it('parses arbitrary font size', function () {
     expect(TailwindParser::parse('text-[18]'))->toBe(['fontSize' => 18.0]);
     expect(TailwindParser::parse('text-[32]'))->toBe(['fontSize' => 32.0]);
