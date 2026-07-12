@@ -34,10 +34,14 @@ struct NodeAnimationModifier: ViewModifier {
         let rotate     = Double(resolveTransform("rotate", literal: CGFloat(props.getFloat("rotate", default: 0))))
         let opacity: Double = {
             let ref = props.getString("opacity_sv", default: "")
-            if !ref.isEmpty, let v = store.evaluate(ref) {
+            // Style opacity stays 1.0 when SV-bound (the collector routes
+            // the binding through the prop bag), so it doubles as the
+            // pre-seed base for a wire-fresh id.
+            let literal = CGFloat(style?.opacity ?? 1)
+            if !ref.isEmpty, let v = store.evaluate(ref, initial: literal) {
                 return Double(v)
             }
-            return Double(style?.opacity ?? 1)
+            return Double(literal)
         }()
 
         let animate = durationMs > 0 || loop
@@ -93,10 +97,14 @@ struct NodeAnimationModifier: ViewModifier {
     }
 
     /// If a SharedValue binding is present for `prop`, evaluate it
-    /// against the store. Otherwise return the literal.
+    /// against the store. Otherwise return the literal. The literal is
+    /// also the pre-seed base: PHP writes the SharedValue's current
+    /// snapshot alongside every `{prop}_sv` binding, so an id the store
+    /// hasn't seen yet (fresh from a re-render) evaluates its formula
+    /// against that snapshot instead of 0.
     private func resolveTransform(_ prop: String, literal: CGFloat) -> CGFloat {
         let ref = props.getString("\(prop)_sv", default: "")
-        if !ref.isEmpty, let v = store.evaluate(ref) {
+        if !ref.isEmpty, let v = store.evaluate(ref, initial: literal) {
             return v
         }
         return literal

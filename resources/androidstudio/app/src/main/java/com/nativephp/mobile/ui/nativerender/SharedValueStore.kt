@@ -44,12 +44,21 @@ object SharedValueStore {
      * against the current store. Returns null if the string isn't a
      * `__sv:` reference.
      *
+     * `initial` is the value the id materializes with when the store
+     * has no entry yet — callers pass the literal snapshot PHP wrote
+     * alongside the binding, so a wire-fresh id (e.g. right after a
+     * re-render minted a new SharedValue) renders at its initial value
+     * instead of collapsing to 0. Materializing on read (rather than
+     * returning a fallback) is what subscribes the caller: the entry's
+     * `MutableState` must exist for a later gesture write to recompose
+     * this reader.
+     *
      * Must be called from @Composable scope — the underlying
      * `mutableStateOf.value` read is what subscribes the caller for
      * recomposition.
      */
     @Composable
-    fun evaluate(ref: String): Float? {
+    fun evaluate(ref: String, initial: Float = 0f): Float? {
         if (!ref.startsWith("__sv:")) return null
         val parts = ref.split("|")
         if (parts.isEmpty()) return null
@@ -58,7 +67,7 @@ object SharedValueStore {
         val id = idStr.toIntOrNull() ?: return null
 
         // Read MutableState here — subscribes the calling @Composable.
-        var current: Float = get(id).value
+        var current: Float = values.getOrPut(id) { mutableStateOf(initial) }.value
 
         for (step in parts.drop(1)) {
             val seg = step.split(":")

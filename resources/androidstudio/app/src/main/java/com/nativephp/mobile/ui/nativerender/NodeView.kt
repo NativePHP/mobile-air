@@ -113,20 +113,25 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         // SharedValue bindings (companion `_sv` props) take precedence
         // over literals. The `evaluate` call is @Composable — its
         // mutableState read subscribes the caller to recomposition.
+        // The literal (PHP's snapshot of the SharedValue at publish
+        // time) doubles as evaluate's `initial`, so an id the store
+        // hasn't seen yet — fresh from a re-render that minted a new
+        // SharedValue — renders at its initial value instead of 0.
         val txRef = node.props.getString("translate-x_sv", "")
         val tyRef = node.props.getString("translate-y_sv", "")
         val scRef = node.props.getString("scale_sv", "")
         val rtRef = node.props.getString("rotate_sv", "")
         val opRef = node.props.getString("opacity_sv", "")
 
-        val translateX = if (txRef.isNotEmpty()) SharedValueStore.evaluate(txRef) ?: 0f
-                         else node.props.getFloat("translate-x", 0f)
-        val translateY = if (tyRef.isNotEmpty()) SharedValueStore.evaluate(tyRef) ?: 0f
-                         else node.props.getFloat("translate-y", 0f)
-        val scaleVal   = if (scRef.isNotEmpty()) SharedValueStore.evaluate(scRef) ?: 1f
-                         else node.props.getFloat("scale", 1f)
-        val rotateVal  = if (rtRef.isNotEmpty()) SharedValueStore.evaluate(rtRef) ?: 0f
-                         else node.props.getFloat("rotate", 0f)
+        val txLit = node.props.getFloat("translate-x", 0f)
+        val tyLit = node.props.getFloat("translate-y", 0f)
+        val scLit = node.props.getFloat("scale", 1f)
+        val rtLit = node.props.getFloat("rotate", 0f)
+
+        val translateX = if (txRef.isNotEmpty()) SharedValueStore.evaluate(txRef, txLit) ?: 0f else txLit
+        val translateY = if (tyRef.isNotEmpty()) SharedValueStore.evaluate(tyRef, tyLit) ?: 0f else tyLit
+        val scaleVal   = if (scRef.isNotEmpty()) SharedValueStore.evaluate(scRef, scLit) ?: 1f else scLit
+        val rotateVal  = if (rtRef.isNotEmpty()) SharedValueStore.evaluate(rtRef, rtLit) ?: 0f else rtLit
 
         val hasTransforms = translateX != 0f || translateY != 0f
             || scaleVal != 1f || rotateVal != 0f
@@ -154,7 +159,7 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
                 style != null -> style.opacity
                 else -> 1f
             }
-            val targetOpacity = if (opRef.isNotEmpty()) SharedValueStore.evaluate(opRef) ?: literalOpacity
+            val targetOpacity = if (opRef.isNotEmpty()) SharedValueStore.evaluate(opRef, literalOpacity) ?: literalOpacity
                                 else literalOpacity
             val easingName = node.props.getString("animate-easing", "ease-in-out")
             val isSpring = easingName == "spring"

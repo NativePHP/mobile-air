@@ -232,8 +232,10 @@ class NativeTagPrecompiler
         );
 
         // Convert @press, @longPress, @doubleTap, @change, @submit, @dismiss, @refresh,
-        // @endReached, @swipeDelete to underscored versions before Blade interprets @ as a directive
-        $value = preg_replace('/@(press|longPress|doubleTap|change|submit|dismiss|refresh|endReached|swipeDelete)=/', '_$1=', $value);
+        // @endReached, @swipeDelete, @swipe, @pinchEnd to underscored versions before
+        // Blade interprets @ as a directive. `swipeDelete` must precede `swipe` in the
+        // alternation so it wins the longer match.
+        $value = preg_replace('/@(press|longPress|doubleTap|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd)=/', '_$1=', $value);
 
         // The attribute-region pattern below uses possessive quantifiers
         // (`*+`) to keep PCRE from catastrophically backtracking when a

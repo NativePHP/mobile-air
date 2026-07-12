@@ -72,10 +72,10 @@ class TestableComponent
     protected const EVENT_CALLBACK_KEYS = [
         self::EVENT_PRESS => ['on_press'],
         self::EVENT_LONG_PRESS => ['on_long_press'],
-        self::EVENT_TEXT_CHANGE => ['on_change'],
+        self::EVENT_TEXT_CHANGE => ['on_change', 'on_swipe'],
         self::EVENT_TOGGLE_CHANGE => ['on_change'],
         self::EVENT_SUBMIT => ['on_submit'],
-        self::EVENT_SLIDER_CHANGE => ['on_change'],
+        self::EVENT_SLIDER_CHANGE => ['on_change', 'on_pinch_end'],
         self::EVENT_CHECKBOX_CHANGE => ['on_change'],
         self::EVENT_RADIO_CHANGE => ['on_change'],
         self::EVENT_SELECT_CHANGE => ['on_change'],
@@ -299,6 +299,25 @@ class TestableComponent
     public function slide(string $target, float $value): static
     {
         return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $value]);
+    }
+
+    /**
+     * Fire a gesture-area swipe bound to `@swipe`. Direction is one of
+     * "left", "right", "up", "down" — delivered to the handler as a
+     * string, exactly as the device sends it.
+     */
+    public function swipe(string $target, string $direction = 'left'): static
+    {
+        return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $direction]);
+    }
+
+    /**
+     * Fire a gesture-area pinch-end bound to `@pinchEnd`, delivering the
+     * final scale factor (1.0 = identity) as a float.
+     */
+    public function pinch(string $target, float $scale): static
+    {
+        return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $scale]);
     }
 
     public function selectRadio(string $target, string $value): static

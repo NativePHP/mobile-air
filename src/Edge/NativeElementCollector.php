@@ -1069,6 +1069,12 @@ class NativeElementCollector
         if (isset($attrs['_swipeDelete']) && method_exists($element, 'onSwipeDelete')) {
             $element->onSwipeDelete($attrs['_swipeDelete']);
         }
+        if (isset($attrs['_swipe']) && method_exists($element, 'onSwipe')) {
+            $element->onSwipe($attrs['_swipe']);
+        }
+        if (isset($attrs['_pinchEnd']) && method_exists($element, 'onPinchEnd')) {
+            $element->onPinchEnd($attrs['_pinchEnd']);
+        }
         if (isset($attrs['_navigate'])) {
             $element->setNavigateConfig($attrs['_navigate']);
         }

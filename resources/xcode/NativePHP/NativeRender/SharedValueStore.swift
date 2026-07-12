@@ -41,18 +41,24 @@ final class SharedValueStore: ObservableObject {
     /// against the current store. Returns `nil` if the string is not
     /// a `__sv:` reference.
     ///
+    /// `initial` is the base value used when the store has no entry
+    /// for the id yet — callers pass the literal snapshot PHP wrote
+    /// alongside the binding, so a wire-fresh id (e.g. right after a
+    /// re-render minted a new SharedValue) renders at its initial
+    /// value instead of collapsing to 0 until a gesture seeds it.
+    ///
     /// Examples:
     ///   `__sv:42`                              → values[42]
     ///   `__sv:42|interp:0,200:1,0`             → linear-map values[42] from [0,200] to [1,0]
     ///   `__sv:42|interp:0,200:1,0|clamp:0,1`   → chained
-    func evaluate(_ ref: String) -> CGFloat? {
+    func evaluate(_ ref: String, initial: CGFloat = 0) -> CGFloat? {
         guard ref.hasPrefix("__sv:") else { return nil }
         let parts = ref.split(separator: "|").map { String($0) }
         guard let first = parts.first else { return nil }
 
         let idStr = String(first.dropFirst(5))  // strip "__sv:"
         guard let id = Int(idStr) else { return nil }
-        var v = value(for: id)
+        var v = values[id] ?? initial
 
         for step in parts.dropFirst() {
             let segments = step.split(separator: ":").map { String($0) }
