@@ -28,6 +28,9 @@ class NavBarOptions
 
     public ?string $textColor = null;
 
+    /** Custom font token (resources/fonts/ file, minus extension). See NavBar::font(). */
+    public ?string $font = null;
+
     public ?int $elevation = null;
 
     /** Title display mode — `large` | `inline` | `automatic`. See NavBar::displayMode(). */
@@ -88,6 +91,13 @@ class NavBarOptions
     public function textColor(string $color): self
     {
         $this->textColor = $color;
+
+        return $this;
+    }
+
+    public function font(string $name): self
+    {
+        $this->font = $name;
 
         return $this;
     }

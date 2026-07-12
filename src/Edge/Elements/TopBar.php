@@ -18,7 +18,7 @@ class TopBar extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        foreach (['title', 'subtitle', 'backgroundColor', 'textColor'] as $key) {
+        foreach (['title', 'subtitle', 'backgroundColor', 'textColor', 'fontName'] as $key) {
             if (isset($attrs[$key])) {
                 $snakeKey = strtolower(preg_replace('/[A-Z]/', '_$0', $key));
                 $this->props[$snakeKey] = $attrs[$key];

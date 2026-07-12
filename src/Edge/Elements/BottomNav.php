@@ -38,6 +38,10 @@ class BottomNav extends Element
             $this->props['text_color'] = $attrs['textColor'];
         }
 
+        if (isset($attrs['fontName'])) {
+            $this->props['font_name'] = $attrs['fontName'];
+        }
+
         $this->props['id'] = 'bottom_nav';
     }
 

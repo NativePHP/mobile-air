@@ -135,6 +135,15 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val navBgArgb = node.props.getColor("nav_background_color", 0)
     val navTextArgb = node.props.getColor("nav_text_color", 0)
     val hasNavBar = navBack || navTitle.isNotEmpty() || titleNode != null
+    // Per-layout / per-bar chrome fonts, resolved through the plugin seam.
+    // `font_name` = the tab bar's font; `nav_font_name` = the folded nav
+    // bar's font (falls back to the tab bar's). Null → inherit the ambient
+    // typography unchanged.
+    val chromeFontFamily = com.nativephp.mobile.ui.NativeUIThemeProvider
+        .resolveChromeFontFamily(node.props.getString("font_name", ""))
+    val navChromeFontFamily = com.nativephp.mobile.ui.NativeUIThemeProvider
+        .resolveChromeFontFamily(node.props.getString("nav_font_name", ""))
+        ?: chromeFontFamily
 
     // Search-tab config — search-role tab plus its items live as children.
     // Show the search-role tab when any of:
@@ -192,11 +201,11 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                             }
                         } else if (navSubtitle.isNotEmpty()) {
                             Column {
-                                Text(navTitle, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                                Text(navSubtitle, style = MaterialTheme.typography.labelSmall)
+                                Text(navTitle, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium, fontFamily = navChromeFontFamily)
+                                Text(navSubtitle, style = MaterialTheme.typography.labelSmall, fontFamily = navChromeFontFamily)
                             }
                         } else {
-                            Text(navTitle, fontWeight = FontWeight.SemiBold)
+                            Text(navTitle, fontWeight = FontWeight.SemiBold, fontFamily = navChromeFontFamily)
                         }
                     },
                     navigationIcon = {
@@ -282,7 +291,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                 if (badge.isNotEmpty() || news) {
                                     BadgedBox(badge = {
                                         Badge {
-                                            if (badge.isNotEmpty()) Text(badge)
+                                            if (badge.isNotEmpty()) Text(badge, fontFamily = chromeFontFamily)
                                         }
                                     }) {
                                         MaterialIcon(name = icon, contentDescription = label)
@@ -291,7 +300,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                     MaterialIcon(name = icon, contentDescription = label)
                                 }
                             },
-                            label = { Text(label) },
+                            label = { Text(label, fontFamily = chromeFontFamily) },
                             // `active_color` (TabBar::activeColor) tints the selected
                             // tab; `text_color` (TabBar::textColor) tints the inactive
                             // icons + labels. Layer both onto the M3 defaults via copy()

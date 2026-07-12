@@ -93,6 +93,11 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val textArgb = activeNode.props.getColor("text_color", 0)
     val hasExplicitBg = bgArgb != 0
     val hasExplicitText = textArgb != 0
+    // Per-layout / per-bar chrome font (font_name prop), resolved through the
+    // plugin seam. Null → inherit the ambient (possibly app-default-themed)
+    // typography unchanged.
+    val chromeFontFamily = com.nativephp.mobile.ui.NativeUIThemeProvider
+        .resolveChromeFontFamily(activeNode.props.getString("font_name", ""))
 
     // Filter children for actions and the screen content body.
     val actions = activeNode.children.filter { it.type == "top_bar_action" }
@@ -179,18 +184,19 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 // inline mode shrinks it to titleMedium so title + subtitle
                 // fit the single-row bar.
                 if (useLargeTitle) {
-                    Text(title, fontWeight = FontWeight.SemiBold)
+                    Text(title, fontWeight = FontWeight.SemiBold, fontFamily = chromeFontFamily)
                 } else {
                     Text(
                         title,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = chromeFontFamily
                     )
                 }
-                Text(subtitle, style = MaterialTheme.typography.labelSmall)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, fontFamily = chromeFontFamily)
             }
         } else {
-            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(title, fontWeight = FontWeight.SemiBold, fontFamily = chromeFontFamily)
         }
     }
     val navIconContent: @Composable () -> Unit = {

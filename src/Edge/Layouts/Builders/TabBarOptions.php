@@ -38,6 +38,9 @@ class TabBarOptions
 
     public ?string $backgroundColor = null;
 
+    /** Custom font token (resources/fonts/ file, minus extension). See TabBar::font(). */
+    public ?string $font = null;
+
     public static function make(): self
     {
         return new self;
@@ -74,6 +77,13 @@ class TabBarOptions
     public function backgroundColor(string $color): self
     {
         $this->backgroundColor = $color;
+
+        return $this;
+    }
+
+    public function font(string $name): self
+    {
+        $this->font = $name;
 
         return $this;
     }

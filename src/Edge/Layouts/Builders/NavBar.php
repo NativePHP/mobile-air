@@ -43,6 +43,8 @@ class NavBar
 
     private ?string $textColor = null;
 
+    private ?string $font = null;
+
     private ?int $elevation = null;
 
     /**
@@ -148,6 +150,33 @@ class NavBar
         return $this;
     }
 
+    /**
+     * Render the bar's title/subtitle in a custom font — a resources/fonts/
+     * file token (e.g. `Inter-Bold`). Overrides the layout's `$font` and the
+     * theme's app-wide `font-family` default. iOS note: system-drawn LARGE
+     * titles keep the app-default font (UIKit limitation); inline titles,
+     * subtitles, and Android honor this fully.
+     */
+    public function font(string $name): self
+    {
+        $this->font = $name;
+
+        return $this;
+    }
+
+    /**
+     * Layout-wide default (from NativeLayout::$font) — applies only when no
+     * explicit ->font() was set on this bar.
+     */
+    public function defaultFont(?string $name): self
+    {
+        if ($this->font === null && $name !== null) {
+            $this->font = $name;
+        }
+
+        return $this;
+    }
+
     public function elevation(int $px): self
     {
         $this->elevation = $px;
@@ -245,6 +274,9 @@ class NavBar
         if ($opts->textColor !== null) {
             $this->textColor = $opts->textColor;
         }
+        if ($opts->font !== null) {
+            $this->font = $opts->font;
+        }
         if ($opts->elevation !== null) {
             $this->elevation = $opts->elevation;
         }
@@ -285,6 +317,9 @@ class NavBar
         if (isset($state['textColor'])) {
             $this->textColor = $state['textColor'];
         }
+        if (isset($state['font'])) {
+            $this->font = $state['font'];
+        }
         if (isset($state['elevation'])) {
             $this->elevation = (int) $state['elevation'];
         }
@@ -319,6 +354,9 @@ class NavBar
         }
         if ($this->textColor !== null) {
             $attrs['textColor'] = $this->textColor;
+        }
+        if ($this->font !== null) {
+            $attrs['fontName'] = $this->font;
         }
         if ($this->elevation !== null) {
             $attrs['elevation'] = $this->elevation;
@@ -372,6 +410,9 @@ class NavBar
         }
         if ($this->textColor !== null) {
             $attrs['textColor'] = $this->textColor;
+        }
+        if ($this->font !== null) {
+            $attrs['fontName'] = $this->font;
         }
         if ($this->elevation !== null) {
             $attrs['elevation'] = $this->elevation;

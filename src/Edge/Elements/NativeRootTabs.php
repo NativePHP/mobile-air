@@ -62,6 +62,9 @@ class NativeRootTabs extends Element
         if (isset($attrs['textColor'])) {
             $this->props['text_color'] = $attrs['textColor'];
         }
+        if (isset($attrs['fontName'])) {
+            $this->props['font_name'] = $attrs['fontName'];
+        }
         if (isset($attrs['labelVisibility'])) {
             $this->props['label_visibility'] = $attrs['labelVisibility'];
         }
@@ -84,6 +87,9 @@ class NativeRootTabs extends Element
         }
         if (isset($attrs['navTextColor'])) {
             $this->props['nav_text_color'] = $attrs['navTextColor'];
+        }
+        if (isset($attrs['navFontName'])) {
+            $this->props['nav_font_name'] = $attrs['navFontName'];
         }
         if (isset($attrs['navElevation'])) {
             $this->props['nav_elevation'] = (int) $attrs['navElevation'];

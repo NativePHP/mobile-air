@@ -88,6 +88,13 @@ struct NativeRootTabsRenderer: View {
         //     (matches the legacy custom `NativeBottomNav` behavior).
         //   - "labeled" → always show labels (default).
         let labelVisibility = node.props.getString("label_visibility", default: "labeled")
+        // Per-layout / per-bar tab-label font (font_name prop), resolved
+        // through the plugin seam. Applied via UITabBarAppearance below —
+        // iOS 26 Liquid Glass bars reject appearance overrides, so labels
+        // keep the default font there (documented best-effort).
+        let chromeFontName = NativeChromeFontResolver.postScriptName(
+            for: node.props.getString("font_name", default: "")
+        )
 
         // Folded NavBar config — present when the layout supplies both
         // bars. Tabs render an inner NavigationStack with toolbar even
@@ -232,7 +239,7 @@ struct NativeRootTabsRenderer: View {
             placement: .tabBar
         ))
         .preferredColorScheme(isDark ? .dark : nil)
-        .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility))
+        .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility, fontName: chromeFontName))
         .modifier(TabBarAccessoryModifier(accessory: accessory))
         .onAppear {
             selection = owningId
@@ -710,6 +717,7 @@ private struct ExplicitBarBackgroundModifier: ViewModifier {
 /// non-selected tabs) — no appearance tweak needed.
 private struct TabBarLabelVisibilityModifier: ViewModifier {
     let mode: String
+    var fontName: String? = nil
 
     func body(content: Content) -> some View {
         content.onAppear {
@@ -729,26 +737,41 @@ private struct TabBarLabelVisibilityModifier: ViewModifier {
             // .tabBarMinimizeBehavior. The empty-string label passed to
             // Tab(_:systemImage:value:) is sufficient on Liquid Glass;
             // the bar auto-centers the icon without title spacing.
+            // Consequence: per-bar label FONTS are also unavailable on
+            // Liquid Glass — labels keep the system font there.
             return
         }
 
-        guard mode == "unlabeled" else { return }
+        guard mode == "unlabeled" || fontName != nil else { return }
 
         let appearance = UITabBarAppearance()
         appearance.configureWithDefaultBackground()
 
-        let clear: [NSAttributedString.Key: Any] = [.foregroundColor: UIColor.clear]
-        let offscreen = UIOffset(horizontal: 0, vertical: 1000)
+        if mode == "unlabeled" {
+            let clear: [NSAttributedString.Key: Any] = [.foregroundColor: UIColor.clear]
+            let offscreen = UIOffset(horizontal: 0, vertical: 1000)
 
-        for itemAppearance in [
-            appearance.stackedLayoutAppearance,
-            appearance.inlineLayoutAppearance,
-            appearance.compactInlineLayoutAppearance,
-        ] {
-            itemAppearance.normal.titleTextAttributes = clear
-            itemAppearance.selected.titleTextAttributes = clear
-            itemAppearance.normal.titlePositionAdjustment = offscreen
-            itemAppearance.selected.titlePositionAdjustment = offscreen
+            for itemAppearance in [
+                appearance.stackedLayoutAppearance,
+                appearance.inlineLayoutAppearance,
+                appearance.compactInlineLayoutAppearance,
+            ] {
+                itemAppearance.normal.titleTextAttributes = clear
+                itemAppearance.selected.titleTextAttributes = clear
+                itemAppearance.normal.titlePositionAdjustment = offscreen
+                itemAppearance.selected.titlePositionAdjustment = offscreen
+            }
+        } else if let fontName, let font = UIFont(name: fontName, size: 10) {
+            // Custom tab-label font (chrome font_name). 10pt matches UIKit's
+            // stacked tab-item label size.
+            for itemAppearance in [
+                appearance.stackedLayoutAppearance,
+                appearance.inlineLayoutAppearance,
+                appearance.compactInlineLayoutAppearance,
+            ] {
+                itemAppearance.normal.titleTextAttributes = [.font: font]
+                itemAppearance.selected.titleTextAttributes = [.font: font]
+            }
         }
 
         UITabBar.appearance().standardAppearance = appearance

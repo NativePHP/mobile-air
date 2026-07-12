@@ -412,6 +412,9 @@ abstract class NativeComponent
                     if (! empty($this->nativePendingNavBarState)) {
                         $navBar->mergeState($this->nativePendingNavBarState);
                     }
+                    // Layout-wide chrome font — loses to any ->font() the
+                    // bar (or per-screen options/state) already set.
+                    $navBar->defaultFont($layout->chromeFont());
                 }
             }
 
@@ -423,6 +426,7 @@ abstract class NativeComponent
                     if ($currentUri !== null) {
                         $tabBar->highlight($currentUri);
                     }
+                    $tabBar->defaultFont($layout->chromeFont());
                 }
             }
 
@@ -582,6 +586,9 @@ abstract class NativeComponent
                 }
                 if ($tabOptions->backgroundColor !== null) {
                     $attrs['backgroundColor'] = $tabOptions->backgroundColor;
+                }
+                if ($tabOptions->font !== null) {
+                    $attrs['fontName'] = $tabOptions->font;
                 }
             }
 

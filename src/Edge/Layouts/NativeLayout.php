@@ -20,6 +20,22 @@ use Native\Mobile\Edge\NativeComponent;
 abstract class NativeLayout
 {
     /**
+     * Chrome font for this layout — a resources/fonts/ file token (e.g.
+     * `Lobster-Regular`). Applies to the layout's nav bar and tab bar unless
+     * a bar sets its own ->font(). Null defers to the theme's app-wide
+     * `font-family` default. iOS note: system-drawn LARGE titles keep the
+     * app-default font (UIKit limitation); inline titles, subtitles, tab
+     * labels, and Android honor this fully.
+     */
+    protected ?string $font = null;
+
+    /** The layout-wide chrome font token, or null. */
+    public function chromeFont(): ?string
+    {
+        return $this->font;
+    }
+
+    /**
      * Return the top navigation bar for this screen, or null for none.
      * The screen is passed in so the layout can read $screen->navTitle()
      * or other declared properties.

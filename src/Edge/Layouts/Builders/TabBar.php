@@ -30,6 +30,8 @@ class TabBar
 
     private ?string $textColor = null;
 
+    private ?string $font = null;
+
     private ?string $backgroundColor = null;
 
     private ?string $labelVisibility = null;
@@ -80,6 +82,31 @@ class TabBar
     public function textColor(string $color): self
     {
         $this->textColor = $color;
+
+        return $this;
+    }
+
+    /**
+     * Render tab labels in a custom font — a resources/fonts/ file token
+     * (e.g. `Inter-Bold`). Overrides the layout's `$font` and the theme's
+     * app-wide `font-family` default.
+     */
+    public function font(string $name): self
+    {
+        $this->font = $name;
+
+        return $this;
+    }
+
+    /**
+     * Layout-wide default (from NativeLayout::$font) — applies only when no
+     * explicit ->font() was set on this bar.
+     */
+    public function defaultFont(?string $name): self
+    {
+        if ($this->font === null && $name !== null) {
+            $this->font = $name;
+        }
 
         return $this;
     }
@@ -183,6 +210,9 @@ class TabBar
         if ($this->textColor !== null) {
             $attrs['textColor'] = $this->textColor;
         }
+        if ($this->font !== null) {
+            $attrs['fontName'] = $this->font;
+        }
         if ($this->minimizeOnScroll) {
             $attrs['minimizeOnScroll'] = true;
         }
@@ -215,6 +245,9 @@ class TabBar
         }
         if ($this->textColor !== null) {
             $attrs['textColor'] = $this->textColor;
+        }
+        if ($this->font !== null) {
+            $attrs['fontName'] = $this->font;
         }
 
         $nav->applyAttributes($attrs);

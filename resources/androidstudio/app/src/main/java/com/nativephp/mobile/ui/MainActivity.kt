@@ -153,7 +153,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // uninterruptible I/O sleep on the main thread + Chromium init on the critical path.)
         setContent {
             val isDark = isSystemInDarkTheme()
-            MaterialTheme(colorScheme = nativeUiMaterialColorScheme(isDark)) {
+            MaterialTheme(
+                colorScheme = nativeUiMaterialColorScheme(isDark),
+                typography = NativeUIThemeProvider.resolveTypography(),
+            ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     // The heavy MainScreen tree (Scaffold + drawer + WebView) is gated on
                     // showContent; until boot is ready the first frame is just the splash.
@@ -1364,7 +1367,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 animationSpec = tween(150)
             )
         ) {
-            MaterialTheme(colorScheme = colorScheme) {
+            MaterialTheme(
+                colorScheme = colorScheme,
+                typography = NativeUIThemeProvider.resolveTypography(),
+            ) {
                 NativeBottomNavigation(
                     onNavigate = { url ->
                         Log.d("Navigation", "🖱️ Bottom nav item clicked")
@@ -1385,7 +1391,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         val useDarkTheme = sideNavData?.dark ?: systemInDarkMode
         val colorScheme = nativeUiMaterialColorScheme(useDarkTheme)
 
-        MaterialTheme(colorScheme = colorScheme) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = NativeUIThemeProvider.resolveTypography(),
+        ) {
             NativeSideDrawer(
                 onNavigate = { url ->
                     Log.d("Navigation", "🖱️ Side nav item clicked")

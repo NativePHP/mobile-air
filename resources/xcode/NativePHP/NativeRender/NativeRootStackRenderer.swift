@@ -84,6 +84,13 @@ struct NativeRootStackRenderer: View {
         let showBack = root.props.getBool("back")
         let bgArgb = root.props.getColor("background_color", default: 0)
         let textArgb = root.props.getColor("text_color", default: 0)
+        // Per-layout / per-bar chrome font (font_name prop), resolved through
+        // the plugin seam. Applies where WE draw the title (the principal-slot
+        // path); system-drawn `.navigationTitle` large titles keep the global
+        // appearance font (UIKit exposes no per-screen hook).
+        let chromeFontName = NativeChromeFontResolver.postScriptName(
+            for: root.props.getString("font_name", default: "")
+        )
         let displayModeStr = root.props.getString("display_mode", default: "inline")
         let actions = root.children.filter { $0.type == "top_bar_action" }
         // Custom principal-slot content (logo / titleView) — replaces the
@@ -118,8 +125,17 @@ struct NativeRootStackRenderer: View {
             }
         }()
 
+        // Inline-mode bars render the string title via the `.principal`
+        // toolbar slot (instead of the system `.navigationTitle`) when a
+        // subtitle needs stacking OR a custom chrome font is set — the
+        // system-drawn title exposes no per-screen font hook. Visually
+        // identical to the system inline title. `large` / `automatic`
+        // modes keep the system title (and the app-default font).
+        let usesPrincipalTitle = titleNode == nil && titleDisplayMode == .inline
+            && (!subtitle.isEmpty || chromeFontName != nil)
+
         screenView(screenContent)
-            .navigationTitle(titleNode != nil ? "" : title)
+            .navigationTitle((titleNode != nil || usesPrincipalTitle) ? "" : title)
             .navigationBarTitleDisplayMode(titleDisplayMode)
             // iOS 18+ has a first-class `.navigationSubtitle(...)` that sits
             // with the title (next to it for inline, under the large title
@@ -157,22 +173,25 @@ struct NativeRootStackRenderer: View {
                             }
                         }
                     }
-                } else if !subtitle.isEmpty && titleDisplayMode == .inline {
-                    // Render subtitle as a `.principal` toolbar item ONLY when
-                    // displayMode is inline. With `.large` (or `.automatic` at
-                    // root), the principal slot duplicates content next to the
-                    // big title — the user sees two stacked titles. iOS 18+
-                    // exposes `.navigationSubtitle(...)` which sits with the
-                    // large title naturally; until we adopt that path, we just
-                    // suppress the principal subtitle for non-inline modes.
+                } else if usesPrincipalTitle {
+                    // Render the title (and any subtitle) as a `.principal`
+                    // toolbar item ONLY when displayMode is inline. With
+                    // `.large` (or `.automatic` at root), the principal slot
+                    // duplicates content next to the big title — the user sees
+                    // two stacked titles. iOS 18+ exposes
+                    // `.navigationSubtitle(...)` which sits with the large
+                    // title naturally; until we adopt that path, we just
+                    // suppress the principal content for non-inline modes.
                     ToolbarItem(placement: .principal) {
                         VStack(spacing: 0) {
                             Text(title)
-                                .font(.headline)
+                                .font(chromeFontName.map { .custom($0, size: 17).weight(.semibold) } ?? .headline)
                                 .foregroundColor(textColor)
-                            Text(subtitle)
-                                .font(.caption)
-                                .foregroundColor(textColor.opacity(0.7))
+                            if !subtitle.isEmpty {
+                                Text(subtitle)
+                                    .font(chromeFontName.map { .custom($0, size: 12) } ?? .caption)
+                                    .foregroundColor(textColor.opacity(0.7))
+                            }
                         }
                     }
                 }
