@@ -15,9 +15,16 @@ namespace Native\Mobile\Edge\Layouts\Builders;
  *           ->title("Item #{$this->id}")
  *           ->action(NavAction::make('save')->icon('save')->press('save'));
  *   }
+ *
+ * For the common "hide the nav bar on this screen" case, the shorter
+ * `protected bool $hidesNavBar = true;` property on the screen is
+ * equivalent to `NavBarOptions::make()->hidden()`. Use either; if both
+ * are set, the explicit builder wins.
  */
 class NavBarOptions
 {
+    public ?bool $hidden = null;
+
     public ?string $title = null;
 
     public ?string $subtitle = null;
@@ -58,6 +65,19 @@ class NavBarOptions
     public static function make(): self
     {
         return new self;
+    }
+
+    /** Hide the nav bar on this screen. Full-bleed / immersive pattern. */
+    public function hidden(bool $hidden = true): self
+    {
+        $this->hidden = $hidden;
+
+        return $this;
+    }
+
+    public function isHidden(): bool
+    {
+        return $this->hidden === true;
     }
 
     public function title(?string $title): self

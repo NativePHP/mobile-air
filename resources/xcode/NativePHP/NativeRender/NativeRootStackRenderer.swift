@@ -92,6 +92,10 @@ struct NativeRootStackRenderer: View {
             for: root.props.getString("font_name", default: "")
         )
         let displayModeStr = root.props.getString("display_mode", default: "inline")
+        // Per-screen nav-bar opt-out (`$hidesNavBar` /
+        // `navigationOptions()->hidden()`), folded onto the sentinel as
+        // `hide_nav_bar`. Applied per destination below.
+        let hideNavBar = root.props.getBool("hide_nav_bar")
         let actions = root.children.filter { $0.type == "top_bar_action" }
         // Custom principal-slot content (logo / titleView) — replaces the
         // string title when present.
@@ -201,6 +205,7 @@ struct NativeRootStackRenderer: View {
                     }
                 }
             }
+            .modifier(HideNavBarModifier(hidden: hideNavBar))
             .modifier(StackBarBackgroundModifier(argb: bgArgb))
             .modifier(StackBottomBarInsetModifier(bottomBar: bottomBar))
             // Inline search field — Apple HIG / Expo pattern. The

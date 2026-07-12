@@ -56,6 +56,11 @@ class NativeRootStack extends Element
         if (isset($attrs['elevation'])) {
             $this->props['elevation'] = (int) $attrs['elevation'];
         }
+        // Per-screen nav-bar opt-out — hides the toolbar for this
+        // destination while the NavigationStack itself survives.
+        if (isset($attrs['hideNavBar'])) {
+            $this->props['hide_nav_bar'] = (bool) $attrs['hideNavBar'];
+        }
         // Title display mode for the iOS NavigationStack toolbar — `large`,
         // `inline` (default), or `automatic`.
         if (isset($attrs['displayMode'])) {

@@ -867,6 +867,56 @@ class TestableComponent
         return $this;
     }
 
+    /**
+     * Assert the nav bar is hidden on this screen (`$hidesNavBar` /
+     * `navigationOptions()->hidden()`), across both chrome paths: on the
+     * native-chrome path the sentinel carries `hide_nav_bar`; on the
+     * custom-Column path the bar is simply not rendered.
+     */
+    public function assertNavBarHidden(): static
+    {
+        $root = $this->findElement($this->tree(), 'native_root_tabs')
+            ?? $this->findElement($this->tree(), 'native_root_stack');
+
+        if ($root !== null) {
+            Assert::assertTrue(
+                (bool) ($root['props']['hide_nav_bar'] ?? false),
+                'Expected the nav bar to be hidden on this screen, but hide_nav_bar is not set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNull(
+            $this->findElement($this->tree(), 'top_bar'),
+            'Expected the nav bar to be hidden on this screen, but a top_bar element was rendered.'
+        );
+
+        return $this;
+    }
+
+    public function assertNavBarVisible(): static
+    {
+        $root = $this->findElement($this->tree(), 'native_root_tabs')
+            ?? $this->findElement($this->tree(), 'native_root_stack');
+
+        if ($root !== null) {
+            Assert::assertFalse(
+                (bool) ($root['props']['hide_nav_bar'] ?? false),
+                'Expected the nav bar to be visible, but hide_nav_bar is set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNotNull(
+            $this->findElement($this->tree(), 'top_bar'),
+            'Expected a visible nav bar, but no chrome rendered one — does the screen have a layout with a NavBar?'
+        );
+
+        return $this;
+    }
+
     /** Assert a tab with the given label exists in the tab bar. */
     public function assertHasTab(string $label): static
     {

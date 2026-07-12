@@ -13,9 +13,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,6 +40,7 @@ import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -123,6 +126,11 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // `tabBarOptions()->hidden()` builder, folded onto the sentinel).
     val hideTabBar = node.props.getBool("hide_tab_bar")
 
+    // Per-screen nav-bar opt-out (`$hidesNavBar` /
+    // `navigationOptions()->hidden()`) — suppresses the TopAppBar for
+    // this screen only; the Scaffold padding follows automatically.
+    val hideNavBar = node.props.getBool("hide_nav_bar")
+
     // Active screen URI — used as part of the inner AnimatedContent's
     // key so within-tab navigation (chats list → chat detail) animates
     // even when the tab index doesn't change.
@@ -192,7 +200,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     Scaffold(
         topBar = {
-            if (hasNavBar && !isOnSearchTab) {
+            if (hasNavBar && !hideNavBar && !isOnSearchTab) {
                 TopAppBar(
                     title = {
                         if (titleNode != null) {
@@ -328,6 +336,18 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     }
                 }
             }
+        },
+        // With the TopAppBar hidden per-screen, Scaffold's default
+        // contentWindowInsets would turn the status-bar inset into hard top
+        // padding — a dead strip nothing can draw behind. Drop the top side
+        // so hidden-bar screens are genuinely edge-to-edge (mirrors
+        // NativeRootStackRenderer). Layouts with no nav bar at all keep the
+        // default insets — that's long-standing behavior for bar-less tabs.
+        contentWindowInsets = if (hasNavBar && hideNavBar) {
+            ScaffoldDefaults.contentWindowInsets
+                .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+        } else {
+            ScaffoldDefaults.contentWindowInsets
         },
         modifier = modifier.fillMaxSize()
     ) { padding ->

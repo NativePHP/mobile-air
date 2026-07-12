@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,6 +28,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -123,6 +126,12 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val searchOnQueryCb = activeNode.props.getCallbackId("search_on_query")
     val searchDebounceMs = activeNode.props.getInt("search_debounce_ms", 300)
     val hasSearch = searchPlaceholder.isNotEmpty()
+
+    // Per-screen nav-bar opt-out (`$hidesNavBar` /
+    // `navigationOptions()->hidden()`) — suppresses the TopAppBar for
+    // this level only; push / pop and the path-driven AnimatedContent
+    // keep working, and the Scaffold padding follows automatically.
+    val hideNavBar = activeNode.props.getBool("hide_nav_bar")
 
     // System back / predictive-back: shrink path if pushed, otherwise
     // forward to PHP so it pops the underlying stack (e.g. back to
@@ -230,7 +239,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
 
     Scaffold(
-        topBar = {
+        topBar = topBar@{
+          if (hideNavBar) return@topBar
           // iOS renders `searchBar()` BELOW the navigation title. Mirror that:
           // keep the title in the bar and stack the search field underneath.
           // Only when there's no title at all does search take the title slot
@@ -279,6 +289,19 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             // Scaffold slot so content insets above it and `imePadding` lifts
             // it over the keyboard.
             bottomBarNode?.children?.firstOrNull()?.let { NodeView(node = it) }
+        },
+        // With the TopAppBar composed, it consumes the status-bar inset
+        // itself. With the bar hidden, Scaffold's default contentWindowInsets
+        // would turn that inset into hard top padding — a dead strip under
+        // the (transparent) status bar that nothing can draw behind. Drop
+        // the top side so hidden-bar screens are genuinely edge-to-edge;
+        // content that shouldn't sit under the clock uses the safe-area
+        // utilities instead.
+        contentWindowInsets = if (hideNavBar) {
+            ScaffoldDefaults.contentWindowInsets
+                .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+        } else {
+            ScaffoldDefaults.contentWindowInsets
         },
         modifier = modifier.fillMaxSize()
     ) { padding ->

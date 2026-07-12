@@ -397,6 +397,11 @@ private struct PerTabContent: View {
         // request hiding — useful for tab-root screens that want the bar
         // hidden anyway, which path-depth alone can't express.
         let forceHideTabBar = root.props.getBool("hide_tab_bar")
+        // Per-screen nav-bar opt-out (PHP-side `$hidesNavBar` /
+        // `navigationOptions()->hidden()`). Hides the toolbar for this
+        // destination only — the NavigationStack survives so push / pop
+        // keep working.
+        let hideNavBar = root.props.getBool("hide_nav_bar")
         // Manual back chevron only shows at the tab's root level — at
         // that level there's no NavigationStack history to pop, so the
         // chevron fires `sendSystemBackEvent` to leave the tabs entirely
@@ -458,6 +463,7 @@ private struct PerTabContent: View {
                 textArgb: textArgb,
                 bgArgb: bgArgb
             ))
+            .modifier(HideNavBarModifier(hidden: hideNavBar))
             .modifier(SearchableNavBarModifier(
                 placeholder: searchPlaceholder,
                 callbackId: searchOnQueryCb,
@@ -673,6 +679,32 @@ private struct HideTabBarOnPushModifier: ViewModifier {
             content
                 .toolbar(.hidden, for: .tabBar)
                 .ignoresSafeArea(.container, edges: .bottom)
+        }
+    }
+}
+
+/// Hides the navigation bar for a single destination when the screen
+/// opted out via PHP-side `$hidesNavBar` / `navigationOptions()->hidden()`,
+/// folded onto the chrome sentinel as `hide_nav_bar`. The enclosing
+/// `NavigationStack` survives — push / pop and per-URI caching keep
+/// working; only the toolbar chrome disappears. Unlike the tab bar,
+/// hiding the nav bar releases its space automatically, and the
+/// status-bar safe area stays intact.
+///
+/// Note: SwiftUI disables the interactive edge-swipe-back gesture while
+/// the bar is hidden — screens that hide it on a pushed level should
+/// render their own back affordance (e.g. a `@navigate` overlay button).
+///
+/// Shared with `NativeRootStackRenderer` (file-internal by design, like
+/// `SearchableNavBarModifier`).
+struct HideNavBarModifier: ViewModifier {
+    let hidden: Bool
+
+    func body(content: Content) -> some View {
+        if hidden {
+            content.toolbar(.hidden, for: .navigationBar)
+        } else {
+            content
         }
     }
 }

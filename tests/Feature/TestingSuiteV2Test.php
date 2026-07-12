@@ -4,11 +4,14 @@ use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\PestExpectations;
 use PHPUnit\Framework\AssertionFailedError;
+use Tests\Fixtures\Edge\ChromeColumnLayout;
 use Tests\Fixtures\Edge\ChromeScreen;
 use Tests\Fixtures\Edge\ChromeTabsLayout;
 use Tests\Fixtures\Edge\CounterScreen;
 use Tests\Fixtures\Edge\DetailScreen;
 use Tests\Fixtures\Edge\GateScreen;
+use Tests\Fixtures\Edge\HiddenNavOptionsScreen;
+use Tests\Fixtures\Edge\HiddenNavScreen;
 use Tests\Fixtures\Edge\HiddenTabScreen;
 use Tests\Fixtures\Edge\PingReceived;
 use Tests\Fixtures\Edge\PlatformScreen;
@@ -221,6 +224,29 @@ it('asserts per-screen tab bar hiding', function () {
     Native::test(HiddenTabScreen::class, layout: ChromeTabsLayout::class)
         ->assertNavTitle('Pushed Detail')
         ->assertTabBarHidden();
+});
+
+it('asserts per-screen nav bar hiding on native chrome', function () {
+    Native::test(HiddenNavScreen::class, layout: ChromeTabsLayout::class)
+        ->assertNavBarHidden()
+        ->assertTabBarVisible();
+
+    Native::test(ChromeScreen::class, layout: ChromeTabsLayout::class)
+        ->assertNavBarVisible();
+});
+
+it('hides the nav bar via the navigationOptions builder', function () {
+    Native::test(HiddenNavOptionsScreen::class, layout: ChromeTabsLayout::class)
+        ->assertNavBarHidden();
+});
+
+it('drops the top bar entirely on the custom-Column chrome path', function () {
+    Native::test(HiddenNavScreen::class, layout: ChromeColumnLayout::class)
+        ->assertNavBarHidden();
+
+    Native::test(ChromeScreen::class, layout: ChromeColumnLayout::class)
+        ->assertNavBarVisible()
+        ->assertNavTitle('Chrome Demo');
 });
 
 it('fails nav title assertions helpfully', function () {

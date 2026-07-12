@@ -407,6 +407,15 @@ abstract class NativeComponent
             $navBar = null;
             if (! $hasInlineNavBar) {
                 $navBar = $layout->navBar($this);
+                // Per-screen opt-out ($hidesNavBar shortcut + navigationOptions()
+                // builder). On this custom-Column path hiding is identical to
+                // the layout returning null. The native-chrome path instead
+                // keeps the bar config and folds a `hide_nav_bar` prop onto
+                // the sentinel — the NavigationStack must survive for push /
+                // pop to keep working.
+                if ($navBar !== null && ! $layout->usesNativeChrome() && $this->shouldHideNavBar()) {
+                    $navBar = null;
+                }
                 if ($navBar !== null) {
                     $navBar->mergeOptions($this->navigationOptions());
                     if (! empty($this->nativePendingNavBarState)) {
@@ -576,6 +585,11 @@ abstract class NativeComponent
             if ($this->shouldHideTabBar()) {
                 $attrs['hideTabBar'] = true;
             }
+            // Per-screen nav-bar opt-out, same shape as `hideTabBar` — the
+            // renderers hide the toolbar for this destination only.
+            if ($navBar !== null && $this->shouldHideNavBar()) {
+                $attrs['hideNavBar'] = true;
+            }
             $tabOptions = $this->tabBarOptions();
             if ($tabOptions !== null) {
                 if ($tabOptions->highlight !== null) {
@@ -691,6 +705,11 @@ abstract class NativeComponent
             // NavigationCoordinator can route push / pop / no-op
             // correctly across publishes.
             $attrs['currentUri'] = $this->nativeRouter?->currentUri() ?? '';
+            // Per-screen nav-bar opt-out — the sentinel (and its
+            // NavigationStack) survives; only the toolbar hides.
+            if ($this->shouldHideNavBar()) {
+                $attrs['hideNavBar'] = true;
+            }
             $root->applyAttributes($attrs);
             foreach ($navBar->getActions() as $action) {
                 $root->addChild($action->toElement());
@@ -907,6 +926,33 @@ abstract class NativeComponent
     public function navigationOptions(): ?NavBarOptions
     {
         return null;
+    }
+
+    /**
+     * Hide the nav bar on this screen — shorthand for the full-bleed /
+     * immersive case (photo viewer, onboarding, video). Equivalent to
+     * `navigationOptions()->hidden()`. When both are set the explicit
+     * builder wins. Default `false` → the layout's nav bar shows.
+     */
+    protected bool $hidesNavBar = false;
+
+    /**
+     * Resolved "should the nav bar be hidden on this screen?" — combines
+     * the boolean shortcut and the builder. The builder wins on conflict
+     * (more explicit). On the custom-Column chrome path [wrapWithChrome]
+     * simply skips the bar; on the native-chrome path
+     * [wrapWithNativeChrome] folds a `hide_nav_bar` prop onto the chrome
+     * sentinel (the sentinel itself must survive — iOS keys push / pop
+     * off it).
+     */
+    public function shouldHideNavBar(): bool
+    {
+        $options = $this->navigationOptions();
+        if ($options !== null && $options->hidden !== null) {
+            return $options->isHidden();
+        }
+
+        return $this->hidesNavBar;
     }
 
     /**
