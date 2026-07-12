@@ -310,7 +310,9 @@ class NativeUIParser {
 // MARK: - UIColor Extension for Hex Colors
 extension UIColor {
     /// Parse hex color string to UIColor
-    /// Supports both 6-digit (#RRGGBB) and 8-digit (#RRGGBBAA) hex formats
+    /// Supports 6-digit (#RRGGBB) and 8-digit (#AARRGGBB) hex formats —
+    /// the same wire byte order as ColorParser (Swift and Kotlin). PHP
+    /// converts authored CSS-style #RRGGBBAA to #AARRGGBB before sending.
     convenience init?(hex: String) {
         var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
@@ -330,10 +332,10 @@ extension UIColor {
             b = CGFloat(rgb & 0x0000FF) / 255.0
             a = 1.0
         } else if length == 8 {
-            r = CGFloat((rgb & 0xFF000000) >> 24) / 255.0
-            g = CGFloat((rgb & 0x00FF0000) >> 16) / 255.0
-            b = CGFloat((rgb & 0x0000FF00) >> 8) / 255.0
-            a = CGFloat(rgb & 0x000000FF) / 255.0
+            a = CGFloat((rgb & 0xFF000000) >> 24) / 255.0
+            r = CGFloat((rgb & 0x00FF0000) >> 16) / 255.0
+            g = CGFloat((rgb & 0x0000FF00) >> 8) / 255.0
+            b = CGFloat(rgb & 0x000000FF) / 255.0
         } else {
             return nil
         }
