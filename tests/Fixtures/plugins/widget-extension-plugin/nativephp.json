@@ -1,0 +1,24 @@
+{
+    "namespace": "NativePHPWidgets",
+    "ios": {
+        "min_version": "17.0",
+        "entitlements": {
+            "aps-environment": "production",
+            "com.apple.security.application-groups": [
+                "group.${APP_ID}.widgets"
+            ]
+        },
+        "extension_targets": [
+            {
+                "name": "NativePHPWidgetsExtension",
+                "type": "widget-extension",
+                "bundle_id_suffix": "widgets",
+                "deployment_target": "17.0",
+                "sources_dir": "extension",
+                "info_plist": {
+                    "CFBundleDisplayName": "NativePHP Widgets"
+                }
+            }
+        ]
+    }
+}

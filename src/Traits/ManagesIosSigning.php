@@ -2,7 +2,10 @@
 
 namespace Native\Mobile\Traits;
 
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Plugins\IOS\ExtensionProvisioningProfileManager;
+use Native\Mobile\Plugins\PluginRegistry;
 
 trait ManagesIosSigning
 {
@@ -65,7 +68,7 @@ trait ManagesIosSigning
         if (! $certificate) {
             $this->components->twoColumnDetail('Certificates', 'Using local keychain');
 
-            return true;
+            return $this->setupExtensionProvisioningProfiles($exportMethod);
         }
 
         \Laravel\Prompts\info('Setting up CI signing credentials...');
@@ -96,10 +99,45 @@ trait ManagesIosSigning
             $this->components->twoColumnDetail('Provisioning', 'Automatic (no profile provided)');
         }
 
+        if (! $this->setupExtensionProvisioningProfiles($exportMethod)) {
+            $this->cleanupCertificates();
+
+            return false;
+        }
+
         // Register cleanup
         register_shutdown_function(function () {
             $this->cleanupTempKeychain();
         });
+
+        return true;
+    }
+
+    protected function setupExtensionProvisioningProfiles(string $exportMethod): bool
+    {
+        $manager = new ExtensionProvisioningProfileManager(new Filesystem);
+        $plugins = app(PluginRegistry::class)->all();
+        $isManualSigning = ! in_array($exportMethod, ['development', 'debugging'], true);
+
+        try {
+            $bundleIds = $manager->bundleIds($plugins, (string) config('nativephp.app_id', ''));
+            $profiles = $manager->install($plugins, (string) config('nativephp.app_id', ''));
+        } catch (\InvalidArgumentException|\RuntimeException $exception) {
+            \Laravel\Prompts\error($exception->getMessage());
+
+            return false;
+        }
+
+        if ($isManualSigning && count($profiles) !== count($bundleIds)) {
+            \Laravel\Prompts\error('Manual iOS signing requires a provisioning profile for every app extension.');
+            $this->line('Set '.ExtensionProvisioningProfileManager::CONFIGURATION_ENV.' to a JSON object keyed by extension bundle ID.');
+
+            return false;
+        }
+
+        foreach ($profiles as $bundleId => $profile) {
+            $this->components->twoColumnDetail('Extension profile', "{$bundleId} ({$profile['name']})");
+        }
 
         return true;
     }

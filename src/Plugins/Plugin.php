@@ -38,14 +38,7 @@ class Plugin
         return $this->manifest->ios['info_plist'] ?? [];
     }
 
-    /**
-     * Per-locale overrides for Info.plist string entries.
-     *
-     * Shape: ['nl' => ['NSCameraUsageDescription' => 'Dutch text'], 'fr' => [...]]
-     * Locale keys become {locale}.lproj/InfoPlist.strings at build time.
-     *
-     * @return array<string, array<string, string>>
-     */
+    /** @return array<string, array<string, string>> */
     public function getIosInfoPlistLocalizations(): array
     {
         return $this->manifest->ios['info_plist_localizations'] ?? [];
@@ -64,6 +57,14 @@ class Plugin
     public function getIosEntitlements(): array
     {
         return $this->manifest->ios['entitlements'] ?? [];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function getIosExtensionTargets(): array
+    {
+        return $this->manifest->ios['extension_targets'] ?? [];
     }
 
     public function getIosCapabilities(): array
@@ -140,7 +141,6 @@ class Plugin
 
     public function getAndroidManifest(): array
     {
-        // Return activities, services, receivers, providers, meta_data from android config
         return array_filter([
             'activities' => $this->manifest->android['activities'] ?? [],
             'services' => $this->manifest->android['services'] ?? [],
@@ -152,7 +152,6 @@ class Plugin
 
     public function getIosManifest(): array
     {
-        // Return iOS-specific manifest entries (excluding info_plist, dependencies, assets)
         $ios = $this->manifest->ios;
         unset($ios['info_plist'], $ios['dependencies'], $ios['assets']);
 
@@ -171,25 +170,21 @@ class Plugin
 
     public function getAndroidSourcePath(): string
     {
-        // Support both nested (resources/android/src/) and flat (resources/android/) structures
         $nestedPath = $this->path.'/resources/android/src';
         if (is_dir($nestedPath)) {
             return $nestedPath;
         }
 
-        // Fallback to flat structure
         return $this->path.'/resources/android';
     }
 
     public function getIosSourcePath(): string
     {
-        // Support both nested (resources/ios/Sources/) and flat (resources/ios/) structures
         $nestedPath = $this->path.'/resources/ios/Sources';
         if (is_dir($nestedPath)) {
             return $nestedPath;
         }
 
-        // Fallback to flat structure
         return $this->path.'/resources/ios';
     }
 
@@ -201,13 +196,11 @@ class Plugin
             return false;
         }
 
-        // Check if there are any .kt files in the directory
         $files = glob($path.'/*.kt') ?: [];
         if (! empty($files)) {
             return true;
         }
 
-        // Check subdirectories recursively
         $iterator = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
         );
@@ -229,13 +222,11 @@ class Plugin
             return false;
         }
 
-        // Check if there are any .swift files in the directory
         $files = glob($path.'/*.swift') ?: [];
         if (! empty($files)) {
             return true;
         }
 
-        // Check subdirectories recursively
         $iterator = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
         );

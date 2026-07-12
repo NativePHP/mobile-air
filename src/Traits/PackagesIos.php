@@ -2,7 +2,9 @@
 
 namespace Native\Mobile\Traits;
 
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Plugins\IOS\ExtensionProvisioningProfileManager;
 use Symfony\Component\Console\Command\Command;
 
 use function Laravel\Prompts\outro;
@@ -228,6 +230,12 @@ trait PackagesIos
 
     protected function exportArchive(string $archivePath): ?string
     {
+        if ($this->archiveContainsAppExtensions($archivePath)) {
+            $this->components->twoColumnDetail('Exporter', 'Xcode (app extensions)');
+
+            return $this->exportArchiveWithXcode($archivePath);
+        }
+
         $manualIpaPath = null;
 
         $this->components->task('Exporting IPA (manual)', function () use ($archivePath, &$manualIpaPath) {
@@ -243,6 +251,13 @@ trait PackagesIos
         \Laravel\Prompts\warning('Manual export failed, falling back to Xcode export');
 
         return $this->exportArchiveWithXcode($archivePath);
+    }
+
+    protected function archiveContainsAppExtensions(string $archivePath): bool
+    {
+        $pattern = $archivePath.'/Products/Applications/*.app/PlugIns/*.appex';
+
+        return (glob($pattern, GLOB_ONLYDIR) ?: []) !== [];
     }
 
     protected function exportArchiveWithXcode(string $archivePath): ?string
@@ -532,17 +547,25 @@ trait PackagesIos
         if ($exportMethod !== 'debugging') {
             $uuid = getenv('EXTRACTED_PROVISIONING_PROFILE_UUID') ?: null;
             $name = $uuid ? null : $this->getProvisioningProfile($appId, $exportMethod);
+            $provisioningProfiles = [];
 
             if ($uuid) {
-                $exportOptions['provisioningProfiles'] = [$appId => $uuid];
+                $provisioningProfiles[$appId] = $uuid;
                 $this->components->twoColumnDetail('Provisioning profile', $uuid);
             } elseif ($name && $name !== '*') {
-                $exportOptions['provisioningProfiles'] = [$appId => $name];
+                $provisioningProfiles[$appId] = $name;
                 $this->components->twoColumnDetail('Provisioning profile', $name);
             } else {
                 \Laravel\Prompts\error('No deterministic provisioning profile available (UUID or explicit name)');
                 throw new \Exception('Missing deterministic provisioning profile for distribution build');
             }
+
+            $extensionProfiles = (new ExtensionProvisioningProfileManager(new Filesystem))->installedProfiles();
+            foreach ($extensionProfiles as $bundleId => $profile) {
+                $provisioningProfiles[$bundleId] = $profile['uuid'];
+            }
+
+            $exportOptions['provisioningProfiles'] = $provisioningProfiles;
         }
 
         $plistPath = $basePath.'/build/ExportOptions.plist';
