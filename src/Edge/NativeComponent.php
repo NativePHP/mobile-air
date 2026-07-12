@@ -1081,6 +1081,19 @@ abstract class NativeComponent
             // instance and grants access to protected/private members via the
             // class-scope second argument.
             //
+            // Participate in the Factory's render counting, mirroring
+            // View::render()/renderContents(). The direct include below runs
+            // outside Factory::render(), so without our increment the first
+            // nested @include drops the count 0→1→0 and its
+            // flushStateIfDoneRendering() wipes sections and component slot
+            // storage mid-render — crashing any open <x-*> component in the
+            // template. On success, flush only once the outermost render
+            // finishes; on throw, flushState() (which resets the count
+            // itself — a `finally` decrement after a nested flush would
+            // drive it negative, which is why Laravel uses catch-flush too).
+            $factory = view();
+            $factory->incrementRender();
+
             // Buffer and discard the include's textual output: a native view
             // builds its element tree via collector side effects, so anything
             // echoed is just the literal whitespace between <native:*> tags in
@@ -1093,9 +1106,15 @@ abstract class NativeComponent
                     extract($viewData, EXTR_SKIP);
                     include $compiledPath;
                 }, $this, static::class)();
+            } catch (\Throwable $e) {
+                $factory->flushState();
+                throw $e;
             } finally {
                 ob_end_clean();
             }
+
+            $factory->decrementRender();
+            $factory->flushStateIfDoneRendering();
         } finally {
             NativeTagPrecompiler::setActive($wasActive);
         }
