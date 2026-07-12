@@ -439,6 +439,16 @@ final class NativeElementBridge {
                 // to drive SwiftUI. The next CADisplayLink tick is T3.
                 InteractionTracker.shared.onTreePostedToMain()
                 let bridge = NativeUIBridge.shared
+
+                // In a Jump WebView session the shell is showing the forwarded
+                // remote app in the WebView. The LOCAL native-ui runloop (e.g.
+                // the Jump home screen still polling discovery) keeps publishing
+                // frames — drop them here so a local publish can't flip isActive
+                // back to true and yank the WebView off screen.
+                if JumpWebViewSession.shared.isActive {
+                    return
+                }
+
                 let wasActive = bridge.isActive
                 bridge.isActive = true
 

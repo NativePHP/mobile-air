@@ -3,6 +3,17 @@ import WebKit
 class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
     let domain = "127.0.0.1"
 
+    // Shared session for Jump WebView-mode forwards. Reused across requests so
+    // HTTP keep-alive / connection pooling kicks in — a fresh session per
+    // request re-did the TCP handshake every time and made navigation crawl.
+    // Cookies are NOT auto-stored here; forwardToRemote rebinds remote
+    // Set-Cookies to 127.0.0.1 in the WebView store (the single cookie source).
+    static let forwardSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        return URLSession(configuration: config)
+    }()
+
     private let maxRedirects = 10
     private var activeTasks: [ObjectIdentifier: WKURLSchemeTask] = [:]
     private let taskLock = NSLock()
@@ -694,14 +705,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
         NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] --> \(request.method) \(urlString)")
 
-        // Don't let URLSession auto-store cookies against the remote host; we
-        // rebind them to 127.0.0.1 ourselves so the WebView store (which the
-        // outgoing Cookie header is built from) stays the single source.
-        let config = URLSessionConfiguration.ephemeral
-        config.httpShouldSetCookies = false
-        let session = URLSession(configuration: config)
-
-        session.dataTask(with: req) { data, response, err in
+        PHPSchemeHandler.forwardSession.dataTask(with: req) { data, response, err in
             if let err = err {
                 completion(.failure(err))
                 return
@@ -747,7 +751,20 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 head += "\(k): \(v)\r\n"
             }
 
-            let bodyString = String(data: data, encoding: .utf8) ?? ""
+            var bodyString = String(data: data, encoding: .utf8) ?? ""
+
+            // Rewrite absolute dev-server URLs to relative so EVERY app request —
+            // navigations, assets, and crucially Livewire `wire:click` XHRs — stays
+            // same-origin under php://127.0.0.1 and routes through this scheme
+            // handler. Otherwise the app's absolute URLs (http://host:port/…) make
+            // fetch() go cross-origin, which bypasses the forward and gets
+            // CORS-blocked — the reason button-triggered native calls (Camera, etc.)
+            // silently did nothing while page-load calls worked.
+            let origin = "\(host):\(port)"
+            bodyString = bodyString
+                .replacingOccurrences(of: "http://\(origin)", with: "")
+                .replacingOccurrences(of: "https://\(origin)", with: "")
+
             let full = head + "\r\n" + bodyString
             completion(.success(Data(full.utf8)))
         }.resume()

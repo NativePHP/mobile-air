@@ -152,6 +152,9 @@ if ($path === '/jump/info') {
         'app_name' => getenv('APP_NAME') ?: 'Laravel',
         'version' => '1.0.0',
         'type' => 'nativephp-server',
+        // How the client should render this app: 'native-ui' (stream Element.*
+        // frames) or 'webview' (forward HTTP responses). Set by JumpCommand.
+        'ui' => getenv('JUMP_APP_UI') ?: 'native-ui',
     ];
 
     // Include WebSocket port for hybrid mode

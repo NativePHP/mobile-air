@@ -44,11 +44,42 @@ class JumpCommand extends Command
     /** Handle to the mDNS/Bonjour advertiser subprocess (LAN discovery). */
     private $mdnsProcess = null;
 
+    /** @var resource|null Router (php -S) proc_open handle. */
+    private $routerProcess = null;
+
+    /** @var list<int> Process-group leader PIDs of every grouped subtree we spawn. */
+    private array $childLeaders = [];
+
+    /** @var list<int> Direct child PIDs (== leaders when grouped) for the no-pcntl ps fallback. */
+    private array $childPids = [];
+
+    /** Re-entrancy guard: signal handler AND shutdown function both call the teardown. */
+    private bool $shuttingDown = false;
+
+    // Ports this run owns; 0 until chosen, so an early-startup signal reaps nothing spuriously.
+    private int $httpPort = 0;
+
+    private int $wsPort = 0;
+
+    private int $bridgePort = 0;
+
+    private int $viteProxyPort = 0;
+
     public function handle()
     {
         $this->verbose = $this->output->isVerbose();
 
         intro('NativePHP Jump Server');
+
+        // Arm teardown BEFORE any spawn so a Cmd+C during the blocking startup
+        // (port waits, the 120s Laravel warmup, the interactive IP prompt) is
+        // honoured and tears the whole fleet down deterministically.
+        $this->installSignalHandlers();
+        register_shutdown_function([$this, 'shutdownEverything']);
+
+        // Reclaim a prior run's leaked ports NOW (this call was dead code) so we
+        // reuse 3000/8000/3001/3002/3003 instead of escalating to 3008/8002/…
+        $this->killExistingServers();
 
         // Configuration
         $host = $this->option('host');
@@ -86,6 +117,11 @@ class JumpCommand extends Command
         // to the real Vite dev server on 127.0.0.1. Keeps users from having to
         // edit vite.config.js for network access.
         $viteProxyPort = (int) ($this->option('vite-proxy-port') ?? $this->findAvailablePort(3003, 100, $usedPorts));
+
+        $this->httpPort = $httpPort;
+        $this->wsPort = $wsPort;
+        $this->bridgePort = $bridgePort;
+        $this->viteProxyPort = $viteProxyPort;
 
         // Start or detect the Laravel dev server
         if ($this->option('no-serve')) {
@@ -138,8 +174,7 @@ class JumpCommand extends Command
         // can distinguish this live server from a crashed one. Cleaned up on
         // exit — register_shutdown_function fires on normal return, exit() from
         // the signal handler, and fatals alike.
-        $this->writeInstanceRegistry($httpPort, $this->laravelPort, $wsPort, $bridgePort, $viteProxyPort);
-        register_shutdown_function([$this, 'removeInstanceRegistry']);
+        $this->writeInstanceRegistry(); // now reads $this->* ports + childLeaders/childPids
 
         // Start PHP built-in server (serves QR page + proxies to Laravel)
         $this->startPhpServer($host, $httpPort, $openQr, $bridgePort, $wsPort, $viteProxyPort);
@@ -175,6 +210,14 @@ class JumpCommand extends Command
             return;
         }
 
+        // Detect how Jump should render this app. If the start route is a
+        // Route::native screen the app is native-ui (streams Element.* frames
+        // over the WS bridge); otherwise it's a classic WebView app (Blade /
+        // Livewire / Inertia over HTTP) that the client renders by forwarding
+        // its HTTP responses. Surfaced to the client via /jump/info's `ui`.
+        $startUrl = config('nativephp.start_url') ?: '/';
+        $appUi = \Native\Mobile\Edge\NativeRouter::isNativeRoute($startUrl) ? 'native-ui' : 'webview';
+
         // Build environment variables for the router
         $env = [
             'JUMP_DISPLAY_HOST' => $this->displayHost,
@@ -182,6 +225,7 @@ class JumpCommand extends Command
             'JUMP_LARAVEL_PORT' => (string) $this->laravelPort,
             'JUMP_BRIDGE_PORT' => (string) $bridgePort,
             'JUMP_WS_PORT' => (string) $wsPort,
+            'JUMP_APP_UI' => $appUi,
             'JUMP_VITE_PORT' => (string) config('nativephp.server.vite_port', 5173),
             'JUMP_VITE_PROXY_PORT' => (string) $viteProxyPort,
             'JUMP_BASE_PATH' => base_path(),
