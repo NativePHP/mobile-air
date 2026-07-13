@@ -4,6 +4,7 @@ import SwiftUI
 ///
 /// Driven by props on the node:
 ///   - `animate-duration` (ms float, > 0 enables animations on state change).
+///   - `animate-delay`    (ms float, start offset; staggers loop phase).
 ///   - `animate-easing`   (string).
 ///   - `animate-loop`     (bool — yoyo forever between identity and configured).
 ///   - `translate-x` / `translate-y` (points, or `__sv:` wire ref).
@@ -77,7 +78,11 @@ struct NodeAnimationModifier: ViewModifier {
             easing: props.getString("animate-easing", default: "ease-in-out"),
             durationMs: effectiveMs
         )
-        let anim = loop ? baseAnim.repeatForever(autoreverses: true) : baseAnim
+        // `animate-delay` offsets the start of the whole animation (the
+        // delay is outside `repeatForever`, so loops stagger their phase
+        // rather than pausing every cycle).
+        let delaySec = Double(props.getFloat("animate-delay", default: 0)) / 1000.0
+        let anim = (loop ? baseAnim.repeatForever(autoreverses: true) : baseAnim).delay(delaySec)
 
         // Opacity applies when:
         //   - this modifier is in animate mode (durationMs > 0 or loop), OR

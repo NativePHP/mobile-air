@@ -176,9 +176,11 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             // instead of a tween, to match SwiftUI's `.spring(...)`.
             // Duration on spring is approximate — the dampingRatio /
             // stiffness drive the actual feel.
+            val delayMs = node.props.getFloat("animate-delay", 0f).toInt().coerceAtLeast(0)
+
             fun <T> oneShotSpec(): androidx.compose.animation.core.AnimationSpec<T> =
                 if (isSpring) spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
-                else tween(durationMillis = animateDuration.toInt().coerceAtLeast(1), easing = easing)
+                else tween(durationMillis = animateDuration.toInt().coerceAtLeast(1), delayMillis = delayMs, easing = easing)
 
             if (animateLoop) {
                 val infinite = rememberInfiniteTransition(label = "node_loop")
@@ -186,9 +188,14 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
                 // so `spring` falls back to a tween for loop mode —
                 // springs have natural completion, the "yoyo" repeat
                 // wouldn't have a meaningful spring shape anyway.
+                // `animate-delay` staggers loop phases across siblings via
+                // a start offset rather than a per-cycle delay.
                 val loopSpec = infiniteRepeatable<Float>(
                     animation = tween(durationMillis = effectiveMs, easing = easing),
                     repeatMode = RepeatMode.Reverse,
+                    initialStartOffset = androidx.compose.animation.core.StartOffset(
+                        delayMs, androidx.compose.animation.core.StartOffsetType.Delay
+                    ),
                 )
                 animAlpha   = infinite.animateFloat(initialValue = 1f, targetValue = targetOpacity, animationSpec = loopSpec, label = "loop_alpha").value
                 animTx      = infinite.animateFloat(initialValue = 0f, targetValue = translateX,    animationSpec = loopSpec, label = "loop_tx").value
