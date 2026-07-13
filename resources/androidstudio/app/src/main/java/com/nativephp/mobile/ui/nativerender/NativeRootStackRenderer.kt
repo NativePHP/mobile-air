@@ -138,7 +138,9 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // wherever the user came from before entering native chrome).
     BackHandler(enabled = true) {
         if (path.isNotEmpty()) {
-            path.removeLast()
+            // removeAt, NOT Kotlin's removeLast(): compiled against SDK 35 the
+            // latter binds to Java 21's List.removeLast(), absent on Android 14-.
+            path.removeAt(path.lastIndex)
             coordinator.onPathChange(path.toList())
         } else {
             NativeElementBridge.sendSystemBackEvent()
@@ -214,7 +216,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 // Manual back chevron always defers to system back —
                 // shrinks path if pushed, otherwise tells PHP.
                 if (path.isNotEmpty()) {
-                    path.removeLast()
+                    // removeAt, NOT removeLast() — see BackHandler above.
+                    path.removeAt(path.lastIndex)
                     coordinator.onPathChange(path.toList())
                 } else {
                     NativeElementBridge.sendSystemBackEvent()
