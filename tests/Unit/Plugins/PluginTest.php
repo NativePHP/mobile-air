@@ -178,6 +178,30 @@ class PluginTest extends TestCase
     /**
      * @test
      *
+     * Declared android.proguard_rules are returned verbatim; absent key
+     * yields an empty list.
+     */
+    public function it_returns_android_proguard_rules(): void
+    {
+        $manifest = new PluginManifest([
+            'namespace' => 'RulesPlugin',
+            'android' => [
+                'proguard_rules' => ['-dontwarn org.slf4j.impl.StaticLoggerBinder'],
+            ],
+        ]);
+        $plugin = new Plugin('vendor/rules-plugin', '1.0.0', $this->validPluginPath, $manifest);
+
+        $this->assertSame(
+            ['-dontwarn org.slf4j.impl.StaticLoggerBinder'],
+            $plugin->getAndroidProguardRules()
+        );
+
+        $this->assertSame([], $this->plugin->getAndroidProguardRules());
+    }
+
+    /**
+     * @test
+     *
      * Multiple Android permissions should all be returned.
      */
     public function it_returns_multiple_android_permissions(): void

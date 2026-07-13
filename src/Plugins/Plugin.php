@@ -49,6 +49,20 @@ class Plugin
         return $this->manifest->android['permissions'] ?? [];
     }
 
+    /**
+     * Extra ProGuard/R8 rules this plugin needs in minified builds, declared
+     * as `android.proguard_rules` in nativephp.json. Keep rules for the
+     * plugin's own classes are generated automatically from its Kotlin
+     * package declarations — this is for dependency quirks the compiler
+     * can't infer (e.g. `-dontwarn` for a library's optional reflection).
+     *
+     * @return list<string>
+     */
+    public function getAndroidProguardRules(): array
+    {
+        return $this->manifest->android['proguard_rules'] ?? [];
+    }
+
     public function getIosInfoPlist(): array
     {
         return $this->manifest->ios['info_plist'] ?? [];
