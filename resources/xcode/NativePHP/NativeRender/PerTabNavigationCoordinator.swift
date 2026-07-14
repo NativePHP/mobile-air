@@ -129,11 +129,16 @@ final class TabCoordinatorBag: ObservableObject {
     private var coords: [Int: PerTabNavigationCoordinator] = [:]
 
     /// Returns the coordinator for the given tab index, lazily creating
-    /// one bound to `rootUri` on first access. The first-seen `rootUri`
-    /// for an index is sticky — re-calling with a different `rootUri`
-    /// for the same index keeps the original instance.
+    /// one bound to `rootUri` on first access. Identity is (index +
+    /// rootUri): a tabs→tabs chrome swap (two layouts that both use
+    /// native tab chrome) reuses the renderer instance — and with it
+    /// this bag — so index alone would hand the new layout's tab a
+    /// stale coordinator rooted at the OLD layout's URL. `receive()`
+    /// then treats the new tab root as a pushed level, which hides the
+    /// tab bar. A mismatched `rootUri` mints a fresh coordinator
+    /// (empty path → root level) instead.
     func coordinator(forIdx idx: Int, rootUri: String) -> PerTabNavigationCoordinator {
-        if let existing = coords[idx] {
+        if let existing = coords[idx], existing.rootUri == rootUri {
             return existing
         }
         let fresh = PerTabNavigationCoordinator(rootUri: rootUri)
