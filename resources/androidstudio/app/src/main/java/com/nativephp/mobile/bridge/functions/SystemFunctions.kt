@@ -1,5 +1,6 @@
 package com.nativephp.mobile.bridge.functions
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -42,6 +43,25 @@ object SystemFunctions {
                 Log.e("System.OpenAppSettings", "Error opening app settings: ${e.message}", e)
                 throw BridgeError.ExecutionFailed("Failed to open app settings: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Send the app to the background — the expected response to the system
+     * back button on the navigation-stack root. Called by PHP's
+     * `NativeComponent::back()` when the native stack has nothing left to
+     * pop; without it the runloop would exit and reveal the blank WebView
+     * underneath. Android-only (iOS apps cannot background themselves).
+     * Returns:
+     *   - success: boolean - True if the task was moved to the back
+     */
+    class MinimizeApp(private val activity: Activity) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            Log.d("System.MinimizeApp", "Moving task to back")
+            activity.runOnUiThread {
+                activity.moveTaskToBack(true)
+            }
+            return mapOf("success" to true)
         }
     }
 
