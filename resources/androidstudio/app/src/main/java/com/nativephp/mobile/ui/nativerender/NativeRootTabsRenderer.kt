@@ -343,7 +343,12 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // so hidden-bar screens are genuinely edge-to-edge (mirrors
         // NativeRootStackRenderer). Layouts with no nav bar at all keep the
         // default insets — that's long-standing behavior for bar-less tabs.
-        contentWindowInsets = if (hasNavBar && hideNavBar) {
+        // `!isOnSearchTab`: the search tab swaps the whole content area for
+        // the search UI WITHOUT a new publish, so hideNavBar still reflects
+        // the underlying screen (e.g. a hidden-bar home). Dropping the top
+        // inset there put the search field behind the status bar / camera
+        // cutout, where it can't be tapped — the search UI always needs it.
+        contentWindowInsets = if (hasNavBar && hideNavBar && !isOnSearchTab) {
             ScaffoldDefaults.contentWindowInsets
                 .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
         } else {
