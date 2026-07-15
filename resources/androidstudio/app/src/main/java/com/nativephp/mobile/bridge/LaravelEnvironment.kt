@@ -881,18 +881,17 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
         }
     }
 
+    // APP_KEY is just 32 random bytes, base64-encoded — generate it locally
+    // instead of booting PHP just to run key:generate (matches iOS).
     private fun generateAndSaveAppKey(file: File): String {
-        val result = phpBridge.runArtisanCommand("key:generate --show")
-        var generatedKey = result.trim()
-
-        if (!generatedKey.startsWith("base64:")) {
-            generatedKey = "base64:3a3I14QgnAhKUHROy1bn6A/UpTeELNI2flsl+Ud0bF4="
-        }
+        val keyBytes = ByteArray(32)
+        java.security.SecureRandom().nextBytes(keyBytes)
+        val generatedKey = "base64:" + android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP)
 
         file.parentFile?.mkdirs()
         file.writeText(generatedKey)
 
-        Log.d(TAG, "🔐 Generated and stored new APP_KEY: $generatedKey")
+        Log.d(TAG, "🔐 Generated and stored new APP_KEY locally (no PHP boot)")
         return generatedKey
     }
 
