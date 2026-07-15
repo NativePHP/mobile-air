@@ -19,7 +19,9 @@ enum DialogFunctions {
     /// Parameters:
     ///   - title: (optional) string - Alert title
     ///   - message: (optional) string - Alert message body
-    ///   - buttons: (optional) array of strings - Button titles (defaults to ["OK"])
+    ///   - buttons: (optional) array - Button titles as strings, or objects
+    ///     {label, style} where style is "default", "cancel" or "destructive"
+    ///     (defaults to ["OK"])
     ///   - id: (optional) string - Custom ID included in event payload
     ///   - eventClass: (optional) string - Custom event class name (defaults to "Native\Mobile\Events\Alert\ButtonPressed")
     /// Events:
@@ -31,15 +33,20 @@ enum DialogFunctions {
             let id = parameters["id"] as? String
             let event = parameters["event"] as? String ?? "Native\\Mobile\\Events\\Alert\\ButtonPressed"
 
-            var buttons: [String] = []
-            if let buttonsArray = parameters["buttons"] as? [String] {
-                buttons = buttonsArray
-            } else if let buttonsArray = parameters["buttons"] as? [Any] {
-                buttons = buttonsArray.compactMap { $0 as? String }
+            var buttons: [(label: String, style: String)] = []
+            if let buttonsArray = parameters["buttons"] as? [Any] {
+                for entry in buttonsArray {
+                    if let label = entry as? String {
+                        buttons.append((label: label, style: "default"))
+                    } else if let dict = entry as? [String: Any],
+                              let label = dict["label"] as? String {
+                        buttons.append((label: label, style: dict["style"] as? String ?? "default"))
+                    }
+                }
             }
 
             if buttons.isEmpty {
-                buttons = ["OK"]
+                buttons = [(label: "OK", style: "default")]
             }
 
             DispatchQueue.main.async {
@@ -54,10 +61,23 @@ enum DialogFunctions {
                                               message: message,
                                               preferredStyle: .alert)
 
-                for (index, label) in buttons.enumerated() {
-                    alert.addAction(UIAlertAction(title: label,
-                                                  style: .default) { _ in
-                        var payload: [String: Any] = ["index": index, "label": label]
+                // UIAlertController allows at most one .cancel action
+                var cancelUsed = false
+                for (index, button) in buttons.enumerated() {
+                    let style: UIAlertAction.Style
+                    switch button.style {
+                    case "destructive":
+                        style = .destructive
+                    case "cancel" where !cancelUsed:
+                        style = .cancel
+                        cancelUsed = true
+                    default:
+                        style = .default
+                    }
+
+                    alert.addAction(UIAlertAction(title: button.label,
+                                                  style: style) { _ in
+                        var payload: [String: Any] = ["index": index, "label": button.label]
                         if let id = id {
                             payload["id"] = id
                         }

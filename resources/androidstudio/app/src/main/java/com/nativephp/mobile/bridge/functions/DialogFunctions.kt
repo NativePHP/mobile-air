@@ -12,6 +12,7 @@ import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.google.android.material.snackbar.Snackbar
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Functions related to native alert dialogs
@@ -29,7 +30,9 @@ object DialogFunctions {
      * Parameters:
      *   - title: (optional) string - Alert title
      *   - message: (optional) string - Alert message body
-     *   - buttons: (optional) array of strings - Button titles (defaults to ["OK"])
+     *   - buttons: (optional) array - Button titles as strings, or objects
+     *     {label, style} where style is "default", "cancel" or "destructive"
+     *     (defaults to ["OK"])
      *   - id: (optional) string - Custom ID included in event payload
      *   - event: (optional) string - Custom event class name (defaults to "Native\Mobile\Events\Alert\ButtonPressed")
      * Events:
@@ -42,24 +45,44 @@ object DialogFunctions {
             val id = parameters["id"] as? String
             val event = parameters["event"] as? String ?: "Native\\Mobile\\Events\\Alert\\ButtonPressed"
 
-            // Parse buttons array
-            val buttons = mutableListOf<String>()
+            // Parse buttons array (strings or {label, style} objects)
+            val labels = mutableListOf<String>()
+            val styles = mutableListOf<String>()
+            fun addButton(label: String?, style: String?) {
+                if (label.isNullOrEmpty()) return
+                labels.add(label)
+                styles.add(style ?: "default")
+            }
             when (val buttonsParam = parameters["buttons"]) {
                 is JSONArray -> {
                     for (i in 0 until buttonsParam.length()) {
-                        buttonsParam.optString(i)?.let { buttons.add(it) }
+                        when (val entry = buttonsParam.opt(i)) {
+                            is String -> addButton(entry, null)
+                            is JSONObject -> addButton(entry.optString("label"), entry.optString("style", "default"))
+                        }
                     }
                 }
                 is List<*> -> {
-                    buttonsParam.filterIsInstance<String>().forEach { buttons.add(it) }
+                    buttonsParam.forEach { entry ->
+                        when (entry) {
+                            is String -> addButton(entry, null)
+                            is Map<*, *> -> addButton(entry["label"] as? String, entry["style"] as? String)
+                        }
+                    }
                 }
                 is Array<*> -> {
-                    buttonsParam.filterIsInstance<String>().forEach { buttons.add(it) }
+                    buttonsParam.forEach { entry ->
+                        when (entry) {
+                            is String -> addButton(entry, null)
+                            is Map<*, *> -> addButton(entry["label"] as? String, entry["style"] as? String)
+                        }
+                    }
                 }
             }
 
-            if (buttons.isEmpty()) {
-                buttons.add("OK")
+            if (labels.isEmpty()) {
+                labels.add("OK")
+                styles.add("default")
             }
 
             // Launch alert on UI thread
@@ -69,7 +92,8 @@ object DialogFunctions {
                     coord.launchAlert(
                         title ?: "",
                         message ?: "",
-                        buttons.toTypedArray(),
+                        labels.toTypedArray(),
+                        styles.toTypedArray(),
                         id,
                         event
                     )
