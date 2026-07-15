@@ -17,13 +17,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
@@ -42,9 +39,12 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.nativephp.mobile.ui.MaterialIcon
 
@@ -223,7 +223,13 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     NativeElementBridge.sendSystemBackEvent()
                 }
             }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                // Font glyphs don't auto-mirror like AutoMirrored ImageVectors; flip for RTL.
+                val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+                MaterialIcon(
+                    name = "arrow_back",
+                    contentDescription = "Back",
+                    modifier = if (rtl) Modifier.scale(scaleX = -1f, scaleY = 1f) else Modifier
+                )
             }
         }
     }

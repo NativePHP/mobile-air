@@ -1,8 +1,8 @@
-package com.nativephp.mobile.bridge.plugins
+import Foundation
 
 // AUTO-GENERATED FILE - DO NOT EDIT
 // No NativePHP UI plugins installed
 
-fun registerPluginRenderers() {
+func registerPluginRenderers() {
     // No UI plugin renderers to register
 }

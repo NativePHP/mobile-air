@@ -1206,9 +1206,8 @@ class BuildIosAppCommand extends Command
     {
         $plugins = app(PluginRegistry::class);
 
-        if ($plugins->count() === 0) {
-            return true;
-        }
+        // Always compile, even with zero plugins — the compiler regenerates the
+        // registration files with empty stubs so stale plugin references never build.
 
         // Validate plugin secrets before compilation
         $secretsValidator = new PluginSecretsValidator($plugins->all());
