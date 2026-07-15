@@ -519,7 +519,9 @@ trait PreparesBuild
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask$extraArgs");
+            $result = $process->run("$gradleWrapper $gradleTask$extraArgs", function ($type, $output) {
+                $this->getOutput()->write($output);
+            });
 
             if (! $result->successful()) {
                 \Laravel\Prompts\error('Gradle build failed');

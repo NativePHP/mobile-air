@@ -63,7 +63,7 @@ class PackageCommand extends Command
 
     protected string $platform;
 
-    public function handle(): void
+    public function handle(): int
     {
         // Get platform (flags take priority over argument)
         if ($this->option('ios')) {
@@ -75,7 +75,7 @@ class PackageCommand extends Command
             if (! $platform) {
                 \Laravel\Prompts\error('Platform must be specified via argument or flags (--ios/--android)');
 
-                return;
+                return 1;
             }
             // Support shorthands: 'a' for android, 'i' for ios
             $this->platform = match (strtolower($platform)) {
@@ -88,7 +88,7 @@ class PackageCommand extends Command
         if (! in_array($this->platform, ['android', 'ios'])) {
             \Laravel\Prompts\error('Platform must be either "android" or "ios" (or "a" / "i" as shortcuts)');
 
-            return;
+            return 1;
         }
 
         $this->validateAppId();
@@ -97,27 +97,27 @@ class PackageCommand extends Command
         if ($this->option('test-push') && $this->platform === 'android') {
             $this->testPlayStorePush();
 
-            return;
+            return 0;
         }
 
         if ($this->option('validate-profile') && $this->platform === 'ios') {
             $exportMethod = $this->option('export-method') ?: 'app-store';
             $this->validateIosProvisioningProfile($exportMethod);
 
-            return;
+            return 0;
         }
 
         intro("Building signed NativePHP {$this->platform} app");
 
         if (! $this->validateBuildEnvironment()) {
-            return;
+            return 1;
         }
 
         $this->buildType = $this->option('build-type');
         if (! in_array($this->buildType, ['release', 'bundle'])) {
             \Laravel\Prompts\error('Build type must be either "release" or "bundle"');
 
-            return;
+            return 1;
         }
 
         if ($this->platform === 'android') {
@@ -126,26 +126,28 @@ class PackageCommand extends Command
                 $this->updateBuildNumberFromStore('android', $jumpBy);
             }
 
-            $this->buildAndroid();
+            return $this->buildAndroid() ? 0 : 1;
         } elseif ($this->platform === 'ios') {
             // Validate and prepare iOS signing configuration
             $iosSigningConfig = $this->validateAndPrepareIosSigningConfig();
             if (! $iosSigningConfig) {
-                return;
+                return 1;
             }
 
             $this->buildIos($iosSigningConfig);
         }
+
+        return 0;
     }
 
-    protected function buildAndroid(): void
+    protected function buildAndroid(): bool
     {
         $minSdk = (int) config('nativephp.android.min_sdk', 26);
         if ($minSdk < 26) {
             \Laravel\Prompts\error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
             \Laravel\Prompts\note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
 
-            return;
+            return false;
         }
 
         $plugins = app(PluginRegistry::class)->all();
@@ -155,7 +157,7 @@ class PackageCommand extends Command
                 \Laravel\Prompts\error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
                 \Laravel\Prompts\note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
 
-                return;
+                return false;
             }
         }
 
@@ -165,13 +167,13 @@ class PackageCommand extends Command
             \Laravel\Prompts\error('No Android project found at [nativephp/android].');
             \Laravel\Prompts\note('Run `php artisan native:install android` first.');
 
-            return;
+            return false;
         }
 
         // Validate signing configuration
         $signingConfig = $this->validateAndPrepareSigningConfig();
         if (! $signingConfig) {
-            return;
+            return false;
         }
 
         if (! $this->option('skip-prepare')) {
@@ -179,7 +181,7 @@ class PackageCommand extends Command
         }
 
         if (! $this->compileAndroidPlugins()) {
-            return;
+            return false;
         }
 
         // Build with signing
@@ -191,16 +193,22 @@ class PackageCommand extends Command
             if (! $buildSuccessful) {
                 \Laravel\Prompts\error('Build failed');
 
-                return;
+                return false;
             }
         } catch (\Exception $e) {
             \Laravel\Prompts\error('Build failed: '.$e->getMessage());
 
-            return;
+            return false;
         }
 
         // Handle artifacts
         $outputPath = $this->handleBuildArtifacts();
+
+        if (! $outputPath) {
+            \Laravel\Prompts\error('Build produced no output file');
+
+            return false;
+        }
 
         // Upload to Play Store if requested
         if ($this->option('upload-to-play-store')) {
@@ -210,6 +218,8 @@ class PackageCommand extends Command
         outro("Signed {$this->buildType} build complete");
 
         $this->showBifrostBanner();
+
+        return true;
     }
 
     protected function validateAndPrepareSigningConfig(): ?array
