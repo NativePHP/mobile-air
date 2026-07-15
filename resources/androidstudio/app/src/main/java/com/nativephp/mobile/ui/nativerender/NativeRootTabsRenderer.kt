@@ -46,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -389,6 +390,12 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // uses the live padding, exiting keeps the padding it was last
         // laid out with.
         val screenPaddings = remember { HashMap<String, PaddingValues>() }
+        // Pin each pane's nodes to its key, mirroring NativeUIContent's
+        // treesByKey: the exiting pane recomposes when a new publish lands,
+        // and reading the live `screenContent` there made the old screen
+        // snap to the destination's content before the slide/fade ran —
+        // the "new page flashes, then the transition kicks in" stutter.
+        val paneNodes = remember { HashMap<String, Pair<NativeUINode?, NativeUINode?>>() }
         AnimatedContent(
             targetState = targetKey,
             transitionSpec = {
@@ -403,25 +410,36 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             label = "tab-content",
             modifier = Modifier.fillMaxSize()
         ) { key ->
+            DisposableEffect(key) {
+                onDispose {
+                    paneNodes.remove(key)
+                    screenPaddings.remove(key)
+                }
+            }
             val screenPadding = if (key == targetKey) {
                 screenPaddings[key] = padding
                 padding
             } else {
                 screenPaddings[key] ?: padding
             }
+            val (paneScreen, paneBottomBar) = if (key == targetKey) {
+                Pair(screenContent, bottomBarNode).also { paneNodes[key] = it }
+            } else {
+                paneNodes[key] ?: Pair(screenContent, bottomBarNode)
+            }
             Box(modifier = Modifier.fillMaxSize().padding(screenPadding)) {
-                if (bottomBarNode != null) {
+                if (paneBottomBar != null) {
                     // Screen content fills the space above the pinned bar; the
                     // bar sits at the bottom. Root `imePadding` shrinks this
                     // column when the keyboard opens so the bar rides above it.
                     Column(modifier = Modifier.fillMaxSize()) {
                         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                            if (screenContent != null) NodeView(node = screenContent)
+                            if (paneScreen != null) NodeView(node = paneScreen)
                         }
-                        bottomBarNode.children.firstOrNull()?.let { NodeView(node = it) }
+                        paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
                     }
-                } else if (screenContent != null) {
-                    NodeView(node = screenContent)
+                } else if (paneScreen != null) {
+                    NodeView(node = paneScreen)
                 } else {
                     Box(modifier = Modifier.fillMaxSize())
                 }

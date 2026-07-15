@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -83,12 +84,30 @@ fun NativeUIContent() {
             // a navigation. The transition spec maps Edge\Transition string
             // values (slide_from_right, fade, etc.) to Compose's enter/exit
             // pairs, mirroring the iOS nativeScreenTransition(for:) mapper.
+            //
+            // Each pane renders the tree pinned to ITS key, never the live
+            // `tree` state: AnimatedContent recomposes the exiting pane when
+            // `tree` changes, so reading the live tree there snapped the old
+            // screen to the incoming page — the destination showed for a
+            // frame BEFORE the enter/exit animation ran. The current pane
+            // re-pins on every pass (state updates still flow through); an
+            // exiting pane keeps the last tree it showed and releases it
+            // when its exit animation completes.
+            val treesByKey = remember { HashMap<Int, NativeUITree>() }
             AnimatedContent(
                 targetState = screenKey,
                 transitionSpec = { transitionFor(pendingTransition) },
                 label = "screen-transition"
-            ) { _ ->
-                tree?.let { t ->
+            ) { key ->
+                DisposableEffect(key) {
+                    onDispose { treesByKey.remove(key) }
+                }
+                val paneTree = if (key == screenKey) {
+                    tree?.also { treesByKey[key] = it }
+                } else {
+                    treesByKey[key]
+                }
+                paneTree?.let { t ->
                     // Fold any plugin-registered root hosts (side drawers,
                     // global overlays, …) around the rendered tree. A host
                     // pulls its own sentinel child out of `t.root` and renders
