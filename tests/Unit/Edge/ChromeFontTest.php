@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
@@ -12,7 +13,6 @@ use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
  * in toRootProps()/toElement() attrs → `font_name` wire prop on the chrome
  * sentinels, resolved natively through the plugin font seam.
  */
-
 it('applies the layout default font only when the bar has none', function () {
     $bar = NavBar::make()->title('Home');
     $bar->defaultFont('Lobster-Regular');
@@ -43,7 +43,7 @@ it('omits fontName entirely when nothing sets a font', function () {
 it('flows the font through NavBar::toElement to the top_bar font_name prop', function () {
     $bar = NavBar::make()->title('Home')->font('Inter-Bold');
 
-    $props = $bar->toElement()->toArray(new Native\Mobile\Edge\CallbackRegistry)['props'];
+    $props = $bar->toElement()->toArray(new CallbackRegistry)['props'];
 
     expect($props['font_name'])->toBe('Inter-Bold');
 });
@@ -53,7 +53,7 @@ it('serializes the tab bar font in both root props and the bottom_nav element', 
 
     expect($bar->toRootProps()['fontName'])->toBe('Lobster-Regular');
 
-    $props = $bar->toElement()->toArray(new Native\Mobile\Edge\CallbackRegistry)['props'];
+    $props = $bar->toElement()->toArray(new CallbackRegistry)['props'];
     expect($props['font_name'])->toBe('Lobster-Regular');
 });
 

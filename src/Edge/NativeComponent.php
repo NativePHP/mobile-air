@@ -24,6 +24,7 @@ use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
 use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
 use Native\Mobile\Edge\Layouts\NativeLayout;
+use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
@@ -1572,7 +1573,7 @@ abstract class NativeComponent
         $class = str_starts_with($eventName, 'native:') ? substr($eventName, 7) : $eventName;
 
         if (! class_exists($class)
-            || ! is_subclass_of($class, \Native\Mobile\Events\Concerns\BroadcastsGlobally::class)) {
+            || ! is_subclass_of($class, BroadcastsGlobally::class)) {
             return;
         }
 

@@ -13,7 +13,6 @@ use Native\Mobile\Edge\Layouts\Builders\NavBar;
  * `NativeRootStack` / `NativeRootTabs` children; these cover the PHP half
  * (builder + marker) that feeds them.
  */
-
 it('builds an Image titleView from the logo() sugar, sized to a nav height', function () {
     $navBar = NavBar::make()->logo('images/jump-logo.png', 30);
 

@@ -1,6 +1,8 @@
 <?php
 
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
 
 /**
@@ -232,9 +234,9 @@ it('applies dark companion props from programmatic class()', function () {
     // The collector splits the parser's `dark` sub-array into `dark_*`
     // props for blade elements; Element::class() must do the same so
     // PHP-built trees (Element-returning render()) keep dark styling.
-    $el = \Native\Mobile\Edge\Elements\Column::make()
+    $el = Column::make()
         ->class('bg-[#FFFFFF] dark:bg-[#050714]');
-    $el->addChild(\Native\Mobile\Edge\Elements\Text::make('hi')
+    $el->addChild(Text::make('hi')
         ->class('text-[#272D48] dark:text-[#FFFFFF]'));
 
     $tree = $el->toArray(new CallbackRegistry);

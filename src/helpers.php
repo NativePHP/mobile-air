@@ -7,7 +7,6 @@ use Native\Mobile\Facades\System;
  * function_exists so an app defining its own never collides. Autoloaded via
  * composer `autoload.files`.
  */
-
 if (! function_exists('isDark')) {
     /** Is the device currently in dark mode? */
     function isDark(): bool

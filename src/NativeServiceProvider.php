@@ -6,6 +6,7 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
@@ -39,6 +40,7 @@ use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
@@ -140,9 +142,9 @@ class NativeServiceProvider extends PackageServiceProvider
      */
     protected function registerSystemEventListeners(): void
     {
-        \Illuminate\Support\Facades\Event::listen(
-            \Native\Mobile\Events\System\AppearanceChanged::class,
-            fn (\Native\Mobile\Events\System\AppearanceChanged $e) => System::rememberAppearance($e->mode),
+        Event::listen(
+            AppearanceChanged::class,
+            fn (AppearanceChanged $e) => System::rememberAppearance($e->mode),
         );
     }
 
@@ -150,8 +152,8 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         $this->app->singleton(Device::class, fn () => new Device);
         $this->app->singleton(System::class, fn () => new System);
-        $this->app->singleton(\Native\Mobile\Dialog::class, fn () => new \Native\Mobile\Dialog);
-        $this->app->singleton(\Native\Mobile\File::class, fn () => new \Native\Mobile\File);
+        $this->app->singleton(Dialog::class, fn () => new Dialog);
+        $this->app->singleton(File::class, fn () => new File);
     }
 
     protected function registerPluginServices(): void

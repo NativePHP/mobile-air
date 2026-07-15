@@ -5,6 +5,7 @@ namespace Native\Mobile\Commands;
 use Endroid\QrCode\Builder\Builder;
 use Endroid\QrCode\ErrorCorrectionLevel;
 use Illuminate\Console\Command;
+use Native\Mobile\Edge\NativeRouter;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\select;
@@ -205,7 +206,7 @@ class JumpCommand extends Command
      * then falls back to the ps-tree walk + port sweep.
      *
      * @param  list<string>  $argv  Absolute binary first, then its args.
-     * @return array{0: resource|false, 1: int}  [process, leaderPid] (0 = ungrouped)
+     * @return array{0: resource|false, 1: int} [process, leaderPid] (0 = ungrouped)
      */
     private function spawnGroupLeader(array $argv, ?string $cwd, ?array $env, array $descriptors, ?array &$pipes): array
     {
@@ -444,7 +445,7 @@ class JumpCommand extends Command
         // Livewire / Inertia over HTTP) that the client renders by forwarding
         // its HTTP responses. Surfaced to the client via /jump/info's `ui`.
         $startUrl = config('nativephp.start_url') ?: '/';
-        $appUi = \Native\Mobile\Edge\NativeRouter::isNativeRoute($startUrl) ? 'native-ui' : 'webview';
+        $appUi = NativeRouter::isNativeRoute($startUrl) ? 'native-ui' : 'webview';
 
         // Build environment variables for the router
         $env = [

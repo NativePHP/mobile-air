@@ -1,6 +1,7 @@
 <?php
 
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Events\Alert\ButtonPressed;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\System;
@@ -10,7 +11,6 @@ use Native\Mobile\System;
  * plumbing that lets a native event reach app-wide listeners, not just the
  * active component's #[On] handlers.
  */
-
 it('marks AppearanceChanged for global dispatch', function () {
     expect(is_subclass_of(AppearanceChanged::class, BroadcastsGlobally::class))->toBeTrue();
 });
@@ -53,13 +53,13 @@ it('dispatches marked events globally but leaves unmarked ones to the component'
     Event::listen(AppearanceChanged::class, function ($e) use (&$seen) {
         $seen[] = $e->mode;
     });
-    Event::listen(\Native\Mobile\Events\Alert\ButtonPressed::class, function () use (&$seen) {
+    Event::listen(ButtonPressed::class, function () use (&$seen) {
         $seen[] = 'button';
     });
 
     $dispatch->invoke($comp, AppearanceChanged::class, ['mode' => 'dark']);
     // BroadcastsGlobally not implemented → must NOT auto-dispatch globally.
-    $dispatch->invoke($comp, \Native\Mobile\Events\Alert\ButtonPressed::class, ['index' => 0, 'label' => 'OK']);
+    $dispatch->invoke($comp, ButtonPressed::class, ['index' => 0, 'label' => 'OK']);
 
     expect($seen)->toBe(['dark']);
 });

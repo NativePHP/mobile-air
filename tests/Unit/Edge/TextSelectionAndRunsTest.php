@@ -12,7 +12,6 @@ use Native\Mobile\Edge\TailwindParser;
  *    themselves `text` nodes — the tree shape the inline-rich-text renderers
  *    (AttributedString / AnnotatedString composition) walk.
  */
-
 it('maps select-text / select-none to the selectable prop', function () {
     expect(TailwindParser::parse('select-text'))->toBe(['selectable' => 1]);
     expect(TailwindParser::parse('select-none'))->toBe(['selectable' => 0]);

@@ -8,7 +8,6 @@ use Native\Mobile\Testing\FakeBridge;
  * or ['label' => ..., 'style' => ...] arrays where style is one of
  * default / cancel / destructive.
  */
-
 beforeEach(fn () => FakeBridge::enable());
 afterEach(fn () => FakeBridge::disable());
 
