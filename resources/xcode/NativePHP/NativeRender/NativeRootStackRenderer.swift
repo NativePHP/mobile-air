@@ -139,7 +139,13 @@ struct NativeRootStackRenderer: View {
             && (!subtitle.isEmpty || chromeFontName != nil)
 
         screenView(screenContent)
-            .navigationTitle((titleNode != nil || usesPrincipalTitle) ? "" : title)
+            // Always set the string title, even when a titleView / principal
+            // title owns the visible slot (with a `.principal` toolbar item
+            // the system doesn't draw it): the back-chevron long-press
+            // history menu and accessibility label this level from
+            // `navigationTitle` — blanking it renders those entries as
+            // empty glass pills.
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(titleDisplayMode)
             // iOS 18+ has a first-class `.navigationSubtitle(...)` that sits
             // with the title (next to it for inline, under the large title

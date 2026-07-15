@@ -453,7 +453,12 @@ private struct PerTabContent: View {
         let searchDebounceMs = root.props.getInt("nav_search_debounce_ms", default: 300)
 
         levelContent(for: root, screenContent: screenContent)
-            .navigationTitle(titleNode != nil ? "" : title)
+            // Always set the string title, even when a titleView lockup owns
+            // the visible slot (the `.principal` toolbar item overrides what
+            // is drawn): the back-chevron long-press history menu and
+            // accessibility label this level from `navigationTitle` —
+            // blanking it renders those entries as empty glass pills.
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .modifier(TabsToolbarModifier(
                 showBack: manualBack,
