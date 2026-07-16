@@ -17,8 +17,6 @@ final class ExtensionTargetCompiler
 
     private readonly PropertyList $propertyList;
 
-    private readonly ManifestValueResolver $valueResolver;
-
     /**
      * @param  array<string, mixed>  $config
      */
@@ -30,7 +28,6 @@ final class ExtensionTargetCompiler
     ) {
         $this->extensionsPath = $iosProjectPath.'/Extensions';
         $this->propertyList = new PropertyList;
-        $this->valueResolver = new ManifestValueResolver($appId);
     }
 
     /**
@@ -59,7 +56,7 @@ final class ExtensionTargetCompiler
         ));
 
         foreach ($builds as $build) {
-            $this->writeExtension($build['target'], $build['source'], $build['entitlements']);
+            $this->writeExtension($build['plugin'], $build['target'], $build['source'], $build['entitlements']);
         }
 
         $this->editor($projectPath)->update($targets);
@@ -68,6 +65,7 @@ final class ExtensionTargetCompiler
     /**
      * @param  Collection<int, Plugin>  $plugins
      * @return list<array{
+     *     plugin: Plugin,
      *     target: ExtensionTarget,
      *     source: string,
      *     entitlements: array<string, mixed>
@@ -108,6 +106,7 @@ final class ExtensionTargetCompiler
                 $names[$normalizedName] = true;
                 $bundleIds[$normalizedBundleId] = true;
                 $builds[] = [
+                    'plugin' => $plugin,
                     'target' => $target,
                     'source' => $source,
                     'entitlements' => array_intersect_key(
@@ -124,8 +123,12 @@ final class ExtensionTargetCompiler
     /**
      * @param  array<string, mixed>  $entitlements
      */
-    private function writeExtension(ExtensionTarget $target, string $source, array $entitlements): void
-    {
+    private function writeExtension(
+        Plugin $plugin,
+        ExtensionTarget $target,
+        string $source,
+        array $entitlements
+    ): void {
         $destination = $this->extensionsPath.'/'.$target->name;
         $this->files->copyDirectory($source, $destination);
 
@@ -140,8 +143,9 @@ final class ExtensionTargetCompiler
             'CFBundleVersion' => '$(CURRENT_PROJECT_VERSION)',
         ], $target->infoPlist);
 
-        $resolvedInfoPlist = $this->valueResolver->resolve($infoPlist);
-        $resolvedEntitlements = $this->valueResolver->resolve($entitlements);
+        $resolver = ManifestValueResolver::forPlugin($this->appId, $plugin);
+        $resolvedInfoPlist = $resolver->resolve($infoPlist);
+        $resolvedEntitlements = $resolver->resolve($entitlements);
 
         $this->files->put($destination.'/Info.plist', $this->propertyList->encode($resolvedInfoPlist));
         $this->files->put(
@@ -159,7 +163,7 @@ final class ExtensionTargetCompiler
     }
 
     /**
-     * @param  list<array{target: ExtensionTarget, source: string, entitlements: array<string, mixed>}>  $builds
+     * @param  list<array{plugin: Plugin, target: ExtensionTarget, source: string, entitlements: array<string, mixed>}>  $builds
      */
     private function removePreviouslyManagedTargets(array $builds): void
     {

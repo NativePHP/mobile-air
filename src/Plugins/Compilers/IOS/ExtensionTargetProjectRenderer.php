@@ -283,6 +283,6 @@ PBX;
 
     private function id(string $name, string $role): string
     {
-        return strtoupper(substr(hash('sha256', "nativephp|ios-extension|{$name}|{$role}"), 0, 24));
+        return ExtensionTargetProjectId::for($name, $role);
     }
 }

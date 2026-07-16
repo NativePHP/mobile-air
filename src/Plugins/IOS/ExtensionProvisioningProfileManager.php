@@ -244,6 +244,9 @@ final class ExtensionProvisioningProfileManager
     private function storeMetadata(array $metadata): array
     {
         $json = json_encode((object) $metadata, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+
+        // Packaging launches native:build as a child process, so this metadata
+        // reaches the build through inherited environment without profile contents.
         if (! putenv(self::METADATA_ENV.'='.$json)) {
             throw new RuntimeException('Unable to store installed iOS extension profile metadata.');
         }

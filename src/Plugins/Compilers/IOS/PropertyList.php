@@ -28,7 +28,24 @@ PLIST;
     /**
      * @return array<string, mixed>
      */
-    public function decode(string $contents): array
+    public function decode(string $contents, ?string $source = null): array
+    {
+        try {
+            return $this->decodeContents($contents);
+        } catch (InvalidArgumentException $exception) {
+            if ($source === null) {
+                throw $exception;
+            }
+
+            throw new InvalidArgumentException(
+                "Unable to decode property list at {$source}: {$exception->getMessage()}",
+                previous: $exception,
+            );
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function decodeContents(string $contents): array
     {
         $document = new DOMDocument;
         $previous = libxml_use_internal_errors(true);

@@ -794,14 +794,14 @@ class IOSPluginCompiler
     {
         $entitlementsPath = $this->iosProjectPath.'/NativePHP/NativePHP.entitlements';
         $propertyList = new PropertyList;
-        $resolver = new ManifestValueResolver($this->appId);
         $allEntitlements = $this->files->exists($entitlementsPath)
-            ? $propertyList->decode($this->files->get($entitlementsPath))
+            ? $propertyList->decode($this->files->get($entitlementsPath), $entitlementsPath)
             : [];
         $hasPluginEntitlements = false;
 
         foreach ($plugins as $plugin) {
-            $entitlements = $resolver->resolve($plugin->getIosEntitlements());
+            $entitlements = ManifestValueResolver::forPlugin($this->appId, $plugin)
+                ->resolve($plugin->getIosEntitlements());
             foreach ($entitlements as $key => $value) {
                 $hasPluginEntitlements = true;
                 $allEntitlements[$key] = array_key_exists($key, $allEntitlements)

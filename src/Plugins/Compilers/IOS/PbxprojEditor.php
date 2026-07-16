@@ -24,10 +24,36 @@ final class PbxprojEditor
             throw new RuntimeException("Xcode project file not found at {$this->projectPath}.");
         }
 
-        $contents = $this->stripManagedBlocks($this->files->get($this->projectPath));
+        $original = $this->files->get($this->projectPath);
+        $stripper = new PbxprojManagedObjectStripper;
+        $managedTargetNames = $stripper->targetNames($original);
+        $hasManagedMarkers = str_contains($original, 'NATIVEPHP_EXTENSIONS_BEGIN');
+        $hasManagedObjects = $stripper->hasManagedContent($original);
+
+        if ($targets === [] && ! $hasManagedMarkers && ! $hasManagedObjects) {
+            return;
+        }
+
+        $simulatorTargetId = $this->targetId($original, 'NativePHP-simulator');
+        $simulatorConfigurationIds = $this->targetConfigurationIds($original, $simulatorTargetId);
+        $targetNames = array_values(array_unique([
+            ...$managedTargetNames,
+            ...array_map(fn (ExtensionTarget $target): string => $target->name, $targets),
+        ]));
+        $contents = $stripper->strip($this->stripManagedBlocks($original), $targetNames);
+
+        if ($hasManagedObjects) {
+            $contents = $stripper->stripBuildSetting(
+                $contents,
+                $simulatorConfigurationIds,
+                'CODE_SIGN_ENTITLEMENTS = NativePHP/NativePHP.entitlements;'
+            );
+        }
 
         if ($targets === []) {
-            $this->files->put($this->projectPath, $contents);
+            if ($contents !== $original) {
+                $this->files->put($this->projectPath, $contents);
+            }
 
             return;
         }
