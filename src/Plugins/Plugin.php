@@ -96,6 +96,14 @@ class Plugin
         return $this->manifest->ios['entitlements'] ?? [];
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function getIosExtensionTargets(): array
+    {
+        return $this->manifest->ios['extension_targets'] ?? [];
+    }
+
     public function getIosCapabilities(): array
     {
         return $this->manifest->ios['capabilities'] ?? [];

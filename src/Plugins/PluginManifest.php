@@ -4,6 +4,7 @@ namespace Native\Mobile\Plugins;
 
 use InvalidArgumentException;
 use JsonSerializable;
+use Native\Mobile\Plugins\IOS\ExtensionTarget;
 
 class PluginManifest implements JsonSerializable
 {
@@ -27,10 +28,9 @@ class PluginManifest implements JsonSerializable
 
     public function __construct(array $data)
     {
-        $this->validate($data);
-
         // Normalize the data to new format
         $data = $this->normalizeToNewFormat($data);
+        $this->validate($data);
 
         $this->namespace = $data['namespace'];
         $this->bridgeFunctions = $data['bridge_functions'] ?? [];
@@ -133,6 +133,7 @@ class PluginManifest implements JsonSerializable
         $hasNewIos = isset($data['ios']) && (
             isset($data['ios']['info_plist']) ||
             isset($data['ios']['dependencies']) ||
+            isset($data['ios']['extension_targets']) ||
             isset($data['ios']['min_version'])
         );
 
@@ -207,6 +208,52 @@ class PluginManifest implements JsonSerializable
                     "Component '{$component['type']}' missing platform renderer (android_renderer or ios_renderer)"
                 );
             }
+        }
+
+        $this->validateIosExtensionTargets($data);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function validateIosExtensionTargets(array $data): void
+    {
+        $ios = $data['ios'] ?? [];
+        if (! is_array($ios)) {
+            throw new InvalidArgumentException('Plugin manifest ios must be an object.');
+        }
+
+        if (! array_key_exists('extension_targets', $ios)) {
+            return;
+        }
+
+        $targets = $ios['extension_targets'];
+        if (! is_array($targets) || ! array_is_list($targets)) {
+            throw new InvalidArgumentException('Plugin manifest ios.extension_targets must be a list.');
+        }
+
+        $names = [];
+        $bundleIdSuffixes = [];
+        foreach ($targets as $index => $target) {
+            if (! is_array($target)) {
+                throw new InvalidArgumentException("iOS extension target at index {$index} must be an object.");
+            }
+
+            $extension = ExtensionTarget::fromArray(
+                $target,
+                is_string($ios['min_version'] ?? null) ? $ios['min_version'] : null,
+                $index
+            );
+
+            $normalizedName = strtolower($extension->name);
+            $normalizedBundleIdSuffix = strtolower($extension->bundleIdSuffix);
+
+            if (isset($names[$normalizedName]) || isset($bundleIdSuffixes[$normalizedBundleIdSuffix])) {
+                throw new InvalidArgumentException('Plugin manifest contains a duplicate iOS extension target name or bundle_id_suffix.');
+            }
+
+            $names[$normalizedName] = true;
+            $bundleIdSuffixes[$normalizedBundleIdSuffix] = true;
         }
     }
 

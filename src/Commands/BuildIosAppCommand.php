@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
+use Native\Mobile\Plugins\IOS\ExtensionProvisioningProfileManager;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
@@ -984,12 +985,38 @@ class BuildIosAppCommand extends Command
 
     public function cleanupProvisioningProfileConfiguration(): void
     {
-        Process::path($this->xcodeProjectPath)
-            ->run([
-                'sed', '-i', '',
-                '/PROVISIONING_PROFILE_SPECIFIER = "[0-9a-fA-F-]*";/d',
-                'project.pbxproj',
-            ]);
+        putenv(ExtensionProvisioningProfileManager::METADATA_ENV.'={}');
+        $projectPath = $this->xcodeProjectPath.'/project.pbxproj';
+        if (! File::exists($projectPath)) {
+            return;
+        }
+
+        $contents = File::get($projectPath);
+        $removeProfileSpecifier = fn (string $block): string => preg_replace(
+            '/^[ \t]*PROVISIONING_PROFILE_SPECIFIER = "[^"\r\n]+";\R?/m',
+            '',
+            $block
+        ) ?? $block;
+        $contents = preg_replace_callback(
+            '/[A-F0-9]{24}(?: \/\*[^*\r\n]*\*\/)? = \{\s+'
+                .'isa = XCBuildConfiguration;\s+buildSettings = \{(?:(?!\n[ \t]*\};).)*'
+                .'CODE_SIGN_ENTITLEMENTS = NativePHP\/NativePHP\.entitlements;'
+                .'(?:(?!\n[ \t]*\};).)*\n[ \t]*\};/s',
+            fn (array $matches): string => $removeProfileSpecifier($matches[0]),
+            $contents
+        ) ?? $contents;
+        $contents = preg_replace_callback(
+            '/\/\* NATIVEPHP_EXTENSIONS_BEGIN XCBuildConfiguration \*\/(.*?)'
+                .'\/\* NATIVEPHP_EXTENSIONS_END XCBuildConfiguration \*\//s',
+            fn (array $matches): string => str_replace(
+                'CODE_SIGN_STYLE = Manual;',
+                'CODE_SIGN_STYLE = Automatic;',
+                $removeProfileSpecifier($matches[0])
+            ),
+            $contents
+        ) ?? $contents;
+
+        File::put($projectPath, $contents);
     }
 
     private function build(): bool
@@ -1205,10 +1232,6 @@ class BuildIosAppCommand extends Command
     private function compileIosPlugins(): bool
     {
         $plugins = app(PluginRegistry::class);
-
-        if ($plugins->count() === 0) {
-            return true;
-        }
 
         // Validate plugin secrets before compilation
         $secretsValidator = new PluginSecretsValidator($plugins->all());

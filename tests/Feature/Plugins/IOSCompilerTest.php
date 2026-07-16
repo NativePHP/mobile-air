@@ -285,6 +285,31 @@ class NestedClass {}');
         $this->assertStringContainsString('This app uses microphone', $content);
     }
 
+    /** @test */
+    public function it_resolves_app_id_placeholders_in_plugin_info_plist_entries(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [
+                    'NativePHPWidgetAppGroup' => 'group.${APP_ID}.widgets',
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler
+            ->setAppId('com.example.sourcefolk')
+            ->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+
+        $this->assertStringContainsString('group.com.example.sourcefolk.widgets', $content);
+        $this->assertStringNotContainsString('${APP_ID}', $content);
+    }
+
     /**
      * @test
      *

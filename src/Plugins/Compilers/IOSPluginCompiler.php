@@ -5,6 +5,9 @@ namespace Native\Mobile\Plugins\Compilers;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\Compilers\IOS\ExtensionTargetCompiler;
+use Native\Mobile\Plugins\Compilers\IOS\ManifestValueResolver;
+use Native\Mobile\Plugins\Compilers\IOS\PropertyList;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -114,9 +117,12 @@ class IOSPluginCompiler
             return false;
         });
 
-        // Get plugins with iOS info_plist entries or dependencies
+        // Get plugins with iOS manifest data
         $pluginsWithIosData = $allPlugins->filter(function (Plugin $p) {
-            return ! empty($p->getIosInfoPlist()) || ! empty($p->getIosDependencies());
+            return ! empty($p->getIosInfoPlist())
+                || ! empty($p->getIosDependencies())
+                || ! empty($p->getIosEntitlements())
+                || ! empty($p->getIosExtensionTargets());
         });
 
         // Check for plugins with iOS UI component renderers
@@ -143,6 +149,7 @@ class IOSPluginCompiler
             && $pluginsWithRenderers->isEmpty()
             && ! $hasAppLocalizations
         ) {
+            $this->compileExtensionTargets($allPlugins);
             $this->generateEmptyRegistration();
             $this->generateEmptyRendererRegistration();
 
@@ -179,6 +186,9 @@ class IOSPluginCompiler
         // Add CocoaPods dependencies
         $this->addPodDependencies($allPlugins);
 
+        // Compile isolated app-extension targets and embed them in both iOS hosts
+        $this->compileExtensionTargets($allPlugins);
+
         // Update Xcode project file
         $this->updateXcodeProject($allPlugins);
 
@@ -205,20 +215,32 @@ class IOSPluginCompiler
 
         // Create plugin-specific subdirectory
         $pluginDir = $this->generatedPath.'/'.$plugin->getNamespace();
+        if ($this->files->isDirectory($pluginDir)) {
+            $this->files->deleteDirectory($pluginDir);
+        }
         $this->files->ensureDirectoryExists($pluginDir);
 
-        // Copy all Swift files recursively
-        $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+        $excludedPaths = array_map(
+            fn (array $target): string => $plugin->path.'/resources/ios/'.$target['sources_dir'],
+            $plugin->getIosExtensionTargets()
+        );
+
+        // Copy host Swift files recursively, keeping extension entry points isolated
+        $this->copySwiftFilesRecursively($sourcePath, $pluginDir, $excludedPaths);
     }
 
     /**
      * Recursively copy Swift files, preserving directory structure
      */
-    protected function copySwiftFilesRecursively(string $source, string $destination): void
+    protected function copySwiftFilesRecursively(string $source, string $destination, array $excludedPaths = []): void
     {
         // First, copy any Swift files at the root level
         $rootFiles = glob($source.'/*.swift') ?: [];
         foreach ($rootFiles as $file) {
+            if ($this->isExcludedSourcePath($file, $excludedPaths)) {
+                continue;
+            }
+
             $filename = basename($file);
             $this->files->copy($file, $destination.'/'.$filename);
         }
@@ -230,6 +252,10 @@ class IOSPluginCompiler
         );
 
         foreach ($iterator as $item) {
+            if ($this->isExcludedSourcePath($item->getPathname(), $excludedPaths)) {
+                continue;
+            }
+
             $relativePath = substr($item->getPathname(), strlen($source) + 1);
             $destPath = $destination.'/'.$relativePath;
 
@@ -242,6 +268,21 @@ class IOSPluginCompiler
                 }
             }
         }
+    }
+
+    /**
+     * @param  list<string>  $excludedPaths
+     */
+    private function isExcludedSourcePath(string $path, array $excludedPaths): bool
+    {
+        foreach ($excludedPaths as $excludedPath) {
+            $excludedPath = rtrim($excludedPath, DIRECTORY_SEPARATOR);
+            if ($path === $excludedPath || str_starts_with($path, $excludedPath.DIRECTORY_SEPARATOR)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -684,6 +725,11 @@ class IOSPluginCompiler
     {
         return preg_replace_callback('/\$\{([A-Z_][A-Z0-9_]*)\}/', function ($matches) {
             $envVar = $matches[1];
+
+            if ($envVar === 'APP_ID') {
+                return $this->appId;
+            }
+
             $envValue = env($envVar);
 
             if ($envValue === null) {
@@ -747,101 +793,53 @@ class IOSPluginCompiler
     protected function mergeEntitlements(Collection $plugins): void
     {
         $entitlementsPath = $this->iosProjectPath.'/NativePHP/NativePHP.entitlements';
-
-        // Collect all entitlements from plugins
-        $allEntitlements = [];
+        $propertyList = new PropertyList;
+        $allEntitlements = $this->files->exists($entitlementsPath)
+            ? $propertyList->decode($this->files->get($entitlementsPath), $entitlementsPath)
+            : [];
+        $hasPluginEntitlements = false;
 
         foreach ($plugins as $plugin) {
-            $entitlements = $plugin->getIosEntitlements();
+            $entitlements = ManifestValueResolver::forPlugin($this->appId, $plugin)
+                ->resolve($plugin->getIosEntitlements());
             foreach ($entitlements as $key => $value) {
-                $allEntitlements[$key] = $value;
+                $hasPluginEntitlements = true;
+                $allEntitlements[$key] = array_key_exists($key, $allEntitlements)
+                    ? $this->mergeEntitlementValue($allEntitlements[$key], $value)
+                    : $value;
             }
         }
 
-        if (empty($allEntitlements)) {
+        if (! $hasPluginEntitlements) {
             return;
         }
 
-        // If entitlements file doesn't exist, create it
-        if (! $this->files->exists($entitlementsPath)) {
-            $this->createEntitlementsFile($entitlementsPath, $allEntitlements);
-
-            return;
-        }
-
-        // Merge into existing entitlements file
-        $entitlementsPlist = $this->files->get($entitlementsPath);
-        $entitlementsPlist = $this->injectEntitlements($entitlementsPlist, $allEntitlements);
-
-        $this->files->put($entitlementsPath, $entitlementsPlist);
+        $this->files->put($entitlementsPath, $propertyList->encode($allEntitlements));
     }
 
-    /**
-     * Create a new entitlements plist file
-     */
-    protected function createEntitlementsFile(string $path, array $entitlements): void
+    private function mergeEntitlementValue(mixed $current, mixed $incoming): mixed
     {
-        $entries = '';
-
-        foreach ($entitlements as $key => $value) {
-            if (is_bool($value)) {
-                $entries .= "\t<key>{$key}</key>\n\t<".($value ? 'true' : 'false')."/>\n";
-            } elseif (is_array($value)) {
-                $arrayContent = '';
-                foreach ($value as $item) {
-                    $arrayContent .= "\t\t<string>{$item}</string>\n";
-                }
-                $entries .= "\t<key>{$key}</key>\n\t<array>\n{$arrayContent}\t</array>\n";
-            } else {
-                $entries .= "\t<key>{$key}</key>\n\t<string>{$value}</string>\n";
-            }
+        if (! is_array($current) || ! is_array($incoming)) {
+            return $current;
         }
 
-        $content = <<<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-{$entries}</dict>
-</plist>
-PLIST;
-
-        $this->files->put($path, $content);
-    }
-
-    /**
-     * Inject entitlements into an existing entitlements plist
-     */
-    protected function injectEntitlements(string $plist, array $entitlements): string
-    {
-        foreach ($entitlements as $key => $value) {
-            // Skip if key already exists
-            if (str_contains($plist, "<key>{$key}</key>")) {
-                continue;
-            }
-
-            if (is_bool($value)) {
-                $entry = "\n\t<key>{$key}</key>\n\t<".($value ? 'true' : 'false').'/>';
-            } elseif (is_array($value)) {
-                $arrayContent = '';
-                foreach ($value as $item) {
-                    $arrayContent .= "\n\t\t<string>{$item}</string>";
+        if (array_is_list($current) && array_is_list($incoming)) {
+            foreach ($incoming as $value) {
+                if (! in_array($value, $current, true)) {
+                    $current[] = $value;
                 }
-                $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
-            } else {
-                $entry = "\n\t<key>{$key}</key>\n\t<string>{$value}</string>";
             }
 
-            // Add before closing </dict>
-            $plist = preg_replace(
-                '/(\s*<\/dict>\s*<\/plist>)/s',
-                $entry.'$1',
-                $plist,
-                1
-            );
+            return $current;
         }
 
-        return $plist;
+        foreach ($incoming as $key => $value) {
+            $current[$key] = array_key_exists($key, $current)
+                ? $this->mergeEntitlementValue($current[$key], $value)
+                : $value;
+        }
+
+        return $current;
     }
 
     /**
@@ -1370,6 +1368,8 @@ PODFILE;
         if ($this->files->isDirectory($this->generatedPath)) {
             $this->files->deleteDirectory($this->generatedPath);
         }
+
+        $this->compileExtensionTargets(collect());
     }
 
     /**
@@ -1386,5 +1386,18 @@ PODFILE;
             ->map(fn ($file) => $file->getPathname())
             ->values()
             ->all();
+    }
+
+    /**
+     * @param  Collection<int, Plugin>  $plugins
+     */
+    private function compileExtensionTargets(Collection $plugins): void
+    {
+        (new ExtensionTargetCompiler(
+            $this->files,
+            $this->iosProjectPath,
+            $this->appId,
+            $this->config
+        ))->compile($plugins);
     }
 }
