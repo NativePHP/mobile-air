@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.content.pm.ActivityInfo
 import android.app.Activity
+import android.os.Message
 import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
@@ -119,6 +120,50 @@ class WebViewManager(
                     "$TAG-Console",
                     "${consoleMessage.message()} -- From line ${consoleMessage.lineNumber()}"
                 )
+                return true
+            }
+
+            override fun onCreateWindow(
+                view: WebView,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message
+            ): Boolean {
+                // target="_blank" links and window.open() land here because
+                // multiple windows are enabled; without this override they are
+                // silently dropped. There is no second window in the app, so
+                // resolve the URL through a throwaway WebView and route it
+                // like a normal navigation: external → system browser,
+                // local-server → the main WebView.
+                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                val popup = WebView(view.context)
+                popup.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        popupView: WebView,
+                        request: WebResourceRequest
+                    ): Boolean {
+                        val url = request.url.toString()
+                        Log.d(TAG, "🪟 onCreateWindow resolved: $url")
+                        if ((url.startsWith("http://") || url.startsWith("https://")) &&
+                            !url.contains("127.0.0.1") &&
+                            !url.contains("localhost")
+                        ) {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                context.startActivity(intent)
+                            } catch (e: ActivityNotFoundException) {
+                                Toast.makeText(context, "No app can handle this link", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            webView.loadUrl(url)
+                        }
+                        popupView.post { popupView.destroy() }
+                        return true
+                    }
+                }
+                transport.webView = popup
+                resultMsg.sendToTarget()
                 return true
             }
         }
