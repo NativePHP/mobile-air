@@ -9,6 +9,7 @@
 
 use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
+use PHPUnit\Framework\AssertionFailedError;
 use Tests\Fixtures\Edge\CounterScreen;
 
 // ── Macros on the bridge itself ─────────────────────
@@ -45,7 +46,7 @@ it('fails macro assertions with the underlying bridge message', function () {
     Native::fakeBridge();
 
     expect(fn () => Native::test(CounterScreen::class)->assertLocatedOnce())
-        ->toThrow(PHPUnit\Framework\AssertionFailedError::class);
+        ->toThrow(AssertionFailedError::class);
 });
 
 // ── Forwarding through the harness ──────────────────
