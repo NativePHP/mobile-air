@@ -1,0 +1,34 @@
+<?php
+
+namespace Native\Mobile\Edge\Components\Native;
+
+use Native\Mobile\Edge\NativeElementCollector;
+
+class Text extends NativeBladeComponent
+{
+    protected bool $handlesCollectorManually = true;
+
+    protected function elementType(): string
+    {
+        return 'text';
+    }
+
+    public function render(): \Closure
+    {
+        return function (array $data) {
+            $attrs = $data['attributes']->getAttributes();
+            $text = preg_replace('/\s+/', ' ', trim(html_entity_decode(strip_tags($data['slot']->toHtml()), ENT_QUOTES, 'UTF-8')));
+            if ($text !== '') {
+                $attrs['text'] = $text;
+            }
+
+            if (NativeElementCollector::isStreaming()) {
+                NativeElementCollector::leafStreaming($this->elementType(), $attrs);
+            } else {
+                NativeElementCollector::leaf($this->elementType(), $attrs);
+            }
+
+            return '';
+        };
+    }
+}

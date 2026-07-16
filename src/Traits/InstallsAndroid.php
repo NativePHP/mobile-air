@@ -249,10 +249,30 @@ trait InstallsAndroid
             });
         }
 
-        $destination = base_path('nativephp/android/app/src/main');
-        File::ensureDirectoryExists($destination);
+        $mainDir = base_path('nativephp/android/app/src/main');
+        File::ensureDirectoryExists($mainDir);
 
-        $this->components->task('Installing Android libraries', fn () => $this->platformOptimizedCopy($extractPath, $destination));
+        // Static libs go to app/src/main/staticLibs/
+        $staticLibsSrc = $extractPath.DIRECTORY_SEPARATOR.'staticLibs';
+        $staticLibsDst = $mainDir.DIRECTORY_SEPARATOR.'staticLibs';
+
+        // Headers go to app/src/main/cpp/include/
+        $includeSrc = $extractPath.DIRECTORY_SEPARATOR.'include';
+        $includeDst = $mainDir.DIRECTORY_SEPARATOR.'cpp'.DIRECTORY_SEPARATOR.'include';
+
+        $this->components->task('Installing static libraries', function () use ($staticLibsSrc, $staticLibsDst) {
+            if (is_dir($staticLibsSrc)) {
+                File::ensureDirectoryExists($staticLibsDst);
+                $this->platformOptimizedCopy($staticLibsSrc, $staticLibsDst);
+            }
+        });
+
+        $this->components->task('Installing PHP headers', function () use ($includeSrc, $includeDst) {
+            if (is_dir($includeSrc)) {
+                File::ensureDirectoryExists($includeDst);
+                $this->platformOptimizedCopy($includeSrc, $includeDst);
+            }
+        });
 
         try {
             $this->removeDirectory($extractPath);

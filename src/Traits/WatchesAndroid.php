@@ -29,24 +29,28 @@ trait WatchesAndroid
 
     private ?int $vitePort = null;
 
-    protected function startAndroidHotReload(): void
+    private ?string $androidSerial = null;
+
+    protected function startAndroidHotReload(?string $target = null): void
     {
         if (! $this->checkAndroidHotReloadDependencies()) {
             return;
         }
 
-        if (! $this->checkAndroidDeviceConnection()) {
+        if (! $this->checkAndroidDeviceConnection($target)) {
             return;
         }
 
-        // Start Vite dev server if the nativephpMobile plugin is installed
-        $this->startViteDevServer('android');
+        if ($this->shouldRunVite()) {
+            // Start Vite dev server if the nativephpMobile plugin is installed
+            $this->startViteDevServer('android');
 
-        // Detect Vite port from public/hot file
-        $this->vitePort = $this->detectVitePort();
+            // Detect Vite port from public/hot file
+            $this->vitePort = $this->detectVitePort();
 
-        if ($this->vitePort) {
-            $this->setupViteDevServerForwarding($this->vitePort);
+            if ($this->vitePort) {
+                $this->setupViteDevServerForwarding($this->vitePort);
+            }
         }
 
         $this->startAndroidWatching();
@@ -73,19 +77,63 @@ trait WatchesAndroid
         return true;
     }
 
-    private function checkAndroidDeviceConnection(): bool
+    private function checkAndroidDeviceConnection(?string $target = null): bool
     {
         $process = new Process(['adb', 'devices']);
         $process->run();
 
-        if (! str_contains($process->getOutput(), 'device')) {
+        // Trim lines so Windows \r\n output parses the same as Unix
+        $devices = collect(explode("\n", $process->getOutput()))
+            ->map(fn ($line) => trim($line))
+            ->filter(fn ($line) => str_contains($line, "\tdevice"))
+            ->map(fn ($line) => explode("\t", $line)[0])
+            ->values()
+            ->all();
+
+        if (empty($devices)) {
             \Laravel\Prompts\error('No Android device connected via ADB');
             \Laravel\Prompts\note('Make sure USB debugging is enabled and device is connected');
 
             return false;
         }
 
+        if ($target !== null) {
+            if (! in_array($target, $devices)) {
+                \Laravel\Prompts\error("Device '{$target}' not found. Connected devices: ".implode(', ', $devices));
+
+                return false;
+            }
+
+            $this->androidSerial = $target;
+        } elseif (count($devices) === 1) {
+            $this->androidSerial = $devices[0];
+        } else {
+            // Bare adb commands fail with "more than one device/emulator" when
+            // several devices are attached, so we must target one explicitly.
+            $this->androidSerial = \Laravel\Prompts\select(
+                label: 'Multiple Android devices connected. Select one to watch',
+                options: array_combine($devices, $devices)
+            );
+        }
+
+        $this->info("Watching Android device: {$this->androidSerial}");
+
         return true;
+    }
+
+    /**
+     * Build an adb Process targeting the selected device.
+     */
+    private function adb(string ...$args): Process
+    {
+        $command = ['adb'];
+
+        if ($this->androidSerial !== null) {
+            $command[] = '-s';
+            $command[] = $this->androidSerial;
+        }
+
+        return new Process([...$command, ...$args]);
     }
 
     private function detectVitePort(): ?int
@@ -111,7 +159,7 @@ trait WatchesAndroid
 
     private function setupViteDevServerForwarding(int $port): void
     {
-        $process = new Process(['adb', 'reverse', "tcp:{$port}", "tcp:{$port}"]);
+        $process = $this->adb('reverse', "tcp:{$port}", "tcp:{$port}");
         $process->setTimeout(10);
         $process->run();
 
@@ -162,7 +210,9 @@ trait WatchesAndroid
         $this->checkAdbConnection();
 
         // Check for Vite process output
-        $this->checkViteProcessOutput();
+        if ($this->shouldRunVite()) {
+            $this->checkViteProcessOutput();
+        }
     }
 
     private function handleAndroidFileChange(string $filePath): void
@@ -191,7 +241,7 @@ trait WatchesAndroid
             return;
         }
 
-        if ($this->isViteHandledFile($relativePath)) {
+        if ($this->shouldRunVite() && $this->isViteHandledFile($relativePath)) {
             return;
         }
 
@@ -233,11 +283,11 @@ trait WatchesAndroid
         $this->lastAdbHealthCheck = $now;
 
         // Check if adb reverse is still active
-        $process = new Process(['adb', 'reverse', '--list']);
+        $process = $this->adb('reverse', '--list');
         $process->run();
 
         if (! $process->isSuccessful() || ! str_contains($process->getOutput(), "tcp:{$this->vitePort}")) {
-            $reverseProcess = new Process(['adb', 'reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}"]);
+            $reverseProcess = $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}");
             $reverseProcess->run();
         }
     }
@@ -253,26 +303,28 @@ trait WatchesAndroid
             return;
         }
 
-        $pushProcess = new Process(['adb', 'push', $localBuildPath, $tempPath]);
+        $pushProcess = $this->adb('push', $localBuildPath, $tempPath);
         $pushProcess->run();
 
         if (! $pushProcess->isSuccessful()) {
+            $this->error('Hot reload: adb push failed — '.trim($pushProcess->getErrorOutput()));
+
             return;
         }
 
         // Step 2: Remove old build directory
-        $rmProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'rm', '-rf', $deviceBasePath.'/build']);
+        $rmProcess = $this->adb('shell', 'run-as', $packageName, 'rm', '-rf', $deviceBasePath.'/build');
         $rmProcess->run();
 
         // Step 3: Create public directory if needed
-        $mkdirProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'mkdir', '-p', $deviceBasePath]);
+        $mkdirProcess = $this->adb('shell', 'run-as', $packageName, 'mkdir', '-p', $deviceBasePath);
         $mkdirProcess->run();
 
         // Step 4: Copy from temp to app storage
-        $cpProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'cp', '-r', $tempPath, $deviceBasePath.'/build']);
+        $cpProcess = $this->adb('shell', 'run-as', $packageName, 'cp', '-r', $tempPath, $deviceBasePath.'/build');
         $cpProcess->run();
 
-        $cleanupProcess = new Process(['adb', 'shell', 'rm', '-rf', $tempPath]);
+        $cleanupProcess = $this->adb('shell', 'rm', '-rf', $tempPath);
         $cleanupProcess->run();
 
         if (! $cpProcess->isSuccessful()) {
@@ -380,21 +432,23 @@ trait WatchesAndroid
         $tempFileName = 'hotreload_'.uniqid().'_'.basename($localPath);
         $tempPath = "/data/local/tmp/{$tempFileName}";
 
-        $pushProcess = new Process(['adb', 'push', $localPath, $tempPath]);
+        $pushProcess = $this->adb('push', $localPath, $tempPath);
         $pushProcess->run();
 
         if (! $pushProcess->isSuccessful()) {
+            $this->error('Hot reload: adb push failed — '.trim($pushProcess->getErrorOutput()));
+
             return false;
         }
 
         $deviceDir = dirname($devicePath);
-        $mkdirProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'mkdir', '-p', $deviceDir]);
+        $mkdirProcess = $this->adb('shell', 'run-as', $packageName, 'mkdir', '-p', $deviceDir);
         $mkdirProcess->run();
 
-        $copyProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'cp', $tempPath, $devicePath]);
+        $copyProcess = $this->adb('shell', 'run-as', $packageName, 'cp', $tempPath, $devicePath);
         $copyProcess->run();
 
-        $cleanupProcess = new Process(['adb', 'shell', 'rm', $tempPath]);
+        $cleanupProcess = $this->adb('shell', 'rm', $tempPath);
         $cleanupProcess->run();
 
         return $copyProcess->isSuccessful();
@@ -416,13 +470,33 @@ trait WatchesAndroid
         $tempSignalPath = '/data/local/tmp/reload_signal.json';
         $signalPath = "/data/data/{$packageName}/app_storage/laravel/storage/framework/reload_signal.json";
 
-        $pushProcess = new Process(['adb', 'push', $localTemp, $tempSignalPath]);
+        // Ensure the target directory exists on device
+        $mkdirProcess = $this->adb('shell', 'run-as', $packageName, 'mkdir', '-p', dirname($signalPath));
+        $mkdirProcess->run();
+
+        $pushProcess = $this->adb('push', $localTemp, $tempSignalPath);
         $pushProcess->run();
 
-        $copyProcess = new Process(['adb', 'shell', 'run-as', $packageName, 'cp', $tempSignalPath, $signalPath]);
+        if (! $pushProcess->isSuccessful()) {
+            $this->error('Hot reload: adb push failed — '.$pushProcess->getErrorOutput());
+
+            @unlink($localTemp);
+
+            return;
+        }
+
+        $copyProcess = $this->adb('shell', 'run-as', $packageName, 'cp', $tempSignalPath, $signalPath);
         $copyProcess->run();
 
-        $cleanupProcess = new Process(['adb', 'shell', 'rm', $tempSignalPath]);
+        if (! $copyProcess->isSuccessful()) {
+            $this->error('Hot reload: run-as cp failed — '.$copyProcess->getErrorOutput());
+        }
+
+        // Touch the file to ensure mtime updates (some Android cp preserves source mtime)
+        $touchProcess = $this->adb('shell', 'run-as', $packageName, 'touch', $signalPath);
+        $touchProcess->run();
+
+        $cleanupProcess = $this->adb('shell', 'rm', $tempSignalPath);
         $cleanupProcess->run();
 
         @unlink($localTemp);

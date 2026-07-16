@@ -185,7 +185,7 @@ class InstallCommand extends Command
             };
         }
 
-        $this->showProBanner();
+        $this->showSuperNativeBanner();
     }
 
     protected function ensureAppIdIsSet(): void

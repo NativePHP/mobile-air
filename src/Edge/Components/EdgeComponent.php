@@ -7,6 +7,16 @@ use Illuminate\View\Component;
 use Native\Mobile\Edge\Edge;
 use Native\Mobile\Edge\Exceptions\MissingRequiredPropsException;
 
+/**
+ * Base class for Edge navigation chrome components (top bar, bottom nav, side nav).
+ *
+ * These components use the Edge class to build navigation UI that wraps around
+ * the content area. They collect children via Edge::startContext()/endContext()
+ * and render through native-placeholder blade templates.
+ *
+ * This is separate from NativeBladeComponent, which builds full native screen
+ * content via NativeElementCollector and shared memory.
+ */
 abstract class EdgeComponent extends Component
 {
     protected string $type = '';

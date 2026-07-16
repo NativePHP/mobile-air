@@ -2,6 +2,9 @@
 .DS_Store
 /vendor
 /resources/xcode/Libraries
+resources/xcode/**/xcuserdata/
+resources/xcode/NativePHP.xcworkspace/xcuserdata/
+resources/xcode/Pods/
 
 !/resources/xcode/Include/Bridge
 !/resources/xcode/Include/module.modulemap

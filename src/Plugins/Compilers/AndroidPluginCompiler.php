@@ -140,8 +140,13 @@ class AndroidPluginCompiler
         // Run pre-compile hooks
         $hookRunner->runPreCompileHooks();
 
+        // Emit ProGuard/R8 keep rules for every plugin (runs even when the
+        // list is empty so a removed plugin's stale rules are cleared).
+        $this->injectPluginProguardRules($allPlugins);
+
         if ($allPlugins->isEmpty()) {
             $this->generateEmptyRegistration();
+            $this->generateEmptyRendererRegistration();
 
             return;
         }
@@ -175,6 +180,9 @@ class AndroidPluginCompiler
             $this->generateEmptyRegistration();
         }
 
+        // Generate UI plugin renderer registration
+        $this->generateRendererRegistration($allPlugins);
+
         // Merge AndroidManifest entries (even if no bridge functions)
         $this->mergeManifestEntries($allPlugins);
 
@@ -192,6 +200,121 @@ class AndroidPluginCompiler
 
         // Run post-compile hooks
         $hookRunner->runPostCompileHooks();
+    }
+
+    /**
+     * Write ProGuard/R8 rules for all plugins into the app's
+     * proguard-rules.pro, inside a marker-delimited block that is rebuilt
+     * on every compile (idempotent; stale rules from removed plugins are
+     * dropped). Inert unless minification is enabled.
+     *
+     * Two sources per plugin:
+     *  - generated `-keep` rules for each distinct Kotlin package found in
+     *    the plugin's sources — plugin entry points are reached via
+     *    generated registrations, build-time patches, and JNI, none of
+     *    which R8 can trace, so plugin classes must survive shrinking;
+     *  - verbatim rules the plugin declares as `android.proguard_rules`
+     *    in nativephp.json (dependency `-dontwarn`s and the like).
+     */
+    protected function injectPluginProguardRules(Collection $plugins): void
+    {
+        $proguardPath = $this->androidProjectPath.'/app/proguard-rules.pro';
+
+        if (! $this->files->exists($proguardPath)) {
+            return;
+        }
+
+        $block = $this->buildPluginProguardBlock($plugins);
+        $content = $this->files->get($proguardPath);
+
+        $begin = '# BEGIN nativephp-plugin-rules';
+        $end = '# END nativephp-plugin-rules';
+
+        if (str_contains($content, $begin) && str_contains($content, $end)) {
+            $content = preg_replace(
+                '/'.preg_quote($begin, '/').'.*?'.preg_quote($end, '/').'/s',
+                $block,
+                $content,
+                1
+            );
+        } else {
+            $content = rtrim($content)."\n\n".$block."\n";
+        }
+
+        $this->files->put($proguardPath, $content);
+    }
+
+    /**
+     * Build the marker-delimited rules block. Pure (no IO on the android
+     * project) so it is unit-testable.
+     */
+    public function buildPluginProguardBlock(Collection $plugins): string
+    {
+        $lines = [
+            '# BEGIN nativephp-plugin-rules',
+            '# Auto-generated on every build from installed plugins — do not edit.',
+        ];
+
+        foreach ($plugins as $plugin) {
+            $packages = $this->pluginKotlinPackages($plugin);
+            $declared = $plugin->getAndroidProguardRules();
+
+            if (empty($packages) && empty($declared)) {
+                continue;
+            }
+
+            $lines[] = "# {$plugin->name}";
+            foreach ($packages as $package) {
+                $lines[] = "-keep class {$package}.** { *; }";
+            }
+            foreach ($declared as $rule) {
+                $lines[] = $rule;
+            }
+        }
+
+        $lines[] = '# END nativephp-plugin-rules';
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Distinct Kotlin package declarations across a plugin's Android
+     * sources, pruned so a parent package subsumes its children.
+     *
+     * @return list<string>
+     */
+    protected function pluginKotlinPackages(Plugin $plugin): array
+    {
+        $sourcePath = $plugin->getAndroidSourcePath();
+
+        if (! $this->files->isDirectory($sourcePath)) {
+            return [];
+        }
+
+        $packages = [];
+        foreach ($this->files->allFiles($sourcePath) as $file) {
+            if ($file->getExtension() !== 'kt') {
+                continue;
+            }
+            $package = $this->extractPackageFromContent($this->files->get($file->getPathname()));
+            if ($package !== null) {
+                $packages[] = $package;
+            }
+        }
+
+        $packages = array_values(array_unique($packages));
+        sort($packages);
+
+        // Drop packages already covered by a parent's `.**` keep.
+        return array_values(array_filter($packages, function ($candidate) use ($packages) {
+            foreach ($packages as $other) {
+                if ($other !== $candidate && str_starts_with($candidate, $other.'.')) {
+                    return false;
+                }
+            }
+
+            return true;
+        }));
     }
 
     /**
@@ -394,6 +517,76 @@ class AndroidPluginCompiler
         $content = Stub::make('android/PluginBridgeFunctionRegistration.empty.kt.stub')->render();
 
         $path = $this->generatedPath.'/PluginBridgeFunctionRegistration.kt';
+        $this->files->put($path, $content);
+        $this->generatedFiles[] = $path;
+    }
+
+    /**
+     * Generate PluginRendererRegistration.kt for UI plugin renderers
+     */
+    protected function generateRendererRegistration(Collection $plugins): void
+    {
+        $registrations = [];
+
+        foreach ($plugins as $plugin) {
+            foreach ($plugin->getComponents() as $component) {
+                if (empty($component['android_renderer'])) {
+                    continue;
+                }
+
+                $registrations[] = [
+                    'type' => $component['type'],
+                    'renderer' => $component['android_renderer'],
+                    'plugin' => $plugin->name,
+                ];
+            }
+        }
+
+        if (empty($registrations)) {
+            $this->generateEmptyRendererRegistration();
+
+            return;
+        }
+
+        $imports = collect($registrations)
+            ->pluck('renderer')
+            ->unique()
+            ->sort()
+            ->map(fn ($renderer) => "import {$renderer}")
+            ->implode("\n");
+
+        $registerCalls = collect($registrations)
+            ->map(function ($reg) {
+                // Extract just the class name from FQN: com.vendor.ui.RendererName → RendererName
+                $parts = explode('.', $reg['renderer']);
+                $className = end($parts);
+
+                return "    // Plugin: {$reg['plugin']}\n    NativeRendererRegistry.register(\"{$reg['type']}\", NodeRenderer { node, modifier ->\n        {$className}.Render(node, modifier)\n    })";
+            })
+            ->implode("\n\n");
+
+        $content = Stub::make('android/PluginRendererRegistration.kt.stub')
+            ->replaceAll([
+                'IMPORTS' => $imports,
+                'REGISTRATIONS' => $registerCalls,
+            ])
+            ->render();
+
+        $path = $this->generatedPath.'/PluginRendererRegistration.kt';
+        $this->files->put($path, $content);
+        $this->generatedFiles[] = $path;
+    }
+
+    /**
+     * Generate empty renderer registration when no UI plugins
+     */
+    protected function generateEmptyRendererRegistration(): void
+    {
+        $this->files->ensureDirectoryExists($this->generatedPath);
+
+        $content = Stub::make('android/PluginRendererRegistration.empty.kt.stub')->render();
+
+        $path = $this->generatedPath.'/PluginRendererRegistration.kt';
         $this->files->put($path, $content);
         $this->generatedFiles[] = $path;
     }

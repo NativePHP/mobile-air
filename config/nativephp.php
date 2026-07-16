@@ -156,6 +156,27 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Runtime Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Controls how the PHP interpreter runs on device. In 'persistent' mode,
+    | PHP boots once and stays alive — subsequent requests dispatch through
+    | the running interpreter (~5-30ms instead of ~200-300ms). In 'classic'
+    | mode, each request does a full php_embed_init/shutdown cycle.
+    |
+    | reset_instances:        Clear resolved facade instances between dispatches
+    | gc_between_dispatches:  Run gc_collect_cycles() between dispatches
+    |
+    */
+
+    'runtime' => [
+        'mode' => env('NATIVEPHP_RUNTIME_MODE', 'persistent'),
+        'reset_instances' => true,
+        'gc_between_dispatches' => false,
+    ],
+
     'cleanup_env_keys' => [
         'AWS_*',
         'GITHUB_*',
@@ -201,6 +222,37 @@ return [
         'gc_between_dispatches' => false,
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Runtime Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Controls the persistent PHP runtime behavior. In 'persistent' mode,
+    | Laravel boots once and the kernel is reused across requests (~5-30ms
+    | per dispatch instead of ~200-300ms). Falls back to 'classic' mode
+    | (full init/shutdown per request) if persistent boot fails.
+    |
+    */
+
+    'runtime' => [
+        'mode' => env('NATIVEPHP_RUNTIME_MODE', 'persistent'),
+        'reset_instances' => true,
+        'gc_between_dispatches' => false,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | FPS Overlay
+    |--------------------------------------------------------------------------
+    |
+    | When true, shows a small dev overlay in the top-trailing corner with
+    | live FPS / p99 frame time / jank count. Useful for spotting jank
+    | during development. Default off so production users never see it.
+    | Toggle via `NATIVEPHP_FPS_OVERLAY=true` in `.env`.
+    |
+    */
+    'fps_overlay' => env('NATIVEPHP_FPS_OVERLAY', false),
+
     'android' => [
         'gradle_jdk_path' => env('NATIVEPHP_GRADLE_PATH'),
         'android_sdk_path' => env('NATIVEPHP_ANDROID_SDK_LOCATION'),
@@ -220,6 +272,9 @@ return [
         | target_sdk:  The SDK version your app is designed and tested for
         |
         */
+        'compile_sdk' => env('NATIVEPHP_ANDROID_COMPILE_SDK', 36),
+        'min_sdk' => env('NATIVEPHP_ANDROID_MIN_SDK', 33),
+        'target_sdk' => env('NATIVEPHP_ANDROID_TARGET_SDK', 36),
 
         /*
         |--------------------------------------------------------------------------

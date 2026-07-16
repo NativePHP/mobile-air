@@ -25,8 +25,10 @@ class RunCommand extends Command
     protected $signature = 'native:run
         {os? : Platform to run (android/a or ios/i)}
         {udid?}
-        {--build=debug : debug|release|bundle}
+        {--build=debug : debug|release|bundle|profileable}
         {--W|watch : Enable hot reloading during development}
+        {--vite : Start the Vite dev server (opt-in; off by default)}
+        {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
         {--no-tty : Disable TTY mode for non-interactive environments}';
 
@@ -109,6 +111,7 @@ class RunCommand extends Command
 
         if ($os === 'android') {
             $buildTypes['bundle'] = 'App Bundle (AAB)';
+            $buildTypes['profileable'] = 'Profileable (release-optimized, benchmarkable)';
         }
 
         $this->buildType = $this->option('build') ?? select(

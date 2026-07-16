@@ -1,0 +1,12 @@
+package com.nativephp.mobile.bridge.plugins
+
+import com.nativephp.mobile.ui.nativerender.NativeRendererRegistry
+import com.nativephp.mobile.ui.nativerender.NodeRenderer
+{{ IMPORTS }}
+
+// AUTO-GENERATED FILE - DO NOT EDIT
+// Generated from installed NativePHP UI plugins
+
+fun registerPluginRenderers() {
+{{ REGISTRATIONS }}
+}

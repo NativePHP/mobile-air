@@ -149,7 +149,19 @@ $wsWorker->onWorkerStart = function () use (&$deviceConnections, &$pendingCalls,
                         'error' => 'No device connected',
                     ]);
                     $packed = pack('N', strlen($error)).$error;
-                    $connection->send($packed);
+
+                    // THROTTLE the rejection. Replying instantly makes the PHP
+                    // runloop loop at full speed (publish→wait→reject→…), which
+                    // saturates this single-process Workerman event loop so a
+                    // reconnecting device's WebSocket can't be serviced (the app
+                    // sees "Operation timed out"). Delaying ~1s drops the
+                    // orphaned runloop to ~1 call/sec — no CPU spin, the event
+                    // loop stays free to accept the new device, and the
+                    // runloop's epoch check gets a chance to kill it cleanly
+                    // when the next session starts. One-shot timer per call.
+                    Timer::add(1, function () use ($connection, $packed) {
+                        $connection->send($packed);
+                    }, [], false);
 
                     continue;
                 }

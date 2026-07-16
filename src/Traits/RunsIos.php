@@ -106,7 +106,7 @@ trait RunsIos
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
-        if ($this->watching) {
+        if ($this->watching && $this->shouldRunVite()) {
             $this->startViteDevServer('ios');
         }
 
@@ -244,6 +244,18 @@ trait RunsIos
 
         shell_exec('open -a Simulator');
 
+        // Free the hot-reload port before (re)launching. Two stale holders can
+        // block the fresh app from binding 9999, which silently breaks hot
+        // reload (triggers land on the wrong listener):
+        //   1. A previous app instance still running in the simulator.
+        //   2. A leftover host `iproxy` from an earlier device run — the
+        //      simulator shares the host's localhost, so it collides too.
+        // simctl terminate errors if the app isn't running; that's expected.
+        Process::path($basePath)
+            ->run('xcrun simctl terminate '.$target.' '.config('nativephp.app_id'));
+        Process::path($basePath)
+            ->run('lsof -ti tcp:9999 | xargs kill -9 2>/dev/null');
+
         $this->components->task('Installing app on simulator', function () use ($basePath, $target, $verbose) {
             Process::path($basePath)
                 ->forever()
@@ -353,6 +365,13 @@ trait RunsIos
             warning('App installed but launch failed - tap the app icon on your device.');
         } else {
             outro('App launched!');
+        }
+
+        if ($this->watching) {
+            $this->call('native:watch', [
+                'platform' => 'ios',
+                'target' => $target,
+            ]);
         }
     }
 

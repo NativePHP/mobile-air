@@ -6,6 +6,8 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
@@ -14,6 +16,8 @@ use Native\Mobile\Commands\DebugCommand;
 use Native\Mobile\Commands\InstallCommand;
 use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\LaunchEmulatorCommand;
+use Native\Mobile\Commands\MakeNativeComponentCommand;
+use Native\Mobile\Commands\MakeNativeTestCommand;
 use Native\Mobile\Commands\OpenProjectCommand;
 use Native\Mobile\Commands\PackageCommand;
 use Native\Mobile\Commands\PluginBoostCommand;
@@ -25,12 +29,18 @@ use Native\Mobile\Commands\PluginRegisterCommand;
 use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
+use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\SimCommand;
 use Native\Mobile\Commands\TailCommand;
+use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
+use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\Elements;
+use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
@@ -73,14 +83,27 @@ class NativeServiceProvider extends PackageServiceProvider
                 PluginRegisterCommand::class,
                 PluginUninstallCommand::class,
                 PluginValidateCommand::class,
+                MakeNativeComponentCommand::class,
+                MakeNativeTestCommand::class,
+                RemoveNativeComponentCommand::class,
+                ValidateCommand::class,
             ]);
     }
 
     public function packageRegistered()
     {
+        // Load global helpers here too — not only via composer `autoload.files`.
+        // The dev sync copies src/ into an app's vendor without re-dumping the
+        // app autoloader, so the files-autoload entry wouldn't take effect until
+        // `composer dump-autoload`. Requiring it on boot makes isDark()/etc.
+        // available immediately after a sync. function_exists() guards inside
+        // keep it idempotent when the autoloader has already loaded it.
+        require_once __DIR__.'/helpers.php';
+
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
         $this->publishPluginsServiceProvider();
+        $this->registerCoreFacades();
         $this->registerPluginServices();
         $this->prepForIos();
         $this->registerJumpBridgeFallback();
@@ -102,6 +125,35 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->publishes([
             __DIR__.'/../resources/stubs/NativeServiceProvider.php.stub' => app_path('Providers/NativeServiceProvider.php'),
         ], 'nativephp-plugins-provider');
+    }
+
+    /**
+     * Bind facades that were previously supplied by standalone plugins and are
+     * now core built-ins (their native bridge functions ship in core's
+     * BridgeFunctionRegistration). Mirrors the singleton binding each plugin's
+     * ServiceProvider used to do — so `Device::…` resolves with no plugin
+     * installed. Dialog/File/System follow the same pattern as they migrate.
+     */
+    /**
+     * Keep query-side caches in sync with their push events. When the OS flips
+     * the theme, AppearanceChanged fires (and auto-dispatches globally); this
+     * listener updates System's cached appearance so `System::appearance()` /
+     * `isDark()` stay fresh without re-probing the bridge.
+     */
+    protected function registerSystemEventListeners(): void
+    {
+        Event::listen(
+            AppearanceChanged::class,
+            fn (AppearanceChanged $e) => System::rememberAppearance($e->mode),
+        );
+    }
+
+    protected function registerCoreFacades(): void
+    {
+        $this->app->singleton(Device::class, fn () => new Device);
+        $this->app->singleton(System::class, fn () => new System);
+        $this->app->singleton(Dialog::class, fn () => new Dialog);
+        $this->app->singleton(File::class, fn () => new File);
     }
 
     protected function registerPluginServices(): void
@@ -142,19 +194,185 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->loadViewsFrom(__DIR__.'/resources/views', 'nativephp-mobile');
         $this->loadViewsFrom(__DIR__.'/../resources/jump/views', 'jump');
+
+        // Register `resources/views/native` as a primary view-finder
+        // location (mirrors Livewire's `resources/views/livewire`
+        // convention). Lets devs write `view('home')` in their
+        // `render()` instead of `view('native.home')`.
+        //
+        // Unconditional on purpose: Laravel-aware IDE plugins
+        // (Laravel Idea, PhpStorm Laravel support, Intelephense)
+        // scan service-provider code STATICALLY to find view paths
+        // to index. They can't evaluate `is_dir(...)` at scan time —
+        // a conditional registration is skipped by the indexer, and
+        // CMD-click on view names stops resolving. Laravel's
+        // view-finder tolerates a missing path at runtime (it just
+        // won't find any views there), so the guard wasn't buying us
+        // anything.
+        app('view')->addLocation(resource_path('views/native'));
     }
 
     public function packageBooted()
     {
         $this->setupComposerPostUpdateScript();
+        $this->registerSystemEventListeners();
         $this->registerNativeComponents();
+        $this->registerCoreElements();
+        $this->registerUiPluginComponents();
         $this->registerMiddleware();
         $this->registerFilesystems();
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
+        $this->applyFpsOverlayConfig();
+
+        if (config('nativephp-internal.running')) {
+            $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+        }
 
         $blade = app('blade.compiler');
-        $blade->precompiler(new NativeTagPrecompiler($blade));
+
+        // Build the bare-tag allowlist from registered element types so
+        // `<column>` / `<row>` / `<button>` etc. compile the same way as
+        // `<native:column>` / `<native:row>` / `<native:button>`. Types
+        // are snake_case (`scroll_view`) and tags are kebab-case
+        // (`scroll-view`) — convert here and the precompiler matches on
+        // the kebab form like it already does for the prefixed syntax.
+        $shortFormTags = array_map(
+            fn (string $type) => str_replace('_', '-', $type),
+            array_keys(ElementRegistry::all()),
+        );
+
+        $blade->precompiler(new NativeTagPrecompiler($shortFormTags));
+
+        // During a native render, force-recompile any view whose cached
+        // compiled file wasn't produced with the native precompiler active
+        // (no marker — e.g. a web render or `view:cache` compiled it
+        // first). Covers nested @includes; the root view gets the same
+        // check in renderBladeBoundToSelf().
+        //
+        // Registered as a view creator rather than a replacement 'blade'
+        // engine: the engine resolver is a single slot, and Livewire parks
+        // its ExtendedCompilerEngine there to bind `$this` inside component
+        // views — replacing it breaks every `$this->...` in Livewire blades.
+        // Creators are multi-listener and fire before each view (including
+        // nested @includes) evaluates, which is all this guard needs.
+        $this->app['view']->creator('*', function ($view) {
+            if (! NativeTagPrecompiler::active()) {
+                return;
+            }
+
+            $path = $view->getPath();
+
+            if (! str_ends_with($path, '.blade.php')) {
+                return;
+            }
+
+            $compiler = $this->app['blade.compiler'];
+
+            if (! NativeTagPrecompiler::compiledFileIsNative($compiler->getCompiledPath($path))) {
+                $compiler->compile($path);
+            }
+        });
+
+        Route::macro('native', function (string $uri, string $componentClass) {
+            NativeRouter::register($uri, $componentClass);
+
+            return Route::get($uri, function () use ($componentClass) {
+                // HTTP feature tests ($this->get('/')) must never enter the
+                // runloop: it blocks in wait_event against the REAL bridge —
+                // with a live Jump session that's ~90s of reconnect spinning
+                // per request. Answer 200 so route-level smoke tests pass,
+                // and point at the component harness for actual coverage.
+                if (app()->runningUnitTests()) {
+                    return response(
+                        "Native screen [{$componentClass}] — test it with Native::test() / Native::visit().",
+                        200
+                    );
+                }
+
+                $router = new NativeRouter;
+                $path = '/'.ltrim(request()->path(), '/');
+                $resolved = NativeRouter::resolve($path);
+                $params = $resolved ? $resolved['params'] : [];
+
+                // Hot-reload stack restoration. PHP wrote the full
+                // navigation stack to `.hot_restart` when the user
+                // saved a file; replay the entries below the current
+                // top so back-button history survives the PHP reboot.
+                // We delete the file here (PHP becomes the sole
+                // consumer); iOS / Android just peek at it for the
+                // top URI to dispatch.
+                $restartPath = storage_path('framework/.hot_restart');
+                if (is_file($restartPath)) {
+                    $raw = @file_get_contents($restartPath);
+                    $data = $raw ? @json_decode($raw, true) : null;
+                    $age = time() - (int) ($data['ts'] ?? 0);
+
+                    // The hot-reload re-exec lands on the WebView's URL (almost
+                    // always "/"), but the user may have navigated deeper before
+                    // saving. Redirect to the saved top screen so ITS route
+                    // restores onto it — otherwise the entry screen ("/") gets
+                    // pushed on top of the restored stack and the user is dumped
+                    // back at root. Leave .hot_restart in place; the target
+                    // route is the sole consumer. Normalize for a stable compare
+                    // so we can't redirect-loop.
+                    $savedTop = is_array($data) ? ($data['uri'] ?? null) : null;
+                    $savedTopNorm = $savedTop !== null ? '/'.ltrim($savedTop, '/') : null;
+                    if ($age <= 30 && $savedTopNorm && $savedTopNorm !== $path) {
+                        return redirect($savedTopNorm);
+                    }
+
+                    @unlink($restartPath);
+                    $stack = is_array($data['stack'] ?? null) ? $data['stack'] : [];
+                    // Drop the entry matching the current request URI —
+                    // `start()` will push that as the top itself.
+                    if ($age <= 30 && ! empty($stack)) {
+                        $last = end($stack);
+                        if (is_array($last) && ($last['uri'] ?? null) === $path) {
+                            array_pop($stack);
+                        }
+                        if (! empty($stack)) {
+                            $router->preloadStack($stack);
+                        }
+                    }
+                }
+
+                $exitUri = $router->start($componentClass, $params, $path);
+
+                if ($exitUri !== null) {
+                    return redirect($exitUri);
+                }
+
+                // Hot reload exit — return 204 so the WebView doesn't load stale content
+                if (file_exists(storage_path('framework/.hot_restart'))) {
+                    return response()->noContent();
+                }
+
+                return '';
+            });
+        });
+
+        // Route::nativeGroup(layout: TabsLayout::class, function () { ... })
+        // Routes registered inside the closure inherit the group's layout
+        // unless they call ->layout(...) themselves to override.
+        Route::macro('nativeGroup', function (string $layout, \Closure $routes) {
+            NativeRouter::beginGroup($layout);
+            try {
+                $routes();
+            } finally {
+                NativeRouter::endGroup();
+            }
+        });
+
+        // Fluent ->layout() chaining on the Route returned by Route::native().
+        // Example:
+        //     Route::native('/item/{id}', ItemDetail::class)
+        //         ->layout(StackLayout::class);
+        \Illuminate\Routing\Route::macro('layout', function (string $layoutClass) {
+            NativeRouter::setLayout($this->uri, $layoutClass);
+
+            return $this;
+        });
     }
 
     protected function registerBladeDirectives(): void
@@ -173,6 +391,21 @@ class NativeServiceProvider extends PackageServiceProvider
 
         Blade::if('android', function () {
             return Facades\System::isAndroid();
+        });
+
+        Blade::directive('nativeError', function ($expression) {
+            return "<?php
+                \$__nativeErrorArgs = [{$expression}];
+                \$__nativeErrorField = \$__nativeErrorArgs[0];
+                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? '#FF0000';
+                if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
+                    \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
+                        'text' => \$errors[\$__nativeErrorField],
+                        'color' => \$__nativeErrorColor,
+                        'fontSize' => 12,
+                    ]);
+                }
+            ?>";
         });
     }
 
@@ -265,6 +498,30 @@ class NativeServiceProvider extends PackageServiceProvider
         Vite::useHotFile($hotFile);
     }
 
+    /**
+     * Push the `nativephp.fps_overlay` config flag to the native side at
+     * boot so the iOS/Android FPS overlay turns on/off based purely on
+     * the dev's `.env` / config without touching native code.
+     */
+    private function applyFpsOverlayConfig(): void
+    {
+        if (! function_exists('nativephp_call')) {
+            return;
+        }
+
+        // Never at test boot: on a dev machine nativephp_call is the Jump
+        // TCP polyfill, and with a live Jump session this call blocks on a
+        // real device round-trip — adding ~1s to EVERY test's app boot
+        // (the FakeBridge can't intercept it; tests bind it after boot).
+        if ($this->app->runningUnitTests()) {
+            return;
+        }
+
+        $enabled = (bool) config('nativephp.fps_overlay', false);
+
+        nativephp_call('Perf.SetFpsOverlayEnabled', json_encode(['enabled' => $enabled]));
+    }
+
     private function setupComposerPostUpdateScript()
     {
         // Temporarily disabled for testing
@@ -350,6 +607,93 @@ class NativeServiceProvider extends PackageServiceProvider
     }
 
     /**
+     * Register UI components from installed nativephp-ui-plugin packages.
+     *
+     * For each component declared in a UI plugin's manifest:
+     * - Registers the Element class in ElementRegistry (for NativeElementCollector resolution)
+     * - Registers the Blade component (for <native:vendor-component> tag support)
+     */
+    protected function registerUiPluginComponents(): void
+    {
+        try {
+            $registry = $this->app->make(PluginRegistry::class);
+        } catch (\Throwable) {
+            return;
+        }
+
+        foreach ($registry->components() as $component) {
+            $type = $component['type'];
+            $elementClass = $component['element'];
+            $bladeClass = $component['blade'];
+
+            // Register in ElementRegistry so NativeElementCollector's default case resolves it
+            // Skip types already registered as core elements
+            if (class_exists($elementClass) && ! ElementRegistry::has($type)) {
+                ElementRegistry::register($type, $elementClass);
+            }
+
+            // Convert type to kebab Blade tag name:
+            // "button" → "native-button"
+            // "stripe.payment_sheet" → "native-stripe-payment-sheet"
+            $kebabName = str_replace(['.', '_'], '-', $type);
+            $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', $kebabName)), '-');
+
+            if (class_exists($bladeClass)) {
+                Blade::component("native-{$kebabName}", $bladeClass);
+            }
+        }
+    }
+
+    protected function registerCoreElements(): void
+    {
+        $elements = [
+            // Layout
+            'column' => Elements\Column::class,
+            'row' => Elements\Row::class,
+            'stack' => Elements\Stack::class,
+            'scroll_view' => Elements\ScrollView::class,
+            'spacer' => Elements\Spacer::class,
+
+            // Content
+            'text' => Elements\Text::class,
+            'image' => Elements\Image::class,
+            'icon' => Elements\Icon::class,
+
+            // Input (core primitive only)
+            'pressable' => Elements\Pressable::class,
+            // `button`, `text_input`, `toggle`, `activity_indicator`, `bottom_sheet`
+            // are registered by UI plugins (see nativephp/native-ui). Plugin
+            // discovery can't override an existing registration, so these must
+            // NOT be registered here.
+
+            // Navigation chrome
+            'top_bar' => Elements\TopBar::class,
+            'top_bar_action' => Elements\TopBarAction::class,
+            'bottom_nav' => Elements\BottomNav::class,
+            'bottom_nav_item' => Elements\BottomNavItem::class,
+            'side_nav' => Elements\SideNav::class,
+            'side_nav_item' => Elements\SideNavItem::class,
+            'side_nav_group' => Elements\SideNavGroup::class,
+            'side_nav_header' => Elements\SideNavHeader::class,
+
+            // Gesture / interaction
+            'gesture_area' => Elements\GestureArea::class,
+            'refreshable' => Elements\Refreshable::class,
+
+            // Canvas/shapes
+            'canvas' => Elements\Canvas::class,
+            'rect' => Elements\Rect::class,
+            'circle' => Elements\Circle::class,
+            'line' => Elements\Line::class,
+            'divider' => Elements\Divider::class,
+        ];
+
+        foreach ($elements as $type => $class) {
+            ElementRegistry::register($type, $class);
+        }
+    }
+
+    /**
      * Register pure PHP fallback for nativephp_call() when running on dev machine.
      *
      * On device, nativephp_call() is a C extension that calls into Swift/Kotlin.
@@ -395,8 +739,8 @@ class NativeServiceProvider extends PackageServiceProvider
             // Get just the class name for the component tag
             $className = basename($classPath);
 
-            // Skip the base NativeComponent class
-            if ($className === 'NativeComponent') {
+            // Skip the abstract base class
+            if ($className === 'NativeBladeComponent') {
                 continue;
             }
 

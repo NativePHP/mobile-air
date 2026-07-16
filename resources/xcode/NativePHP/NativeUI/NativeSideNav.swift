@@ -391,6 +391,17 @@ struct SideNavItemView: View {
     }
 
     private func handleNavigation() {
+        // In a Jump WebView session, side-nav items point at the dev-server host
+        // (absolute URLs). Forward those through onNavigate (→ php:// forward)
+        // instead of the system browser. Genuinely external links (a different
+        // host) still open externally.
+        let jump = JumpWebViewSession.shared
+        if jump.isActive, !jump.host.isEmpty, item.url.contains(jump.host) {
+            print("📱 Jump WebView session — forwarding side-nav URL: \(item.url)")
+            onNavigate(item.url)
+            return
+        }
+
         // Check if should open in browser
         if item.openInBrowser == true || isExternalUrl(item.url) {
             print("🌐 Opening external URL: \(item.url)")

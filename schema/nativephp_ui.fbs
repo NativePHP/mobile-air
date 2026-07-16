@@ -1,0 +1,339 @@
+// NativePHP Native UI — FlatBuffer Schema v1
+//
+// Shared between:
+//   - PHP extension (C, via flatcc)
+//   - Android native (Kotlin, via flatbuffers-java)
+//   - iOS native (Swift, via flatbuffers-swift)
+//
+// Generate:
+//   flatcc -a -o ../generated/c schema/nativephp_ui.fbs
+//   flatc --kotlin -o ../generated/kotlin schema/nativephp_ui.fbs
+//   flatc --swift -o ../generated/swift schema/nativephp_ui.fbs
+
+namespace nativephp.ui;
+
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum NodeType : ubyte {
+    Column = 0,
+    Row,
+    Stack,
+    ScrollView,
+    Text,
+    Image,
+    Button,
+    TextInput,
+    Toggle,
+    Spacer,
+    Divider,
+    // 64+ reserved for plugin-registered types
+    Custom = 64
+}
+
+// How a dimension is measured
+enum SizeMode : ubyte {
+    Fixed = 0,      // use the dp value
+    Wrap,           // intrinsic size
+    Fill,           // fill parent
+    Percent         // percentage of parent (value = 0-100)
+}
+
+enum Align : ubyte {
+    Start = 0,
+    Center,
+    End,
+    Stretch
+}
+
+enum Justify : ubyte {
+    Start = 0,
+    Center,
+    End,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly
+}
+
+enum FontWeight : ubyte {
+    Normal = 0,
+    Bold,
+    Light,
+    Medium,
+    SemiBold
+}
+
+enum TextAlign : ubyte {
+    Left = 0,
+    Center,
+    Right
+}
+
+enum ImageFit : ubyte {
+    Cover = 0,
+    Contain,
+    Stretch,
+    Center
+}
+
+enum KeyboardType : ubyte {
+    Default = 0,
+    Number,
+    Email,
+    Phone,
+    Url,
+    Decimal
+}
+
+enum EventType : ubyte {
+    Press = 0,
+    LongPress,
+    TextChange,
+    ToggleChange,
+    Submit,
+    Focus,
+    Blur,
+    Scroll
+}
+
+enum PatchOp : ubyte {
+    Create = 0,
+    Update,
+    Remove,
+    Reorder
+}
+
+// ─────────────────────────────────────────────
+// Structs (inline, zero overhead, fixed layout)
+// ─────────────────────────────────────────────
+
+// Packed ARGB color — matches Android's ColorInt
+struct Color {
+    argb: uint32;
+}
+
+// 4-sided insets (padding, margin, border)
+struct Edges {
+    top: float;
+    right: float;
+    bottom: float;
+    left: float;
+}
+
+// A dimension with its measurement mode
+struct Dimension {
+    value: float;
+    mode: SizeMode;
+}
+
+// ─────────────────────────────────────────────
+// Layout — shared by all nodes
+// ─────────────────────────────────────────────
+
+table Layout {
+    width: Dimension;
+    height: Dimension;
+    padding: Edges;
+    margin: Edges;
+
+    // Flex properties (for children of Row/Column)
+    flex_grow: float = 0;
+    flex_shrink: float = 1;
+    align_self: Align = Start;
+
+    // For Row/Column containers
+    align_items: Align = Start;
+    justify_content: Justify = Start;
+    gap: float = 0;
+}
+
+// ─────────────────────────────────────────────
+// Style — shared by all nodes
+// ─────────────────────────────────────────────
+
+table Style {
+    bg_color: Color;
+    border_radius: float = 0;
+    border_width: float = 0;
+    border_color: Color;
+    opacity: float = 1.0;
+    elevation: float = 0;
+}
+
+// ─────────────────────────────────────────────
+// Node-specific props (union)
+// ─────────────────────────────────────────────
+
+table TextProps {
+    text: string (required);
+    font_size: float = 16;
+    font_weight: FontWeight = Normal;
+    color: Color;
+    text_align: TextAlign = Left;
+    max_lines: uint16 = 0;         // 0 = unlimited
+    line_height: float = 0;        // 0 = default
+}
+
+table ImageProps {
+    src: string (required);        // URL, asset path, or base64
+    fit: ImageFit = Cover;
+    tint_color: Color;             // optional tint overlay
+}
+
+table ButtonProps {
+    label: string (required);
+    on_press: uint32;              // callback ID
+    disabled: bool = false;
+    color: Color;                  // button color
+    label_color: Color;            // text color
+}
+
+table TextInputProps {
+    value: string;
+    placeholder: string;
+    on_change: uint32;             // callback ID
+    on_submit: uint32;             // callback ID
+    keyboard: KeyboardType = Default;
+    secure: bool = false;
+    max_length: uint16 = 0;       // 0 = unlimited
+    multiline: bool = false;
+}
+
+table ToggleProps {
+    value: bool = false;
+    on_change: uint32;             // callback ID
+    disabled: bool = false;
+}
+
+table ScrollViewProps {
+    horizontal: bool = false;
+    shows_indicators: bool = true;
+}
+
+// For plugin-registered custom node types
+table CustomProps {
+    type_name: string (required);  // e.g. "MapView", "VideoPlayer"
+    data: [CustomPropEntry];       // generic key-value pairs
+}
+
+table CustomPropEntry {
+    key: string (required);
+    // Only one of these will be set
+    str_val: string;
+    int_val: int32;
+    float_val: float;
+    bool_val: bool;
+    callback_val: uint32;          // callback ID
+}
+
+// Union: each node has at most one of these
+union Props {
+    TextProps,
+    ImageProps,
+    ButtonProps,
+    TextInputProps,
+    ToggleProps,
+    ScrollViewProps,
+    CustomProps
+}
+
+// ─────────────────────────────────────────────
+// Node — the core building block
+// ─────────────────────────────────────────────
+
+table Node {
+    id: uint32;
+    type: NodeType;
+    props: Props;                  // type-specific properties
+    layout: Layout;
+    style: Style;
+    children: [Node];
+
+    // Generic event handlers (any node can be tappable)
+    on_press: uint32 = 0;         // callback ID, 0 = none
+    on_long_press: uint32 = 0;
+}
+
+// ─────────────────────────────────────────────
+// Tree — full screen description
+// ─────────────────────────────────────────────
+
+table Tree {
+    root: Node;
+    version: uint32;
+    // Callback count so native knows the range of valid IDs
+    callback_count: uint32;
+}
+
+// ─────────────────────────────────────────────
+// Patches — incremental updates (PHP → Native)
+// ─────────────────────────────────────────────
+
+table Patch {
+    op: PatchOp;
+    node_id: uint32;               // target node
+    parent_id: uint32;             // for Create/Reorder
+    index: int32;                  // position in parent children
+    node: Node;                    // full node for Create, partial for Update
+}
+
+table PatchSet {
+    from_version: uint32;
+    to_version: uint32;
+    patches: [Patch];
+}
+
+// ─────────────────────────────────────────────
+// Events — Native → PHP (user interactions)
+// ─────────────────────────────────────────────
+
+table PressEventData {
+    x: float;
+    y: float;
+}
+
+table TextChangeData {
+    text: string;
+}
+
+table ScrollData {
+    offset_x: float;
+    offset_y: float;
+    content_width: float;
+    content_height: float;
+}
+
+table ToggleData {
+    value: bool;
+}
+
+union EventData {
+    PressEventData,
+    TextChangeData,
+    ScrollData,
+    ToggleData
+}
+
+table Event {
+    type: EventType;
+    callback_id: uint32;           // maps to PHP closure
+    node_id: uint32;               // which node triggered it
+    data: EventData;
+    timestamp: uint64;             // ms since epoch
+}
+
+// The event queue sits in shared memory.
+// Native appends events, PHP reads and drains.
+table EventQueue {
+    events: [Event];
+}
+
+// ─────────────────────────────────────────────
+// Root types for buffer identification
+// ─────────────────────────────────────────────
+
+root_type Tree;
+
+file_identifier "NPUI";
+file_extension "npui";

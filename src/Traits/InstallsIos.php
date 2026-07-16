@@ -166,6 +166,14 @@ trait InstallsIos
         $this->components->task('Installing iOS libraries', function () use ($extractPath) {
             File::copyDirectory($extractPath.'/Libraries', $this->iosPath.'/Libraries');
             File::copyDirectory($extractPath.'/Include', $this->iosPath.'/Include');
+
+            // Re-copy our custom Bridge files (PHP.c, PHP.h) which contain the persistent
+            // runtime implementation — the binary ZIP ships older/template versions
+            $bridgeSrc = __DIR__.'/../../resources/xcode/Include/Bridge';
+            $bridgeDst = $this->iosPath.'/Include/Bridge';
+            if (is_dir($bridgeSrc)) {
+                File::copyDirectory($bridgeSrc, $bridgeDst);
+            }
         });
 
         // Re-copy our custom Bridge files (PHP.c, PHP.h) which contain the persistent

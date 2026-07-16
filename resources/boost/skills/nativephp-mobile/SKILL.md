@@ -1,40 +1,72 @@
 ---
 name: nativephp-mobile
-description: "Builds native iOS and Android apps with PHP & Larvel. Activate when using native device APIs (camera, dialog, biometrics, scanner, geolocation, push notifications), EDGE components (bottom-nav, top-bar, side-nav), `#nativephp` JavaScript imports, native mobile events, NativePHP Artisan commands (native:run, native:install, native:watch), deep links, secure storage, or mobile app deployment."
+description: "Builds fully native iOS and Android apps with PHP & Laravel. Activate when working with SuperNative screens (NativeComponent, Route::native, native:make), EDGE components (native:column, native:button, native:list, bottom-nav, top-bar, and 40+ more), NativeLayout chrome, native:model data binding, #[Computed]/#[Poll]/#[On] attributes, Native::test() component tests, native device APIs (camera, dialog, biometrics, scanner, geolocation, push notifications), NativePHP Artisan commands (native:run, native:install, native:watch, native:jump), deep links, secure storage, or mobile app deployment."
 ---
 
-# NativePHP Mobile v3
+# NativePHP Mobile v4
+
+NativePHP Mobile v4 ("SuperNative") builds **fully native** apps: SwiftUI on iOS, Jetpack Compose on Android,
+driven entirely by PHP. Each screen is a `NativeComponent` PHP class (think Livewire, but for native views)
+rendering **EDGE** Blade elements. There is no web server and — for native UI screens — no web view.
+
+## Native UI First — Non-Negotiable
+
+**Every screen you build or scaffold must be native UI**: a `NativeComponent` + EDGE elements, registered with
+`Route::native()`.
+
+- Never create new screens as web views, Livewire pages, or Inertia pages. The web view is a legacy escape hatch
+  (`native:web-view`) for embedding web content inside a native screen — never the foundation of one.
+- If the user asks for a webview-based screen, build it natively with EDGE and briefly explain why (performance,
+  platform look-and-feel, no web-view lifecycle issues). Only fall back if they explicitly insist.
+- When you encounter existing webview/Livewire/Inertia screens in an app, suggest migrating them — the
+  `nativephp-webview-to-native` skill walks through the conversion.
+- Style exclusively with Tailwind utility classes via `class="..."` / `:class="..."`. Never inline CSS
+  `style="..."` or ad-hoc styling props.
+- Use `native:icon` for iconography (SF Symbols on iOS, Material Icons on Android — cross-platform names like
+  `home` resolve on both). Never use emoji characters in UI text, labels, or buttons unless the user explicitly
+  asks for them. Prefer the **typed icon enums** (`App\Icons\Ios`, `App\Icons\Android`, `App\Icons\AndroidOutlined`,
+  bound with `:ios` / `:android` — they're autocompletable and can't misspell a symbol name. The enums are
+  generated, not shipped: **if `app/Icons/` doesn't exist yet, run `php artisan native-ui:generate-icons`
+  first** (safe to run yourself; re-run with `--refresh-material` to update). Import them with `@use` (compiled
+  views have no namespace), or use fully-qualified cases:
+
+  ```blade
+  @use('App\Icons\Ios')
+  @use('App\Icons\Android')
+
+  <native:icon :ios="Ios::Gearshape" :android="Android::Settings" :size="28" class="text-theme-primary" />
+  ```
 
 ## Documentation
 
-Before implementing any feature, fetch the relevant docs using `WebFetch`. Find the right URL in [references/available-docs.md](references/available-docs.md).
+Before implementing any feature, fetch the relevant docs using `WebFetch`. Find the right URL in
+[references/available-docs.md](references/available-docs.md).
 
 ```
-WebFetch("https://nativephp.com/docs/mobile/3/apis/camera", "Explain Camera API methods, events, and fluent builder options")
+WebFetch("https://nativephp.com/docs/mobile/4/the-basics/routing", "Explain Route::native, navigation methods, and transitions")
 ```
 
 ## Build Commands — Tell the User, Don't Run
 
-Never auto-run these commands. Always tell the user to run them manually:
+Never auto-run these commands. Always tell the user to run them manually, and always ask which platform
+(iOS or Android) first — never assume:
 
 ```bash
-npm run build -- --mode=ios      # or --mode=android
-php artisan native:run ios       # or android
-php artisan native:watch
-./native open
-./native watch
+php artisan native:run ios          # or android; compile and launch
+php artisan native:run ios --watch  # build, deploy, hot reload in one
+php artisan native:watch            # hot reload only
+php artisan native:jump             # device dev loop via the Jump app (QR code)
+./native run                        # shortcut wrapper installed by native:install
 ```
 
-## Environment Detection
+The Vite dev server is **opt-in** in v4: add `--vite` to `native:run`/`native:watch` only when the app uses
+JS/CSS HMR (web-view assets). Native UI screens hot-reload without Vite. `npm run build -- --mode=ios|android`
+is only needed for apps that still ship web-view assets.
 
-Before suggesting commands, determine:
+## Getting Started
 
-1. **OS**: macOS supports iOS + Android. Windows/Linux support Android only. WSL unsupported.
-2. **Frontend stack**: Livewire/Blade (`.blade.php` with `wire:`, `app/Livewire/`) vs JavaScript (`.vue`/`.jsx`/`.tsx`, `inertiajs` in `package.json`).
-
-## Required Environment Variables
-
-Set in `.env` before `php artisan native:install`:
+New apps: `laravel new my-app --using=nativephp/mobile-starter`, or `composer require nativephp/mobile` in an
+existing app. Set env vars **before** `php artisan native:install`:
 
 ```dotenv
 NATIVEPHP_APP_ID=com.yourcompany.yourapp
@@ -44,128 +76,186 @@ NATIVEPHP_APP_VERSION_CODE="1"
 NATIVEPHP_DEVELOPMENT_TEAM=XXXXXXXXXX
 ```
 
-## Artisan Commands Reference
+OS support: macOS builds iOS + Android; Windows/Linux build Android only; WSL unsupported.
 
-| Command | Purpose |
-|---------|---------|
-| `php artisan native:install` | Install/upgrade native shell |
-| `php artisan native:run ios/android` | Build and launch on simulator/emulator |
-| `php artisan native:watch` | Hot reload during development |
-| `php artisan native:jump` | Quick restart without full rebuild |
-| `php artisan native:tail` | Stream device logs |
-| `php artisan native:package` | Package for App Store / Play Store |
+## SuperNative Screens
 
-HMR with Vite works when `npm run dev` runs alongside `native:run`.
-
-## Vite Configuration
-
-```javascript
-import { nativephpMobile, nativephpHotFile } from './vendor/nativephp/mobile/resources/js/vite-plugin.js';
-
-export default defineConfig({
-    plugins: [
-        laravel({
-            input: ['resources/css/app.css', 'resources/js/app.js'],
-            refresh: true,
-            hotFile: nativephpHotFile(),
-        }),
-        tailwindcss(),
-        nativephpMobile(),
-    ]
-});
-```
-
-## JavaScript Usage (Vue/React/Inertia)
-
-```javascript
-import { camera, dialog, scanner, biometric, on, off, Events } from '#nativephp';
-
-await camera.getPhoto();
-await dialog.alert('Title', 'Message');
-await scanner.scan().prompt('Scan ticket').formats(['qr', 'ean13']);
-await biometric.prompt().id('auth-check');
-```
-
-Event handling — always clean up in `onUnmounted`:
-
-```javascript
-const handler = (payload) => { /* handle */ };
-on(Events.Camera.PhotoTaken, handler);
-
-// onUnmounted:
-off(Events.Camera.PhotoTaken, handler);
-```
-
-## PHP Usage (Livewire/Blade)
-
-Core Facades (`Native\Mobile\Facades`): `Camera`, `Dialog`, `Biometrics`, `Network`, `SecureStorage`, `File`, `Share`, `Haptics`, `System`, `Device`
-
-Plugin Facades (separate packages): `Browser`, `Scanner`, `Microphone`, `Geolocation`, `PushNotifications`
+Scaffold with `php artisan native:make Counter` (remove with `native:rm`). Register in routes (a
+`routes/mobile.php` is a clean convention):
 
 ```php
-use Native\Mobile\Attributes\OnNative;
-use Native\Mobile\Events\Camera\PhotoTaken;
+Route::native('/', Home::class);
+Route::native('/item/{id}', ItemDetail::class);
+```
 
-#[OnNative(PhotoTaken::class)]
-public function handlePhoto(string $path): void
+Inside a `NativeComponent`: `$this->param('id')`, `$this->data('key', 'default')`, `$this->navigate('/item/42')`,
+`$this->back()`, `$this->replace('/login')`, `$this->exitToWeb('/dashboard')`; chain
+`->transition(Transition::SlideFromBottom)` to customize animation. In Blade, `@navigate="/path"` works on any
+element (modifiers: `@navigate.back`, `@navigate.replace.fade`, `@navigate.slideFromBottom`).
+
+Lifecycle hooks: `mount()` (first push only), `onResume()` (returning to the screen), `onBackPressed()`
+(Android back button), `unmount()`, and `updated{Property}()` when a bound property changes. Mark a component
+`#[Lazy]` to paint a placeholder instantly while a slow `mount()` runs in the background.
+
+## EDGE Elements
+
+Screens are built from `native:` Blade components (the prefix is optional but preferred for clarity):
+
+```blade
+<native:column class="w-full h-full p-4 gap-4 bg-theme-background">
+    <native:text class="text-2xl font-bold">Welcome</native:text>
+    <native:text-input native:model="name" placeholder="Your name" />
+    <native:button label="Save" @press="save" />
+</native:column>
+```
+
+~40 elements are available — layout (column, row, stack, scroll-view, spacer, pressable), content (text, image,
+icon, divider, badge, progress-bar, activity-indicator), forms (button, button-group, text-input, toggle,
+checkbox, radio-group, select, slider, chip), navigation (bottom-nav, top-bar, side-nav, tab-row), lists
+(list, lazy-grid, carousel, refreshable), overlays (modal, bottom-sheet), and drawing (canvas, shapes). Fetch
+the component's doc page before using it — required props are validated at render time.
+
+## Custom Fonts
+
+Drop `.ttf`/`.otf`/`.ttc` files into `resources/fonts/` — the build bundles them into the native project
+automatically (a rebuild via `native:run` is needed for newly added files; tell the user). Reference a font by
+its filename without extension: `font="Inter-Bold"` on `native:text`, `native:button`, and the text inputs
+(fluent: `->font('Inter-Bold')`).
+
+- **Google Fonts**: `php artisan native:font Inter --weights=400,700` downloads straight into `resources/fonts/`
+  (no API key; libre-licensed, safe to bundle). Files come out as `<Family>-<Style>.ttf`, ready to use as
+  `font` tokens. Safe to run yourself.
+- **App-wide default**: set the `font-family` token in `config/native-ui.php` (e.g. `'Inter-Regular'`;
+  `'System'` = platform default) — applies to text, buttons, inputs, and navigation chrome. `native:font
+  --default` offers to set this for you. Per-element `font` and `font-serif`/`font-mono` classes still win.
+- **Chrome fonts**: layouts take a `$font` property, bars a `->font()`, and per-screen
+  `NavBarOptions::make()->font()`.
+- **Weight gotcha**: one font file = one weight. Avoid `font-bold` on single-weight custom fonts (Android
+  synthesizes a faux bold, iOS ignores it) — bundle the Bold file and reference it directly
+  (`font="Inter-Bold"`). `font` only changes the typeface; size/weight still come from `text-*`/`font-*`
+  classes.
+
+## Data Binding & Reactivity
+
+- `native:model="property"` two-way binds any input-style element to a public property (the native `wire:model`).
+  Modifiers: `.blur`/`.lazy`, `.debounce.300ms`. `updated{Property}()` fires on change.
+- `#[Computed]` methods are read as properties (`$this->total`), memoized per frame, invalidated on state change;
+  `#[Computed(persist: true)]` survives re-renders until state changes.
+- `#[Poll(5000)]` on a method runs it on an interval then re-renders; on a class it just re-renders. In Blade:
+  `native:poll="1s"` on an element.
+- `#[On(EventClass::class)]` listens for native events (push taps, websocket messages via the Vibe plugin,
+  bridge completions); parameters bind by name to event properties; listeners auto-teardown on unmount. Use
+  `$this->on(Event::class, $closure)` for dynamic registration. (`#[OnNative]` is the legacy webview/Livewire
+  equivalent — do not use it in NativeComponents.)
+
+## Layouts (Shared Chrome)
+
+A `NativeLayout` class declares nav bars, tab bars, and drawers once; attach with
+`Route::native(...)->layout(...)` or `Route::nativeGroup(TabsLayout::class, fn () => ...)`. Override `navBar()`
+/ `tabBar()` using the `NavBar`, `NavAction`, `TabBar`, and `Tab` fluent builders. Layouts handle safe areas
+automatically — never add `safe-area` classes to screens under a layout (reserve them for chrome-less screens).
+
+## Device APIs
+
+**Core built-ins** (`Native\Mobile\Facades`): `Device`, `Dialog`, `File`, `System` — these ship inside
+`nativephp/mobile` in v4. Also `System::isIos()` / `isAndroid()` and Blade directives `@ios` / `@android`.
+
+**Plugins** (separate Composer packages): browser, camera, microphone, network, share (free); biometrics,
+geolocation, scanner, secure-storage (paid); firebase (push notifications, proprietary); vibe
+(websockets/Reverb). v4 **conflicts** with the old `mobile-device`/`-dialog`/`-file`/`-system` plugins — remove
+them with `php artisan native:plugin:uninstall --core-v4` when upgrading.
+
+Installing a plugin is a **four-step flow — never stop after `composer require`** (an unregistered plugin does
+nothing):
+
+```bash
+composer require vendor/plugin-name
+php artisan vendor:publish --tag=nativephp-plugins-provider   # once, before first registration
+php artisan native:plugin:register vendor/plugin-name          # adds it to NativeServiceProvider
+php artisan native:plugin:list                                 # verify it shows as registered
+```
+
+Then tell the user to rebuild with `native:run` (don't run it yourself). If `native:run` warns "The following
+plugins are installed but not registered", the register step was missed.
+
+Async calls dispatch events (`Camera::getPhoto()` → `PhotoTaken`); handle with `#[On(PhotoTaken::class)]` in a
+NativeComponent. Sync calls return directly (`SecureStorage::get()`, `Network::status()`).
+
+## When a Capability Is Missing
+
+Native functionality or a UI component that core and `native-ui` don't provide is **not** a reason to drop to
+the web view. Escalate in this order:
+
+1. **Existing plugin** — check the plugin marketplace (`https://plugins.nativephp.com`) and the core plugins
+   list. If a marketplace-lookup MCP tool is available in your session, use it to search.
+2. **Custom plugin** — scaffold with `php artisan native:plugin:create`. Plugins bundle PHP facades/events,
+   Swift/Kotlin bridge functions, permissions, native dependencies (Gradle/SPM/CocoaPods), and can ship their
+   own native EDGE components — so custom native logic *and* custom native UI both belong in a plugin. See
+   [references/plugin-best-practices.md](references/plugin-best-practices.md) and the
+   `plugins/creating-plugins` docs.
+
+## Database & Seeding
+
+SQLite is the only database driver (deliberate — no remote DB credentials in a distributable binary; use an API
+backend for sync). NativePHP creates the DB in the app container and **runs migrations automatically on every
+app start**, as needed.
+
+**Seeding must go through migrations** — there is no `db:seed` on device. Create a dedicated seed migration
+(`php artisan make:migration seed_app_settings`) with the inserts in `up()`; migrations give you exactly the
+seeding semantics you want (run once per installation, tracked, versioned, reversible). If a Seeder class helps
+organize larger datasets, create it — but call it from the migration:
+
+```php
+public function up(): void
 {
-    // Process photo at $path
+    (new \Database\Seeders\CategorySeeder)->run();
 }
 ```
 
-## Event Handling
+Test seed migrations for both fresh installs and upgrades of existing user databases — a bad migration on update
+can destroy user data.
 
-- **Sync** returns directly: `SecureStorage::get()`, `Network::status()`
-- **Async** dispatches events: `Camera::getPhoto()` dispatches `PhotoTaken`
-- Custom events: `->event(CustomEvent::class)` (PHP) or `.event('App\\Events\\Custom')` (JS)
-- Events dispatch to both JS and PHP simultaneously
+## Testing
 
-## EDGE Components (Native UI)
+Component tests run in-process — no device or simulator. Scaffold with `php artisan native:make-test Counter`:
 
-EDGE renders Blade components as native UI. Works with both Livewire and Inertia (layout is Blade).
-
-- Prefix: `native:bottom-nav`, `native:top-bar`, `native:side-nav`
-- Child items require unique `id` attributes
-- Add `nativephp-safe-area` class to body for notch handling
-
-```blade
-<native:bottom-nav>
-    <native:bottom-nav-item id="home" icon="home" label="Home" :url="route('home')" />
-    <native:bottom-nav-item id="profile" icon="person" label="Profile" :url="route('profile')" />
-</native:bottom-nav>
+```php
+Native::test(Counter::class)
+    ->assertSee('Count: 0')
+    ->tap('Increment')
+    ->assertSet('count', 1);
 ```
 
-## Plugin System (v3)
+`Native::visit('/profile/5')` mounts by route; `Native::fakeBridge()` scripts native responses;
+`emitNative(Event::class, [...])` delivers device events in tests.
 
-Modular plugin architecture — device features as separate Composer packages:
+## Legacy Web-View Apps (Maintenance Only)
 
-| Package | Feature | Cost |
-|---------|---------|------|
-| `nativephp/mobile-browser` | In-app browser, OAuth | Free |
-| `nativephp/mobile-camera` | Camera & photo picker | Free |
-| `nativephp/mobile-dialog` | Alerts & toasts | Free |
-| `nativephp/mobile-device` | Vibrate, flashlight, device info | Free |
-| `nativephp/mobile-file` | File move/copy | Free |
-| `nativephp/mobile-microphone` | Audio recording | Free |
-| `nativephp/mobile-network` | Network status | Free |
-| `nativephp/mobile-share` | Share URLs & files | Free |
-| `nativephp/mobile-system` | Open app settings | Free |
-| `nativephp/mobile-scanner` | QR/barcode scanning | $49 |
-| `nativephp/mobile-biometrics` | Face ID / Touch ID | $49 |
-| `nativephp/mobile-geolocation` | GPS location | $49 |
-| `nativephp/mobile-secure-storage` | Keychain/Keystore | $49 |
-| `nativephp/mobile-firebase` | Push notifications | Proprietary |
-
-For authoring plugins: [references/plugin-best-practices.md](references/plugin-best-practices.md)
+Some existing apps still render in the web view (Livewire or Inertia). When maintaining them: the `#nativephp`
+JS import (`import { camera, dialog, on, off, Events } from '#nativephp'`) exposes device APIs; clean up JS
+listeners with `off()` on unmount; `#[OnNative(...)]` handles events in Livewire components; the `nativephpMobile()`
+Vite plugin and `nativephpHotFile()` belong in `vite.config.js`; add the `nativephp-safe-area` body class.
+**Do not extend these apps with new webview screens** — build new screens natively and recommend converting the
+rest with the `nativephp-webview-to-native` skill.
 
 ## Common Pitfalls
 
+- Building a screen in the web view when native UI can do it — always default to EDGE + NativeComponent
+- Inline `style="..."` or styling props on EDGE elements — Tailwind classes only
+- Emoji characters as icons in labels/buttons/text — use `native:icon` unless the user explicitly asks for emojis
+- Using Livewire patterns (`wire:model`, Livewire's `#[On]`) in NativeComponents — use `native:model` and
+  `Native\Mobile\Attributes\On`
+- Seeding via `DatabaseSeeder`/`db:seed` — it never runs on device; seed from a migration's `up()` instead
 - Missing `NATIVEPHP_APP_ID` in `.env` before `native:install`
 - Suggesting iOS commands on Windows/Linux
-- Not cleaning up event listeners with `off()` in `onUnmounted`
-- Missing unique `id` on EDGE component children
-- Forgetting `nativephp-safe-area` class on body
-- Using core facades for plugin features (e.g. `Scanner` requires `nativephp/mobile-scanner`)
-- Forgetting `nativephpMobile()` / `nativephpHotFile()` in `vite.config.js`
-- Not passing `--mode=ios` or `--mode=android` to `npm run build`
-- Not fetching v3 docs before implementing — use WebFetch with URLs from [references/available-docs.md](references/available-docs.md)
+- Adding `safe-area` classes to screens already wrapped by a NativeLayout
+- Expecting Vite HMR without passing `--vite` (opt-in since v4)
+- Installing a plugin with Composer but never running `native:plugin:register` — the plugin silently does
+  nothing and `native:run` warns "installed but not registered"; always register and verify with
+  `native:plugin:list`
+- Leaving the four v3 plugins (device/dialog/file/system) installed after upgrading — composer will refuse to
+  resolve; run `native:plugin:uninstall --core-v4`
+- Not fetching v4 docs before implementing — use WebFetch with URLs from
+  [references/available-docs.md](references/available-docs.md)
+
+For authoring plugins: [references/plugin-best-practices.md](references/plugin-best-practices.md)

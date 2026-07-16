@@ -20,8 +20,6 @@ struct NativePHPApp: App {
 
     static var shared: NativePHPApp?
 
-    @Environment(\.scenePhase) private var scenePhase
-
     init() {
         Self.shared = self
 
@@ -88,8 +86,10 @@ struct NativePHPApp: App {
 
         // 4. Now that PHP is booted, allow WebView to render
         DispatchQueue.main.async {
+            NSLog("TRACE[15]: markPhpReady + markReadyToLoad + markInitialized on main thread")
             DeepLinkRouter.shared.markPhpReady()
             AppState.shared.markReadyToLoad()
+            AppState.shared.markInitialized()
         }
 
         // 5. Execute plugin initialization callbacks (on main thread)
@@ -140,6 +140,12 @@ struct NativePHPApp: App {
                         }
                 }
             }
+            // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
+            // Driven by CADisplayLink via FrameTracker.shared. Sits on
+            // top of ContentView AND the splash so it's visible during
+            // boot / hot-reload too. Toggle off for production
+            // screenshots via FrameTracker.shared.enabled = false.
+            .perfOverlay()
             .animation(.easeInOut(duration: 0.3), value: appState.isInitialized)
             .onOpenURL { url in
                 // Only handle if not already handled by AppDelegate during cold start

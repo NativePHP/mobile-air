@@ -252,7 +252,13 @@ trait PreparesBuild
                     $this->logToFile($result->errorOutput());
                 }
 
-                return $result->successful();
+                if (! $result->successful()) {
+                    \Laravel\Prompts\error('Composer install failed. Check your dependencies and try again.');
+                    $this->logToFile('ERROR: composer install failed with exit code '.$result->exitCode());
+                    exit(1);
+                }
+
+                return true;
             });
 
             $this->logToFile('  Optimizing autoloader...');
@@ -266,7 +272,13 @@ trait PreparesBuild
                     $this->logToFile($result->errorOutput());
                 }
 
-                return $result->successful();
+                if (! $result->successful()) {
+                    \Laravel\Prompts\error('Autoloader optimization failed.');
+                    $this->logToFile('ERROR: composer dump-autoload failed with exit code '.$result->exitCode());
+                    exit(1);
+                }
+
+                return true;
             });
 
             $version = config('nativephp.version', now()->format('Ymd-His'));

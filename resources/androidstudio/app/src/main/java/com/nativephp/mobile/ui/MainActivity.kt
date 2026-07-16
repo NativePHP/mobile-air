@@ -1,8 +1,11 @@
 package com.nativephp.mobile.ui
 
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.Looper
 import android.os.Handler
@@ -14,10 +17,16 @@ import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.bridge.PHPQueueWorker
 import com.nativephp.mobile.bridge.LaravelEnvironment
 import com.nativephp.mobile.bridge.registerBridgeFunctions
+import com.nativephp.mobile.bridge.plugins.registerPluginRenderers
+import com.nativephp.mobile.ui.nativerender.registerNativeChromeRenderers
 import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
+import com.nativephp.mobile.ui.nativerender.NativeElementBridge
+import com.nativephp.mobile.ui.nativerender.NativeUIBridge
+import com.nativephp.mobile.ui.nativerender.NativeUIContent
+import com.nativephp.mobile.ui.nativerender.PerformanceTracker
 import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.nativephp.mobile.utils.WebViewProvider
 import com.nativephp.mobile.security.LaravelCookieStore
@@ -33,17 +42,16 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ime
 import androidx.compose.material3.FabPosition
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -52,20 +60,40 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.graphics.Insets
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : FragmentActivity(), WebViewProvider {
     private lateinit var webView: WebView
-    private val phpBridge = PHPBridge(this)
+    // Lazy so PHPBridge's static `System.loadLibrary("php_wrapper")` (loading the large
+    // embedded-PHP .so) runs on FIRST use — which is now the post-first-frame boot block —
+    // instead of during activity construction on the TTID critical path. First access is on
+    // the main thread (WebViewManager ctor) then the boot thread; the default synchronized
+    // lazy makes that safe.
+    private val phpBridge by lazy { PHPBridge(this) }
     private lateinit var laravelEnv: LaravelEnvironment
     private lateinit var webViewManager: WebViewManager
     private lateinit var coord: NativeActionCoordinator
     private var pendingDeepLink: String? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
+    @Volatile private var nativeUIThread: Thread? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
+    // Last appearance pushed to PHP, so onConfigurationChanged (which also fires
+    // on rotation) only emits AppearanceChanged when the theme actually flips.
+    private var lastAppearance: String? = null
     private var showSplash by mutableStateOf(true)
+    // Gates composition of the heavy MainScreen tree (Scaffold + drawer + WebView)
+    // until the runtime is booted and the WebView is ready. Until then the first
+    // frame is just the splash overlay, keeping that composition off the critical
+    // path to first paint.
+    private var showContent by mutableStateOf(false)
+
+    // Device-shake detection — registered in onResume, unregistered in onPause.
+    private var sensorManager: SensorManager? = null
+    private var shakeDetector: ShakeDetector? = null
 
     // Status bar style configuration - replaced during build
     private val statusBarStyle = "REPLACE_STATUS_BAR_STYLE"
@@ -74,11 +102,21 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Static instance holder for accessing MainActivity from other activities
         var instance: MainActivity? = null
             private set
+
+        // Delay before the background queue worker boots. The worker spins up a
+        // second full Laravel runtime; deferring it keeps that off the cold-start
+        // critical path so it doesn't steal CPU from the first paint.
+        private const val WORKER_START_DELAY_MS = 2500L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+
+        // Seed the appearance tracker so a later config change (e.g. rotation)
+        // only emits AppearanceChanged when the theme genuinely differs.
+        lastAppearance = if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
 
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -105,60 +143,132 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             insets
         }
 
-        // Initialize WebView before setContent so it's available for composition
-        webView = WebView(this).apply {
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            settings.mediaPlaybackRequiresUserGesture = false
-        }
-
-        LaravelCookieStore.init(applicationContext)
-
-        // Register bridge functions early, before PHP code can execute
-        Log.d("MainActivity", "🔌 Registering bridge functions...")
-        registerBridgeFunctions(this, applicationContext)
-        Log.d("MainActivity", "✅ Bridge functions registered")
-
         handleDeepLinkIntent(intent)
 
-        // Set up Compose UI
+        // Set up Compose UI and PAINT THE SPLASH FIRST, from a minimal onCreate, so the
+        // first frame is on screen ASAP (TTID). Everything heavy — WebView (Chromium)
+        // init and the PHP boot — is deferred to AFTER the first frame (below), so neither
+        // the main-thread Chromium cost nor the boot thread's disk I/O blocks the path to
+        // first paint. (Measured: starting the boot before first paint cost ~160ms of
+        // uninterruptible I/O sleep on the main thread + Chromium init on the critical path.)
         setContent {
-            MainScreen()
+            val isDark = isSystemInDarkTheme()
+            MaterialTheme(
+                colorScheme = nativeUiMaterialColorScheme(isDark),
+                typography = NativeUIThemeProvider.resolveTypography(),
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    // The heavy MainScreen tree (Scaffold + drawer + WebView) is gated on
+                    // showContent; until boot is ready the first frame is just the splash.
+                    if (showContent) {
+                        MainScreen()
+                    }
+                    // Splash overlay with fade animation (full screen, no insets).
+                    // Lives here — NOT inside the showContent gate — so it paints on the
+                    // first frame and covers the boot; MainScreen composes beneath it.
+                    AnimatedVisibility(
+                        visible = showSplash,
+                        exit = fadeOut(animationSpec = tween(300))
+                    ) {
+                        SplashScreen()
+                    }
+                    // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
+                    // Driven by Choreographer via FrameTracker. Recomposes at
+                    // 4Hz only — no per-frame render cost. Toggle off in
+                    // production via FrameTracker.enabled = false.
+                    com.nativephp.mobile.ui.nativerender.PerfOverlay()
+                }
+            }
         }
 
-        initializeEnvironmentAsync {
-            // Setup WebView and managers FIRST
-            webViewManager = WebViewManager(this, webView, phpBridge)
-            webViewManager.setup()
-            coord = NativeActionCoordinator.install(this)
-
-            // Add JavaScript interface for drawer control
-            webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
-
-            // Inject safe area insets BEFORE loading any URL to prevent content shift
-            pendingInsets?.let {
-                injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
+        // Defer the expensive work until AFTER the first frame is laid out. The WebView
+        // and the boot thread's I/O previously sat on the critical path to first paint;
+        // running them here keeps the splash frame fast while still overlapping WebView
+        // init with the background Laravel boot.
+        window.decorView.post {
+            // WebView (Chromium first-init) — off the first-frame critical path now.
+            webView = WebView(this).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                settings.mediaPlaybackRequiresUserGesture = false
             }
 
-            // NOW load the URL after WebView is fully configured
-            val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
-            val fullUrl = "http://127.0.0.1$target"
-            Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
-            webView.loadUrl(fullUrl)
+            // Kick off the PHP boot pipeline. Bridge/renderer registration happens on that
+            // thread ahead of the PHP boot (see initializeEnvironmentAsync). It overlaps the
+            // WebView init above; both now run after first paint.
+            initializeEnvironmentAsync {
+                // Setup WebView and managers FIRST
+                webViewManager = WebViewManager(this, webView, phpBridge)
+                webViewManager.setup()
+                coord = NativeActionCoordinator.install(this)
 
-            pendingDeepLink = null
+                // Add JavaScript interface for drawer control
+                webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
 
+                // Compose the real UI now (this attaches the WebView).
+                showContent = true
+
+                // Inject safe area insets BEFORE loading any URL to prevent content shift
+                pendingInsets?.let {
+                    injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
+                }
+
+                // NOW load the URL after WebView is fully configured
+                val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
+                val fullUrl = "http://127.0.0.1$target"
+                Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
+                webView.loadUrl(fullUrl)
+
+                pendingDeepLink = null
+
+                // The two lines below keep their original 12-space indent: splash-screen
+                // plugins (s2br/nativephp-mobile-splashscreen) patch them via exact-string
+                // match including that indentation. Do not re-indent.
             // Hide splash screen after URL is loaded
             showSplash = false
 
-            // Start hot reload watcher AFTER Laravel environment is initialized
-            startHotReloadWatcher()
-            injectJavaScript(webView)
+                // Report the app as fully drawn so cold-start TTFD is measured against
+                // real content (Macrobenchmark / Play Console vitals) instead of an
+                // implicit first frame.
+                try {
+                    reportFullyDrawn()
+                } catch (t: Throwable) {
+                    Log.w("MainActivity", "reportFullyDrawn failed: ${t.message}")
+                }
+
+                // Defer the background queue worker — it boots a SECOND full Laravel
+                // runtime that would contend for CPU during first paint. Start it a
+                // couple of seconds after the UI is up. Guarded against a fast destroy
+                // and against double-starting if the activity was re-created.
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (!isFinishing && !isDestroyed &&
+                        phpBridge.isPersistentMode() && queueWorker == null) {
+                        Log.d("MainActivity", "▶️ Starting deferred background queue worker")
+                        queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    }
+                }, WORKER_START_DELAY_MS)
+
+                // Start hot reload watcher AFTER Laravel environment is initialized
+                startHotReloadWatcher()
+                injectJavaScript(webView)
+            }
         }
 
         onBackPressedDispatcher.addCallback(this) {
+            // Native UI mode: route the back press into the PHP event queue
+            // (EventType.systemBack = 8) so NativeComponent.runLoop can pop
+            // the navigation stack via onBackPressed → back(). PHP handles
+            // the deferredTransition (slide-from-left) and republishes.
+            // When the stack empties, NativeUIBridge.isActive flips false on
+            // the next iteration and a subsequent back press falls through
+            // to the WebView / finish() path below.
+            if (NativeUIBridge.isActive.value) {
+                NativeElementBridge.sendSystemBackEvent()
+                return@addCallback
+            }
+
             if (webView.canGoBack()) {
                 webView.goBack()
             } else {
@@ -167,7 +277,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
     }
 
-     override fun onConfigurationChanged(newConfig: Configuration) {
+    override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         Log.d("MainActivity", "🌀 Config changed: orientation = ${newConfig.orientation}")
 
@@ -180,16 +290,21 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         if ((newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) != 0) {
             configureStatusBar()
         }
+
+        // Push a native AppearanceChanged event to PHP when the theme flips.
+        // onConfigurationChanged also fires on rotation, so guard on an actual
+        // change. Drives reactive System::appearance() / #[On(AppearanceChanged)].
+        val mode = if ((newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
+        if (mode != lastAppearance) {
+            lastAppearance = mode
+            NativeElementBridge.sendNativeEvent(
+                "Native\\Mobile\\Events\\System\\AppearanceChanged",
+                org.json.JSONObject().put("mode", mode).toString()
+            )
+        }
     }
 
-    /**
-     * Configure status bar and navigation bar colors and icon appearance based on config
-     * - auto: Detect from system theme (light icons in dark mode, dark icons in light mode)
-     * - light: Always use light/white icons
-     * - dark: Always use dark icons
-     *
-     * For edge-to-edge mode, system bars are transparent to allow content to draw behind them
-     */
     @Suppress("DEPRECATION")
     private fun configureStatusBar() {
         val windowInsetsController = WindowInsetsControllerCompat(window, window.decorView)
@@ -200,12 +315,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         when (statusBarStyle) {
             "auto" -> {
-                // Auto-detect from system theme
                 val isSystemDarkMode = (resources.configuration.uiMode and
                     Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-
-                // Light status/nav bars (dark icons) for light theme
-                // Dark status/nav bars (light icons) for dark theme
                 windowInsetsController.isAppearanceLightStatusBars = !isSystemDarkMode
                 windowInsetsController.isAppearanceLightNavigationBars = !isSystemDarkMode
 
@@ -213,14 +324,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 Log.d("StatusBar", "🎨 Using ${if (!isSystemDarkMode) "dark" else "light"} icons with transparent background")
             }
             "light" -> {
-                // Light/white icons (for dark backgrounds)
                 windowInsetsController.isAppearanceLightStatusBars = false
                 windowInsetsController.isAppearanceLightNavigationBars = false
 
                 Log.d("StatusBar", "🎨 System bars style: light (white icons with transparent background)")
             }
             "dark" -> {
-                // Dark icons (for light backgrounds)
                 windowInsetsController.isAppearanceLightStatusBars = true
                 windowInsetsController.isAppearanceLightNavigationBars = true
 
@@ -228,7 +337,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
             else -> {
                 Log.w("StatusBar", "⚠️ Unknown status bar style: $statusBarStyle, defaulting to auto")
-                // Default to auto
                 val isSystemDarkMode = (resources.configuration.uiMode and
                     Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
                 windowInsetsController.isAppearanceLightStatusBars = !isSystemDarkMode
@@ -239,6 +347,23 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
     private fun initializeEnvironmentAsync(onReady: () -> Unit) {
         Thread {
+            // Hydrate the cookie store here rather than in onCreate: it's plain
+            // SharedPreferences disk I/O, and nothing reads cookies until the first
+            // PHP request — which can't happen before this thread's boot completes.
+            // Keeps a blocking prefs read off the main thread / TTID path.
+            LaravelCookieStore.init(applicationContext)
+
+            // Register bridge functions + renderers BEFORE booting PHP — a service
+            // provider may call a bridge function during boot, so registration must
+            // precede it. These are cheap registry inserts; running them here (off
+            // the main thread and ahead of the PHP boot) keeps them off the
+            // cold-start critical path while preserving ordering.
+            Log.d("MainActivity", "🔌 Registering bridge functions...")
+            registerBridgeFunctions(this, applicationContext)
+            registerNativeChromeRenderers()
+            registerPluginRenderers()
+            Log.d("MainActivity", "✅ Bridge functions registered")
+
             Log.d("LaravelInit", "Starting async Laravel extraction...")
             laravelEnv = LaravelEnvironment(this)
             laravelEnv.initialize()
@@ -253,7 +378,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 Log.d("LaravelInit", "Classic mode configured — skipping persistent runtime boot")
             } else {
                 // Boot persistent PHP runtime BEFORE WebView loads
-                // This boots Laravel once — all subsequent requests dispatch through the live interpreter
                 val bootStart = System.currentTimeMillis()
                 val booted = phpBridge.bootPersistentRuntime()
                 val bootTime = System.currentTimeMillis() - bootStart
@@ -261,8 +385,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 if (booted) {
                     Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
 
-                    // Start background queue worker after persistent runtime is ready
-                    queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    // NOTE: the background queue worker is NOT started here. It
+                    // boots a second full Laravel runtime that would contend for
+                    // CPU during first paint, so it's deferred to the onReady
+                    // callback (see WORKER_START_DELAY_MS).
                 } else {
                     Log.w("LaravelInit", "Persistent runtime boot failed after ${bootTime}ms — falling back to classic mode")
                 }
@@ -298,11 +424,57 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     override fun onResume() {
         super.onResume()
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_RESUME)
+        registerShakeDetector()
     }
 
     override fun onPause() {
         super.onPause()
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_PAUSE)
+        sensorManager?.unregisterListener(shakeDetector)
+    }
+
+    /**
+     * Lazily wires the accelerometer shake detector. On shake it forwards a
+     * native event to PHP — `Native\Mobile\Events\Motion\ShakeDetected`,
+     * consumed via `#[On(ShakeDetected::class)]`.
+     */
+    private fun registerShakeDetector() {
+        if (sensorManager == null) {
+            sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+            shakeDetector = ShakeDetector {
+                NativeElementBridge.sendNativeEvent(
+                    "Native\\Mobile\\Events\\Motion\\ShakeDetected",
+                    "{}"
+                )
+            }
+        }
+        sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { accelerometer ->
+            sensorManager?.registerListener(shakeDetector, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        }
+    }
+
+    /**
+     * Navigate an already-running app to a deep-link route.
+     *
+     * In native-UI apps the single PHP event loop is blocked running the current
+     * screen, so webView.loadUrl() for a Route::native screen never routes — the
+     * request queues behind the running loop and the link is silently dropped.
+     * Instead wake the loop with a `__deeplink` native event carrying the route;
+     * NativeComponent::dispatchNativeEvent turns it into a NavigationIntent::NAVIGATE
+     * and NativeRouter pushes the screen (same path as an in-app @press navigate).
+     * WebView/Inertia apps keep the direct loadUrl().
+     */
+    private fun navigateWarm(route: String) {
+        if (NativeUIBridge.isActive.value) {
+            val escaped = route.replace("\\", "\\\\").replace("\"", "\\\"")
+            Log.d("DeepLink", "🚀 native-ui: dispatching __deeplink event: $route")
+            NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"}")
+        } else {
+            val fullUrl = "http://127.0.0.1$route"
+            Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
+            webView.loadUrl(fullUrl)
+        }
+        pendingDeepLink = null
     }
 
     private fun handleDeepLinkIntent(intent: Intent?) {
@@ -312,10 +484,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             Log.d("DeepLink", "🔔 Notification URL: $notificationUrl")
             pendingDeepLink = notificationUrl
             if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
-                val fullUrl = "http://127.0.0.1$notificationUrl"
-                Log.d("DeepLink", "🚀 Loading notification URL immediately: $fullUrl")
-                webView.loadUrl(fullUrl)
-                pendingDeepLink = null
+                navigateWarm(notificationUrl)
             }
             return
         }
@@ -336,10 +505,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
             pendingDeepLink = route
             if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
-                val fullUrl = "http://127.0.0.1$route"
-                Log.d("DeepLink", "🚀 Loading FCM deep link immediately: $fullUrl")
-                webView.loadUrl(fullUrl)
-                pendingDeepLink = null
+                navigateWarm(route)
             }
             return
         }
@@ -392,11 +558,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
         pendingDeepLink = laravelUrl
         if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
-            // Only load immediately if both Laravel environment AND WebView are ready
-            val fullUrl = "http://127.0.0.1$laravelUrl"
-            Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
-            webView.loadUrl(fullUrl)
-            pendingDeepLink = null
+            // Only navigate immediately if both Laravel environment AND WebView are ready
+            navigateWarm(laravelUrl)
         } else {
             Log.d("DeepLink", "⏳ Deep link saved, waiting for app initialization to complete")
         }
@@ -422,6 +585,25 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         super.onDestroy()
         instance = null
 
+        // PARK the persistent runtime instead of tearing it down — and do
+        // it FIRST, while the element region is still intact, or the
+        // SHUTDOWN wake event has nowhere to land and the runloop parks
+        // forever. The process can outlive this activity (plugin
+        // foreground services pin it), and native PHP does not survive
+        // teardown + re-init in the same process: classic embed re-init
+        // SEGVs in ts_resource_ex, and nativePersistentBoot after
+        // nativePersistentShutdown hangs. Parking just ends the element
+        // runloop; a re-created activity reuses the booted runtime
+        // (bootPersistentRuntime's guard), and when nothing pins the
+        // process the OS reclaims it all anyway — the old explicit
+        // teardown (shutdownPersistentRuntime + cleanup + shutdown)
+        // bought nothing but the wedge.
+        if (phpBridge.isPersistentMode()) {
+            phpBridge.parkPersistentRuntime()
+        }
+
+        PerformanceTracker.detachFrameMetrics(window)
+
         // Post lifecycle event for plugins
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_DESTROY)
 
@@ -443,16 +625,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         shouldStopWatcher = true
         hotReloadWatcherThread?.interrupt()
 
-        // Stop background queue worker before persistent runtime shutdown
+        // Stop native UI tree watcher
+        NativeUIBridge.stopWatching()
+
+        // Stop background queue worker
         queueWorker?.stop()
-
-        // Shutdown persistent runtime before cleanup
-        if (phpBridge.isPersistentMode()) {
-            phpBridge.shutdownPersistentRuntime()
-        }
-
-        laravelEnv.cleanup()
-        phpBridge.shutdown()
     }
 
     override fun getWebView(): WebView {
@@ -499,41 +676,198 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     private fun startHotReloadWatcher() {
-        if (!isDebugVersion()) return
-
         // Configure WebView for development - disable caching for hot reload
         webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
 
         hotReloadWatcherThread = Thread {
             val appStorageDir = File(filesDir.parent, "app_storage")
             val reloadFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/reload_signal.json")
+            // PHP's storage_path() resolves to persisted_data/storage/ (set by LARAVEL_STORAGE_PATH)
+            val restartFile = File("${appStorageDir.absolutePath}/persisted_data/storage/framework/.hot_restart")
             var lastModified: Long = 0
+            // Track .hot_restart's last-seen mtime so the polling loop
+            // doesn't re-trigger reboot every iteration while the file
+            // exists. PHP consumes the file (deletes it) inside its
+            // Route::native macro after extracting the nav stack; the
+            // loop here just needs to fire once per write.
+            var lastRestartModified: Long = 0
+            var pollCount = 0
+            // Generation counter — increments on every hot-reload
+            // cycle. Helps identify exactly which reload is stuck in
+            // logcat output ("HMR#N").
+            var reloadGeneration = 0
 
-            Log.d("HotReload", "Watcher started, persistent=${phpBridge.isPersistentMode()}")
+            Log.d("HotReload", "Watcher started — watching: ${reloadFile.absolutePath}")
 
             while (!shouldStopWatcher && !Thread.currentThread().isInterrupted) {
                 try {
+                    pollCount++
+                    if (pollCount % 20 == 0) {
+                        Log.d("HotReload", "Poll #$pollCount — exists=${reloadFile.exists()} lastMod=$lastModified curMod=${if (reloadFile.exists()) reloadFile.lastModified() else "N/A"} nativeUI=${NativeUIBridge.isActive.value}")
+                    }
+
+                    // Reset the mtime tracker when the file is gone
+                    // (PHP consumed it) so the next reload triggers.
+                    if (!restartFile.exists() && lastRestartModified != 0L) {
+                        lastRestartModified = 0L
+                    }
+
+                    // Check for native UI restart signal (PHP wrote .hot_restart before exiting).
+                    // We peek the top URI but DON'T delete the file —
+                    // PHP's Route::native handler is the sole
+                    // consumer; it reads the full nav stack to
+                    // restore back-button history, then removes the
+                    // file. Deleting here would strip that payload.
+                    // Mtime gate prevents the polling loop from re-
+                    // triggering reboot every iteration while the file
+                    // is in flight to PHP (we run faster than PHP can
+                    // consume).
+                    if (restartFile.exists() && restartFile.lastModified() > lastRestartModified) {
+                        reloadGeneration++
+                        val gen = reloadGeneration
+                        val mtime = restartFile.lastModified()
+                        lastRestartModified = mtime
+                        Log.d("HotReload", "HMR#$gen .hot_restart detected — mtime=$mtime size=${restartFile.length()}")
+                        try {
+                            val content = restartFile.readText()
+                            val json = org.json.JSONObject(content)
+                            val restartUri = json.optString("uri", "/")
+                            val stackSize = json.optJSONArray("stack")?.length() ?: 0
+
+                            Log.d("HotReload", "HMR#$gen restart uri=$restartUri stackDepth=$stackSize")
+
+                            // Wait for old PHP thread to finish (C mutex also guards this,
+                            // but joining here avoids starting a thread that just blocks)
+                            val oldThread = nativeUIThread
+                            if (oldThread != null && oldThread.isAlive) {
+                                val joinStart = System.currentTimeMillis()
+                                Log.d("HotReload", "HMR#$gen waiting on old PHP thread (name=${oldThread.name})...")
+                                oldThread.join(5000)
+                                val joinElapsed = System.currentTimeMillis() - joinStart
+                                if (oldThread.isAlive) {
+                                    Log.w("HotReload", "HMR#$gen ⚠️ old PHP thread STILL ALIVE after ${joinElapsed}ms — proceeding anyway (C mutex will serialize)")
+                                } else {
+                                    Log.d("HotReload", "HMR#$gen old PHP thread exited in ${joinElapsed}ms")
+                                }
+                            } else {
+                                Log.d("HotReload", "HMR#$gen no live old PHP thread (nativeUIThread=${oldThread?.name ?: "null"})")
+                            }
+
+                            // If persistent mode, reboot interpreter to pick up new class definitions
+                            if (phpBridge.isPersistentMode()) {
+                                val rebootStart = System.currentTimeMillis()
+                                Log.d("HotReload", "HMR#$gen rebooting persistent runtime...")
+
+                                // Stop queue worker before shutdown — its TSRM context
+                                // will be destroyed by php_module_shutdown
+                                queueWorker?.stop()
+
+                                phpBridge.shutdownPersistentRuntime()
+                                phpBridge.bootPersistentRuntime()
+
+                                // Restart queue worker with fresh runtime
+                                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                Log.d("HotReload", "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms")
+                            }
+
+                            // Re-start the native UI watcher (PHP will re-init shared memory)
+                            NativeUIBridge.startWatching()
+                            NativeElementBridge.startWatching()
+
+                            // Directly re-execute the PHP request on a new thread
+                            // This bypasses the WebView entirely — fresh PHP process
+                            val restartThread = Thread({
+                                try {
+                                    Log.d("HotReload", "HMR#$gen executing PHP for $restartUri")
+                                    val execStart = System.currentTimeMillis()
+                                    phpBridge.executeNativeRoute(restartUri)
+                                    Log.d("HotReload", "HMR#$gen PHP execution returned after ${System.currentTimeMillis() - execStart}ms")
+                                } catch (e: Exception) {
+                                    Log.e("HotReload", "HMR#$gen execution failed: ${e.message}", e)
+                                }
+                            }, "npui-hot-restart-$gen")
+                            nativeUIThread = restartThread
+                            restartThread.start()
+
+                            continue
+                        } catch (e: Exception) {
+                            Log.e("HotReload", "HMR#$gen failed: ${e.message}", e)
+                            restartFile.delete()
+                        }
+                    }
+
                     if (reloadFile.exists() && reloadFile.lastModified() > lastModified) {
                         lastModified = reloadFile.lastModified()
 
-                        // Reboot the persistent runtime so it picks up file changes
-                        if (phpBridge.isPersistentMode()) {
-                            phpBridge.rebootPersistentRuntime()
+                        // Skip if a hot reload is still in flight — the
+                        // C-side PHP shutdown briefly flips `isActive`
+                        // false; a save landing in that window used to
+                        // misroute to the WebView else-branch (which
+                        // reboots PHP without dispatching a route, then
+                        // never recovers). Drop the duplicate; the user
+                        // can save again after this reload finishes.
+                        if (NativeUIBridge.isReloading.value) {
+                            Log.d("HotReload", "▶ reload_signal fired (mod=$lastModified) — SKIPPED, reload already in flight")
+                            continue
                         }
 
-                        runOnUiThread {
-                            webView.stopLoading()
-                            webView.clearCache(true)
-                            webView.clearHistory()
-                            webView.clearFormData()
+                        if (NativeUIBridge.isActive.value) {
+                            // Native UI mode: send hot reload event through mmap
+                            // PHP will shut down and write .hot_restart signal
+                            val elementReady = NativeElementBridge.nativeElementIsReady()
+                            val phpBooted = phpBridge.isPersistentMode()
+                            Log.d("HotReload", "▶ reload_signal fired (mod=$lastModified) — sending HMR event (isActive=true elementReady=$elementReady persistent=$phpBooted lastRestartModified=$lastRestartModified)")
+                            // Preserve the visible tree across PHP's
+                            // C-side stopWatching call. Cleared in
+                            // `onTreePostedToMain` when the first new
+                            // tree from the rebooted runtime lands.
+                            NativeElementBridge.preserveTreeOnStop = true
+                            // Show the "Reloading…" pill (root Compose
+                            // overlay watches this). Cleared in
+                            // `NativeElementBridge.onTreePostedToMain`
+                            // when the first new tree from the rebooted
+                            // PHP runtime lands.
+                            NativeUIBridge.isReloading.value = true
+                            NativeUIBridge.sendHotReloadEvent()
+                            // Brief wait for PHP to process event and write .hot_restart,
+                            // then loop back to check immediately (instead of 500ms sleep)
+                            Thread.sleep(100)
+                            continue
+                        } else {
+                            // WebView mode: reload the page
+                            // If persistent mode, reboot the interpreter to pick up new class definitions
+                            if (phpBridge.isPersistentMode()) {
+                                Log.d("HotReload", "Rebooting persistent runtime for hot reload...")
+                                val rebootStart = System.currentTimeMillis()
 
-                            val currentUrl = webView.url ?: "http://127.0.0.1/"
-                            val separator = if (currentUrl.contains("?")) "&" else "?"
-                            val cacheBustUrl = "${currentUrl}${separator}_cb=${System.currentTimeMillis()}"
+                                // Stop queue worker before shutdown — its TSRM context
+                                // will be destroyed by php_module_shutdown, causing SIGABRT
+                                // if still active
+                                queueWorker?.stop()
 
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                webView.loadUrl(cacheBustUrl)
-                            }, 100)
+                                phpBridge.shutdownPersistentRuntime()
+                                phpBridge.bootPersistentRuntime()
+
+                                // Restart queue worker with fresh runtime
+                                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+
+                                Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
+                            }
+
+                            runOnUiThread {
+                                webView.stopLoading()
+                                webView.clearCache(true)
+                                webView.clearHistory()
+                                webView.clearFormData()
+
+                                val currentUrl = webView.url ?: "http://127.0.0.1/"
+                                val separator = if (currentUrl.contains("?")) "&" else "?"
+                                val cacheBustUrl = "${currentUrl}${separator}_cb=${System.currentTimeMillis()}"
+
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    webView.loadUrl(cacheBustUrl)
+                                }, 100)
+                            }
                         }
                     }
 
@@ -548,23 +882,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
         hotReloadWatcherThread?.start()
     }
-
-    private fun isDebugVersion(): Boolean {
-        return try {
-            val appStorageDir = File(filesDir.parent, "app_storage")
-            val versionFile = File(appStorageDir, "laravel/.version")
-
-            if (versionFile.exists()) {
-                val version = versionFile.readText().trim().trim('"').trim('\'')
-                version.equals("DEBUG", ignoreCase = true)
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
-
 
     private fun injectJavaScript(view: WebView) {
         val jsCode = """
@@ -881,30 +1198,61 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         // Use paddingValues to respect TopBar and BottomNav heights
                         // IMPORTANT: Add IME (keyboard) inset padding so content isn't hidden behind keyboard
 
-                        AndroidView(
-                            factory = { webView },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(paddingValues)
-                                .consumeWindowInsets(paddingValues)
-                                .windowInsetsPadding(WindowInsets.ime),
-                            update = { view ->
-                                // Force layout recalculation when Compose size changes
-                                // This ensures viewport units (100vh, 100vw) work correctly
-                                view.requestLayout()
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            AndroidView(
+                                factory = { webView },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(paddingValues)
+                                    .consumeWindowInsets(paddingValues)
+                                    .windowInsetsPadding(WindowInsets.ime),
+                                update = { view ->
+                                    // Force layout recalculation when Compose size changes
+                                    // This ensures viewport units (100vh, 100vw) work correctly
+                                    view.requestLayout()
+                                }
+                            )
+
+                            // Native UI overlay — covers WebView when PHP renders a native tree
+                            // Must be inside SideDrawerContent so the drawer renders on top
+                            val nativeUIActive by NativeUIBridge.isActive
+                            if (nativeUIActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(MaterialTheme.colorScheme.background)
+                                ) {
+                                    NativeUIContent()
+                                }
                             }
-                        )
+
+                            // Hot-reload indicator. Mirrors iOS's
+                            // `HotReloadIndicator` — small Material 3
+                            // pill at top with a spinner + label.
+                            // `isReloading` is true between the start
+                            // of the hot-reload event and the first
+                            // new tree publish from the rebooted PHP.
+                            val isReloading by NativeUIBridge.isReloading
+                            AnimatedVisibility(
+                                visible = isReloading,
+                                enter = slideInVertically { -it } + androidx.compose.animation.fadeIn(),
+                                exit = slideOutVertically { -it } + androidx.compose.animation.fadeOut(),
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    // `statusBarsPadding` clears the
+                                    // notch / status bar; the extra
+                                    // 8.dp gives the pill some breathing
+                                    // room below it.
+                                    .statusBarsPadding()
+                                    .padding(top = 8.dp),
+                            ) {
+                                HotReloadIndicator()
+                            }
+                        }
                     }
                 }
             )
 
-            // Splash overlay with fade animation (full screen, no insets)
-            AnimatedVisibility(
-                visible = showSplash,
-                exit = fadeOut(animationSpec = tween(300))
-            ) {
-                SplashScreen()
-            }
         }
     }
 
@@ -921,20 +1269,53 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
         }
 
+        // Decode the full-screen splash bitmap OFF the main thread. painterResource
+        // decodes synchronously inside the first composition — directly on the TTID
+        // critical path (tens of ms for a full-screen PNG). The first frame paints
+        // solid black (identical to the theme's windowBackground, so there's no
+        // visible seam) and the image fades in as soon as the decode lands.
+        var splashBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+        LaunchedEffect(splashResourceId) {
+            if (splashResourceId != 0) {
+                splashBitmap = withContext(Dispatchers.IO) {
+                    try {
+                        android.graphics.BitmapFactory
+                            .decodeResource(resources, splashResourceId)
+                            ?.asImageBitmap()
+                    } catch (t: Throwable) {
+                        Log.w("Splash", "Failed to decode splash: ${t.message}")
+                        null
+                    }
+                }
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
-            if (splashResourceId != 0) {
-                Image(
-                    painter = painterResource(id = splashResourceId),
-                    contentDescription = "App splash screen",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
+            val bitmap = splashBitmap
+            if (bitmap != null) {
+                // MutableTransitionState(false) → targetState = true makes the
+                // fade-in play on the Image's FIRST composition (plain
+                // AnimatedVisibility(visible = true) would skip it).
+                val fadeInState = remember {
+                    androidx.compose.animation.core.MutableTransitionState(false)
+                }.apply { targetState = true }
+                AnimatedVisibility(
+                    visibleState = fadeInState,
+                    enter = fadeIn(animationSpec = tween(150))
+                ) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "App splash screen",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            } else if (splashResourceId == 0) {
                 SplashText()
             }
         }
@@ -956,6 +1337,17 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     /**
+     * The app's M3 [ColorScheme]. Resolved through [NativeUIThemeProvider] so
+     * core doesn't depend on any UI plugin: a plugin (native-ui) registers a
+     * provider that maps its PHP-driven theme tokens reactively; with no UI
+     * plugin installed this falls back to Material defaults and still builds.
+     */
+    @Composable
+    private fun nativeUiMaterialColorScheme(isDark: Boolean): ColorScheme {
+        return NativeUIThemeProvider.resolve(isDark)
+    }
+
+    /**
      * Bottom navigation composable
      * Hides with animation when keyboard is visible to prevent layout conflicts
      */
@@ -966,7 +1358,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         val systemInDarkMode = isSystemInDarkTheme()
         val useDarkTheme = bottomNavData?.dark ?: systemInDarkMode
-        val colorScheme = if (useDarkTheme) darkColorScheme() else lightColorScheme()
+        val colorScheme = nativeUiMaterialColorScheme(useDarkTheme)
 
         // Animate bottom nav visibility - slide down when keyboard opens
         AnimatedVisibility(
@@ -980,7 +1372,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 animationSpec = tween(150)
             )
         ) {
-            MaterialTheme(colorScheme = colorScheme) {
+            MaterialTheme(
+                colorScheme = colorScheme,
+                typography = NativeUIThemeProvider.resolveTypography(),
+            ) {
                 NativeBottomNavigation(
                     onNavigate = { url ->
                         Log.d("Navigation", "🖱️ Bottom nav item clicked")
@@ -999,9 +1394,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         val systemInDarkMode = isSystemInDarkTheme()
         val sideNavData by NativeUIState.sideNavData
         val useDarkTheme = sideNavData?.dark ?: systemInDarkMode
-        val colorScheme = if (useDarkTheme) darkColorScheme() else lightColorScheme()
+        val colorScheme = nativeUiMaterialColorScheme(useDarkTheme)
 
-        MaterialTheme(colorScheme = colorScheme) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = NativeUIThemeProvider.resolveTypography(),
+        ) {
             NativeSideDrawer(
                 onNavigate = { url ->
                     Log.d("Navigation", "🖱️ Side nav item clicked")
@@ -1047,4 +1445,43 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }
     }
 
+}
+
+/**
+ * Material 3 "Reloading…" pill shown briefly during hot reload.
+ * Tonal `surfaceContainerHigh` capsule with a small `CircularProgressIndicator`
+ * and label. Auto-dismisses when `NativeUIBridge.isReloading` flips
+ * false (driven by the first publish from the rebooted PHP runtime —
+ * see `NativeElementBridge.onTreePostedToMain`). Mirrors iOS's
+ * `HotReloadIndicator`.
+ */
+@Composable
+private fun HotReloadIndicator() {
+    androidx.compose.material3.Surface(
+        // `primaryContainer` reads as a brand-colored chip — more
+        // visible against arbitrary screen content than the tonal
+        // surface variant. Matches the prominence of iOS's Liquid
+        // Glass capsule, which has its own material vocabulary.
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(percent = 50),
+        tonalElevation = 6.dp,
+        shadowElevation = 8.dp,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                "Reloading…",
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
 }

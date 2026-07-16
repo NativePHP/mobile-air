@@ -138,6 +138,9 @@ static void setup_embed_module(void) {
                                    "display_errors=1\n"
                                    "error_reporting=E_ALL\n";
     php_embed_module.header_handler = android_header_handler;
+
+    // Extension functions are now statically linked via --enable-nativephp
+    // and self-register on every php_embed_init() — no manual registration needed.
 }
 
 // Safe shutdown: block all signals to prevent mutex access after TSRM destruction
@@ -303,6 +306,7 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
         return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPHP init failed.");
     }
     sapi_module.header_handler = android_header_handler;
+    // nativephp extension self-registers via static linking
     php_initialized = 1;
 
     // Per-request setup and execution
@@ -356,7 +360,6 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
 // The mutex serializes all access — only one PHP execution at a time.
 
 static int persistent_initialized = 0;
-static char *persistent_bootstrap_path = NULL;
 
 /**
  * Boot the persistent PHP interpreter once.
@@ -378,6 +381,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     clear_collected_output();
 
     // Set env vars BEFORE php_embed_init so they're available when Laravel boots
+
     setenv("NATIVEPHP_RUNNING", "true", 1);
     setenv("APP_URL", "http://127.0.0.1", 1);
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
@@ -395,6 +399,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
         return -1;
     }
     sapi_module.header_handler = android_header_handler;
+    // nativephp extension self-registers via static linking
     php_initialized = 1;
 
     // Execute the persistent bootstrap script (boots Laravel, stores kernel globally)
@@ -412,13 +417,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     }
 
     persistent_initialized = 1;
-
-    // Store bootstrap path for reboot capability
-    if (persistent_bootstrap_path) free(persistent_bootstrap_path);
-    persistent_bootstrap_path = strdup(bootstrapPath);
-
     set_persistent_boot_state(PERSISTENT_BOOT_SUCCEEDED);
-
     LOGI("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
@@ -497,6 +496,7 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
             SG(request_info).request_body = post_stream;
             SG(request_info).content_length = strlen(post);
 
+
             const char *content_type = getenv("CONTENT_TYPE");
             if (!content_type) content_type = getenv("HTTP_CONTENT_TYPE");
             if (content_type && strstr(content_type, "json")) {
@@ -514,6 +514,7 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
     }
 
     // Build the dispatch call — Runtime::dispatch() handles everything
+
     char eval_code[8192];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
@@ -541,11 +542,13 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
         "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
         "\n"
         "    // Sync ALL env vars into $_SERVER (C setenv() doesn't update PHP $_SERVER)\n"
+
         "    foreach (getenv() as $__k => $__v) {\n"
         "        $_SERVER[$__k] = $__v;\n"
         "    }\n"
         "\n"
         "    // Ensure CONTENT_TYPE is set without HTTP_ prefix (CGI convention)\n"
+
         "    if (isset($_SERVER['HTTP_CONTENT_TYPE'])) {\n"
         "        $_SERVER['CONTENT_TYPE'] = $_SERVER['HTTP_CONTENT_TYPE'];\n"
         "    }\n"
@@ -680,76 +683,6 @@ JNIEXPORT jstring JNICALL native_persistent_artisan(JNIEnv *env, jobject thiz, j
 }
 
 /**
- * Reboot the persistent runtime WITHOUT restarting the PHP interpreter.
- * Flushes the Laravel app, clears opcache, and re-executes the bootstrap script.
- * The PHP process stays alive — only the Laravel application is rebuilt.
- */
-JNIEXPORT jint JNICALL native_persistent_reboot(JNIEnv *env, jobject thiz) {
-    pthread_mutex_lock(&g_php_request_mutex);
-
-    if (!persistent_initialized || !persistent_bootstrap_path) {
-        LOGE("persistent_reboot: runtime not initialized or no bootstrap path");
-        pthread_mutex_unlock(&g_php_request_mutex);
-        return -1;
-    }
-
-    LOGI("persistent_reboot: rebooting Laravel (PHP interpreter stays alive)...");
-
-    // 1. Shut down the Laravel application (flush container, null out kernel)
-    zend_first_try {
-        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "persistent_reboot_shutdown");
-    } zend_end_try();
-    LOGI("persistent_reboot: Runtime::shutdown() complete");
-
-    // 2. Clear opcache so PHP re-reads files from disk
-    zend_first_try {
-        zend_eval_string(
-            "if (function_exists('opcache_reset')) { opcache_reset(); }",
-            NULL, "persistent_reboot_opcache"
-        );
-    } zend_end_try();
-    LOGI("persistent_reboot: opcache cleared");
-
-    // 3. Clear compiled views and cached config
-    zend_first_try {
-        zend_eval_string(
-            "$__storage = getenv('LARAVEL_STORAGE_PATH');"
-            "if ($__storage) {"
-            "    $__viewsDir = $__storage . '/framework/views';"
-            "    if (is_dir($__viewsDir)) {"
-            "        foreach (glob($__viewsDir . '/*.php') as $__f) { @unlink($__f); }"
-            "    }"
-            "    @unlink($__storage . '/framework/cache/config.php');"
-            "    @unlink($__storage . '/framework/cache/routes-v7.php');"
-            "}",
-            NULL, "persistent_reboot_clear_cache"
-        );
-    } zend_end_try();
-    LOGI("persistent_reboot: compiled views and cache cleared");
-
-    // 4. Rebuild the Laravel application from scratch
-    //    Autoloader is already loaded, classes are in memory — just create fresh app + kernel
-    clear_collected_output();
-    zend_first_try {
-        zend_eval_string(
-            "$app = require $_SERVER['LARAVEL_BOOTSTRAP_PATH'] . '/app.php';"
-            "\\Native\\Mobile\\Runtime::boot($app);"
-            "error_log('persistent_reboot: Laravel re-bootstrapped');",
-            NULL, "persistent_reboot_bootstrap"
-        );
-    } zend_end_try();
-
-    char *boot_output = get_collected_output();
-    if (boot_output && strlen(boot_output) > 0) {
-        LOGI("persistent_reboot: bootstrap output: %.500s", boot_output);
-    }
-
-    LOGI("persistent_reboot: Laravel rebooted successfully");
-    pthread_mutex_unlock(&g_php_request_mutex);
-    return 0;
-}
-
-/**
  * Shut down the persistent PHP interpreter.
  * Called on app destroy or before hot-reload reboot.
  */
@@ -775,11 +708,6 @@ JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
     // Reset the gate so a future ephemeral_embed_init cold path is safe and
     // a subsequent persistent_boot can transition IN_PROGRESS cleanly.
     set_persistent_boot_state(PERSISTENT_BOOT_NEVER_STARTED);
-
-    if (persistent_bootstrap_path) {
-        free(persistent_bootstrap_path);
-        persistent_bootstrap_path = NULL;
-    }
 
     LOGI("persistent_shutdown: done");
     pthread_mutex_unlock(&g_php_request_mutex);
@@ -843,64 +771,20 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     jstring jLaravelPath = (jstring)(*env)->CallObjectMethod(env, thiz, method);
     const char *cLaravelPath = (*env)->GetStringUTFChars(env, jLaravelPath, NULL);
 
-    // PHP startup must respect any already-initialized TSRM context. When the
-    // persistent runtime (or the queue worker) is alive — e.g. a WorkManager
-    // scheduler job firing while the app process is still up — php_embed_init()
-    // has already run tsrm_startup() process-wide. Calling it again re-runs
-    // php_tsrm_startup_ex → zend_ini_refresh_caches → OnUpdateBool against
-    // half-initialized globals and SIGSEGVs. Mirror ephemeral_embed_init():
-    // hot path attaches to the existing TSRM, cold path does a full embed init.
-    if (wait_for_persistent_boot_settled(10) != 0) {
-        LOGE("runArtisanCommand: timed out waiting for persistent boot to settle");
+    // Full init per artisan command
+    setup_embed_module();
+    php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
+    if (php_embed_init(0, NULL) != SUCCESS) {
+        LOGE("Failed to initialize PHP for artisan");
         pthread_mutex_unlock(&g_ephemeral_mutex);
         (*env)->ReleaseStringUTFChars(env, jcommand, command);
         (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
         (*env)->DeleteLocalRef(env, jLaravelPath);
         return (*env)->NewStringUTF(env, "");
     }
-
-    int artisan_hot_path = php_initialized;
-    if (artisan_hot_path) {
-        // Hot path: a PHP runtime is already live on another thread. Allocate a
-        // thread-local TSRM context instead of re-running global startup.
-        LOGI("runArtisanCommand: hot path — attaching to existing TSRM");
-        ts_resource(0);
-        setup_embed_module();
-        if (php_embed_module.startup(&php_embed_module) == FAILURE) {
-            LOGE("runArtisanCommand: hot-path module startup failed");
-            pthread_mutex_unlock(&g_ephemeral_mutex);
-            (*env)->ReleaseStringUTFChars(env, jcommand, command);
-            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
-            (*env)->DeleteLocalRef(env, jLaravelPath);
-            return (*env)->NewStringUTF(env, "");
-        }
-        if (php_request_startup() == FAILURE) {
-            LOGE("runArtisanCommand: hot-path request startup failed");
-            php_request_shutdown(NULL);
-            ts_free_thread();
-            pthread_mutex_unlock(&g_ephemeral_mutex);
-            (*env)->ReleaseStringUTFChars(env, jcommand, command);
-            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
-            (*env)->DeleteLocalRef(env, jLaravelPath);
-            return (*env)->NewStringUTF(env, "");
-        }
-        sapi_module.header_handler = android_header_handler;
-    } else {
-        // Cold path: no live runtime (e.g. install-time setup, or a WorkManager
-        // cold start after the app was killed) — full embed init is safe.
-        setup_embed_module();
-        php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
-        if (php_embed_init(0, NULL) != SUCCESS) {
-            LOGE("Failed to initialize PHP for artisan");
-            pthread_mutex_unlock(&g_ephemeral_mutex);
-            (*env)->ReleaseStringUTFChars(env, jcommand, command);
-            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
-            (*env)->DeleteLocalRef(env, jLaravelPath);
-            return (*env)->NewStringUTF(env, "");
-        }
-        sapi_module.header_handler = android_header_handler;
-        php_initialized = 1;
-    }
+    sapi_module.header_handler = android_header_handler;
+    // nativephp extension self-registers via static linking
+    php_initialized = 1;
 
     char artisanPath[1024];
     snprintf(artisanPath, sizeof(artisanPath), "%s/../artisan.php", cLaravelPath);
@@ -948,15 +832,8 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     zend_stream_init_filename(&file_handle, artisanPath);
     php_execute_script(&file_handle);
 
-    if (artisan_hot_path) {
-        // Tear down only this thread's context — leave the live runtime's
-        // global TSRM (and php_initialized) intact.
-        php_request_shutdown(NULL);
-        ts_free_thread();
-    } else {
-        safe_php_embed_shutdown();
-        php_initialized = 0;
-    }
+    safe_php_embed_shutdown();
+    php_initialized = 0;
 
     pthread_mutex_unlock(&g_ephemeral_mutex);
 
@@ -967,17 +844,6 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
 
     char *cmd_output = get_collected_output();
     return (*env)->NewStringUTF(env, cmd_output ? cmd_output : "");
-}
-
-/**
- * Report whether the persistent PHP runtime is currently booted in this process.
- * Process-wide signal (the C global is the single source of truth across the
- * MainActivity thread and any WorkManager worker thread, which each hold their
- * own PHPBridge instance). Lets the background path skip install-time artisan
- * commands that the live app already ran at boot.
- */
-JNIEXPORT jboolean JNICALL native_is_persistent_runtime_live(JNIEnv *env, jobject thiz) {
-    return persistent_initialized ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL native_get_laravel_root_path(JNIEnv *env, jobject thiz) {
@@ -1151,6 +1017,7 @@ static int worker_embed_init(void) {
         LOGE("worker_embed_init: request startup failed");
         return FAILURE;
     }
+
 
     LOGI("worker_embed_init: worker PHP context ready");
     return SUCCESS;
@@ -1486,7 +1353,6 @@ static JNINativeMethod gMethods[] = {
         {"runArtisanCommand", "(Ljava/lang/String;)Ljava/lang/String;", (void *) native_run_artisan_command},
         {"getLaravelPublicPath", "()Ljava/lang/String;", (void *) native_get_laravel_public_path},
         {"getLaravelRootPath", "()Ljava/lang/String;", (void *) native_get_laravel_root_path},
-        {"nativeIsPersistentRuntimeLive", "()Z", (void *) native_is_persistent_runtime_live},
 
         // LaravelEnvironment
         {"nativeSetEnv", "(Ljava/lang/String;Ljava/lang/String;I)I", (void *) native_set_env},
@@ -1499,7 +1365,6 @@ static JNINativeMethod gMethods[] = {
         {"nativePersistentDispatch","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_dispatch},
         {"nativePersistentArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_artisan},
         {"nativePersistentShutdown","()V",(void *) native_persistent_shutdown},
-        {"nativePersistentReboot","()I",(void *) native_persistent_reboot},
 
         // Worker (background queue) methods
         {"nativeWorkerBoot","(Ljava/lang/String;)I",(void *) native_worker_boot},

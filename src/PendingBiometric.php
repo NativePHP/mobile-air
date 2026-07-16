@@ -4,10 +4,16 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Native\Mobile\Concerns\HandlesNativeCallbacks;
 use Native\Mobile\Events\Biometric\Completed;
 
+/**
+ * @method $this completed(\Closure|array|string $callback)
+ */
 class PendingBiometric
 {
+    use HandlesNativeCallbacks;
+
     protected ?string $id = null;
 
     protected ?string $eventClass = null;

@@ -3,6 +3,17 @@ import WebKit
 class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
     let domain = "127.0.0.1"
 
+    // Shared session for Jump WebView-mode forwards. Reused across requests so
+    // HTTP keep-alive / connection pooling kicks in — a fresh session per
+    // request re-did the TCP handshake every time and made navigation crawl.
+    // Cookies are NOT auto-stored here; forwardToRemote rebinds remote
+    // Set-Cookies to 127.0.0.1 in the WebView store (the single cookie source).
+    static let forwardSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        return URLSession(configuration: config)
+    }()
+
     private let maxRedirects = 10
     private var activeTasks: [ObjectIdentifier: WKURLSchemeTask] = [:]
     private let taskLock = NSLock()
@@ -255,47 +266,10 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             return "image/jpeg"
         case "gif":
             return "image/gif"
-        case "webp":
-            return "image/webp"
-        case "heic":
-            return "image/heic"
-        case "heif":
-            return "image/heif"
         case "svg":
             return "image/svg+xml"
-        // Video — keep parity with the Android handler so plugin-staged media
-        // (and any other locally served clips) play with the correct
-        // Content-Type. WKWebView byte-sniffs in some cases, but stricter
-        // clients still need an explicit video/* type.
-        case "mp4":
-            return "video/mp4"
-        case "m4v":
-            return "video/x-m4v"
-        case "mov":
-            return "video/quicktime"
-        case "webm":
-            return "video/webm"
-        case "mkv":
-            return "video/x-matroska"
-        case "avi":
-            return "video/x-msvideo"
-        case "3gp":
-            return "video/3gpp"
-        case "m3u8":
-            return "application/vnd.apple.mpegurl"
-        case "ts":
-            return "video/mp2t"
-        // Audio
         case "m4a":
             return "audio/mp4"
-        case "mp3":
-            return "audio/mpeg"
-        case "wav":
-            return "audio/wav"
-        case "aac":
-            return "audio/aac"
-        case "ogg":
-            return "audio/ogg"
         default:
             return "application/octet-stream"
         }
@@ -331,39 +305,11 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         // Extract Headers
         let headers = request.allHTTPHeaderFields ?? [:]
 
-        // Extract POST data if method is POST/PUT/PATCH.
-        //
-        // WKURLSchemeTask does not populate `request.httpBody` for XHR or
-        // fetch() POSTs originating from JavaScript — the body is exposed only
-        // via `request.httpBodyStream`. Read the stream as a fallback so JSON
-        // and other JS-initiated bodies (Inertia.js, axios, fetch) reach PHP.
+        // Extract POST data if method is POST/PUT/PATCH
         var data: String?
-        if ["POST", "PUT", "PATCH"].contains(method.uppercased()) {
-            if let httpBody = request.httpBody {
-                if let body = String(data: httpBody, encoding: .utf8) {
-                    data = body
-                }
-            } else if let stream = request.httpBodyStream {
-                stream.open()
-                defer { stream.close() }
-
-                var bodyData = Data()
-                let bufferSize = 4096
-                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-                defer { buffer.deallocate() }
-
-                while stream.hasBytesAvailable {
-                    let bytesRead = stream.read(buffer, maxLength: bufferSize)
-                    if bytesRead > 0 {
-                        bodyData.append(buffer, count: bytesRead)
-                    } else {
-                        break
-                    }
-                }
-
-                if let body = String(data: bodyData, encoding: .utf8) {
-                    data = body
-                }
+        if ["POST", "PUT", "PATCH"].contains(method.uppercased()), let httpBody = request.httpBody {
+            if let body = String(data: httpBody, encoding: .utf8) {
+                data = body
             }
         }
 
@@ -657,6 +603,14 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private func getResponse(request: RequestData,
                               completion: @escaping (Result<Data, Error>) -> Void) {
+        // PROTOTYPE: in a Jump WebView session, forward to the remote dev server
+        // instead of the local embedded PHP. The WebView still believes it is
+        // loading php://127.0.0.1, so no origin/ATS/nav-policy change is needed.
+        if JumpWebViewSession.shared.isActive {
+            forwardToRemote(request: request, completion: completion)
+            return
+        }
+
         // Execute on dedicated PHP thread (same thread as php_embed_init for ZTS compatibility)
         PersistentPHPRuntime.shared.executeOnPHPThreadAsync {
             let mode = PersistentPHPRuntime.shared.isBooted ? "PERSISTENT" : "CLASSIC"
@@ -712,6 +666,108 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             }
         }
+    }
+
+    /// PROTOTYPE forward: proxy a php://127.0.0.1 request to the remote Jump dev
+    /// server over the LAN and return the response in the same raw-HTTP-string
+    /// format `getResponse` produces, so `forwardToPHP` parses it unchanged.
+    ///
+    /// v0 limitations (follow-ups): body is treated as UTF-8, so text responses
+    /// (HTML / Livewire / CSS / JS) work but binary assets (fonts / images) do
+    /// not yet; only the app route + text assets render. Remote Set-Cookies are
+    /// rebound to 127.0.0.1 so Livewire sessions/CSRF persist across forwards.
+    private func forwardToRemote(request: RequestData,
+                                 completion: @escaping (Result<Data, Error>) -> Void) {
+        let host = JumpWebViewSession.shared.host
+        let port = JumpWebViewSession.shared.port
+
+        var urlString = "http://\(host):\(port)\(request.uri)"
+        if let q = request.query, !q.isEmpty {
+            urlString += "?\(q)"
+        }
+        guard let url = URL(string: urlString) else {
+            completion(.failure(error(code: 400, description: "Bad remote URL \(urlString)")))
+            return
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = request.method
+        req.timeoutInterval = 15
+        // Copy client headers; drop hop-by-hop / length headers URLSession owns.
+        for (key, value) in request.headers {
+            let lk = key.lowercased()
+            if lk == "host" || lk == "content-length" { continue }
+            req.setValue(value, forHTTPHeaderField: key)
+        }
+        if let body = request.data, !body.isEmpty {
+            req.httpBody = body.data(using: .utf8)
+        }
+
+        NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] --> \(request.method) \(urlString)")
+
+        PHPSchemeHandler.forwardSession.dataTask(with: req) { data, response, err in
+            if let err = err {
+                completion(.failure(err))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data = data else {
+                completion(.failure(self.error(code: 502, description: "No response from remote dev server")))
+                return
+            }
+
+            NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] <-- \(http.statusCode) \(data.count) bytes")
+
+            // Flatten headers to [String:String] for cookie parsing + rebuild.
+            var headerFields: [String: String] = [:]
+            for (k, v) in http.allHeaderFields {
+                headerFields["\(k)"] = "\(v)"
+            }
+
+            // Rebind remote Set-Cookies to 127.0.0.1 and put them in the WebView
+            // store, matching the local path's behaviour.
+            let remoteCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
+            if !remoteCookies.isEmpty {
+                DispatchQueue.main.async {
+                    for c in remoteCookies {
+                        var props = c.properties ?? [:]
+                        props[.domain] = "127.0.0.1"
+                        if let rebound = HTTPCookie(properties: props) {
+                            WebView.dataStore.httpCookieStore.setCookie(rebound)
+                        }
+                    }
+                }
+            }
+
+            // Rebuild the raw HTTP string forwardToPHP expects:
+            // "<status line>\r\n<header lines>\r\n\r\n<body>".
+            var head = "HTTP/1.1 \(http.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: http.statusCode))\r\n"
+            for (k, v) in headerFields {
+                let lk = k.lowercased()
+                // Drop headers the WebView recomputes or that would corrupt the
+                // string body (we already decoded/te-decoded the payload).
+                if lk == "content-length" || lk == "transfer-encoding" || lk == "content-encoding" {
+                    continue
+                }
+                head += "\(k): \(v)\r\n"
+            }
+
+            var bodyString = String(data: data, encoding: .utf8) ?? ""
+
+            // Rewrite absolute dev-server URLs to relative so EVERY app request —
+            // navigations, assets, and crucially Livewire `wire:click` XHRs — stays
+            // same-origin under php://127.0.0.1 and routes through this scheme
+            // handler. Otherwise the app's absolute URLs (http://host:port/…) make
+            // fetch() go cross-origin, which bypasses the forward and gets
+            // CORS-blocked — the reason button-triggered native calls (Camera, etc.)
+            // silently did nothing while page-load calls worked.
+            let origin = "\(host):\(port)"
+            bodyString = bodyString
+                .replacingOccurrences(of: "http://\(origin)", with: "")
+                .replacingOccurrences(of: "https://\(origin)", with: "")
+
+            let full = head + "\r\n" + bodyString
+            completion(.success(Data(full.utf8)))
+        }.resume()
     }
 }
 

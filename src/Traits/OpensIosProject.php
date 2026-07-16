@@ -8,7 +8,9 @@ trait OpensIosProject
 {
     public function openIosProject(): void
     {
-        $projectPath = base_path('nativephp/ios/NativePHP.xcworkspace');
+        // Prefer workspace (includes CocoaPods) over bare project
+        $workspacePath = base_path('nativephp/ios/NativePHP.xcworkspace');
+        $projectPath = is_dir($workspacePath) ? $workspacePath : base_path('nativephp/ios/NativePHP.xcodeproj');
 
         if (! is_dir($projectPath)) {
             $this->error('Xcode workspace not found at '.$projectPath);

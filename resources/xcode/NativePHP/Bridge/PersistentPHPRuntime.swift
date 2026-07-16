@@ -21,9 +21,6 @@ private func _persistent_php_artisan(_ command: UnsafePointer<CChar>?) -> Unsafe
 @_silgen_name("persistent_php_shutdown")
 private func _persistent_php_shutdown()
 
-@_silgen_name("persistent_php_reboot")
-private func _persistent_php_reboot() -> Int32
-
 @_silgen_name("persistent_php_is_booted")
 private func _persistent_php_is_booted() -> Int32
 
@@ -102,18 +99,10 @@ final class PersistentPHPRuntime {
         return isBooted
     }
 
-    /// Reboot the persistent runtime without restarting the PHP interpreter.
-    /// Flushes the Laravel app, clears opcache and compiled views, then re-bootstraps.
+    /// Re-boot the persistent runtime (shutdown then boot).
     func reboot() -> Bool {
-        guard isBooted else { return false }
-        let result = _persistent_php_reboot()
-        if result == 0 {
-            print("PersistentPHPRuntime: reboot succeeded")
-            return true
-        } else {
-            print("PersistentPHPRuntime: reboot FAILED (\(result))")
-            return false
-        }
+        shutdown()
+        return boot()
     }
 
 

@@ -24,6 +24,8 @@ class PluginManifest implements JsonSerializable
 
     public readonly array $secrets;
 
+    public readonly array $components;
+
     public function __construct(array $data)
     {
         // Normalize the data to new format
@@ -32,6 +34,7 @@ class PluginManifest implements JsonSerializable
 
         $this->namespace = $data['namespace'];
         $this->bridgeFunctions = $data['bridge_functions'] ?? [];
+        $this->components = $data['components'] ?? [];
         $this->android = $data['android'] ?? [];
         $this->ios = $data['ios'] ?? [];
         $this->assets = $data['assets'] ?? [];
@@ -179,6 +182,34 @@ class PluginManifest implements JsonSerializable
             }
         }
 
+        // Validate components structure (for UI plugins)
+        foreach ($data['components'] ?? [] as $index => $component) {
+            if (empty($component['type'])) {
+                throw new InvalidArgumentException(
+                    "Component at index {$index} missing 'type'"
+                );
+            }
+
+            if (empty($component['element'])) {
+                throw new InvalidArgumentException(
+                    "Component '{$component['type']}' missing 'element' class"
+                );
+            }
+
+            if (empty($component['blade'])) {
+                throw new InvalidArgumentException(
+                    "Component '{$component['type']}' missing 'blade' class"
+                );
+            }
+
+            // At least one platform renderer required
+            if (empty($component['android_renderer']) && empty($component['ios_renderer'])) {
+                throw new InvalidArgumentException(
+                    "Component '{$component['type']}' missing platform renderer (android_renderer or ios_renderer)"
+                );
+            }
+        }
+
         $this->validateIosExtensionTargets($data);
     }
 
@@ -197,14 +228,12 @@ class PluginManifest implements JsonSerializable
         }
 
         $targets = $ios['extension_targets'];
-
         if (! is_array($targets) || ! array_is_list($targets)) {
             throw new InvalidArgumentException('Plugin manifest ios.extension_targets must be a list.');
         }
 
         $names = [];
         $bundleIdSuffixes = [];
-
         foreach ($targets as $index => $target) {
             if (! is_array($target)) {
                 throw new InvalidArgumentException("iOS extension target at index {$index} must be an object.");
@@ -253,6 +282,7 @@ class PluginManifest implements JsonSerializable
         return [
             'namespace' => $this->namespace,
             'bridge_functions' => $this->bridgeFunctions,
+            'components' => $this->components,
             'android' => $this->android,
             'ios' => $this->ios,
             'assets' => $this->assets,

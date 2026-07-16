@@ -5,6 +5,7 @@ namespace Native\Mobile\Commands;
 use Endroid\QrCode\Builder\Builder;
 use Endroid\QrCode\ErrorCorrectionLevel;
 use Illuminate\Console\Command;
+use Native\Mobile\Edge\NativeRouter;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\select;
@@ -25,7 +26,10 @@ class JumpCommand extends Command
 
     protected $description = 'Start the NativePHP development server for testing mobile apps';
 
-    private int $laravelPort;
+    // Default 0 so a teardown reached before handle() assigns it (early
+    // return-FAILURE, or Cmd+C during killExistingServers) doesn't fatal on an
+    // uninitialized typed property; reapOwnedPorts/killListenersOnPort no-op on 0.
+    private int $laravelPort = 0;
 
     private string $displayHost;
 
@@ -41,11 +45,45 @@ class JumpCommand extends Command
 
     private bool $verbose = false;
 
+    /** Handle to the mDNS/Bonjour advertiser subprocess (LAN discovery). */
+    private $mdnsProcess = null;
+
+    /** @var resource|null Router (php -S) proc_open handle. */
+    private $routerProcess = null;
+
+    /** @var list<int> Process-group leader PIDs of every grouped subtree we spawn. */
+    private array $childLeaders = [];
+
+    /** @var list<int> Direct child PIDs (== leaders when grouped) for the no-pcntl ps fallback. */
+    private array $childPids = [];
+
+    /** Re-entrancy guard: signal handler AND shutdown function both call the teardown. */
+    private bool $shuttingDown = false;
+
+    // Ports this run owns; 0 until chosen, so an early-startup signal reaps nothing spuriously.
+    private int $httpPort = 0;
+
+    private int $wsPort = 0;
+
+    private int $bridgePort = 0;
+
+    private int $viteProxyPort = 0;
+
     public function handle()
     {
         $this->verbose = $this->output->isVerbose();
 
         intro('NativePHP Jump Server');
+
+        // Arm teardown BEFORE any spawn so a Cmd+C during the blocking startup
+        // (port waits, the 120s Laravel warmup, the interactive IP prompt) is
+        // honoured and tears the whole fleet down deterministically.
+        $this->installSignalHandlers();
+        register_shutdown_function([$this, 'shutdownEverything']);
+
+        // Reclaim a prior run's leaked ports NOW (this call was dead code) so we
+        // reuse 3000/8000/3001/3002/3003 instead of escalating to 3008/8002/…
+        $this->killExistingServers();
 
         // Configuration
         $host = $this->option('host');
@@ -83,6 +121,11 @@ class JumpCommand extends Command
         // to the real Vite dev server on 127.0.0.1. Keeps users from having to
         // edit vite.config.js for network access.
         $viteProxyPort = (int) ($this->option('vite-proxy-port') ?? $this->findAvailablePort(3003, 100, $usedPorts));
+
+        $this->httpPort = $httpPort;
+        $this->wsPort = $wsPort;
+        $this->bridgePort = $bridgePort;
+        $this->viteProxyPort = $viteProxyPort;
 
         // Start or detect the Laravel dev server
         if ($this->option('no-serve')) {
@@ -131,10 +174,241 @@ class JumpCommand extends Command
         $this->components->twoColumnDetail('Bridge TCP', "tcp://127.0.0.1:{$bridgePort}");
         $this->components->twoColumnDetail('Vite HMR proxy', "ws://{$this->displayHost}:{$viteProxyPort}/");
 
+        // Register this instance (PID + ports) so a later `native:jump` start
+        // can distinguish this live server from a crashed one. Cleaned up on
+        // exit — register_shutdown_function fires on normal return, exit() from
+        // the signal handler, and fatals alike.
+        $this->writeInstanceRegistry(); // now reads $this->* ports + childLeaders/childPids
+
         // Start PHP built-in server (serves QR page + proxies to Laravel)
         $this->startPhpServer($host, $httpPort, $openQr, $bridgePort, $wsPort, $viteProxyPort);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Shim run as argv0: become a fresh session/group leader (macOS has no
+     * `setsid` binary), then exec the real program so proc_get_status()['pid']
+     * IS the group leader (pid === pgid). pcntl_exec does NOT search PATH, so
+     * argv[1] must be an ABSOLUTE binary (all callers pass PHP_BINARY); its
+     * args are argv[2..].
+     */
+    private function setsidShim(): string
+    {
+        return 'posix_setsid(); $a=$argv; pcntl_exec($a[1], array_slice($a, 2));';
+    }
+
+    /**
+     * proc_open $argv as the leader of its own process group so the entire
+     * subtree (php -S workers, artisan serve's php -S grandchild + its workers,
+     * the Workerman master + workers) can be reaped by killing -pgid. Degrades
+     * on Windows / pcntl-less builds to a shell-less array proc_open; teardown
+     * then falls back to the ps-tree walk + port sweep.
+     *
+     * @param  list<string>  $argv  Absolute binary first, then its args.
+     * @return array{0: resource|false, 1: int} [process, leaderPid] (0 = ungrouped)
+     */
+    private function spawnGroupLeader(array $argv, ?string $cwd, ?array $env, array $descriptors, ?array &$pipes): array
+    {
+        $canGroup = PHP_OS_FAMILY !== 'Windows'
+            && function_exists('posix_setsid')
+            && function_exists('pcntl_exec')
+            && function_exists('posix_kill');
+
+        $cmd = $canGroup
+            ? array_merge([PHP_BINARY, '-d', 'error_reporting=0', '-r', $this->setsidShim()], $argv)
+            : $argv; // array form bypasses /bin/sh on PHP 7.4+
+
+        $process = @proc_open($cmd, $descriptors, $pipes, $cwd, $env);
+        $pid = is_resource($process) ? (int) (@proc_get_status($process)['pid'] ?? 0) : 0;
+
+        if ($pid > 0) {
+            $this->childPids[] = $pid;               // always tracked (ps fallback)
+            if ($canGroup) {
+                $this->childLeaders[] = $pid;        // pid === pgid here
+            }
+        }
+
+        return [$process, $canGroup ? $pid : 0];
+    }
+
+    /** Install async signal handlers before any child is spawned. No-op without pcntl. */
+    private function installSignalHandlers(): void
+    {
+        if (! function_exists('pcntl_signal')) {
+            return; // Windows / no pcntl: shutdown fn + next-run killExistingServers are the net.
+        }
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true); // deliver mid-curl/mid-select/mid-usleep, not once per loop
+        }
+        $handler = function (int $signo) {
+            $this->shutdownEverything();
+            exit(128 + $signo);
+        };
+        pcntl_signal(SIGINT, $handler);
+        pcntl_signal(SIGTERM, $handler);
+        pcntl_signal(SIGHUP, $handler); // closed terminal tab
+    }
+
+    /**
+     * The single idempotent teardown — runs on SIGINT/SIGTERM/SIGHUP, normal
+     * router exit, and register_shutdown_function (fatals / exit()).
+     */
+    public function shutdownEverything(): void
+    {
+        if ($this->shuttingDown) {
+            return; // signal handler + shutdown function may both reach here
+        }
+        $this->shuttingDown = true;
+
+        // Make teardown uninterruptible. With async signals armed, a second
+        // Ctrl+C (common when a stop looks hung) would re-enter the handler and
+        // exit() mid-kill — aborting the SIGTERM→SIGKILL escalation and the port
+        // backstop, re-orphaning the very fleet we're killing. Ignore
+        // terminating signals for the duration of the teardown.
+        if (function_exists('pcntl_signal')) {
+            pcntl_signal(SIGINT, SIG_IGN);
+            pcntl_signal(SIGTERM, SIG_IGN);
+            pcntl_signal(SIGHUP, SIG_IGN);
+        }
+
+        try {
+            $this->newLine();
+            $this->components->info('Shutting down...');
+        } catch (\Throwable) {
+            // tty gone (SIGHUP from a closed tab) — keep cleaning up silently
+        }
+
+        // Advertiser first: its graceful exit multicasts the mDNS goodbye packet.
+        $this->stopAdvertiser();
+
+        if (! empty($this->childLeaders)) {
+            // PRIMARY (macOS/Linux): blast each spawned subtree by its group.
+            foreach ($this->childLeaders as $leader) {
+                $this->killGroup($leader);
+            }
+        } elseif (PHP_OS_FAMILY !== 'Windows' && ! empty($this->childPids)) {
+            // FALLBACK (Unix without pcntl): snapshot + kill each tracked subtree.
+            $this->terminateTrees($this->childPids);
+        } elseif (PHP_OS_FAMILY === 'Windows') {
+            foreach ($this->childPids as $pid) {
+                @exec("taskkill /F /T /PID {$pid} 2>NUL"); // /T = whole tree
+            }
+        }
+
+        // BACKSTOP A: proc_terminate + proc_close tracked handles. Kills the
+        // ungrouped path and, crucially, reaps the now-dead group-leader zombies.
+        $this->stopLaravelServer();
+        foreach (['routerProcess', 'bridgeProcess', 'viteHmrProcess'] as $prop) {
+            if (is_resource($this->{$prop})) {
+                @proc_terminate($this->{$prop});
+                @proc_close($this->{$prop});
+                $this->{$prop} = null;
+            }
+        }
+
+        // BACKSTOP B: identity-checked port sweep for anything that still slipped
+        // (respects --no-serve; killListenersOnPort no-ops on port 0).
+        $this->reapOwnedPorts($this->httpPort, $this->wsPort, $this->bridgePort, $this->viteProxyPort);
+
+        $this->removeInstanceRegistry();
+    }
+
+    /** SIGTERM then SIGKILL an entire process group by its leader PID. */
+    private function killGroup(int $leaderPid): void
+    {
+        if ($leaderPid <= 0 || ! function_exists('posix_kill')) {
+            return;
+        }
+        @posix_kill(-$leaderPid, SIGTERM);                 // negative PID => whole group
+        for ($i = 0; $i < 15 && $this->isPidAlive($leaderPid); $i++) {
+            usleep(100_000);                               // up to ~1.5s graceful
+        }
+        @posix_kill(-$leaderPid, SIGKILL);
+    }
+
+    /**
+     * Identity-checked group kill for a leader PID read from ANOTHER run's
+     * registry file. That PID belongs to a since-dead process, so the OS may
+     * have recycled it into an unrelated process group — an unguarded
+     * killGroup() would then blast that innocent group. Only kill when the
+     * leader still looks like one of our Jump processes. (Current-run leaders in
+     * shutdownEverything() are trusted and skip this check.)
+     */
+    private function killGroupIfOwned(int $leaderPid): void
+    {
+        if ($leaderPid <= 0 || ! $this->isPidAlive($leaderPid)) {
+            return;
+        }
+        if (PHP_OS_FAMILY !== 'Windows') {
+            $command = trim((string) @shell_exec('ps -p '.$leaderPid.' -o command= 2>/dev/null'));
+            $ppid = (int) trim((string) @shell_exec('ps -p '.$leaderPid.' -o ppid= 2>/dev/null'));
+            if ($command === '' || ! $this->isJumpOwnedProcess($command, $ppid)) {
+                return; // recycled or not ours — never group-kill a stranger
+            }
+        }
+        $this->killGroup($leaderPid);
+    }
+
+    /** No-pcntl fallback: snapshot each root's descendants, then SIGTERM→SIGKILL. */
+    private function terminateTrees(array $rootPids): void
+    {
+        $tree = $this->buildProcessTree();
+        $targets = [];
+        $me = getmypid();
+        foreach ($rootPids as $pid) {
+            $targets[$pid] = true;
+            foreach ($this->descendantsOf($tree, $pid) as $d) {
+                $targets[$d] = true;
+            }
+        }
+        unset($targets[$me]);
+        $targets = array_keys($targets);
+
+        foreach ($targets as $pid) {
+            $this->signalPid($pid, 15);
+        }
+        for ($i = 0; $i < 20; $i++) {
+            $targets = array_values(array_filter($targets, fn ($p) => $this->isPidAlive($p)));
+            if (! $targets) {
+                return;
+            }
+            usleep(100_000);
+        }
+        foreach ($targets as $pid) {
+            $this->signalPid($pid, 9);
+        }
+    }
+
+    /** Snapshot the whole process table once: ppid -> [child pids]. */
+    private function buildProcessTree(): array
+    {
+        $tree = [];
+        $ps = (string) @shell_exec('ps -Ao pid=,ppid= 2>/dev/null');
+        foreach (preg_split('/\n/', trim($ps)) as $line) {
+            if (preg_match('/^\s*(\d+)\s+(\d+)/', $line, $m)) {
+                $tree[(int) $m[2]][] = (int) $m[1];
+            }
+        }
+
+        return $tree;
+    }
+
+    /** BFS all descendants of $pid from a pre-built tree. */
+    private function descendantsOf(array $tree, int $pid): array
+    {
+        $out = [];
+        $stack = [$pid];
+        while ($stack) {
+            foreach ($tree[array_pop($stack)] ?? [] as $c) {
+                if (! isset($out[$c])) {
+                    $out[$c] = true;
+                    $stack[] = $c;
+                }
+            }
+        }
+
+        return array_keys($out);
     }
 
     /**
@@ -165,6 +439,14 @@ class JumpCommand extends Command
             return;
         }
 
+        // Detect how Jump should render this app. If the start route is a
+        // Route::native screen the app is native-ui (streams Element.* frames
+        // over the WS bridge); otherwise it's a classic WebView app (Blade /
+        // Livewire / Inertia over HTTP) that the client renders by forwarding
+        // its HTTP responses. Surfaced to the client via /jump/info's `ui`.
+        $startUrl = config('nativephp.start_url') ?: '/';
+        $appUi = NativeRouter::isNativeRoute($startUrl) ? 'native-ui' : 'webview';
+
         // Build environment variables for the router
         $env = [
             'JUMP_DISPLAY_HOST' => $this->displayHost,
@@ -172,10 +454,17 @@ class JumpCommand extends Command
             'JUMP_LARAVEL_PORT' => (string) $this->laravelPort,
             'JUMP_BRIDGE_PORT' => (string) $bridgePort,
             'JUMP_WS_PORT' => (string) $wsPort,
+            'JUMP_APP_UI' => $appUi,
             'JUMP_VITE_PORT' => (string) config('nativephp.server.vite_port', 5173),
             'JUMP_VITE_PROXY_PORT' => (string) $viteProxyPort,
             'JUMP_BASE_PATH' => base_path(),
             'APP_NAME' => config('app.name', 'Laravel'),
+            // The router proxies `GET /` to Laravel via a blocking curl, so it
+            // is held open for the entire native-screen lifetime too. Same
+            // single-worker starvation as the Laravel server — give the router
+            // its own worker pool so /jump/info, /jump/qr and asset proxying
+            // stay responsive while a native runloop request is in flight.
+            'PHP_CLI_SERVER_WORKERS' => (string) max(4, (int) config('nativephp.server.workers', 10)),
         ];
 
         // Merge with current environment
@@ -221,13 +510,24 @@ class JumpCommand extends Command
             );
         }
 
-        $process = proc_open($cmd, $descriptorSpec, $pipes, base_path(), $fullEnv);
+        if ($useWorkerman) {
+            // Windows: unchanged string-cmd proc_open (bypass not needed here).
+            $process = proc_open($cmd, $descriptorSpec, $pipes, base_path(), $fullEnv);
+        } else {
+            $serverArgv = [$phpBinary, '-S', "{$serverHost}:{$httpPort}", $serverScriptPath];
+            [$process] = $this->spawnGroupLeader($serverArgv, base_path(), $fullEnv, $descriptorSpec, $pipes);
+        }
 
         if (! is_resource($process)) {
             $this->error('Failed to start PHP server');
 
             return;
         }
+        $this->routerProcess = $process;
+
+        // Router leader now known — refresh the registry so a hard `kill -9` of
+        // the parent is still recoverable by group next run.
+        $this->writeInstanceRegistry();
 
         // Set pipes to non-blocking
         stream_set_blocking($pipes[1], false);
@@ -236,24 +536,25 @@ class JumpCommand extends Command
         // Close stdin - we don't need to write to the server
         fclose($pipes[0]);
 
-        // Handle signals for graceful shutdown
-        if (function_exists('pcntl_signal')) {
-            $shutdown = function () use ($process, &$pipes) {
-                $this->newLine();
-                $this->components->info('Shutting down...');
-                $this->stopLaravelServer();
-                if (is_resource($pipes[1])) {
-                    fclose($pipes[1]);
-                }
-                if (is_resource($pipes[2])) {
-                    fclose($pipes[2]);
-                }
-                proc_terminate($process);
-                exit(0);
-            };
-            pcntl_signal(SIGINT, $shutdown);
-            pcntl_signal(SIGTERM, $shutdown);
+        // Advertise on the LAN only once the router actually answers — an ad
+        // for a server that failed to start manufactures phantom "server
+        // nearby" pills that time out on tap.
+        for ($i = 0; $i < 50; $i++) { // 5s max
+            if ($this->isPortInUse($httpPort)) {
+                $this->advertiseOnNetwork($httpPort);
+                break;
+            }
+            usleep(100000);
         }
+        if (! is_resource($this->mdnsProcess)) {
+            $this->warn($this->isPortInUse($httpPort)
+                ? 'LAN discovery unavailable (no dns-sd/avahi) — use the QR code.'
+                : "Server did not start on port {$httpPort} — not advertising on the network.");
+        }
+
+        // Signal handlers and the advertiser/registry shutdown functions are
+        // installed once in handle() (before any spawn) and all funnel through
+        // shutdownEverything(); nothing to wire up per-process here.
 
         // Open the browser-rendered QR page once the HTTP server is up.
         // Terminal-rendered QR codes are unreliable across font/terminal
@@ -317,6 +618,16 @@ class JumpCommand extends Command
                 }
             }
 
+            // Drain Laravel server output to prevent pipe buffer from filling
+            if ($this->laravelProcess && is_resource($this->laravelProcess)) {
+                if (is_resource($this->laravelPipes[1] ?? null)) {
+                    fgets($this->laravelPipes[1]);
+                }
+                if (is_resource($this->laravelPipes[2] ?? null)) {
+                    fgets($this->laravelPipes[2]);
+                }
+            }
+
             // Handle signals if available
             if (function_exists('pcntl_signal_dispatch')) {
                 pcntl_signal_dispatch();
@@ -326,11 +637,45 @@ class JumpCommand extends Command
             usleep(10000); // 10ms
         }
 
-        // Cleanup
-        $this->stopLaravelServer();
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        proc_close($process);
+        // Router died on its own (crash / external kill) — same idempotent teardown.
+        $this->shutdownEverything();
+    }
+
+    /**
+     * Terminate the mDNS/Bonjour advertiser subprocess. When `dns-sd -R`
+     * exits, mDNSResponder deregisters the service and multicasts goodbye
+     * packets, so browsing devices drop the entry within seconds instead of
+     * caching it for the record TTL (up to 75 minutes).
+     */
+    public function stopAdvertiser(): void
+    {
+        if (is_resource($this->mdnsProcess)) {
+            proc_terminate($this->mdnsProcess);
+            proc_close($this->mdnsProcess);
+            $this->mdnsProcess = null;
+        }
+    }
+
+    /**
+     * Kill every process still listening on this instance's ports — the same
+     * reap cleanupDeadInstances() performs for crashed runs, applied at our own
+     * shutdown. proc_terminate() only signals direct children: it misses the
+     * php -S workers artisan serve leaves behind (SIGTERM kills artisan serve
+     * before its Process destructor stops them) and the bridge server, which
+     * runs fully detached. In --no-serve mode the Laravel server belongs to the
+     * user, so its port is left alone.
+     */
+    private function reapOwnedPorts(int $httpPort, int $wsPort, int $bridgePort, int $viteProxyPort): void
+    {
+        $ports = [$httpPort, $wsPort, $bridgePort, $viteProxyPort];
+
+        if (! $this->option('no-serve')) {
+            $ports[] = $this->laravelPort;
+        }
+
+        foreach ($ports as $port) {
+            $this->killListenersOnPort($port);
+        }
     }
 
     /**
@@ -391,18 +736,28 @@ class JumpCommand extends Command
             // On Ctrl+C the PHP process is hard-terminated by Windows and the
             // bridge stays running, matching Mac/Linux behaviour.
             $this->bridgeProcess = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
+            // Track the PID so shutdownEverything()'s `taskkill /F /T` reaps the
+            // Workerman master AND its JumpBridge/JumpViteProxy worker tree —
+            // proc_terminate() alone (backstop A) only signals the master.
+            $bpid = is_resource($this->bridgeProcess) ? (int) (@proc_get_status($this->bridgeProcess)['pid'] ?? 0) : 0;
+            if ($bpid > 0) {
+                $this->childPids[] = $bpid;
+            }
         } else {
-            $cmd = sprintf(
-                '%s %s %s %d %d %d start >> %s 2>&1 &',
-                escapeshellarg($phpBinary),
-                escapeshellarg($serverPath),
-                escapeshellarg(base_path()),
-                $wsPort,
-                $bridgePort,
-                $viteProxyPort,
-                escapeshellarg($logFile)
-            );
-            exec($cmd);
+            // Was: exec("php … start >> log 2>&1 &"). The trailing & reparented
+            // the Workerman master to PID 1 at birth, untracked and unsignalable.
+            // Spawn it as its OWN process-group leader so killGroup() reaps the
+            // master + JumpBridge + JumpViteProxy workers together.
+            $descriptors = [
+                0 => ['file', '/dev/null', 'r'],
+                1 => ['file', $logFile, 'a'],
+                2 => ['file', $logFile, 'a'],
+            ];
+            $argv = [$phpBinary, $serverPath, base_path(), (string) $wsPort, (string) $bridgePort, (string) $viteProxyPort, 'start'];
+            [$proc] = $this->spawnGroupLeader($argv, base_path(), null, $descriptors, $pipes);
+            // Track the handle so backstop A can proc_terminate/proc_close it.
+            // Never proc_close during the run (blocks on the long-lived child).
+            $this->bridgeProcess = is_resource($proc) ? $proc : null;
         }
 
         // Give it a moment to start
@@ -457,6 +812,11 @@ class JumpCommand extends Command
         // block waiting on the long-lived child). The OS process is
         // independent and Windows hard-terminates everything on Ctrl+C.
         $this->viteHmrProcess = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
+        // Track the PID so `taskkill /F /T` reaps the Workerman tree on shutdown.
+        $vpid = is_resource($this->viteHmrProcess) ? (int) (@proc_get_status($this->viteHmrProcess)['pid'] ?? 0) : 0;
+        if ($vpid > 0) {
+            $this->childPids[] = $vpid;
+        }
 
         usleep(500000);
 
@@ -481,28 +841,43 @@ class JumpCommand extends Command
             2 => ['pipe', 'w'],
         ];
 
-        // --no-reload is required on Windows/Herd: without it, Laravel's
-        // ServeCommand strips most env vars from the spawned `php -S` child
-        // (only a small allowlist survives), which on Windows can break PHP's
-        // socket initialization and produces the opaque
-        // "Failed to listen on 127.0.0.1:<port> (reason: ?)" error across
-        // every port it tries. We're managing this server's lifecycle from
-        // Jump anyway, so the env-reload watcher provides no value here.
-        $cmd = sprintf(
-            '%s %s serve --port=%d --host=127.0.0.1 --no-interaction --no-reload',
-            escapeshellarg($phpBinary),
-            escapeshellarg($artisan),
-            $port
-        );
+        // --no-reload is REQUIRED for two reasons:
+        //  1. It lets artisan serve honour PHP_CLI_SERVER_WORKERS — Laravel only
+        //     spins up the multi-worker built-in server with that flag; otherwise
+        //     it warns and falls back to a single worker, re-introducing the
+        //     native-runloop starvation.
+        //  2. On Windows/Herd, without it Laravel's ServeCommand strips most env
+        //     vars from the spawned `php -S` child (only a small allowlist
+        //     survives), which can break PHP's socket initialization and produce
+        //     the opaque "Failed to listen on 127.0.0.1:<port> (reason: ?)" error
+        //     across every port it tries.
+        // Jump runs its own file watcher in websocket-server.php, so artisan
+        // serve's built-in .env reload is redundant here anyway.
+        $serveArgv = [
+            $phpBinary, $artisan, 'serve',
+            "--port={$port}", '--host=127.0.0.1', '--no-interaction', '--no-reload',
+        ];
 
         // Pass bridge ports so nativephp_call() (JumpBridge) in Laravel dials the right TCP port.
+        //
+        // PHP_CLI_SERVER_WORKERS is critical for native-UI apps: a native
+        // screen's `GET /` runs the element runloop, which BLOCKS the request
+        // for the whole lifetime of the screen. With the built-in server's
+        // default single worker, that one blocked request starves every other
+        // request (asset loads, /jump/info health checks, the next screen's
+        // GET /) — the device's 10s health check then times out and the
+        // session is torn down (the "scan → bounced home", "re-scan hangs"
+        // loop). WebView (v3) apps never hit this because their `GET /`
+        // returns immediately. Give the server a worker pool so the blocking
+        // runloop request only occupies one of them.
         $env = array_merge($_ENV, $_SERVER, [
             'JUMP_BRIDGE_PORT' => (string) $bridgePort,
             'JUMP_WS_PORT' => (string) $wsPort,
+            'PHP_CLI_SERVER_WORKERS' => (string) max(4, (int) config('nativephp.server.workers', 10)),
         ]);
         $env = array_filter($env, fn ($v) => is_string($v) || is_numeric($v));
 
-        $this->laravelProcess = proc_open($cmd, $descriptorSpec, $this->laravelPipes, base_path(), $env);
+        [$this->laravelProcess] = $this->spawnGroupLeader($serveArgv, base_path(), $env, $descriptorSpec, $this->laravelPipes);
 
         if (! is_resource($this->laravelProcess)) {
             $this->error('Failed to start artisan serve');
@@ -714,6 +1089,9 @@ class JumpCommand extends Command
             $this->newLine();
             $this->line("  <fg=gray>{$qrData}</>");
             $this->newLine();
+            $this->line('  <fg=green>iOS</>  Scan with Camera app or Jump app');
+            $this->line('  <fg=blue>Android</>  Scan from within the Jump app');
+            $this->newLine();
             $browserHost = $host === '0.0.0.0' ? 'localhost' : $host;
             $browserUrl = "http://{$browserHost}:{$port}/jump/qr";
             $this->line("  <fg=yellow>Can't scan the QR code? Try it in the browser: <fg=cyan>{$browserUrl}</></>");
@@ -775,6 +1153,70 @@ class JumpCommand extends Command
         $ips = $this->getAllLocalIpAddresses();
 
         return $ips[0] ?? null;
+    }
+
+    /**
+     * Publish an mDNS/Bonjour service (`_jump._tcp`) so the app can discover
+     * this dev server on the LAN and connect by tapping it — no QR scan. This
+     * is purely additive: it advertises the SAME host + port the QR encodes, so
+     * the app's connect flow is unchanged, and if no advertiser is available we
+     * just skip (the QR still works). Best-effort, killed on shutdown.
+     */
+    private function advertiseOnNetwork(int $httpPort): void
+    {
+        // Advertise the SAME host the QR encodes ($displayHost is the
+        // user-selected interface on multi-homed machines). Falling back to
+        // getLocalIpAddress() here could point the pill at an interface the
+        // phone can't reach while the QR works.
+        $ip = $this->displayHost ?: ($this->getLocalIpAddress() ?: '127.0.0.1');
+        $label = basename(base_path());
+
+        // TXT records carry the reachable LAN IP, port and a friendly name, so
+        // the app never has to resolve a flaky `.local` hostname (and iOS can
+        // read host+port straight from the browse metadata, no resolve step).
+        $txtHost = 'host='.$ip;
+        $txtPort = 'port='.$httpPort;
+        $txtName = 'name='.$label;
+
+        $dnssd = trim((string) @shell_exec('command -v dns-sd 2>/dev/null'));
+        $avahi = $dnssd === '' ? trim((string) @shell_exec('command -v avahi-publish-service 2>/dev/null')) : '';
+
+        if ($dnssd !== '') {
+            // macOS / Bonjour: dns-sd -R <name> <type> <domain> <port> [k=v ...]
+            $cmd = sprintf(
+                '%s -R %s _jump._tcp local %d %s %s %s',
+                escapeshellarg($dnssd),
+                escapeshellarg($label),
+                $httpPort,
+                escapeshellarg($txtHost),
+                escapeshellarg($txtPort),
+                escapeshellarg($txtName),
+            );
+        } elseif ($avahi !== '') {
+            // Linux / Avahi: avahi-publish-service <name> <type> <port> [k=v ...]
+            $cmd = sprintf(
+                '%s %s _jump._tcp %d %s %s %s',
+                escapeshellarg($avahi),
+                escapeshellarg($label),
+                $httpPort,
+                escapeshellarg($txtHost),
+                escapeshellarg($txtPort),
+                escapeshellarg($txtName),
+            );
+        } else {
+            return; // no advertiser on this platform — QR-only, no harm
+        }
+
+        $spec = [
+            0 => ['pipe', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
+        $proc = @proc_open($cmd, $spec, $pipes);
+        if (is_resource($proc)) {
+            $this->mdnsProcess = $proc;
+            $this->components->info("Discoverable on this network as \"{$label}\" — open the app to connect without scanning.");
+        }
     }
 
     private function openBrowser($host, $port)
@@ -861,6 +1303,376 @@ APPLESCRIPT;
 
         if ($result !== 'true') {
             exec("open '{$url}' > /dev/null 2>&1 &");
+        }
+    }
+
+    private function killExistingServers()
+    {
+        $currentPid = getmypid();
+
+        if (PHP_OS_FAMILY === 'Windows') {
+            // Kill leftover jump servers from a prior run. Match ALL our scripts
+            // (router + Workerman bridge + Windows vite-hmr proxy), not just the
+            // router, and tree-kill (/T) so php -S workers and Workerman worker
+            // processes are reaped too — otherwise ws/bridge/vite ports escalate.
+            $pids = [];
+            foreach (['router.php', 'websocket-server.php', 'vite-hmr-server.php'] as $needle) {
+                $output = shell_exec('wmic process where "commandline like \'%'.$needle.'%\'" get processid 2>NUL');
+                if (! $output) {
+                    $output = shell_exec('powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like \'*'.$needle.'*\' } | Select-Object -ExpandProperty ProcessId" 2>NUL');
+                }
+                if ($output) {
+                    foreach (preg_split('/\s+/', trim($output)) as $pid) {
+                        if (is_numeric($pid) && (int) $pid !== $currentPid && (int) $pid > 0) {
+                            $pids[(int) $pid] = true; // dedupe across patterns
+                        }
+                    }
+                }
+            }
+            $pids = array_keys($pids);
+
+            if (count($pids) > 0) {
+                $this->components->task('Cleaning up '.count($pids).' existing server(s)', function () use ($pids) {
+                    foreach ($pids as $pid) {
+                        exec("taskkill /F /T /PID {$pid} 2>NUL"); // /T = whole tree
+                    }
+                    usleep(500000);
+
+                    return true;
+                });
+            }
+        } else {
+            // Unix: reap only DEAD jump instances (and orphaned advertisers),
+            // leaving any live sibling server running. This is what lets you
+            // serve multiple projects at once on different ports — each fresh
+            // start auto-finds free ports (findAvailablePort) and only cleans up
+            // the leftovers of runs whose master process is gone.
+            $this->cleanupDeadInstances();
+
+            // A live sibling serving THIS project is different: the newest
+            // invocation should own the session (otherwise a forgotten
+            // terminal tab holds 3000-3003 forever and every new run walks
+            // up through 3004+, breaking the ports the device already knows).
+            $this->takeOverSameProjectInstances();
+        }
+    }
+
+    /**
+     * Stop any LIVE jump instance serving this same project so this run can
+     * claim the canonical ports. Graceful first — SIGINT lets the sibling's
+     * own shutdown handler stop its Laravel server, advertiser, bridge and
+     * registry entry — with a force-reap fallback if it doesn't die in time.
+     * Instances of OTHER projects are untouched.
+     */
+    private function takeOverSameProjectInstances(): void
+    {
+        foreach (glob($this->jumpRegistryDir().'/*.json') ?: [] as $file) {
+            $data = json_decode((string) @file_get_contents($file), true);
+            if (! is_array($data)) {
+                continue;
+            }
+
+            $pid = (int) ($data['master_pid'] ?? 0);
+            $project = $data['project'] ?? null;
+
+            if ($project !== base_path() || $pid <= 0 || $pid === getmypid() || ! $this->isPidAlive($pid)) {
+                continue;
+            }
+
+            $this->components->task("Stopping previous Jump for this project (pid {$pid})", function () use ($pid, $file, $data) {
+                $this->signalPid($pid, 2); // SIGINT — run its graceful shutdown
+
+                // Give its shutdown handler up to 5s to clean up after itself.
+                for ($i = 0; $i < 50 && $this->isPidAlive($pid); $i++) {
+                    usleep(100_000);
+                }
+
+                if ($this->isPidAlive($pid)) {
+                    $this->signalPid($pid, 9); // SIGKILL
+                    foreach ((array) ($data['group_leaders'] ?? []) as $leader) {
+                        $this->killGroupIfOwned((int) $leader); // registry PID may be recycled
+                    }
+                    foreach (['http_port', 'laravel_port', 'ws_port', 'bridge_port', 'vite_port'] as $key) {
+                        if (! empty($data[$key])) {
+                            $this->killListenersOnPort((int) $data[$key]);
+                        }
+                    }
+                }
+
+                @unlink($file);
+
+                return true;
+            });
+        }
+    }
+
+    /** Directory holding one JSON file per live native:jump instance. */
+    private function jumpRegistryDir(): string
+    {
+        $dir = sys_get_temp_dir().'/nativephp-jump-instances';
+        if (! is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+
+        return $dir;
+    }
+
+    private function instanceRegistryFile(): string
+    {
+        return $this->jumpRegistryDir().'/'.getmypid().'.json';
+    }
+
+    /**
+     * Record this instance's PID + ports so a future `native:jump` start can
+     * tell a live sibling (leave it alone) from a crashed one (reap its ports).
+     */
+    private function writeInstanceRegistry(): void
+    {
+        @file_put_contents($this->instanceRegistryFile(), json_encode([
+            'master_pid' => getmypid(),
+            'project' => base_path(),
+            'http_port' => $this->httpPort,
+            'laravel_port' => $this->laravelPort,
+            'ws_port' => $this->wsPort,
+            'bridge_port' => $this->bridgePort,
+            'vite_port' => $this->viteProxyPort,
+            'group_leaders' => array_values($this->childLeaders),
+            'child_pids' => array_values($this->childPids),
+        ]));
+    }
+
+    public function removeInstanceRegistry(): void
+    {
+        @unlink($this->instanceRegistryFile());
+    }
+
+    /** Send a signal by number, with or without the posix extension. */
+    private function signalPid(int $pid, int $signal): void
+    {
+        if ($pid <= 0) {
+            return;
+        }
+        if (function_exists('posix_kill')) {
+            @posix_kill($pid, $signal);
+        } else {
+            @exec('kill -'.$signal.' '.$pid.' 2>/dev/null');
+        }
+    }
+
+    private function isPidAlive(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return false;
+        }
+        if (function_exists('posix_kill')) {
+            return @posix_kill($pid, 0);
+        }
+
+        return trim((string) @shell_exec('ps -p '.$pid.' -o pid= 2>/dev/null')) !== '';
+    }
+
+    /**
+     * Kill jump-owned processes still listening on a port. IDENTITY-CHECKED:
+     * a port recorded by a crashed instance may have since been re-bound by a
+     * completely unrelated process (any `artisan serve`, a docker proxy, …) —
+     * blindly `kill -9`-ing by port number executes innocents. Only processes
+     * whose command line is recognizably part of a jump run are killed.
+     */
+    private function killListenersOnPort(int $port): void
+    {
+        if ($port <= 0) {
+            return;
+        }
+        $out = trim((string) @shell_exec('lsof -nP -iTCP:'.$port.' -sTCP:LISTEN -t 2>/dev/null'));
+        if ($out === '') {
+            return;
+        }
+        foreach (array_unique(preg_split('/\s+/', $out)) as $pid) {
+            if (! is_numeric($pid) || (int) $pid === getmypid()) {
+                continue;
+            }
+
+            $info = trim((string) @shell_exec('ps -p '.(int) $pid.' -o ppid=,command= 2>/dev/null'));
+            if ($info === '' || ! preg_match('/^\s*(\d+)\s+(.*)$/s', $info, $m)) {
+                continue;
+            }
+            $ppid = (int) $m[1];
+            $command = trim($m[2]);
+
+            if (! $this->isJumpOwnedProcess($command, $ppid)) {
+                $this->warn("Port {$port} is held by an unrelated process (pid {$pid}) — leaving it alone.");
+
+                continue;
+            }
+
+            @exec('kill -9 '.(int) $pid.' 2>/dev/null');
+        }
+    }
+
+    /**
+     * Does this command line belong to a process a `native:jump` run spawns?
+     * Matches the jump router, the bridge server, mDNS advertisers, the
+     * MANAGED `artisan serve` (identified by the `--no-reload` flag jump
+     * always passes — a user's own `artisan serve` doesn't have it), and
+     * ORPHANED `php -S … server.php` workers (PPID 1 — a live user server's
+     * workers still have their artisan parent).
+     */
+    private function isJumpOwnedProcess(string $command, int $ppid): bool
+    {
+        if (str_contains($command, 'resources/jump/router.php')
+            || str_contains($command, 'resources/jump/websocket-server.php')
+            || str_contains($command, '_jump._tcp')) {
+            return true;
+        }
+
+        // The bridge server runs under Workerman, which REWRITES its process
+        // title (`WorkerMan: worker process JumpBridge websocket://…`,
+        // `… JumpViteProxy …`) — the original websocket-server.php command
+        // line is not visible in ps output. Match any Workerman process whose
+        // worker name carries our Jump prefix (JumpBridge, JumpViteProxy, …).
+        if (str_contains($command, 'WorkerMan') && str_contains($command, 'Jump')) {
+            return true;
+        }
+
+        if (preg_match('/artisan[\'"]? serve/', $command) && str_contains($command, '--no-reload')) {
+            return true;
+        }
+
+        if ($ppid === 1
+            && preg_match('/php[^ ]* -S 127\.0\.0\.1:\d+/', $command)
+            && str_contains($command, 'server.php')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Reap leftovers from PREVIOUS jump runs without touching live siblings.
+     * A registry entry whose master PID is still alive is a concurrent server —
+     * leave it (and its ports) running. An entry whose master is gone is a
+     * crash: kill whatever still listens on its recorded ports and drop the
+     * file. Finally sweep orphaned mDNS advertisers (PPID 1) that a crashed run
+     * leaves advertising a phantom "server nearby".
+     */
+    private function cleanupDeadInstances(): void
+    {
+        $portKeys = ['http_port', 'laravel_port', 'ws_port', 'bridge_port', 'vite_port'];
+
+        $entries = [];
+        foreach (glob($this->jumpRegistryDir().'/*.json') ?: [] as $file) {
+            $data = json_decode((string) @file_get_contents($file), true);
+            if (is_array($data)) {
+                $entries[$file] = $data;
+            } else {
+                @unlink($file);
+            }
+        }
+
+        $isLive = function (array $data): bool {
+            $pid = (int) ($data['master_pid'] ?? 0);
+
+            return $pid > 0 && $pid !== getmypid() && $this->isPidAlive($pid);
+        };
+
+        // Ports a LIVE sibling owns — never reap these, even if a stale entry
+        // from a crashed run happens to name the same (since-reused) port.
+        $livePorts = [];
+        foreach ($entries as $data) {
+            if ($isLive($data)) {
+                foreach ($portKeys as $key) {
+                    if (! empty($data[$key])) {
+                        $livePorts[(int) $data[$key]] = true;
+                    }
+                }
+            }
+        }
+
+        foreach ($entries as $file => $data) {
+            if ($isLive($data)) {
+                continue; // live sibling server — leave it (and its ports) alone
+            }
+
+            foreach ((array) ($data['group_leaders'] ?? []) as $leader) {
+                $this->killGroupIfOwned((int) $leader); // registry PID may be recycled
+            }
+
+            foreach ($portKeys as $key) {
+                $port = (int) ($data[$key] ?? 0);
+                if ($port > 0 && ! isset($livePorts[$port])) {
+                    $this->killListenersOnPort($port);
+                }
+            }
+            @unlink($file);
+        }
+
+        // Belt-and-suspenders: reap jump-owned orphans holding the DEFAULT ports
+        // that left NO registry entry — e.g. spawned by a pre-fix build, or a run
+        // whose registry file was removed on a partial shutdown. This is the case
+        // the registry-driven sweep above cannot see. killListenersOnPort is
+        // identity-gated (only kills a process whose command matches a jump
+        // server), and we skip any port a LIVE sibling owns — so it never touches
+        // an unrelated service (e.g. `php artisan boost:mcp` on 3002) or a running
+        // project. Covers the router (3000) + artisan serve (8000) + bridge/ws +
+        // vite-proxy default ports.
+        foreach ([3000, 8000, 3001, 3002, 3003] as $port) {
+            if (! isset($livePorts[$port])) {
+                $this->killListenersOnPort($port);
+            }
+        }
+
+        $this->killOrphanedAdvertisers();
+        $this->killOrphanedJumpProcesses();
+    }
+
+    /**
+     * Reap jump-owned processes orphaned to launchd/init (PPID 1) — chiefly the
+     * Workerman bridge/vite MASTERS, which hold no listening port (so the port
+     * sweep can't see them, and killing a worker just makes the master re-fork).
+     * A LIVE server's master is a child of its running native:jump (PPID != 1),
+     * so PPID 1 reliably means "owner gone" and never touches a running project.
+     * Identity-checked via isJumpOwnedProcess so only our own processes die.
+     */
+    private function killOrphanedJumpProcesses(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            return; // Windows path handles its own reclaim in killExistingServers()
+        }
+        $ps = (string) @shell_exec('ps -Ao pid,ppid,command 2>/dev/null');
+        foreach (preg_split('/\n/', $ps) as $line) {
+            if (! preg_match('/^\s*(\d+)\s+(\d+)\s+(.*)$/', $line, $m)) {
+                continue;
+            }
+            $pid = (int) $m[1];
+            $ppid = (int) $m[2];
+            $command = trim($m[3]);
+            if ($pid === getmypid() || $ppid !== 1) {
+                continue; // only reap processes orphaned to init
+            }
+            if ($this->isJumpOwnedProcess($command, $ppid)) {
+                @exec('kill -9 '.$pid.' 2>/dev/null');
+            }
+        }
+    }
+
+    /**
+     * Kill `dns-sd -R` / avahi advertisers for `_jump._tcp` orphaned to launchd
+     * (PPID 1). A live server's advertiser is a direct child of its native:jump
+     * process, so PPID 1 reliably means "owner crashed" — never a running server.
+     */
+    private function killOrphanedAdvertisers(): void
+    {
+        $ps = (string) @shell_exec('ps -Ao pid,ppid,command 2>/dev/null');
+        foreach (preg_split('/\n/', $ps) as $line) {
+            if (! preg_match('/_jump\._tcp/', $line)) {
+                continue;
+            }
+            if (! preg_match('/dns-sd -R|avahi-publish-service/', $line)) {
+                continue;
+            }
+            if (preg_match('/^\s*(\d+)\s+(\d+)\s/', $line, $m) && (int) $m[2] === 1) {
+                @exec('kill -9 '.(int) $m[1].' 2>/dev/null');
+            }
         }
     }
 

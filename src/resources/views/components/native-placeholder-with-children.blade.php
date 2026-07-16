@@ -1,7 +1,5 @@
-{{-- Render slot content to trigger child components --}}
+{{-- Edge navigation system: collects children into an Edge context for navigation chrome (top bar, bottom nav, side nav). --}}
 {{ $slot }}
-
-{{-- After slot renders, close the context --}}
 @php
     \Native\Mobile\Edge\Edge::endContext($contextIndex, $type, $props);
 @endphp

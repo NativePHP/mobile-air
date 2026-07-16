@@ -20,6 +20,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.nativephp.mobile.ui.nativerender.NativeEdgeDrawerState
+import com.nativephp.mobile.ui.nativerender.RenderSideNavDrawerContent
 import kotlinx.coroutines.launch
 
 private const val TAG = "NativeSideNav"
@@ -60,18 +62,26 @@ fun NativeSideDrawer(
     // Track expanded state for each group by heading
     val expandedGroups = remember { mutableStateMapOf<String, Boolean>() }
 
-    // Check if we have side nav data
-    val hasData = sideNavData != null && !sideNavData?.children.isNullOrEmpty()
+    // Check for native EDGE side nav data (shared memory tree)
+    val edgeSideNavNode by NativeEdgeDrawerState.sideNavNode
+    val hasEdgeData = edgeSideNavNode != null && edgeSideNavNode!!.children.isNotEmpty()
+
+    // Check if we have side nav data (WebView path or native EDGE path)
+    val hasData = hasEdgeData || (sideNavData != null && !sideNavData?.children.isNullOrEmpty())
     val children = sideNavData?.children ?: emptyList()
-    val gesturesEnabled = sideNavData?.gesturesEnabled ?: false
+    val gesturesEnabled = if (hasEdgeData) true else (sideNavData?.gesturesEnabled ?: false)
 
     if (hasData) {
         Log.d(TAG, "🎨 Rendering side nav with ${children.size} children")
-        children.forEachIndexed { index, child ->
-            Log.d(TAG, "🎨   Child $index: type=${child.type}")
-        }
     } else {
         Log.d(TAG, "No side nav data - drawer will be disabled")
+    }
+
+    // Don't wrap in ModalNavigationDrawer until we actually have data.
+    // Rendering an empty drawer causes a flicker when content first arrives.
+    if (!hasData) {
+        content()
+        return
     }
 
     // Separate pinned and scrollable content
@@ -84,93 +94,102 @@ fun NativeSideDrawer(
         }
     }
 
-    // Always render ModalNavigationDrawer to keep composable structure stable for WebView
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = hasData && gesturesEnabled,  // Controlled via Laravel
+        gesturesEnabled = gesturesEnabled,
         drawerContent = {
-            ModalDrawerSheet {
-                Column(modifier = Modifier.fillMaxHeight()) {
-                    // Render pinned headers at the top (non-scrollable)
-                    pinnedHeaders.forEach { child ->
-                        if (child.type == "side_nav_header") {
-                            val header = NativeUIParser.parseSideNavHeader(child.data)
-                            header?.let {
-                                SideNavHeaderView(
-                                    header = it,
-                                    onNavigate = onNavigate,
-                                    onCloseDrawer = { scope.launch { drawerState.close() } }
-                                )
-                            }
-                        }
-                    }
-
-                    // Scrollable column for remaining content
-                    Column(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Spacer(Modifier.height(16.dp))
-
-                        scrollableChildren.forEach { child ->
-                            when (child.type) {
-                                "side_nav_header" -> {
-                                    val header = NativeUIParser.parseSideNavHeader(child.data)
-                                    header?.let {
-                                        SideNavHeaderView(
-                                            header = it,
-                                            onNavigate = onNavigate,
-                                            onCloseDrawer = { scope.launch { drawerState.close() } }
-                                        )
-                                    }
-                                }
-                                "side_nav_item" -> {
-                                    val item = NativeUIParser.parseSideNavItem(child.data)
-                                    item?.let {
-                                        SideNavItemView(
-                                            item = it,
-                                            labelVisibility = sideNavData?.labelVisibility,
-                                            onNavigate = onNavigate,
-                                            onCloseDrawer = { scope.launch { drawerState.close() } }
-                                        )
-                                    }
-                                }
-                                "side_nav_group" -> {
-                                    Log.d(TAG, "📦 Found side_nav_group, raw data: ${child.data}")
-                                    val group = NativeUIParser.parseSideNavGroup(child.data)
-                                    Log.d(TAG, "📦 Parsed group: heading=${group?.heading}, children=${group?.children?.size ?: 0}")
-                                    group?.let {
-                                        // Initialize expanded state from data
-                                        if (!expandedGroups.containsKey(it.heading)) {
-                                            expandedGroups[it.heading] = it.expanded ?: false
-                                        }
-
-                                        Log.d(TAG, "📦 Rendering group '${it.heading}' with ${it.children?.size ?: 0} children, expanded=${expandedGroups[it.heading]}")
-
-                                        SideNavGroupView(
-                                            group = it,
-                                            isExpanded = expandedGroups[it.heading] ?: false,
-                                            onToggle = { expandedGroups[it.heading] = !(expandedGroups[it.heading] ?: false) },
-                                            labelVisibility = sideNavData?.labelVisibility,
-                                            onNavigate = onNavigate,
-                                            onCloseDrawer = { scope.launch { drawerState.close() } }
-                                        )
-                                    }
-                                }
-                                "horizontal_divider" -> {
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 8.dp)
+            if (hasEdgeData) {
+                Log.d(TAG, "EDGE drawer: children=${edgeSideNavNode!!.children.size} types=${edgeSideNavNode!!.children.map { it.type }}")
+                // Native EDGE path — render from shared memory tree node
+                RenderSideNavDrawerContent(
+                    node = edgeSideNavNode!!,
+                    onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } },
+                    onNavigate = onNavigate
+                )
+            } else {
+                Log.d(TAG, "WebView drawer path (no EDGE data)")
+                // WebView path — render from NativeUIState JSON models
+                ModalDrawerSheet {
+                    Column(modifier = Modifier.fillMaxHeight()) {
+                        // Render pinned headers at the top (non-scrollable)
+                        pinnedHeaders.forEach { child ->
+                            if (child.type == "side_nav_header") {
+                                val header = NativeUIParser.parseSideNavHeader(child.data)
+                                header?.let {
+                                    SideNavHeaderView(
+                                        header = it,
+                                        onNavigate = onNavigate,
+                                        onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
                                     )
                                 }
-                                else -> {
-                                    Log.w(TAG, "Unknown side nav child type: ${child.type}")
-                                }
                             }
                         }
 
-                        Spacer(Modifier.height(16.dp))
+                        // Scrollable column for remaining content
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Spacer(Modifier.height(16.dp))
+
+                            scrollableChildren.forEach { child ->
+                                when (child.type) {
+                                    "side_nav_header" -> {
+                                        val header = NativeUIParser.parseSideNavHeader(child.data)
+                                        header?.let {
+                                            SideNavHeaderView(
+                                                header = it,
+                                                onNavigate = onNavigate,
+                                                onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
+                                            )
+                                        }
+                                    }
+                                    "side_nav_item" -> {
+                                        val item = NativeUIParser.parseSideNavItem(child.data)
+                                        item?.let {
+                                            SideNavItemView(
+                                                item = it,
+                                                labelVisibility = sideNavData?.labelVisibility,
+                                                onNavigate = onNavigate,
+                                                onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
+                                            )
+                                        }
+                                    }
+                                    "side_nav_group" -> {
+                                        Log.d(TAG, "Found side_nav_group, raw data: ${child.data}")
+                                        val group = NativeUIParser.parseSideNavGroup(child.data)
+                                        Log.d(TAG, "Parsed group: heading=${group?.heading}, children=${group?.children?.size ?: 0}")
+                                        group?.let {
+                                            // Initialize expanded state from data
+                                            if (!expandedGroups.containsKey(it.heading)) {
+                                                expandedGroups[it.heading] = it.expanded ?: false
+                                            }
+
+                                            SideNavGroupView(
+                                                group = it,
+                                                isExpanded = expandedGroups[it.heading] ?: false,
+                                                onToggle = { expandedGroups[it.heading] = !(expandedGroups[it.heading] ?: false) },
+                                                labelVisibility = sideNavData?.labelVisibility,
+                                                onNavigate = onNavigate,
+                                                onCloseDrawer = { afterClose -> scope.launch { launch { drawerState.close() }; kotlinx.coroutines.delay(100); afterClose() } }
+                                            )
+                                        }
+                                    }
+                                    "horizontal_divider" -> {
+                                        HorizontalDivider(
+                                            modifier = Modifier.padding(vertical = 8.dp)
+                                        )
+                                    }
+                                    else -> {
+                                        Log.w(TAG, "Unknown side nav child type: ${child.type}")
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(16.dp))
+                        }
                     }
                 }
             }
@@ -187,7 +206,7 @@ private fun SideNavItemView(
     item: SideNavItem,
     labelVisibility: String?,
     onNavigate: (String) -> Unit,
-    onCloseDrawer: () -> Unit,
+    onCloseDrawer: (() -> Unit) -> Unit,
     modifier: Modifier = Modifier.padding(horizontal = 12.dp)
 ) {
     val context = LocalContext.current
@@ -239,12 +258,11 @@ private fun SideNavItemView(
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to open external URL: ${item.url}", e)
                 }
+                onCloseDrawer {}
             } else {
                 Log.d(TAG, "📱 Opening internal URL in WebView: ${item.url}")
-                onNavigate(item.url)
+                onCloseDrawer { onNavigate(item.url) }
             }
-
-            onCloseDrawer()
         },
         modifier = modifier
     )
@@ -269,7 +287,7 @@ private fun SideNavGroupView(
     onToggle: () -> Unit,
     labelVisibility: String?,
     onNavigate: (String) -> Unit,
-    onCloseDrawer: () -> Unit
+    onCloseDrawer: (() -> Unit) -> Unit
 ) {
     Column {
         // Group header (clickable to expand/collapse)
@@ -331,7 +349,7 @@ private fun SideNavGroupView(
 private fun SideNavHeaderView(
     header: SideNavHeader,
     onNavigate: (String) -> Unit,
-    onCloseDrawer: () -> Unit
+    onCloseDrawer: (() -> Unit) -> Unit
 ) {
     val backgroundColor = header.backgroundColor?.let { parseColor(it) }
 
@@ -379,7 +397,7 @@ private fun SideNavHeaderView(
 
             // Close button
             if (header.showCloseButton == true) {
-                IconButton(onClick = onCloseDrawer) {
+                IconButton(onClick = { onCloseDrawer {} }) {
                     MaterialIcon(
                         name = "close",
                         contentDescription = "Close drawer",

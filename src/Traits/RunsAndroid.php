@@ -94,13 +94,13 @@ trait RunsAndroid
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
-        if ($this->option('watch')) {
+        if ($this->option('watch') && $this->shouldRunVite()) {
             $this->startViteDevServer('android');
         }
 
-        // Only require ADB and emulator selection for debug
+        // Require ADB and a device target for builds we install directly (debug + profileable)
         $target = null;
-        if ($this->buildType === 'debug') {
+        if ($this->buildType === 'debug' || $this->buildType === 'profileable') {
             $this->logToFile('Checking ADB availability...');
             if (! $this->canRunCommand('adb version')) {
                 $this->logToFile('ERROR: ADB is not installed or not in PATH');
@@ -125,7 +125,9 @@ trait RunsAndroid
             return;
         }
 
-        $this->runTheAndroidBuild($target);
+        if (! $this->runTheAndroidBuild($target)) {
+            return;
+        }
 
         if ($this->option('watch')) {
             $this->logToFile('Starting hot reload...');
@@ -443,7 +445,7 @@ XML;
         File::put($path, "sdk.dir=$sdkPath".PHP_EOL);
     }
 
-    private function runTheAndroidBuild(?string $targetDeviceId): void
+    private function runTheAndroidBuild(?string $targetDeviceId): bool
     {
         $androidPath = base_path('nativephp/android');
         $gradleWrapper = PHP_OS_FAMILY === 'Windows' ? 'gradlew.bat' : './gradlew';
@@ -459,6 +461,7 @@ XML;
             'debug' => 'assembleDebug',  // Build only, we'll install with adb -s for precise targeting
             'release' => 'assembleRelease',
             'bundle' => 'bundleRelease',
+            'profileable' => 'assembleProfileable',  // Release-optimized + profileable; installed like debug below
             default => throw new \Exception("Unknown build type: $this->buildType")
         };
 
@@ -500,7 +503,7 @@ XML;
                 error('Gradle build failed');
                 note("Check the build log for details: {$this->androidLogPath}");
 
-                return;
+                return false;
             }
 
             $buildSuccessful = $result->successful();
@@ -511,21 +514,38 @@ XML;
             error('Build failed.');
             note("Check the build log for details: {$this->androidLogPath}");
 
-            return;
+            return false;
         }
 
         $this->logToFile('Gradle build completed successfully');
 
-        if ($this->buildType === 'debug') {
+        // Both debug and profileable builds are debug-signed, so we install + launch
+        // them directly via adb. Profileable is release-optimized but attachable by
+        // Macrobenchmark/simpleperf — build once, land on the device ready to benchmark.
+        if ($this->buildType === 'debug' || $this->buildType === 'profileable') {
             $appId = config('nativephp.app_id');
             $mainActivity = 'com.nativephp.mobile.ui.MainActivity';
             $adbCommand = PHP_OS_FAMILY === 'Windows' ? 'adb.exe' : 'adb';
 
             // Install APK to specific device using adb -s (more reliable than Gradle's device serial flag)
-            $apkPath = base_path('nativephp/android/app/build/outputs/apk/debug/app-debug.apk');
+            $apkPath = $this->buildType === 'profileable'
+                ? base_path('nativephp/android/app/build/outputs/apk/profileable/app-profileable.apk')
+                : base_path('nativephp/android/app/build/outputs/apk/debug/app-debug.apk');
             $installCmd = "$adbCommand -s $targetDeviceId install -r \"$apkPath\"";
             $this->logToFile("Installing APK: $installCmd");
-            $installResult = Process::run($installCmd);
+            // Debug APKs are large (~200MB+); a cold emulator can exceed the
+            // default 60s Process timeout mid-install. Give it room.
+            $installResult = Process::timeout(300)->run($installCmd);
+
+            // A previously-installed release-key-signed build blocks an -r update
+            // (signature mismatch). Uninstall and retry so switching to a
+            // profileable build "just works".
+            if (! $installResult->successful()
+                && str_contains($installResult->errorOutput().$installResult->output(), 'INSTALL_FAILED_UPDATE_INCOMPATIBLE')) {
+                $this->logToFile('Signature mismatch on update; uninstalling and retrying install');
+                Process::timeout(120)->run("$adbCommand -s $targetDeviceId uninstall $appId");
+                $installResult = Process::timeout(300)->run($installCmd);
+            }
 
             if (! $installResult->successful()) {
                 $this->logToFile('ERROR: APK installation failed');
@@ -535,7 +555,7 @@ XML;
                 note($installResult->errorOutput() ?: $installResult->output());
                 note('Try freeing up space on the device or uninstalling old apps.');
 
-                return;
+                return false;
             }
 
             $this->logToFile('APK installed on device');
@@ -550,7 +570,7 @@ XML;
                 error('App launch failed');
                 note($launchResult->errorOutput() ?: $launchResult->output());
 
-                return;
+                return false;
             }
 
             $this->logToFile('App launched on device');
@@ -558,6 +578,8 @@ XML;
 
             // Run post-build hooks for all plugins
             $this->runAndroidPostBuildHooks();
+
+            return true;
         } else {
             $outputPath = match ($this->buildType) {
                 'release' => $this->findReleaseApk(),
@@ -594,6 +616,8 @@ XML;
 
             // Run post-build hooks for all plugins
             $this->runAndroidPostBuildHooks();
+
+            return true;
         }
     }
 

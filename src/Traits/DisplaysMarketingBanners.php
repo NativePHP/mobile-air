@@ -5,6 +5,73 @@ namespace Native\Mobile\Traits;
 trait DisplaysMarketingBanners
 {
     /**
+     * Display the SuperNative (v4) banner with a "supercharged" power-up reveal.
+     * Best used after major success moments (install, build complete).
+     */
+    protected function showSuperNativeBanner(bool $animate = true): void
+    {
+        if ($this->option('quiet')) {
+            return;
+        }
+
+        // Honour NO_COLOR / non-interactive output by skipping the animation,
+        // but still render the (static) banner so logs stay branded.
+        $animate = $animate && stream_isatty(STDOUT) && ! $this->option('no-interaction');
+
+        // Flat "ANSI Regular" glyphs (no drop-shadow) with an electric
+        // blue → cyan → mint vertical gradient. The v4 badge rides the last row.
+        $rows = [
+            '<fg=#3B82F6>  ███    ██  █████  ████████ ██ ██    ██ ███████ ██████  ██   ██ ██████</>',
+            '<fg=#22A7E5>  ████   ██ ██   ██    ██    ██ ██    ██ ██      ██   ██ ██   ██ ██   ██</>',
+            '<fg=#12C9D4>  ██ ██  ██ ███████    ██    ██ ██    ██ █████   ██████  ███████ ██████</>',
+            '<fg=#0FD9B0>  ██  ██ ██ ██   ██    ██    ██  ██  ██  ██      ██      ██   ██ ██</>',
+            '<fg=#34D399>  ██   ████ ██   ██    ██    ██   ████   ███████ ██      ██   ██ ██</> <fg=black;bg=cyan;options=bold> v4 </>',
+        ];
+
+        $this->newLine();
+
+        // Reveal the wordmark row-by-row, top → bottom.
+        foreach ($rows as $row) {
+            $this->line($row);
+            if ($animate) {
+                usleep(45_000);
+            }
+        }
+
+        $this->newLine();
+
+        // Charge bar "powers up" left → right, then the SUPERNATIVE label sparks in.
+        $segments = 10;
+        $label = ' <fg=#FFE600;options=bold>⚡</> <fg=#5EEAD4;options=bold>S U P E R N A T I V E</>'
+            .'   <fg=gray>//</>  <fg=white;options=bold>supercharged</>';
+
+        if ($animate) {
+            for ($i = 0; $i <= $segments; $i++) {
+                $filled = str_repeat('▰', $i);
+                $empty = str_repeat('▱', $segments - $i);
+                $bar = "   <fg=#34D399>{$filled}</><fg=#0E3B33>{$empty}</>";
+                // Reveal the label only once the bar is fully charged.
+                $suffix = $i === $segments ? '  '.$label : '';
+                $this->output->write("\r".$bar.$suffix);
+                usleep(60_000);
+            }
+            $this->newLine();
+        } else {
+            $bar = '   <fg=#34D399>'.str_repeat('▰', $segments).'</>';
+            $this->line($bar.'  '.$label);
+        }
+
+        $this->newLine();
+        $this->line('  <fg=white;options=bold>From</> <fg=green>laravel new</> <fg=white;options=bold>to App Store.</> <fg=#34D399;options=bold>Now supercharged.</>');
+        $this->newLine();
+
+        $this->line('  <fg=yellow;options=bold>⚡ Bifrost</> <fg=gray>—</> <fg=white>Ship to stores</> <fg=cyan>→</> <fg=cyan;options=underscore>bifrost.nativephp.com</>');
+        $this->line('  <fg=magenta;options=bold>🔌 Plugins</> <fg=gray>—</> <fg=white>Native features</> <fg=magenta>→</> <fg=magenta;options=underscore>nativephp.com/plugins</>');
+        $this->line('  <fg=white;options=bold>📚 Docs</>    <fg=gray>—</> <fg=white>Get started</> <fg=gray>→</> <fg=gray;options=underscore>nativephp.com/docs/mobile</>');
+        $this->newLine();
+    }
+
+    /**
      * Display the main NativePHP Pro banner with logo.
      * Best used after major success moments (install, build complete).
      */

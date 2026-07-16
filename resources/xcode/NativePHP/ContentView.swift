@@ -10,22 +10,91 @@ extension NSNotification.Name {
 struct ContentView: View {
     @State private var phpOutput = ""
     @StateObject private var uiState = NativeUIState.shared
+    @ObservedObject private var nativeUIBridge = NativeUIBridge.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        NativeSideNavigation(onNavigate: handleNavigation) {
-            WebViewLayoutContainer(onTabSelected: handleNavigation)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if uiState.hasTopBar() {
-                        NativeTopBar(onNavigate: handleNavigation)
-                    }
+        // When native UI is active, render JUST the native tree —
+        // unmount the WebView entirely. Keeping the WebView alive
+        // alongside the SwiftUI overlay caused iOS 26's
+        // `Tab(role: .search)` floating Liquid Glass capsule to lose
+        // single-tap activation (likely WKWebView's UIKit hit-testing
+        // racing the capsule's gesture recognizer). The trade-off is a
+        // WebView remount when transitioning back from native UI; the
+        // WebView's `SharedWebView.shared` cache keeps that fast.
+        Group {
+            if nativeUIBridge.isActive, let tree = nativeUIBridge.currentTree {
+                NativeTreeRenderer(tree: tree)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemBackground))
+                    .id(nativeUIBridge.screenKey)
+                    .transition(nativeScreenTransition(for: nativeUIBridge.pendingTransition))
+                    // Each new screen sits above the previous one during the
+                    // `.id`-driven swap. Without this the two full-screen,
+                    // opaque trees share the same z-position, so an `.opacity`
+                    // (fade) cross-dissolve has no defined front/back and reads
+                    // as an instant cut. Slides are unaffected (incoming on top
+                    // is the correct push ordering).
+                    .zIndex(Double(nativeUIBridge.screenKey))
+            } else {
+                NativeSideNavigation(onNavigate: handleNavigation) {
+                    WebViewLayoutContainer(onTabSelected: handleNavigation)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            if uiState.hasTopBar() {
+                                NativeTopBar(onNavigate: handleNavigation)
+                            }
+                        }
                 }
+            }
+        }
+        .overlay(alignment: .top) {
+            // Hot-reload indicator. Mirrors iOS 26's Liquid Glass pill
+            // language so it feels native and doesn't intrude on the
+            // user's content. Fades in/out around the ~500ms PHP
+            // reboot window. Bridge state owned by `NativeUIBridge.isReloading`.
+            if nativeUIBridge.isReloading {
+                HotReloadIndicator()
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(1)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: nativeUIBridge.screenKey)
+        .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isActive)
+        .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
+        // Global 3-finger swipe-right escape hatch (attaches a recognizer to the
+        // key window). Fires `JumpEscapeHatch`; the Jump client exits any
+        // connected demo app back to the Jump home.
+        .background(EscapeHatchGesture())
+        // Push a native AppearanceChanged event to PHP when the system theme
+        // flips (Control Center toggle, sunset auto-switch). Drives the
+        // reactive `System::appearance()` / `#[On(AppearanceChanged)]` path.
+        // ContentView is always mounted, so this observes every change.
+        .onChange(of: colorScheme) { newScheme in
+            let mode = newScheme == .dark ? "dark" : "light"
+            LaravelBridge.shared.send?("Native\\Mobile\\Events\\System\\AppearanceChanged", ["mode": mode])
         }
     }
 
     /// Handle navigation from any UI component
     /// Uses Inertia router if available for SPA-like navigation, falls back to full page load
     private func handleNavigation(_ url: String) {
+        // In a Jump WebView session, native-chrome / side-nav / tab links point at
+        // the dev-server host (absolute URLs). Route them through the WebView
+        // forward (php://127.0.0.1) exactly like anchor taps — otherwise
+        // isExternalUrl() sees a non-localhost host and opens them in the system
+        // browser, and the Inertia path below doesn't exist for a plain WebView app.
+        if JumpWebViewSession.shared.isActive {
+            let path = extractPath(url)
+            NotificationCenter.default.post(
+                name: .redirectToURLNotification,
+                object: nil,
+                userInfo: ["url": "php://127.0.0.1\(path)"]
+            )
+            return
+        }
+
         // Check if this is an external HTTP/HTTPS URL
         if isExternalUrl(url) {
             // Open external URLs in the default browser
@@ -87,6 +156,44 @@ struct ContentView: View {
         let fallback = url.hasPrefix("/") ? url : "/\(url)"
 
         return fallback
+    }
+}
+
+/// Liquid Glass pill shown briefly during hot reload. Two rows of
+/// content: a spinner + label. Auto-dismisses when
+/// `NativeUIBridge.isReloading` flips false (driven by the first
+/// publish from the rebooted PHP runtime — see
+/// `NativeElementBridge.postTreeUpdateFromRegion`).
+///
+/// Uses iOS 26's `.glassEffect` material when available; falls back
+/// to a thin material on earlier OSes.
+struct HotReloadIndicator: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.regular)
+                .tint(.accentColor)
+            Text("Reloading…")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .modifier(GlassPillBackground())
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+    }
+}
+
+/// Wraps the glass / thin-material material lookup behind an iOS-26
+/// availability check. iOS 26+ gets the real Liquid Glass capsule;
+/// earlier versions fall back to a Capsule-shaped `.thinMaterial`.
+private struct GlassPillBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(in: .capsule)
+        } else {
+            content.background(.thinMaterial, in: .capsule)
+        }
     }
 }
 
@@ -173,6 +280,7 @@ struct WebView: UIViewRepresentable {
         let logger = ConsoleLogger()
         var webView: WKWebView?
         var hasCompletedInitialLoad = false
+        private var reloadInProgress = false
 
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
@@ -188,10 +296,22 @@ struct WebView: UIViewRepresentable {
             // http/https so redirect()->intended() and $request->fullUrl() will always
             // produce http:// URLs for the local server. Route through the scheme handler's
             // redirect path which handles cookie injection from WKHTTPCookieStore.
+            //
+            // PROTOTYPE: in a Jump WebView session, links the remote app emits point
+            // at the dev-server host (Laravel builds absolute URLs from the request
+            // Host). Treat that host like 127.0.0.1 — rewrite to php://127.0.0.1 and
+            // forward through the scheme handler — so navigations stay in the WebView
+            // instead of escaping to Safari. The forward's host:port comes from
+            // JumpWebViewSession, so the rewritten URL drops the remote host + port.
+            let isJumpHost = JumpWebViewSession.shared.isActive
+                && url.host == JumpWebViewSession.shared.host
+
             if (scheme == "http" || scheme == "https"),
-               url.host == "127.0.0.1" {
+               url.host == "127.0.0.1" || isJumpHost {
                 var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
                 components?.scheme = "php"
+                components?.host = "127.0.0.1"
+                components?.port = nil
                 if let phpURL = components?.url {
                     NotificationCenter.default.post(
                         name: .redirectToURLNotification,
@@ -213,6 +333,13 @@ struct WebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            // A committed WebView page load means we are back in WebView mode
+            // (a Route::native screen never commits — its request blocks in the
+            // PHP event loop and only returns a redirect/empty body on exit).
+            // Without this, exit-to-web leaves `isActive == true`, so the frozen
+            // native tree stays on screen over the loaded WebView page.
+            NativeUIBridge.shared.isActive = false
+
             // Inject safe area insets IMMEDIATELY when navigation commits (before rendering)
             // This is the iOS equivalent of Android's onPageStarted
             injectSafeAreaInsets(webView)
@@ -271,6 +398,7 @@ struct WebView: UIViewRepresentable {
             event: String,
             payload: [String: Any]
         ) {
+            let rawEventName = event
             let event: String = {
                 let data = try! JSONSerialization.data(withJSONObject: [event])
                 var literal = String(data: data, encoding: .utf8)!
@@ -332,11 +460,143 @@ struct WebView: UIViewRepresentable {
 //                _ = NativePHPApp.laravel(request: request)
 
             }
+
+            // Also inject into the element event queue for #[OnNative] listeners
+            if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                NativeElementBridge.sendNativeEvent(eventName: rawEventName, payloadJson: jsonString)
+            }
         }
 
         @objc func reloadWebView() {
-            // Views are already cleared during persistent runtime reboot — just reload
-            self.webView?.reload()
+            // Guard against rapid-fire file change events (file + directory)
+            // triggering concurrent reboots that race on php_embed_shutdown.
+            guard !reloadInProgress else { return }
+            reloadInProgress = true
+
+            let isNativeUI = NativeUIBridge.shared.isActive
+            // Capture current route for native UI re-execution
+            let currentPath = self.webView?.url?.path ?? NativePHPApp.getStartURL()
+
+            if isNativeUI {
+                // Show the "Reloading…" overlay (ContentView watches this).
+                // Cleared in `NativeElementBridge.postTreeUpdateFromRegion`
+                // when the first new tree from the rebooted PHP arrives.
+                DispatchQueue.main.async {
+                    NativeUIBridge.shared.isReloading = true
+                }
+
+                // CRITICAL: Send the hot reload event BEFORE queuing on the serial
+                // dispatch queue. For native UI routes the serial queue is blocked by
+                // the component's event-loop dispatch (PHPSchemeHandler also uses
+                // executeOnPHPThreadAsync). Writing the event to the mmap region here
+                // wakes nativephp_element_wait_event(), causing PHP to exit the event
+                // loop and return from dispatch() — which frees the serial queue so
+                // the block below can execute.
+                NativeUIBridge.sendHotReloadEvent()
+            }
+
+            // All reboot work runs off the main thread — persistent_php_shutdown
+            // blocks on a semaphore and must not run on the main queue.
+            PersistentPHPRuntime.shared.executeOnPHPThreadAsync { [weak self] in
+                // By the time this block runs, the native route dispatch has already
+                // returned (the hot reload event caused PHP to exit its event loop).
+                if isNativeUI {
+                    // `preserveTree: true` keeps the last published tree
+                    // on screen while PHP reboots (~500ms). The next
+                    // publish from the dispatch below replaces it
+                    // atomically — no white flash through the WebView
+                    // root.
+                    NativeElementBridge.stopWatching(preserveTree: true)
+                    NativeElementBridge.unregisterRegion()
+                }
+
+                // Reboot persistent runtime to pick up changed code.
+                // The queue worker MUST be stopped first — php_embed_shutdown()
+                // destroys global Zend module state, and the worker's live TSRM
+                // context would reference freed memory, causing a heap-corruption crash.
+                if PersistentPHPRuntime.shared.isBooted {
+                    PHPQueueWorker.shared.stopAndWait()
+                    _ = PersistentPHPRuntime.shared.reboot()
+                    // Clear compiled Blade views so templates are recompiled from
+                    // the updated source files copied by the watcher.
+                    _ = PersistentPHPRuntime.shared.artisan(command: "view:clear")
+                    PHPQueueWorker.shared.start()
+                } else {
+                    _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
+                }
+
+                DispatchQueue.main.async {
+                    NativeUIState.shared.clearAll()
+                }
+
+                if isNativeUI {
+                    // Allow future hot reloads BEFORE re-entering the event loop.
+                    // The serial queue will be blocked by the new dispatch, but the
+                    // next reloadWebView() can still send a hot reload event (above)
+                    // to break out of it.
+                    self?.reloadInProgress = false
+
+                    // Prefer the URI PHP wrote into .hot_restart over the WebView's
+                    // URL — for native-chrome routes the WebView URL isn't kept in
+                    // sync with the active component, so otherwise we'd lose the
+                    // screen on every reload and land on `/`. Android already does
+                    // the same (MainActivity.kt::startHotReloadWatcher).
+                    //
+                    // The file is written by `NativeComponent::runLoop` after the
+                    // EVENT_HOT_RELOAD event fires (PHP-side), and by this point
+                    // PHP has already exited the event loop and the file is on
+                    // disk. Read once, delete, then use.
+                    // Peek at the URI PHP wrote into `.hot_restart`
+                    // (full stack + top URI). We don't delete the
+                    // file here — the PHP-side `Route::native` macro
+                    // handler is the sole consumer; it reads the full
+                    // stack and removes the file. Otherwise we'd lose
+                    // the back-history payload.
+                    let hotRestartUri: String? = {
+                        let storageDir = FileManager.default
+                            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                            .first
+                        guard let path = storageDir?
+                            .appendingPathComponent("storage/framework/.hot_restart")
+                            .path,
+                            let data = FileManager.default.contents(atPath: path),
+                            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                            let uri = json["uri"] as? String,
+                            !uri.isEmpty
+                        else { return nil }
+                        return uri
+                    }()
+
+                    // Native element mode: re-execute the route directly through
+                    // the persistent runtime (same as Android's executeNativeRoute).
+                    // PHP re-registers the mmap region and publishes a new tree.
+                    let request = RequestData(
+                        method: "GET",
+                        uri: hotRestartUri ?? currentPath,
+                        data: nil,
+                        query: nil,
+                        headers: [:]
+                    )
+                    _ = PersistentPHPRuntime.shared.dispatch(request: request)
+                } else {
+                    // WebView mode: reload with cache-bust
+                    DispatchQueue.main.async {
+                        guard let webView = self?.webView else {
+                            self?.reloadInProgress = false
+                            return
+                        }
+                        webView.stopLoading()
+                        let currentUrl = webView.url?.absoluteString ?? "php://127.0.0.1/"
+                        let separator = currentUrl.contains("?") ? "&" : "?"
+                        let cacheBustUrl = "\(currentUrl)\(separator)_cb=\(Int(Date().timeIntervalSince1970 * 1000))"
+                        if let url = URL(string: cacheBustUrl) {
+                            webView.load(URLRequest(url: url))
+                        }
+                        self?.reloadInProgress = false
+                    }
+                }
+            }
         }
 
         // Swipe gestures disabled for back/forward navigation
@@ -433,6 +693,18 @@ struct WebView: UIViewRepresentable {
         webConfiguration.websiteDataStore = WebView.dataStore
         webConfiguration.setURLSchemeHandler(schemeHandler, forURLScheme: "php")
         webConfiguration.allowsInlineMediaPlayback = true
+
+        #if DEBUG
+        // Allow the WebView to load HTTP subresources (e.g. Vite dev server assets)
+        // without being blocked by WebKit's mixed content policy, since the custom
+        // php:// scheme is treated as a secure context.
+        // Uses responds(to:) to safely check the key exists before setting it,
+        // since this is an internal WebKit preference not available on all platforms.
+        let insecureContentSelector = NSSelectorFromString("setAllowRunningInsecureContent:")
+        if webConfiguration.preferences.responds(to: insecureContentSelector) {
+            webConfiguration.preferences.setValue(true, forKey: "allowRunningInsecureContent")
+        }
+        #endif
 
         let webView = WKWebView(frame: .zero, configuration: webConfiguration)
 
