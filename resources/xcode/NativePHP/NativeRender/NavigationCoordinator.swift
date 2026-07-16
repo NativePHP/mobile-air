@@ -104,7 +104,7 @@ final class NavigationCoordinator: ObservableObject {
                 path = []
             }
             phpSnapshot = path
-            evictStaleCacheEntries()
+            scheduleEviction()
             return
         }
 
@@ -119,7 +119,7 @@ final class NavigationCoordinator: ObservableObject {
             let nextPath = Array(path.prefix(idx + 1))
             phpSnapshot = nextPath
             path = nextPath
-            evictStaleCacheEntries()
+            scheduleEviction()
             return
         }
 
@@ -127,7 +127,7 @@ final class NavigationCoordinator: ObservableObject {
         let nextPath = path + [uri]
         phpSnapshot = nextPath
         path = nextPath
-        evictStaleCacheEntries()
+        scheduleEviction()
     }
 
     /// Called from the renderer's `.onChange(of: path)`. If the new path
@@ -152,6 +152,22 @@ final class NavigationCoordinator: ObservableObject {
             }
         }
         phpSnapshot = newPath
+    }
+
+    /// Evict AFTER the transition window, never synchronously. PHP
+    /// republishes the destination screen within ~10ms of a back event —
+    /// far inside the ~350ms pop animation — so evicting in `receive()`
+    /// yanks the popping screen's cache entry mid-flight and its
+    /// destination re-resolves to `Color.clear`: the screen blanks
+    /// instantly (flashing the level below) before the animation has
+    /// visibly run. Eviction is only memory hygiene; delaying it past any
+    /// possible animation costs nothing. `evictStaleCacheEntries()`
+    /// recomputes liveness from the path at fire time, so overlapping
+    /// schedules are harmless.
+    private func scheduleEviction() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.evictStaleCacheEntries()
+        }
     }
 
     /// Drop cache entries whose URI is no longer on the stack. Keeps

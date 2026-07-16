@@ -67,7 +67,7 @@ final class PerTabNavigationCoordinator: ObservableObject {
                 path = []
             }
             phpSnapshot = path
-            evictStaleCacheEntries()
+            scheduleEviction()
             return
         }
 
@@ -82,7 +82,7 @@ final class PerTabNavigationCoordinator: ObservableObject {
             let nextPath = Array(path.prefix(idx + 1))
             phpSnapshot = nextPath
             path = nextPath
-            evictStaleCacheEntries()
+            scheduleEviction()
             return
         }
 
@@ -90,7 +90,7 @@ final class PerTabNavigationCoordinator: ObservableObject {
         let nextPath = path + [uri]
         phpSnapshot = nextPath
         path = nextPath
-        evictStaleCacheEntries()
+        scheduleEviction()
     }
 
     /// Called from the renderer's `.onChange(of: coord.path)` for this
@@ -109,6 +109,18 @@ final class PerTabNavigationCoordinator: ObservableObject {
             }
         }
         phpSnapshot = newPath
+    }
+
+    /// Evict AFTER the transition window, never synchronously — same
+    /// rationale as `NavigationCoordinator.scheduleEviction()`: PHP
+    /// republishes within ~10ms of a back event, so a synchronous evict
+    /// blanks the popping screen to `Color.clear` mid-animation and
+    /// flashes the level below. Liveness is recomputed at fire time, so
+    /// overlapping schedules are harmless.
+    private func scheduleEviction() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.evictStaleCacheEntries()
+        }
     }
 
     /// Drop cache entries whose URI is no longer on this tab's stack.
