@@ -2,6 +2,7 @@ package com.nativephp.mobile.ui.nativerender
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -142,7 +143,15 @@ internal fun transitionFor(type: String?): ContentTransform {
         "slide_from_bottom" -> slideInVertically(intSpec) { it } togetherWith
             slideOutVertically(intSpec) { -it }
         "fade" -> fadeIn(spec) togetherWith fadeOut(spec)
-        "fade_from_bottom" -> (slideInVertically(intSpec) { it } + fadeIn(spec)) togetherWith fadeOut(spec)
+        // Short upward drift (1/8 screen height) + fade over the HELD
+        // outgoing screen — the conventional "fade from bottom" (React
+        // Navigation's fadeFromBottom, classic Android activity open).
+        // Previously a full-height slide + fade, which was visually
+        // indistinguishable from slide_from_bottom (the opaque incoming
+        // screen covers everything mid-slide anyway). Matches iOS's
+        // fixed-drift + `.identity`-removal mapping in ScreenTransitions.swift.
+        "fade_from_bottom" -> (slideInVertically(intSpec) { it / 8 } + fadeIn(spec)) togetherWith
+            ExitTransition.KeepUntilTransitionsFinished
         // Scale the incoming screen in from 50% while it stays fully opaque
         // (no fadeIn) so the whole zoom is visible; the outgoing screen fades
         // out beneath it. Combining scaleIn with fadeIn previously hid the

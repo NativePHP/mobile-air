@@ -452,33 +452,48 @@ final class NativeElementBridge {
                 let wasActive = bridge.isActive
                 bridge.isActive = true
 
-                // Router-level swap between two native screens. The OUTGOING
-                // screen must commit the transition staged by
-                // `NativeUI.Transition.Set` (pendingTransition) for its
-                // REMOVAL before we bump screenKey. If the stage + the
-                // screenKey bump land in the same SwiftUI transaction, SwiftUI
-                // removes the old screen using its LAST committed transition —
-                // the PREVIOUS nav's — so e.g. a fade nav shows the old screen
-                // sliding out (its earlier slide-in) while the new one fades
-                // in, and a parallax nav's outgoing screen never drifts.
-                // Deferring the swap one runloop lets SwiftUI render the old
-                // screen once with the new pendingTransition, so its exit
-                // matches the entrance.
-                if isNav && !nativeChromeContinuation && wasActive {
-                    DispatchQueue.main.async {
-                        bridge.screenKey += 1
-                        bridge.currentTree = finalTree
-                        if bridge.isReloading { bridge.isReloading = false }
+                // Router-level swap between two native screens: two-layer
+                // swap. The old screen is NOT removed — it's reclassified as
+                // `outgoingScreen` so ContentView keeps it mounted (same
+                // ForEach identity, so no removal transition fires and view
+                // state survives) beneath the incoming screen, and drives
+                // its exit with plain animated modifiers. The incoming
+                // screen gets a fresh key and animates in via its insertion
+                // transition — the ONE side of SwiftUI's transition system
+                // that works reliably (removal transitions are captured at
+                // insertion and ignore later updates; AnyTransition.modifier
+                // removals don't interpolate — both verified on-device).
+                // The outgoing entry is dropped after the transition window,
+                // invisibly beneath the opaque new screen. Staging order is
+                // guaranteed: `NativeUI.Transition.Set` runs via main.sync
+                // before PHP publishes the tree.
+                if isNav && !nativeChromeContinuation {
+                    if wasActive, let oldTree = bridge.currentTree {
+                        let outgoingKey = bridge.screenKey
+                        bridge.outgoingScreen = NativeUIBridge.OutgoingScreen(
+                            tree: oldTree,
+                            key: outgoingKey,
+                            transition: bridge.pendingTransition
+                        )
+                        // Drop the held screen once the transition is over
+                        // (longest is parallax_push at ~0.7s). Key-guarded
+                        // so a rapid follow-up navigation (which overwrites
+                        // `outgoingScreen`) isn't clobbered by this earlier
+                        // cleanup firing late.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            if bridge.outgoingScreen?.key == outgoingKey {
+                                bridge.outgoingScreen = nil
+                            }
+                        }
                     }
-                } else {
-                    if isNav && !nativeChromeContinuation { bridge.screenKey += 1 }
-                    bridge.currentTree = finalTree
-                    // First publish after a hot-reload dismisses the
-                    // "Reloading…" pill. Set by `ContentView.reloadWebView`
-                    // at the start of the reboot; cleared here when the
-                    // fresh tree from the rebooted PHP runtime lands.
-                    if bridge.isReloading { bridge.isReloading = false }
+                    bridge.screenKey += 1
                 }
+                bridge.currentTree = finalTree
+                // First publish after a hot-reload dismisses the
+                // "Reloading…" pill. Set by `ContentView.reloadWebView`
+                // at the start of the reboot; cleared here when the
+                // fresh tree from the rebooted PHP runtime lands.
+                if bridge.isReloading { bridge.isReloading = false }
             }
         }
     }

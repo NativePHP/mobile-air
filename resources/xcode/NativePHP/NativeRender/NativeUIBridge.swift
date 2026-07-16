@@ -24,6 +24,28 @@ final class NativeUIBridge: ObservableObject {
     /// Pending transition type
     @Published var pendingTransition: String?
 
+    /// The screen being navigated away from, kept mounted (same identity)
+    /// beneath the incoming screen for the duration of the transition.
+    ///
+    /// This is the exit half of the two-layer swap: SwiftUI's transition
+    /// system reliably animates INSERTIONS but not removals (removal
+    /// transitions are captured at insertion and ignore later updates, and
+    /// AnyTransition.modifier-based removals don't interpolate here —
+    /// both verified frame-by-frame on-device). So the outgoing screen is
+    /// never "removed" at swap time: ContentView keeps rendering it under
+    /// the new screen and drives its exit (parallax drift + dim, or a
+    /// static hold) with ordinary animated modifiers, then the bridge
+    /// drops it ~0.6s later — invisibly, beneath the opaque new screen.
+    struct OutgoingScreen {
+        let tree: NativeUITree
+        let key: Int
+        /// The transition staged for the navigation that displaced this
+        /// screen — drives the exit effect (e.g. parallax drift).
+        let transition: String?
+    }
+
+    @Published var outgoingScreen: OutgoingScreen?
+
     /// Flag set by UI.SetTransition bridge function
     var navigationPending = false
 

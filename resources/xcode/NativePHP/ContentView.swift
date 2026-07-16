@@ -24,18 +24,43 @@ struct ContentView: View {
         // WebView's `SharedWebView.shared` cache keeps that fast.
         Group {
             if nativeUIBridge.isActive, let tree = nativeUIBridge.currentTree {
-                NativeTreeRenderer(tree: tree)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(.systemBackground))
-                    .id(nativeUIBridge.screenKey)
-                    .transition(nativeScreenTransition(for: nativeUIBridge.pendingTransition))
-                    // Each new screen sits above the previous one during the
-                    // `.id`-driven swap. Without this the two full-screen,
-                    // opaque trees share the same z-position, so an `.opacity`
-                    // (fade) cross-dissolve has no defined front/back and reads
-                    // as an instant cut. Slides are unaffected (incoming on top
-                    // is the correct push ordering).
-                    .zIndex(Double(nativeUIBridge.screenKey))
+                // Two-layer swap. Screens are keyed by their screenKey in a
+                // ForEach so a screen keeps its IDENTITY when it changes
+                // role from "current" to "outgoing" — no removal transition
+                // fires at swap time and its view state survives. The
+                // incoming screen (new key) animates in via its insertion
+                // transition — the reliable half of SwiftUI's transition
+                // system — while the held outgoing screen's exit (parallax
+                // drift + dim, or static hold) is driven by ordinary
+                // animated modifiers in `ScreenExitModifier`. The outgoing
+                // entry is dropped by the bridge after the transition,
+                // invisibly beneath the opaque new screen.
+                ZStack {
+                    ForEach(activeScreens(currentTree: tree)) { screen in
+                        NativeTreeRenderer(tree: screen.tree)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color(.systemBackground))
+                            .modifier(ScreenExitModifier(
+                                isExiting: screen.isOutgoing,
+                                transition: nativeUIBridge.outgoingScreen?.transition
+                            ))
+                            // Parallax depth cue that survives dark mode:
+                            // the INCOMING screen casts a soft shadow onto
+                            // the outgoing one at its leading edge (the
+                            // scrim alone is black-on-black there). Active
+                            // only during the parallax transition window.
+                            .shadow(
+                                color: .black.opacity(incomingShadowOpacity(for: screen)),
+                                radius: 18,
+                                x: -10
+                            )
+                            .transition(nativeScreenTransition(for: nativeUIBridge.pendingTransition))
+                            // Each new screen sits above the previous one
+                            // (keys increment), so slides cover in push
+                            // order and a fade has a defined front/back.
+                            .zIndex(Double(screen.id))
+                    }
+                }
             } else {
                 NativeSideNavigation(onNavigate: handleNavigation) {
                     WebViewLayoutContainer(onTabSelected: handleNavigation)
@@ -60,7 +85,13 @@ struct ContentView: View {
                     .zIndex(1)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: nativeUIBridge.screenKey)
+        // Per-transition swap animation — this ambient animation is what
+        // actually paces `.move` insertions (attached transition animations
+        // are ignored for `.move`; see nativeScreenSwapAnimation).
+        .animation(
+            nativeScreenSwapAnimation(for: nativeUIBridge.pendingTransition),
+            value: nativeUIBridge.screenKey
+        )
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isActive)
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
         // Global 3-finger swipe-right escape hatch (attaches a recognizer to the
@@ -75,6 +106,40 @@ struct ContentView: View {
             let mode = newScheme == .dark ? "dark" : "light"
             LaravelBridge.shared.send?("Native\\Mobile\\Events\\System\\AppearanceChanged", ["mode": mode])
         }
+    }
+
+    /// One layer of the two-layer native screen swap. `id` is the screen's
+    /// stable screenKey — ForEach identity, so a screen moving from the
+    /// "current" role to the "outgoing" role is the SAME view to SwiftUI.
+    private struct ActiveNativeScreen: Identifiable {
+        let id: Int
+        let tree: NativeUITree
+        let isOutgoing: Bool
+    }
+
+    /// Outgoing (held) screen first, current screen last. The outgoing
+    /// entry is present only during a transition window; the bridge clears
+    /// it ~0.6s after the swap.
+    private func activeScreens(currentTree: NativeUITree) -> [ActiveNativeScreen] {
+        var screens: [ActiveNativeScreen] = []
+        if let out = nativeUIBridge.outgoingScreen, out.key != nativeUIBridge.screenKey {
+            screens.append(ActiveNativeScreen(id: out.key, tree: out.tree, isOutgoing: true))
+        }
+        screens.append(ActiveNativeScreen(
+            id: nativeUIBridge.screenKey,
+            tree: currentTree,
+            isOutgoing: false
+        ))
+        return screens
+    }
+
+    /// Shadow the incoming screen casts on the held outgoing screen during
+    /// a parallax_push — zero (no shadow layer) at all other times.
+    private func incomingShadowOpacity(for screen: ActiveNativeScreen) -> Double {
+        guard !screen.isOutgoing,
+              let out = nativeUIBridge.outgoingScreen,
+              out.transition == "parallax_push" else { return 0 }
+        return 0.45
     }
 
     /// Handle navigation from any UI component
