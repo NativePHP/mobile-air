@@ -725,6 +725,11 @@ class IOSPluginCompiler
     {
         return preg_replace_callback('/\$\{([A-Z_][A-Z0-9_]*)\}/', function ($matches) {
             $envVar = $matches[1];
+
+            if ($envVar === 'APP_ID') {
+                return $this->appId;
+            }
+
             $envValue = env($envVar);
 
             if ($envValue === null) {
