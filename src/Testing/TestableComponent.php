@@ -1203,6 +1203,31 @@ class TestableComponent
         return $this;
     }
 
+    // ── Bridge delegation ───────────────────────────
+
+    /**
+     * Forward unknown methods to this test's FakeBridge — its built-in
+     * helpers and any macros plugins registered (e.g. a clipboard plugin's
+     * assertCopied()). When the bridge answers fluently (returns itself),
+     * the harness returns $this instead so the test chain stays on the
+     * component.
+     */
+    public function __call(string $method, array $arguments): mixed
+    {
+        if (FakeBridge::hasMacro($method) || method_exists($this->bridge, $method)) {
+            $result = $this->bridge->{$method}(...$arguments);
+
+            return $result === $this->bridge ? $this : $result;
+        }
+
+        throw new \BadMethodCallException(sprintf(
+            'Method %s::%s does not exist, and the FakeBridge has no method or macro named [%s].',
+            static::class,
+            $method,
+            $method
+        ));
+    }
+
     // ── Internals ───────────────────────────────────
 
     /**

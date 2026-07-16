@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 
@@ -17,9 +18,24 @@ use PHPUnit\Framework\Assert;
  *
  * The instance is bound into the Laravel container, so each test's fresh
  * application gets a fresh bridge and state can never leak across tests.
+ *
+ * Plugins can teach the bridge their own test vocabulary via macros, so
+ * app tests read in domain terms instead of raw bridge method strings:
+ *
+ *     FakeBridge::macro('assertCopied', function (?string $text = null) {
+ *         return $this->assertCalled('Clipboard.WriteText',
+ *             fn ($p) => $text === null || $p['text'] === $text);
+ *     });
+ *
+ *     Native::test(ShareSheet::class)->tap('copy')->assertCopied('https://…');
+ *
+ * TestableComponent forwards unknown methods here, so macros (and the
+ * built-in helpers) chain straight off the harness.
  */
 class FakeBridge
 {
+    use Macroable;
+
     /** Every tree passed to nativephp_element_publish(), oldest first. */
     public array $publishes = [];
 
