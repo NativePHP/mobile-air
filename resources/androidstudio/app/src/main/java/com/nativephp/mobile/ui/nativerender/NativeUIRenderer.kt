@@ -150,8 +150,14 @@ internal fun transitionFor(type: String?): ContentTransform {
         // indistinguishable from slide_from_bottom (the opaque incoming
         // screen covers everything mid-slide anyway). Matches iOS's
         // fixed-drift + `.identity`-removal mapping in ScreenTransitions.swift.
+        // Holding the outgoing screen used ExitTransition
+        // .KeepUntilTransitionsFinished, which newer Compose (BOM
+        // 2025.12+) makes internal. A fade to 0.99 alpha over the same
+        // duration is the public-API equivalent: the outgoing screen
+        // stays visually opaque beneath the incoming one for the whole
+        // transition, then is removed.
         "fade_from_bottom" -> (slideInVertically(intSpec) { it / 8 } + fadeIn(spec)) togetherWith
-            ExitTransition.KeepUntilTransitionsFinished
+            fadeOut(spec, targetAlpha = 0.99f)
         // Scale the incoming screen in from 50% while it stays fully opaque
         // (no fadeIn) so the whole zoom is visible; the outgoing screen fades
         // out beneath it. Combining scaleIn with fadeIn previously hid the
