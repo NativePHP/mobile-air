@@ -275,6 +275,40 @@ class TestableComponent
         return $this->fireEvent($target, self::EVENT_LONG_PRESS);
     }
 
+    /**
+     * Touch-down on the element bound to a method name or ref
+     * (`@pressDown`). Down/up ride the PRESS wire event with their own
+     * callback ids in the props dict, so dispatch is a plain press at
+     * the `on_press_down` id.
+     */
+    public function pressDown(string $target): static
+    {
+        return $this->firePropsPress($target, 'on_press_down');
+    }
+
+    /** Touch-up counterpart of pressDown() (`@pressUp`). */
+    public function pressUp(string $target): static
+    {
+        return $this->firePropsPress($target, 'on_press_up');
+    }
+
+    /** Fire EVENT_PRESS at the callback id carried in the given props key. */
+    protected function firePropsPress(string $target, string $key): static
+    {
+        $this->startInteraction();
+
+        $callbackId = $this->callbackIdFor($target)
+            ?? $this->propsCallbackIdByRef($this->tree(), $target, $key);
+
+        Assert::assertNotNull(
+            $callbackId,
+            "No callback registered for [{$target}] in the last render. Registered: ".
+            (implode(', ', array_keys($this->callbacks()->expressions())) ?: '(none)')
+        );
+
+        return $this->dispatchUiEvent(['type' => self::EVENT_PRESS, 'callback_id' => $callbackId]);
+    }
+
     /** Type into an input bound to a method, model property, or ref. */
     public function input(string $target, string $text): static
     {
@@ -1373,6 +1407,28 @@ class TestableComponent
     protected function pressableIdByRef(array $node, string $ref): ?int
     {
         return $this->callbackIdByRef($node, $ref, self::EVENT_PRESS);
+    }
+
+    /**
+     * Callback id in a specific props key on the node with the given ref —
+     * for props-dict callbacks that share a wire event type (press-down/up
+     * both ride EVENT_PRESS), where EVENT_CALLBACK_KEYS can't discriminate.
+     */
+    protected function propsCallbackIdByRef(array $node, string $ref, string $key): ?int
+    {
+        if (($node['ref'] ?? null) === $ref) {
+            $id = $node['props'][$key] ?? null;
+
+            return is_int($id) ? $id : null;
+        }
+
+        foreach ($node['children'] ?? [] as $child) {
+            if (($id = $this->propsCallbackIdByRef($child, $ref, $key)) !== null) {
+                return $id;
+            }
+        }
+
+        return null;
     }
 
     /**

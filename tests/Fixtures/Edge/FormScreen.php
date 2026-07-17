@@ -27,6 +27,8 @@ class FormScreen extends NativeComponent
 
     public bool $held = false;
 
+    public bool $gasHeld = false;
+
     public bool $agreed = false;
 
     public float $volume = 0.0;
@@ -42,6 +44,16 @@ class FormScreen extends NativeComponent
     public function hold(): void
     {
         $this->held = true;
+    }
+
+    public function gasDown(): void
+    {
+        $this->gasHeld = true;
+    }
+
+    public function gasUp(): void
+    {
+        $this->gasHeld = false;
     }
 
     public function updateDraft(string $text): void
@@ -95,6 +107,8 @@ class FormScreen extends NativeComponent
             Text::make("Color: {$this->color} / Size: {$this->size}"),
             Text::make("Tab: {$this->activeTab}"),
             Button::make('Hold me')->onLongPress('hold')->ref('hold-button'),
+            Text::make($this->gasHeld ? 'Accelerating' : 'Coasting'),
+            Button::make('Gas')->onPressDown('gasDown')->onPressUp('gasUp')->ref('gas-button'),
             TextInput::make()->onChange('updateDraft')->onSubmit('submitDraft')->ref('draft-input'),
             Toggle::make()->onChange('agree')->ref('agree-toggle'),
             Button::make('Volume')->onPress('setVolume'),

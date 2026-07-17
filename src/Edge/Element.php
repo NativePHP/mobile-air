@@ -48,6 +48,10 @@ abstract class Element
 
     protected ?string $doubleTapMethod = null;
 
+    protected ?string $pressDownMethod = null;
+
+    protected ?string $pressUpMethod = null;
+
     protected ?string $swipeDeleteMethod = null;
 
     protected ?array $navigateConfig = null;
@@ -489,6 +493,33 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Touch-down handler — fires the moment the finger makes contact,
+     * unlike `onPress` which is a completed tap (fires on release). Pair
+     * with `onPressUp` for held-button semantics (gamepad d-pads, push-to-
+     * talk). Both travel in the props dict (`on_press_down` /
+     * `on_press_up`) and reuse the PRESS wire event — the callback id
+     * alone routes to the handler — so no binary wire-format change.
+     */
+    public function onPressDown(string $method): static
+    {
+        $this->pressDownMethod = $method;
+
+        return $this;
+    }
+
+    /**
+     * Touch-up handler — fires on release OR gesture cancellation (system
+     * gesture steals the touch, view disappears). Renderers guarantee an
+     * up after every down so a held button is never left stuck.
+     */
+    public function onPressUp(string $method): static
+    {
+        $this->pressUpMethod = $method;
+
+        return $this;
+    }
+
     public function setNavigateConfig(array $config): static
     {
         $this->navigateConfig = $config;
@@ -612,6 +643,14 @@ abstract class Element
 
         if ($this->doubleTapMethod !== null) {
             $props['on_double_tap'] = $registry->register($this->doubleTapMethod);
+        }
+
+        if ($this->pressDownMethod !== null) {
+            $props['on_press_down'] = $registry->register($this->pressDownMethod);
+        }
+
+        if ($this->pressUpMethod !== null) {
+            $props['on_press_up'] = $registry->register($this->pressUpMethod);
         }
 
         if (! empty($this->darkProps)) {

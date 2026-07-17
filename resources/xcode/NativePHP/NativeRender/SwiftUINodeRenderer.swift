@@ -215,8 +215,15 @@ private struct NodeGestureModifier: ViewModifier {
     // wire-format change. 0 = no handler.
     private var doubleTapId: Int { node.props.getInt("on_double_tap") }
 
+    // Press-down/up ride the props dict the same way (see
+    // PressDownUpModifier in ViewClickHandlers.swift).
+    private var pressDownId: Int { node.props.getInt("on_press_down") }
+
+    private var pressUpId: Int { node.props.getInt("on_press_up") }
+
     private var hasGesture: Bool {
         node.onPress != 0 || node.onLongPress != 0 || doubleTapId != 0
+            || pressDownId != 0 || pressUpId != 0
     }
 
     func body(content: Content) -> some View {
@@ -230,6 +237,23 @@ private struct NodeGestureModifier: ViewModifier {
                 .modifier(DoubleTapModifier(callbackId: doubleTapId, nodeId: node.id))
                 .modifier(TapModifier(callbackId: node.onPress, nodeId: node.id))
                 .modifier(LongPressModifier(callbackId: node.onLongPress, nodeId: node.id))
+                .modifier(PressDownUpGate(downId: pressDownId, upId: pressUpId, nodeId: node.id))
+        } else {
+            content
+        }
+    }
+}
+
+/// Applies PressDownUpModifier only when a down/up handler exists — mirrors
+/// the callbackId != 0 gating of the tap modifiers above.
+private struct PressDownUpGate: ViewModifier {
+    let downId: Int
+    let upId: Int
+    let nodeId: Int
+
+    func body(content: Content) -> some View {
+        if downId != 0 || upId != 0 {
+            content.modifier(PressDownUpModifier(downId: downId, upId: upId, nodeId: nodeId))
         } else {
             content
         }

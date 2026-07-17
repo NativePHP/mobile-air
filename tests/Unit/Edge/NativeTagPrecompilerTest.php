@@ -83,6 +83,24 @@ it('rewrites @doubleTap to _doubleTap', function () {
     expect($result)->not->toContain('@doubleTap');
 });
 
+it('rewrites @pressDown and @pressUp to underscored versions', function () {
+    $result = ($this->precompiler)('<native:pressable @pressDown="startLeft" @pressUp="stopLeft">x</native:pressable>');
+
+    expect($result)->toContain("'_pressDown' => 'startLeft'");
+    expect($result)->toContain("'_pressUp' => 'stopLeft'");
+    expect($result)->not->toContain('@pressDown');
+    expect($result)->not->toContain('@pressUp');
+});
+
+it('keeps @press and @pressDown distinct on the same tag', function () {
+    // `pressDown` precedes `press` in the alternation — a plain @press must
+    // still rewrite to _press, never swallow the Down/Up suffix.
+    $result = ($this->precompiler)('<native:pressable @press="fire" @pressDown="charge">x</native:pressable>');
+
+    expect($result)->toContain("'_press' => 'fire'");
+    expect($result)->toContain("'_pressDown' => 'charge'");
+});
+
 it('rewrites @change and @submit', function () {
     $result = ($this->precompiler)('<native:text-input @change="onTextChange" @submit="onTextSubmit" />');
 

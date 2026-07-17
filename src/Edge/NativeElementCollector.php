@@ -143,6 +143,14 @@ class NativeElementCollector
                 $props['on_double_tap'] = $doubleTap;
             }
 
+            // Press-down/up ride the props dict too (see resolveOnPressDown).
+            if (($pressDown = static::resolveOnPressDown($attrs)) !== 0) {
+                $props['on_press_down'] = $pressDown;
+            }
+            if (($pressUp = static::resolveOnPressUp($attrs)) !== 0) {
+                $props['on_press_up'] = $pressUp;
+            }
+
             // ScrollView needs overflow: scroll so Yoga doesn't constrain children
             if ($type === 'scroll_view' && ! isset($layout['overflow'])) {
                 $layout['overflow'] = 2;
@@ -223,6 +231,14 @@ class NativeElementCollector
             // Double-tap rides the props dict (not a dedicated node field).
             if (($doubleTap = static::resolveOnDoubleTap($attrs)) !== 0) {
                 $props['on_double_tap'] = $doubleTap;
+            }
+
+            // Press-down/up ride the props dict too (see resolveOnPressDown).
+            if (($pressDown = static::resolveOnPressDown($attrs)) !== 0) {
+                $props['on_press_down'] = $pressDown;
+            }
+            if (($pressUp = static::resolveOnPressUp($attrs)) !== 0) {
+                $props['on_press_up'] = $pressUp;
             }
 
             nphp_node_leaf(
@@ -570,6 +586,31 @@ class NativeElementCollector
     {
         if (isset($attrs['_doubleTap']) && static::$callbacks) {
             return static::$callbacks->register($attrs['_doubleTap']);
+        }
+
+        return 0;
+    }
+
+    /**
+     * Press-down / press-up callback ids. Like double-tap these travel in
+     * the props dict (`on_press_down` / `on_press_up`) and reuse the PRESS
+     * wire event — the callback id alone routes to the handler — so no
+     * `nphp_node_*` signature or binary wire-format change. Returns 0 when
+     * the corresponding `@pressDown` / `@pressUp` attr is not set.
+     */
+    protected static function resolveOnPressDown(array $attrs): int
+    {
+        if (isset($attrs['_pressDown']) && static::$callbacks) {
+            return static::$callbacks->register($attrs['_pressDown']);
+        }
+
+        return 0;
+    }
+
+    protected static function resolveOnPressUp(array $attrs): int
+    {
+        if (isset($attrs['_pressUp']) && static::$callbacks) {
+            return static::$callbacks->register($attrs['_pressUp']);
         }
 
         return 0;
@@ -1054,6 +1095,12 @@ class NativeElementCollector
         }
         if (isset($attrs['_doubleTap'])) {
             $element->onDoubleTap($attrs['_doubleTap']);
+        }
+        if (isset($attrs['_pressDown'])) {
+            $element->onPressDown($attrs['_pressDown']);
+        }
+        if (isset($attrs['_pressUp'])) {
+            $element->onPressUp($attrs['_pressUp']);
         }
         if (isset($attrs['_change']) && method_exists($element, 'onChange')) {
             $element->onChange($attrs['_change']);

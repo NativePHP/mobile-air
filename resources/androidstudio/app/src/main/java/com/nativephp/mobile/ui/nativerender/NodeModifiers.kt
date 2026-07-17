@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
@@ -18,6 +20,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 
 // MARK: - ARGB Color Conversion
@@ -194,10 +197,48 @@ fun Modifier.nodeGestures(
     // Double-tap is carried in props (`on_double_tap`), not a dedicated node
     // field like onPress/onLongPress, so it needs no binary wire-format change.
     val doubleTapId = node.props.getInt("on_double_tap")
+    // Press-down/up ride the props dict the same way. Both reuse the PRESS
+    // wire event — the callback id alone routes to the handler.
+    val pressDownId = node.props.getInt("on_press_down")
+    val pressUpId = node.props.getInt("on_press_up")
 
-    if (callbackId == 0 && longPressId == 0 && doubleTapId == 0) return this
+    if (callbackId == 0 && longPressId == 0 && doubleTapId == 0 &&
+        pressDownId == 0 && pressUpId == 0
+    ) {
+        return this
+    }
 
     val nodeId = node.id
+
+    var mod: Modifier = this
+
+    // Touch-contact tracking for held-button semantics (gamepad d-pads,
+    // push-to-talk): down fires on first contact, up when every pointer
+    // lifts. The `finally` also runs on gesture-coroutine cancellation
+    // (scroll steals the stream, node leaves composition) so a held button
+    // is never left stuck. Observes without consuming, so it composes with
+    // the clickable below when @press is also present.
+    if (pressDownId != 0 || pressUpId != 0) {
+        mod = mod.pointerInput(pressDownId, pressUpId, nodeId) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false)
+                if (pressDownId != 0) {
+                    NativeElementBridge.sendPressEvent(pressDownId, nodeId)
+                }
+                try {
+                    do {
+                        val event = awaitPointerEvent()
+                    } while (event.changes.any { it.pressed })
+                } finally {
+                    if (pressUpId != 0) {
+                        NativeElementBridge.sendPressEvent(pressUpId, nodeId)
+                    }
+                }
+            }
+        }
+    }
+
+    if (callbackId == 0 && longPressId == 0 && doubleTapId == 0) return mod
 
     val onClickAction: () -> Unit = {
         if (callbackId != 0) {
@@ -223,7 +264,7 @@ fun Modifier.nodeGestures(
 
     return if (interactionSource != null) {
         if (needCombined) {
-            this.combinedClickable(
+            mod.combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onLongClick = onLongClickAction,
@@ -231,7 +272,7 @@ fun Modifier.nodeGestures(
                 onClick = onClickAction,
             )
         } else {
-            this.clickable(
+            mod.clickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClickAction,
@@ -239,13 +280,13 @@ fun Modifier.nodeGestures(
         }
     } else {
         if (needCombined) {
-            this.combinedClickable(
+            mod.combinedClickable(
                 onLongClick = onLongClickAction,
                 onDoubleClick = onDoubleClickAction,
                 onClick = onClickAction,
             )
         } else {
-            this.clickable(onClick = onClickAction)
+            mod.clickable(onClick = onClickAction)
         }
     }
 }

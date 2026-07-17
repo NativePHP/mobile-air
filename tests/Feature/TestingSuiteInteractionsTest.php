@@ -34,6 +34,29 @@ it('long-presses by ref', function () {
         ->assertSet('held', true);
 });
 
+// ── Press down / press up ───────────────────────────
+
+it('dispatches a press-down then press-up cycle by method name', function () {
+    Native::test(FormScreen::class)
+        ->assertSee('Coasting')
+        ->pressDown('gasDown')
+        ->assertSet('gasHeld', true)
+        ->assertSee('Accelerating')
+        ->pressUp('gasUp')
+        ->assertSet('gasHeld', false)
+        ->assertSee('Coasting');
+});
+
+it('dispatches press-down and press-up by ref, routed by props key', function () {
+    // Both ids live on the same node and ride the same PRESS wire event —
+    // the props key (`on_press_down` vs `on_press_up`) picks the handler.
+    Native::test(FormScreen::class)
+        ->pressDown('gas-button')
+        ->assertSet('gasHeld', true)
+        ->pressUp('gas-button')
+        ->assertSet('gasHeld', false);
+});
+
 // ── Submit ──────────────────────────────────────────
 
 it('submits an input with explicit text', function () {
