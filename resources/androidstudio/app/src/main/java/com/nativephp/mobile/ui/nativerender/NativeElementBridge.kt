@@ -296,6 +296,20 @@ class NativeElementBridge private constructor() {
                             (prevRootType == "native_root_stack" && newRootType == "native_root_stack") ||
                             (prevRootType == "native_root_tabs"  && newRootType == "native_root_tabs")
 
+                        // A `native_root_stack` renderer is about to COLD-mount
+                        // (previous publish was a different root sentinel —
+                        // tabs, WebView, or nothing). NavigationCoordinator is
+                        // a singleton that survives renderer teardown, so it
+                        // still holds the PREVIOUS stack session's rootUri and
+                        // per-URI tree cache. Without a reset, the new stack's
+                        // first publish falls through receive()'s seed/root
+                        // checks into the PUSH branch — stacking the new screen
+                        // on a stale root — and every subsequent pop animates
+                        // through the OLD page. Reset on main below, atomically
+                        // with the tree swap.
+                        val isFreshStackMount =
+                            newRootType == "native_root_stack" && prevRootType != "native_root_stack"
+
                         val newUri = tree.root.props.getString("current_uri", "")
                         val diffedTree: NativeUITree
 
@@ -358,6 +372,7 @@ class NativeElementBridge private constructor() {
                             // screenKey would trigger the AnimatedContent at
                             // NativeUIContent's root, replacing the system
                             // animation with a slide overlay.
+                            if (isFreshStackMount) NavigationCoordinator.reset()
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
                             NativeUIBridge.currentTree.value = diffedTree
                             // First publish after a hot-reload dismisses

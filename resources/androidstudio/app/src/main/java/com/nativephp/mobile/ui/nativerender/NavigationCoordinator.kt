@@ -153,7 +153,11 @@ object NavigationCoordinator {
     }
 
     /**
-     * Reset on app launch or when explicitly leaving native chrome.
+     * Clear all stack state. Called by NativeElementBridge's shadow loop
+     * when a `native_root_stack` tree cold-mounts (previous publish was a
+     * different root sentinel) — the singleton survives renderer teardown,
+     * so without this the next stack session would treat its first URI as
+     * a push on top of the previous session's stale root.
      */
     fun reset() {
         rootUri.value = null

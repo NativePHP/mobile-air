@@ -391,6 +391,20 @@ final class NativeElementBridge {
                 (prevRootType == "native_root_stack" && newRootType == "native_root_stack") ||
                 (prevRootType == "native_root_tabs"  && newRootType == "native_root_tabs")
 
+            // A `native_root_stack` renderer is about to COLD-mount (the
+            // previous publish was a different root sentinel — tabs,
+            // WebView, or nothing). `NavigationCoordinator.shared` is a
+            // singleton that survives renderer teardown, so at this point
+            // it still holds the PREVIOUS stack session's `rootUri` and
+            // per-URI tree cache. Without a reset, the new stack's first
+            // publish falls through `receive()`'s seed/root checks into
+            // the PUSH branch — stacking the new screen on top of a stale
+            // root — and every subsequent pop animates through the OLD
+            // page (e.g. a product screen visited minutes ago). Reset on
+            // main below, atomically with the tree swap.
+            let isFreshStackMount =
+                newRootType == "native_root_stack" && prevRootType != "native_root_stack"
+
             // Diff against previous tree (reuse unchanged subtrees so
             // NodeView's `===` equality short-circuits and SwiftUI skips
             // re-rendering them).
@@ -488,6 +502,7 @@ final class NativeElementBridge {
                     }
                     bridge.screenKey += 1
                 }
+                if isFreshStackMount { NavigationCoordinator.shared.reset() }
                 bridge.currentTree = finalTree
                 // First publish after a hot-reload dismisses the
                 // "Reloading…" pill. Set by `ContentView.reloadWebView`
