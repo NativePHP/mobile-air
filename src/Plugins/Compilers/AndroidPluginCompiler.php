@@ -140,6 +140,14 @@ class AndroidPluginCompiler
         // Run pre-compile hooks
         $hookRunner->runPreCompileHooks();
 
+        // The generated plugin tree is fully derived from the installed
+        // plugins, so start from a clean slate. Copying over the previous
+        // output would leave stale files behind when a plugin deletes or
+        // renames a source file (or is removed entirely), producing
+        // duplicate-class build failures in Gradle.
+        $this->clean();
+        $this->files->ensureDirectoryExists($this->generatedPath);
+
         // Emit ProGuard/R8 keep rules for every plugin (runs even when the
         // list is empty so a removed plugin's stale rules are cleared).
         $this->injectPluginProguardRules($allPlugins);
@@ -165,9 +173,6 @@ class AndroidPluginCompiler
         $hasInitFunctions = $allPlugins->filter(function (Plugin $p) {
             return $p->getAndroidInitFunction() !== null;
         })->isNotEmpty();
-
-        // Ensure generated directory exists
-        $this->files->ensureDirectoryExists($this->generatedPath);
 
         // Copy plugin source files for plugins that have Android code
         $allPlugins->filter(fn (Plugin $p) => $p->hasAndroidCode())
