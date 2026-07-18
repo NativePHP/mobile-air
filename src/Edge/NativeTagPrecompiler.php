@@ -19,6 +19,17 @@ class NativeTagPrecompiler
     ];
 
     /**
+     * Elements that capture their slot content as a raw markup prop —
+     * no strip_tags or entity decoding, because the markup itself is the
+     * payload (e.g. <webview> renders its slot as an inline HTML document).
+     * An explicit `:prop` attribute takes precedence over the slot.
+     * tag name => prop name for the captured markup
+     */
+    private const RAW_SLOT_ELEMENTS = [
+        'webview' => 'html',
+    ];
+
+    /**
      * Edge navigation components — handled via Edge::add()/startContext()/endContext()
      * instead of NativeElementCollector, so Edge.Set bridge calls work in WebView mode.
      */
@@ -232,11 +243,12 @@ class NativeTagPrecompiler
         );
 
         // Convert @press, @pressDown, @pressUp, @longPress, @doubleTap, @change,
-        // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe, @pinchEnd
-        // to underscored versions before Blade interprets @ as a directive.
+        // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
+        // @pinchEnd, @navigated to underscored versions before Blade
+        // interprets @ as a directive.
         // Longer spellings precede their prefix (`pressDown`/`pressUp` before
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
-        $value = preg_replace('/@(pressDown|pressUp|press|longPress|doubleTap|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd)=/', '_$1=', $value);
+        $value = preg_replace('/@(pressDown|pressUp|press|longPress|doubleTap|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
 
         // The attribute-region pattern below uses possessive quantifiers
         // (`*+`) to keep PCRE from catastrophically backtracking when a
@@ -427,6 +439,12 @@ class NativeTagPrecompiler
             return "<?php \$__nativeSlotAttrs = {$attrs}; ob_start(); ?>";
         }
 
+        // Raw-slot elements: same buffering, but the slot is kept verbatim
+        // on close — the markup itself is the payload.
+        if (isset(self::RAW_SLOT_ELEMENTS[$tag])) {
+            return "<?php \$__nativeSlotAttrs = {$attrs}; ob_start(); ?>";
+        }
+
         // Container: push onto collector stack
         return '<?php '.self::C."::open('{$type}', {$attrs}); ?>";
     }
@@ -461,6 +479,19 @@ class NativeTagPrecompiler
                 $code .= " if (\$__nativeSlot !== '') { \$__nativeSlotAttrs['{$propName}'] = \$__nativeSlot; }";
             }
 
+            $code .= ' '.self::C."::leaf('{$type}', \$__nativeSlotAttrs); ?>";
+
+            return $code;
+        }
+
+        if (isset(self::RAW_SLOT_ELEMENTS[$tag])) {
+            $propName = self::RAW_SLOT_ELEMENTS[$tag];
+            $type = $this->tagToType($tag);
+
+            // No strip_tags/entity decoding — the markup is the payload. An
+            // explicit attribute (e.g. `:html`) wins over the captured slot.
+            $code = '<?php $__nativeSlot = trim(ob_get_clean());';
+            $code .= " if (\$__nativeSlot !== '' && !isset(\$__nativeSlotAttrs['{$propName}'])) { \$__nativeSlotAttrs['{$propName}'] = \$__nativeSlot; }";
             $code .= ' '.self::C."::leaf('{$type}', \$__nativeSlotAttrs); ?>";
 
             return $code;
