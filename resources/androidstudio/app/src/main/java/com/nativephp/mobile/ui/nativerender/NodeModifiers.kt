@@ -52,6 +52,29 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
     var mod = this
     val radius = style.borderRadius
 
+    // Opacity (with dark mode override).
+    //
+    // Must be applied FIRST: a Compose modifier only affects what is drawn
+    // after it in the chain, so alpha has to precede shadow/background/border
+    // to fade the whole box — matching SwiftUI's .opacity(), which wraps the
+    // entire view. Applied last, it would only fade inner content.
+    //
+    // Defer to `NodeView` when:
+    //   - `animate-duration > 0` (state transitions),
+    //   - `animate-loop` (yoyo),
+    //   - opacity is bound to a SharedValue (`opacity_sv` set).
+    // Otherwise applying here would double-multiply.
+    val animateDuration = props.getFloat("animate-duration", 0f)
+    val animateLoop = props.getBool("animate-loop")
+    val opacitySharedBound = props.getString("opacity_sv", "").isNotEmpty()
+    if (animateDuration <= 0f && !animateLoop && !opacitySharedBound) {
+        val darkOpacity = if (isDarkMode) props.getFloat("dark_opacity", 0f) else 0f
+        val opacity = if (darkOpacity > 0f) darkOpacity else style.opacity
+        if (opacity < 1f && opacity >= 0f) {
+            mod = mod.alpha(opacity)
+        }
+    }
+
     // Background color (with dark mode override)
     val darkBg = if (isDarkMode) props.getColor("dark_bg_color", 0) else 0
     val bgArgb = if (darkBg != 0) darkBg else style.bgColor
@@ -89,24 +112,6 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
                 val shape = if (radius > 0f) RoundedCornerShape(radius.dp) else RoundedCornerShape(0.dp)
                 mod = mod.border(style.borderWidth.dp, borderColor, shape)
             }
-        }
-    }
-
-    // Opacity (with dark mode override).
-    //
-    // Defer to `NodeView` when:
-    //   - `animate-duration > 0` (state transitions),
-    //   - `animate-loop` (yoyo),
-    //   - opacity is bound to a SharedValue (`opacity_sv` set).
-    // Otherwise applying here would double-multiply.
-    val animateDuration = props.getFloat("animate-duration", 0f)
-    val animateLoop = props.getBool("animate-loop")
-    val opacitySharedBound = props.getString("opacity_sv", "").isNotEmpty()
-    if (animateDuration <= 0f && !animateLoop && !opacitySharedBound) {
-        val darkOpacity = if (isDarkMode) props.getFloat("dark_opacity", 0f) else 0f
-        val opacity = if (darkOpacity > 0f) darkOpacity else style.opacity
-        if (opacity < 1f && opacity >= 0f) {
-            mod = mod.alpha(opacity)
         }
     }
 
