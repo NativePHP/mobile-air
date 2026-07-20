@@ -66,6 +66,7 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_APP = "persisted_data/storage/app"
         private const val DIR_PUBLIC = "persisted_data/storage/app/public"
         private const val DIR_DATABASE = "persisted_data/database/"
+        private const val DIR_OPCACHE = "persisted_data/opcache"
         private const val DIR_PHP_SESSIONS = "php_sessions"
 
         // API URLs
@@ -169,6 +170,13 @@ class LaravelEnvironment(private val context: Context) {
             //     extractLaravelBundle()
             // }
             val didExtract = extractLaravelBundle()
+
+            // App code changed — wipe the OPcache file cache. It's compiled
+            // with validate_timestamps=0, so stale bytecode would otherwise
+            // be served for the freshly extracted files.
+            if (didExtract) {
+                clearOpcacheFileCache()
+            }
 
             setupEnvironment()
 
@@ -749,6 +757,34 @@ class LaravelEnvironment(private val context: Context) {
         phpBridge.runArtisanCommand("migrate --force")
     }
 
+    /**
+     * True when the extracted bundle is a DEBUG build (hot reload enabled).
+     * Reads the .version marker written during extraction.
+     */
+    private fun isDebugBuild(): Boolean = try {
+        val versionFile = File(appStorageDir, "$DIR_LARAVEL/$VERSION_FILE")
+        versionFile.exists() && versionFile.readText().trim() == VERSION_DEBUG
+    } catch (e: Exception) {
+        false
+    }
+
+    /**
+     * Delete all cached OPcache bytecode. Called whenever the app bundle is
+     * (re-)extracted: OPcache runs with validate_timestamps=0, so cached .bin
+     * files for changed sources would never be revalidated.
+     */
+    private fun clearOpcacheFileCache() {
+        try {
+            val opcacheDir = File(appStorageDir, DIR_OPCACHE)
+            if (opcacheDir.exists()) {
+                opcacheDir.listFiles()?.forEach { it.deleteRecursively() }
+                Log.d(TAG, "🗑️ Cleared OPcache file cache at ${opcacheDir.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear OPcache file cache", e)
+        }
+    }
+
     private fun setupDirectories() {
         try {
             // Create directories with permissions as needed
@@ -760,6 +796,7 @@ class LaravelEnvironment(private val context: Context) {
             createDirectory(DIR_APP)
             createDirectory(DIR_PUBLIC)
             createDirectory(DIR_DATABASE)
+            createDirectory(DIR_OPCACHE, withPermissions = true)
 
             // Set permissions on parent storage directory (owner-only)
             File(appStorageDir, DIR_STORAGE).setWritable(true, true)
@@ -842,6 +879,20 @@ class LaravelEnvironment(private val context: Context) {
                 "REQUEST_SCHEME" to "http"
             )
 
+            // OPcache file cache (file_cache_only mode — SHM crashes on
+            // Android). Production builds only: DEBUG builds re-extract the
+            // bundle on every launch and wipe the cache on every hot reload,
+            // so cached bytecode would never be reused — compiling and
+            // writing .bin files would be pure overhead. The C bridge reads
+            // this and enables OPcache at php_embed_init time; see
+            // build_ini_entries() in php_bridge.c.
+            if (!isDebugBuild()) {
+                setEnvironmentVariable(
+                    "NATIVEPHP_OPCACHE_PATH",
+                    "${appStorageDir.absolutePath}/$DIR_OPCACHE"
+                )
+            }
+
             Log.d(TAG, "✅ Environment variables configured")
 
             val phpSessionDir = File(appStorageDir, DIR_PHP_SESSIONS).apply {
@@ -855,12 +906,7 @@ class LaravelEnvironment(private val context: Context) {
 
             try {
                 // Check if we're in DEBUG mode to force certificate refresh
-                val isDebugMode = try {
-                    val versionFile = File(appStorageDir, "$DIR_LARAVEL/$VERSION_FILE")
-                    versionFile.exists() && versionFile.readText().trim() == VERSION_DEBUG
-                } catch (e: Exception) {
-                    false
-                }
+                val isDebugMode = isDebugBuild()
 
                 Log.d(TAG, "🔍 Certificate copy - DEBUG mode: $isDebugMode")
                 copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode)
@@ -948,6 +994,11 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             // If we arrived first (WorkManager cold start after an app update), we
             // do the extraction ourselves before the ephemeral runtime touches vendor/.
             val didExtract = extractLaravelBundle()
+            // Same as initialize(): extracted code invalidates the OPcache
+            // file cache (validate_timestamps=0 never revalidates).
+            if (didExtract) {
+                clearOpcacheFileCache()
+            }
             setupEnvironment()
             // Only run install-time artisan commands when we actually extracted AND no
             // persistent runtime is already live. In a warm process the live app booted

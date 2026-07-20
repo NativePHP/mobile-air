@@ -406,6 +406,17 @@ struct NativePHPApp: App {
         setenv("VIEW_COMPILED_PATH", viewCacheDir, 1)
         setenv("DB_DATABASE", "\(databaseDir)/database.sqlite", 1)
 
+        // OPcache file cache (file_cache_only mode — SHM conflicts with the
+        // NativePHP extension's shared-memory mutexes). Production builds
+        // only: DEBUG builds wipe the cache on every hot reload, so cached
+        // bytecode would never be reused. See build_ini_entries() in PHP.c.
+        // Note: on the very first launch this runs before extraction, when
+        // getAppVersion() falls back to "DEBUG" — the persistent runtime's
+        // own boot() re-checks after extraction and enables it there.
+        if AppUpdateManager.shared.getAppVersion() != "DEBUG" {
+            setenv("NATIVEPHP_OPCACHE_PATH", getAppSupportDir(dir: "opcache"), 1)
+        }
+
         // Set APP_KEY from secure storage (generates on first run)
         if let appKey = getOrGenerateAppKey() {
             setenv("APP_KEY", appKey, 1)

@@ -16,6 +16,14 @@ if (function_exists('opcache_get_status')) {
     } else {
         $_opcacheInfo = 'disabled';
     }
+
+    // In file_cache_only mode opcache_get_status() reports disabled (no SHM),
+    // but the file cache IS active — flag it so per-request logs aren't
+    // misleading. (No bin count here: this runs per request.)
+    $opcacheConfig = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : null;
+    if (! empty($opcacheConfig['directives']['opcache.file_cache_only'])) {
+        $_opcacheInfo .= ',file_cache_only=1';
+    }
 } else {
     $_opcacheInfo = 'NOT_AVAILABLE';
 }
