@@ -72,11 +72,16 @@ final class PersistentPHPRuntime {
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
 
         // OPcache file cache (file_cache_only mode — SHM conflicts with the
-        // NativePHP extension's shared-memory mutexes). The C bridge reads
-        // this and enables OPcache at startup; see build_ini_entries() in PHP.c.
-        let opcacheDir = storageDir.appendingPathComponent("opcache")
-        try? FileManager.default.createDirectory(at: opcacheDir, withIntermediateDirectories: true)
-        setenv("NATIVEPHP_OPCACHE_PATH", opcacheDir.path, 1)
+        // NativePHP extension's shared-memory mutexes). Production builds
+        // only: DEBUG builds wipe the cache on every hot reload, so cached
+        // bytecode would never be reused — writing .bin files would be pure
+        // overhead. The C bridge reads this and enables OPcache at startup;
+        // see build_ini_entries() in PHP.c.
+        if AppUpdateManager.shared.getAppVersion() != "DEBUG" {
+            let opcacheDir = storageDir.appendingPathComponent("opcache")
+            try? FileManager.default.createDirectory(at: opcacheDir, withIntermediateDirectories: true)
+            setenv("NATIVEPHP_OPCACHE_PATH", opcacheDir.path, 1)
+        }
 
         // Composer autoloader and bootstrap paths (used by persistent.php)
         setenv("COMPOSER_AUTOLOADER_PATH", appPath + "/vendor/autoload.php", 1)

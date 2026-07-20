@@ -758,6 +758,17 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     /**
+     * True when the extracted bundle is a DEBUG build (hot reload enabled).
+     * Reads the .version marker written during extraction.
+     */
+    private fun isDebugBuild(): Boolean = try {
+        val versionFile = File(appStorageDir, "$DIR_LARAVEL/$VERSION_FILE")
+        versionFile.exists() && versionFile.readText().trim() == VERSION_DEBUG
+    } catch (e: Exception) {
+        false
+    }
+
+    /**
      * Delete all cached OPcache bytecode. Called whenever the app bundle is
      * (re-)extracted: OPcache runs with validate_timestamps=0, so cached .bin
      * files for changed sources would never be revalidated.
@@ -860,10 +871,6 @@ class LaravelEnvironment(private val context: Context) {
                 "PHP_INI_SCAN_DIR" to appStorageDir.absolutePath,
                 "CA_CERT_DIR" to context.filesDir.absolutePath,
                 "PHPRC" to context.filesDir.absolutePath,
-                // OPcache file cache (file_cache_only mode — SHM crashes on
-                // Android). The C bridge reads this and enables OPcache at
-                // php_embed_init time; see build_ini_entries() in php_bridge.c.
-                "NATIVEPHP_OPCACHE_PATH" to "${appStorageDir.absolutePath}/$DIR_OPCACHE",
                 // PHP/Server environment
                 "REMOTE_ADDR" to "127.0.0.1",
                 "SERVER_NAME" to "127.0.0.1",
@@ -871,6 +878,20 @@ class LaravelEnvironment(private val context: Context) {
                 "SERVER_PROTOCOL" to "HTTP/1.1",
                 "REQUEST_SCHEME" to "http"
             )
+
+            // OPcache file cache (file_cache_only mode — SHM crashes on
+            // Android). Production builds only: DEBUG builds re-extract the
+            // bundle on every launch and wipe the cache on every hot reload,
+            // so cached bytecode would never be reused — compiling and
+            // writing .bin files would be pure overhead. The C bridge reads
+            // this and enables OPcache at php_embed_init time; see
+            // build_ini_entries() in php_bridge.c.
+            if (!isDebugBuild()) {
+                setEnvironmentVariable(
+                    "NATIVEPHP_OPCACHE_PATH",
+                    "${appStorageDir.absolutePath}/$DIR_OPCACHE"
+                )
+            }
 
             Log.d(TAG, "✅ Environment variables configured")
 
@@ -885,12 +906,7 @@ class LaravelEnvironment(private val context: Context) {
 
             try {
                 // Check if we're in DEBUG mode to force certificate refresh
-                val isDebugMode = try {
-                    val versionFile = File(appStorageDir, "$DIR_LARAVEL/$VERSION_FILE")
-                    versionFile.exists() && versionFile.readText().trim() == VERSION_DEBUG
-                } catch (e: Exception) {
-                    false
-                }
+                val isDebugMode = isDebugBuild()
 
                 Log.d(TAG, "🔍 Certificate copy - DEBUG mode: $isDebugMode")
                 copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode)
