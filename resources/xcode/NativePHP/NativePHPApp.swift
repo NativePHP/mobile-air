@@ -406,6 +406,11 @@ struct NativePHPApp: App {
         setenv("VIEW_COMPILED_PATH", viewCacheDir, 1)
         setenv("DB_DATABASE", "\(databaseDir)/database.sqlite", 1)
 
+        // OPcache file cache (file_cache_only mode — SHM conflicts with the
+        // NativePHP extension's shared-memory mutexes). The C bridge reads
+        // this and enables OPcache at startup; see build_ini_entries() in PHP.c.
+        setenv("NATIVEPHP_OPCACHE_PATH", getAppSupportDir(dir: "opcache"), 1)
+
         // Set APP_KEY from secure storage (generates on first run)
         if let appKey = getOrGenerateAppKey() {
             setenv("APP_KEY", appKey, 1)

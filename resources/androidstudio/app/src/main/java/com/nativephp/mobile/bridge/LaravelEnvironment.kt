@@ -66,6 +66,7 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_APP = "persisted_data/storage/app"
         private const val DIR_PUBLIC = "persisted_data/storage/app/public"
         private const val DIR_DATABASE = "persisted_data/database/"
+        private const val DIR_OPCACHE = "persisted_data/opcache"
         private const val DIR_PHP_SESSIONS = "php_sessions"
 
         // API URLs
@@ -169,6 +170,13 @@ class LaravelEnvironment(private val context: Context) {
             //     extractLaravelBundle()
             // }
             val didExtract = extractLaravelBundle()
+
+            // App code changed — wipe the OPcache file cache. It's compiled
+            // with validate_timestamps=0, so stale bytecode would otherwise
+            // be served for the freshly extracted files.
+            if (didExtract) {
+                clearOpcacheFileCache()
+            }
 
             setupEnvironment()
 
@@ -749,6 +757,23 @@ class LaravelEnvironment(private val context: Context) {
         phpBridge.runArtisanCommand("migrate --force")
     }
 
+    /**
+     * Delete all cached OPcache bytecode. Called whenever the app bundle is
+     * (re-)extracted: OPcache runs with validate_timestamps=0, so cached .bin
+     * files for changed sources would never be revalidated.
+     */
+    private fun clearOpcacheFileCache() {
+        try {
+            val opcacheDir = File(appStorageDir, DIR_OPCACHE)
+            if (opcacheDir.exists()) {
+                opcacheDir.listFiles()?.forEach { it.deleteRecursively() }
+                Log.d(TAG, "🗑️ Cleared OPcache file cache at ${opcacheDir.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear OPcache file cache", e)
+        }
+    }
+
     private fun setupDirectories() {
         try {
             // Create directories with permissions as needed
@@ -760,6 +785,7 @@ class LaravelEnvironment(private val context: Context) {
             createDirectory(DIR_APP)
             createDirectory(DIR_PUBLIC)
             createDirectory(DIR_DATABASE)
+            createDirectory(DIR_OPCACHE, withPermissions = true)
 
             // Set permissions on parent storage directory (owner-only)
             File(appStorageDir, DIR_STORAGE).setWritable(true, true)
@@ -834,6 +860,10 @@ class LaravelEnvironment(private val context: Context) {
                 "PHP_INI_SCAN_DIR" to appStorageDir.absolutePath,
                 "CA_CERT_DIR" to context.filesDir.absolutePath,
                 "PHPRC" to context.filesDir.absolutePath,
+                // OPcache file cache (file_cache_only mode — SHM crashes on
+                // Android). The C bridge reads this and enables OPcache at
+                // php_embed_init time; see build_ini_entries() in php_bridge.c.
+                "NATIVEPHP_OPCACHE_PATH" to "${appStorageDir.absolutePath}/$DIR_OPCACHE",
                 // PHP/Server environment
                 "REMOTE_ADDR" to "127.0.0.1",
                 "SERVER_NAME" to "127.0.0.1",
@@ -948,6 +978,11 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             // If we arrived first (WorkManager cold start after an app update), we
             // do the extraction ourselves before the ephemeral runtime touches vendor/.
             val didExtract = extractLaravelBundle()
+            // Same as initialize(): extracted code invalidates the OPcache
+            // file cache (validate_timestamps=0 never revalidates).
+            if (didExtract) {
+                clearOpcacheFileCache()
+            }
             setupEnvironment()
             // Only run install-time artisan commands when we actually extracted AND no
             // persistent runtime is already live. In a warm process the live app booted

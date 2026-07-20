@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/stat.h>
 #include "php_embed.h"
 #include "PHP.h"
 #include <zend_exceptions.h>
@@ -126,6 +127,54 @@ static int ephemeral_cold_booted = 0;
 static pthread_mutex_t g_ephemeral_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
+ * Build the SAPI hardcoded-ini string, appending OPcache file-cache settings
+ * when the host app has provided a cache directory (NATIVEPHP_OPCACHE_PATH).
+ *
+ * OPcache must run in file_cache_only mode here: its shared-memory mode
+ * crashes on Android ("FORTIFY: pthread_mutex_lock called on a destroyed
+ * mutex") because OPcache's PTHREAD_PROCESS_SHARED mutexes conflict with the
+ * NativePHP extension's own shared-memory mutexes. file_cache_only bypasses
+ * SHM entirely.
+ *
+ * validate_timestamps=0 is safe because app code is immutable between
+ * deployments — the host wipes the cache dir on app update, and
+ * native_persistent_reboot wipes it on hot reload.
+ *
+ * The returned pointer must stay valid until php_embed_init() has run, so the
+ * ini string lives in a static buffer. All boot paths already serialize
+ * startup (request/ephemeral mutexes + persistent boot gate), and the buffer
+ * content is identical on every call.
+ */
+static char g_ini_entries_buf[2048];
+
+static const char *build_ini_entries(const char *base_entries) {
+    const char *cache_dir = getenv("NATIVEPHP_OPCACHE_PATH");
+    if (!cache_dir || cache_dir[0] == '\0') {
+        return base_entries;
+    }
+
+    // OPcache requires the file cache directory to exist (it creates only
+    // its own subdirectories). Ignore EEXIST — the host normally pre-creates it.
+    mkdir(cache_dir, 0700);
+
+    // No quotes around the path: hardcoded ini entries are parsed with the RAW
+    // scanner, which takes unquoted values to end-of-line (spaces included).
+    int written = snprintf(g_ini_entries_buf, sizeof(g_ini_entries_buf),
+        "%s"
+        "opcache.enable=1\n"
+        "opcache.enable_cli=1\n"
+        "opcache.file_cache_only=1\n"
+        "opcache.file_cache=%s\n"
+        "opcache.validate_timestamps=0\n",
+        base_entries, cache_dir);
+    if (written < 0 || (size_t)written >= sizeof(g_ini_entries_buf)) {
+        LOGE("build_ini_entries: ini string overflow, leaving OPcache disabled");
+        return base_entries;
+    }
+    return g_ini_entries_buf;
+}
+
+/**
  * Configure the embed SAPI module with host-registered functions.
  * Must be called before each php_embed_init().
  */
@@ -133,10 +182,11 @@ static void setup_embed_module(void) {
     php_embed_module.ub_write = capture_php_output;
     php_embed_module.phpinfo_as_text = 1;
     php_embed_module.php_ini_ignore = 0;
-    php_embed_module.ini_entries = "output_buffering=4096\n"
-                                   "implicit_flush=0\n"
-                                   "display_errors=1\n"
-                                   "error_reporting=E_ALL\n";
+    php_embed_module.ini_entries = build_ini_entries(
+        "output_buffering=4096\n"
+        "implicit_flush=0\n"
+        "display_errors=1\n"
+        "error_reporting=E_ALL\n");
     php_embed_module.header_handler = android_header_handler;
 }
 
@@ -710,6 +760,26 @@ JNIEXPORT jint JNICALL native_persistent_reboot(JNIEnv *env, jobject thiz) {
     } zend_end_try();
     LOGI("persistent_reboot: opcache cleared");
 
+    // 2b. Wipe the OPcache file cache. opcache_reset() only resets SHM (a
+    // no-op in file_cache_only mode), and with validate_timestamps=0 stale
+    // bytecode would keep being served for files changed by hot reload.
+    zend_first_try {
+        zend_eval_string(
+            "$__opdir = getenv('NATIVEPHP_OPCACHE_PATH');"
+            "if ($__opdir && is_dir($__opdir)) {"
+            "    $__it = new \\RecursiveIteratorIterator("
+            "        new \\RecursiveDirectoryIterator($__opdir, \\FilesystemIterator::SKIP_DOTS),"
+            "        \\RecursiveIteratorIterator::CHILD_FIRST"
+            "    );"
+            "    foreach ($__it as $__f) {"
+            "        $__f->isDir() ? @rmdir($__f->getPathname()) : @unlink($__f->getPathname());"
+            "    }"
+            "}",
+            NULL, "persistent_reboot_opcache_files"
+        );
+    } zend_end_try();
+    LOGI("persistent_reboot: opcache file cache wiped");
+
     // 3. Clear compiled views and cached config
     zend_first_try {
         zend_eval_string(
@@ -889,7 +959,8 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
         // Cold path: no live runtime (e.g. install-time setup, or a WorkManager
         // cold start after the app was killed) — full embed init is safe.
         setup_embed_module();
-        php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
+        php_embed_module.ini_entries = build_ini_entries(
+            "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n");
         if (php_embed_init(0, NULL) != SUCCESS) {
             LOGE("Failed to initialize PHP for artisan");
             pthread_mutex_unlock(&g_ephemeral_mutex);

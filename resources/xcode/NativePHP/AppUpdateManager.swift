@@ -86,6 +86,9 @@ class AppUpdateManager {
             try extractZipParallel(from: sourceURL, to: destinationURL)
             print("✅ Bundled app extracted successfully")
 
+            // App code changed — stale OPcache bytecode must go (validate_timestamps=0)
+            clearOpcacheFileCache()
+
             // Create installed.version file after successful extraction
             createInstalledVersionFile()
 
@@ -207,6 +210,9 @@ class AppUpdateManager {
 
             // Move new app into place
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
+
+            // App code changed — stale OPcache bytecode must go (validate_timestamps=0)
+            clearOpcacheFileCache()
 
             // Create installed.version file for the new version
             createInstalledVersionFile()
@@ -708,6 +714,22 @@ class AppUpdateManager {
         } catch {
             print("❌ Failed to create installed.version file: \(error)")
         }
+    }
+
+    /// Delete all cached OPcache bytecode. Called whenever app code is
+    /// extracted or updated: OPcache runs with validate_timestamps=0, so
+    /// cached .bin files for changed sources would never be revalidated.
+    private func clearOpcacheFileCache() {
+        let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let opcacheDir = appSupportURL.appendingPathComponent("opcache")
+
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: opcacheDir, includingPropertiesForKeys: nil) else {
+            return
+        }
+        for entry in entries {
+            try? FileManager.default.removeItem(at: entry)
+        }
+        print("🗑️ Cleared OPcache file cache at \(opcacheDir.path)")
     }
 
     private func runMigrationsAndClearCaches() {

@@ -26,6 +26,26 @@ if (function_exists('opcache_get_status')) {
     } else {
         $_opcacheInfo = 'disabled';
     }
+
+    // In file_cache_only mode opcache_get_status() reports disabled (there is
+    // no SHM to report on) even though the file cache IS active — surface the
+    // file cache state so boot logs aren't misleading.
+    $opcacheConfig = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : null;
+    if (! empty($opcacheConfig['directives']['opcache.file_cache_only'])) {
+        $fileCacheDir = $opcacheConfig['directives']['opcache.file_cache'] ?? '';
+        $fileCacheBins = 0;
+        if ($fileCacheDir && is_dir($fileCacheDir)) {
+            $it = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($fileCacheDir, FilesystemIterator::SKIP_DOTS)
+            );
+            foreach ($it as $f) {
+                if ($f->getExtension() === 'bin') {
+                    $fileCacheBins++;
+                }
+            }
+        }
+        $_opcacheInfo .= ",file_cache_only=1,file_cache_bins={$fileCacheBins}";
+    }
 } else {
     $_opcacheInfo = 'NOT_AVAILABLE';
 }

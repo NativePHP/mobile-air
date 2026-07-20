@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <zend_exceptions.h>
 
 static phpOutputCallback swiftOutputCallback = NULL;
@@ -247,14 +248,63 @@ static void do_artisan(const char *command);
 static void do_shutdown(void);
 static void do_reboot(void);
 
+// ── OPcache file cache ──────────────────────────────
+// Build the SAPI hardcoded-ini string, appending OPcache file-cache settings
+// when the host app has provided a cache directory (NATIVEPHP_OPCACHE_PATH).
+//
+// OPcache runs in file_cache_only mode, mirroring Android: OPcache's
+// shared-memory mode uses PTHREAD_PROCESS_SHARED mutexes that conflict with
+// the NativePHP extension's own shared-memory mutexes. file_cache_only
+// bypasses SHM entirely.
+//
+// validate_timestamps=0 is safe because app code is immutable between
+// deployments — AppUpdateManager wipes the cache dir on app update, and
+// do_reboot() wipes it on hot reload.
+//
+// The returned pointer must stay valid through module startup, so the ini
+// string lives in a static buffer. All boot paths serialize startup (worker
+// thread + persistent boot gate) and the buffer content is identical on
+// every call.
+static char g_ini_entries_buf[2048];
+
+static const char *build_ini_entries(const char *base_entries) {
+    const char *cache_dir = getenv("NATIVEPHP_OPCACHE_PATH");
+    if (!cache_dir || cache_dir[0] == '\0') {
+        return base_entries;
+    }
+
+    // OPcache requires the file cache directory to exist (it creates only
+    // its own subdirectories). Ignore EEXIST — Swift normally pre-creates it.
+    mkdir(cache_dir, 0700);
+
+    // No quotes around the path (which contains a space on iOS —
+    // ".../Library/Application Support/opcache"): hardcoded ini entries are
+    // parsed with the RAW scanner, which takes unquoted values to end-of-line.
+    int written = snprintf(g_ini_entries_buf, sizeof(g_ini_entries_buf),
+        "%s"
+        "opcache.enable=1\n"
+        "opcache.enable_cli=1\n"
+        "opcache.file_cache_only=1\n"
+        "opcache.file_cache=%s\n"
+        "opcache.validate_timestamps=0\n",
+        base_entries, cache_dir);
+    if (written < 0 || (size_t)written >= sizeof(g_ini_entries_buf)) {
+        fprintf(stderr, "build_ini_entries: ini string overflow, leaving OPcache disabled\n");
+        fflush(stderr);
+        return base_entries;
+    }
+    return g_ini_entries_buf;
+}
+
 static void setup_persistent_sapi(void) {
     php_embed_module.ub_write       = capture_php_output;
     php_embed_module.phpinfo_as_text = 1;
     php_embed_module.php_ini_ignore  = 0;
-    php_embed_module.ini_entries     = "output_buffering=4096\n"
-                                       "implicit_flush=0\n"
-                                       "display_errors=1\n"
-                                       "error_reporting=E_ALL\n";
+    php_embed_module.ini_entries     = build_ini_entries(
+        "output_buffering=4096\n"
+        "implicit_flush=0\n"
+        "display_errors=1\n"
+        "error_reporting=E_ALL\n");
     php_embed_module.header_handler  = ios_header_handler;
 }
 
@@ -649,6 +699,25 @@ static void do_reboot(void) {
         zend_eval_string(
             "if (function_exists('opcache_reset')) { opcache_reset(); }",
             NULL, "persistent_reboot_opcache"
+        );
+    } zend_end_try();
+
+    // 2b. Wipe the OPcache file cache. opcache_reset() only resets SHM (a
+    // no-op in file_cache_only mode), and with validate_timestamps=0 stale
+    // bytecode would keep being served for files changed by hot reload.
+    zend_first_try {
+        zend_eval_string(
+            "$__opdir = getenv('NATIVEPHP_OPCACHE_PATH');"
+            "if ($__opdir && is_dir($__opdir)) {"
+            "    $__it = new \\RecursiveIteratorIterator("
+            "        new \\RecursiveDirectoryIterator($__opdir, \\FilesystemIterator::SKIP_DOTS),"
+            "        \\RecursiveIteratorIterator::CHILD_FIRST"
+            "    );"
+            "    foreach ($__it as $__f) {"
+            "        $__f->isDir() ? @rmdir($__f->getPathname()) : @unlink($__f->getPathname());"
+            "    }"
+            "}",
+            NULL, "persistent_reboot_opcache_files"
         );
     } zend_end_try();
 

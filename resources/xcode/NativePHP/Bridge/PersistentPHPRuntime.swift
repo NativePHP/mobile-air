@@ -71,6 +71,13 @@ final class PersistentPHPRuntime {
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
 
+        // OPcache file cache (file_cache_only mode — SHM conflicts with the
+        // NativePHP extension's shared-memory mutexes). The C bridge reads
+        // this and enables OPcache at startup; see build_ini_entries() in PHP.c.
+        let opcacheDir = storageDir.appendingPathComponent("opcache")
+        try? FileManager.default.createDirectory(at: opcacheDir, withIntermediateDirectories: true)
+        setenv("NATIVEPHP_OPCACHE_PATH", opcacheDir.path, 1)
+
         // Composer autoloader and bootstrap paths (used by persistent.php)
         setenv("COMPOSER_AUTOLOADER_PATH", appPath + "/vendor/autoload.php", 1)
         setenv("LARAVEL_BOOTSTRAP_PATH", appPath + "/bootstrap", 1)
