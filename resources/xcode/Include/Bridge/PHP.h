@@ -39,6 +39,16 @@ const char *ephemeral_php_artisan(const char *command);
 void ephemeral_php_shutdown(void);
 int  ephemeral_php_is_booted(void);
 
+// Webview PHP Runtimes — one dedicated thread + TSRM context per embedded
+// php-mode webview. The persistent lane is parked inside a native screen's
+// event-loop dispatch, so it can never answer php:// requests from an
+// embedded webview; these slots serve them concurrently instead.
+int  webview_php_start(const char *bootstrapPath);   // → handle ≥ 0, or negative error
+const char *webview_php_request(int handle, const char *method, const char *uri,
+                                const char *cookieHeader, const char *postData,
+                                const char *contentType, const char *scriptPath);
+void webview_php_stop(int handle);
+
 // Phase 0 — Element runtime instrumentation. Exported from the PHP nativephp
 // extension (nphp_element.c, linked into libphp.a). Swift calls these
 // directly via C interop; format_version mismatch must fail loud at region

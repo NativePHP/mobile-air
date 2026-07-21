@@ -1222,3 +1222,413 @@ void ephemeral_php_shutdown(void) {
 int ephemeral_php_is_booted(void) {
     return ephemeral_initialized;
 }
+
+// ── Webview PHP Runtimes ────────────────────────────
+// One dedicated PHP context per embedded php-mode <webview> element. The
+// persistent runtime's serial queue is parked inside a native screen's
+// event-loop dispatch for the screen's whole lifetime, so it can never
+// answer php:// requests from an embedded webview — each webview gets its
+// own thread + TSRM context instead, started when the webview mounts and
+// stopped when it leaves the view hierarchy.
+//
+// Request state is passed by inlining into the eval and via per-thread
+// SAPI globals — never via setenv() — so slots can run concurrently with
+// the persistent lane's env churn without racing it.
+
+#define WEBVIEW_PHP_MAX_SLOTS 4
+
+typedef enum {
+    WEBVIEW_WORK_REQUEST = 1,
+    WEBVIEW_WORK_SHUTDOWN = 2,
+} webview_work_type_t;
+
+typedef struct {
+    const char *method;
+    const char *uri;
+    const char *cookieHeader;
+    const char *postData;
+    const char *contentType;
+    const char *scriptPath;
+} webview_request_params_t;
+
+typedef struct {
+    int in_use;        // slot allocated (guarded by webview_pool_mutex)
+    int initialized;   // context booted on its thread
+    int boot_result;
+    dispatch_semaphore_t work_sem;
+    dispatch_semaphore_t done_sem;
+    webview_work_type_t work_type;
+    webview_request_params_t params;
+    char *result;      // strdup'd raw HTTP response, ownership passes to caller
+    char bootstrap_path[1024];
+} webview_php_slot_t;
+
+static webview_php_slot_t webview_slots[WEBVIEW_PHP_MAX_SLOTS];
+static pthread_mutex_t webview_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Escape a string for inclusion inside a single-quoted PHP string literal. */
+static char *webview_escape_php(const char *s) {
+    if (!s) {
+        return strdup("");
+    }
+    size_t len = strlen(s);
+    char *out = malloc(len * 2 + 1);
+    if (!out) {
+        return strdup("");
+    }
+    char *p = out;
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '\\' || c == '\'') {
+            *p++ = '\\';
+        }
+        *p++ = c;
+    }
+    *p = '\0';
+    return out;
+}
+
+static void do_webview_dispatch(webview_php_slot_t *slot) {
+    clear_output_buffer();
+
+    const webview_request_params_t *params = &slot->params;
+
+    // Per-thread SAPI request state (TSRM-local — safe alongside other lanes)
+    SG(headers_sent) = 0;
+    SG(post_read) = 0;
+    SG(read_post_bytes) = 0;
+    SG(request_info).request_method = params->method;
+    SG(request_info).request_uri = (char *)params->uri;
+    SG(request_info).proto_num = 1001;
+
+    memset(&SG(sapi_headers), 0, sizeof(sapi_headers_struct));
+    SG(sapi_headers).http_response_code = 200;
+    zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
+
+    // POST data → php://input
+    if (params->postData && strlen(params->postData) > 0) {
+        php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
+        if (post_stream) {
+            php_stream_write(post_stream, params->postData, strlen(params->postData));
+            php_stream_seek(post_stream, 0, SEEK_SET);
+
+            if (SG(request_info).request_body) {
+                php_stream_close(SG(request_info).request_body);
+            }
+            SG(request_info).request_body = post_stream;
+            SG(request_info).content_length = strlen(params->postData);
+
+            if (params->contentType && strstr(params->contentType, "json")) {
+                SG(request_info).content_type = "application/json";
+            } else {
+                SG(request_info).content_type = "application/x-www-form-urlencoded";
+            }
+        }
+    } else {
+        if (SG(request_info).request_body) {
+            php_stream_close(SG(request_info).request_body);
+            SG(request_info).request_body = NULL;
+        }
+        SG(request_info).content_length = 0;
+    }
+
+    char *esc_method = webview_escape_php(params->method);
+    char *esc_uri = webview_escape_php(params->uri);
+    char *esc_cookie = webview_escape_php(params->cookieHeader);
+    char *esc_ct = webview_escape_php(params->contentType);
+    char *esc_script = webview_escape_php(params->scriptPath);
+
+    // Same dispatch shape as the persistent lane, but every request value is
+    // inlined — no getenv() merge, so the persistent lane's transient
+    // request env vars can never bleed into (or race) this context.
+    char *eval_code = NULL;
+    asprintf(&eval_code,
+        "try {\n"
+        "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
+        "\n"
+        "    foreach ($_SERVER as $__k => $__v) {\n"
+        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
+        "            unset($_SERVER[$__k]);\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
+        "    $_SERVER['REQUEST_URI'] = '%s';\n"
+        "    $_SERVER['SCRIPT_FILENAME'] = '%s';\n"
+        "    $_SERVER['PHP_SELF'] = '/native.php';\n"
+        "    $_SERVER['HTTP_HOST'] = '127.0.0.1';\n"
+        "    $_SERVER['SERVER_NAME'] = '127.0.0.1';\n"
+        "    $_SERVER['SERVER_PORT'] = '80';\n"
+        "    $_SERVER['APP_URL'] = 'php://127.0.0.1';\n"
+        "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
+        "    $_SERVER['NATIVEPHP_PLATFORM'] = 'ios';\n"
+        "    if ('%s' !== '') { $_SERVER['HTTP_COOKIE'] = '%s'; }\n"
+        "    if ('%s' !== '') { $_SERVER['CONTENT_TYPE'] = '%s'; $_SERVER['HTTP_CONTENT_TYPE'] = '%s'; }\n"
+        "\n"
+        "    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');\n"
+        "    if ($__qpos !== false) {\n"
+        "        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);\n"
+        "    } else {\n"
+        "        $_SERVER['QUERY_STRING'] = '';\n"
+        "    }\n"
+        "\n"
+        "    $_GET = [];\n"
+        "    $_POST = [];\n"
+        "    $_COOKIE = [];\n"
+        "    $_FILES = [];\n"
+        "    $_REQUEST = [];\n"
+        "\n"
+        "    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {\n"
+        "        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {\n"
+        "            $__parts = explode('=', $__pair, 2);\n"
+        "            if (count($__parts) === 2) {\n"
+        "                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
+        "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
+        "    }\n"
+        "\n"
+        "    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {\n"
+        "        $__rawInput = file_get_contents('php://input');\n"
+        "        if ($__rawInput !== false && $__rawInput !== '') {\n"
+        "            $__ct = $_SERVER['CONTENT_TYPE'] ?? '';\n"
+        "            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {\n"
+        "                parse_str($__rawInput, $_POST);\n"
+        "            }\n"
+        "            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
+        "        \\Illuminate\\Http\\Request::capture()\n"
+        "    );\n"
+        "    $__code = $__response->getStatusCode();\n"
+        "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
+        "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
+        "    foreach ($__response->headers->all() as $__name => $__values) {\n"
+        "        foreach ($__values as $__value) {\n"
+        "            echo \"{$__name}: {$__value}\\r\\n\";\n"
+        "        }\n"
+        "    }\n"
+        "    echo \"\\r\\n\";\n"
+        "    $__response->sendContent();\n"
+        "} catch (\\Throwable $e) {\n"
+        "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
+        "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
+        "    echo 'Webview dispatch error: ' . $e->getMessage() . \"\\n\";\n"
+        "    echo $e->getTraceAsString();\n"
+        "}\n",
+        esc_method, esc_uri, esc_script,
+        esc_cookie, esc_cookie,
+        esc_ct, esc_ct, esc_ct);
+
+    free(esc_method);
+    free(esc_uri);
+    free(esc_cookie);
+    free(esc_ct);
+    free(esc_script);
+
+    if (!eval_code) {
+        slot->result = strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build webview dispatch.");
+        return;
+    }
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "webview_dispatch");
+    } zend_end_try();
+
+    free(eval_code);
+
+    char *out = get_collected_output();
+    slot->result = out ? strdup(out) : strdup("");
+}
+
+static void *webview_thread_main(void *arg) {
+    webview_php_slot_t *slot = (webview_php_slot_t *)arg;
+
+    fprintf(stderr, "WEBVIEW-PHP: thread started tid=%p\n", (void *)pthread_self());
+    fflush(stderr);
+
+    clear_output_buffer();
+
+    if (ephemeral_embed_init() != SUCCESS) {
+        fprintf(stderr, "WEBVIEW-PHP: embed init FAILED\n");
+        fflush(stderr);
+        slot->boot_result = -1;
+        dispatch_semaphore_signal(slot->done_sem);
+        return NULL;
+    }
+
+    // Boot Laravel on this context so Runtime::dispatch() serves warm requests
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, slot->bootstrap_path);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    char *boot_output = get_collected_output();
+    if (boot_output && strstr(boot_output, "FATAL") != NULL) {
+        fprintf(stderr, "WEBVIEW-PHP: bootstrap errors: %.200s\n", boot_output);
+        fflush(stderr);
+    }
+
+    slot->initialized = 1;
+    slot->boot_result = 0;
+
+    fprintf(stderr, "WEBVIEW-PHP: boot complete, entering work loop\n");
+    fflush(stderr);
+
+    dispatch_semaphore_signal(slot->done_sem);
+
+    while (1) {
+        dispatch_semaphore_wait(slot->work_sem, DISPATCH_TIME_FOREVER);
+
+        switch (slot->work_type) {
+            case WEBVIEW_WORK_REQUEST:
+                do_webview_dispatch(slot);
+                break;
+            case WEBVIEW_WORK_SHUTDOWN:
+                zend_first_try {
+                    zend_eval_string(
+                        "\\Native\\Mobile\\Runtime::shutdown();",
+                        NULL, "webview_shutdown");
+                } zend_end_try();
+                ephemeral_embed_shutdown();
+                slot->initialized = 0;
+                fprintf(stderr, "WEBVIEW-PHP: thread shut down\n");
+                fflush(stderr);
+                dispatch_semaphore_signal(slot->done_sem);
+                return NULL;
+        }
+
+        dispatch_semaphore_signal(slot->done_sem);
+    }
+
+    return NULL;
+}
+
+int webview_php_start(const char *bootstrapPath) {
+    int gate = wait_for_persistent_boot(10);
+    if (gate != 0) {
+        fprintf(stderr, "webview_php_start: persistent runtime not ready (gate=%d)\n", gate);
+        fflush(stderr);
+        return -4;
+    }
+
+    pthread_mutex_lock(&webview_pool_mutex);
+    int handle = -1;
+    for (int i = 0; i < WEBVIEW_PHP_MAX_SLOTS; i++) {
+        if (!webview_slots[i].in_use) {
+            handle = i;
+            webview_slots[i].in_use = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&webview_pool_mutex);
+
+    if (handle < 0) {
+        fprintf(stderr, "webview_php_start: no free slots (max %d)\n", WEBVIEW_PHP_MAX_SLOTS);
+        fflush(stderr);
+        return -2;
+    }
+
+    webview_php_slot_t *slot = &webview_slots[handle];
+    slot->initialized = 0;
+    slot->boot_result = -1;
+    slot->result = NULL;
+    slot->work_sem = dispatch_semaphore_create(0);
+    slot->done_sem = dispatch_semaphore_create(0);
+    snprintf(slot->bootstrap_path, sizeof(slot->bootstrap_path), "%s", bootstrapPath);
+
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INITIATED, 0);
+
+    int rc = pthread_create(&thread, &attr, webview_thread_main, slot);
+    pthread_attr_destroy(&attr);
+
+    if (rc != 0) {
+        fprintf(stderr, "webview_php_start: pthread_create FAILED: %d\n", rc);
+        fflush(stderr);
+        pthread_mutex_lock(&webview_pool_mutex);
+        slot->in_use = 0;
+        pthread_mutex_unlock(&webview_pool_mutex);
+        return -1;
+    }
+
+    // Block until the context finishes booting
+    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+
+    if (slot->boot_result != 0) {
+        pthread_mutex_lock(&webview_pool_mutex);
+        slot->in_use = 0;
+        pthread_mutex_unlock(&webview_pool_mutex);
+        return -3;
+    }
+
+    fprintf(stderr, "webview_php_start: slot %d ready\n", handle);
+    fflush(stderr);
+    return handle;
+}
+
+const char *webview_php_request(int handle,
+                                const char *method,
+                                const char *uri,
+                                const char *cookieHeader,
+                                const char *postData,
+                                const char *contentType,
+                                const char *scriptPath) {
+    if (handle < 0 || handle >= WEBVIEW_PHP_MAX_SLOTS) {
+        return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nInvalid webview runtime handle.");
+    }
+
+    webview_php_slot_t *slot = &webview_slots[handle];
+    if (!slot->in_use || !slot->initialized) {
+        return strdup("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nWebview runtime not booted.");
+    }
+
+    slot->params.method = method;
+    slot->params.uri = uri;
+    slot->params.cookieHeader = cookieHeader;
+    slot->params.postData = postData;
+    slot->params.contentType = contentType;
+    slot->params.scriptPath = scriptPath;
+    slot->result = NULL;
+    slot->work_type = WEBVIEW_WORK_REQUEST;
+
+    dispatch_semaphore_signal(slot->work_sem);
+    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+
+    return slot->result ? slot->result : strdup("");
+}
+
+void webview_php_stop(int handle) {
+    if (handle < 0 || handle >= WEBVIEW_PHP_MAX_SLOTS) {
+        return;
+    }
+
+    webview_php_slot_t *slot = &webview_slots[handle];
+    if (!slot->in_use) {
+        return;
+    }
+
+    if (slot->initialized) {
+        slot->work_type = WEBVIEW_WORK_SHUTDOWN;
+        dispatch_semaphore_signal(slot->work_sem);
+        dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+    }
+
+    pthread_mutex_lock(&webview_pool_mutex);
+    slot->in_use = 0;
+    pthread_mutex_unlock(&webview_pool_mutex);
+
+    fprintf(stderr, "webview_php_stop: slot %d released\n", handle);
+    fflush(stderr);
+}
