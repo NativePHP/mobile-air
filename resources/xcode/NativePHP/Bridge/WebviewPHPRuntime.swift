@@ -31,16 +31,26 @@ private func _webview_php_stop(_ handle: Int32)
 /// behind the (asynchronous) boot, and `release()` behind in-flight
 /// requests — no explicit state machine needed.
 final class WebviewPHPRuntime {
+    /// Queue-confined runtime state, boxed separately from the runtime
+    /// object so queued blocks — including the deinit backstop — capture
+    /// the box, never `self`. A cleanup block queued from `deinit` that
+    /// captured `self` would resurrect a deallocating object ("deallocated
+    /// with non-zero retain count") and crash.
+    private final class State {
+        var handle: Int32 = -1
+        var released = false
+    }
+
     private let queue = DispatchQueue(label: "com.nativephp.webview-php", qos: .userInitiated)
-    private var handle: Int32 = -1
-    private var released = false
+    private let state = State()
 
     init() {
-        queue.async { [self] in
+        let state = self.state
+        queue.async {
             let appPath = AppUpdateManager.shared.getAppPath()
             let bootstrap = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
-            handle = _webview_php_start(bootstrap)
-            print("[NativePHP] webview runtime: boot \(handle >= 0 ? "OK (slot \(handle))" : "FAILED (\(handle))")")
+            state.handle = _webview_php_start(bootstrap)
+            print("[NativePHP] webview runtime: boot \(state.handle >= 0 ? "OK (slot \(state.handle))" : "FAILED (\(state.handle))")")
         }
     }
 
@@ -48,8 +58,9 @@ final class WebviewPHPRuntime {
     /// receives the raw HTTP response (headers + body), matching the format
     /// `PHPSchemeHandler` already parses.
     func dispatch(request: RequestData, completion: @escaping (String) -> Void) {
-        queue.async { [self] in
-            guard !released, handle >= 0 else {
+        let state = self.state
+        queue.async {
+            guard !state.released, state.handle >= 0 else {
                 completion("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nWebview PHP runtime unavailable.")
                 return
             }
@@ -65,10 +76,10 @@ final class WebviewPHPRuntime {
             let contentType = request.headers["Content-Type"] ?? request.headers["content-type"] ?? ""
 
             let start = CFAbsoluteTimeGetCurrent()
-            NSLog("%@", "[NativePHP] [WEBVIEW:\(handle)] --> \(request.method) \(uri)")
+            NSLog("%@", "[NativePHP] [WEBVIEW:\(state.handle)] --> \(request.method) \(uri)")
 
             guard let resultPtr = _webview_php_request(
-                handle, request.method, uri, cookieHeader,
+                state.handle, request.method, uri, cookieHeader,
                 request.data ?? "", contentType, scriptPath
             ) else {
                 completion("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nNull response from webview runtime.")
@@ -80,7 +91,7 @@ final class WebviewPHPRuntime {
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let statusLine = response.prefix(while: { $0 != "\r" && $0 != "\n" })
-            NSLog("%@", "[NativePHP] [WEBVIEW:\(handle)] <-- \(statusLine) (\(String(format: "%.1f", elapsed))ms)")
+            NSLog("%@", "[NativePHP] [WEBVIEW:\(state.handle)] <-- \(statusLine) (\(String(format: "%.1f", elapsed))ms)")
 
             completion(response)
         }
@@ -89,18 +100,24 @@ final class WebviewPHPRuntime {
     /// Stop this webview's PHP thread and free its slot. Queued after any
     /// in-flight request; further dispatches answer 503. Idempotent.
     func release() {
-        queue.async { [self] in
-            guard !released else { return }
-            released = true
-            if handle >= 0 {
-                _webview_php_stop(handle)
-                print("[NativePHP] webview runtime: slot \(handle) released")
-                handle = -1
-            }
-        }
+        Self.releaseAsync(state: state, queue: queue)
     }
 
     deinit {
-        release()
+        // Backstop for paths where dismantleUIView never ran. Captures only
+        // the state box and queue — never `self`.
+        Self.releaseAsync(state: state, queue: queue)
+    }
+
+    private static func releaseAsync(state: State, queue: DispatchQueue) {
+        queue.async {
+            guard !state.released else { return }
+            state.released = true
+            if state.handle >= 0 {
+                _webview_php_stop(state.handle)
+                print("[NativePHP] webview runtime: slot \(state.handle) released")
+                state.handle = -1
+            }
+        }
     }
 }
