@@ -343,7 +343,7 @@ class JumpCommand extends Command
         if (PHP_OS_FAMILY !== 'Windows') {
             $command = trim((string) @shell_exec('ps -p '.$leaderPid.' -o command= 2>/dev/null'));
             $ppid = (int) trim((string) @shell_exec('ps -p '.$leaderPid.' -o ppid= 2>/dev/null'));
-            if ($command === '' || ! $this->isJumpOwnedProcess($command, $ppid)) {
+            if ($command === '' || ! $this->isJumpOwnedProcess($command, $ppid, $leaderPid)) {
                 return; // recycled or not ours — never group-kill a stranger
             }
         }
@@ -926,8 +926,23 @@ class JumpCommand extends Command
             return;
         }
 
+        // Which path to warm on. For a native-UI app, `GET /` runs the element
+        // runloop, which BLOCKS for the whole lifetime of the screen — the same
+        // property that makes PHP_CLI_SERVER_WORKERS necessary. Warming it means
+        // the request never returns and every single start burns the full 120s
+        // timeout before continuing:
+        //
+        //   Laravel warmup  failed after 120s: Operation timed out … 0 bytes received
+        //
+        // Any request boots the framework (autoload, providers, config, opcache),
+        // which is what warming is actually for, so native-UI apps are warmed on
+        // a deliberately unrouted path: full bootstrap, 404, no runloop. WebView
+        // apps keep warming `/`, where compiling the actual page is the point.
+        $startUrl = config('nativephp.start_url') ?: '/';
+        $warmPath = NativeRouter::isNativeRoute($startUrl) ? '/__nativephp_warmup' : '/';
+
         $start = microtime(true);
-        $ch = curl_init("http://127.0.0.1:{$port}/");
+        $ch = curl_init("http://127.0.0.1:{$port}{$warmPath}");
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_NOBODY, false);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
@@ -952,6 +967,7 @@ class JumpCommand extends Command
             return;
         }
 
+        // A 404 is the expected, healthy result on the native-UI warm path.
         $this->components->twoColumnDetail(
             'Laravel warmup',
             "<fg=green>ready in {$elapsed}s (HTTP {$httpCode})</>"
@@ -1499,7 +1515,7 @@ APPLESCRIPT;
             $ppid = (int) $m[1];
             $command = trim($m[2]);
 
-            if (! $this->isJumpOwnedProcess($command, $ppid)) {
+            if (! $this->isJumpOwnedProcess($command, $ppid, (int) $pid)) {
                 $this->warn("Port {$port} is held by an unrelated process (pid {$pid}) — leaving it alone.");
 
                 continue;
@@ -1517,7 +1533,7 @@ APPLESCRIPT;
      * ORPHANED `php -S … server.php` workers (PPID 1 — a live user server's
      * workers still have their artisan parent).
      */
-    private function isJumpOwnedProcess(string $command, int $ppid): bool
+    private function isJumpOwnedProcess(string $command, int $ppid, int $pid = 0): bool
     {
         if (str_contains($command, 'resources/jump/router.php')
             || str_contains($command, 'resources/jump/websocket-server.php')
@@ -1538,6 +1554,29 @@ APPLESCRIPT;
             return true;
         }
 
+        // The managed Laravel dev server. `artisan serve` execs
+        // `php -S <host>:<port> …/Foundation/resources/server.php`, and with
+        // PHP_CLI_SERVER_WORKERS that master forks a worker per slot. NONE of
+        // them carry "artisan serve" in their command line, and their ppid is
+        // the master (or the serve process) — not 1 — so the ppid===1 test below
+        // rejected all ~11 of them and left port 8000 held forever:
+        //
+        //   Port 8000 is held by an unrelated process (pid 2000) — leaving it alone.
+        //   … once per worker, every shutdown
+        //
+        // startLaravelServer() exports JUMP_BRIDGE_PORT into that server's
+        // environment and the forked workers inherit it, so it is a definitive
+        // marker: it distinguishes our server from a plain `php artisan serve`
+        // the user started themselves, which must never be killed.
+        if ($pid > 0
+            && preg_match('/php[^ ]* -S \S+:\d+/', $command)
+            && str_contains($command, 'server.php')
+            && str_contains($this->processEnvironment($pid), 'JUMP_BRIDGE_PORT=')) {
+            return true;
+        }
+
+        // Fallback for when the environment isn't readable (Windows, or a
+        // process we can't inspect): an orphaned `php -S` on loopback.
         if ($ppid === 1
             && preg_match('/php[^ ]* -S 127\.0\.0\.1:\d+/', $command)
             && str_contains($command, 'server.php')) {
@@ -1545,6 +1584,30 @@ APPLESCRIPT;
         }
 
         return false;
+    }
+
+    /**
+     * A process's environment as a flat string, for identity checks. Empty when
+     * it can't be read — callers must treat that as "unknown", never as "ours".
+     */
+    private function processEnvironment(int $pid): string
+    {
+        if ($pid <= 0) {
+            return '';
+        }
+
+        // Linux: /proc is authoritative and NUL-separated.
+        if (PHP_OS_FAMILY === 'Linux' && @is_readable("/proc/{$pid}/environ")) {
+            return str_replace("\0", ' ', (string) @file_get_contents("/proc/{$pid}/environ"));
+        }
+
+        // macOS: `ps -E` appends the environment after the command line. Only
+        // works for our own processes, which is exactly the case we care about.
+        if (PHP_OS_FAMILY === 'Darwin') {
+            return (string) @shell_exec('ps -Ewww -p '.$pid.' 2>/dev/null');
+        }
+
+        return '';
     }
 
     /**
@@ -1649,7 +1712,7 @@ APPLESCRIPT;
             if ($pid === getmypid() || $ppid !== 1) {
                 continue; // only reap processes orphaned to init
             }
-            if ($this->isJumpOwnedProcess($command, $ppid)) {
+            if ($this->isJumpOwnedProcess($command, $ppid, $pid)) {
                 @exec('kill -9 '.$pid.' 2>/dev/null');
             }
         }
