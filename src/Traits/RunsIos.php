@@ -92,6 +92,16 @@ trait RunsIos
 
     public function runIos(): void
     {
+        // iOS builds require the Xcode toolchain (xcrun, simctl, devicectl),
+        // so bail out early with a clear message on Windows/Linux instead of
+        // failing cryptically once xcrun is invoked.
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            error('iOS apps can only be built and run on macOS.');
+            note('Use `php artisan native:run android` on this machine.');
+
+            return;
+        }
+
         $this->watching = $this->option('watch');
 
         $this->iosLogPath = base_path($this->iosLogPath);

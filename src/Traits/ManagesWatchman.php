@@ -15,10 +15,22 @@ trait ManagesWatchman
 
     /**
      * Check if Watchman is installed and available
+     *
+     * Probes both `watchman` and `watchman-wait`: startWatchman() executes
+     * watchman-wait, which is a separate pywatchman helper that some package
+     * managers (e.g. apt's watchman package) do not ship alongside watchman.
      */
     protected function isWatchmanAvailable(): bool
     {
-        $command = PHP_OS_FAMILY === 'Windows' ? 'where watchman' : 'which watchman';
+        return $this->isBinaryAvailable('watchman') && $this->isBinaryAvailable('watchman-wait');
+    }
+
+    /**
+     * Check if a binary is resolvable on the PATH
+     */
+    private function isBinaryAvailable(string $binary): bool
+    {
+        $command = PHP_OS_FAMILY === 'Windows' ? "where {$binary}" : "which {$binary}";
         $process = Process::fromShellCommandline($command);
         $process->run();
 
@@ -35,7 +47,8 @@ trait ManagesWatchman
                 'brew install watchman',
             ],
             'Linux' => [
-                'sudo apt-get install watchman',
+                'sudo apt-get install watchman python3-pywatchman',
+                '# watchman-wait is provided by python3-pywatchman (or: pip install pywatchman)',
                 '# Or build from source: https://facebook.github.io/watchman/docs/install.html',
             ],
             'Windows' => [
@@ -205,8 +218,18 @@ trait ManagesWatchman
      */
     protected function checkWatchmanDependencies(): bool
     {
+        // Windows flows use ManagesPollingWatcher; watchman is never spawned
+        if (PHP_OS_FAMILY === 'Windows') {
+            return true;
+        }
+
         if (! $this->isWatchmanAvailable()) {
-            error('Watchman is not installed.');
+            $missing = array_filter(
+                ['watchman', 'watchman-wait'],
+                fn (string $binary) => ! $this->isBinaryAvailable($binary)
+            );
+
+            error(implode(' and ', $missing).' not found. Watchman is not fully installed.');
             info('Please install Watchman to use the watch command:');
 
             foreach ($this->getWatchmanInstallInstructions() as $instruction) {

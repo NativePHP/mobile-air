@@ -385,11 +385,12 @@ trait WatchesAndroid
 
         // Convert relative paths to absolute paths
         return array_map(function ($path) {
-            if (! str_starts_with($path, '/')) {
-                return base_path($path);
-            }
+            // Recognize Unix, Windows drive-letter (C:\ or C:/), and UNC (\\server) absolute paths
+            $isAbsolute = str_starts_with($path, '/')
+                || preg_match('/^[A-Za-z]:[\\\\\\/]/', $path) === 1
+                || str_starts_with($path, '\\\\');
 
-            return $path;
+            return $isAbsolute ? $path : base_path($path);
         }, $paths);
     }
 

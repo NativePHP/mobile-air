@@ -364,14 +364,21 @@ trait CreatesAndroidCredentials
     {
         // Try different potential keytool commands based on platform
         $commands = ['keytool'];
+        $javaHome = getenv('JAVA_HOME');
 
         // On Windows, keytool might be in different locations
         if (PHP_OS_FAMILY === 'Windows') {
             $commands[] = 'keytool.exe';
             // Try common Java installation paths
-            $javaHome = getenv('JAVA_HOME');
             if ($javaHome) {
                 $commands[] = $javaHome.'\bin\keytool.exe';
+            }
+        } elseif ($javaHome) {
+            // On Linux/macOS, JAVA_HOME (e.g. Android Studio's bundled JBR) is
+            // often set without its bin/ directory on PATH
+            $candidate = rtrim($javaHome, '/').'/bin/keytool';
+            if (is_file($candidate)) {
+                $commands[] = $candidate;
             }
         }
 

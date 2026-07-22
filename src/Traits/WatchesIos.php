@@ -25,6 +25,15 @@ trait WatchesIos
 
     protected function startIosHotReload(?string $target = null): void
     {
+        // Everything here depends on macOS-only tooling (xcrun simctl/devicectl,
+        // iproxy, lsof), so bail out early with a clear message on Windows/Linux
+        // instead of failing cryptically once device discovery runs xcrun.
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            $this->error('iOS hot reload requires macOS with Xcode command line tools. Use `php artisan native:watch android` on this platform.');
+
+            return;
+        }
+
         $this->line('');
         $this->info('Starting iOS hot reload...');
 

@@ -297,7 +297,8 @@ class PluginUninstallCommand extends Command
      */
     protected function resolveRepositoryPath(string $url): string
     {
-        if (str_starts_with($url, '/')) {
+        // Absolute: unix (/...), Windows drive-letter (C:\ or C:/), or UNC (\\server\share)
+        if (str_starts_with($url, '/') || preg_match('#^(?:[A-Za-z]:[\\\\/]|\\\\{2})#', $url)) {
             return $url;
         }
 
@@ -323,7 +324,7 @@ class PluginUninstallCommand extends Command
 
         // Drop the `use Vendor\Plugin\ServiceProvider;` import line entirely.
         $newContent = preg_replace(
-            '/^use\s+\\\\?'.preg_quote($serviceProvider, '/').';[ \t]*\n/m',
+            '/^use\s+\\\\?'.preg_quote($serviceProvider, '/').';[ \t]*\r?\n/m',
             '',
             $content
         );

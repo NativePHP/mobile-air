@@ -48,6 +48,14 @@ class BuildIosAppCommand extends Command
 
     public function handle(): int|string
     {
+        // Building iOS apps needs Xcode and its command-line tools, so bail out
+        // early before we touch the build log or copy any files.
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            $this->error('native:build requires macOS — building iOS apps needs Xcode and its command-line tools.');
+
+            return Command::FAILURE;
+        }
+
         $this->basePath = base_path('nativephp/ios');
         $this->logPath = base_path('nativephp/ios-build.log');
 

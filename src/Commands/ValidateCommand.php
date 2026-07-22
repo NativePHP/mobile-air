@@ -70,9 +70,10 @@ class ValidateCommand extends Command
                 continue;
             }
 
-            $relative = str_replace($componentPath.'/', '', $file->getPathname());
-            $relative = substr($relative, 0, -4);
-            $relative = str_replace('/', '\\', $relative);
+            // Use the Finder-relative path so the mapping works regardless of
+            // platform directory separators (Windows returns backslashes).
+            $relative = substr($file->getRelativePathname(), 0, -4);
+            $relative = str_replace(['/', DIRECTORY_SEPARATOR], '\\', $relative);
             $className = 'App\\NativeComponents\\'.$relative;
 
             if ($componentFilter !== null) {

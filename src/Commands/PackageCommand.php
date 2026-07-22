@@ -471,6 +471,17 @@ class PackageCommand extends Command
         } elseif (PHP_OS_FAMILY === 'Darwin') {
             exec("open \"$directory\"");
         } elseif (PHP_OS_FAMILY === 'Linux') {
+            // In WSL there's usually no desktop session (so no xdg-open), but
+            // Windows Explorer is reachable via interop — open it there instead
+            if ($this->isRunningInWSL()) {
+                $windowsPath = trim((string) shell_exec('wslpath -w '.escapeshellarg($directory).' 2>/dev/null'));
+                if ($windowsPath !== '') {
+                    exec('explorer.exe '.escapeshellarg($windowsPath).' >/dev/null 2>&1');
+
+                    return;
+                }
+            }
+
             if (shell_exec('which xdg-open')) {
                 exec("xdg-open \"$directory\"");
             }

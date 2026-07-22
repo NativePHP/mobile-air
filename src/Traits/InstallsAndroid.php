@@ -113,6 +113,18 @@ trait InstallsAndroid
 
     private function installPHPAndroid(): void
     {
+        // Fail early: ZipArchive validates (and on Linux/macOS extracts) the
+        // downloaded archive, but ext-zip is not guaranteed on stock Linux or
+        // Windows PHP installs — better to error now than after a multi-MB download.
+        if (! class_exists(ZipArchive::class)) {
+            error('The PHP zip extension (ext-zip) is required to install Android PHP binaries.');
+            note(PHP_OS_FAMILY === 'Windows'
+                ? 'Enable extension=zip in your php.ini and retry.'
+                : 'Install it (e.g. sudo apt install php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'-zip) and retry.');
+
+            return;
+        }
+
         $includeIcu = $this->includeIcu ?? false;
         $phpVersion = $this->phpVersion;
         $versions = $this->versionsManifest;

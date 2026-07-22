@@ -1604,7 +1604,13 @@ PHP;
         $this->components->twoColumnDetail('To install in your app', '');
         $this->line('  Add to composer.json <comment>"repositories"</comment> section:');
         $this->newLine();
-        $this->line('  <info>{"type": "path", "url": "'.$this->pluginData['path'].'"}</info>');
+        // Forward slashes keep the snippet valid JSON on Windows (backslashes
+        // would need escaping) and Composer path repositories accept them there.
+        $repoJson = json_encode([
+            'type' => 'path',
+            'url' => str_replace('\\', '/', $this->pluginData['path']),
+        ], JSON_UNESCAPED_SLASHES);
+        $this->line('  <info>'.$repoJson.'</info>');
         $this->newLine();
         $this->line('  Then run:');
         $this->line('  <comment>composer require '.$this->pluginData['name'].'</comment>');

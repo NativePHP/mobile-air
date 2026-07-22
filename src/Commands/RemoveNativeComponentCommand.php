@@ -68,7 +68,9 @@ class RemoveNativeComponentCommand extends Command
 
         $viewPath = $viewDirectory.'/'.$viewName.'.blade.php';
         $viewExists = $this->files->exists($viewPath);
-        $relativeViewPath = str_replace(base_path().'/', '', $viewPath);
+        // Normalize separators before stripping base_path() — on Windows base_path()
+        // is backslashed while $viewPath is mixed, so a naive replace never matches
+        $relativeViewPath = ltrim(str_replace(str_replace('\\', '/', base_path()), '', str_replace('\\', '/', $viewPath)), '/');
 
         $targets = $relativePath.($viewExists ? " and {$relativeViewPath}" : '');
         if (! confirm("Delete {$targets}?", default: false)) {
@@ -95,9 +97,16 @@ class RemoveNativeComponentCommand extends Command
 
     protected function cleanupEmptyDirs(string $directory, string $baseDir): void
     {
+        // Normalize separators so the strict comparison against $baseDir holds on
+        // Windows, where dirname() preserves mixed slashes and would otherwise let
+        // the loop delete the base directory itself
+        $normalize = fn (string $p): string => rtrim(str_replace('\\', '/', $p), '/');
+        $directory = $normalize($directory);
+        $baseDir = $normalize($baseDir);
+
         while ($directory !== $baseDir && $this->files->isDirectory($directory) && empty($this->files->files($directory)) && empty($this->files->directories($directory))) {
             $this->files->deleteDirectory($directory);
-            $directory = dirname($directory);
+            $directory = $normalize(dirname($directory));
         }
     }
 
@@ -113,8 +122,10 @@ class RemoveNativeComponentCommand extends Command
 
         $files = collect($this->files->allFiles($baseDir))
             ->filter(fn ($file) => $file->getExtension() === 'php')
-            ->mapWithKeys(function ($file) use ($baseDir) {
-                $relative = str_replace($baseDir.'/', '', $file->getPathname());
+            ->mapWithKeys(function ($file) {
+                // getRelativePathname() avoids separator-mismatch issues on Windows;
+                // normalize to forward slashes so handle()'s path building works
+                $relative = str_replace('\\', '/', $file->getRelativePathname());
                 $name = substr($relative, 0, -4); // strip .php
 
                 return [$name => $name];

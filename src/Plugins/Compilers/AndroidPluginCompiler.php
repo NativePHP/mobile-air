@@ -1102,7 +1102,8 @@ class AndroidPluginCompiler
         }
 
         // First, remove any existing plugin permission comments to avoid duplicates
-        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Permissions -->\n/s', '', $manifest);
+        // (\r?\n tolerates CRLF manifests generated/committed on Windows)
+        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Permissions -->\r?\n/s', '', $manifest);
 
         $permissionBlock = "\n    <!-- NativePHP Plugin Permissions -->\n";
         $hasNewPermissions = false;
@@ -1141,7 +1142,8 @@ class AndroidPluginCompiler
         }
 
         // First, remove any existing plugin feature comments to avoid duplicates
-        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Features -->\n/s', '', $manifest);
+        // (\r?\n tolerates CRLF manifests generated/committed on Windows)
+        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Features -->\r?\n/s', '', $manifest);
 
         $featureBlock = "\n    <!-- NativePHP Plugin Features -->\n";
         $hasNewFeatures = false;
