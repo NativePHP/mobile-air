@@ -4,9 +4,8 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
-use Native\Mobile\Commands\BuildIosAppCommand;
+use Native\Mobile\Support\BundleFileManager;
 use Native\Mobile\Traits\PreparesBuild;
-use ReflectionClass;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -45,10 +44,14 @@ class ReleaseBuildBundleTest extends TestCase
         File::put($this->testProjectPath.'/bootstrap/cache/packages.php', '<?php return [];');
         File::put($this->testProjectPath.'/bootstrap/cache/services.php', '<?php return [];');
 
-        $command = new BuildIosAppCommand;
-        $this->setPrivateProperty($command, 'appPath', $this->testProjectPath.'/nativephp/ios/laravel/');
-
-        $this->invokePrivateMethod($command, 'copyLaravelAppIntoIosApp');
+        // The same copy call bundleLaravelApp() makes. The inline
+        // copyLaravelAppIntoIosApp() this test reflected on was
+        // replaced by the shared BundleFileManager wiring.
+        BundleFileManager::copy(
+            base_path(),
+            $this->testProjectPath.'/nativephp/ios/laravel/',
+            config('nativephp.cleanup_exclude_files', [])
+        );
 
         $this->assertFileExists($this->testProjectPath.'/nativephp/ios/laravel/app/Example.php');
         $this->assertDirectoryExists($this->testProjectPath.'/nativephp/ios/laravel/bootstrap/cache');
@@ -111,19 +114,6 @@ class ReleaseBuildBundleTest extends TestCase
         File::put($this->testProjectPath.'/bootstrap/cache/packages.php', '<?php return [];');
         File::put($this->testProjectPath.'/bootstrap/cache/services.php', '<?php return [];');
         File::put($this->testProjectPath.'/vendor/nativephp/mobile/bootstrap/android/artisan.php', '<?php // artisan');
-    }
-
-    protected function setPrivateProperty(object $object, string $property, mixed $value): void
-    {
-        $reflection = new ReflectionClass($object);
-        $reflection->getProperty($property)->setValue($object, $value);
-    }
-
-    protected function invokePrivateMethod(object $object, string $method): mixed
-    {
-        $reflection = new ReflectionClass($object);
-
-        return $reflection->getMethod($method)->invoke($object);
     }
 }
 

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
 use Tests\TestCase;
@@ -547,5 +548,21 @@ class IosBuildCopyTest extends TestCase
         $this->createDirectoryStructure($appPath, $structure);
 
         return $appPath;
+    }
+
+    public function test_ios_bundle_delegates_exclusions_to_bundle_file_manager(): void
+    {
+        // Regression guard. The iOS build must route its copy and cleanup
+        // through BundleFileManager so config('nativephp.cleanup_exclude_files')
+        // is honoured. A prior change reverted this to an inline directory
+        // iterator that ignored the config, and the suite stayed green
+        // because nothing asserted the command uses BundleFileManager.
+        $source = file_get_contents(
+            (new \ReflectionClass(BuildIosAppCommand::class))->getFileName()
+        );
+
+        $this->assertStringContainsString('BundleFileManager::copy(', $source);
+        $this->assertStringContainsString('BundleFileManager::removeUnnecessaryFiles(', $source);
+        $this->assertStringNotContainsString('RecursiveDirectoryIterator', $source);
     }
 }
