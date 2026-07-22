@@ -146,6 +146,10 @@ struct NodeView: View, Equatable {
             // `.textSelection` is inherited) — container-scoped like Android's
             // SelectionContainer. No-op when the prop is absent.
             .modifier(NodeTextSelectionModifier(props: node.props))
+            // Content transition (numeric roll / crossfade) for in-place
+            // text changes. Environment-propagating like text selection;
+            // no-op when `content_transition` is absent.
+            .modifier(NodeContentTransitionModifier(props: node.props))
             // Animation modifier runs AFTER style so it sees the resolved
             // opacity. No-op when `animate-duration` is not set, so the
             // hot path is unchanged for non-animated nodes.

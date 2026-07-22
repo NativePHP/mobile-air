@@ -38,6 +38,7 @@ class Text extends Element
             'line-height-px' => 'lineHeightPx',
             'text-align' => 'textAlign',
             'max-lines' => 'maxLines',
+            'content-transition' => 'contentTransition',
         ] as $kebab => $camel) {
             if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
                 $attrs[$camel] = $attrs[$kebab];
@@ -94,6 +95,9 @@ class Text extends Element
         }
         if (isset($attrs['maxLines'])) {
             $this->maxLines((int) $attrs['maxLines']);
+        }
+        if (isset($attrs['contentTransition'])) {
+            $this->contentTransition((string) $attrs['contentTransition']);
         }
     }
 
@@ -172,6 +176,33 @@ class Text extends Element
         $this->textProps['max_lines'] = $lines;
 
         return $this;
+    }
+
+    /**
+     * Animate in-place changes to this element's text instead of swapping it
+     * cold. `numeric` is the counter/timer treatment: iOS maps it to SwiftUI's
+     * `.contentTransition(.numericText(value:))` (digits roll up as the value
+     * grows, down as it shrinks); Android approximates the roll with a
+     * directional slide + fade, since Compose has no numericText equivalent.
+     * `opacity` crossfades on both platforms, and `interpolate` (iOS-only
+     * glyph interpolation) falls back to a crossfade on Android.
+     *
+     * The roll direction comes from parsing the text as a number, so it only
+     * counts up/down for plain numeric strings ("42", "3.14"); anything else
+     * still animates, just without direction. Requires a stable node identity
+     * across renders — pair with `->key(...)` inside loops.
+     */
+    public function contentTransition(string $transition): static
+    {
+        $this->textProps['content_transition'] = $transition;
+
+        return $this;
+    }
+
+    /** Sugar for `contentTransition('numeric')` — rolling counter digits. */
+    public function numericTransition(): static
+    {
+        return $this->contentTransition('numeric');
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

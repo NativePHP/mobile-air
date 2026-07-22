@@ -251,6 +251,13 @@ class GenericProps(private val map: Map<String, Any> = emptyMap()) {
 
     fun has(key: String): Boolean = map.containsKey(key)
 
+    /**
+     * Copy with a single key overridden. Content transitions use this to
+     * render the EXITING AnimatedContent frame with the text it was showing —
+     * by transition time the node itself already carries the new text.
+     */
+    fun with(key: String, value: Any): GenericProps = GenericProps(map + (key to value))
+
     val isEmpty: Boolean get() = map.isEmpty()
 
     override fun equals(other: Any?): Boolean {
