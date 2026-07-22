@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -952,7 +953,7 @@ class BuildIosAppCommand extends Command
         // to decide whether the first screen dispatches directly into the
         // persistent runtime (no WKWebView) or through the legacy WebView
         // path. NATIVEPHP_BOOT_MODE=web forces the legacy path.
-        $nativeRoutes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+        $nativeRoutes = array_keys(NativeRouter::registeredRoutes());
         $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
 
         $bundleMeta = json_encode([

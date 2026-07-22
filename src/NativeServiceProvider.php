@@ -222,7 +222,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 return;
             }
             try {
-                $routes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+                $routes = array_keys(NativeRouter::registeredRoutes());
                 file_put_contents(
                     storage_path('framework/native_routes.json'),
                     json_encode([

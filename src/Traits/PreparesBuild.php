@@ -5,6 +5,7 @@ namespace Native\Mobile\Traits;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Native\Mobile\Edge\NativeRouter;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
@@ -324,7 +325,7 @@ trait PreparesBuild
             // WebView path. Routes are registered by the app's route files, which
             // this artisan process has already loaded. NATIVEPHP_BOOT_MODE=web
             // forces the legacy path regardless.
-            $nativeRoutes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+            $nativeRoutes = array_keys(NativeRouter::registeredRoutes());
             $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
 
             $bundleMeta = json_encode([
