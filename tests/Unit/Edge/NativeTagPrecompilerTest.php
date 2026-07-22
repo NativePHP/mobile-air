@@ -128,6 +128,41 @@ it('keeps @press and @pressDown distinct on the same tag', function () {
     expect($result)->toContain("'_pressDown' => 'charge'");
 });
 
+it('rewrites @tap to _press', function () {
+    $result = ($this->precompiler)('<native:button label="+" @tap="increment" />');
+
+    expect($result)->toContain("'_press' => 'increment'");
+    expect($result)->not->toContain('@tap');
+});
+
+it('rewrites the rest of the tap aliases onto the press family', function () {
+    $result = ($this->precompiler)(
+        '<native:pressable @longTap="hold" @tapDown="charge" @tapUp="release">x</native:pressable>'
+    );
+
+    expect($result)->toContain("'_longPress' => 'hold'");
+    expect($result)->toContain("'_pressDown' => 'charge'");
+    expect($result)->toContain("'_pressUp' => 'release'");
+});
+
+it('leaves @doubleTap alone when aliasing @tap', function () {
+    // The alias alternation is anchored at `@`, so `tap` can never match the
+    // tail of `doubleTap`.
+    $result = ($this->precompiler)('<native:column @doubleTap="two" @tap="one">x</native:column>');
+
+    expect($result)->toContain("'_doubleTap' => 'two'");
+    expect($result)->toContain("'_press' => 'one'");
+});
+
+it('accepts @press and @tap side by side on the same screen', function () {
+    $result = ($this->precompiler)(
+        '<native:column><native:button label="a" @press="old" /><native:button label="b" @tap="new" /></native:column>'
+    );
+
+    expect($result)->toContain("'_press' => 'old'");
+    expect($result)->toContain("'_press' => 'new'");
+});
+
 it('rewrites @change and @submit', function () {
     $result = ($this->precompiler)('<native:text-input @change="onTextChange" @submit="onTextSubmit" />');
 

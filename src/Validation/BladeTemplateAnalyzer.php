@@ -142,8 +142,13 @@ class BladeTemplateAnalyzer
         $stripped = preg_replace('/<!--.*?-->/s', '', $stripped);
 
         // Match @press="method", @longPress="method", @doubleTap="method", @change="method", @submit="method"
-        // Also match the precompiled _press="method" form
-        $pattern = '/[_@](press|longPress|doubleTap|change|submit)\s*=\s*["\']([^"\']+)["\']/';
+        // Also match the precompiled _press="method" form, and the @tap family
+        // aliases (see NativeTagPrecompiler::TAP_ALIASES) — templates are
+        // analyzed before precompilation, so the alias spellings must be
+        // recognized here or their handlers go unvalidated.
+        // Longer spellings precede their prefix (`pressDown`/`pressUp` before
+        // `press`, `tapDown`/`tapUp` before `tap`) so they win the longer match.
+        $pattern = '/[_@](pressDown|pressUp|press|longPress|doubleTap|change|submit|tapDown|tapUp|tap|longTap)\s*=\s*["\']([^"\']+)["\']/';
 
         if (preg_match_all($pattern, $stripped, $matches, PREG_OFFSET_CAPTURE)) {
             foreach ($matches[0] as $i => $match) {

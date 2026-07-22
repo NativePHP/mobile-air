@@ -53,6 +53,18 @@ class NativeTagPrecompiler
         'none' => 'none',
     ];
 
+    /**
+     * Alias directive → canonical press-family directive. Both spellings are
+     * permanent; the alias is normalized away at compile time so the rest of
+     * the pipeline only ever sees the canonical name.
+     */
+    private const TAP_ALIASES = [
+        'tap' => 'press',
+        'longTap' => 'longPress',
+        'tapDown' => 'pressDown',
+        'tapUp' => 'pressUp',
+    ];
+
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
     /**
@@ -239,6 +251,21 @@ class NativeTagPrecompiler
                 $m[1] ?? '',
                 ! empty($m[4]) ? substr($m[4], 1, -1) : (($m[2] ?? '') !== '' ? "'{$m[2]}'" : ($m[3] ?? '')),
             ),
+            $value
+        );
+
+        // Tap spellings are aliases of the press family — `@tap` is the
+        // mobile-native way to say `@press`, and both are supported for
+        // good. They rewrite straight to the *canonical* underscored attr,
+        // so nothing downstream (collector, Element, wire format, testing
+        // suite) ever learns a second name, and every existing app written
+        // against `@press` compiles byte-identically.
+        // Longer spellings precede their prefix, as in the canonical pass
+        // below. `@doubleTap` is untouched: the alternation is anchored at
+        // `@`, so `tap` can't match mid-word.
+        $value = preg_replace_callback(
+            '/@(longTap|tapDown|tapUp|tap)=/',
+            fn ($m) => '_'.self::TAP_ALIASES[$m[1]].'=',
             $value
         );
 
