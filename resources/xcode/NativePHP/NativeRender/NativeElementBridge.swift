@@ -505,7 +505,7 @@ final class NativeElementBridge {
                 if isFreshStackMount { NavigationCoordinator.shared.reset() }
                 bridge.currentTree = finalTree
                 // First publish after a hot-reload dismisses the
-                // "Reloading…" pill. Set by `ContentView.reloadWebView`
+                // "Reloading…" pill. Set by `HotReloadCoordinator.reload`
                 // at the start of the reboot; cleared here when the
                 // fresh tree from the rebooted PHP runtime lands.
                 if bridge.isReloading { bridge.isReloading = false }
