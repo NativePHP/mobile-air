@@ -132,6 +132,9 @@ trait PreparesBuild
             $this->logToFile('  Updating orientation configuration...');
             $this->updateOrientationConfiguration();
 
+            $this->logToFile('  Updating localization configuration...');
+            $this->updateLocalizationConfiguration();
+
             $scheme = config('nativephp.deeplink_scheme');
             $host = config('nativephp.deeplink_host');
             $this->logToFile('  Updating deep link configuration...');
@@ -936,6 +939,60 @@ trait PreparesBuild
         }
 
         File::put($proguardPath, $proguardContent);
+    }
+
+    /**
+     * Generate locales_config.xml and update AndroidManifest.xml when two or more locales are configured.
+     */
+    protected function updateLocalizationConfiguration(): void
+    {
+        $locales = config('nativephp.locales', []);
+        $manifestPath = base_path('nativephp/android/app/src/main/AndroidManifest.xml');
+        $xmlDir = base_path('nativephp/android/app/src/main/res/xml');
+        $localesConfigPath = $xmlDir.'/locales_config.xml';
+
+        if (count($locales) < 2) {
+            // Clean up if locales were previously configured but now removed
+            if (File::exists($localesConfigPath)) {
+                File::delete($localesConfigPath);
+            }
+
+            if (File::exists($manifestPath)) {
+                $contents = File::get($manifestPath);
+                $cleaned = preg_replace('/\s*android:localeConfig="@xml\/locales_config"/', '', $contents);
+                if ($contents !== $cleaned) {
+                    File::put($manifestPath, $this->normalizeLineEndings($cleaned));
+                }
+            }
+
+            return;
+        }
+
+        // Generate locales_config.xml
+        File::ensureDirectoryExists($xmlDir);
+
+        $xml = '<?xml version="1.0" encoding="utf-8"?>'."\n";
+        $xml .= '<locale-config xmlns:android="http://schemas.android.com/apk/res/android">'."\n";
+        foreach ($locales as $locale) {
+            $xml .= '    <locale android:name="'.htmlspecialchars($locale, ENT_XML1).'"/>'."\n";
+        }
+        $xml .= '</locale-config>'."\n";
+
+        File::put($localesConfigPath, $xml);
+
+        // Add android:localeConfig to <application> tag in manifest
+        if (File::exists($manifestPath)) {
+            $contents = File::get($manifestPath);
+
+            if (! str_contains($contents, 'android:localeConfig')) {
+                $contents = preg_replace(
+                    '/(<application\b)/',
+                    '$1 android:localeConfig="@xml/locales_config"',
+                    $contents
+                );
+                File::put($manifestPath, $this->normalizeLineEndings($contents));
+            }
+        }
     }
 
     /**

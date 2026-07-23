@@ -451,4 +451,21 @@ return [
             'landscape_right' => false,
         ],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Supported Locales
+    |--------------------------------------------------------------------------
+    |
+    | The locales your app supports (e.g. ['en', 'fr', 'es', 'de']). When
+    | two or more locales are listed, iOS will resolve Locale.current using
+    | the device's preferred language (via CFBundleLocalizations in
+    | Info.plist) and Android 13+ will show a per-app language picker
+    | (via locales_config.xml).
+    |
+    | Leave empty to skip locale configuration entirely.
+    |
+    */
+
+    'locales' => [],
 ];

@@ -2,6 +2,8 @@
 
 namespace Native\Mobile;
 
+use Native\Mobile\Data\Localization;
+
 class Device
 {
     public function getId(): ?string
@@ -40,6 +42,28 @@ class Device
                 $decoded = json_decode($result, true);
 
                 return $decoded['info'] ?? null;
+            }
+        }
+
+        return null;
+    }
+
+    public function localization(): ?Localization
+    {
+        if (function_exists('nativephp_call')) {
+            $result = nativephp_call('Device.GetLocale', '{}');
+            if ($result) {
+                $decoded = json_decode($result, true);
+                $info = json_decode($decoded['info'] ?? '{}', true);
+
+                return new Localization(
+                    locale: $info['locale'] ?? '',
+                    languageCode: $info['languageCode'] ?? '',
+                    regionCode: $info['regionCode'] ?? '',
+                    timezone: $info['timezone'] ?? '',
+                    currencyCode: $info['currencyCode'] ?? '',
+                    preferredLanguage: $info['preferredLanguage'] ?? '',
+                );
             }
         }
 

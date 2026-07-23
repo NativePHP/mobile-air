@@ -140,6 +140,7 @@ class BuildIosAppCommand extends Command
         $this->updateBuildNumber();
         $this->setAppName();
         $this->updateInfoPlistFiles();
+        $this->updateLocalizationConfig();
         $this->configureDeviceOrientations();
         $this->updateEntitlementsFile();
         $this->configureProvisioningProfile();
@@ -388,6 +389,76 @@ class BuildIosAppCommand extends Command
                 $this->updateInfoPlistFile($simulatorInfoPlist, $appId, $deeplinkScheme);
             }
         });
+    }
+
+    /**
+     * Inject CFBundleLocalizations into Info.plist files when two or more locales are configured.
+     */
+    private function updateLocalizationConfig(): void
+    {
+        $locales = config('nativephp.locales', []);
+
+        if (count($locales) < 2) {
+            return;
+        }
+
+        $plistFiles = [
+            $this->containerPath.'Info.plist',
+            $this->basePath.'/NativePHP-simulator-Info.plist',
+        ];
+
+        foreach ($plistFiles as $filePath) {
+            if (! file_exists($filePath)) {
+                continue;
+            }
+
+            $this->injectCFBundleLocalizations($filePath, $locales);
+        }
+    }
+
+    private function injectCFBundleLocalizations(string $filePath, array $locales): void
+    {
+        $dom = new \DOMDocument;
+        $dom->preserveWhiteSpace = false;
+        $dom->formatOutput = true;
+
+        if (! $dom->load($filePath)) {
+            return;
+        }
+
+        $rootDict = $dom->getElementsByTagName('dict')->item(0);
+        if (! $rootDict) {
+            return;
+        }
+
+        $plistData = $this->parsePlistDict($rootDict);
+
+        if (isset($plistData['CFBundleLocalizations'])) {
+            $arrayNode = $plistData['CFBundleLocalizations']['valueNode'];
+            while ($arrayNode->firstChild) {
+                $arrayNode->removeChild($arrayNode->firstChild);
+            }
+        } else {
+            $rootDict->appendChild($dom->createElement('key', 'CFBundleLocalizations'));
+            $arrayNode = $dom->createElement('array');
+            $rootDict->appendChild($arrayNode);
+        }
+
+        foreach ($locales as $locale) {
+            $arrayNode->appendChild($dom->createElement('string', $locale));
+        }
+
+        $xmlContent = $dom->saveXML();
+
+        if (! str_contains($xmlContent, '<!DOCTYPE')) {
+            $xmlContent = preg_replace(
+                '/<\?xml.*?\?>\s*/s',
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
+                $xmlContent
+            );
+        }
+
+        file_put_contents($filePath, $xmlContent);
     }
 
     /**
