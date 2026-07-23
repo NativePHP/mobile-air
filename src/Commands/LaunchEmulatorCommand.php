@@ -21,6 +21,14 @@ class LaunchEmulatorCommand extends Command
             default => throw new \Exception('Invalid OS type.')
         };
 
+        // iOS simulators are macOS-only tooling — fail fast on Windows/Linux
+        // instead of silently falling through to the Android flow.
+        if ($os === 'ios' && PHP_OS_FAMILY !== 'Darwin') {
+            $this->error('iOS simulators require macOS with Xcode installed. Use `php artisan native:emulator android` on this platform.');
+
+            return;
+        }
+
         match ($os) {
             'android' => $this->startAndroid(),
             'ios' => $this->startAndroid(),

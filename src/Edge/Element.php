@@ -467,6 +467,12 @@ abstract class Element
         return $this;
     }
 
+    /** Alias of onPress() — the programmatic twin of the `@tap` directive. */
+    public function onTap(string $method): static
+    {
+        return $this->onPress($method);
+    }
+
     public function onSwipeDelete(string $method): static
     {
         $this->swipeDeleteMethod = $method;

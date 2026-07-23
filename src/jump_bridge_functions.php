@@ -92,6 +92,7 @@ if (! function_exists('nativephp_element_wait_event')) {
         }
 
         static $consecutiveErrors = 0;
+        static $firstErrorAt = 0.0;
 
         $result = JumpBridge::instance()->call('Element.WaitEvent', json_encode(['timeout' => $timeoutMs]));
 
@@ -102,7 +103,24 @@ if (! function_exists('nativephp_element_wait_event')) {
 
         $decoded = json_decode($result, true);
 
-        if (! is_array($decoded) || (isset($decoded['status']) && $decoded['status'] === 'error')) {
+        // Two DIFFERENT rejection shapes reach us and both must count as errors:
+        //   JumpBridge::call() itself  → {"status":"error","code":"NO_DEVICE",…}
+        //   websocket-server.php       → {"id":…,"error":"No device connected"}
+        // Only the first was ever matched here, so a device that vanished mid
+        // session fell through to the success path below, reset the counter, and
+        // got returned to the runloop as a bogus type-less "event". The give-up
+        // branch could therefore never fire: the orphaned runloop spun forever,
+        // pinning its artisan-serve worker. On macOS php -S forks a pool so that
+        // just leaked one worker at a time; on Windows `forking is not supported`
+        // means there is exactly ONE worker, so the first orphan deadlocked the
+        // whole dev server — no later scan could ever be served. A real event
+        // always carries `type`, so require its absence before treating an
+        // `error` key as a failure.
+        $isBridgeError = ! is_array($decoded)
+            || (isset($decoded['status']) && $decoded['status'] === 'error')
+            || (isset($decoded['error']) && ! isset($decoded['type']));
+
+        if ($isBridgeError) {
             // Bridge error — almost always the device WebSocket briefly
             // dropped (app backgrounded, Wi-Fi blip, dev-server reconnect).
             // The iOS / Android client auto-reconnects within ~2s, so this
@@ -117,19 +135,25 @@ if (! function_exists('nativephp_element_wait_event')) {
             // a long *continuous* outage so a genuinely-gone device doesn't
             // pin an artisan-serve worker forever.
             $consecutiveErrors++;
+            $firstErrorAt = $firstErrorAt ?: microtime(true);
             usleep(200_000); // 200ms — throttle the spin while disconnected
-            // The client auto-reconnects within ~2s (≈10 ticks), so ride
-            // out short outages. But the runloop is holding the GET /
-            // request open on the single-threaded `php -S` server the whole
-            // time it spins here — so if the device is genuinely gone we
-            // must give up fairly quickly and let the runloop return,
-            // freeing the worker. Otherwise a dropped session pins the
-            // server and every later scan / re-scan just hangs (which is
-            // exactly the "restart jump, same thing again" loop). ~8s is a
-            // comfortable margin over the 2s reconnect without locking the
-            // server up for long.
-            if ($consecutiveErrors >= 40) { // ~8s of unbroken failure
+            // The client auto-reconnects within ~2s, so ride out short outages.
+            // But the runloop holds the GET / request open on a single-threaded
+            // `php -S` worker the whole time it spins here — so if the device is
+            // genuinely gone we must give up and let the runloop return, freeing
+            // the worker. Otherwise a dropped session pins the server and every
+            // later scan / re-scan hangs (the "restart jump, same thing again"
+            // loop). 8s is a comfortable margin over the 2s reconnect.
+            //
+            // Measured in WALL TIME, not tick count: websocket-server.php
+            // deliberately delays each rejection ~1s to stop an orphaned runloop
+            // saturating its event loop, so a 40-tick budget was really ~48s on
+            // that path while the immediate NO_DEVICE path (no server round trip)
+            // hit it in ~8s. Timing the outage makes the budget mean the same
+            // thing regardless of which rejection path we're on.
+            if (microtime(true) - $firstErrorAt >= 8.0) {
                 $consecutiveErrors = 0;
+                $firstErrorAt = 0.0;
 
                 return ['type' => 8, 'callback_id' => 0, 'node_id' => 0];
             }
@@ -139,6 +163,7 @@ if (! function_exists('nativephp_element_wait_event')) {
 
         // Reset on success
         $consecutiveErrors = 0;
+        $firstErrorAt = 0.0;
 
         // Hot reload (EVENT_HOT_RELOAD = 15): PASS IT THROUGH to the runloop
         // instead of handling in-place. A long-running runloop can't re-render

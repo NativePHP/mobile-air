@@ -131,7 +131,10 @@ class RouteAnalyzer
 
     protected function relativePath(string $path): string
     {
-        $base = base_path().'/';
+        // Normalize to forward slashes so the base-path prefix strips on
+        // Windows too (base_path() returns backslashes there).
+        $path = str_replace('\\', '/', $path);
+        $base = str_replace('\\', '/', base_path()).'/';
 
         return str_starts_with($path, $base) ? substr($path, strlen($base)) : $path;
     }

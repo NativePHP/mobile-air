@@ -19,6 +19,20 @@ class PHPBridge(private val context: Context) {
     private val nativePhpScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/native.php"
 
+    /**
+     * Serves this bridge's requests on a dedicated per-webview PHP context
+     * instead of phpExecutor — REQUIRED for php-mode webviews embedded in
+     * native screens, where phpExecutor is parked inside the screen's
+     * event-loop dispatch and would never answer.
+     */
+    var dedicatedWebviewRuntime: WebviewPHPRuntime? = null
+
+    internal val webviewBootstrapScript: String
+        get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/persistent.php"
+
+    internal val webviewNativeScript: String
+        get() = nativePhpScript
+
     private val persistentBootstrapScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/persistent.php"
 
@@ -68,6 +82,20 @@ class PHPBridge(private val context: Context) {
     external fun nativeEphemeralBoot(bootstrapPath: String): Int
     external fun nativeEphemeralArtisan(command: String): String
     external fun nativeEphemeralShutdown()
+
+    // Webview runtime (dedicated context per embedded php-mode webview).
+    // Call ONLY from that webview's single-thread executor — the TSRM
+    // context is bound to the calling thread.
+    external fun nativeWebviewPhpBoot(bootstrapPath: String): Int
+    external fun nativeWebviewPhpRequest(
+        method: String,
+        uri: String,
+        cookieHeader: String,
+        body: String,
+        contentType: String,
+        scriptPath: String
+    ): String
+    external fun nativeWebviewPhpShutdown()
 
     fun ensureRuntimeInitialized() {
         if (!runtimeInitialized) {
@@ -262,6 +290,13 @@ class PHPBridge(private val context: Context) {
     }
 
     fun handleLaravelRequest(request: PHPRequest): String {
+        // Embedded php-mode webview — its own context serves the request;
+        // phpExecutor may be parked inside a native screen's event-loop
+        // dispatch and would never answer.
+        dedicatedWebviewRuntime?.let {
+            return processRawPHPResponse(it.request(request))
+        }
+
         val requestStart = System.currentTimeMillis()
 
         val future = phpExecutor.submit<String> {

@@ -62,6 +62,33 @@ it('compiles button elements with label slot capture', function () {
     expect($result)->toContain("'label'");
 });
 
+it('compiles self-closing webview to a leaf', function () {
+    $result = ($this->precompiler)('<native:webview src="https://example.com" @navigated="urlChanged" />');
+
+    expect($result)->toContain("::leaf('webview',");
+    expect($result)->toContain("'src' => 'https://example.com'");
+    expect($result)->toContain("'_navigated' => 'urlChanged'");
+    expect($result)->not->toContain('@navigated');
+});
+
+it('captures webview slot markup verbatim into the html prop', function () {
+    $result = ($this->precompiler)('<native:webview><h1>Hi</h1><p>Hello <em>world</em></p></native:webview>');
+
+    expect($result)->toContain('ob_start();');
+    expect($result)->toContain("::leaf('webview',");
+    expect($result)->toContain("\$__nativeSlotAttrs['html']");
+    // The slot is an HTML document, not display text — it must never go
+    // through the strip_tags/entity-decode path text elements use.
+    expect($result)->not->toContain('strip_tags');
+});
+
+it('lets an explicit :html attribute win over webview slot content', function () {
+    $result = ($this->precompiler)('<native:webview :html="$doc"><h1>fallback</h1></native:webview>');
+
+    expect($result)->toContain("'html' => (\$doc)");
+    expect($result)->toContain("!isset(\$__nativeSlotAttrs['html'])");
+});
+
 it('rewrites @press to _press', function () {
     $result = ($this->precompiler)('<native:button label="+" @press="increment" />');
 
@@ -99,6 +126,41 @@ it('keeps @press and @pressDown distinct on the same tag', function () {
 
     expect($result)->toContain("'_press' => 'fire'");
     expect($result)->toContain("'_pressDown' => 'charge'");
+});
+
+it('rewrites @tap to _press', function () {
+    $result = ($this->precompiler)('<native:button label="+" @tap="increment" />');
+
+    expect($result)->toContain("'_press' => 'increment'");
+    expect($result)->not->toContain('@tap');
+});
+
+it('rewrites the rest of the tap aliases onto the press family', function () {
+    $result = ($this->precompiler)(
+        '<native:pressable @longTap="hold" @tapDown="charge" @tapUp="release">x</native:pressable>'
+    );
+
+    expect($result)->toContain("'_longPress' => 'hold'");
+    expect($result)->toContain("'_pressDown' => 'charge'");
+    expect($result)->toContain("'_pressUp' => 'release'");
+});
+
+it('leaves @doubleTap alone when aliasing @tap', function () {
+    // The alias alternation is anchored at `@`, so `tap` can never match the
+    // tail of `doubleTap`.
+    $result = ($this->precompiler)('<native:column @doubleTap="two" @tap="one">x</native:column>');
+
+    expect($result)->toContain("'_doubleTap' => 'two'");
+    expect($result)->toContain("'_press' => 'one'");
+});
+
+it('accepts @press and @tap side by side on the same screen', function () {
+    $result = ($this->precompiler)(
+        '<native:column><native:button label="a" @press="old" /><native:button label="b" @tap="new" /></native:column>'
+    );
+
+    expect($result)->toContain("'_press' => 'old'");
+    expect($result)->toContain("'_press' => 'new'");
 });
 
 it('rewrites @change and @submit', function () {

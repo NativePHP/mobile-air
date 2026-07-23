@@ -464,13 +464,16 @@ trait ChecksLatestBuildNumber
         $envContent = file_get_contents($envFilePath);
         $newLine = "{$key}={$value}";
 
-        // Check if the key already exists
-        if (preg_match("/^{$key}=.*$/m", $envContent)) {
+        // Match up to (but not including) the line terminator so a CRLF .env
+        // keeps its \r intact instead of ending up with mixed line endings
+        if (preg_match("/^{$key}=[^\r\n]*/m", $envContent)) {
             // Update existing line
-            $envContent = preg_replace("/^{$key}=.*$/m", $newLine, $envContent);
+            $envContent = preg_replace("/^{$key}=[^\r\n]*/m", $newLine, $envContent);
         } else {
-            // Add new line
-            $envContent = PHP_EOL.rtrim($envContent).PHP_EOL.$newLine.PHP_EOL;
+            // Add new line using the file's dominant line ending, not PHP_EOL,
+            // so we don't inject CRLF into an LF .env on Windows (or vice versa)
+            $eol = str_contains($envContent, "\r\n") ? "\r\n" : "\n";
+            $envContent = $eol.rtrim($envContent, "\r\n").$eol.$newLine.$eol;
         }
 
         file_put_contents($envFilePath, $envContent);

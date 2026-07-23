@@ -1,6 +1,7 @@
 <?php
 
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
@@ -244,4 +245,42 @@ it('applies dark companion props from programmatic class()', function () {
     expect($tree['style']['bg_color'] ?? $tree['props']['bg_color'] ?? null)->not->toBeNull();
     expect($tree['props']['dark_bg_color'])->toBe('#050714');
     expect($tree['children'][0]['props']['dark_color'])->toBe('#FFFFFF');
+});
+
+// ── Callback attribute wiring ────────────
+
+it('wires _navigated to onNavigated when the element supports it', function () {
+    $element = new class extends Element
+    {
+        public ?string $navigatedMethod = null;
+
+        public function getType(): string
+        {
+            return 'webview';
+        }
+
+        public function onNavigated(string $method): static
+        {
+            $this->navigatedMethod = $method;
+
+            return $this;
+        }
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_navigated' => 'urlChanged']);
+
+    expect($element->navigatedMethod)->toBe('urlChanged');
+});
+
+it('ignores _navigated on elements without an onNavigated method', function () {
+    $element = new class extends Element
+    {
+        protected string $type = 'column';
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_navigated' => 'urlChanged']);
+
+    expect($element->toArray(new CallbackRegistry))->not->toHaveKey('on_navigated');
 });

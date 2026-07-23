@@ -99,6 +99,14 @@ class IOSPluginCompiler
         // Run pre-compile hooks
         $hookRunner->runPreCompileHooks();
 
+        // The generated plugin tree is fully derived from the installed
+        // plugins, so start from a clean slate. Copying over the previous
+        // output would leave stale files behind when a plugin deletes or
+        // renames a source file (or is removed entirely), producing
+        // duplicate-symbol build failures in Xcode.
+        $this->clean();
+        $this->files->ensureDirectoryExists($this->generatedPath);
+
         // Get plugins with iOS code (for copying files)
         $pluginsWithCode = $allPlugins->filter(fn (Plugin $p) => $p->hasIosCode());
 
@@ -148,9 +156,6 @@ class IOSPluginCompiler
 
             return;
         }
-
-        // Ensure generated directory exists
-        $this->files->ensureDirectoryExists($this->generatedPath);
 
         // Copy plugin source files
         $pluginsWithCode->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));

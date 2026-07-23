@@ -850,9 +850,15 @@ trait ManagesIosSigning
      */
     protected function readAndEncodeFile(string $filePath): ?string
     {
-        // Expand tilde to home directory
-        if (str_starts_with($filePath, '~/')) {
-            $filePath = $_SERVER['HOME'].substr($filePath, 1);
+        // Expand tilde to home directory. $_SERVER['HOME'] is unset on Windows
+        // (which uses USERPROFILE) and in some Linux CI containers, so fall back
+        // before mangling the path; if no home dir is resolvable, leave the path
+        // untouched so it falls through to the base_path() resolution below.
+        if (str_starts_with($filePath, '~/') || str_starts_with($filePath, '~\\')) {
+            $home = $_SERVER['HOME'] ?? getenv('HOME') ?: getenv('USERPROFILE');
+            if ($home) {
+                $filePath = rtrim($home, '/\\').substr($filePath, 1);
+            }
         }
 
         // Resolve relative paths relative to Laravel's base path

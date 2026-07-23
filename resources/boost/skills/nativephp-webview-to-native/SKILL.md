@@ -50,7 +50,7 @@ The web view remains available during migration, so you never need a big-bang re
 | `class Foo extends Component` | `class Foo extends NativeComponent` |
 | `Route::get()` + view / `Route::livewire()` | `Route::native('/path', Foo::class)` |
 | `wire:model` / `.blur` / `.debounce.300ms` | `native:model` / `.blur` / `.debounce.300ms` |
-| `wire:click="save"` | `@press="save"` |
+| `wire:click="save"` | `@press="save"` (or its alias `@tap="save"`) |
 | `wire:submit` | `@submit` on the input / `@press` on the button |
 | `wire:poll.5s` | `#[Poll(5000)]` on a method, or `native:poll="5s"` |
 | `#[Computed]` (Livewire) | `#[Computed]` (`Native\Mobile\Attributes\Computed`) |

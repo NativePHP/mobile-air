@@ -69,6 +69,15 @@ class RunCommand extends Command
             };
         }
 
+        // iOS builds depend on the Xcode toolchain (xcrun, xcodebuild), which only
+        // exists on macOS — fail fast before touching logs, Vite, or devices
+        if ($os === 'ios' && PHP_OS_FAMILY !== 'Darwin') {
+            error('iOS builds require macOS (Xcode toolchain).');
+            note('You can build and run the Android app on this machine with `php artisan native:run android`.');
+
+            return self::FAILURE;
+        }
+
         // Check for WSL environment - Android is not supported in WSL
         if ($this->isRunningInWSL()) {
             error('Android is not supported in WSL (Windows Subsystem for Linux).');

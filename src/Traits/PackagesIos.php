@@ -17,6 +17,14 @@ trait PackagesIos
 
     protected function buildIos(?array $iosSigningConfig = null): void
     {
+        // Guard first: every iOS packaging path (test-upload, validate-only, full build)
+        // relies on macOS-only tooling (xcrun, xcodebuild, codesign), so fail fast off-macOS
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            \Laravel\Prompts\error('iOS packaging (including App Store uploads) is only supported on macOS.');
+
+            return;
+        }
+
         // If test-upload flag is set, just test upload without building
         if ($this->option('test-upload')) {
             $this->testAppStoreUpload();
@@ -29,12 +37,6 @@ trait PackagesIos
         if (! is_dir($iosPath)) {
             \Laravel\Prompts\error('No iOS project found at [nativephp/ios].');
             \Laravel\Prompts\note('Run `php artisan native:install` first.');
-
-            return;
-        }
-
-        if (PHP_OS_FAMILY !== 'Darwin') {
-            \Laravel\Prompts\error('iOS builds are only supported on macOS.');
 
             return;
         }

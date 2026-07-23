@@ -490,7 +490,8 @@ XML;
             $process = Process::path($androidPath)
                 ->timeout(600);
 
-            if (! $this->option('no-tty')) {
+            // TTY needs a real terminal; Symfony throws on Docker/CI/piped output
+            if (! $this->option('no-tty') && SymfonyProcess::isTtySupported()) {
                 $process->tty();
             }
 
@@ -668,7 +669,10 @@ XML;
             exit(1);
         }
 
-        $avds = array_filter(explode("\n", trim($listProcess->getOutput())));
+        // Trim each line: emulator.exe emits CRLF on Windows, and a stray \r in
+        // an AVD name breaks the launch command. array_values keeps a list so
+        // select() returns the name, not an integer key.
+        $avds = array_values(array_filter(array_map('trim', explode("\n", $listProcess->getOutput()))));
 
         if (empty($avds)) {
             error('No AVDs found.');

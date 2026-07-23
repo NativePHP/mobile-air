@@ -1371,6 +1371,267 @@ JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_unlock(&g_ephemeral_mutex);
 }
 
+
+// ── Webview PHP Runtimes ────────────────────────────
+// One dedicated PHP context per embedded php-mode <webview> element. The
+// persistent lane (phpExecutor → native_persistent_dispatch) is parked
+// inside a native screen's event-loop dispatch for the screen's whole
+// lifetime, so it can never answer the embedded webview's requests.
+//
+// Each Kotlin WebviewPHPRuntime owns a single-thread executor and calls
+// these functions only from that thread — so the TSRM context is
+// implicitly per-webview (thread == context) and no handle bookkeeping is
+// needed. Boots are serialized to avoid concurrent module-startup races.
+// Request state is inlined into the eval and carried by per-thread SAPI
+// globals — never process env — so contexts run concurrently with the
+// persistent lane's env churn without racing it.
+
+static pthread_mutex_t g_webview_boot_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Escape a string for inclusion inside a single-quoted PHP string literal. */
+static char *webview_escape_php(const char *s) {
+    if (!s) {
+        return strdup("");
+    }
+    size_t len = strlen(s);
+    char *out = malloc(len * 2 + 1);
+    if (!out) {
+        return strdup("");
+    }
+    char *p = out;
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '\\' || c == '\'') {
+            *p++ = '\\';
+        }
+        *p++ = c;
+    }
+    *p = '\0';
+    return out;
+}
+
+JNIEXPORT jint JNICALL native_webview_php_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    pthread_mutex_lock(&g_webview_boot_mutex);
+
+    const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
+    LOGI("webview_php_boot: booting dedicated context");
+
+    clear_collected_output();
+
+    if (ephemeral_embed_init() != SUCCESS) {
+        LOGE("webview_php_boot: embed init FAILED");
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        pthread_mutex_unlock(&g_webview_boot_mutex);
+        return -1;
+    }
+
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, bootstrapPath);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    char *boot_output = get_collected_output();
+    if (boot_output && strstr(boot_output, "FATAL") != NULL) {
+        LOGE("webview_php_boot: bootstrap errors: %.200s", boot_output);
+    }
+
+    (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+    pthread_mutex_unlock(&g_webview_boot_mutex);
+    LOGI("webview_php_boot: ready");
+    return 0;
+}
+
+JNIEXPORT jstring JNICALL native_webview_php_request(JNIEnv *env, jobject thiz,
+                                                     jstring jMethod, jstring jUri,
+                                                     jstring jCookie, jstring jBody,
+                                                     jstring jContentType, jstring jScriptPath) {
+    const char *method = (*env)->GetStringUTFChars(env, jMethod, NULL);
+    const char *uri = (*env)->GetStringUTFChars(env, jUri, NULL);
+    const char *cookieHeader = (*env)->GetStringUTFChars(env, jCookie, NULL);
+    const char *postData = (*env)->GetStringUTFChars(env, jBody, NULL);
+    const char *contentType = (*env)->GetStringUTFChars(env, jContentType, NULL);
+    const char *scriptPath = (*env)->GetStringUTFChars(env, jScriptPath, NULL);
+
+    clear_collected_output();
+
+    // Per-thread SAPI request state (TSRM-local — safe alongside other lanes)
+    SG(headers_sent) = 0;
+    SG(post_read) = 0;
+    SG(read_post_bytes) = 0;
+    SG(request_info).request_method = method;
+    SG(request_info).request_uri = (char *)uri;
+    SG(request_info).proto_num = 1001;
+
+    memset(&SG(sapi_headers), 0, sizeof(sapi_headers_struct));
+    SG(sapi_headers).http_response_code = 200;
+    zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
+
+    // POST data → php://input
+    if (postData && strlen(postData) > 0) {
+        php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
+        if (post_stream) {
+            php_stream_write(post_stream, postData, strlen(postData));
+            php_stream_seek(post_stream, 0, SEEK_SET);
+
+            if (SG(request_info).request_body) {
+                php_stream_close(SG(request_info).request_body);
+            }
+            SG(request_info).request_body = post_stream;
+            SG(request_info).content_length = strlen(postData);
+
+            if (contentType && strstr(contentType, "json")) {
+                SG(request_info).content_type = "application/json";
+            } else {
+                SG(request_info).content_type = "application/x-www-form-urlencoded";
+            }
+        }
+    } else {
+        if (SG(request_info).request_body) {
+            php_stream_close(SG(request_info).request_body);
+            SG(request_info).request_body = NULL;
+        }
+        SG(request_info).content_length = 0;
+    }
+
+    char *esc_method = webview_escape_php(method);
+    char *esc_uri = webview_escape_php(uri);
+    char *esc_cookie = webview_escape_php(cookieHeader);
+    char *esc_ct = webview_escape_php(contentType);
+    char *esc_script = webview_escape_php(scriptPath);
+
+    char *eval_code = NULL;
+    asprintf(&eval_code,
+        "try {\n"
+        "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
+        "\n"
+        "    foreach ($_SERVER as $__k => $__v) {\n"
+        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
+        "            unset($_SERVER[$__k]);\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
+        "    $_SERVER['REQUEST_URI'] = '%s';\n"
+        "    $_SERVER['SCRIPT_FILENAME'] = '%s';\n"
+        "    $_SERVER['PHP_SELF'] = '/native.php';\n"
+        "    $_SERVER['HTTP_HOST'] = '127.0.0.1';\n"
+        "    $_SERVER['SERVER_NAME'] = '127.0.0.1';\n"
+        "    $_SERVER['SERVER_PORT'] = '80';\n"
+        "    $_SERVER['APP_URL'] = 'http://127.0.0.1';\n"
+        "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
+        "    $_SERVER['NATIVEPHP_PLATFORM'] = 'android';\n"
+        "    if ('%s' !== '') { $_SERVER['HTTP_COOKIE'] = '%s'; }\n"
+        "    if ('%s' !== '') { $_SERVER['CONTENT_TYPE'] = '%s'; $_SERVER['HTTP_CONTENT_TYPE'] = '%s'; }\n"
+        "\n"
+        "    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');\n"
+        "    if ($__qpos !== false) {\n"
+        "        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);\n"
+        "    } else {\n"
+        "        $_SERVER['QUERY_STRING'] = '';\n"
+        "    }\n"
+        "\n"
+        "    $_GET = [];\n"
+        "    $_POST = [];\n"
+        "    $_COOKIE = [];\n"
+        "    $_FILES = [];\n"
+        "    $_REQUEST = [];\n"
+        "\n"
+        "    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {\n"
+        "        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {\n"
+        "            $__parts = explode('=', $__pair, 2);\n"
+        "            if (count($__parts) === 2) {\n"
+        "                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
+        "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
+        "    }\n"
+        "\n"
+        "    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {\n"
+        "        $__rawInput = file_get_contents('php://input');\n"
+        "        if ($__rawInput !== false && $__rawInput !== '') {\n"
+        "            $__ct = $_SERVER['CONTENT_TYPE'] ?? '';\n"
+        "            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {\n"
+        "                parse_str($__rawInput, $_POST);\n"
+        "            }\n"
+        "            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
+        "        \\Illuminate\\Http\\Request::capture()\n"
+        "    );\n"
+        "    $__code = $__response->getStatusCode();\n"
+        "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
+        "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
+        "    foreach ($__response->headers->all() as $__name => $__values) {\n"
+        "        foreach ($__values as $__value) {\n"
+        "            echo \"{$__name}: {$__value}\\r\\n\";\n"
+        "        }\n"
+        "    }\n"
+        "    echo \"\\r\\n\";\n"
+        "    $__response->sendContent();\n"
+        "} catch (\\Throwable $e) {\n"
+        "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
+        "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
+        "    echo 'Webview dispatch error: ' . $e->getMessage() . \"\\n\";\n"
+        "    echo $e->getTraceAsString();\n"
+        "}\n",
+        esc_method, esc_uri, esc_script,
+        esc_cookie, esc_cookie,
+        esc_ct, esc_ct, esc_ct);
+
+    free(esc_method);
+    free(esc_uri);
+    free(esc_cookie);
+    free(esc_ct);
+    free(esc_script);
+
+    jstring result;
+    if (!eval_code) {
+        result = (*env)->NewStringUTF(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build webview dispatch.");
+    } else {
+        zend_first_try {
+            zend_eval_string(eval_code, NULL, "webview_dispatch");
+        } zend_end_try();
+        free(eval_code);
+
+        char *out = get_collected_output();
+        result = (*env)->NewStringUTF(env, out ? out : "");
+    }
+
+    (*env)->ReleaseStringUTFChars(env, jMethod, method);
+    (*env)->ReleaseStringUTFChars(env, jUri, uri);
+    (*env)->ReleaseStringUTFChars(env, jCookie, cookieHeader);
+    (*env)->ReleaseStringUTFChars(env, jBody, postData);
+    (*env)->ReleaseStringUTFChars(env, jContentType, contentType);
+    (*env)->ReleaseStringUTFChars(env, jScriptPath, scriptPath);
+
+    return result;
+}
+
+JNIEXPORT void JNICALL native_webview_php_shutdown(JNIEnv *env, jobject thiz) {
+    LOGI("webview_php_shutdown: tearing down dedicated context");
+
+    zend_first_try {
+        zend_eval_string(
+            "\\Native\\Mobile\\Runtime::shutdown();",
+            NULL, "webview_shutdown");
+    } zend_end_try();
+
+    // Webview contexts only exist while the persistent runtime is alive, so
+    // this is always the hot-path teardown: release this thread's request
+    // and TSRM context, leave the process-wide runtime untouched.
+    php_request_shutdown(NULL);
+    ts_free_thread();
+
+    LOGI("webview_php_shutdown: done");
+}
+
 static JNINativeMethod gMethods[] = {
         // PHPBridge
         {"nativeExecuteScript", "(Ljava/lang/String;)Ljava/lang/String;", (void *) native_execute_script},
@@ -1404,6 +1665,11 @@ static JNINativeMethod gMethods[] = {
         {"nativeEphemeralBoot","(Ljava/lang/String;)I",(void *) native_ephemeral_boot},
         {"nativeEphemeralArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_ephemeral_artisan},
         {"nativeEphemeralShutdown","()V",(void *) native_ephemeral_shutdown},
+
+        // Webview runtime (dedicated context per embedded php-mode webview)
+        {"nativeWebviewPhpBoot","(Ljava/lang/String;)I",(void *) native_webview_php_boot},
+        {"nativeWebviewPhpRequest","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_webview_php_request},
+        {"nativeWebviewPhpShutdown","()V",(void *) native_webview_php_shutdown},
 };
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {

@@ -3,6 +3,12 @@ import WebKit
 class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
     let domain = "127.0.0.1"
 
+    /// When set, requests are served by this webview's own PHP context
+    /// instead of the persistent runtime's serial queue. Embedded php-mode
+    /// webviews inside native screens MUST set this: the persistent queue is
+    /// parked in the screen's event-loop dispatch and would never answer.
+    var dedicatedRuntime: WebviewPHPRuntime?
+
     // Shared session for Jump WebView-mode forwards. Reused across requests so
     // HTTP keep-alive / connection pooling kicks in — a fresh session per
     // request re-did the TCP handshake every time and made navigation crawl.
@@ -655,8 +661,47 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
+    /// Push a raw response's Set-Cookie headers into the shared WebView
+    /// cookie store (same rebinding the persistent path does inline).
+    private func storeSetCookies(from rawResponse: String) {
+        let components = rawResponse.components(separatedBy: "\r\n\r\n")
+        let headersList = components[0].components(separatedBy: "\n").filter { !$0.isEmpty }
+        let setCookieHeaders = headersList.filter { $0.hasPrefix("Set-Cookie:") || $0.hasPrefix("set-cookie:") }
+        guard !setCookieHeaders.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            for header in setCookieHeaders {
+                var cookieString = header
+                if let range = cookieString.range(of: "Set-Cookie: ", options: .caseInsensitive) {
+                    cookieString = String(cookieString[range.upperBound...])
+                }
+                cookieString = cookieString
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: ";\\s+", with: ";", options: .regularExpression)
+
+                if let cookie = HTTPCookie(properties: self.parseSetCookieHeader(cookieString: cookieString)) {
+                    WebView.dataStore.httpCookieStore.setCookie(cookie)
+                }
+            }
+        }
+    }
+
     private func getResponse(request: RequestData,
                               completion: @escaping (Result<Data, Error>) -> Void) {
+        // Embedded php-mode webview — serve on its own dedicated PHP context.
+        if let dedicated = dedicatedRuntime {
+            dedicated.dispatch(request: request) { [weak self] response in
+                guard let self else { return }
+                self.storeSetCookies(from: response)
+                if let responseData = response.data(using: .utf8) {
+                    completion(.success(responseData))
+                } else {
+                    completion(.failure(self.error(code: 500, description: "Failed to encode PHP response")))
+                }
+            }
+            return
+        }
+
         // PROTOTYPE: in a Jump WebView session, forward to the remote dev server
         // instead of the local embedded PHP. The WebView still believes it is
         // loading php://127.0.0.1, so no origin/ATS/nav-policy change is needed.

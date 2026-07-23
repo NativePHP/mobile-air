@@ -283,8 +283,15 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             .nodeGestures(node, interactionSource)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
+        // In-place text change animation (`content_transition` — numeric
+        // roll / crossfade). Wraps the content in AnimatedContent keyed on
+        // the text prop; absent prop → straight render, hot path unchanged.
+        val contentTransition = node.props.getString("content_transition", "")
+
         val renderContent: @Composable () -> Unit = {
-            if (renderer != null) {
+            if (contentTransition.isNotEmpty()) {
+                NodeContentTransition(node, contentTransition, modifier)
+            } else if (renderer != null) {
                 renderer.Render(node, modifier)
             } else {
                 DefaultContainerNode(node, modifier)

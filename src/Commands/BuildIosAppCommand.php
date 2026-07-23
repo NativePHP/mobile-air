@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -47,6 +48,14 @@ class BuildIosAppCommand extends Command
 
     public function handle(): int|string
     {
+        // Building iOS apps needs Xcode and its command-line tools, so bail out
+        // early before we touch the build log or copy any files.
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            $this->error('native:build requires macOS — building iOS apps needs Xcode and its command-line tools.');
+
+            return Command::FAILURE;
+        }
+
         $this->basePath = base_path('nativephp/ios');
         $this->logPath = base_path('nativephp/ios-build.log');
 
@@ -92,7 +101,7 @@ class BuildIosAppCommand extends Command
         file_put_contents($this->appPath.'.env', PHP_EOL.'ASSET_URL="/_assets"'.PHP_EOL, FILE_APPEND);
 
         $this->components->task('Installing Composer dependencies', function () {
-            Process::path($this->appPath)
+            $result = Process::path($this->appPath)
                 ->forever()
                 ->run([
                     'composer',
@@ -105,6 +114,19 @@ class BuildIosAppCommand extends Command
                         $this->output->write($output);
                     }
                 });
+
+            if (! $result->successful()) {
+                $errorOutput = $result->errorOutput();
+                if ($errorOutput) {
+                    file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
+                }
+
+                error('Composer install failed. Check your dependencies and try again.');
+                file_put_contents($this->logPath, 'ERROR: composer install failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
+                exit(1);
+            }
+
+            return true;
         });
 
         $this->components->task('Removing unnecessary files', fn () => $this->removeUnnecessaryFiles());
@@ -216,6 +238,7 @@ class BuildIosAppCommand extends Command
                 Str::startsWith($relativePath, 'dist/') ||
                 Str::startsWith($relativePath, 'artifacts/') ||
                 Str::startsWith($relativePath, '.git/') ||
+                Str::startsWith($relativePath, 'bootstrap/cache/') ||
                 Str::startsWith($relativePath, 'storage/logs/') ||
                 Str::startsWith($relativePath, 'storage/framework/cache/')) {
                 continue;
@@ -224,6 +247,8 @@ class BuildIosAppCommand extends Command
             @File::makeDirectory(dirname($destination.$relativePath), recursive: true, force: true);
             @File::copy($realPath, $destination.$relativePath);
         }
+
+        File::ensureDirectoryExists($destination.'bootstrap/cache');
     }
 
     private function updateAppVersion(): void
@@ -952,7 +977,7 @@ class BuildIosAppCommand extends Command
         // to decide whether the first screen dispatches directly into the
         // persistent runtime (no WKWebView) or through the legacy WebView
         // path. NATIVEPHP_BOOT_MODE=web forces the legacy path.
-        $nativeRoutes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+        $nativeRoutes = array_keys(NativeRouter::registeredRoutes());
         $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
 
         $bundleMeta = json_encode([

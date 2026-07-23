@@ -5,6 +5,7 @@ namespace Native\Mobile\Traits;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Native\Mobile\Edge\NativeRouter;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
@@ -207,9 +208,21 @@ trait PreparesBuild
         $this->logToFile("  Source: $source");
         $this->logToFile("  Destination: $destinationZip");
 
-        $tempDir = PHP_OS_FAMILY === 'Windows'
-            ? 'C:\\temp\\'.time()
-            : base_path('nativephp/android/laravel');
+        if (PHP_OS_FAMILY === 'Windows') {
+            // Derive the drive from the environment rather than assuming C:, and
+            // probe writability up front — File::ensureDirectoryExists() below
+            // throws (rather than returning false) when the drive root's ACL is
+            // locked down, so a fallback after the fact would never fire.
+            $tempBase = (getenv('SystemDrive') ?: 'C:').'\\temp';
+            if (! is_dir($tempBase) && ! @mkdir($tempBase, 0755, true)) {
+                // Root ACL locked down or drive missing — use the user's temp dir
+                // instead (still short enough to avoid MAX_PATH in practice)
+                $tempBase = rtrim(sys_get_temp_dir(), '\\/').DIRECTORY_SEPARATOR.'nativephp';
+            }
+            $tempDir = $tempBase.DIRECTORY_SEPARATOR.time();
+        } else {
+            $tempDir = base_path('nativephp/android/laravel');
+        }
 
         $this->logToFile("  Temp directory: $tempDir");
 
@@ -232,12 +245,16 @@ trait PreparesBuild
                 default => config('nativephp.cleanup_exclude_files'),
             };
 
+            $excludedDirs[] = 'bootstrap/cache';
+
             $this->logToFile('  Excluded directories: '.implode(', ', $excludedDirs));
 
             $srcDir = base_path('vendor/nativephp/mobile/bootstrap/android');
 
             $this->logToFile('  Copying Laravel source...');
             $this->components->task('Copying Laravel source', fn () => $this->platformOptimizedCopy($source, $tempDir, $excludedDirs));
+
+            File::ensureDirectoryExists($tempDir.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache');
 
             $composerArgs = $excludeDevDependencies ? '--no-dev --no-interaction' : '--no-interaction';
 
@@ -324,7 +341,7 @@ trait PreparesBuild
             // WebView path. Routes are registered by the app's route files, which
             // this artisan process has already loaded. NATIVEPHP_BOOT_MODE=web
             // forces the legacy path regardless.
-            $nativeRoutes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+            $nativeRoutes = array_keys(NativeRouter::registeredRoutes());
             $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
 
             $bundleMeta = json_encode([
@@ -360,7 +377,56 @@ trait PreparesBuild
                 exit(1);
             }
 
-            $cmd = "\"$sevenZip\" a -tzip \"$destination\" \"$source\\*\" -xr!node_modules";
+            // Pre-create the runtime dirs Laravel needs at boot so they land in
+            // the archive — 7-Zip stores empty dirs matched by "$source\*",
+            // mirroring the addEmptyDir() guarantee of the ZipArchive branch
+            $requiredDirs = [
+                'bootstrap/cache',
+                'storage/framework/cache',
+                'storage/framework/sessions',
+                'storage/framework/views',
+            ];
+
+            foreach ($requiredDirs as $dir) {
+                File::ensureDirectoryExists($source.DIRECTORY_SEPARATOR.str_replace('/', '\\', $dir));
+            }
+
+            // Mirror the exclusions applied by addDirectoryToZip() on macOS/Linux.
+            // The robocopy /XD exclusions in platformOptimizedCopy remain the first
+            // line of defense, but /XD is directory-only — the zip-level *.jks and
+            // laravel.log patterns here are what keep keystores and logs out of
+            // the publicly distributed bundle.
+            $patterns = [
+                // Recursive name/extension matches (any depth)
+                '-xr!node_modules',
+                '-xr!*.jks',
+                '-xr!*.zip',
+                '-xr!.idea',
+                // Root-anchored paths (-x! matches relative to the scan root,
+                // preserving the Str::startsWith semantics of the unix branch)
+                '-x!output',
+                '-x!public\\storage',
+                '-x!storage\\app\\native-build',
+                '-x!storage\\logs\\laravel.log',
+                '-x!vendor\\endroid',
+                '-x!vendor\\nativephp\\mobile\\resources',
+                '-x!vendor\\nativephp\\mobile\\vendor',
+                // Keep the runtime dirs themselves but drop their cached contents
+                '-x!bootstrap\\cache\\*',
+                '-x!storage\\framework\\cache\\*',
+                '-x!storage\\framework\\sessions\\*',
+                '-x!storage\\framework\\views\\*',
+            ];
+
+            // Honor the configured exclusions for parity with the unix branch
+            // (entries containing * pass through as 7-Zip wildcards)
+            foreach ($excludedDirs as $dir) {
+                $patterns[] = '-x!'.str_replace('/', '\\', rtrim($dir, '/'));
+            }
+
+            $excludeFlags = implode(' ', array_map(fn ($p) => '"'.$p.'"', $patterns));
+
+            $cmd = "\"$sevenZip\" a -tzip \"$destination\" \"$source\\*\" $excludeFlags";
             exec($cmd, $output, $code);
 
             if ($code !== 0) {
@@ -503,22 +569,15 @@ trait PreparesBuild
 
         $this->components->twoColumnDetail('Running Gradle', $gradleTask);
 
-        // Also pass signing properties as system properties for extra reliability
-        $extraArgs = '';
-        if ($signingConfig) {
-            $extraArgs = sprintf(
-                ' -PMYAPP_UPLOAD_STORE_FILE="%s" -PMYAPP_UPLOAD_KEY_ALIAS="%s" -PMYAPP_UPLOAD_STORE_PASSWORD="%s" -PMYAPP_UPLOAD_KEY_PASSWORD="%s"',
-                str_replace('\\', '/', $signingConfig['keystore']),
-                $signingConfig['keyAlias'],
-                $signingConfig['keystorePassword'],
-                $signingConfig['keyPassword']
-            );
-        }
+        // Signing properties are read by Gradle from gradle.properties (written by
+        // applySigningConfiguration above) with no shell involvement. Passing them
+        // as -P args on the command line would run passwords through sh/cmd, where
+        // $, backticks, " and %VAR% sequences get expanded or mangled.
 
         $buildSuccessful = false;
 
         if (PHP_OS_FAMILY === 'Windows') {
-            $cmd = "cd /d \"$androidPath\" && $gradleWrapper $gradleTask$extraArgs";
+            $cmd = "cd /d \"$androidPath\" && $gradleWrapper $gradleTask";
             $exitCode = 0;
             passthru($cmd, $exitCode);
             $buildSuccessful = ($exitCode === 0);
@@ -530,7 +589,7 @@ trait PreparesBuild
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask$extraArgs");
+            $result = $process->run("$gradleWrapper $gradleTask");
 
             if (! $result->successful()) {
                 \Laravel\Prompts\error('Gradle build failed');
@@ -579,9 +638,11 @@ trait PreparesBuild
             return;
         }
 
-        // Use jarsigner to verify the signature
+        // Use jarsigner to verify the signature. shell_exec() returns null
+        // when jarsigner isn't on PATH (common on Windows) — treat that as
+        // "couldn't verify" rather than feeding null to str_contains().
         $verifyCmd = sprintf('jarsigner -verify -verbose %s 2>&1', escapeshellarg($outputPath));
-        $verifyOutput = shell_exec($verifyCmd);
+        $verifyOutput = shell_exec($verifyCmd) ?? '';
 
         if (str_contains($verifyOutput, 'jar is unsigned')) {
             \Laravel\Prompts\warning('Build output is unsigned - this will be rejected by Google Play Console');

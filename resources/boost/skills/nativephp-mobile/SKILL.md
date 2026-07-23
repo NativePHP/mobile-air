@@ -109,6 +109,9 @@ Screens are built from `native:` Blade components (the prefix is optional but pr
 </native:column>
 ```
 
+Tap handlers use `@press` (`@tap` is a permanent alias — same for `@longPress`/`@longTap` and
+`@pressDown`/`@tapDown`, `@pressUp`/`@tapUp`; both spellings compile identically).
+
 ~40 elements are available — layout (column, row, stack, scroll-view, spacer, pressable), content (text, image,
 icon, divider, badge, progress-bar, activity-indicator), forms (button, button-group, text-input, toggle,
 checkbox, radio-group, select, slider, chip), navigation (bottom-nav, top-bar, side-nav, tab-row), lists

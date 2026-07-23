@@ -29,7 +29,9 @@ trait LaunchesAndroidEmulator
             return;
         }
 
-        $avds = array_filter(explode("\n", trim($listProcess->getOutput())));
+        // Split on \r?\n and trim each entry: emulator.exe emits CRLF on Windows,
+        // and a stray "\r" in an AVD name breaks the -avd launch argument.
+        $avds = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', trim($listProcess->getOutput())))));
 
         if (empty($avds)) {
             $this->error('❌ No emulators (AVDs) found.');
@@ -55,18 +57,33 @@ trait LaunchesAndroidEmulator
             $escapedAvd = escapeshellarg($selected);
             $launchCommand = "nohup $escapedPath -avd $escapedAvd > /tmp/emulator.log 2>&1 &";
         }
-        Process::fromShellCommandline($launchCommand)->start();
+        // Hold the Process reference until this method returns: a discarded temporary
+        // is destructed immediately, and on Windows Process::__destruct() tree-kills
+        // the cmd.exe wrapper (taskkill /F /T), taking the emulator down with it.
+        $launchProcess = Process::fromShellCommandline($launchCommand);
+
+        if (PHP_OS_FAMILY === 'Windows') {
+            // Detach the wrapper into its own console so the destructor closes
+            // pipes instead of tree-killing the spawned emulator.
+            $launchProcess->setOptions(['create_new_console' => true]);
+        }
+
+        $launchProcess->start();
 
         $this->info('⏳ Waiting for emulator to boot...');
+
+        // Resolve adb from the SDK: platform-tools is frequently not on PATH,
+        // especially on stock Android Studio installs (Windows/Linux).
+        $adb = $this->resolveAdbPath($emulatorPath);
 
         $booted = false;
 
         for ($i = 0; $i < 200; $i++) { // ~24s
-            $bootProcess = Process::fromShellCommandline('adb shell getprop sys.boot_completed');
+            $bootProcess = Process::fromShellCommandline(sprintf('"%s" shell getprop sys.boot_completed', $adb));
             $bootProcess->run();
             $bootCompleted = trim($bootProcess->getOutput());
 
-            $readyProcess = Process::fromShellCommandline('adb shell getprop init.svc.bootanim');
+            $readyProcess = Process::fromShellCommandline(sprintf('"%s" shell getprop init.svc.bootanim', $adb));
             $readyProcess->run();
             $bootAnimStatus = trim($readyProcess->getOutput());
 
@@ -83,6 +100,29 @@ trait LaunchesAndroidEmulator
         } else {
             $this->warn('⚠️ Emulator did not finish booting in time.');
         }
+    }
+
+    protected function resolveAdbPath(string $emulatorPath): string
+    {
+        $adbName = PHP_OS_FAMILY === 'Windows' ? 'adb.exe' : 'adb';
+
+        $candidates = [];
+
+        // Every emulator candidate lives at <sdk>/emulator/<bin>, so the SDK root
+        // is two levels up — this covers stock installs where ANDROID_HOME is unset.
+        $candidates[] = dirname($emulatorPath, 2).DIRECTORY_SEPARATOR.'platform-tools'.DIRECTORY_SEPARATOR.$adbName;
+
+        if ($sdk = env('ANDROID_HOME') ?: env('ANDROID_SDK_ROOT')) {
+            $candidates[] = $sdk.DIRECTORY_SEPARATOR.'platform-tools'.DIRECTORY_SEPARATOR.$adbName;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (file_exists($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $adbName; // fall back to PATH
     }
 
     protected function resolveAndroidEmulatorPath(): ?string

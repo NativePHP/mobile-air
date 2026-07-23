@@ -105,8 +105,12 @@ class MakeNativeComponentCommand extends Command
 
         // ── Output ──────────────────────────────────────
 
-        $relativeClassPath = str_replace(base_path().'/', '', $classPath);
-        $relativeViewPath = str_replace(base_path().'/', '', $viewPath);
+        // Strip the base path by length and normalize separators so the
+        // relative path displays cleanly on Windows (where app_path() and
+        // resource_path() join with backslashes) as well as macOS/Linux.
+        $relative = fn (string $path): string => ltrim(str_replace('\\', '/', substr($path, strlen(base_path()))), '/');
+        $relativeClassPath = $relative($classPath);
+        $relativeViewPath = $relative($viewPath);
 
         outro("Created {$className}");
 

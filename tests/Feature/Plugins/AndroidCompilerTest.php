@@ -273,6 +273,31 @@ object TestFunctions {
     /**
      * @test
      *
+     * Fallback copies under bridge/plugins from a plugin that is no longer
+     * installed must be removed — a stale copy re-declares its classes and
+     * breaks the Gradle build.
+     */
+    public function it_prunes_stale_generated_plugin_copies(): void
+    {
+        $staleDir = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/removed_plugin';
+        $this->files->ensureDirectoryExists($staleDir);
+        $this->files->put($staleDir.'/Zombie.kt', 'class Zombie {}');
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect());
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryDoesNotExist($staleDir);
+        $this->assertFileExists(
+            $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt'
+        );
+    }
+
+    /**
+     * @test
+     *
      * Should preserve directory structure when copying Kotlin files.
      */
     public function it_preserves_directory_structure_when_copying(): void

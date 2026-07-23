@@ -47,6 +47,9 @@
         "phpstan/phpstan-phpunit": "^1.0",
         "spatie/laravel-ray": "^1.26"
     },
+    "suggest": {
+        "ext-zip": "Required by native:install to validate and extract the downloaded Android PHP binary archives"
+    },
     "conflict": {
         "nativephp/mobile-device": "*",
         "nativephp/mobile-dialog": "*",

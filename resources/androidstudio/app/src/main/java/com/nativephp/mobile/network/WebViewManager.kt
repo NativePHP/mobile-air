@@ -23,7 +23,12 @@ import com.nativephp.mobile.security.LaravelSecurity
 class WebViewManager(
     private val context: Context,
     private val webView: WebView,
-    private val phpBridge: PHPBridge
+    private val phpBridge: PHPBridge,
+    // An embedded webview lives INSIDE the native tree (php-mode <webview>
+    // element). It must never drive app-level state: no native/web mode
+    // flips, no chrome updates from response headers — those belong to the
+    // root webview alone.
+    private val embedded: Boolean = false
 ) {
     private val TAG = "PHPMonitor"
     private var fullscreenView: View? = null
@@ -376,17 +381,22 @@ class WebViewManager(
                 // flip happens in onPageCommitVisible instead, so the swap never
                 // flashes a blank/stale WebView.
                 val activity = context as? MainActivity
-                if (activity?.pendingWebSwap != true) {
+                if (!embedded && activity?.pendingWebSwap != true) {
                     com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
                 }
 
-                // Inject safe area insets IMMEDIATELY when page starts loading
-                // This ensures CSS variables are available before DOM parsing
-                activity?.injectSafeAreaInsetsToWebView()
+                if (!embedded) {
+                    // Inject safe area insets IMMEDIATELY when page starts loading
+                    // This ensures CSS variables are available before DOM parsing
+                    activity?.injectSafeAreaInsetsToWebView()
+                }
             }
 
             override fun onPageCommitVisible(view: WebView, url: String) {
                 super.onPageCommitVisible(view, url)
+                if (embedded) {
+                    return
+                }
                 val activity = context as? MainActivity
                 if (activity?.pendingWebSwap == true) {
                     activity.pendingWebSwap = false
@@ -407,6 +417,13 @@ class WebViewManager(
                 request: WebResourceRequest
             ) {
                 if (response == null) {
+                    return
+                }
+
+                // Embedded webviews must not drive the app's chrome: a plain
+                // web page here would otherwise clearAll() the native UI state
+                // (top bar / tabs) out from under the native screen hosting it.
+                if (embedded) {
                     return
                 }
 

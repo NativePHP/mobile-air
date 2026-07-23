@@ -178,11 +178,19 @@ class InstallCommand extends Command
         )) {
             $url = 'https://github.com/NativePHP/mobile-air';
 
-            match (PHP_OS_FAMILY) {
-                'Darwin' => exec("open {$url}"),
-                'Windows' => exec("start {$url}"),
-                default => exec("xdg-open {$url}"),
-            };
+            // xdg-open may be absent on headless/minimal Linux and WSL —
+            // probe first and fall back to printing the URL. Quote the URL
+            // everywhere; `start` needs a leading "" title arg when quoting.
+            if (PHP_OS_FAMILY === 'Darwin') {
+                exec('open '.escapeshellarg($url));
+            } elseif (PHP_OS_FAMILY === 'Windows') {
+                exec('start "" "'.$url.'"');
+            } else {
+                exec('command -v xdg-open >/dev/null 2>&1', $probe, $missing);
+                $missing === 0
+                    ? exec('xdg-open '.escapeshellarg($url).' >/dev/null 2>&1')
+                    : $this->line("  Open in your browser: {$url}");
+            }
         }
 
         $this->showSuperNativeBanner();
@@ -257,14 +265,17 @@ class InstallCommand extends Command
         $envPath = base_path('.env');
         $envContents = file_exists($envPath) ? file_get_contents($envPath) : '';
 
-        $pattern = "/^{$key}=.*$/m";
+        // [^\r\n]* instead of .*$ so a CRLF file's trailing \r isn't consumed
+        // by the replacement (which would leave mixed line endings on Windows)
+        $pattern = "/^{$key}=[^\\r\\n]*/m";
 
         if (preg_match($pattern, $envContents)) {
             // Update existing value
             $envContents = preg_replace($pattern, "{$key}={$value}", $envContents);
         } else {
-            // Append new value
-            $envContents = rtrim($envContents)."\n\n{$key}={$value}\n";
+            // Append new value, matching the file's existing line endings
+            $eol = str_contains($envContents, "\r\n") ? "\r\n" : "\n";
+            $envContents = rtrim($envContents).$eol.$eol."{$key}={$value}".$eol;
         }
 
         file_put_contents($envPath, $envContents);
