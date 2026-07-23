@@ -132,6 +132,52 @@ class AndroidBundleCopyTest extends TestCase
         $this->assertStringContainsString('/XD "'.str_replace('/', '\\', $source.'/custom/cache').'"', $cmd);
     }
 
+    public function test_robocopy_prunes_vendor_patterns_from_destination(): void
+    {
+        Process::fake([
+            'robocopy*' => Process::result(output: '', exitCode: 1),
+        ]);
+
+        $source = $this->testProjectPath.'/app-source';
+        $this->createDirectoryStructure($source.'/', ['app' => ['Models' => ['User.php' => '<?php']]]);
+
+        // Stage the destination as robocopy leaves it: vendor docs and
+        // metadata still present, since /XD and /XF cannot express the
+        // multi-level vendor/** wildcards rsync filters natively.
+        $destination = $this->testProjectPath.'/bundle';
+        $this->createDirectoryStructure($destination.'/', [
+            'resources' => ['keep.md' => '# keep'],
+            'vendor' => [
+                'autoload.php' => '<?php',
+                'stray.md' => '# depth zero, rsync would keep it',
+                'acme' => ['pkg' => [
+                    'README.md' => '# strip',
+                    'LICENSE' => 'MIT',
+                    'phpstan.neon' => 'includes: []',
+                    'docs' => ['guide.md' => '# strip'],
+                    'src' => ['Pkg.php' => '<?php', 'deep' => ['notes.md' => '# strip']],
+                ]],
+            ],
+        ]);
+
+        (new \ReflectionMethod(BundleFileManager::class, 'copyWithRobocopy'))
+            ->invoke(null, $source, $destination, []);
+
+        // Pruned at any depth inside vendor packages.
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/README.md');
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/LICENSE');
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/phpstan.neon');
+        $this->assertDirectoryDoesNotExist($destination.'/vendor/acme/pkg/docs');
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/src/deep/notes.md');
+
+        // Untouched: runtime vendor code, vendor root files (rsync's
+        // vendor/**/ form needs one directory level), and app files.
+        $this->assertFileExists($destination.'/vendor/acme/pkg/src/Pkg.php');
+        $this->assertFileExists($destination.'/vendor/autoload.php');
+        $this->assertFileExists($destination.'/vendor/stray.md');
+        $this->assertFileExists($destination.'/resources/keep.md');
+    }
+
     public function test_robocopy_throws_when_exit_code_signals_failure(): void
     {
         // Robocopy exit codes below 8 are success variants; 8+ mean

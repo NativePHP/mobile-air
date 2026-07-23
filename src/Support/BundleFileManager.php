@@ -103,8 +103,8 @@ class BundleFileManager
             }
 
             // Multi-level wildcards (vendor/**/*.md) cannot be expressed
-            // with /XD or /XF. They only slim the bundle, so skipping
-            // them on Windows is a size cost rather than a bug.
+            // with /XD or /XF, so they are pruned from the destination
+            // after robocopy finishes instead.
             if (str_contains($pattern, '**')) {
                 continue;
             }
@@ -131,6 +131,45 @@ class BundleFileManager
         // Robocopy exit codes < 8 are success
         if ($result->exitCode() >= 8) {
             throw new \Exception('Failed to copy app bundle (robocopy exit code '.$result->exitCode().')');
+        }
+
+        self::pruneVendorPatterns($destination);
+    }
+
+    /**
+     * Delete files matching VENDOR_PATTERNS from a copied vendor tree.
+     * Robocopy cannot express the multi-level vendor wildcards rsync
+     * handles natively, so the Windows backend prunes them here to
+     * keep the copy contract identical on every platform.
+     */
+    private static function pruneVendorPatterns(string $destination): void
+    {
+        $vendorPath = $destination.'/vendor';
+
+        if (! is_dir($vendorPath)) {
+            return;
+        }
+
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($vendorPath, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        foreach ($items as $item) {
+            // rsync's vendor/**/<pattern> form needs at least one directory
+            // level below vendor/, so files sitting directly in vendor/
+            // (only autoload.php in practice) are never matched.
+            if ($items->getDepth() < 1) {
+                continue;
+            }
+
+            foreach (BundleExclusions::VENDOR_PATTERNS as $pattern) {
+                if (fnmatch($pattern, $item->getFilename())) {
+                    $item->isDir() ? File::deleteDirectory($item->getPathname()) : unlink($item->getPathname());
+
+                    break;
+                }
+            }
         }
     }
 
