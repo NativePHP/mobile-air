@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Support\BundleFileManager;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
@@ -238,21 +239,14 @@ trait PreparesBuild
                 unlink($destinationZip);
             }
 
-            $excludedDirs = match (PHP_OS_FAMILY) {
-                'Windows' => array_merge(config('nativephp.cleanup_exclude_files'), ['.git', 'node_modules', 'nativephp', 'vendor/nativephp/mobile/resources']),
-                'Linux' => array_merge(config('nativephp.cleanup_exclude_files'), ['.git', 'node_modules', 'nativephp/ios', 'nativephp/android']),
-                'Darwin' => array_merge(config('nativephp.cleanup_exclude_files'), ['.git', 'node_modules', 'nativephp/ios', 'nativephp/android']),
-                default => config('nativephp.cleanup_exclude_files'),
-            };
+            $configExcludes = config('nativephp.cleanup_exclude_files', []);
 
-            $excludedDirs[] = 'bootstrap/cache';
-
-            $this->logToFile('  Excluded directories: '.implode(', ', $excludedDirs));
+            $this->logToFile('  Config excludes: '.(implode(', ', $configExcludes) ?: '(none)').' — bundled defaults in BundleExclusions');
 
             $srcDir = base_path('vendor/nativephp/mobile/bootstrap/android');
 
             $this->logToFile('  Copying Laravel source...');
-            $this->components->task('Copying Laravel source', fn () => $this->platformOptimizedCopy($source, $tempDir, $excludedDirs));
+            $this->components->task('Copying Laravel source', fn () => BundleFileManager::copy($source, $tempDir, $configExcludes));
 
             File::ensureDirectoryExists($tempDir.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache');
 
@@ -298,6 +292,13 @@ trait PreparesBuild
                 return true;
             });
 
+            $this->logToFile('  Removing non-runtime files...');
+            $this->components->task('Removing non-runtime files', function () use ($tempDir, $configExcludes) {
+                BundleFileManager::removeUnnecessaryFiles($tempDir, $configExcludes);
+
+                return true;
+            });
+
             $version = config('nativephp.version', now()->format('Ymd-His'));
             $versionCode = config('nativephp.version_code', 1);
             $bundleVersionId = $version === 'DEBUG' ? 'DEBUG' : "{$version}b{$versionCode}";
@@ -318,7 +319,7 @@ trait PreparesBuild
             }
 
             $this->logToFile('  Creating bundle archive...');
-            $this->components->task('Creating bundle archive', fn () => $this->createZipBundle($tempDir, $destinationZip, $excludedDirs));
+            $this->components->task('Creating bundle archive', fn () => $this->createZipBundle($tempDir, $destinationZip, $configExcludes));
 
             if (! file_exists($destinationZip) || filesize($destinationZip) <= 1000) {
                 $this->logToFile('ERROR: Failed to create valid zip file');
@@ -368,7 +369,7 @@ trait PreparesBuild
     /**
      * Create ZIP bundle with cross-platform support
      */
-    protected function createZipBundle(string $source, string $destination, array $excludedDirs = []): void
+    protected function createZipBundle(string $source, string $destination, array $configExcludes = []): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
             $sevenZip = config('nativephp.android.7zip-location');
@@ -392,10 +393,9 @@ trait PreparesBuild
             }
 
             // Mirror the exclusions applied by addDirectoryToZip() on macOS/Linux.
-            // The robocopy /XD exclusions in platformOptimizedCopy remain the first
-            // line of defense, but /XD is directory-only — the zip-level *.jks and
-            // laravel.log patterns here are what keep keystores and logs out of
-            // the publicly distributed bundle.
+            // The BundleFileManager excludes remain the first line of defense, but
+            // the zip-level *.jks and laravel.log patterns here are what keep
+            // keystores and logs out of the distributed bundle.
             $patterns = [
                 // Recursive name/extension matches (any depth)
                 '-xr!node_modules',
@@ -420,7 +420,7 @@ trait PreparesBuild
 
             // Honor the configured exclusions for parity with the unix branch
             // (entries containing * pass through as 7-Zip wildcards)
-            foreach ($excludedDirs as $dir) {
+            foreach ($configExcludes as $dir) {
                 $patterns[] = '-x!'.str_replace('/', '\\', rtrim($dir, '/'));
             }
 
@@ -444,7 +444,7 @@ trait PreparesBuild
             exit(1);
         }
 
-        $this->addDirectoryToZip($zip, $source, '', $excludedDirs);
+        $this->addDirectoryToZip($zip, $source, '', $configExcludes);
 
         $requiredDirs = [
             'bootstrap/cache',
@@ -469,7 +469,7 @@ trait PreparesBuild
     /**
      * Add directory contents to ZIP archive
      */
-    protected function addDirectoryToZip(\ZipArchive $zip, string $source, string $prefix = '', array $excludedDirs = []): void
+    protected function addDirectoryToZip(\ZipArchive $zip, string $source, string $prefix = '', array $configExcludes = []): void
     {
         $source = rtrim(str_replace('\\', '/', $source), '/').'/';
 
@@ -484,7 +484,7 @@ trait PreparesBuild
 
             // Check against configured exclusions first
             $shouldExclude = false;
-            foreach ($excludedDirs as $excludedDir) {
+            foreach ($configExcludes as $excludedDir) {
                 // Handle wildcard patterns (e.g., "public/fonts/*")
                 if (str_contains($excludedDir, '*')) {
                     $pattern = str_replace('*', '.*', preg_quote($excludedDir, '/'));
@@ -989,6 +989,4 @@ trait PreparesBuild
     abstract protected function updateFirebaseConfiguration(): void;
 
     abstract protected function removeDirectory(string $path): void;
-
-    abstract protected function platformOptimizedCopy(string $source, string $destination, array $excludedDirs): void;
 }

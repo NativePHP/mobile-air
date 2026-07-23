@@ -17,7 +17,10 @@ class ReleaseBuildBundleTest extends TestCase
     {
         parent::setUp();
 
-        $this->testProjectPath = sys_get_temp_dir().'/nativephp_release_bundle_test_'.uniqid();
+        // realpath() matters: sys_get_temp_dir() is a symlink on macOS and
+        // addDirectoryToZip() derives archive paths from getRealPath(), so
+        // an unresolved base path would mangle every entry in the zip.
+        $this->testProjectPath = realpath(sys_get_temp_dir()).'/nativephp_release_bundle_test_'.uniqid();
 
         File::ensureDirectoryExists($this->testProjectPath);
         app()->setBasePath($this->testProjectPath);
@@ -61,18 +64,20 @@ class ReleaseBuildBundleTest extends TestCase
 
     public function test_android_release_bundle_excludes_cached_bootstrap_files_and_recreates_cache_directory(): void
     {
+        // Composer is faked but rsync is not — the copy must really run
+        // through BundleFileManager so the zip assertions below reflect
+        // the bundle an actual build would produce.
         Process::fake([
             'composer install*' => Process::result(),
             'composer dump-autoload*' => Process::result(),
         ]);
-        Process::preventStrayProcesses();
+
+        config(['nativephp.cleanup_exclude_files' => ['secret']]);
 
         $this->createAndroidProjectFixture();
 
         $builder = new ReleaseBuildTester;
         $builder->testPrepareLaravelBundle();
-
-        $this->assertContains('bootstrap/cache', $builder->copiedWithExcludedDirs);
 
         Process::assertRan('composer install --no-dev --no-interaction');
         Process::assertRan('composer dump-autoload --optimize --classmap-authoritative');
@@ -86,6 +91,24 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertFalse($zip->statName('bootstrap/cache/services.php'));
         $this->assertFalse($zip->statName('bootstrap/cache/packages.php'));
         $this->assertNotFalse($zip->statName('bootstrap/cache/'));
+
+        // Delegation to BundleFileManager, asserted by outcome: config
+        // excludes and vendor slimming patterns shape the final zip.
+        $this->assertNotFalse($zip->statName('app/Example.php'));
+        $this->assertNotFalse($zip->statName('vendor/acme/pkg/src/Pkg.php'));
+        $this->assertFalse($zip->statName('vendor/acme/pkg/README.md'));
+        $this->assertFalse($zip->statName('secret/api-key.txt'));
+
+        // Cleanup-only files survive the copy so composer install can use
+        // them, then the cleanup pass removes them from the final bundle.
+        // The Android artisan.php bootstrap must survive that pass.
+        $this->assertFalse($zip->statName('artisan'));
+        $this->assertFalse($zip->statName('composer.lock'));
+        $this->assertNotFalse($zip->statName('artisan.php'));
+        $this->assertNotFalse($zip->statName('.version'));
+
+        // Runtime dirs are re-added as empty entries after cleanup strips them.
+        $this->assertNotFalse($zip->statName('storage/framework/views/'));
 
         $zip->close();
     }
@@ -111,6 +134,16 @@ class ReleaseBuildBundleTest extends TestCase
 
         File::put($this->testProjectPath.'/app/Example.php', '<?php');
         File::put($this->testProjectPath.'/app/release-fixture.bin', random_bytes(2048));
+
+        File::put($this->testProjectPath.'/artisan', '#!/usr/bin/env php');
+        File::put($this->testProjectPath.'/composer.lock', '{}');
+
+        File::ensureDirectoryExists($this->testProjectPath.'/vendor/acme/pkg/src');
+        File::put($this->testProjectPath.'/vendor/acme/pkg/src/Pkg.php', '<?php');
+        File::put($this->testProjectPath.'/vendor/acme/pkg/README.md', '# strip');
+
+        File::ensureDirectoryExists($this->testProjectPath.'/secret');
+        File::put($this->testProjectPath.'/secret/api-key.txt', 'excluded via config');
         File::put($this->testProjectPath.'/bootstrap/cache/packages.php', '<?php return [];');
         File::put($this->testProjectPath.'/bootstrap/cache/services.php', '<?php return [];');
         File::put($this->testProjectPath.'/vendor/nativephp/mobile/bootstrap/android/artisan.php', '<?php // artisan');
@@ -124,8 +157,6 @@ class ReleaseBuildTester
     }
 
     public object $components;
-
-    public array $copiedWithExcludedDirs = [];
 
     public function __construct()
     {
@@ -158,28 +189,6 @@ class ReleaseBuildTester
     {
         if (is_dir($path)) {
             File::deleteDirectory($path);
-        }
-    }
-
-    protected function platformOptimizedCopy(string $source, string $destination, array $excludedDirs): void
-    {
-        $this->copiedWithExcludedDirs = $excludedDirs;
-        $source = rtrim(str_replace('\\', '/', realpath($source)), '/').'/';
-
-        foreach (File::allFiles($source) as $file) {
-            $filePath = str_replace('\\', '/', $file->getRealPath());
-            $relativePath = ltrim(substr($filePath, strlen($source)), '/');
-
-            foreach ($excludedDirs as $excludedDir) {
-                $excludedDir = rtrim($excludedDir, '/');
-
-                if ($relativePath === $excludedDir || str_starts_with($relativePath, $excludedDir.'/')) {
-                    continue 2;
-                }
-            }
-
-            File::ensureDirectoryExists(dirname($destination.'/'.$relativePath));
-            File::copy($filePath, $destination.'/'.$relativePath);
         }
     }
 

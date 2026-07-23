@@ -81,16 +81,52 @@ class BundleFileManager
     private static function copyWithRobocopy(string $source, string $destination, array $configPaths): void
     {
         $excludes = self::excludes($configPaths, $source);
+        $source = rtrim($source, '/');
 
-        // Robocopy uses /XD for directories with absolute paths
+        // Robocopy path matching requires backslashes, but callers build
+        // their paths with forward slashes (base_path('x')). /XD only
+        // excludes directories, so files are registered via /XF.
         $excludeArgs = '';
+        $append = function (string $path) use (&$excludeArgs): void {
+            $flag = is_file($path) ? '/XF' : '/XD';
+            $excludeArgs .= ' '.$flag.' "'.str_replace('/', '\\', $path).'"';
+        };
+
         foreach ($excludes as $pattern) {
-            $dir = ltrim($pattern, '/\\');
-            $dir = str_replace('/', '\\', $dir);
-            $excludeArgs .= " /XD \"{$source}\\{$dir}\"";
+            // Bare names match at any depth, mirroring rsync's unanchored
+            // semantics. A name can be a file or a directory and unused
+            // robocopy flags are harmless, so register it as both.
+            if (! str_contains($pattern, '/')) {
+                $excludeArgs .= " /XD \"{$pattern}\" /XF \"{$pattern}\"";
+
+                continue;
+            }
+
+            // Multi-level wildcards (vendor/**/*.md) cannot be expressed
+            // with /XD or /XF. They only slim the bundle, so skipping
+            // them on Windows is a size cost rather than a bug.
+            if (str_contains($pattern, '**')) {
+                continue;
+            }
+
+            // Single-level wildcards (vendor/*/*/vendor) are expanded here
+            // because robocopy cannot. This also keeps robocopy from
+            // cycling through composer path-repo junctions.
+            if (str_contains($pattern, '*')) {
+                foreach (glob($source.'/'.ltrim($pattern, '/')) ?: [] as $match) {
+                    $append($match);
+                }
+
+                continue;
+            }
+
+            $append($source.'/'.ltrim($pattern, '/'));
         }
 
-        $result = Process::run("robocopy \"{$source}\" \"{$destination}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}");
+        $sourceWin = str_replace('/', '\\', $source);
+        $destinationWin = str_replace('/', '\\', $destination);
+
+        $result = Process::run("robocopy \"{$sourceWin}\" \"{$destinationWin}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}");
 
         // Robocopy exit codes < 8 are success
         if ($result->exitCode() >= 8) {
