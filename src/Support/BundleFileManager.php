@@ -8,19 +8,17 @@ use Illuminate\Support\Facades\Process;
 class BundleFileManager
 {
     /**
-     * All exclusion patterns, with project-level paths anchored by leading /.
-     * Patterns without / match at any depth; patterns with / are project-root only.
-     *
-     * When a source path is given, export-ignore patterns from vendor .gitattributes
-     * are included automatically.
-     *
-     * Optional config paths are anchored and merged (deduplicated).
+     * All exclusion patterns. Project-level paths are anchored by a leading slash,
+     * vendor patterns are scoped under vendor/** so they never match app files,
+     * and bare patterns match at any depth. When a source path is given the
+     * export-ignore patterns from vendor .gitattributes are also included.
+     * Optional config paths are anchored and merged in (deduplicated).
      */
     public static function excludes(array $configPaths = [], ?string $sourcePath = null): array
     {
         $excludes = array_merge(
             BundleExclusions::ANY_DEPTH,
-            BundleExclusions::VENDOR_PATTERNS,
+            array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::VENDOR_PATTERNS),
             BundleExclusions::VENDOR_PATHS,
             array_map(fn ($p) => '/'.$p, BundleExclusions::PROJECT),
             array_map(fn ($p) => '/'.$p, BundleExclusions::COPY_ONLY),

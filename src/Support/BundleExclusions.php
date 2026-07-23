@@ -50,7 +50,7 @@ class BundleExclusions
         'artisan',
     ];
 
-    /** Non-runtime patterns inside vendor packages. */
+    /** Non-runtime patterns matched only inside vendor packages. */
     public const VENDOR_PATTERNS = [
         '*.md',
         'LICENSE*',
