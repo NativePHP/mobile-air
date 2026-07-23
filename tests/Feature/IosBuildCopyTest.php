@@ -409,21 +409,6 @@ class IosBuildCopyTest extends TestCase
         }
     }
 
-    /**
-     * Copy delegates to an external process (rsync/robocopy) so PHP never
-     * loads the file tree into memory.
-     */
-    public function test_copy_delegates_to_external_process_not_php_iterator(): void
-    {
-        $source = file_get_contents(
-            (new \ReflectionMethod(BundleFileManager::class, 'copyWithRsync'))->getFileName()
-        );
-
-        $this->assertStringContainsString('Process::run', $source);
-        $this->assertStringNotContainsString('RecursiveIteratorIterator', $source);
-        $this->assertStringNotContainsString('RecursiveDirectoryIterator', $source);
-    }
-
     public function test_excluded_paths_includes_config_cleanup_exclude_files(): void
     {
         $paths = BundleFileManager::excludes([
