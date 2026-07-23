@@ -26,6 +26,25 @@ import SwiftUI
 ///     publish flow → activeTabIdx changes → set `selection` → SwiftUI
 ///     animates the swap. We don't fire press (already at activeTabIdx).
 ///
+/// **Rapid re-taps (stale publish suppression).** Tab navigations aren't
+/// cancellable PHP-side: once a tap's `replace` starts rendering, the
+/// runloop publishes that screen no matter what the user taps meanwhile.
+/// So a tap sequence Home → Contacts (slow) → Home used to end up on
+/// Contacts: the Home re-tap was swallowed (selection == owning tab),
+/// and the late Contacts publish then yanked `selection` back. Tracked
+/// intent fixes both halves:
+///   - `pendingTabId` records the user's latest tab tap while its
+///     navigation is in flight; tabs it displaced go in
+///     `supersededTabIds`.
+///   - A publish for a superseded tab is stale: don't sync `selection`
+///     to it. The user's re-tap press was sent against a tree whose
+///     component had already exited, so PHP dropped its callback id —
+///     re-fire the pending tab's press with THIS publish's fresh id and
+///     wait for the next publish instead.
+///   - A publish for the pending tab (or any unrelated URI — e.g. a
+///     mount() redirect) settles the race: clear the trackers and sync
+///     selection as before.
+///
 /// **Three-tier appearance** (matches NavigationStack):
 ///   - No `background_color` → defaults; on iOS 26+ Liquid Glass.
 ///   - `background_color` set → `.toolbarBackground(.visible, .tabBar)`
@@ -42,6 +61,16 @@ struct NativeRootTabsRenderer: View {
     // stable across publishes for the same tab.
     @State private var selection: String = ""
     @StateObject private var tabBag = TabCoordinatorBag()
+
+    /// The tab the user most recently tapped, while its `replace`
+    /// navigation is still in flight PHP-side. Cleared when a publish
+    /// settles the race (see "Rapid re-taps" in the header comment).
+    @State private var pendingTabId: String?
+
+    /// Tabs whose in-flight navigation the user superseded by tapping
+    /// another tab before the publish landed. A publish for one of these
+    /// is stale — it must not move `selection`.
+    @State private var supersededTabIds: Set<String> = []
 
     var body: some View {
         let tabs = node.children.filter { $0.type == "bottom_nav_item" }
@@ -247,6 +276,26 @@ struct NativeRootTabsRenderer: View {
         .onChange(of: owningId) { newId in
             // PHP-driven owning-tab change (publish landed under a
             // different tab's URL prefix) — sync our SwiftUI selection.
+            if let pending = pendingTabId, newId != pending {
+                if supersededTabIds.contains(newId),
+                   let tab = tabs.first(where: { $0.props.getString("id", default: "") == pending }),
+                   tab.onPress != 0 {
+                    // Stale publish: a navigation the user superseded by
+                    // tapping again finished late. Hold `selection` where
+                    // the user put it, and re-fire the pending tab's
+                    // press — the tap-time press carried the previous
+                    // tree's callback id, which the component that just
+                    // published doesn't own, so PHP dropped it. This
+                    // tree's id is live.
+                    NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
+                    return
+                }
+                // Unrelated navigation won the race (programmatic
+                // replace, mount() redirect, or the pending tab left
+                // the layout) — accept the publish as authoritative.
+            }
+            pendingTabId = nil
+            supersededTabIds.removeAll()
             if selection != newId {
                 selection = newId
             }
@@ -272,27 +321,42 @@ struct NativeRootTabsRenderer: View {
         }
         .onChange(of: selection) { newId in
             // User tapped a tab — fire its press handler so PHP runs
-            // the BottomNavItem-auto-wired `replace` navigation. We
-            // don't fire when selection already matches the owning tab
-            // (PHP-driven sync path).
-            guard newId != owningId else { return }
+            // the BottomNavItem-auto-wired `replace` navigation. Skip
+            // only the PHP-driven sync echo (we just set selection to
+            // match a publish and nothing is in flight). A tap BACK to
+            // the owning tab while a navigation IS in flight is a real
+            // user action: PHP is already navigating away, so it must
+            // be told to come back.
+            if newId == owningId && pendingTabId == nil { return }
             guard let tab = tabs.first(where: { $0.props.getString("id", default: "") == newId }) else { return }
+            let url = tab.props.getString("url", default: "")
+            let isSearch = tab.props.getBool("search")
             if tab.onPress != 0 {
+                // URL-backed tabs navigate — record the user's latest
+                // intent so the publish handler can tell the pending
+                // navigation's publish from a superseded one arriving
+                // late (see "Rapid re-taps" in the header comment).
+                if !url.isEmpty && !isSearch {
+                    if let prev = pendingTabId, prev != newId {
+                        supersededTabIds.insert(prev)
+                    }
+                    pendingTabId = newId
+                }
                 NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
             }
             // Action-only tab (no URL, no press handler) — the press
             // fires something off-screen instead of navigating, so PHP
             // won't republish to switch the owning tab. Snap selection
-            // back to the actual owning tab so the visible "selected"
-            // indicator doesn't get stuck. Search-role tabs also have
-            // `on_press == 0` (they're iOS-owned, no PHP destination)
-            // but should keep selection on themselves while the user
-            // interacts with the search UI — we skip snap-back for them.
-            let url = tab.props.getString("url", default: "")
-            let isSearch = tab.props.getBool("search")
+            // back so the visible "selected" indicator doesn't get
+            // stuck: to the pending tab when a navigation is in flight
+            // (that's where the user is headed), else to the owning
+            // tab. Search-role tabs also have `on_press == 0` (they're
+            // iOS-owned, no PHP destination) but should keep selection
+            // on themselves while the user interacts with the search
+            // UI — we skip snap-back for them.
             if url.isEmpty && !isSearch {
                 DispatchQueue.main.async {
-                    selection = owningId
+                    selection = pendingTabId ?? owningId
                 }
             }
         }
