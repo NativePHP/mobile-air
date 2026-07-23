@@ -52,6 +52,9 @@ class JumpCommand extends Command
     /** Handle to the mDNS/Bonjour advertiser subprocess (LAN discovery). */
     private $mdnsProcess = null;
 
+    /** True when $mdnsProcess is our pure-PHP responder (needs stop-file teardown, not a hard kill). */
+    private bool $mdnsIsPhpResponder = false;
+
     /** @var resource|null Router (php -S) proc_open handle. */
     private $routerProcess = null;
 
@@ -601,9 +604,13 @@ class JumpCommand extends Command
             usleep(100000);
         }
         if (! is_resource($this->mdnsProcess)) {
-            $this->warn($this->isPortInUse($httpPort)
-                ? 'LAN discovery unavailable (no dns-sd/avahi) — use the QR code.'
-                : "Server did not start on port {$httpPort} — not advertising on the network.");
+            if (! $this->isPortInUse($httpPort)) {
+                $this->warn("Server did not start on port {$httpPort} — not advertising on the network.");
+            } elseif (PHP_OS_FAMILY !== 'Windows') {
+                // Windows falls back to the pure-PHP responder, which warns for
+                // itself if it can't bind — so only warn here on macOS/Linux.
+                $this->warn('LAN discovery unavailable (no dns-sd/avahi) — use the QR code.');
+            }
         }
 
         // Signal handlers and the advertiser/registry shutdown functions are
@@ -702,6 +709,69 @@ class JumpCommand extends Command
     }
 
     /**
+     * Windows fallback advertiser: spawn the pure-PHP DNS-SD responder
+     * (resources/jump/mdns-server.php) when no Bonjour dns-sd.exe is present.
+     * Stored on $this->mdnsProcess so the existing stopAdvertiser() teardown
+     * reaps it unchanged. Best-effort — if it can't bind UDP 5353 the QR still
+     * works, so we only warn.
+     */
+    private function startPhpMdnsResponder(int $httpPort, string $ip, string $label): void
+    {
+        $serverPath = __DIR__.'/../../resources/jump/mdns-server.php';
+        if (! file_exists($serverPath)) {
+            return;
+        }
+
+        $logDir = base_path('storage/logs');
+        if (! is_dir($logDir)) {
+            @mkdir($logDir, 0755, true);
+        }
+        $logFile = $logDir.'/jump-mdns.log';
+
+        // Pass our own PID so the responder can watch it: if Jump is hard-killed
+        // or crashes (no graceful stopAdvertiser), the responder notices the
+        // parent is gone and multicasts its own goodbye instead of lingering.
+        $cmd = sprintf(
+            '%s %s %s %s %d %s %d',
+            escapeshellarg(PHP_BINARY),
+            escapeshellarg($serverPath),
+            escapeshellarg(base_path()),
+            escapeshellarg($label),
+            $httpPort,
+            escapeshellarg($ip),
+            getmypid() ?: 0,
+        );
+        $desc = [
+            0 => ['file', 'NUL', 'r'],
+            1 => ['file', $logFile, 'a'],
+            2 => ['file', $logFile, 'a'],
+        ];
+
+        // bypass_shell so stopAdvertiser()'s proc_terminate() signals php.exe
+        // itself (not a wrapping cmd.exe), matching the bridge/vite spawns.
+        $proc = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
+        if (! is_resource($proc)) {
+            return;
+        }
+
+        // Give it a beat to bind (or fail on a missing ext-sockets / busy port).
+        usleep(400000);
+        if (! (@proc_get_status($proc)['running'] ?? false)) {
+            proc_close($proc);
+            $this->warn('LAN discovery unavailable — the pure-PHP mDNS responder exited (see storage/logs/jump-mdns.log). Use the QR code.');
+
+            return;
+        }
+
+        $this->mdnsProcess = $proc;
+        $this->mdnsIsPhpResponder = true;
+        if (($pid = (int) (@proc_get_status($proc)['pid'] ?? 0)) > 0) {
+            $this->childPids[] = $pid;
+        }
+        $this->components->info("Discoverable on this network as \"{$label}\" — open the app to connect without scanning.");
+    }
+
+    /**
      * Terminate the mDNS/Bonjour advertiser subprocess. When `dns-sd -R`
      * exits, mDNSResponder deregisters the service and multicasts goodbye
      * packets, so browsing devices drop the entry within seconds instead of
@@ -709,11 +779,39 @@ class JumpCommand extends Command
      */
     public function stopAdvertiser(): void
     {
-        if (is_resource($this->mdnsProcess)) {
-            proc_terminate($this->mdnsProcess);
-            proc_close($this->mdnsProcess);
-            $this->mdnsProcess = null;
+        if (! is_resource($this->mdnsProcess)) {
+            return;
         }
+
+        if ($this->mdnsIsPhpResponder) {
+            // The pure-PHP responder can't catch proc_terminate() (a hard
+            // TerminateProcess on Windows), so a plain kill would skip the
+            // DNS-SD goodbye and leave a phantom "server nearby" in the app for
+            // the record TTL. Instead drop the stop-file it polls: it multicasts
+            // the goodbye (TTL-0) and exits on its own. proc_terminate stays as a
+            // backstop only if it doesn't exit within the grace window.
+            $stopFile = base_path('storage/framework/jump-mdns.stop');
+            @touch($stopFile);
+            for ($i = 0; $i < 15; $i++) { // up to ~1.5s
+                if (! (@proc_get_status($this->mdnsProcess)['running'] ?? false)) {
+                    break;
+                }
+                usleep(100000);
+            }
+            @unlink($stopFile);
+            if (@proc_get_status($this->mdnsProcess)['running'] ?? false) {
+                @proc_terminate($this->mdnsProcess);
+            }
+            @proc_close($this->mdnsProcess);
+            $this->mdnsProcess = null;
+            $this->mdnsIsPhpResponder = false;
+
+            return;
+        }
+
+        proc_terminate($this->mdnsProcess);
+        proc_close($this->mdnsProcess);
+        $this->mdnsProcess = null;
     }
 
     /**
@@ -1316,6 +1414,14 @@ class JumpCommand extends Command
                 escapeshellarg($txtPort),
                 escapeshellarg($txtName),
             );
+        } elseif (PHP_OS_FAMILY === 'Windows') {
+            // No Bonjour dns-sd.exe on this Windows box — fall back to our
+            // self-contained pure-PHP DNS-SD responder so LAN discovery still
+            // works without asking the user to install Bonjour. It advertises
+            // the identical _jump._tcp record (host/port/name) the QR encodes.
+            $this->startPhpMdnsResponder($httpPort, $ip, $label);
+
+            return;
         } else {
             return; // no advertiser on this platform — QR-only, no harm
         }
