@@ -34,7 +34,7 @@ it('owns Workerman workers carrying the Jump prefix despite the rewritten proces
 });
 
 it('owns our artisan serve (spawned with --no-reload) but not a plain one', function () {
-    expect(isJumpOwned("php artisan serve --port=8000 --host=127.0.0.1 --no-interaction --no-reload", 42))->toBeTrue()
+    expect(isJumpOwned('php artisan serve --port=8000 --host=127.0.0.1 --no-interaction --no-reload', 42))->toBeTrue()
         ->and(isJumpOwned('php artisan serve --port=8000', 42))->toBeFalse();
 });
 

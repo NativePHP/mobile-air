@@ -662,6 +662,7 @@ function jumpBuildLaravelResponse(string $raw, string $method, string $uri): Res
         $body = substr($raw, $split + 4);
         if (preg_match('#^HTTP/\d\.\d\s+1\d\d#', $rawHeaders)) {
             $raw = $body; // informational — the real response follows
+
             continue;
         }
         break;

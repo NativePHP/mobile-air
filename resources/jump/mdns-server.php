@@ -35,7 +35,6 @@
  * Output (banner + errors) goes to STDERR so the caller can route it to
  * storage/logs/jump-mdns.log, mirroring the other Windows Jump subprocesses.
  */
-
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_WARNING);
 
 $basePath = $argv[1] ?? getcwd();
