@@ -1371,6 +1371,152 @@ JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_unlock(&g_ephemeral_mutex);
 }
 
+// ============================================================================
+// Async Task Lane — pool of TSRM contexts for immediate background PHP work
+// ============================================================================
+// Each pool thread (managed by Kotlin's AsyncTaskExecutor) boots its OWN PHP
+// interpreter context once, then runs `native:async:run --id=<id>` for tasks
+// handed to it. Unlike the single queue worker this lane is CONCURRENT (N
+// threads); unlike ephemeral it is reused across tasks, not torn down each time.
+// It never touches SQLite or the standard queue — task ids arrive from Kotlin,
+// and the task payload/result travel via the PHP-side temp-file transport plus
+// the AsyncTask.Complete bridge function (which wakes the UI runloop).
+//
+// "Booted?" is tracked per-thread via a pthread key, so one set of entrypoints
+// serves every pool thread with no shared bookkeeping. Boots are serialized
+// (g_async_boot_mutex) to avoid concurrent module-startup races (as the webview
+// lane does); runs proceed concurrently, each on its own TSRM context.
+
+static pthread_key_t g_async_booted_key;
+static pthread_once_t g_async_key_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t g_async_boot_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void make_async_booted_key(void) {
+    pthread_key_create(&g_async_booted_key, NULL);
+}
+
+static int async_thread_booted(void) {
+    pthread_once(&g_async_key_once, make_async_booted_key);
+    return pthread_getspecific(g_async_booted_key) != NULL;
+}
+
+static void set_async_thread_booted(int booted) {
+    pthread_once(&g_async_key_once, make_async_booted_key);
+    pthread_setspecific(g_async_booted_key, booted ? (void *) 1 : NULL);
+}
+
+// Allocate + initialize a PHP context for THIS async pool thread. Same shape as
+// worker_embed_init — TSRM is already started by the persistent runtime.
+static int async_embed_init(void) {
+    ts_resource(0);
+    setup_embed_module();
+    if (php_embed_module.startup(&php_embed_module) == FAILURE) {
+        LOGE("async_embed_init: module startup failed");
+        return FAILURE;
+    }
+    if (php_request_startup() == FAILURE) {
+        LOGE("async_embed_init: request startup failed");
+        return FAILURE;
+    }
+    return SUCCESS;
+}
+
+static void async_embed_shutdown(void) {
+    php_request_shutdown(NULL);
+    ts_free_thread();
+}
+
+JNIEXPORT jint JNICALL native_async_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    if (async_thread_booted()) {
+        return 0; // this pool thread already owns a context
+    }
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("async_boot: timed out waiting for persistent boot to settle");
+        return -1;
+    }
+
+    const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
+    LOGI("async_boot: booting context on async pool thread");
+
+    // Serialize boots across pool threads — module startup isn't reentrant.
+    pthread_mutex_lock(&g_async_boot_mutex);
+    clear_collected_output();
+
+    setenv("PHP_SELF", "artisan.php", 1);
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+
+    if (async_embed_init() != SUCCESS) {
+        LOGE("async_boot: async_embed_init() FAILED");
+        pthread_mutex_unlock(&g_async_boot_mutex);
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        return -1;
+    }
+
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, bootstrapPath);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    set_async_thread_booted(1);
+    pthread_mutex_unlock(&g_async_boot_mutex);
+
+    (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+    LOGI("async_boot: context ready");
+    return 0;
+}
+
+JNIEXPORT jstring JNICALL native_async_run(JNIEnv *env, jobject thiz, jstring jTaskId) {
+    if (!async_thread_booted()) {
+        LOGE("async_run: context not booted on this thread");
+        return (*env)->NewStringUTF(env, "async context not booted");
+    }
+
+    // taskId is a framework-generated UUID (Str::uuid()), so it's safe to embed
+    // in the eval below; no user input reaches this string.
+    const char *taskId = (*env)->GetStringUTFChars(env, jTaskId, NULL);
+    LOGI("async_run: task %s", taskId);
+
+    clear_collected_output();
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+    setenv("PHP_SELF", "artisan.php", 1);
+
+    char eval_code[1024];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    $_SERVER['PHP_SELF'] = 'artisan.php';\n"
+        "    $_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n"
+        "    \\Native\\Mobile\\Runtime::artisan('native:async:run --id=%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    error_log('async run error: ' . $e->getMessage());\n"
+        "}\n",
+        taskId);
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "async_run");
+    } zend_end_try();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
+
+    (*env)->ReleaseStringUTFChars(env, jTaskId, taskId);
+
+    char *out = get_collected_output();
+    return (*env)->NewStringUTF(env, out ? out : "");
+}
+
+JNIEXPORT void JNICALL native_async_thread_shutdown(JNIEnv *env, jobject thiz) {
+    if (!async_thread_booted()) {
+        return;
+    }
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "async_shutdown");
+    } zend_end_try();
+    async_embed_shutdown();
+    set_async_thread_booted(0);
+    LOGI("async_thread_shutdown: done");
+}
+
 
 // ── Webview PHP Runtimes ────────────────────────────
 // One dedicated PHP context per embedded php-mode <webview> element. The
@@ -1665,6 +1811,11 @@ static JNINativeMethod gMethods[] = {
         {"nativeEphemeralBoot","(Ljava/lang/String;)I",(void *) native_ephemeral_boot},
         {"nativeEphemeralArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_ephemeral_artisan},
         {"nativeEphemeralShutdown","()V",(void *) native_ephemeral_shutdown},
+
+        // Async task lane (immediate concurrent background PHP work)
+        {"nativeAsyncBoot","(Ljava/lang/String;)I",(void *) native_async_boot},
+        {"nativeAsyncRun","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_async_run},
+        {"nativeAsyncThreadShutdown","()V",(void *) native_async_thread_shutdown},
 
         // Webview runtime (dedicated context per embedded php-mode webview)
         {"nativeWebviewPhpBoot","(Ljava/lang/String;)I",(void *) native_webview_php_boot},

@@ -14,6 +14,17 @@ abstract class TestCase extends BaseTestCase
         ];
     }
 
+    protected function tearDown(): void
+    {
+        // Async task state lives in process statics (persistent-runtime shaped),
+        // so reset it between tests for isolation.
+        \Native\Mobile\AsyncTask::clearFake();
+        \Native\Mobile\Support\AsyncTaskRegistry::flush();
+        \Native\Mobile\Support\NativeCallbacks::flush();
+
+        parent::tearDown();
+    }
+
     protected function getEnvironmentSetUp($app)
     {
         // Set up default config values for testing

@@ -1223,6 +1223,245 @@ int ephemeral_php_is_booted(void) {
     return ephemeral_initialized;
 }
 
+// ============================================================================
+// Async Task Lane — pool of TSRM contexts for immediate background PHP work
+// ============================================================================
+// Backs AsyncTask::dispatch(). A fixed pool of worker threads, each with its
+// own TSRM context booted once, running `native:async:run --id=<id>` for tasks
+// assigned to it. Concurrent (one in-flight task per slot) and reused across
+// tasks — unlike the single queue worker and the boot-per-invocation ephemeral
+// lane. Never touches SQLite or the standard queue; the task payload/result
+// travel via the PHP temp-file transport + the AsyncTask.Complete bridge
+// function (which wakes the UI runloop). Android twin: the async lane in
+// php_bridge.c + AsyncTaskExecutor.kt.
+//
+// Swift's AsyncTaskExecutor pins each slot to one serial queue, so a slot is
+// only ever touched by its own thread — the TSRM context stays thread-local.
+
+#define ASYNC_PHP_MAX_SLOTS 4
+
+typedef enum {
+    ASYNC_WORK_RUN = 1,
+    ASYNC_WORK_SHUTDOWN = 2,
+} async_work_type_t;
+
+typedef struct {
+    int in_use;        // slot allocated (guarded by async_pool_mutex)
+    int initialized;   // context booted on its thread
+    int boot_result;
+    dispatch_semaphore_t work_sem;
+    dispatch_semaphore_t done_sem;
+    async_work_type_t work_type;
+    const char *task_id;  // borrowed for the duration of one run
+    char *result;         // strdup'd task output, ownership passes to caller
+    char bootstrap_path[1024];
+} async_php_slot_t;
+
+static async_php_slot_t async_slots[ASYNC_PHP_MAX_SLOTS];
+static pthread_mutex_t async_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void do_async_run(async_php_slot_t *slot) {
+    clear_output_buffer();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+    setenv("PHP_SELF", "artisan.php", 1);
+
+    // task_id is a framework-generated UUID (Str::uuid()), so it's safe to
+    // embed directly; no user input reaches this string.
+    char eval_code[1024];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    $_SERVER['PHP_SELF'] = 'artisan.php';\n"
+        "    $_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n"
+        "    \\Native\\Mobile\\Runtime::artisan('native:async:run --id=%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    error_log('async run error: ' . $e->getMessage());\n"
+        "}\n",
+        slot->task_id ? slot->task_id : "");
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "async_run");
+    } zend_end_try();
+
+    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
+
+    char *out = get_collected_output();
+    slot->result = out ? strdup(out) : strdup("");
+}
+
+static void *async_thread_main(void *arg) {
+    async_php_slot_t *slot = (async_php_slot_t *)arg;
+
+    fprintf(stderr, "ASYNC-PHP: thread started tid=%p\n", (void *)pthread_self());
+    fflush(stderr);
+
+    clear_output_buffer();
+
+    // Same per-thread TSRM init the webview lane uses.
+    if (ephemeral_embed_init() != SUCCESS) {
+        fprintf(stderr, "ASYNC-PHP: embed init FAILED\n");
+        fflush(stderr);
+        slot->boot_result = -1;
+        dispatch_semaphore_signal(slot->done_sem);
+        return NULL;
+    }
+
+    zend_first_try {
+        zend_activate_modules();
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, slot->bootstrap_path);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    char *boot_output = get_collected_output();
+    if (boot_output && strstr(boot_output, "FATAL") != NULL) {
+        fprintf(stderr, "ASYNC-PHP: bootstrap errors: %.200s\n", boot_output);
+        fflush(stderr);
+    }
+
+    slot->initialized = 1;
+    slot->boot_result = 0;
+
+    dispatch_semaphore_signal(slot->done_sem);
+
+    while (1) {
+        dispatch_semaphore_wait(slot->work_sem, DISPATCH_TIME_FOREVER);
+
+        switch (slot->work_type) {
+            case ASYNC_WORK_RUN:
+                do_async_run(slot);
+                break;
+            case ASYNC_WORK_SHUTDOWN:
+                zend_first_try {
+                    zend_eval_string(
+                        "\\Native\\Mobile\\Runtime::shutdown();",
+                        NULL, "async_shutdown");
+                } zend_end_try();
+                ephemeral_embed_shutdown();
+                slot->initialized = 0;
+                dispatch_semaphore_signal(slot->done_sem);
+                return NULL;
+        }
+
+        dispatch_semaphore_signal(slot->done_sem);
+    }
+
+    return NULL;
+}
+
+// Boot one async slot and return its handle (≥ 0), or negative on error.
+// Swift calls this once per pool thread.
+int async_php_boot(const char *bootstrapPath) {
+    int gate = wait_for_persistent_boot(10);
+    if (gate != 0) {
+        fprintf(stderr, "async_php_boot: persistent runtime not ready (gate=%d)\n", gate);
+        fflush(stderr);
+        return -4;
+    }
+
+    pthread_mutex_lock(&async_pool_mutex);
+    int handle = -1;
+    for (int i = 0; i < ASYNC_PHP_MAX_SLOTS; i++) {
+        if (!async_slots[i].in_use) {
+            handle = i;
+            async_slots[i].in_use = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&async_pool_mutex);
+
+    if (handle < 0) {
+        fprintf(stderr, "async_php_boot: no free slots (max %d)\n", ASYNC_PHP_MAX_SLOTS);
+        fflush(stderr);
+        return -2;
+    }
+
+    async_php_slot_t *slot = &async_slots[handle];
+    slot->initialized = 0;
+    slot->boot_result = -1;
+    slot->result = NULL;
+    slot->task_id = NULL;
+    slot->work_sem = dispatch_semaphore_create(0);
+    slot->done_sem = dispatch_semaphore_create(0);
+    snprintf(slot->bootstrap_path, sizeof(slot->bootstrap_path), "%s", bootstrapPath);
+
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_UTILITY, 0);
+
+    int rc = pthread_create(&thread, &attr, async_thread_main, slot);
+    pthread_attr_destroy(&attr);
+
+    if (rc != 0) {
+        fprintf(stderr, "async_php_boot: pthread_create FAILED: %d\n", rc);
+        fflush(stderr);
+        pthread_mutex_lock(&async_pool_mutex);
+        slot->in_use = 0;
+        pthread_mutex_unlock(&async_pool_mutex);
+        return -1;
+    }
+
+    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+
+    if (slot->boot_result != 0) {
+        pthread_mutex_lock(&async_pool_mutex);
+        slot->in_use = 0;
+        pthread_mutex_unlock(&async_pool_mutex);
+        return -3;
+    }
+
+    fprintf(stderr, "async_php_boot: slot %d ready\n", handle);
+    fflush(stderr);
+    return handle;
+}
+
+// Run one task on a specific slot. Blocks until the task completes. Call only
+// from that slot's dedicated Swift serial queue (keeps the context thread-local).
+const char *async_php_run(int handle, const char *taskId) {
+    if (handle < 0 || handle >= ASYNC_PHP_MAX_SLOTS) {
+        return strdup("");
+    }
+
+    async_php_slot_t *slot = &async_slots[handle];
+    if (!slot->in_use || !slot->initialized) {
+        return strdup("");
+    }
+
+    slot->task_id = taskId;
+    slot->result = NULL;
+    slot->work_type = ASYNC_WORK_RUN;
+
+    dispatch_semaphore_signal(slot->work_sem);
+    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+
+    slot->task_id = NULL;
+    return slot->result ? slot->result : strdup("");
+}
+
+void async_php_stop(int handle) {
+    if (handle < 0 || handle >= ASYNC_PHP_MAX_SLOTS) {
+        return;
+    }
+
+    async_php_slot_t *slot = &async_slots[handle];
+    if (!slot->in_use) {
+        return;
+    }
+
+    if (slot->initialized) {
+        slot->work_type = ASYNC_WORK_SHUTDOWN;
+        dispatch_semaphore_signal(slot->work_sem);
+        dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+    }
+
+    pthread_mutex_lock(&async_pool_mutex);
+    slot->in_use = 0;
+    pthread_mutex_unlock(&async_pool_mutex);
+}
+
 // ── Webview PHP Runtimes ────────────────────────────
 // One dedicated PHP context per embedded php-mode <webview> element. The
 // persistent runtime's serial queue is parked inside a native screen's

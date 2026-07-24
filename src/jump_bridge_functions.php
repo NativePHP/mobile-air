@@ -1,6 +1,7 @@
 <?php
 
 use Native\Mobile\JumpBridge;
+use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Testing\FakeBridge;
 
 /**
@@ -89,6 +90,14 @@ if (! function_exists('nativephp_element_wait_event')) {
     {
         if ($fake = FakeBridge::current()) {
             return $fake->elementWaitEvent($timeoutMs);
+        }
+
+        // Async task completions run in a dev-machine subprocess (there's no
+        // device async lane under Jump) and land in a local spool. Surface any
+        // pending completion as a native event before blocking on the TCP poll,
+        // so ->finished()/->failed() fire in the runloop just like on device.
+        if (($completion = AsyncTaskTransport::drainJumpCompletion()) !== null) {
+            return $completion;
         }
 
         static $consecutiveErrors = 0;

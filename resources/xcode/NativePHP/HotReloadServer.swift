@@ -84,11 +84,16 @@ class HotReloadCoordinator {
             // context would reference freed memory, causing a heap-corruption crash.
             if PersistentPHPRuntime.shared.isBooted {
                 PHPQueueWorker.shared.stopAndWait()
+                // Same reason as the queue worker: the async slots' live TSRM
+                // contexts reference Zend module state that php_embed_shutdown
+                // frees. stop() serializes shutdown after any in-flight task.
+                AsyncTaskExecutor.shared.stop()
                 _ = PersistentPHPRuntime.shared.reboot()
                 // Clear compiled Blade views so templates are recompiled from
                 // the updated source files copied by the watcher.
                 _ = PersistentPHPRuntime.shared.artisan(command: "view:clear")
                 PHPQueueWorker.shared.start()
+                AsyncTaskExecutor.shared.start()
             } else {
                 _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
             }

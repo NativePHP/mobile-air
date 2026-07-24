@@ -91,6 +91,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private var pendingDeepLink: String? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
+
+    private var asyncExecutor: com.nativephp.mobile.bridge.AsyncTaskExecutor? = null
     @Volatile private var nativeUIThread: Thread? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
@@ -242,6 +244,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         phpBridge.isPersistentMode() && queueWorker == null) {
                         Log.d("MainActivity", "▶️ Starting deferred background queue worker")
                         queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    }
+
+                    // Async task lane (AsyncTask::dispatch()). Pool threads boot
+                    // their PHP context lazily on first task, so starting the
+                    // executor now costs nothing until work is dispatched.
+                    if (!isFinishing && !isDestroyed &&
+                        phpBridge.isPersistentMode() && asyncExecutor == null) {
+                        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                     }
                 }, WORKER_START_DELAY_MS)
 
@@ -785,6 +795,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         // Stop background queue worker
         queueWorker?.stop()
+
+        // Stop async task lane
+        asyncExecutor?.stop()
     }
 
     override fun getWebView(): WebView {
@@ -922,12 +935,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 // Stop queue worker before shutdown — its TSRM context
                                 // will be destroyed by php_module_shutdown
                                 queueWorker?.stop()
+                                asyncExecutor?.stop()
 
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
 
-                                // Restart queue worker with fresh runtime
+                                // Restart queue worker + async lane with fresh runtime
                                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                                 Log.d("HotReload", "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms")
                             }
 
@@ -1005,12 +1020,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 // will be destroyed by php_module_shutdown, causing SIGABRT
                                 // if still active
                                 queueWorker?.stop()
+                                asyncExecutor?.stop()
 
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
 
-                                // Restart queue worker with fresh runtime
+                                // Restart queue worker + async lane with fresh runtime
                                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
 
                                 Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
                             }

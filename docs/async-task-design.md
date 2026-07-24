@@ -1,0 +1,209 @@
+# Async Tasks — Background PHP Work with UI Completion Callbacks
+
+## Running PHP work off the UI runloop, then updating component state on completion.
+
+> Status: **design + initial implementation**. Companion to
+> [`persistent-php-runtime-architecture.md`](./persistent-php-runtime-architecture.md)
+> and [`native-callback-api-design.md`](./native-callback-api-design.md).
+
+---
+
+## The developer story
+
+```php
+public function generateReport(): void
+{
+    $this->generating = true; // spinner shows on the next (immediate) re-render
+
+    AsyncTask::dispatch(static function () {
+        // Runs on a SEPARATE PHP thread with its OWN interpreter.
+        // Must be a static closure — no $this, nothing unserializable captured.
+        return ExpensiveReport::build()->toArray();
+    })
+        ->finished(function (array $result) {
+            // Back on the UI thread, rebound to this live component.
+            $this->report = $result;
+            $this->generating = false;
+        })
+        ->failed(function (Throwable $e) {
+            $this->generating = false;
+            $this->error = $e->getMessage();
+        });
+}
+```
+
+Sugar on `NativeComponent` for the common in-component case:
+
+```php
+$this->async(static fn () => ExpensiveReport::build()->toArray())
+    ->finished(fn ($result) => $this->report = $result);
+```
+
+Both forms return a `PendingAsyncTask`.
+
+---
+
+## Why this is mostly glue, not new infrastructure
+
+Two halves already exist in the codebase; async tasks are the bridge between them.
+
+1. **A real background PHP thread.** Each platform already boots independent PHP
+   interpreter contexts on their own threads with their own TSRM storage — the
+   queue worker (`worker_php_*`), the ephemeral lane (`ephemeral_php_*`), and the
+   per-webview lanes (`webview_php_*`). Async tasks add one more lane of the same
+   shape (`async_php_*`) — deliberately **not** the queue worker (see §Decisions).
+
+2. **A completion channel into the parked UI runloop.** The fluent-callback
+   machinery built for Camera (`NativeCallbacks` + `fireNativeCallback()` in
+   `NativeComponent`) already: stores a callback correlated by id, receives a
+   native event that wakes `nativephp_element_wait_event()`
+   (`nphp_element_post_event` / `sendNativeEvent`), rebinds the callback to the
+   **live** component, runs it, and re-renders. That is exactly `->finished()`.
+
+The only missing piece was a way for a background PHP context to say "I'm done"
+back to the UI runloop, plus a small API surface on top.
+
+---
+
+## Data flow
+
+```
+UI PHP thread (component runloop)          Async PHP thread (own interpreter)
+────────────────────────────────           ──────────────────────────────────
+handler: AsyncTask::dispatch($work)
+  → serialize $work (SerializableClosure)
+  → write payload → storage/framework/async/payload/<id>.task
+  → NativeCallbacks::register(id, …)        (finished/failed stored, screen-tagged)
+  → AsyncTaskRegistry::register(id, origin)
+  → nativephp_call('AsyncTask.Dispatch', {id})  ─┐  native assigns a booted async
+  → handler returns → re-render (spinner)        │  context and runs:
+                                                 ▼
+                                    artisan native:async:run --id=<id>
+                                      → read + delete payload/<id>.task
+                                      → unserialize + run $work → $result
+                                      → AsyncTask.Complete(id, event, payload) ─┐
+                                                                                │
+UI runloop  ◀── sendNativeEvent(event, {id, result}) ◀──────────────────────────┘
+  → handleAsyncCompletion: scope check, bind cb to live component, run cb($result)
+  → re-render → publish frame
+```
+
+No PHP value ever crosses a thread directly — everything is serialized. The
+**work payload travels via a temp file** on the shared app filesystem (the UI
+and async contexts share it), so the native side never touches it: it just
+assigns an async-lane context to run the task and relays the completion event.
+It never interprets either.
+
+---
+
+## Decisions (from design review)
+
+1. **Static closures only.** The work closure runs in a different interpreter, so
+   it cannot carry `$this` or capture anything unserializable. We **reflect the
+   closure at dispatch time and throw immediately** if it is non-static — failing
+   in the handler where the developer can see it, not silently in a worker log.
+   `finished()`/`failed()` closures **do** bind to the component (they run on the
+   UI thread), exactly like Camera callbacks.
+
+2. **Screen scoping, with an opt-out.** By default a `finished()` callback is
+   **dropped if the originating screen is no longer topmost** when the result
+   arrives — firing a component-bound closure against the wrong live component is
+   a footgun (see the id-collision rationale in `CallbackRegistry`). But a
+   component may own a UI element shared across screens (a layout chrome element,
+   a mini-player) that should react regardless. For that, `->shared('alias')`
+   flips delivery from a component-scoped closure to a **named global event**:
+   the result is delivered as a native event named `alias`, handled by any active
+   component via `#[On('alias')]` / `->on('alias', …)`. The developer picks it up
+   however they like.
+
+3. **`failed()` handler.** Errors serialize down to class + message (+ trace
+   string) as an `AsyncTaskFailed` event carrying the same id. Async UI tasks
+   default to **one attempt** — silent queue-style retries of a button action are
+   surprising.
+
+4. **Immediate, concurrent, no SQLite, not the queue worker.** Tasks must start
+   *now*, not on a ≤3s `queue:work --once` poll, and a developer may run several
+   at once. So async tasks get their **own lane** with a small pool of PHP
+   contexts, independent of the single queue-worker thread and its SQLite
+   `database` queue. Nothing touches SQLite. Concurrency is bounded (see
+   §Concurrency); excess tasks queue in native and log when they do.
+
+5. **Result size.** The event channel has no hard cap now, but the result still
+   round-trips as JSON. Return scalars/arrays; pass large blobs by file path or
+   cache key. Enforced only by documentation.
+
+6. **Testing + Jump.**
+   - **Testing:** `AsyncTask::fake()` runs the work **inline-synchronously** and
+     records dispatches, so tests need no threads. Assertion helpers
+     (`assertDispatched`, etc.).
+   - **Jump (dev server):** there is no device async lane on the laptop, so the
+     Jump fallback spawns a background `php artisan native:async:run` **subprocess**
+     on the dev machine (payload handed off via a temp file under
+     `storage/framework/async/`), and the subprocess delivers completion back
+     through the existing Jump event path. (The "serialize the closure over the
+     websocket and run it on the phone" option is noted as a future alternative —
+     it would exercise the real device lane from Jump, at the cost of a
+     websocket round-trip for the payload.)
+
+7. **`dispatch` terminology, not a real queued Job.** `AsyncTask::dispatch()`
+   reads familiarly to Laravel devs but is **not** a `ShouldQueue` job and does
+   not pollute the standard queue. `AsyncTask` is an extensible base — a developer
+   can subclass it (`class BuildReport extends AsyncTask`) and
+   `BuildReport::dispatch($month)->finished(…)`.
+
+8. **Internal vs. surface naming.** Internally we reuse the existing fluent
+   `->then()` / `->catch()` vocabulary where it already exists; the public surface
+   on `PendingAsyncTask` uses **`finished()` / `failed()`** for clearer intent.
+
+### Parked for later
+
+- **`await()` via Fibers.** A synchronous-looking `$result = $this->await(fn …)`
+  that suspends the handler and resumes it on completion would layer cleanly on
+  this exact task-id + event plumbing. Parked until we confirm Fiber support in
+  the custom PHP binaries and work through handler re-entrancy.
+
+---
+
+## Concurrency
+
+A bounded pool of async PHP contexts (default 4). Each context is a booted
+interpreter reused across tasks (boot cost paid once, like the queue worker).
+Tasks beyond the pool size queue in native FIFO; the native side `log()`s when a
+task waits so bounded concurrency is never silent. Ordering across tasks is not
+guaranteed — each `finished()` fires when its own task completes.
+
+---
+
+## Native surface (two bridge functions + one lane)
+
+The payload moves via a temp file, so native stays a dumb courier with just two
+calls:
+
+- `AsyncTask.Dispatch` `{id}` → assign a booted async-lane context to run
+  `native:async:run --id=<id>`. Returns immediately.
+- `AsyncTask.Complete` `{id, event, payload}` → relay `sendNativeEvent(event,
+  payload)` into the UI runloop (this is what wakes the C `wait_event`).
+
+C lane `async_php_*` mirrors the queue-worker / webview lanes: a pool of
+per-thread TSRM contexts that boot the persistent bootstrap once and run
+`native:async:run` for tasks handed to them — concurrent, reused, and with no
+coupling to the persistent runtime's request mutex. Android
+(`AsyncTaskExecutor.kt`) pins each context to a pool thread; iOS
+(`AsyncTaskExecutor.swift`) pins each C slot to a serial `DispatchQueue`.
+
+Payload handoff via temp file (rather than a native RAM map keyed by id) keeps
+the native surface minimal and truly persistence-free — no SQLite, no queue. The
+RAM-map alternative would avoid the disk write but needs a concurrent map plus
+lifecycle on each platform; revisit only if temp-file IO shows up in profiling.
+
+### Alternative considered — a userland `nativephp_post_event()`
+
+Rather than routing completion through a bridge function
+(`AsyncTask.Complete` → `sendNativeEvent`), the extension could expose a
+`nativephp_post_event(type, name, payload)` PHP function that wraps
+`nphp_element_post_event` directly. That is **cleaner and has zero native hop** —
+the async context would post the wake event itself. We did **not** take it here
+because the `nativephp` extension ships **prebuilt** with the runtime, so a new
+extension function can't land from this repo; the bridge-function route is the
+one shippable without a new PHP binary. Worth revisiting when the extension is
+next rebuilt.

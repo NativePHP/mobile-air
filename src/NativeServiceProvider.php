@@ -30,6 +30,7 @@ use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
+use Native\Mobile\Commands\RunAsyncTaskCommand;
 use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\SimCommand;
 use Native\Mobile\Commands\TailCommand;
@@ -67,6 +68,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 DebugCommand::class,
                 InstallCommand::class,
                 RunCommand::class,
+                RunAsyncTaskCommand::class,
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
                 SimCommand::class,

@@ -83,6 +83,12 @@ class PHPBridge(private val context: Context) {
     external fun nativeEphemeralArtisan(command: String): String
     external fun nativeEphemeralShutdown()
 
+    // Async task lane JNI methods — one TSRM context per async pool thread.
+    // Call ONLY from that pool thread; the context is thread-local.
+    external fun nativeAsyncBoot(bootstrapPath: String): Int
+    external fun nativeAsyncRun(taskId: String): String
+    external fun nativeAsyncThreadShutdown()
+
     // Webview runtime (dedicated context per embedded php-mode webview).
     // Call ONLY from that webview's single-thread executor — the TSRM
     // context is bound to the calling thread.
@@ -288,6 +294,24 @@ class PHPBridge(private val context: Context) {
         nativeWorkerShutdown()
         Log.i(TAG, "Worker runtime shut down")
     }
+
+    // ── Async task lane ─────────────────────────────
+    // Reuses the persistent bootstrap script; each async pool thread boots its
+    // own context once and runs `native:async:run` for tasks handed to it.
+    // Every call below MUST run on the same pool thread (thread-local context).
+
+    fun bootAsyncContext(): Boolean {
+        ensureRuntimeInitialized()
+        val result = nativeAsyncBoot(workerBootstrapScript)
+        if (result != 0) {
+            Log.e(TAG, "Async context boot FAILED (code=$result)")
+        }
+        return result == 0
+    }
+
+    fun runAsyncTask(taskId: String): String = nativeAsyncRun(taskId)
+
+    fun shutdownAsyncContext() = nativeAsyncThreadShutdown()
 
     fun handleLaravelRequest(request: PHPRequest): String {
         // Embedded php-mode webview — its own context serves the request;
