@@ -741,7 +741,7 @@ abstract class NativeComponent
      * Wrap a NavBar's `titleView()` / `logo()` content in a `TopBarTitle`
      * marker for the native-chrome renderers to render in the bar's principal
      * slot, or null when the bar uses a plain string title. A Blade view is
-     * rendered against this screen (so `@press` / bindings resolve) first.
+     * rendered against this screen (so `@tap` / bindings resolve) first.
      */
     protected function topBarTitleElement(NavBar $navBar): ?Element
     {
@@ -1482,7 +1482,7 @@ abstract class NativeComponent
         // loop — a warm php:// load can't route because this loop owns the PHP
         // thread. Turn it into a NAVIGATE intent and exit; NativeRouter resolves
         // the URI (with route params) and pushes the target screen, exactly like
-        // an in-app @press navigate.
+        // an in-app @tap navigate.
         if ($eventName === '__deeplink') {
             $uri = is_array($payload) ? ($payload['uri'] ?? null) : null;
             if (is_string($uri) && $uri !== '') {

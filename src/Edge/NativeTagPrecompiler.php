@@ -255,11 +255,11 @@ class NativeTagPrecompiler
         );
 
         // Tap spellings are aliases of the press family — `@tap` is the
-        // mobile-native way to say `@press`, and both are supported for
+        // mobile-native way to say `@tap`, and both are supported for
         // good. They rewrite straight to the *canonical* underscored attr,
         // so nothing downstream (collector, Element, wire format, testing
         // suite) ever learns a second name, and every existing app written
-        // against `@press` compiles byte-identically.
+        // against `@tap` compiles byte-identically.
         // Longer spellings precede their prefix, as in the canonical pass
         // below. `@doubleTap` is untouched: the alternation is anchored at
         // `@`, so `tap` can't match mid-word.
@@ -269,7 +269,7 @@ class NativeTagPrecompiler
             $value
         );
 
-        // Convert @press, @pressDown, @pressUp, @longPress, @doubleTap, @change,
+        // Convert @tap, @tapDown, @tapUp, @longPress, @doubleTap, @change,
         // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
         // @pinchEnd, @navigated to underscored versions before Blade
         // interprets @ as a directive.

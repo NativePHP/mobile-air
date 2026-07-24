@@ -89,11 +89,11 @@ it('lets an explicit :html attribute win over webview slot content', function ()
     expect($result)->toContain("!isset(\$__nativeSlotAttrs['html'])");
 });
 
-it('rewrites @press to _press', function () {
-    $result = ($this->precompiler)('<native:button label="+" @press="increment" />');
+it('rewrites @tap to _press', function () {
+    $result = ($this->precompiler)('<native:button label="+" @tap="increment" />');
 
     expect($result)->toContain("'_press' => 'increment'");
-    expect($result)->not->toContain('@press');
+    expect($result)->not->toContain('@tap');
 });
 
 it('rewrites @longPress to _longPress', function () {
@@ -110,34 +110,34 @@ it('rewrites @doubleTap to _doubleTap', function () {
     expect($result)->not->toContain('@doubleTap');
 });
 
-it('rewrites @pressDown and @pressUp to underscored versions', function () {
-    $result = ($this->precompiler)('<native:pressable @pressDown="startLeft" @pressUp="stopLeft">x</native:pressable>');
+it('rewrites @tapDown and @tapUp to underscored versions', function () {
+    $result = ($this->precompiler)('<native:pressable @tapDown="startLeft" @tapUp="stopLeft">x</native:pressable>');
 
     expect($result)->toContain("'_pressDown' => 'startLeft'");
     expect($result)->toContain("'_pressUp' => 'stopLeft'");
-    expect($result)->not->toContain('@pressDown');
-    expect($result)->not->toContain('@pressUp');
+    expect($result)->not->toContain('@tapDown');
+    expect($result)->not->toContain('@tapUp');
 });
 
-it('keeps @press and @pressDown distinct on the same tag', function () {
-    // `pressDown` precedes `press` in the alternation — a plain @press must
+it('keeps @tap and @tapDown distinct on the same tag', function () {
+    // `pressDown` precedes `press` in the alternation — a plain @tap must
     // still rewrite to _press, never swallow the Down/Up suffix.
-    $result = ($this->precompiler)('<native:pressable @press="fire" @pressDown="charge">x</native:pressable>');
+    $result = ($this->precompiler)('<native:pressable @tap="fire" @tapDown="charge">x</native:pressable>');
 
     expect($result)->toContain("'_press' => 'fire'");
     expect($result)->toContain("'_pressDown' => 'charge'");
 });
 
-it('rewrites @tap to _press', function () {
-    $result = ($this->precompiler)('<native:button label="+" @tap="increment" />');
+it('rewrites the @press alias to _press', function () {
+    $result = ($this->precompiler)('<native:button label="+" @press="increment" />');
 
     expect($result)->toContain("'_press' => 'increment'");
-    expect($result)->not->toContain('@tap');
+    expect($result)->not->toContain('@press');
 });
 
-it('rewrites the rest of the tap aliases onto the press family', function () {
+it('rewrites the rest of the press-family aliases onto the same wire attrs', function () {
     $result = ($this->precompiler)(
-        '<native:pressable @longTap="hold" @tapDown="charge" @tapUp="release">x</native:pressable>'
+        '<native:pressable @longTap="hold" @pressDown="charge" @pressUp="release">x</native:pressable>'
     );
 
     expect($result)->toContain("'_longPress' => 'hold'");
@@ -154,9 +154,9 @@ it('leaves @doubleTap alone when aliasing @tap', function () {
     expect($result)->toContain("'_press' => 'one'");
 });
 
-it('accepts @press and @tap side by side on the same screen', function () {
+it('accepts @tap and @tap side by side on the same screen', function () {
     $result = ($this->precompiler)(
-        '<native:column><native:button label="a" @press="old" /><native:button label="b" @tap="new" /></native:column>'
+        '<native:column><native:button label="a" @tap="old" /><native:button label="b" @tap="new" /></native:column>'
     );
 
     expect($result)->toContain("'_press' => 'old'");
@@ -199,7 +199,7 @@ it('handles dynamic attributes with colon prefix', function () {
 });
 
 it('handles multiple native tags in one template', function () {
-    $input = '<native:column fill><native:text :fontSize="20">Hi</native:text><native:button label="OK" @press="ok" /></native:column>';
+    $input = '<native:column fill><native:text :fontSize="20">Hi</native:text><native:button label="OK" @tap="ok" /></native:column>';
     $result = ($this->precompiler)($input);
 
     expect($result)->toContain("::open('column', ['fill' => true])");

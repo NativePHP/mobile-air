@@ -621,7 +621,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      * request queues behind the running loop and the link is silently dropped.
      * Instead wake the loop with a `__deeplink` native event carrying the route;
      * NativeComponent::dispatchNativeEvent turns it into a NavigationIntent::NAVIGATE
-     * and NativeRouter pushes the screen (same path as an in-app @press navigate).
+     * and NativeRouter pushes the screen (same path as an in-app @tap navigate).
      * WebView/Inertia apps keep the direct loadUrl().
      */
     private fun navigateWarm(route: String) {
@@ -679,12 +679,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             Log.d("OAuth", "🔐 OAuth callback host: ${uri.host}")
             Log.d("OAuth", "🔐 OAuth callback path: ${uri.path}")
             Log.d("OAuth", "🔐 OAuth callback query: ${uri.query}")
-            
+
             // Check for common OAuth parameters
             val code = uri.getQueryParameter("code")
             val state = uri.getQueryParameter("state")
             val error = uri.getQueryParameter("error")
-            
+
             if (code != null) {
                 Log.d("OAuth", "✅ OAuth authorization code received: ${code.take(10)}...")
             }
