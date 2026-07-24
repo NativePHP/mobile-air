@@ -3,7 +3,7 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
-use Native\Mobile\Traits\LaunchesAndroidEmulator;
+use Native\Mobile\Concerns\LaunchesAndroidEmulator;
 
 class LaunchEmulatorCommand extends Command
 {

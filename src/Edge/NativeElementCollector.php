@@ -6,6 +6,9 @@ use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
 use Native\Mobile\Edge\Elements\Stack;
+use Native\Mobile\Edge\Enums\AlignItems;
+use Native\Mobile\Edge\Enums\AlignSelf;
+use Native\Mobile\Edge\Enums\JustifyContent;
 
 class NativeElementCollector
 {
@@ -151,7 +154,7 @@ class NativeElementCollector
                 $props['on_press_up'] = $pressUp;
             }
 
-            // ScrollView needs overflow: scroll so Yoga doesn't constrain children
+            // ScrollView needs overflow: scroll so the flex layout doesn't constrain children
             if ($type === 'scroll_view' && ! isset($layout['overflow'])) {
                 $layout['overflow'] = 2;
             }
@@ -381,14 +384,14 @@ class NativeElementCollector
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
         }
-        if (isset($attrs['alignSelf'])) {
-            $layout['align_self'] = (int) $attrs['alignSelf'];
+        if (isset($attrs['alignSelf']) && ($alignSelf = AlignSelf::parse($attrs['alignSelf'])) !== null) {
+            $layout['align_self'] = $alignSelf;
         }
-        if (isset($attrs['alignItems'])) {
-            $layout['align_items'] = (int) $attrs['alignItems'];
+        if (isset($attrs['alignItems']) && ($alignItems = AlignItems::parse($attrs['alignItems'])) !== null) {
+            $layout['align_items'] = $alignItems;
         }
-        if (isset($attrs['justifyContent'])) {
-            $layout['justify_content'] = (int) $attrs['justifyContent'];
+        if (isset($attrs['justifyContent']) && ($justifyContent = JustifyContent::parse($attrs['justifyContent'])) !== null) {
+            $layout['justify_content'] = $justifyContent;
         }
         if (isset($attrs['positionType'])) {
             $layout['position_type'] = (int) $attrs['positionType'];
@@ -1016,13 +1019,13 @@ class NativeElementCollector
             $element->aspectRatio((float) $attrs['aspectRatio']);
         }
         if (isset($attrs['alignSelf'])) {
-            $element->alignSelf((int) $attrs['alignSelf']);
+            $element->alignSelf($attrs['alignSelf']);
         }
         if (isset($attrs['alignItems'])) {
-            $element->alignItems((int) $attrs['alignItems']);
+            $element->alignItems($attrs['alignItems']);
         }
         if (isset($attrs['justifyContent'])) {
-            $element->justifyContent((int) $attrs['justifyContent']);
+            $element->justifyContent($attrs['justifyContent']);
         }
         if (isset($attrs['positionType'])) {
             $element->positionType((int) $attrs['positionType']);

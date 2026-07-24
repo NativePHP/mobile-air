@@ -3,7 +3,7 @@
 namespace Tests\Unit;
 
 use Illuminate\Support\Facades\File;
-use Native\Mobile\Traits\PlatformFileOperations;
+use Native\Mobile\Concerns\PlatformFileOperations;
 use Tests\TestCase;
 
 class CrossPlatformFileOperationsTest extends TestCase

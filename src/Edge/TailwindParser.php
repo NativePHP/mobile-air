@@ -2,6 +2,10 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Edge\Enums\AlignItems;
+use Native\Mobile\Edge\Enums\AlignSelf;
+use Native\Mobile\Edge\Enums\JustifyContent;
+use Native\Mobile\Edge\Enums\TextAlign;
 use Native\Mobile\Platform;
 
 class TailwindParser
@@ -508,7 +512,7 @@ class TailwindParser
             $class === 'object-fill' => ['fit' => 3],
             $class === 'object-scale-down' => ['fit' => 1],
 
-            // Aspect ratio — sets Yoga's `aspect_ratio` layout field
+            // Aspect ratio — sets the `aspect_ratio` flex layout field
             // (applied natively via AspectRatioModifier on iOS/Android).
             $class === 'aspect-square' => ['aspectRatio' => 1.0],
             $class === 'aspect-video' => ['aspectRatio' => 16 / 9],
@@ -805,9 +809,9 @@ class TailwindParser
 
         // Alignment
         return match ($value) {
-            'left' => ['textAlign' => 0],
-            'center' => ['textAlign' => 1],
-            'right' => ['textAlign' => 2],
+            'left' => ['textAlign' => TextAlign::Left->value],
+            'center' => ['textAlign' => TextAlign::Center->value],
+            'right' => ['textAlign' => TextAlign::Right->value],
             'white' => ['color' => '#FFFFFF'],
             'black' => ['color' => '#000000'],
             'transparent' => ['color' => '#00000000'],
@@ -875,37 +879,23 @@ class TailwindParser
 
     private static function parseAlignItems(string $value): ?array
     {
-        return match ($value) {
-            'start' => ['alignItems' => 0],
-            'center' => ['alignItems' => 1],
-            'end' => ['alignItems' => 2],
-            'stretch' => ['alignItems' => 3],
-            default => null,
-        };
+        return ($case = AlignItems::fromLabel($value)) !== null
+            ? ['alignItems' => $case->value]
+            : null;
     }
 
     private static function parseJustifyContent(string $value): ?array
     {
-        return match ($value) {
-            'start' => ['justifyContent' => 0],
-            'center' => ['justifyContent' => 1],
-            'end' => ['justifyContent' => 2],
-            'between' => ['justifyContent' => 3],
-            'around' => ['justifyContent' => 4],
-            'evenly' => ['justifyContent' => 5],
-            default => null,
-        };
+        return ($case = JustifyContent::fromLabel($value)) !== null
+            ? ['justifyContent' => $case->value]
+            : null;
     }
 
     private static function parseAlignSelf(string $value): ?array
     {
-        return match ($value) {
-            'start' => ['alignSelf' => 0],
-            'center' => ['alignSelf' => 1],
-            'end' => ['alignSelf' => 2],
-            'stretch' => ['alignSelf' => 3],
-            default => null,
-        };
+        return ($case = AlignSelf::fromLabel($value)) !== null
+            ? ['alignSelf' => $case->value]
+            : null;
     }
 
     private static function parseArbitrary(string $prefix, string $value): ?array

@@ -5,7 +5,7 @@ namespace Tests\Feature;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Native\Mobile\Commands\BuildIosAppCommand;
-use Native\Mobile\Traits\PreparesBuild;
+use Native\Mobile\Concerns\PreparesBuild;
 use ReflectionClass;
 use Tests\TestCase;
 use ZipArchive;

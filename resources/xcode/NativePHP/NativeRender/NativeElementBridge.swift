@@ -14,7 +14,7 @@ import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags 
 ///  62: flex_grow           66: flex_shrink         70: align_self (u8)
 ///  71: align_items (u8)   72: justify_content    73: gap (f32)
 ///  77: safe_area (u8)
-///  --- Extended layout (Yoga) ---
+///  --- Extended layout (flexbox) ---
 ///  78: min_width          82: min_height          86: max_width
 ///  90: max_height         94: flex_basis           98: flex_basis_mode (u8)
 ///  99: flex_wrap (u8)    100: flex_direction (u8) 101: position_type (u8)
@@ -26,7 +26,7 @@ import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags 
 /// 142: border_color      146: opacity             150: elevation
 /// 154: prop_offset       158: prop_size (u16)
 final class NativeElementBridge {
-    /// Node stride: 161 bytes — Yoga-aware base (160) plus the Phase 2
+    /// Node stride: 161 bytes — flex-layout base (160) plus the Phase 2
     /// appended `flags` byte at offset 160. Bumped in lockstep with
     /// NPHP_FORMAT_VERSION = 2. Legacy 108-byte and 160-byte nodes are
     /// not supported (format-version guard rejects mismatched producers).
@@ -774,7 +774,7 @@ final class NativeElementBridge {
             let gap = Float(bitPattern: base.loadUnaligned(fromByteOffset: 73, as: UInt32.self).littleEndian)
             let safeArea = Int(base.load(fromByteOffset: 77, as: UInt8.self))
 
-            // Extended layout fields (Yoga) — only present in 160-byte nodes
+            // Extended layout fields (flexbox) — only present in 160-byte nodes
             let minWidth: Float, minHeight: Float, maxWidth: Float, maxHeight: Float
             let flexBasis: Float, flexBasisMode: Int, flexWrap: Int, flexDirection: Int
             let positionType: Int
@@ -787,7 +787,7 @@ final class NativeElementBridge {
             let borderColor: Int, opacity: Float, elevation: Float
             let propOffset: Int, propSize: Int
 
-            // 160-byte node: extended Yoga fields at 78..129, style at 130, props at 154
+            // 160-byte node: extended flex fields at 78..129, style at 130, props at 154
             minWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 78, as: UInt32.self).littleEndian)
             minHeight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 82, as: UInt32.self).littleEndian)
             maxWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 86, as: UInt32.self).littleEndian)

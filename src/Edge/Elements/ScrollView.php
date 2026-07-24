@@ -22,7 +22,7 @@ class ScrollView extends Element
     protected function layoutDefaults(): array
     {
         return [
-            'overflow' => 2, // scroll — tells Yoga not to constrain children on scroll axis
+            'overflow' => 2, // scroll — flex layout must not constrain children on the scroll axis
         ];
     }
 
@@ -32,7 +32,7 @@ class ScrollView extends Element
         $this->scrollProps['axis'] = $value ? 'horizontal' : 'vertical';
 
         if ($value) {
-            // Tell Yoga the main axis is horizontal so overflow:scroll applies to width
+            // Main axis is horizontal so overflow:scroll applies to width
             $this->layout['flex_direction'] = 1; // row
         }
 

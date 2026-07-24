@@ -6,17 +6,17 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Native\Mobile\Concerns\ChecksLatestBuildNumber;
+use Native\Mobile\Concerns\CleansEnvFile;
+use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\InstallsAppIcon;
+use Native\Mobile\Concerns\InstallsSplashScreen;
+use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
-use Native\Mobile\Traits\ChecksLatestBuildNumber;
-use Native\Mobile\Traits\CleansEnvFile;
-use Native\Mobile\Traits\DisplaysMarketingBanners;
-use Native\Mobile\Traits\InstallsAppIcon;
-use Native\Mobile\Traits\InstallsSplashScreen;
-use Native\Mobile\Traits\ValidatesAppConfig;
 
 use function Laravel\Prompts\error;
 

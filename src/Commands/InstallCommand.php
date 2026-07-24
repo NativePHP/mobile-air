@@ -5,10 +5,10 @@ namespace Native\Mobile\Commands;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Console\Command;
-use Native\Mobile\Traits\DisplaysMarketingBanners;
-use Native\Mobile\Traits\InstallsAndroid;
-use Native\Mobile\Traits\InstallsIos;
-use Native\Mobile\Traits\PlatformFileOperations;
+use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\InstallsAndroid;
+use Native\Mobile\Concerns\InstallsIos;
+use Native\Mobile\Concerns\PlatformFileOperations;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;

@@ -4,14 +4,14 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Concerns\ChecksLatestBuildNumber;
+use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\PackagesIos;
+use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Concerns\PublishesToPlayStore;
+use Native\Mobile\Concerns\RunsAndroid;
+use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Plugins\PluginRegistry;
-use Native\Mobile\Traits\ChecksLatestBuildNumber;
-use Native\Mobile\Traits\DisplaysMarketingBanners;
-use Native\Mobile\Traits\PackagesIos;
-use Native\Mobile\Traits\PlatformFileOperations;
-use Native\Mobile\Traits\PublishesToPlayStore;
-use Native\Mobile\Traits\RunsAndroid;
-use Native\Mobile\Traits\ValidatesAppConfig;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\outro;

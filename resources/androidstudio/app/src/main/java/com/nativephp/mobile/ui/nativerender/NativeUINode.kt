@@ -333,7 +333,7 @@ data class NodeLayout(
     val justifyContent: Int,
     val gap: Float,
     val safeArea: Int = 0,
-    // Extended layout fields (Yoga)
+    // Extended layout fields (flexbox)
     val minWidth: Float = 0f,
     val minHeight: Float = 0f,
     val maxWidth: Float = 0f,
