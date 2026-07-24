@@ -134,7 +134,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
+            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs) + static::anchorProp($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -224,7 +224,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
+            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs) + static::anchorProp($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -390,21 +390,77 @@ class NativeElementCollector
         if (isset($attrs['justifyContent'])) {
             $layout['justify_content'] = (int) $attrs['justifyContent'];
         }
-        if (isset($attrs['positionType'])) {
-            $layout['position_type'] = (int) $attrs['positionType'];
+        // Position type. Accept the short attribute spellings alongside the
+        // class-derived `positionType`, so `<native:column absolute>` and
+        // `position="absolute"` work like `class="absolute"`.
+        $positionType = match (true) {
+            isset($attrs['positionType']) => (int) $attrs['positionType'],
+            ! empty($attrs['absolute']) || ($attrs['position'] ?? null) === 'absolute' => 1,
+            ! empty($attrs['relative']) || ($attrs['position'] ?? null) === 'relative' => 0,
+            default => null,
+        };
+        if ($positionType !== null) {
+            $layout['position_type'] = $positionType;
         }
-        if (isset($attrs['positionTop']) || isset($attrs['positionRight'])
-            || isset($attrs['positionBottom']) || isset($attrs['positionLeft'])) {
+
+        // Position offsets. `positionTop` (from `top-0`) and the bare `top`
+        // attribute are equivalent — the explicit camelCase wins when both
+        // are present. Same for right/bottom/left.
+        $positionTop = $attrs['positionTop'] ?? $attrs['top'] ?? null;
+        $positionRight = $attrs['positionRight'] ?? $attrs['right'] ?? null;
+        $positionBottom = $attrs['positionBottom'] ?? $attrs['bottom'] ?? null;
+        $positionLeft = $attrs['positionLeft'] ?? $attrs['left'] ?? null;
+        if ($positionTop !== null || $positionRight !== null
+            || $positionBottom !== null || $positionLeft !== null) {
             // [top, right, bottom, left] — same order as Element::insets()
             $layout['position'] = [
-                (float) ($attrs['positionTop'] ?? 0),
-                (float) ($attrs['positionRight'] ?? 0),
-                (float) ($attrs['positionBottom'] ?? 0),
-                (float) ($attrs['positionLeft'] ?? 0),
+                (float) ($positionTop ?? 0),
+                (float) ($positionRight ?? 0),
+                (float) ($positionBottom ?? 0),
+                (float) ($positionLeft ?? 0),
             ];
         }
 
         return $layout;
+    }
+
+    /**
+     * The stack `anchor` as a prop entry (the anchor rides the tolerant props
+     * blob, not the fixed layout struct, so the native decoders pick it up
+     * without a wire-format change). `[]` when absent or unrecognized.
+     *
+     * @return array{anchor?: int}
+     */
+    protected static function anchorProp(array $attrs): array
+    {
+        if (! isset($attrs['anchor'])) {
+            return [];
+        }
+
+        $anchor = self::resolveAnchor((string) $attrs['anchor']);
+
+        return $anchor === null ? [] : ['anchor' => $anchor];
+    }
+
+    /**
+     * Anchor names → wire enum, shared with the native stack renderers.
+     * `center` (0) is the default; the eight compass points follow. Aliases
+     * collapse to their canonical point (`top` == `top-center`, etc.).
+     */
+    private static function resolveAnchor(string $anchor): ?int
+    {
+        return match (strtolower(trim($anchor))) {
+            'center', 'center-center', 'middle' => 0,
+            'top-left', 'top-start' => 1,
+            'top', 'top-center' => 2,
+            'top-right', 'top-end' => 3,
+            'left', 'center-left' => 4,
+            'right', 'center-right' => 5,
+            'bottom-left', 'bottom-start' => 6,
+            'bottom', 'bottom-center' => 7,
+            'bottom-right', 'bottom-end' => 8,
+            default => null,
+        };
     }
 
     public static function buildStyleArray(array $attrs): array
@@ -1136,6 +1192,13 @@ class NativeElementCollector
 
     public static function applyElementProps(Element $element, array $attrs): void
     {
+        // Stack anchor — where this element sits when it's a child of a
+        // `stack` (whose children are z-stacked and absolutely positioned).
+        // Rides props so it applies to every element type uniformly.
+        foreach (static::anchorProp($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+
         if ($element instanceof ScrollView) {
             // `axis="both"` enables 2D scrolling. Falls back to the legacy
             // `horizontal` boolean when axis isn't set.

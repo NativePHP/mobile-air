@@ -52,6 +52,41 @@ object Display {
 }
 
 /**
+ * 9-point anchor for `stack` container children (matches the PHP side).
+ * Read off each child's tolerant PROPS blob via `props.getInt("anchor")`;
+ * absent → CENTER (the stack default).
+ */
+object Anchor {
+    const val CENTER        = 0
+    const val TOP_LEFT      = 1
+    const val TOP_CENTER    = 2
+    const val TOP_RIGHT     = 3
+    const val CENTER_LEFT   = 4
+    const val CENTER_RIGHT  = 5
+    const val BOTTOM_LEFT   = 6
+    const val BOTTOM_CENTER = 7
+    const val BOTTOM_RIGHT  = 8
+}
+
+/**
+ * Maps an [Anchor] int to a Compose 2-D [Alignment]. Unknown / 0 → Center.
+ * All nine constants exist on `Alignment`'s companion (TopStart/TopCenter/
+ * TopEnd, CenterStart/Center/CenterEnd, BottomStart/BottomCenter/BottomEnd),
+ * so each maps 1:1 and can be handed straight to `BoxScope.align`.
+ */
+private fun anchorToAlignment(anchor: Int): Alignment = when (anchor) {
+    Anchor.TOP_LEFT      -> Alignment.TopStart
+    Anchor.TOP_CENTER    -> Alignment.TopCenter
+    Anchor.TOP_RIGHT     -> Alignment.TopEnd
+    Anchor.CENTER_LEFT   -> Alignment.CenterStart
+    Anchor.CENTER_RIGHT  -> Alignment.CenterEnd
+    Anchor.BOTTOM_LEFT   -> Alignment.BottomStart
+    Anchor.BOTTOM_CENTER -> Alignment.BottomCenter
+    Anchor.BOTTOM_RIGHT  -> Alignment.BottomEnd
+    else                 -> Alignment.Center // 0 CENTER (stack default) or unknown
+}
+
+/**
  * Renders children in a flex container using Compose's built-in Column/Row.
  * Maps flexbox properties to Compose equivalents:
  *   - flex_direction → Column or Row
@@ -72,8 +107,51 @@ fun FlexContainer(
     wrap: Int = 0,
     childNodes: List<NativeUINode>,
     modifier: Modifier = Modifier,
+    isStack: Boolean = false,
     content: @Composable () -> Unit
 ) {
+    // `stack` container: z-overlay EVERY child in a single Box, positioned by a
+    // 9-point `anchor` prop (default center) and fine-tuned by absolute inset
+    // offsets. No flow Column/Row runs — every child is treated as overlaid.
+    //
+    // Sizing: the Box carries only the incoming `modifier` (the stack node's own
+    // width/height, resolved upstream in NodeView). We add NO fillMaxWidth/
+    // Height/Size here, so a stack with no explicit size (WRAP mode → NodeView
+    // applies no size modifier) lets Box wrap-content and measure to its LARGEST
+    // child. `.align()`/`.offset()` are placement-only (ParentDataModifier /
+    // post-measure layout) and do not change what the Box measures, so the
+    // largest child still drives the stack's size — a text + a small anchored
+    // dot sizes to the text, never collapsing to the dot nor over-expanding.
+    if (isStack) {
+        Box(modifier = modifier) {
+            // Document order = z-order: first child drawn at the back.
+            childNodes.forEachIndexed { i, node ->
+                if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
+
+                val alignment = anchorToAlignment(node.props.getInt("anchor", Anchor.CENTER))
+
+                // Inset offsets nudge the anchored child. Same convention as the
+                // absolute path: a set `right`/`bottom` pulls inward from that
+                // edge, otherwise `left`/`top` push from the leading edge.
+                val left = node.layout?.positionLeft ?: 0f
+                val top = node.layout?.positionTop ?: 0f
+                val right = node.layout?.positionRight ?: 0f
+                val bottom = node.layout?.positionBottom ?: 0f
+                val offsetX = if (right > 0f) (-right).dp else left.dp
+                val offsetY = if (bottom > 0f) (-bottom).dp else top.dp
+
+                Box(
+                    modifier = Modifier
+                        .align(alignment)
+                        .offset(x = offsetX, y = offsetY)
+                ) {
+                    NodeView(node = node)
+                }
+            }
+        }
+        return
+    }
+
     // Separate absolute children from flow children
     val hasAbsolute = childNodes.any { (it.layout?.positionType ?: 0) == PositionType.ABSOLUTE }
 
