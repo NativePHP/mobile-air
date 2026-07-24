@@ -136,9 +136,11 @@ its filename without extension: `font="Inter-Bold"` on `native:text`, `native:bu
 - **Google Fonts**: `php artisan native:font Inter --weights=400,700` downloads straight into `resources/fonts/`
   (no API key; libre-licensed, safe to bundle). Files come out as `<Family>-<Style>.ttf`, ready to use as
   `font` tokens. Safe to run yourself.
-- **App-wide default**: set the `font-family` token in `config/native-ui.php` (e.g. `'Inter-Regular'`;
-  `'System'` = platform default) — applies to text, buttons, inputs, and navigation chrome. `native:font
-  --default` offers to set this for you. Per-element `font` and `font-serif`/`font-mono` classes still win.
+- **App-wide default**: set the `default` alias in the `fonts` block of `config/native-ui.php`
+  (`'fonts' => ['default' => 'Inter-Regular']`; `'System'` = platform default) — applies to text, buttons,
+  inputs, and navigation chrome. `native:font --default` offers to set this for you. A legacy theme
+  `font-family` token is still honored when no `default` alias is set. Per-element `font` and
+  `font-serif`/`font-mono` classes still win.
 - **Chrome fonts**: layouts take a `$font` property, bars a `->font()`, and per-screen
   `NavBarOptions::make()->font()`.
 - **Weight gotcha**: one font file = one weight. Avoid `font-bold` on single-weight custom fonts (Android
