@@ -401,6 +401,11 @@ class TailwindParser
             $class === 'absolute' => ['positionType' => 1],
             $class === 'relative' => ['positionType' => 0],
 
+            // Stack anchor — `anchor-top-right`, `anchor-center`, etc. The
+            // name is resolved to the wire enum in buildLayoutArray, the same
+            // place the `anchor="…"` attribute is resolved.
+            str_starts_with($class, 'anchor-') => ['anchor' => substr($class, 7)],
+
             // Padding
             str_starts_with($class, 'px-') => self::parseSpacingAxis('padding', 'x', substr($class, 3)),
             str_starts_with($class, 'py-') => self::parseSpacingAxis('padding', 'y', substr($class, 3)),

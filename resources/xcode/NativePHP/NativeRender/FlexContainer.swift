@@ -62,6 +62,11 @@ struct FlexContainer: Layout {
     let align: Int       // AlignItems
     let gap: CGFloat
     let wrap: Int        // 0 = nowrap, 1 = wrap
+    /// When true this container behaves like a SwiftUI ZStack: EVERY visible
+    /// child is z-overlaid via absolute placement (ignoring its own
+    /// positionType) using a 9-point anchor, and the container sizes to the
+    /// union of its children (its largest child on each axis).
+    let isStack: Bool
     /// Direct access to child nodes — LayoutValueKeys don't propagate through ViewModifiers,
     /// so we pass the node array and index into flex properties directly.
     let childNodes: [NativeUINode]
@@ -72,6 +77,7 @@ struct FlexContainer: Layout {
         align: Int = AlignItems.stretch,
         gap: CGFloat = 0,
         wrap: Int = 0,
+        isStack: Bool = false,
         childNodes: [NativeUINode] = []
     ) {
         self.direction = direction
@@ -79,6 +85,7 @@ struct FlexContainer: Layout {
         self.align = align
         self.gap = gap
         self.wrap = wrap
+        self.isStack = isStack
         self.childNodes = childNodes
     }
 
@@ -133,6 +140,12 @@ struct FlexContainer: Layout {
         let positionLeft: CGFloat
         let display: Int
         let flexBasis: CGFloat
+        /// 9-point anchor (0=center … 8=bottom-right) read from the child's
+        /// tolerant PROPS blob. `nil` when the child has no `anchor` prop —
+        /// which keeps legacy non-stack absolute children on the inset-based
+        /// top-left placement. Stack children default to center (see
+        /// `placeAbsolute`).
+        let anchor: Int?
         var idealSize: CGSize = .zero
     }
 
@@ -144,6 +157,15 @@ struct FlexContainer: Layout {
 
         for (i, _) in subviews.enumerated() {
             let layout = i < childNodes.count ? childNodes[i].layout : nil
+            // The `anchor` value rides the tolerant PROPS blob, not the fixed
+            // binary layout struct. Read it directly off the node's props;
+            // `has` distinguishes an explicit `center` (0) from an absent prop.
+            let anchor: Int?
+            if i < childNodes.count, childNodes[i].props.has("anchor") {
+                anchor = childNodes[i].props.getInt("anchor")
+            } else {
+                anchor = nil
+            }
             let info = ChildInfo(
                 flexGrow: CGFloat(layout?.flexGrow ?? 0),
                 flexShrink: CGFloat(layout?.flexShrink ?? 0),
@@ -164,12 +186,17 @@ struct FlexContainer: Layout {
                 // basis of 0 was treated as "use content size", which made
                 // flex-1 children inflate to their natural width (e.g. a long
                 // single-line <native:text> ⇒ 600+pt column overflow).
-                flexBasis: (layout?.flexBasisMode ?? 0) == 1 ? CGFloat(layout?.flexBasis ?? 0) : -1
+                flexBasis: (layout?.flexBasisMode ?? 0) == 1 ? CGFloat(layout?.flexBasis ?? 0) : -1,
+                anchor: anchor
             )
             cache.childInfos.append(info)
 
             if info.display == Display.none { continue }
-            if info.positionType == PositionType.absolute {
+            // In a stack, EVERY visible child overlays regardless of its own
+            // positionType — they're all placed absolutely with the anchor.
+            // Enumeration is in ascending index order, so absoluteIndices keeps
+            // document order → z-order = document order (first child at back).
+            if isStack || info.positionType == PositionType.absolute {
                 cache.absoluteIndices.append(i)
             } else {
                 cache.flowIndices.append(i)
@@ -221,6 +248,35 @@ struct FlexContainer: Layout {
         subviews: Subviews,
         cache: inout CacheData
     ) -> CGSize {
+        // Stack containers overlay every child (all routed to absoluteIndices),
+        // so `flowIndices` is empty and absolute children don't feed the flex
+        // sizing below. Size like a SwiftUI ZStack instead: the union of the
+        // children's intrinsic sizes (largest child on each axis). This makes a
+        // stack with no explicit width/height wrap its largest child rather than
+        // collapsing to zero (e.g. a wordmark <text> gives the stack its size,
+        // and a small anchored dot rides on top). A finite proposal on an axis
+        // still wins, so an explicitly filled/sized stack fills as before.
+        if isStack {
+            let key = ProposalKey(proposal)
+            if let cached = cache.sizeCache[key] { return cached }
+
+            var maxWidth: CGFloat = 0
+            var maxHeight: CGFloat = 0
+            for i in cache.absoluteIndices {
+                let ideal = subviews[i].sizeThatFits(.unspecified)
+                cache.childInfos[i].idealSize = ideal
+                maxWidth = max(maxWidth, ideal.width)
+                maxHeight = max(maxHeight, ideal.height)
+            }
+
+            let result = CGSize(
+                width: proposal.width ?? maxWidth,
+                height: proposal.height ?? maxHeight
+            )
+            cache.sizeCache[key] = result
+            return result
+        }
+
         guard !cache.flowIndices.isEmpty else {
             // Even with no children, fill the proposed space if finite
             return CGSize(
@@ -589,20 +645,63 @@ struct FlexContainer: Layout {
         }
     }
 
-    /// Place an absolute-positioned child using position insets.
+    /// Map a 9-point anchor id to its horizontal/vertical placement fractions.
+    ///   0=center, 1=top-left, 2=top-center, 3=top-right, 4=center-left,
+    ///   5=center-right, 6=bottom-left, 7=bottom-center, 8=bottom-right.
+    private func anchorFractions(_ anchor: Int) -> (ax: CGFloat, ay: CGFloat) {
+        switch anchor {
+        case 1: return (0, 0)       // top-left
+        case 2: return (0.5, 0)     // top-center
+        case 3: return (1, 0)       // top-right
+        case 4: return (0, 0.5)     // center-left
+        case 5: return (1, 0.5)     // center-right
+        case 6: return (0, 1)       // bottom-left
+        case 7: return (0.5, 1)     // bottom-center
+        case 8: return (1, 1)       // bottom-right
+        default: return (0.5, 0.5)  // 0 = center (also the stack default)
+        }
+    }
+
+    /// Place an absolute-positioned child.
+    ///
+    /// Two placement modes:
+    ///   • Anchored — used for stack children (default anchor = center) and any
+    ///     child carrying an explicit `anchor` prop. The child's frame is
+    ///     positioned within the container by the anchor fraction, then the
+    ///     position insets nudge it (left/top push right/down, right/bottom
+    ///     push left/up).
+    ///   • Legacy inset — used for non-stack absolute children with no anchor.
+    ///     Byte-identical to the historical top-left/inset behavior.
     private func placeAbsolute(_ subview: LayoutSubview, info: ChildInfo, in bounds: CGRect) {
         let ideal = subview.sizeThatFits(.unspecified)
 
-        // Resolve horizontal position
-        var x = bounds.minX + info.positionLeft
-        if info.positionRight > 0 && info.positionLeft == 0 {
-            x = bounds.maxX - ideal.width - info.positionRight
-        }
+        // Explicit per-child anchor wins; otherwise stack children default to
+        // center (0). A nil result (non-stack absolute child, no anchor) falls
+        // through to the unchanged legacy inset placement.
+        let effectiveAnchor: Int? = info.anchor ?? (isStack ? 0 : nil)
 
-        // Resolve vertical position
-        var y = bounds.minY + info.positionTop
-        if info.positionBottom > 0 && info.positionTop == 0 {
-            y = bounds.maxY - ideal.height - info.positionBottom
+        let x: CGFloat
+        let y: CGFloat
+        if let anchor = effectiveAnchor {
+            let (ax, ay) = anchorFractions(anchor)
+            x = bounds.minX + (bounds.width - ideal.width) * ax
+                + info.positionLeft - info.positionRight
+            y = bounds.minY + (bounds.height - ideal.height) * ay
+                + info.positionTop - info.positionBottom
+        } else {
+            // Legacy inset-based placement (unchanged).
+            var lx = bounds.minX + info.positionLeft
+            if info.positionRight > 0 && info.positionLeft == 0 {
+                lx = bounds.maxX - ideal.width - info.positionRight
+            }
+
+            var ly = bounds.minY + info.positionTop
+            if info.positionBottom > 0 && info.positionTop == 0 {
+                ly = bounds.maxY - ideal.height - info.positionBottom
+            }
+
+            x = lx
+            y = ly
         }
 
         subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(ideal))

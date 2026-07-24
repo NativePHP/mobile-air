@@ -190,6 +190,9 @@ struct NodeView: View, Equatable {
                 align: node.layout?.alignItems ?? AlignItems.stretch,
                 gap: CGFloat(node.layout?.gap ?? 0),
                 wrap: node.layout?.flexWrap ?? 0,
+                // A `stack` overlays all its children (z-stack) with 9-point
+                // anchored absolute positioning, sizing to its largest child.
+                isStack: node.type == "stack",
                 childNodes: node.children
             ) {
                 ForEach(node.children) { child in
