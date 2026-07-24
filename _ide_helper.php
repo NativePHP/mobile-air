@@ -11,6 +11,10 @@
  * src/) and phpstan (paths: src/) never touch it, so nothing here executes
  * or double-declares at runtime.
  *
+ * The filename matters: PhpStorm suppresses its "Multiple definitions exist
+ * for class" hint only for files named exactly _ide_helper.php (the
+ * convention barryvdh/laravel-ide-helper established).
+ *
  * Keep the signatures in sync with the Route::macro(...) registrations in
  * src/NativeServiceProvider.php.
  */
