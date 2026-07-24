@@ -1105,6 +1105,9 @@ class NativeElementCollector
         if (isset($attrs['_change']) && method_exists($element, 'onChange')) {
             $element->onChange($attrs['_change']);
         }
+        if (isset($attrs['_selectionChange']) && method_exists($element, 'onSelectionChange')) {
+            $element->onSelectionChange($attrs['_selectionChange']);
+        }
         if (isset($attrs['_submit']) && method_exists($element, 'onSubmit')) {
             $element->onSubmit($attrs['_submit']);
         }

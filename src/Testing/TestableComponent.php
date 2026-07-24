@@ -309,10 +309,67 @@ class TestableComponent
         return $this->dispatchUiEvent(['type' => self::EVENT_PRESS, 'callback_id' => $callbackId]);
     }
 
-    /** Type into an input bound to a method, model property, or ref. */
-    public function input(string $target, string $text): static
+    /**
+     * Type into an input bound to a method, model property, or ref.
+     *
+     * When caret/selection offsets are given AND the target element
+     * registered `@selectionChange` (an `on_selection_change` callback id
+     * in its props), the harness also fires the selection event after the
+     * text change — the two frames a device sends for one keystroke.
+     * Offsets are Unicode code points; omitting `$selectionEnd` means a
+     * collapsed caret at `$selectionStart`.
+     */
+    public function input(string $target, string $text, ?int $selectionStart = null, ?int $selectionEnd = null): static
     {
-        return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $text]);
+        // Resolve the selection callback from the CURRENT tree, before the
+        // text change re-renders it (ids are stable across frames, so
+        // dispatching after the re-render is safe).
+        $selectionId = $selectionStart === null ? null : $this->selectionCallbackIdFor($target);
+
+        $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $text]);
+
+        // Mirror the runloop: once the text-change handler navigated away
+        // or stopped the component, no further events are delivered.
+        if ($selectionId !== null && $this->component->getNavigationIntent() === null && $this->isRunning()) {
+            $this->startInteraction();
+
+            return $this->dispatchUiEvent([
+                'type' => self::EVENT_TEXT_CHANGE,
+                'callback_id' => $selectionId,
+                'text' => self::packSelection($text, $selectionStart, $selectionEnd),
+            ]);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Move the caret (or select a range) in an input carrying
+     * `@selectionChange`, without changing its text — fires only the
+     * selection event. `$end` defaults to a collapsed caret at `$start`;
+     * `$text` defaults to the element's current `value` prop when
+     * resolvable, else ''.
+     */
+    public function moveCaret(string $target, int $start, ?int $end = null, ?string $text = null): static
+    {
+        $this->startInteraction();
+
+        $node = $this->nodeFor($target);
+        $callbackId = $node['props']['on_selection_change'] ?? null;
+        $callbackId = is_int($callbackId) ? $callbackId : null;
+
+        Assert::assertNotNull(
+            $callbackId,
+            "No @selectionChange callback registered for [{$target}] in the last render."
+        );
+
+        $text ??= (string) ($node['props']['value'] ?? '');
+
+        return $this->dispatchUiEvent([
+            'type' => self::EVENT_TEXT_CHANGE,
+            'callback_id' => $callbackId,
+            'text' => self::packSelection($text, $start, $end),
+        ]);
     }
 
     public function submit(string $target, string $text = ''): static
@@ -1452,6 +1509,87 @@ class TestableComponent
         foreach ($node['children'] ?? [] as $child) {
             if (($id = $this->callbackIdByRef($child, $ref, $type)) !== null) {
                 return $id;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Pack a caret/selection payload for the TEXT_CHANGE wire frame:
+     * "{start},{end}\x1F{text}" — header before the first U+001F unit
+     * separator, exactly as the device sends it. A well-behaved device
+     * never sends negative or inverted offsets, so the harness normalizes
+     * them here; dispatch() additionally clamps to the text's code-point
+     * length.
+     */
+    protected static function packSelection(string $text, int $start, ?int $end): string
+    {
+        $start = max(0, $start);
+        $end = max($start, $end ?? $start);
+
+        return "{$start},{$end}\x1F{$text}";
+    }
+
+    /** The target element's `on_selection_change` callback id, if any. */
+    protected function selectionCallbackIdFor(string $target): ?int
+    {
+        $id = $this->nodeFor($target)['props']['on_selection_change'] ?? null;
+
+        return is_int($id) ? $id : null;
+    }
+
+    /**
+     * The rendered node a target resolves to: the node carrying `ref` ===
+     * target, else the node owning the callback id the target's method /
+     * expression / model binding registered.
+     */
+    protected function nodeFor(string $target): ?array
+    {
+        if (($node = $this->nodeByRef($this->tree(), $target)) !== null) {
+            return $node;
+        }
+
+        if (($id = $this->callbackIdFor($target)) !== null) {
+            return $this->nodeOwningCallback($this->tree(), $id);
+        }
+
+        return null;
+    }
+
+    /** The node in the subtree carrying the given ref, if any. */
+    protected function nodeByRef(array $node, string $ref): ?array
+    {
+        if (($node['ref'] ?? null) === $ref) {
+            return $node;
+        }
+
+        foreach ($node['children'] ?? [] as $child) {
+            if (($found = $this->nodeByRef($child, $ref)) !== null) {
+                return $found;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The node whose callback entries (node-level `on_*` keys or the
+     * props map) carry the given callback id, wherever the element put it.
+     */
+    protected function nodeOwningCallback(array $node, int $id): ?array
+    {
+        foreach ([$node, $node['props'] ?? []] as $bag) {
+            foreach ($bag as $key => $value) {
+                if (is_string($key) && str_starts_with($key, 'on_') && $value === $id) {
+                    return $node;
+                }
+            }
+        }
+
+        foreach ($node['children'] ?? [] as $child) {
+            if (($found = $this->nodeOwningCallback($child, $id)) !== null) {
+                return $found;
             }
         }
 

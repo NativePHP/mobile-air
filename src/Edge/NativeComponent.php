@@ -2744,6 +2744,38 @@ abstract class NativeComponent
             return;
         }
 
+        // 'text_selection' callbacks (registered by text-input elements
+        // for `@selectionChange`) also ride the TEXT_CHANGE format.
+        // Native packs "{start},{end}\x1F{text}": the selection header
+        // sits before the FIRST U+001F unit separator, the input's full
+        // text after it (the text may itself contain U+001F — only the
+        // first one is structural). Offsets are Unicode code points into
+        // the text with 0 <= start <= end; caret == (start === end). A
+        // malformed header degrades to the whole payload as text with a
+        // caret at its end, so the handler still sees what was typed.
+        if ($kind === 'text_selection') {
+            $payload = $event['text'] ?? '';
+            $sep = strpos($payload, "\x1F");
+            $header = $sep === false ? '' : substr($payload, 0, $sep);
+
+            if ($sep !== false && preg_match('/^(\d+),(\d+)$/', $header, $m) === 1) {
+                $text = substr($payload, $sep + 1);
+                $length = mb_strlen($text, 'UTF-8');
+                $start = min((int) $m[1], $length);
+                $end = min((int) $m[2], $length);
+                if ($start > $end) {
+                    [$start, $end] = [$end, $start];
+                }
+            } else {
+                $text = $payload;
+                $start = $end = mb_strlen($text, 'UTF-8');
+            }
+
+            $this->$method(...[...$args, $text, $start, $end]);
+
+            return;
+        }
+
         $this->$method(...[...$args, ...$eventArgs]);
     }
 }

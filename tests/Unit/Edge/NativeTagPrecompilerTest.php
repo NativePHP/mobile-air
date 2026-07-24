@@ -119,6 +119,24 @@ it('rewrites @pressDown and @pressUp to underscored versions', function () {
     expect($result)->not->toContain('@pressUp');
 });
 
+it('rewrites @selectionChange to _selectionChange', function () {
+    $result = ($this->precompiler)('<native:column @selectionChange="caretMoved">x</native:column>');
+
+    expect($result)->toContain("'_selectionChange' => 'caretMoved'");
+    expect($result)->not->toContain('@selectionChange');
+});
+
+it('rewrites @selectionChange and @change independently on the same tag', function () {
+    // `change` is a suffix of `selectionChange` — the @-anchored alternation
+    // must never rewrite one into the other.
+    $result = ($this->precompiler)('<native:column @change="updateDraft" @selectionChange="caretMoved">x</native:column>');
+
+    expect($result)->toContain("'_change' => 'updateDraft'");
+    expect($result)->toContain("'_selectionChange' => 'caretMoved'");
+    expect($result)->not->toContain('@change');
+    expect($result)->not->toContain('@selectionChange');
+});
+
 it('keeps @press and @pressDown distinct on the same tag', function () {
     // `pressDown` precedes `press` in the alternation — a plain @press must
     // still rewrite to _press, never swallow the Down/Up suffix.
