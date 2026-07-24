@@ -50,15 +50,15 @@ The web view remains available during migration, so you never need a big-bang re
 | `class Foo extends Component` | `class Foo extends NativeComponent` |
 | `Route::get()` + view / `Route::livewire()` | `Route::native('/path', Foo::class)` |
 | `wire:model` / `.blur` / `.debounce.300ms` | `native:model` / `.blur` / `.debounce.300ms` |
-| `wire:click="save"` | `@press="save"` (or its alias `@tap="save"`) |
-| `wire:submit` | `@submit` on the input / `@press` on the button |
+| `wire:click="save"` | `@tap="save"` (or its alias `@press="save"`) |
+| `wire:submit` | `@submit` on the input / `@tap` on the button |
 | `wire:poll.5s` | `#[Poll(5000)]` on a method, or `native:poll="5s"` |
 | `#[Computed]` (Livewire) | `#[Computed]` (`Native\Mobile\Attributes\Computed`) |
 | `#[On]` (Livewire) / `#[OnNative]` | `#[On(Event::class)]` (`Native\Mobile\Attributes\On`) |
 | `mount()`, `updatedFoo()` | Same names — plus `onResume()`, `onBackPressed()`, `unmount()` |
 | `redirect()` / `<a href>` | `$this->navigate()`, `$this->replace()`, `$this->back()`, or `@navigate` |
 | `@if` / `@foreach` / Blade logic | Unchanged — it's still Blade |
-| Alpine.js state/toggles | Component properties + `@press`, or `SharedValue` for gesture-driven UI |
+| Alpine.js state/toggles | Component properties + `@tap`, or `SharedValue` for gesture-driven UI |
 
 ## HTML → EDGE Mapping
 
@@ -69,7 +69,7 @@ The web view remains available during migration, so you never need a big-bang re
 | Positioned/overlapping layers | `<native:stack>` or `class="absolute top-[N] left-[N]"` |
 | `<p>` / `<span>` / headings | `<native:text>` (nest for inline styled runs) |
 | `<img>` | `<native:image src alt>` |
-| `<button>` / `<a>` styled as button | `<native:button label @press>` (theme-styled) or `<native:pressable>` (full control) |
+| `<button>` / `<a>` styled as button | `<native:button label @tap>` (theme-styled) or `<native:pressable>` (full control) |
 | `<input type="text">` | `<native:outlined-text-input>` / `<native:filled-text-input>` / `<native:bare-text-input>` |
 | `<input type="checkbox">` | `<native:checkbox>` or `<native:toggle>` |
 | `<select>` | `<native:select :options>` |
