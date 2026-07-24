@@ -277,7 +277,7 @@ class TestableComponent
 
     /**
      * Touch-down on the element bound to a method name or ref
-     * (`@pressDown`). Down/up ride the PRESS wire event with their own
+     * (`@tapDown`). Down/up ride the PRESS wire event with their own
      * callback ids in the props dict, so dispatch is a plain press at
      * the `on_press_down` id.
      */
@@ -286,7 +286,7 @@ class TestableComponent
         return $this->firePropsPress($target, 'on_press_down');
     }
 
-    /** Touch-up counterpart of pressDown() (`@pressUp`). */
+    /** Touch-up counterpart of pressDown() (`@tapUp`). */
     public function pressUp(string $target): static
     {
         return $this->firePropsPress($target, 'on_press_up');

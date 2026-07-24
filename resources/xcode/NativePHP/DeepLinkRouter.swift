@@ -2,23 +2,23 @@ import Foundation
 
 final class DeepLinkRouter {
     static let shared = DeepLinkRouter()
-    
+
     private var pendingURL: String?
     private var isWebViewReady = false
     private var isPhpReady = false
-    
+
     func markWebViewReady() {
         DebugLogger.shared.log("🔗 WebView marked as ready")
         isWebViewReady = true
         processePendingURLIfReady()
     }
-    
+
     func markPhpReady() {
         DebugLogger.shared.log("🔗 PHP marked as ready")
         isPhpReady = true
         processePendingURLIfReady()
     }
-    
+
     private func processePendingURLIfReady() {
         DebugLogger.shared.log("🔗 processePendingURLIfReady() - WebView: \(isWebViewReady), PHP: \(isPhpReady), Pending: \(pendingURL != nil)")
         // Only process pending URL when both WebView and PHP are ready
@@ -28,11 +28,11 @@ final class DeepLinkRouter {
             self.pendingURL = nil
         }
     }
-    
+
     func hasPendingURL() -> Bool {
         return pendingURL != nil
     }
-    
+
     func handle(url: URL) {
         DebugLogger.shared.log("🔗 DeepLinkRouter.handle() called with: \(url)")
         DebugLogger.shared.log("🔗 Current state - WebView ready: \(isWebViewReady), PHP ready: \(isPhpReady)")
@@ -112,7 +112,7 @@ final class DeepLinkRouter {
         let newURLString = "php://127.0.0.1\(normalizedRoute)"
 
         DebugLogger.shared.log("🔗 Normalized to: \(newURLString)")
-        
+
         // 3. Either navigate immediately or store for later
         if isWebViewReady && isPhpReady {
             // App is already running. How we navigate depends on the runtime:
@@ -125,7 +125,7 @@ final class DeepLinkRouter {
                 // Instead, wake the running loop with a native event carrying the
                 // target route; NativeComponent::dispatchNativeEvent turns it into
                 // a NavigationIntent::NAVIGATE and NativeRouter pushes the screen —
-                // the same path an in-app @press navigate uses.
+                // the same path an in-app @tap navigate uses.
                 let escaped = normalizedRoute
                     .replacingOccurrences(of: "\\", with: "\\\\")
                     .replacingOccurrences(of: "\"", with: "\\\"")
@@ -145,7 +145,7 @@ final class DeepLinkRouter {
             pendingURL = newURLString
         }
     }
-    
+
     private func redirectToURL(_ urlString: String) {
         DebugLogger.shared.log("🔗 redirectToURL() posting notification for: \(urlString)")
         NotificationCenter.default.post(

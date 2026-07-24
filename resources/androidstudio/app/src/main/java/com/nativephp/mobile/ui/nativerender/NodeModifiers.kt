@@ -222,7 +222,7 @@ fun Modifier.nodeGestures(
     // lifts. The `finally` also runs on gesture-coroutine cancellation
     // (scroll steals the stream, node leaves composition) so a held button
     // is never left stuck. Observes without consuming, so it composes with
-    // the clickable below when @press is also present.
+    // the clickable below when @tap is also present.
     if (pressDownId != 0 || pressUpId != 0) {
         mod = mod.pointerInput(pressDownId, pressUpId, nodeId) {
             awaitEachGesture {

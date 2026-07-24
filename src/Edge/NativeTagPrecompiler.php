@@ -255,11 +255,11 @@ class NativeTagPrecompiler
         );
 
         // Tap spellings are aliases of the press family — `@tap` is the
-        // mobile-native way to say `@press`, and both are supported for
+        // mobile-native way to say `@tap`, and both are supported for
         // good. They rewrite straight to the *canonical* underscored attr,
         // so nothing downstream (collector, Element, wire format, testing
         // suite) ever learns a second name, and every existing app written
-        // against `@press` compiles byte-identically.
+        // against `@tap` compiles byte-identically.
         // Longer spellings precede their prefix, as in the canonical pass
         // below. `@doubleTap` is untouched: the alternation is anchored at
         // `@`, so `tap` can't match mid-word.
@@ -269,16 +269,16 @@ class NativeTagPrecompiler
             $value
         );
 
-        // Convert @press, @pressDown, @pressUp, @longPress, @doubleTap,
-        // @selectionChange, @change, @submit, @dismiss, @refresh,
-        // @endReached, @swipeDelete, @swipe, @pinchEnd, @navigated to
-        // underscored versions before Blade interprets @ as a directive.
+        // Convert @tap, @tapDown, @tapUp, @longPress, @doubleTap, @change,
+        // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
+        // @pinchEnd, @navigated, @selectionChange to underscored versions before Blade
+        // interprets @ as a directive.
         // Longer spellings precede their prefix (`pressDown`/`pressUp` before
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
         // `selectionChange` shares no prefix with `change` — the alternation
         // is anchored at `@`, so `change` can't match mid-word — but it sits
         // before it anyway to keep the longer-first convention obvious.
-        $value = preg_replace('/@(pressDown|pressUp|press|longPress|doubleTap|selectionChange|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
+        $value = preg_replace('/@(tapDown|tapUp|tap|pressDown|pressUp|press|longPress|doubleTap|selectionChange|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
 
         // The attribute-region pattern below uses possessive quantifiers
         // (`*+`) to keep PCRE from catastrophically backtracking when a

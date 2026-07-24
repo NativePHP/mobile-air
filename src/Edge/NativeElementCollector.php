@@ -596,7 +596,7 @@ class NativeElementCollector
      * the props dict (`on_press_down` / `on_press_up`) and reuse the PRESS
      * wire event — the callback id alone routes to the handler — so no
      * `nphp_node_*` signature or binary wire-format change. Returns 0 when
-     * the corresponding `@pressDown` / `@pressUp` attr is not set.
+     * the corresponding `@tapDown` / `@tapUp` attr is not set.
      */
     protected static function resolveOnPressDown(array $attrs): int
     {

@@ -113,12 +113,12 @@ Screens are built from `native:` Blade components (the prefix is optional but pr
 <native:column class="w-full h-full p-4 gap-4 bg-theme-background">
     <native:text class="text-2xl font-bold">Welcome</native:text>
     <native:text-input native:model="name" placeholder="Your name" />
-    <native:button label="Save" @press="save" />
+    <native:button label="Save" @tap="save" />
 </native:column>
 ```
 
-Tap handlers use `@press` (`@tap` is a permanent alias — same for `@longPress`/`@longTap` and
-`@pressDown`/`@tapDown`, `@pressUp`/`@tapUp`; both spellings compile identically).
+Tap handlers use `@tap` (`@press` is a permanent alias — same for `@longTap`/`@longPress` and
+`@tapDown`/`@pressDown`, `@tapUp`/`@pressUp`; both spellings compile identically).
 
 ~40 elements are available — layout (column, row, stack, scroll-view, spacer, pressable), content (text, image,
 icon, divider, badge, progress-bar, activity-indicator), forms (button, button-group, text-input, toggle,
