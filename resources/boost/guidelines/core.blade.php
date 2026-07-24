@@ -26,6 +26,36 @@ elements (`native:column`, `native:text`, `native:button`, …).** This is the w
   Blade's use directive first. The enums are generated, not shipped — if `app/Icons/` doesn't exist yet, run
   `php artisan native-ui:generate-icons` first (safe to run yourself).
 
+### Theme Tokens, Font Aliases, and Layouts — the Design System Trio
+
+Every app's visual identity belongs in `config/native-ui.php` (publish with
+`php artisan vendor:publish --tag=native-ui-config`), not scattered through the markup. When building or
+reviewing screens, enforce all three:
+
+1. **Theme tokens over hardcoded colors.** Define the palette once in the config's `theme` block, then style
+   with `bg-theme-*` / `text-theme-*` / `border-theme-*` classes (`bg-theme-surface`, `text-theme-on-surface`,
+   `border-theme-outline`). Never sprinkle `bg-[#1E2021]`-style arbitrary values for what is really a theme
+   role — they can't be re-skinned and don't get automatic dark-mode pairs. Arbitrary color values are for
+   genuine data-driven color (per-category identity colors, map imagery, chart series), and those belong in
+   one PHP home (an enum or model method), never inline per view. Two capabilities that prevent hex fallbacks:
+   - **The token map is open-ended.** When a design needs a role the shipped set lacks (a success green, an
+     `outline-variant`), add it to both `light` and `dark` blocks — `bg-theme-success` works immediately; no
+     package change required.
+   - **Theme classes take opacity modifiers** just like palette classes: `bg-theme-primary/15` is the correct
+     tonal-fill idiom (applies to the dark companion too) — never approximate with a hardcoded alpha hex.
+2. **Font aliases over file tokens.** Register semantic aliases in the config's `fonts` array
+   (`'headline' => 'ArchivoNarrow-Bold'`, `'mono' => 'JetBrainsMono-Regular'`, `'default' => …` for the
+   app-wide font) and write `font="headline"` in views — never `font="ArchivoNarrow-Bold"`. Swapping a
+   typeface must be a one-line config change.
+3. **Every screen belongs to a `NativeLayout`.** Attach one via `Route::native(...)->layout(...)` or
+   `Route::nativeGroup(...)` — tab roots share a tabs layout (`navBar()` + `tabBar()`), pushed screens get a
+   stack layout with auto-back. Prefer `usesNativeChrome(): true` for real NavigationStack/TabView chrome.
+   Never hand-roll top bars or bottom navs out of rows and pressables inside screen views — that forfeits
+   native back gestures, safe-area handling, and Liquid Glass/Material You. Chrome builder colors take raw
+   strings — feed them with the appearance-aware `theme()` helper (`->activeColor(theme('primary'))`), which
+   reads the same config tokens and follows light/dark switches; never paste hex into a layout. Bar fonts take
+   config aliases (`->font('mono')`). Only screens rendered without any layout may use `safe-area` classes.
+
 ### When a Capability Is Missing
 
 If the app needs native functionality or a UI component that core and `native-ui` don't provide:

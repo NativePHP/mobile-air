@@ -22,6 +22,14 @@ rendering **EDGE** Blade elements. There is no web server and — for native UI 
   `nativephp-webview-to-native` skill walks through the conversion.
 - Style exclusively with Tailwind utility classes via `class="..."` / `:class="..."`. Never inline CSS
   `style="..."` or ad-hoc styling props.
+- **Prefer theme tokens and font aliases over raw values.** Publish `config/native-ui.php`
+  (`vendor:publish --tag=native-ui-config`), define the palette in its `theme` block and semantic font
+  aliases in `fonts` (`'headline' => 'ArchivoNarrow-Bold'`), then style with `bg-theme-*` / `text-theme-*` /
+  `border-theme-*` classes and `font="headline"`. The token map is open-ended (add `success`,
+  `outline-variant`, … to both blocks and `bg-theme-success` just works) and theme classes accept opacity
+  modifiers (`bg-theme-primary/15` — the tonal-fill idiom). Arbitrary `bg-[#…]` values are only for genuine
+  data-driven color (category identity colors, imagery) and belong in one PHP home (enum/model), never inline
+  per view.
 - Use `native:icon` for iconography (SF Symbols on iOS, Material Icons on Android — cross-platform names like
   `home` resolve on both). Never use emoji characters in UI text, labels, or buttons unless the user explicitly
   asks for them. Prefer the **typed icon enums** (`App\Icons\Ios`, `App\Icons\Android`, `App\Icons\AndroidOutlined`,
@@ -158,6 +166,13 @@ A `NativeLayout` class declares nav bars, tab bars, and drawers once; attach wit
 / `tabBar()` using the `NavBar`, `NavAction`, `TabBar`, and `Tab` fluent builders. Layouts handle safe areas
 automatically — never add `safe-area` classes to screens under a layout (reserve them for chrome-less screens).
 
+**Every screen should have a layout.** Tab roots share a tabs layout, pushed details get a stack layout with
+auto-back; prefer `usesNativeChrome(): true` for real NavigationStack/TabView chrome (edge-swipe back,
+predictive back, large titles, Liquid Glass/Material You for free). Never hand-roll top bars or bottom navs
+out of rows and pressables inside screen views. Chrome builder colors (`backgroundColor()`, `activeColor()`,
+`textColor()`) take raw color strings — feed them with the appearance-aware `theme()` helper
+(`->activeColor(theme('primary'))`) instead of hardcoding hex; bar fonts take aliases (`->font('mono')`).
+
 ## Device APIs
 
 **Core built-ins** (`Native\Mobile\Facades`): `Device`, `Dialog`, `File`, `System` — these ship inside
@@ -252,6 +267,9 @@ rest with the `nativephp-webview-to-native` skill.
 - Missing `NATIVEPHP_APP_ID` in `.env` before `native:install`
 - Suggesting iOS commands on Windows/Linux
 - Adding `safe-area` classes to screens already wrapped by a NativeLayout
+- Hardcoding hex colors or font file tokens in views instead of theme tokens (`bg-theme-surface`) and font
+  aliases (`font="headline"`) from `config/native-ui.php`
+- Hand-rolling top bars / bottom navs inside screens instead of attaching a `NativeLayout`
 - Expecting Vite HMR without passing `--vite` (opt-in since v4)
 - Installing a plugin with Composer but never running `native:plugin:register` — the plugin silently does
   nothing and `native:run` warns "installed but not registered"; always register and verify with
