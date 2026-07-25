@@ -3,6 +3,8 @@
 namespace Native\Mobile\Events\Async;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\PendingAsyncTask;
 
 /**
  * A background async task completed successfully.
@@ -12,8 +14,8 @@ use Illuminate\Foundation\Events\Dispatchable;
  * `id`. `$result` is whatever the task closure/handle returned, round-tripped
  * as JSON — so keep it to scalars/arrays (pass large blobs by path or cache key).
  *
- * @see \Native\Mobile\PendingAsyncTask
- * @see \Native\Mobile\Edge\NativeComponent::handleAsyncCompletion()
+ * @see PendingAsyncTask
+ * @see NativeComponent
  */
 class AsyncTaskFinished
 {

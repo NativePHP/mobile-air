@@ -27,7 +27,7 @@ use Native\Mobile\Testing\FakeAsyncTask;
  * BuildReport::dispatch($month)->finished(fn ($result) => $this->report = $result);
  * ```
  *
- * @see \Native\Mobile\PendingAsyncTask
+ * @see PendingAsyncTask
  * @see docs/async-task-design.md
  */
 class AsyncTask

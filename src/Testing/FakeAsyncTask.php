@@ -3,10 +3,11 @@
 namespace Native\Mobile\Testing;
 
 use Closure;
+use Native\Mobile\AsyncTask;
 use PHPUnit\Framework\Assert;
 
 /**
- * In-process stand-in for the async lane, enabled with {@see \Native\Mobile\AsyncTask::fake()}.
+ * In-process stand-in for the async lane, enabled with {@see AsyncTask::fake()}.
  *
  * While active, every `AsyncTask::dispatch()` runs its work **inline and
  * synchronously** and its `finished()`/`failed()` callback fires immediately —

@@ -4,11 +4,12 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Native\Mobile\Support\AsyncTaskRunner;
+use Native\Mobile\Support\AsyncTaskTransport;
 
 /**
  * Runs a single dispatched async task, identified by its id, inside the
  * background PHP context (the device async lane, or a Jump dev-machine
- * subprocess). Not meant to be invoked by hand — {@see \Native\Mobile\Support\AsyncTaskTransport}
+ * subprocess). Not meant to be invoked by hand — {@see AsyncTaskTransport}
  * dispatches it.
  *
  * `--jump` marks the run as a Jump subprocess so completion is written to the

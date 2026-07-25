@@ -2,7 +2,6 @@
 
 namespace Native\Mobile\Edge;
 
-use Closure;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\View\Engines\CompilerEngine;
@@ -1811,7 +1810,7 @@ abstract class NativeComponent
 
     /**
      * The component currently driving the runloop, or null when none is active.
-     * Used by {@see \Native\Mobile\PendingAsyncTask} to scope async completion
+     * Used by {@see PendingAsyncTask} to scope async completion
      * callbacks to the screen that dispatched them.
      */
     public static function active(): ?self
@@ -1830,7 +1829,7 @@ abstract class NativeComponent
      * The work MUST be a static closure — it runs in another interpreter and
      * cannot capture `$this`. Mutate state from `->finished()`/`->failed()`.
      */
-    protected function async(Closure $work): PendingAsyncTask
+    protected function async(\Closure $work): PendingAsyncTask
     {
         return AsyncTask::dispatch($work);
     }

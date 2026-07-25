@@ -1,5 +1,6 @@
 <?php
 
+use Laravel\SerializableClosure\SerializableClosure;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\Exceptions\AsyncTaskException;
 use Native\Mobile\PendingAsyncTask;
@@ -111,7 +112,7 @@ it('asserts nothing dispatched when idle', function () {
 it('invokes a closure work envelope directly', function () {
     $result = AsyncTaskRunner::invoke([
         'kind' => 'closure',
-        'closure' => new \Laravel\SerializableClosure\SerializableClosure(static fn () => 'hi'),
+        'closure' => new SerializableClosure(static fn () => 'hi'),
     ]);
 
     expect($result)->toBe('hi');
