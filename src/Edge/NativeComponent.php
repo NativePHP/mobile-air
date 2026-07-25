@@ -994,6 +994,14 @@ abstract class NativeComponent
             return null;
         }
 
+        // An inline `<native:top-bar-title>` arrives already wrapped (the
+        // collector built the marker itself) — re-wrapping would nest a
+        // `top_bar_title` inside a `top_bar_title` and the renderers, which
+        // draw the marker's direct children, would paint nothing.
+        if ($titleView instanceof TopBarTitle) {
+            return $titleView;
+        }
+
         $wrapper = TopBarTitle::make();
         $wrapper->addChild($titleView instanceof View ? $this->fromViewPartial($titleView) : $titleView);
 

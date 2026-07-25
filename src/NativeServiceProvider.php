@@ -687,6 +687,7 @@ class NativeServiceProvider extends PackageServiceProvider
             // Navigation chrome
             'top_bar' => Elements\TopBar::class,
             'top_bar_action' => Elements\TopBarAction::class,
+            'top_bar_title' => Elements\TopBarTitle::class,
             'bottom_nav' => Elements\BottomNav::class,
             'bottom_nav_item' => Elements\BottomNavItem::class,
             'side_nav' => Elements\SideNav::class,

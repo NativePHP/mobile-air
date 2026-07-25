@@ -7,6 +7,7 @@ use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Elements\Image;
 use Native\Mobile\Edge\Elements\TopBar;
 use Native\Mobile\Edge\Elements\TopBarAction;
+use Native\Mobile\Edge\Elements\TopBarTitle;
 
 /**
  * Fluent builder for the top navigation bar.
@@ -136,6 +137,13 @@ class NavBar
         foreach ($element->getChildren() as $child) {
             if ($child instanceof TopBarAction) {
                 $bar->prebuiltActionElements[] = $child;
+            }
+            // An inline `<native:top-bar-title>` is the blade spelling of
+            // `titleView()`. Kept as the collected marker element (callbacks
+            // its children carry survive); NativeComponent emits it as-is
+            // rather than re-wrapping.
+            if ($child instanceof TopBarTitle) {
+                $bar->titleView = $child;
             }
         }
 

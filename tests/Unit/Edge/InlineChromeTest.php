@@ -14,6 +14,7 @@ use Tests\Fixtures\Edge\CustomTopBarScreen;
 use Tests\Fixtures\Edge\FabScreen;
 use Tests\Fixtures\Edge\InlineBottomNavScreen;
 use Tests\Fixtures\Edge\InlineTopBarScreen;
+use Tests\Fixtures\Edge\InlineTopBarTitleScreen;
 use Tests\Fixtures\Edge\ScrollFabScreen;
 use Tests\Fixtures\Edge\ScrollNoFabScreen;
 use Tests\Fixtures\Edge\ScrollRootFabScreen;
@@ -160,6 +161,35 @@ it('hoists an inline top-bar into a NativeRootStack with no layout at all', func
         // The bar was hoisted — it must not also render as a drawn element.
         ->assertMissingElement('top_bar')
         ->assertSee('Top bar body');
+});
+
+it('hoists an inline top-bar-title into the chrome root as the principal slot content', function () {
+    $screen = Native::test(InlineTopBarTitleScreen::class)
+        ->assertMissingElement('top_bar')
+        // The marker rides on the chrome root, NOT nested in another marker —
+        // the renderers draw its direct children in the principal slot.
+        ->assertElement('top_bar_title', function (array $n) {
+            $children = $n['children'] ?? [];
+
+            return count($children) === 1
+                && ($children[0]['type'] ?? null) === 'pressable';
+        })
+        ->assertMissingElement('top_bar_title', function (array $n) {
+            foreach ($n['children'] ?? [] as $child) {
+                if (($child['type'] ?? null) === 'top_bar_title') {
+                    return true;
+                }
+            }
+
+            return false;
+        })
+        // A string title still rides along (iOS labels the back-history menu
+        // from it) and actions are unaffected.
+        ->assertNavTitle('Inline Title')
+        ->assertElement('top_bar_action', fn (array $n) => ($n['props']['id'] ?? null) === 'save');
+
+    // Callbacks wired by the collector inside the title view survive.
+    $screen->tap('Brand Lockup')->assertSet('brandTaps', 1);
 });
 
 it('keeps inline top-bar actions (and their callbacks) on the chrome root', function () {
