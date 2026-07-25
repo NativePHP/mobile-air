@@ -82,6 +82,9 @@ class HotReloadCoordinator {
             // The queue worker MUST be stopped first — php_embed_shutdown()
             // destroys global Zend module state, and the worker's live TSRM
             // context would reference freed memory, causing a heap-corruption crash.
+            // Embedded php-mode webviews own TSRM contexts with the same
+            // hazard; `PersistentPHPRuntime.shutdown()` suspends those itself
+            // (see `WebviewPHPRuntime.suspendAllForRuntimeReboot`).
             if PersistentPHPRuntime.shared.isBooted {
                 PHPQueueWorker.shared.stopAndWait()
                 _ = PersistentPHPRuntime.shared.reboot()

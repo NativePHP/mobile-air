@@ -920,7 +920,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 Log.d("HotReload", "HMR#$gen rebooting persistent runtime...")
 
                                 // Stop queue worker before shutdown — its TSRM context
-                                // will be destroyed by php_module_shutdown
+                                // will be destroyed by php_module_shutdown.
+                                // Embedded php-mode webviews own contexts with the
+                                // same hazard; shutdownPersistentRuntime() suspends
+                                // those itself.
                                 queueWorker?.stop()
 
                                 phpBridge.shutdownPersistentRuntime()
