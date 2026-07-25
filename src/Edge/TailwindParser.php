@@ -342,6 +342,19 @@ class TailwindParser
             return ['dark' => $inner];
         }
 
+        // Negative utilities: `-mt-4`, `-right-8`, `-left-[12]`. Parsed by
+        // stripping the sign, running the positive form, then negating the
+        // result. Placed AFTER the variant prefixes so `ios:-right-8` works,
+        // and BEFORE arbitrary values so `-left-[12]` does too.
+        //
+        // Only inset and margin utilities may go negative — Tailwind itself
+        // has no negative padding/gap/size, and silently accepting one here
+        // would emit nonsense geometry instead of an obvious no-op. The
+        // negative form of anything else parses to null (class ignored).
+        if (str_starts_with($class, '-')) {
+            return self::negateSpacing(self::parseClassImpl(substr($class, 1)));
+        }
+
         // Arbitrary values: prefix-[value]
         if (str_contains($class, '[')) {
             if (preg_match('/^(.+?)-\[([^\]]+)\]$/', $class, $m)) {
@@ -622,6 +635,45 @@ class TailwindParser
         }
 
         return null;
+    }
+
+    /**
+     * Keys a leading `-` may legally flip. Mirrors Tailwind: margins and
+     * insets take negatives, padding / gap / sizing never do.
+     */
+    private const NEGATABLE = [
+        'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
+        'positionTop', 'positionRight', 'positionBottom', 'positionLeft',
+    ];
+
+    /**
+     * Flip the sign of a parsed spacing result, or reject it.
+     *
+     * Returns null when $parsed is null (the positive form didn't parse) or
+     * carries ANY key outside [NEGATABLE] — a negative form of a
+     * non-negatable utility is a typo, and dropping the class is safer than
+     * emitting geometry the author didn't ask for.
+     *
+     * @param  array<string, mixed>|null  $parsed
+     * @return array<string, float>|null
+     */
+    private static function negateSpacing(?array $parsed): ?array
+    {
+        if ($parsed === null || $parsed === []) {
+            return null;
+        }
+
+        $negated = [];
+
+        foreach ($parsed as $key => $value) {
+            if (! in_array($key, self::NEGATABLE, true) || ! is_numeric($value)) {
+                return null;
+            }
+
+            $negated[$key] = -(float) $value;
+        }
+
+        return $negated;
     }
 
     /**

@@ -643,3 +643,49 @@ it('explicit attrs override class attrs', function () {
     // explicit fontSize=32 should override text-xl (20)
     expect($tree['props']['font_size'])->toBe(32.0);
 });
+
+// ── Negative utilities ──────────────────────────────
+
+it('parses negative margins', function () {
+    expect(TailwindParser::parse('-mt-4'))->toBe(['marginTop' => -16.0]);
+    expect(TailwindParser::parse('-ml-2'))->toBe(['marginLeft' => -8.0]);
+    expect(TailwindParser::parse('-m-1'))->toBe(['margin' => -4.0]);
+    expect(TailwindParser::parse('-mx-4'))->toBe(['marginLeft' => -16.0, 'marginRight' => -16.0]);
+    expect(TailwindParser::parse('-my-2'))->toBe(['marginTop' => -8.0, 'marginBottom' => -8.0]);
+});
+
+it('parses negative insets so an absolute child can overhang its container', function () {
+    expect(TailwindParser::parse('-right-8'))->toBe(['positionRight' => -32.0]);
+    expect(TailwindParser::parse('-top-2'))->toBe(['positionTop' => -8.0]);
+    expect(TailwindParser::parse('-bottom-px'))->toBe(['positionBottom' => -1.0]);
+    expect(TailwindParser::parse('-left-0.5'))->toBe(['positionLeft' => -2.0]);
+});
+
+it('parses negative arbitrary values', function () {
+    expect(TailwindParser::parse('-right-[12]'))->toBe(['positionRight' => -12.0]);
+    expect(TailwindParser::parse('-mt-[6]'))->toBe(['marginTop' => -6.0]);
+});
+
+it('composes negatives with platform and dark variants', function () {
+    TailwindParser::setPlatform('ios');
+    expect(TailwindParser::parse('ios:-right-8'))->toBe(['positionRight' => -32.0]);
+    expect(TailwindParser::parse('android:-right-8'))->toBe([]);
+    TailwindParser::setPlatform(null);
+
+    expect(TailwindParser::parse('dark:-mt-4'))->toBe(['dark' => ['marginTop' => -16.0]]);
+});
+
+it('rejects negatives on utilities that have no negative form', function () {
+    // Tailwind has no negative padding / gap / sizing; emitting geometry the
+    // author never asked for would be worse than dropping the class.
+    expect(TailwindParser::parse('-p-4'))->toBe([]);
+    expect(TailwindParser::parse('-gap-2'))->toBe([]);
+    expect(TailwindParser::parse('-w-4'))->toBe([]);
+    expect(TailwindParser::parse('-bg-red-500'))->toBe([]);
+    expect(TailwindParser::parse('-nonsense'))->toBe([]);
+});
+
+it('keeps positive spacing untouched', function () {
+    expect(TailwindParser::parse('mt-4'))->toBe(['marginTop' => 16]);
+    expect(TailwindParser::parse('right-8'))->toBe(['positionRight' => 32]);
+});

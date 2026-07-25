@@ -593,15 +593,20 @@ struct FlexContainer: Layout {
     private func placeAbsolute(_ subview: LayoutSubview, info: ChildInfo, in bounds: CGRect) {
         let ideal = subview.sizeThatFits(.unspecified)
 
-        // Resolve horizontal position
+        // Resolve horizontal position. A NON-ZERO right inset (with no left)
+        // anchors to the trailing edge; `!= 0` rather than `> 0` so NEGATIVE
+        // insets work — `-right-8` resolves to maxX - width + 8, deliberately
+        // overhanging the edge (Tailwind's `-right-8` bleed). Zero still means
+        // "no right anchor", since the packed node struct has no spare byte to
+        // distinguish an unset edge from an explicit `right-0`.
         var x = bounds.minX + info.positionLeft
-        if info.positionRight > 0 && info.positionLeft == 0 {
+        if info.positionRight != 0 && info.positionLeft == 0 {
             x = bounds.maxX - ideal.width - info.positionRight
         }
 
-        // Resolve vertical position
+        // Resolve vertical position — same convention.
         var y = bounds.minY + info.positionTop
-        if info.positionBottom > 0 && info.positionTop == 0 {
+        if info.positionBottom != 0 && info.positionTop == 0 {
             y = bounds.maxY - ideal.height - info.positionBottom
         }
 
