@@ -41,7 +41,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ime
-import androidx.compose.material3.FabPosition
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -100,7 +99,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     // on rotation) only emits AppearanceChanged when the theme actually flips.
     private var lastAppearance: String? = null
     private var showSplash by mutableStateOf(true)
-    // Gates composition of the heavy MainScreen tree (Scaffold + drawer + WebView)
+    // Gates composition of the heavy MainScreen tree (Scaffold + WebView)
     // until the runtime is booted and the WebView is ready. Until then the first
     // frame is just the splash overlay, keeping that composition off the critical
     // path to first paint.
@@ -151,8 +150,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 injectSafeAreaInsets(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             }
 
-            // Keyboard visibility: Compose state always (native bottom nav
-            // reacts), WebView CSS class only when a renderer exists.
+            // Keyboard visibility: injected as a WebView CSS class once boot
+            // is ready (native screens read the IME inset natively).
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             if (bootReady) {
                 injectKeyboardVisibility(imeVisible)
@@ -631,7 +630,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      * request queues behind the running loop and the link is silently dropped.
      * Instead wake the loop with a `__deeplink` native event carrying the route;
      * NativeComponent::dispatchNativeEvent turns it into a NavigationIntent::NAVIGATE
-     * and NativeRouter pushes the screen (same path as an in-app @press navigate).
+     * and NativeRouter pushes the screen (same path as an in-app @tap navigate).
      * WebView/Inertia apps keep the direct loadUrl().
      */
     private fun navigateWarm(route: String) {
@@ -689,12 +688,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             Log.d("OAuth", "🔐 OAuth callback host: ${uri.host}")
             Log.d("OAuth", "🔐 OAuth callback path: ${uri.path}")
             Log.d("OAuth", "🔐 OAuth callback query: ${uri.query}")
-            
+
             // Check for common OAuth parameters
             val code = uri.getQueryParameter("code")
             val state = uri.getQueryParameter("state")
             val error = uri.getQueryParameter("error")
-            
+
             if (code != null) {
                 Log.d("OAuth", "✅ OAuth authorization code received: ${code.take(10)}...")
             }
@@ -1131,17 +1130,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         val portraitHeightPx = maxOf(currentWidthPx, currentHeightPx)
 
         val leftPx = (left / density).toInt()
-        var topPx = (top / density).toInt()
+        val topPx = (top / density).toInt()
         val rightPx = (right / density).toInt()
         val bottomPx = (bottom / density).toInt()
-
-        // Check if native top bar is present - if so, set top inset to 0
-        // The native top bar already handles status bar spacing
-        val hasTopBar = NativeUIState.topBarData.value != null
-        if (hasTopBar) {
-            topPx = 0
-            Log.d("SafeArea", "Native top bar detected - setting top inset to 0")
-        }
 
         // Get actual device orientation from Android Configuration
         val isPortrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
@@ -1241,9 +1232,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         if (lastKeyboardVisible == isVisible) return
         lastKeyboardVisible = isVisible
 
-        // Update UI state so Compose components can react (e.g., hide bottom nav)
-        NativeUIState.setKeyboardVisible(isVisible)
-
         val jsCode = if (isVisible) {
             "document.body.classList.add('keyboard-visible');"
         } else {
@@ -1321,63 +1309,20 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     /**
-     * Main Compose UI screen with WebView, navigation, and overlays
-     * Side drawer wraps everything to avoid touch blocking issues
+     * Main Compose UI screen with WebView, native tree, and overlays.
+     * WebView-mode chrome (the Edge-bridge top bar / bottom nav / side
+     * drawer / FAB) is gone — native chrome now comes exclusively from
+     * the element-collector path (NativeRootStack / NativeRootTabs).
      */
     @Composable
     private fun MainScreen() {
         Box(Modifier.fillMaxSize()) {
-            // Side drawer wraps the main content (correct ModalNavigationDrawer usage)
-            SideDrawerContent(
-                content = {
-                    // Get FAB position from state
-                    val fabData by NativeUIState.fabData
-                    val fabPosition = when (fabData?.position?.lowercase()) {
-                        "center" -> FabPosition.Center
-                        "start" -> FabPosition.Start
-                        else -> FabPosition.End  // Default to end (bottom-right)
-                    }
-
-                    // Scaffold provides standard Material3 layout with FAB support
-                    // Configure for edge-to-edge by using zero content window insets
-                    Scaffold(
-                        topBar = {
-                            NativeTopBar(
-                                onMenuClick = {
-                                    Log.d("Navigation", "🍔 Menu button clicked - opening drawer")
-                                },
-                                onNavigate = { url ->
-                                    Log.d("Navigation", "⚡ TopBar action navigation clicked")
-                                    navigateWithInertia(url)
-                                }
-                            )
-                        },
-                        bottomBar = {
-                            BottomNavigationContent()
-                        },
-                        floatingActionButton = {
-                            NativeFab(
-                                onNavigate = { url ->
-                                    Log.d("Navigation", "🖱️ FAB navigation clicked")
-                                    navigateWithInertia(url)
-                                },
-                                onEvent = { eventName ->
-                                    Log.d("NativeEvent", "🖱️ FAB event dispatched: $eventName")
-                                    // Dispatch native event via JavaScript
-                                    val jsCode = """
-                                        if (window.Native) {
-                                            window.Native.dispatch('$eventName', {});
-                                        }
-                                    """.trimIndent()
-                                    webRenderer?.webView?.evaluateJavascript(jsCode, null)
-                                }
-                            )
-                        },
-                        floatingActionButtonPosition = fabPosition,
-                        contentWindowInsets = WindowInsets(0, 0, 0, 0)
-                    ) { paddingValues ->
+            // Scaffold retained for its padding contract with the
+            // WebView below; edge-to-edge via zero window insets.
+            Scaffold(
+                contentWindowInsets = WindowInsets(0, 0, 0, 0)
+            ) { paddingValues ->
                         // Main content: WebView only
-                        // Use paddingValues to respect TopBar and BottomNav heights
                         // IMPORTANT: Add IME (keyboard) inset padding so content isn't hidden behind keyboard
 
                         Box(modifier = Modifier.fillMaxSize()) {
@@ -1446,10 +1391,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 HotReloadIndicator()
                             }
                         }
-                    }
-                }
-            )
-
+            }
         }
     }
 
@@ -1544,101 +1486,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         return NativeUIThemeProvider.resolve(isDark)
     }
 
-    /**
-     * Bottom navigation composable
-     * Hides with animation when keyboard is visible to prevent layout conflicts
-     */
-    @Composable
-    private fun BottomNavigationContent() {
-        val isKeyboardVisible by NativeUIState.isKeyboardVisible
-        val bottomNavData by NativeUIState.bottomNavData
-
-        val systemInDarkMode = isSystemInDarkTheme()
-        val useDarkTheme = bottomNavData?.dark ?: systemInDarkMode
-        val colorScheme = nativeUiMaterialColorScheme(useDarkTheme)
-
-        // Animate bottom nav visibility - slide down when keyboard opens
-        AnimatedVisibility(
-            visible = !isKeyboardVisible,
-            enter = slideInVertically(
-                initialOffsetY = { it },
-                animationSpec = tween(150)
-            ),
-            exit = slideOutVertically(
-                targetOffsetY = { it },
-                animationSpec = tween(150)
-            )
-        ) {
-            MaterialTheme(
-                colorScheme = colorScheme,
-                typography = NativeUIThemeProvider.resolveTypography(),
-            ) {
-                NativeBottomNavigation(
-                    onNavigate = { url ->
-                        Log.d("Navigation", "🖱️ Bottom nav item clicked")
-                        navigateWithInertia(url)
-                    }
-                )
-            }
-        }
-    }
-
-    /**
-     * Side drawer composable - wraps main content in ModalNavigationDrawer
-     */
-    @Composable
-    private fun SideDrawerContent(content: @Composable () -> Unit) {
-        val systemInDarkMode = isSystemInDarkTheme()
-        val sideNavData by NativeUIState.sideNavData
-        val useDarkTheme = sideNavData?.dark ?: systemInDarkMode
-        val colorScheme = nativeUiMaterialColorScheme(useDarkTheme)
-
-        MaterialTheme(
-            colorScheme = colorScheme,
-            typography = NativeUIThemeProvider.resolveTypography(),
-        ) {
-            NativeSideDrawer(
-                onNavigate = { url ->
-                    Log.d("Navigation", "🖱️ Side nav item clicked")
-                    navigateWithInertia(url)
-                },
-                onDrawerStateChange = { isOpen ->
-                    Log.d("SideDrawer", "Drawer state changed: $isOpen")
-                },
-                content = content
-            )
-        }
-    }
-
     inner class AndroidBridge {
         @android.webkit.JavascriptInterface
         fun openDrawer() {
-            Log.d("AndroidBridge", "🖱️ openDrawer() called from JavaScript")
-            runOnUiThread {
-                // Check if we have side nav data first
-                val hasData = NativeUIState.sideNavData.value != null &&
-                             !NativeUIState.sideNavData.value?.children.isNullOrEmpty()
-
-                if (!hasData) {
-                    Log.w("AndroidBridge", "⚠️ Cannot open drawer - no side nav data available")
-                    return@runOnUiThread
-                }
-
-                if (NativeUIState.drawerScope == null) {
-                    Log.e("AndroidBridge", "❌ drawerScope is null!")
-                    return@runOnUiThread
-                }
-                if (NativeUIState.drawerState == null) {
-                    Log.e("AndroidBridge", "❌ drawerState is null!")
-                    return@runOnUiThread
-                }
-
-                // Open drawer via Compose state
-                NativeUIState.drawerScope?.launch {
-                    NativeUIState.drawerState?.open()
-                    Log.d("AndroidBridge", "✅ Drawer opened!")
-                }
-            }
+            // The Edge-bridge side drawer is gone (chrome now comes from the
+            // element-collector path). The JS interface survives so pages
+            // calling window.AndroidBridge.openDrawer() don't throw.
+            Log.w("AndroidBridge", "openDrawer() is no longer supported — the WebView-mode side drawer was removed")
         }
     }
 

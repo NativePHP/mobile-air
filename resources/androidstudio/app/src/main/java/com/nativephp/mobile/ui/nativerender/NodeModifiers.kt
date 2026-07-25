@@ -19,9 +19,58 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+
+// MARK: - Linear Gradient
+
+/**
+ * Build a linear-gradient Brush from `bg-gradient-to-* from-* via-* to-*`,
+ * or null when the node declares no gradient.
+ *
+ * Gradient props ride the props bag rather than NodeStyle: the style block is a
+ * fixed-layout region of the packed binary node with no room for a
+ * variable-length stop list. `dark_bg_color` takes the same route.
+ *
+ * `gradient_stops` is a comma-joined list of two or three `#AARRGGBB` values.
+ * `gradient_dx`/`gradient_dy` are the unit vector the gradient travels toward,
+ * in view space where y grows downward — the same convention as iOS.
+ *
+ * Compose wants pixel endpoints, and the brush is built before layout size is
+ * known, so `Float.POSITIVE_INFINITY` is used as the "far edge" sentinel that
+ * Compose resolves against the actual bounds at draw time.
+ */
+fun linearGradientBrush(props: GenericProps): Brush? {
+    val raw = props.getString("gradient_stops", "")
+    if (raw.isEmpty()) return null
+
+    val colors = raw.split(",")
+        .filter { it.isNotBlank() }
+        .map { argbToComposeColor(ColorParser.parse(it.trim())) }
+
+    if (colors.size < 2) return null
+
+    val dx = props.getFloat("gradient_dx", 0f)
+    val dy = props.getFloat("gradient_dy", 1f)
+
+    val far = Float.POSITIVE_INFINITY
+
+    // Map each axis to start/end offsets: a negative component means the
+    // gradient travels toward that origin, so start at the far edge.
+    val startX = if (dx > 0f) 0f else if (dx < 0f) far else 0f
+    val endX = if (dx > 0f) far else if (dx < 0f) 0f else 0f
+    val startY = if (dy > 0f) 0f else if (dy < 0f) far else 0f
+    val endY = if (dy > 0f) far else if (dy < 0f) 0f else 0f
+
+    return Brush.linearGradient(
+        colors = colors,
+        start = Offset(startX, startY),
+        end = Offset(endX, endY),
+    )
+}
 
 // MARK: - ARGB Color Conversion
 
@@ -86,8 +135,13 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         mod = mod.shadow(elevation = style.elevation.dp, shape = shape)
     }
 
-    // Background
-    if (bgArgb != 0) {
+    // Background — a linear gradient wins over the flat color when declared,
+    // matching CSS where background-image paints over background-color.
+    val gradient = linearGradientBrush(props)
+
+    if (gradient != null) {
+        mod = mod.background(gradient, shape)
+    } else if (bgArgb != 0) {
         val bgColor = argbToComposeColor(bgArgb)
         if (bgColor != Color.Transparent) {
             mod = mod.background(bgColor, shape)
@@ -222,7 +276,7 @@ fun Modifier.nodeGestures(
     // lifts. The `finally` also runs on gesture-coroutine cancellation
     // (scroll steals the stream, node leaves composition) so a held button
     // is never left stuck. Observes without consuming, so it composes with
-    // the clickable below when @press is also present.
+    // the clickable below when @tap is also present.
     if (pressDownId != 0 || pressUpId != 0) {
         mod = mod.pointerInput(pressDownId, pressUpId, nodeId) {
             awaitEachGesture {

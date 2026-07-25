@@ -1,6 +1,6 @@
 ---
 name: nativephp-mobile
-description: "Builds fully native iOS and Android apps with PHP & Laravel. Activate when working with SuperNative screens (NativeComponent, Route::native, native:make), EDGE components (native:column, native:button, native:list, bottom-nav, top-bar, and 40+ more), NativeLayout chrome, native:model data binding, #[Computed]/#[Poll]/#[On] attributes, Native::test() component tests, native device APIs (camera, dialog, biometrics, scanner, geolocation, push notifications), NativePHP Artisan commands (native:run, native:install, native:watch, native:jump), deep links, secure storage, or mobile app deployment."
+description: "Builds fully native iOS and Android apps with PHP & Laravel. Activate when working with SuperNative screens (NativeComponent, Route::native, native:make), nested child components (component tags, props, key, emit, @event bindings), EDGE components (native:column, native:button, native:list, and 40+ more), composable chrome elements (top-bar, bottom-nav, fab, side-nav, bottom-bar) or NativeLayout chrome, native:model data binding, #[Computed]/#[Poll]/#[On] attributes, Native::test() component tests, native device APIs (camera, dialog, biometrics, scanner, geolocation, push notifications), NativePHP Artisan commands (native:run, native:install, native:watch, native:jump), deep links, secure storage, or mobile app deployment."
 ---
 
 # NativePHP Mobile v4
@@ -113,18 +113,19 @@ Screens are built from `native:` Blade components (the prefix is optional but pr
 <native:column class="w-full h-full p-4 gap-4 bg-theme-background">
     <native:text class="text-2xl font-bold">Welcome</native:text>
     <native:text-input native:model="name" placeholder="Your name" />
-    <native:button label="Save" @press="save" />
+    <native:button label="Save" @tap="save" />
 </native:column>
 ```
 
-Tap handlers use `@press` (`@tap` is a permanent alias — same for `@longPress`/`@longTap` and
-`@pressDown`/`@tapDown`, `@pressUp`/`@tapUp`; both spellings compile identically).
+Tap handlers use `@tap` (`@press` is a permanent alias — same for `@longTap`/`@longPress` and
+`@tapDown`/`@pressDown`, `@tapUp`/`@pressUp`; both spellings compile identically).
 
 ~40 elements are available — layout (column, row, stack, scroll-view, spacer, pressable), content (text, image,
 icon, divider, badge, progress-bar, activity-indicator), forms (button, button-group, text-input, toggle,
-checkbox, radio-group, select, slider, chip), navigation (bottom-nav, top-bar, side-nav, tab-row), lists
-(list, lazy-grid, carousel, refreshable), overlays (modal, bottom-sheet), and drawing (canvas, shapes). Fetch
-the component's doc page before using it — required props are validated at render time.
+checkbox, radio-group, select, slider, chip), chrome (top-bar, bottom-nav, fab, bottom-bar, side-nav — see
+Native Chrome below), lists (list, lazy-grid, carousel, refreshable), overlays (modal, bottom-sheet), and
+drawing (canvas, shapes). Fetch the component's doc page before using it — required props are validated at
+render time.
 
 ## Custom Fonts
 
@@ -161,19 +162,84 @@ its filename without extension: `font="Inter-Bold"` on `native:text`, `native:bu
   `$this->on(Event::class, $closure)` for dynamic registration. (`#[OnNative]` is the legacy webview/Livewire
   equivalent — do not use it in NativeComponents.)
 
-## Layouts (Shared Chrome)
+## Nested Components (Child Components)
 
-A `NativeLayout` class declares nav bars, tab bars, and drawers once; attach with
-`Route::native(...)->layout(...)` or `Route::nativeGroup(TabsLayout::class, fn () => ...)`. Override `navBar()`
-/ `tabBar()` using the `NavBar`, `NavAction`, `TabBar`, and `Tab` fluent builders. Layouts handle safe areas
-automatically — never add `safe-area` classes to screens under a layout (reserve them for chrome-less screens).
+Any `NativeComponent` can mount others as children — the unit of reuse for repeated UI (cards, rows, chips).
+Classes under `app/NativeComponents` are auto-registered as tags by kebab name (`UserCard` →
+`<native:user-card>`); registered element names always win over component tags. Register classes living
+elsewhere with `ComponentRegistry::components(['user-card' => UserCard::class])`.
 
-**Every screen should have a layout.** Tab roots share a tabs layout, pushed details get a stack layout with
-auto-back; prefer `usesNativeChrome(): true` for real NavigationStack/TabView chrome (edge-swipe back,
-predictive back, large titles, Liquid Glass/Material You for free). Never hand-roll top bars or bottom navs
-out of rows and pressables inside screen views. Chrome builder colors (`backgroundColor()`, `activeColor()`,
-`textColor()`) take raw color strings — feed them with the appearance-aware `theme()` helper
-(`->activeColor(theme('primary'))`) instead of hardcoding hex; bar fonts take aliases (`->font('mono')`).
+```blade
+@foreach ($users as $u)
+    <native:user-card :user="$u" level="admin" key="user-{{ $u->id }}" @saved="onSaved" />
+@endforeach
+```
+
+- **Props down.** Attributes assign to the child's matching public properties (kebab → camelCase; `:prop`
+  binds expressions, plain attrs pass strings with scalar coercion). Props are re-assigned on **every** parent
+  render, so they stay live as parent state changes.
+- **Own state persists.** The child's other public properties survive parent re-renders. Give list children a
+  stable domain `key` (`key="task-{{ $task->id }}"`, never the loop index) so state follows identity through
+  reorders and removals; unkeyed children fall back to tag + position.
+- **Events up.** `$this->emit('saved', ...$args)` in the child bubbles to every ancestor: `@saved="onSaved"`
+  on the mounting tag calls that parent method (bound args first, emit args appended), and string-form
+  `#[On('saved')]` methods fire on any ancestor — including the screen, even from grandchildren. Class-based
+  `#[On(EventClass::class)]` native-event listeners are unrelated and stay screen-scoped.
+- **Lifecycle.** `mount()` runs when the child's key first appears, `unmount()` when it disappears. Children
+  share the screen's run loop — a class-level `#[Poll]` on a child does not schedule timers (use
+  `native:poll` inside the child's Blade instead).
+- `@tap`, `native:model`, and `updated{Property}()` inside a child's view dispatch to **that child instance**,
+  not the screen. Children nest recursively; child navigation calls (`navigate()`, `back()`) forward to the
+  screen.
+- Slot content between component tags is not supported (it throws) — pass data through props.
+
+## Native Chrome — Composable Blade Elements (Layouts Optional)
+
+Author chrome directly in the screen's Blade. These elements hoist onto the **real** native chrome root
+(NavigationStack/TabView on iOS, Scaffold/NavigationBar on Android) — edge-swipe back, predictive back, large
+titles, and Liquid Glass/Material You all come for free, exactly as with a layout:
+
+```blade
+@use('App\Icons\Ios')
+@use('App\Icons\Android')
+
+<native:top-bar title="Inbox" subtitle="{{ $unread }} unread" display-mode="large">
+    <native:top-bar-action id="compose" label="Compose" @tap="compose"
+                           :ios-icon="Ios::SquareAndPencil" :android-icon="Android::Edit" />
+</native:top-bar>
+
+<native:bottom-nav>
+    <native:bottom-nav-item id="home" label="Home" url="/" icon="home" badge="{{ $unread ?: '' }}" />
+    <native:bottom-nav-item id="settings" label="Settings" url="/settings"
+                            :ios-icon="Ios::Gearshape" :android-icon="Android::Settings" />
+</native:bottom-nav>
+
+<native:fab icon="add" @tap="create" />
+```
+
+- **Chrome is reactive** — attributes are Blade expressions over screen state, so badges, subtitles, and icon
+  swaps re-render like any other element.
+- **Platform icons**: `:ios-icon` / `:android-icon` take the typed enums (`:ios` / `:android` shorthand also
+  works); a plain `icon` string is the cross-platform fallback. `AndroidOutlined` cases carry their variant
+  automatically.
+- `<native:fab>` floats above the content (give it `@tap` or `url`; `label` makes it an extended fab).
+  `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance.
+- **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
+  element — only for designs the system bars can't express. It still suppresses a layout's bar for that slot.
+- Never hand-roll top bars or bottom navs out of rows and pressables — that forfeits native back gestures,
+  safe-area handling, and system materials. Use the chrome elements (or the `custom` variant of them).
+
+**Layouts are optional.** A `NativeLayout` class (attach with `Route::native(...)->layout(...)` or
+`Route::nativeGroup(TabsLayout::class, fn () => ...)`, override `navBar()` / `tabBar()` with the `NavBar`,
+`NavAction`, `TabBar`, `Tab` fluent builders) still earns its keep when many screens share identical chrome —
+one tabs layout for a whole tab section, a stack layout with auto-back for pushed details. An inline chrome
+element on a screen **overrides the layout's bar for that slot** (the other slot still comes from the layout),
+so per-screen chrome belongs in the screen's Blade, shared chrome in a layout. Builder colors take
+`theme()`-fed strings (`->activeColor(theme('primary'))`), never hardcoded hex; bar fonts take config aliases
+(`font="mono"` / `->font('mono')`).
+
+Screens with chrome — inline or layout — handle safe areas automatically; never add `safe-area` classes to
+them (reserve those for fully chrome-less screens).
 
 ## Device APIs
 
@@ -268,10 +334,16 @@ rest with the `nativephp-webview-to-native` skill.
 - Seeding via `DatabaseSeeder`/`db:seed` — it never runs on device; seed from a migration's `up()` instead
 - Missing `NATIVEPHP_APP_ID` in `.env` before `native:install`
 - Suggesting iOS commands on Windows/Linux
-- Adding `safe-area` classes to screens already wrapped by a NativeLayout
+- Adding `safe-area` classes to screens that already have chrome (a layout or inline chrome elements)
 - Hardcoding hex colors or font file tokens in views instead of theme tokens (`bg-theme-surface`) and font
   aliases (`font="headline"`) from `config/native-ui.php`
-- Hand-rolling top bars / bottom navs inside screens instead of attaching a `NativeLayout`
+- Hand-rolling top bars / bottom navs out of rows and pressables instead of the chrome elements
+  (`<native:top-bar>`, `<native:bottom-nav>`, `<native:fab>`) or a `NativeLayout`
+- Using the loop index as a child component `key` — keys must be stable domain ids or state sticks to the
+  wrong child on reorder
+- Duplicating the same card/row Blade across screens instead of extracting a nested child component
+- Putting slot content between component tags (`<native:user-card>…</native:user-card>`) — it throws; pass
+  data via props
 - Expecting Vite HMR without passing `--vite` (opt-in since v4)
 - Installing a plugin with Composer but never running `native:plugin:register` — the plugin silently does
   nothing and `native:run` warns "installed but not registered"; always register and verify with

@@ -5,7 +5,6 @@ import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.functions.AsyncFunctions
 import com.nativephp.mobile.bridge.functions.DeviceFunctions
 import com.nativephp.mobile.bridge.functions.DialogFunctions
-import com.nativephp.mobile.bridge.functions.EdgeFunctions
 import com.nativephp.mobile.bridge.functions.FileFunctions
 import com.nativephp.mobile.bridge.functions.PerfFunctions
 import com.nativephp.mobile.bridge.functions.SystemFunctions
@@ -18,8 +17,6 @@ import com.nativephp.mobile.bridge.plugins.registerPluginBridgeFunctions
  */
 fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     val registry = BridgeFunctionRegistry.shared
-
-    registry.register("Edge.Set", EdgeFunctions.Set())
 
     // AsyncTask.* — background PHP work with UI completion callbacks
     // (AsyncTask::dispatch()). iOS twin: Bridge/Functions/AsyncFunctions.swift.

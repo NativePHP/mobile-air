@@ -98,10 +98,6 @@ class HotReloadCoordinator {
                 _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
             }
 
-            DispatchQueue.main.async {
-                NativeUIState.shared.clearAll()
-            }
-
             if isNativeUI {
                 // Allow future hot reloads BEFORE re-entering the event loop.
                 // The serial queue will be blocked by the new dispatch, but the

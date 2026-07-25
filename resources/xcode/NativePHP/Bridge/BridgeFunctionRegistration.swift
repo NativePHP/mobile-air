@@ -6,8 +6,6 @@ import SwiftUI
 func registerBridgeFunctions() {
     let registry = BridgeFunctionRegistry.shared
 
-    registry.register("Edge.Set", function: EdgeFunctions.Set())
-
     // AsyncTask.* — background PHP work with UI completion callbacks
     // (AsyncTask::dispatch()). Android twin: bridge/functions/AsyncFunctions.kt.
     registry.register("AsyncTask.Dispatch", function: AsyncFunctions.Dispatch())

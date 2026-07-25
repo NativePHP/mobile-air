@@ -9,7 +9,6 @@ extension NSNotification.Name {
 
 struct ContentView: View {
     @State private var phpOutput = ""
-    @StateObject private var uiState = NativeUIState.shared
     @ObservedObject private var nativeUIBridge = NativeUIBridge.shared
     @ObservedObject private var bootState = BootState.shared
     @Environment(\.colorScheme) private var colorScheme
@@ -63,15 +62,8 @@ struct ContentView: View {
                     }
                 }
             } else if bootState.webViewAllowed {
-                NativeSideNavigation(onNavigate: handleNavigation) {
-                    WebViewLayoutContainer(onTabSelected: handleNavigation)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .safeAreaInset(edge: .top, spacing: 0) {
-                            if uiState.hasTopBar() {
-                                NativeTopBar(onNavigate: handleNavigation)
-                            }
-                        }
-                }
+                WebViewLayoutContainer()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Native-direct boot, first tree not yet published: hold a
                 // plain background under the splash. Mounting the WebView
@@ -155,86 +147,6 @@ struct ContentView: View {
         return 0.45
     }
 
-    /// Handle navigation from any UI component
-    /// Uses Inertia router if available for SPA-like navigation, falls back to full page load
-    private func handleNavigation(_ url: String) {
-        // In a Jump WebView session, native-chrome / side-nav / tab links point at
-        // the dev-server host (absolute URLs). Route them through the WebView
-        // forward (php://127.0.0.1) exactly like anchor taps — otherwise
-        // isExternalUrl() sees a non-localhost host and opens them in the system
-        // browser, and the Inertia path below doesn't exist for a plain WebView app.
-        if JumpWebViewSession.shared.isActive {
-            let path = extractPath(url)
-            NotificationCenter.default.post(
-                name: .redirectToURLNotification,
-                object: nil,
-                userInfo: ["url": "php://127.0.0.1\(path)"]
-            )
-            return
-        }
-
-        // Check if this is an external HTTP/HTTPS URL
-        if isExternalUrl(url) {
-            // Open external URLs in the default browser
-            if let externalUrl = URL(string: url) {
-                UIApplication.shared.open(externalUrl)
-            }
-            return
-        }
-
-        // Handle internal navigation using Inertia if available
-        let path = extractPath(url)
-
-        NotificationCenter.default.post(
-            name: .navigateWithInertiaNotification,
-            object: nil,
-            userInfo: ["path": path]
-        )
-    }
-
-    /// Check if URL is external (absolute HTTP/HTTPS not pointing to localhost)
-    private func isExternalUrl(_ url: String) -> Bool {
-        return (url.hasPrefix("http://") || url.hasPrefix("https://"))
-            && !url.contains("127.0.0.1")
-            && !url.contains("localhost")
-    }
-
-
-    /// Extract path and query from URL, handling both full URLs and relative paths
-    private func extractPath(_ url: String) -> String {
-        if url.hasPrefix("php://") {
-            // Extract just the path from php://127.0.0.1/path
-            if let parsedUrl = URL(string: url) {
-                let path = parsedUrl.path.isEmpty ? "/" : parsedUrl.path
-                let query = parsedUrl.query
-                let result = query != nil ? "\(path)?\(query!)" : path
-
-                return result
-            }
-        }
-
-        if url.hasPrefix("http://") || url.hasPrefix("https://") {
-            // Parse as full URL and extract path + query
-            if let parsedUrl = URL(string: url) {
-                let path = parsedUrl.path.isEmpty ? "/" : parsedUrl.path
-                let query = parsedUrl.query
-                let result = query != nil ? "\(path)?\(query!)" : path
-
-                return result
-            }
-        } else if url.hasPrefix("/") {
-            return url
-        } else {
-            let result = "/\(url)"
-
-            return result
-        }
-
-        // Fallback
-        let fallback = url.hasPrefix("/") ? url : "/\(url)"
-
-        return fallback
-    }
 }
 
 /// Liquid Glass pill shown briefly during hot reload. Two rows of
@@ -282,51 +194,17 @@ class SharedWebView: ObservableObject {
     var coordinator: WebView.Coordinator?
 }
 
-/// Container that wraps a single WebView instance with appropriate layout based on UI state
+/// Container that hosts the single shared WebView instance. WebView-mode
+/// chrome (the Edge-bridge top bar / bottom nav / side nav) is gone —
+/// native chrome now comes exclusively from the element-collector path
+/// (NativeRootStack / NativeRootTabs), so this is just the full-bleed page.
 struct WebViewLayoutContainer: View {
-    @ObservedObject var uiState = NativeUIState.shared
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
-    let onTabSelected: (String) -> Void
 
     var body: some View {
-        if uiState.hasBottomNav() {
-            if #available(iOS 26.0, *) {
-                // iOS 26+: WebView extends behind tab bar for Liquid Glass effect
-                GeometryReader { geometry in
-                    ZStack(alignment: .bottom) {
-                        // Single WebView instance - extends to full screen
-                        WebView(shared: SharedWebView.shared, horizontalSizeClass: horizontalSizeClass)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .ignoresSafeArea()
-                            // Add bottom padding so content isn't hidden behind tab bar
-                            .safeAreaInset(edge: .bottom) {
-                                Color.clear
-                                    .frame(height: 49 + geometry.safeAreaInsets.bottom)
-                            }
-
-                        // Bottom navigation overlays at bottom
-                        NativeBottomNavigation(onTabSelected: onTabSelected)
-                    }
-                    .ignoresSafeArea()
-                }
-            } else {
-                // iOS 18 and below: WebView stops at tab bar
-                ZStack(alignment: .bottom) {
-                    // Single WebView instance - fills available space
-                    WebView(shared: SharedWebView.shared, horizontalSizeClass: horizontalSizeClass)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .ignoresSafeArea(.all, edges: uiState.hasTopBar() ? .horizontal : .all)
-
-                    // Bottom navigation at bottom
-                    NativeBottomNavigation(onTabSelected: onTabSelected)
-                }
-            }
-        } else {
-            // No bottom nav - WebView fills entire screen
-            WebView(shared: SharedWebView.shared, horizontalSizeClass: horizontalSizeClass)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(.all, edges: uiState.hasTopBar() ? [.horizontal, .bottom] : .all)
-        }
+        WebView(shared: SharedWebView.shared, horizontalSizeClass: horizontalSizeClass)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
     }
 }
 

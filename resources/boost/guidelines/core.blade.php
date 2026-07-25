@@ -19,6 +19,11 @@ elements (`native:column`, `native:text`, `native:button`, …).** This is the w
   `nativephp-webview-to-native` skill).
 - Style EDGE elements with Tailwind utility classes via `class="..."` / `:class="..."` only — never inline
   CSS `style="..."` attributes or ad-hoc styling props.
+- Compose screens from **nested child components**: any `NativeComponent` under `app/NativeComponents` mounts
+  as a tag (`UserCard` → `<native:user-card :user="$u" key="user-{{ $u->id }}" @saved="onSaved" />`) with live
+  props, its own persistent state, and `emit()` events bubbling to `@event` tag bindings / `#[On('event')]`
+  listeners. Prefer extracting a reusable child component over duplicating Blade across screens; give list
+  children a stable domain `key` (never the loop index).
 - Use `native:icon` (SF Symbols on iOS, Material Icons on Android) for iconography — never emoji characters in
   UI text, labels, or buttons, unless the user explicitly asks for emojis. Prefer the typed icon enums
   (`App\Icons\Ios`, `App\Icons\Android`, `App\Icons\AndroidOutlined`) bound via the `:ios` / `:android`
@@ -47,14 +52,21 @@ reviewing screens, enforce all three:
    (`'headline' => 'ArchivoNarrow-Bold'`, `'mono' => 'JetBrainsMono-Regular'`, `'default' => …` for the
    app-wide font) and write `font="headline"` in views — never `font="ArchivoNarrow-Bold"`. Swapping a
    typeface must be a one-line config change.
-3. **Every screen belongs to a `NativeLayout`.** Attach one via `Route::native(...)->layout(...)` or
-   `Route::nativeGroup(...)` — tab roots share a tabs layout (`navBar()` + `tabBar()`), pushed screens get a
-   stack layout with auto-back. Prefer `usesNativeChrome(): true` for real NavigationStack/TabView chrome.
-   Never hand-roll top bars or bottom navs out of rows and pressables inside screen views — that forfeits
-   native back gestures, safe-area handling, and Liquid Glass/Material You. Chrome builder colors take raw
-   strings — feed them with the appearance-aware `theme()` helper (`->activeColor(theme('primary'))`), which
-   reads the same config tokens and follows light/dark switches; never paste hex into a layout. Bar fonts take
-   config aliases (`->font('mono')`). Only screens rendered without any layout may use `safe-area` classes.
+3. **Native chrome via composable chrome elements (layouts optional).** Author nav bars, tab bars, fabs, and
+   side navs directly in the screen's Blade — `<native:top-bar>` (+ `top-bar-action`), `<native:bottom-nav>`
+   (+ `bottom-nav-item`), `<native:fab>`, `<native:bottom-bar>`, `<native:side-nav>`. They hoist onto the real
+   NavigationStack/TabView chrome (edge-swipe back, predictive back, large titles, Liquid Glass/Material You),
+   and their attributes are Blade expressions over screen state, so badges/subtitles/icons are reactive. A
+   `NativeLayout` (attached via `Route::native(...)->layout(...)` or `Route::nativeGroup(...)`) is **optional**
+   — reach for one only when many screens share identical chrome (e.g. one tabs layout for a tab section); an
+   inline chrome element on a screen always overrides the layout's bar for that slot. Add the `custom`
+   attribute to a chrome tag only for designs the system bars genuinely can't express — it renders in-tree as
+   an ordinary drawn element. Never hand-roll top bars or bottom navs out of rows and pressables — that
+   forfeits native back gestures, safe-area handling, and Liquid Glass/Material You. Chrome colors take theme
+   tokens (inline: theme classes / `theme()`-fed attributes; builders: `->activeColor(theme('primary'))`) —
+   never pasted hex. Bar icons take the platform enums via `:ios-icon` / `:android-icon` with a plain `icon`
+   string as cross-platform fallback; bar fonts take config aliases (`font="mono"` / `->font('mono')`). Only
+   screens rendered without any chrome (no layout AND no inline bars) may use `safe-area` classes.
 
 ### When a Capability Is Missing
 

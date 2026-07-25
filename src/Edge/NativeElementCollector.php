@@ -6,6 +6,7 @@ use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
 use Native\Mobile\Edge\Elements\Stack;
+use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
 
 class NativeElementCollector
 {
@@ -16,6 +17,43 @@ class NativeElementCollector
     protected static bool $streaming = false;
 
     protected static ?CallbackRegistry $callbacks = null;
+
+    /**
+     * The component whose render is currently emitting into the collector —
+     * the screen at the top level, or a child component while its scope is
+     * open. Child-component tags mount through it (it owns the instance
+     * map), which is how nesting recurses.
+     */
+    protected static ?NativeComponent $owner = null;
+
+    /**
+     * Depth of open child-component render scopes. 0 = the screen's own
+     * render. While > 0, view()/partial() must not hard-reset the collector
+     * (the parent's tree is live in $stack/$roots) — see the guards in
+     * NativeComponent::view() and NativeElementCollector::capture().
+     */
+    protected static int $componentDepth = 0;
+
+    /** Recursion guard — a component that mounts itself would loop forever. */
+    protected const MAX_COMPONENT_DEPTH = 32;
+
+    /**
+     * Sentinel Element returned by view()/fromView() during a child render:
+     * the child's elements were already emitted in place, so there is
+     * nothing for the caller to attach. Compared by identity.
+     */
+    protected static ?Element $scopeMarker = null;
+
+    /**
+     * Tag names the collector handles itself (createElement's match arms +
+     * the precompiler's special slots). These are never child components,
+     * whatever the ComponentRegistry says.
+     */
+    protected const COLLECTOR_BUILTIN_TYPES = [
+        'column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas',
+        'spacer', 'divider', 'bottom_bar', 'virtual_list',
+        'text', 'button', 'webview',
+    ];
 
     /**
      * Phase 1 — Blade-side key-path stack for the streaming render path.
@@ -77,6 +115,150 @@ class NativeElementCollector
         static::$callbacks = $callbacks;
     }
 
+    // ── Child-component scopes ───────────────────────
+
+    /**
+     * Bind the component whose render is emitting into the collector.
+     * The screen's view()/partial() paths set themselves here; child
+     * scopes swap it via beginComponentScope().
+     */
+    public static function setOwner(?NativeComponent $owner): void
+    {
+        static::$owner = $owner;
+    }
+
+    public static function inComponentScope(): bool
+    {
+        return static::$componentDepth > 0;
+    }
+
+    /**
+     * Enter a child component's render scope: callbacks registered while it
+     * is open land in the CHILD's registry (so dispatch resolves them to the
+     * child), and any `<native:*>` component tag it contains mounts through
+     * the child. Elements still emit into the parent's tree at the current
+     * position — the scope swaps ownership, not the collection target.
+     *
+     * Returns the saved state to hand back to endComponentScope(). Always
+     * pair the two in try/finally — an unbalanced scope poisons every
+     * later render in the process.
+     */
+    public static function beginComponentScope(CallbackRegistry $callbacks, NativeComponent $owner): array
+    {
+        if (static::$componentDepth >= static::MAX_COMPONENT_DEPTH) {
+            throw new \RuntimeException(
+                'Child component nesting exceeded '.static::MAX_COMPONENT_DEPTH
+                .' levels — is a component mounting itself (directly or via a cycle)?'
+            );
+        }
+
+        $saved = ['callbacks' => static::$callbacks, 'owner' => static::$owner];
+
+        static::$componentDepth++;
+        static::$callbacks = $callbacks;
+        static::$owner = $owner;
+
+        return $saved;
+    }
+
+    public static function endComponentScope(array $saved): void
+    {
+        static::$componentDepth--;
+        static::$callbacks = $saved['callbacks'];
+        static::$owner = $saved['owner'];
+    }
+
+    /** The identity-compared "already emitted in place" sentinel. */
+    public static function scopeMarker(): Element
+    {
+        return static::$scopeMarker ??= Column::make();
+    }
+
+    /**
+     * Attach a programmatically-built Element at the current tree position —
+     * used when a child component's render() returns an Element instead of
+     * a Blade view.
+     */
+    public static function attachElement(Element $element): void
+    {
+        if (static::$streaming) {
+            throw new \RuntimeException(
+                'A child component returned an Element from render() during a streaming render — '
+                .'child components must render Blade views under streaming.'
+            );
+        }
+
+        if (empty(static::$stack)) {
+            static::$roots[] = $element;
+        } else {
+            static::$stack[count(static::$stack) - 1]->addChild($element);
+        }
+    }
+
+    /**
+     * Collect a detached subtree while a component scope is open, WITHOUT
+     * resetting the live parent tree: swaps the working state out, runs the
+     * render closure, and restores it. This is what keeps partial() safe to
+     * call from inside a child component.
+     */
+    public static function capture(\Closure $render): Element
+    {
+        $saved = [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack];
+        static::$stack = [];
+        static::$roots = [];
+        static::$textFrames = [];
+        static::$keyPathStack = [];
+
+        try {
+            $render();
+            $roots = static::$roots;
+        } finally {
+            [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack] = $saved;
+        }
+
+        return static::wrapRoots($roots);
+    }
+
+    /**
+     * True when an emitted tag should mount a registered child component:
+     * never for collector builtins or registered element types (elements
+     * always win), and only while a component render context is bound.
+     */
+    protected static function isComponentTag(string $type): bool
+    {
+        return static::$owner !== null
+            && ! in_array($type, static::COLLECTOR_BUILTIN_TYPES, true)
+            && ! ElementRegistry::has($type)
+            && ComponentRegistry::has($type);
+    }
+
+    /** Mount a child component at the current tree position. */
+    protected static function mountComponent(string $type, array $attrs): void
+    {
+        $tag = str_replace('_', '-', $type);
+
+        if (static::$owner === null) {
+            throw new \RuntimeException(
+                "Component tag <native:{$tag}> can only render inside a NativeComponent render."
+            );
+        }
+
+        static::$owner->mountChildComponent($tag, $attrs);
+    }
+
+    /**
+     * Reject slot content: the top of the stack being a ComponentTagFrame
+     * means we are between a component tag's open and close.
+     */
+    protected static function guardAgainstComponentSlot(string $type): void
+    {
+        $top = end(static::$stack);
+
+        if ($top instanceof ComponentTagFrame) {
+            throw new ComponentSlotNotSupportedException($top->tag, $type);
+        }
+    }
+
     /**
      * Phase 1 — pull the `native:key` attribute off an attrs array and
      * derive the {nodeId, myKeyPath} pair to publish.
@@ -134,7 +316,9 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
+            $props = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -181,7 +365,7 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs);
+            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -224,7 +408,9 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
+            $props = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -266,7 +452,7 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs);
+            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -517,6 +703,50 @@ class NativeElementCollector
     }
 
     /**
+     * Build linear-gradient props from the `gradient` attribute key
+     * (`bg-gradient-to-* from-* via-* to-*`).
+     *
+     * These ride the props bag rather than NodeStyle because the style block
+     * is a fixed-layout region of the packed binary node — there is no room
+     * for a variable-length stop list without changing the wire format on
+     * both decoders. `dark_bg_color` takes the same route for the same reason.
+     *
+     * Emitted only when there is an axis AND at least two stops, so a partial
+     * declaration (a stray `from-black` with no direction) stays inert instead
+     * of painting something the author never asked for. When present, the
+     * native style modifiers draw this INSTEAD of `bg_color`.
+     *
+     * @return array{gradient_dx?: float, gradient_dy?: float, gradient_stops?: string}
+     */
+    public static function buildGradientProps(array $attrs): array
+    {
+        if (! isset($attrs['gradient']) || ! is_array($attrs['gradient'])) {
+            return [];
+        }
+
+        $gradient = $attrs['gradient'];
+        $direction = $gradient['direction'] ?? null;
+
+        $stops = array_values(array_filter([
+            $gradient['from'] ?? null,
+            $gradient['via'] ?? null,
+            $gradient['to'] ?? null,
+        ]));
+
+        if (! is_array($direction) || count($stops) < 2) {
+            return [];
+        }
+
+        return [
+            'gradient_dx' => (float) $direction[0],
+            'gradient_dy' => (float) $direction[1],
+            // Comma-joined so the stop list stays a single string prop; the
+            // native side splits it. Two or three `#AARRGGBB` entries.
+            'gradient_stops' => implode(',', $stops),
+        ];
+    }
+
+    /**
      * Build dark mode override props from the 'dark' attribute key.
      * Maps TailwindParser output keys to prop names prefixed with 'dark_'.
      */
@@ -596,7 +826,7 @@ class NativeElementCollector
      * the props dict (`on_press_down` / `on_press_up`) and reuse the PRESS
      * wire event — the callback id alone routes to the handler — so no
      * `nphp_node_*` signature or binary wire-format change. Returns 0 when
-     * the corresponding `@pressDown` / `@pressUp` attr is not set.
+     * the corresponding `@tapDown` / `@tapUp` attr is not set.
      */
     protected static function resolveOnPressDown(array $attrs): int
     {
@@ -622,6 +852,19 @@ class NativeElementCollector
     {
         $attrs = static::extractPoll($attrs);
 
+        // A registered child-component tag: push a marker frame; the
+        // matching close() mounts the child (and anything collected in
+        // between is rejected slot content). Resolved at runtime so
+        // compiled views survive registry changes.
+        if (static::isComponentTag($type)) {
+            static::$stack[] = new ComponentTagFrame(str_replace('_', '-', $type), $attrs);
+
+            return;
+        }
+
+        static::guardAgainstComponentSlot($type);
+        $attrs = static::stripEventBindings($attrs);
+
         if (static::$streaming) {
             static::openStreaming($type, $attrs);
 
@@ -630,6 +873,23 @@ class NativeElementCollector
 
         $element = static::createElement($type, $attrs);
         static::$stack[] = $element;
+    }
+
+    /**
+     * Drop compiled `@event=` bindings (`_event-*` attrs) from a PLAIN
+     * element's attrs — they only mean something on a child-component tag,
+     * and components are resolved at runtime so the compiler can't tell
+     * the two apart. Leaving them in would leak junk props to the wire.
+     */
+    protected static function stripEventBindings(array $attrs): array
+    {
+        foreach ($attrs as $key => $value) {
+            if (str_starts_with($key, '_event-')) {
+                unset($attrs[$key]);
+            }
+        }
+
+        return $attrs;
     }
 
     /**
@@ -662,6 +922,15 @@ class NativeElementCollector
 
     public static function close(): void
     {
+        // The matching open() pushed a component frame — mount the child
+        // here, at the position the tag occupies in the parent's tree.
+        if (end(static::$stack) instanceof ComponentTagFrame) {
+            $frame = array_pop(static::$stack);
+            static::mountComponent(str_replace('-', '_', $frame->tag), $frame->attrs);
+
+            return;
+        }
+
         if (static::$streaming) {
             static::closeStreaming();
 
@@ -680,6 +949,16 @@ class NativeElementCollector
     public static function leaf(string $type, array $attrs): void
     {
         $attrs = static::extractPoll($attrs);
+
+        // Self-closing child-component tag — mount immediately in place.
+        if (static::isComponentTag($type)) {
+            static::mountComponent($type, $attrs);
+
+            return;
+        }
+
+        static::guardAgainstComponentSlot($type);
+        $attrs = static::stripEventBindings($attrs);
 
         if (static::$streaming) {
             static::leafStreaming($type, $attrs);
@@ -814,6 +1093,12 @@ class NativeElementCollector
         $roots = static::$roots;
         static::reset();
 
+        return static::wrapRoots($roots);
+    }
+
+    /** Shared root normalization for collect() and capture(). */
+    protected static function wrapRoots(array $roots): Element
+    {
         if (empty($roots)) {
             throw new \RuntimeException('No root element was built by the Blade template.');
         }
@@ -844,6 +1129,12 @@ class NativeElementCollector
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).
         static::$keyPathStack = [];
+        // Reset is only reachable at screen level (child scopes route
+        // through capture()), so the render-context bookkeeping can be
+        // cleared too — the screen's view()/partial() rebinds it right
+        // after. Guards against a scope leaked by an aborted frame.
+        static::$owner = null;
+        static::$componentDepth = 0;
     }
 
     protected static function createElement(string $type, array $attrs): Element
@@ -887,6 +1178,15 @@ class NativeElementCollector
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
 
+        // Inside a child component's render scope, callbacks belong to the
+        // CHILD's registry — pin it on the element so toArray() registers
+        // @tap / native:model handlers there, and dispatch resolves them
+        // back to the child instance. At screen level (depth 0) the passed
+        // registry already is the screen's, so nothing needs pinning.
+        if (static::$componentDepth > 0 && static::$callbacks !== null) {
+            $element->ownCallbacks(static::$callbacks);
+        }
+
         // Phase 1 — apply `native:key` after attrs so an Element subclass
         // can't accidentally swallow it. Toggles the Element's id
         // derivation in toArray() to hash(parentKeyPath/'/'/$key).
@@ -903,6 +1203,13 @@ class NativeElementCollector
         $darkProps = static::buildDarkProps($attrs);
         if (! empty($darkProps)) {
             $element->mergeDarkProps($darkProps);
+        }
+
+        // Gradient props — same central `setProp` path as animation below, so
+        // `bg-gradient-to-*` works on every element type without per-element
+        // wiring.
+        foreach (static::buildGradientProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
         }
 
         // Animation props — push through `setProp` so builtin elements
