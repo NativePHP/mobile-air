@@ -9,13 +9,19 @@ beforeEach(function () {
     TailwindParser::clearCache();
 });
 
-/** Resolve the `anchor` prop an element ends up with for the given attrs. */
-function anchorPropFor(array $attrs): ?int
+/** The props an element ends up with after the collector applies the attrs. */
+function positionPropsFor(array $attrs): array
 {
     $element = Column::make();
     NativeElementCollector::applyElementProps($element, $attrs);
 
-    return $element->toArray(new CallbackRegistry)['props']['anchor'] ?? null;
+    return $element->toArray(new CallbackRegistry)['props'] ?? [];
+}
+
+/** Just the `anchor` prop, or null. */
+function anchorPropFor(array $attrs): ?int
+{
+    return positionPropsFor($attrs)['anchor'] ?? null;
 }
 
 // ── Attribute-based position (parity with the utility classes) ──────────
@@ -102,4 +108,29 @@ it('parses the anchor-* utility class to the anchor name', function () {
 
 it('resolves the anchor class end to end into the prop enum', function () {
     expect(anchorPropFor(TailwindParser::parse('anchor-bottom-right')))->toBe(8);
+});
+
+// ── Origin (the point ON the child that aligns to the parent's anchor) ───
+
+it('resolves the origin attribute to its own prop', function () {
+    expect(positionPropsFor(['origin' => 'top-left'])['origin'] ?? null)->toBe(1);
+    expect(positionPropsFor(['origin' => 'center'])['origin'] ?? null)->toBe(0);
+});
+
+it('parses the origin-* utility class', function () {
+    expect(TailwindParser::parse('origin-bottom-right'))->toBe(['origin' => 'bottom-right']);
+});
+
+it('carries anchor and origin independently on the same element', function () {
+    // A badge whose top-left (origin) hooks onto the parent's top-right (anchor).
+    expect(positionPropsFor(['anchor' => 'top-right', 'origin' => 'top-left']))
+        ->toMatchArray(['anchor' => 3, 'origin' => 1]);
+
+    // Mix attribute + class.
+    $attrs = array_merge(TailwindParser::parse('origin-center'), ['anchor' => 'bottom-left']);
+    expect(positionPropsFor($attrs))->toMatchArray(['anchor' => 6, 'origin' => 0]);
+});
+
+it('emits no origin prop for an unknown name', function () {
+    expect(positionPropsFor(['origin' => 'nowhere']))->not->toHaveKey('origin');
 });

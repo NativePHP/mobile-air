@@ -141,11 +141,16 @@ struct FlexContainer: Layout {
         let display: Int
         let flexBasis: CGFloat
         /// 9-point anchor (0=center … 8=bottom-right) read from the child's
-        /// tolerant PROPS blob. `nil` when the child has no `anchor` prop —
-        /// which keeps legacy non-stack absolute children on the inset-based
-        /// top-left placement. Stack children default to center (see
-        /// `placeAbsolute`).
+        /// tolerant PROPS blob. This is the point ON THE PARENT that the child
+        /// hooks onto. `nil` when the child has no `anchor` prop — which, with
+        /// no `origin` prop and outside a stack, keeps legacy non-stack absolute
+        /// children on the inset-based top-left placement. Stack children
+        /// default to center (see `placeAbsolute`).
         let anchor: Int?
+        /// 9-point origin (same 0–8 enum) read from the child's PROPS blob. This
+        /// is the point ON THE CHILD that lands on the parent's `anchor` point.
+        /// `nil` when absent; defaults to center inside the two-point path.
+        let origin: Int?
         var idealSize: CGSize = .zero
     }
 
@@ -157,14 +162,20 @@ struct FlexContainer: Layout {
 
         for (i, _) in subviews.enumerated() {
             let layout = i < childNodes.count ? childNodes[i].layout : nil
-            // The `anchor` value rides the tolerant PROPS blob, not the fixed
-            // binary layout struct. Read it directly off the node's props;
-            // `has` distinguishes an explicit `center` (0) from an absent prop.
+            // The `anchor` / `origin` values ride the tolerant PROPS blob, not
+            // the fixed binary layout struct. Read them directly off the node's
+            // props; `has` distinguishes an explicit `center` (0) from absence.
+            // `anchor` = point on the PARENT the child hooks onto; `origin` =
+            // point on the CHILD that lands on it.
             let anchor: Int?
-            if i < childNodes.count, childNodes[i].props.has("anchor") {
-                anchor = childNodes[i].props.getInt("anchor")
+            let origin: Int?
+            if i < childNodes.count {
+                let props = childNodes[i].props
+                anchor = props.has("anchor") ? props.getInt("anchor") : nil
+                origin = props.has("origin") ? props.getInt("origin") : nil
             } else {
                 anchor = nil
+                origin = nil
             }
             let info = ChildInfo(
                 flexGrow: CGFloat(layout?.flexGrow ?? 0),
@@ -187,7 +198,8 @@ struct FlexContainer: Layout {
                 // flex-1 children inflate to their natural width (e.g. a long
                 // single-line <native:text> ⇒ 600+pt column overflow).
                 flexBasis: (layout?.flexBasisMode ?? 0) == 1 ? CGFloat(layout?.flexBasis ?? 0) : -1,
-                anchor: anchor
+                anchor: anchor,
+                origin: origin
             )
             cache.childInfos.append(info)
 
@@ -665,28 +677,31 @@ struct FlexContainer: Layout {
     /// Place an absolute-positioned child.
     ///
     /// Two placement modes:
-    ///   • Anchored — used for stack children (default anchor = center) and any
-    ///     child carrying an explicit `anchor` prop. The child's frame is
-    ///     positioned within the container by the anchor fraction, then the
+    ///   • Two-point anchor/origin — used for stack children and any child
+    ///     carrying an explicit `anchor` and/or `origin` prop. The child's
+    ///     `origin` point (a fraction of its own frame) is pinned to the
+    ///     parent's `anchor` point (a fraction of the container), then the
     ///     position insets nudge it (left/top push right/down, right/bottom
-    ///     push left/up).
-    ///   • Legacy inset — used for non-stack absolute children with no anchor.
-    ///     Byte-identical to the historical top-left/inset behavior.
+    ///     push left/up). Both default to center (0). This can intentionally
+    ///     draw partly outside the container — a plain container doesn't clip.
+    ///   • Legacy inset — used for non-stack absolute children with neither
+    ///     an `anchor` nor an `origin`. Byte-identical to the historical
+    ///     top-left/inset behavior.
     private func placeAbsolute(_ subview: LayoutSubview, info: ChildInfo, in bounds: CGRect) {
         let ideal = subview.sizeThatFits(.unspecified)
 
-        // Explicit per-child anchor wins; otherwise stack children default to
-        // center (0). A nil result (non-stack absolute child, no anchor) falls
-        // through to the unchanged legacy inset placement.
-        let effectiveAnchor: Int? = info.anchor ?? (isStack ? 0 : nil)
+        // Use the two-point model for stacks, or whenever the child opts in with
+        // either prop. Otherwise fall through to the unchanged legacy inset path.
+        let useAnchorModel = isStack || info.anchor != nil || info.origin != nil
 
         let x: CGFloat
         let y: CGFloat
-        if let anchor = effectiveAnchor {
-            let (ax, ay) = anchorFractions(anchor)
-            x = bounds.minX + (bounds.width - ideal.width) * ax
+        if useAnchorModel {
+            let (aax, aay) = anchorFractions(info.anchor ?? 0)   // point on the parent
+            let (oax, oay) = anchorFractions(info.origin ?? 0)   // point on the child
+            x = bounds.minX + bounds.width * aax - ideal.width * oax
                 + info.positionLeft - info.positionRight
-            y = bounds.minY + (bounds.height - ideal.height) * ay
+            y = bounds.minY + bounds.height * aay - ideal.height * oay
                 + info.positionTop - info.positionBottom
         } else {
             // Legacy inset-based placement (unchanged).

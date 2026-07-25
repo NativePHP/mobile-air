@@ -16,7 +16,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 
 // MARK: - Flex Enums (match PHP/binary protocol values)
 
@@ -69,21 +73,49 @@ object Anchor {
 }
 
 /**
- * Maps an [Anchor] int to a Compose 2-D [Alignment]. Unknown / 0 → Center.
- * All nine constants exist on `Alignment`'s companion (TopStart/TopCenter/
- * TopEnd, CenterStart/Center/CenterEnd, BottomStart/BottomCenter/BottomEnd),
- * so each maps 1:1 and can be handed straight to `BoxScope.align`.
+ * Maps the 0–8 anchor/origin enum to (x, y) fractions in [0, 1]:
+ * center(.5,.5), top-left(0,0), top-center(.5,0), top-right(1,0),
+ * center-left(0,.5), center-right(1,.5), bottom-left(0,1),
+ * bottom-center(.5,1), bottom-right(1,1). Unknown / 0 → center.
  */
-private fun anchorToAlignment(anchor: Int): Alignment = when (anchor) {
-    Anchor.TOP_LEFT      -> Alignment.TopStart
-    Anchor.TOP_CENTER    -> Alignment.TopCenter
-    Anchor.TOP_RIGHT     -> Alignment.TopEnd
-    Anchor.CENTER_LEFT   -> Alignment.CenterStart
-    Anchor.CENTER_RIGHT  -> Alignment.CenterEnd
-    Anchor.BOTTOM_LEFT   -> Alignment.BottomStart
-    Anchor.BOTTOM_CENTER -> Alignment.BottomCenter
-    Anchor.BOTTOM_RIGHT  -> Alignment.BottomEnd
-    else                 -> Alignment.Center // 0 CENTER (stack default) or unknown
+private fun anchorFraction(point: Int): Pair<Float, Float> = when (point) {
+    Anchor.TOP_LEFT      -> 0f to 0f
+    Anchor.TOP_CENTER    -> 0.5f to 0f
+    Anchor.TOP_RIGHT     -> 1f to 0f
+    Anchor.CENTER_LEFT   -> 0f to 0.5f
+    Anchor.CENTER_RIGHT  -> 1f to 0.5f
+    Anchor.BOTTOM_LEFT   -> 0f to 1f
+    Anchor.BOTTOM_CENTER -> 0.5f to 1f
+    Anchor.BOTTOM_RIGHT  -> 1f to 1f
+    else                 -> 0.5f to 0.5f // CENTER (0) or unknown
+}
+
+/**
+ * A custom two-point [Alignment]: [anchor] is the point on the PARENT the child
+ * hooks onto; [origin] is the point ON THE CHILD that lands on that parent point.
+ * Both use the 0–8 enum (default center). The built-in `Alignment` constants
+ * only express a single point, so a decoupled anchor/origin needs this.
+ *
+ * Intentionally LTR-absolute — it IGNORES [layoutDirection] — to stay consistent
+ * with the absolute top/right/bottom/left inset system and with iOS. That's a
+ * deliberate improvement over the built-in RTL-aware Alignments.
+ *
+ * Implemented as a `data class` so instances are value-equal on (anchor, origin);
+ * that keeps `BoxScope.align` skip-friendly across recompositions instead of
+ * re-laying-out on every fresh lambda.
+ */
+private data class TwoPointAlignment(
+    val anchor: Int,
+    val origin: Int
+) : Alignment {
+    override fun align(size: IntSize, space: IntSize, layoutDirection: LayoutDirection): IntOffset {
+        val (aax, aay) = anchorFraction(anchor) // parent point
+        val (oax, oay) = anchorFraction(origin) // child point
+        return IntOffset(
+            (space.width * aax - size.width * oax).roundToInt(),
+            (space.height * aay - size.height * oay).roundToInt(),
+        )
+    }
 }
 
 /**
@@ -128,7 +160,12 @@ fun FlexContainer(
             childNodes.forEachIndexed { i, node ->
                 if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
 
-                val alignment = anchorToAlignment(node.props.getInt("anchor", Anchor.CENTER))
+                // Two-point model: `anchor` = point on this parent, `origin` =
+                // point on the child that lands on it. Both default to center.
+                val alignment = TwoPointAlignment(
+                    anchor = node.props.getInt("anchor", Anchor.CENTER),
+                    origin = node.props.getInt("origin", Anchor.CENTER)
+                )
 
                 // Inset offsets nudge the anchored child. Same convention as the
                 // absolute path: a set `right`/`bottom` pulls inward from that
@@ -180,12 +217,23 @@ fun FlexContainer(
                     val right = node.layout?.positionRight ?: 0f
                     val bottom = node.layout?.positionBottom ?: 0f
 
-                    val anchor = when {
-                        right > 0f && bottom > 0f -> Alignment.BottomEnd
-                        right > 0f && top > 0f    -> Alignment.TopEnd
-                        right > 0f                 -> Alignment.TopEnd
-                        bottom > 0f                -> Alignment.BottomStart
-                        else                       -> Alignment.TopStart
+                    // Opt-in: if this absolute child carries an `anchor`/`origin`
+                    // prop, use the two-point model. With NEITHER prop it keeps
+                    // the legacy inset-derived corner logic byte-for-byte, so
+                    // existing `absolute top-0 right-0` layouts are untouched.
+                    val anchor: Alignment = if (node.props.has("anchor") || node.props.has("origin")) {
+                        TwoPointAlignment(
+                            anchor = node.props.getInt("anchor", Anchor.CENTER),
+                            origin = node.props.getInt("origin", Anchor.CENTER)
+                        )
+                    } else {
+                        when {
+                            right > 0f && bottom > 0f -> Alignment.BottomEnd
+                            right > 0f && top > 0f    -> Alignment.TopEnd
+                            right > 0f                 -> Alignment.TopEnd
+                            bottom > 0f                -> Alignment.BottomStart
+                            else                       -> Alignment.TopStart
+                        }
                     }
                     val offsetX = if (right > 0f) (-right).dp else left.dp
                     val offsetY = if (bottom > 0f) (-bottom).dp else top.dp

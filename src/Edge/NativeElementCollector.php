@@ -134,7 +134,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs) + static::anchorProp($attrs);
+            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs) + static::anchorProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -224,7 +224,7 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs) + static::anchorProp($attrs);
+            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs) + static::anchorProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -425,25 +425,32 @@ class NativeElementCollector
     }
 
     /**
-     * The stack `anchor` as a prop entry (the anchor rides the tolerant props
-     * blob, not the fixed layout struct, so the native decoders pick it up
-     * without a wire-format change). `[]` when absent or unrecognized.
+     * The `anchor` (point on the parent) and `origin` (point on the child)
+     * as prop entries. An absolutely-positioned child aligns its `origin`
+     * point to the parent's `anchor` point; both default to `center` on the
+     * native side. They ride the tolerant props blob (not the fixed layout
+     * struct), so the native decoders pick them up without a wire-format
+     * change. Unrecognized names are dropped.
      *
-     * @return array{anchor?: int}
+     * @return array{anchor?: int, origin?: int}
      */
-    protected static function anchorProp(array $attrs): array
+    protected static function anchorProps(array $attrs): array
     {
-        if (! isset($attrs['anchor'])) {
-            return [];
+        $props = [];
+
+        if (isset($attrs['anchor']) && ($anchor = self::resolveAnchor((string) $attrs['anchor'])) !== null) {
+            $props['anchor'] = $anchor;
         }
 
-        $anchor = self::resolveAnchor((string) $attrs['anchor']);
+        if (isset($attrs['origin']) && ($origin = self::resolveAnchor((string) $attrs['origin'])) !== null) {
+            $props['origin'] = $origin;
+        }
 
-        return $anchor === null ? [] : ['anchor' => $anchor];
+        return $props;
     }
 
     /**
-     * Anchor names → wire enum, shared with the native stack renderers.
+     * Anchor/origin names → wire enum, shared with the native renderers.
      * `center` (0) is the default; the eight compass points follow. Aliases
      * collapse to their canonical point (`top` == `top-center`, etc.).
      */
@@ -1192,10 +1199,10 @@ class NativeElementCollector
 
     public static function applyElementProps(Element $element, array $attrs): void
     {
-        // Stack anchor — where this element sits when it's a child of a
-        // `stack` (whose children are z-stacked and absolutely positioned).
-        // Rides props so it applies to every element type uniformly.
-        foreach (static::anchorProp($attrs) as $key => $value) {
+        // Anchor/origin — where this element sits when it's absolutely
+        // positioned (always, for a `stack` child). Rides props so it applies
+        // to every element type uniformly.
+        foreach (static::anchorProps($attrs) as $key => $value) {
             $element->setProp($key, $value);
         }
 
