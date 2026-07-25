@@ -331,7 +331,8 @@ fun DefaultContainerNode(node: NativeUINode, modifier: Modifier = Modifier) {
             gap = node.layout?.gap ?: 0f,
             wrap = node.layout?.flexWrap ?: 0,
             childNodes = node.children,
-            modifier = modifier
+            modifier = modifier,
+            isStack = node.type == "stack"
         ) {
             // Content is rendered by FlexContainer itself via NodeView calls
         }

@@ -16,7 +16,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 
 // MARK: - Flex Enums (match PHP/binary protocol values)
 
@@ -52,6 +56,69 @@ object Display {
 }
 
 /**
+ * 9-point anchor for `stack` container children (matches the PHP side).
+ * Read off each child's tolerant PROPS blob via `props.getInt("anchor")`;
+ * absent → CENTER (the stack default).
+ */
+object Anchor {
+    const val CENTER        = 0
+    const val TOP_LEFT      = 1
+    const val TOP_CENTER    = 2
+    const val TOP_RIGHT     = 3
+    const val CENTER_LEFT   = 4
+    const val CENTER_RIGHT  = 5
+    const val BOTTOM_LEFT   = 6
+    const val BOTTOM_CENTER = 7
+    const val BOTTOM_RIGHT  = 8
+}
+
+/**
+ * Maps the 0–8 anchor/origin enum to (x, y) fractions in [0, 1]:
+ * center(.5,.5), top-left(0,0), top-center(.5,0), top-right(1,0),
+ * center-left(0,.5), center-right(1,.5), bottom-left(0,1),
+ * bottom-center(.5,1), bottom-right(1,1). Unknown / 0 → center.
+ */
+private fun anchorFraction(point: Int): Pair<Float, Float> = when (point) {
+    Anchor.TOP_LEFT      -> 0f to 0f
+    Anchor.TOP_CENTER    -> 0.5f to 0f
+    Anchor.TOP_RIGHT     -> 1f to 0f
+    Anchor.CENTER_LEFT   -> 0f to 0.5f
+    Anchor.CENTER_RIGHT  -> 1f to 0.5f
+    Anchor.BOTTOM_LEFT   -> 0f to 1f
+    Anchor.BOTTOM_CENTER -> 0.5f to 1f
+    Anchor.BOTTOM_RIGHT  -> 1f to 1f
+    else                 -> 0.5f to 0.5f // CENTER (0) or unknown
+}
+
+/**
+ * A custom two-point [Alignment]: [anchor] is the point on the PARENT the child
+ * hooks onto; [origin] is the point ON THE CHILD that lands on that parent point.
+ * Both use the 0–8 enum (default center). The built-in `Alignment` constants
+ * only express a single point, so a decoupled anchor/origin needs this.
+ *
+ * Intentionally LTR-absolute — it IGNORES [layoutDirection] — to stay consistent
+ * with the absolute top/right/bottom/left inset system and with iOS. That's a
+ * deliberate improvement over the built-in RTL-aware Alignments.
+ *
+ * Implemented as a `data class` so instances are value-equal on (anchor, origin);
+ * that keeps `BoxScope.align` skip-friendly across recompositions instead of
+ * re-laying-out on every fresh lambda.
+ */
+private data class TwoPointAlignment(
+    val anchor: Int,
+    val origin: Int
+) : Alignment {
+    override fun align(size: IntSize, space: IntSize, layoutDirection: LayoutDirection): IntOffset {
+        val (aax, aay) = anchorFraction(anchor) // parent point
+        val (oax, oay) = anchorFraction(origin) // child point
+        return IntOffset(
+            (space.width * aax - size.width * oax).roundToInt(),
+            (space.height * aay - size.height * oay).roundToInt(),
+        )
+    }
+}
+
+/**
  * Renders children in a flex container using Compose's built-in Column/Row.
  * Maps flexbox properties to Compose equivalents:
  *   - flex_direction → Column or Row
@@ -72,8 +139,56 @@ fun FlexContainer(
     wrap: Int = 0,
     childNodes: List<NativeUINode>,
     modifier: Modifier = Modifier,
+    isStack: Boolean = false,
     content: @Composable () -> Unit
 ) {
+    // `stack` container: z-overlay EVERY child in a single Box, positioned by a
+    // 9-point `anchor` prop (default center) and fine-tuned by absolute inset
+    // offsets. No flow Column/Row runs — every child is treated as overlaid.
+    //
+    // Sizing: the Box carries only the incoming `modifier` (the stack node's own
+    // width/height, resolved upstream in NodeView). We add NO fillMaxWidth/
+    // Height/Size here, so a stack with no explicit size (WRAP mode → NodeView
+    // applies no size modifier) lets Box wrap-content and measure to its LARGEST
+    // child. `.align()`/`.offset()` are placement-only (ParentDataModifier /
+    // post-measure layout) and do not change what the Box measures, so the
+    // largest child still drives the stack's size — a text + a small anchored
+    // dot sizes to the text, never collapsing to the dot nor over-expanding.
+    if (isStack) {
+        Box(modifier = modifier) {
+            // Document order = z-order: first child drawn at the back.
+            childNodes.forEachIndexed { i, node ->
+                if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
+
+                // Two-point model: `anchor` = point on this parent, `origin` =
+                // point on the child that lands on it. Both default to center.
+                val alignment = TwoPointAlignment(
+                    anchor = node.props.getInt("anchor", Anchor.CENTER),
+                    origin = node.props.getInt("origin", Anchor.CENTER)
+                )
+
+                // Inset offsets nudge the anchored child. Same convention as the
+                // absolute path: a set `right`/`bottom` pulls inward from that
+                // edge, otherwise `left`/`top` push from the leading edge.
+                val left = node.layout?.positionLeft ?: 0f
+                val top = node.layout?.positionTop ?: 0f
+                val right = node.layout?.positionRight ?: 0f
+                val bottom = node.layout?.positionBottom ?: 0f
+                val offsetX = if (right > 0f) (-right).dp else left.dp
+                val offsetY = if (bottom > 0f) (-bottom).dp else top.dp
+
+                Box(
+                    modifier = Modifier
+                        .align(alignment)
+                        .offset(x = offsetX, y = offsetY)
+                ) {
+                    NodeView(node = node)
+                }
+            }
+        }
+        return
+    }
+
     // Separate absolute children from flow children
     val hasAbsolute = childNodes.any { (it.layout?.positionType ?: 0) == PositionType.ABSOLUTE }
 
@@ -102,12 +217,23 @@ fun FlexContainer(
                     val right = node.layout?.positionRight ?: 0f
                     val bottom = node.layout?.positionBottom ?: 0f
 
-                    val anchor = when {
-                        right > 0f && bottom > 0f -> Alignment.BottomEnd
-                        right > 0f && top > 0f    -> Alignment.TopEnd
-                        right > 0f                 -> Alignment.TopEnd
-                        bottom > 0f                -> Alignment.BottomStart
-                        else                       -> Alignment.TopStart
+                    // Opt-in: if this absolute child carries an `anchor`/`origin`
+                    // prop, use the two-point model. With NEITHER prop it keeps
+                    // the legacy inset-derived corner logic byte-for-byte, so
+                    // existing `absolute top-0 right-0` layouts are untouched.
+                    val anchor: Alignment = if (node.props.has("anchor") || node.props.has("origin")) {
+                        TwoPointAlignment(
+                            anchor = node.props.getInt("anchor", Anchor.CENTER),
+                            origin = node.props.getInt("origin", Anchor.CENTER)
+                        )
+                    } else {
+                        when {
+                            right > 0f && bottom > 0f -> Alignment.BottomEnd
+                            right > 0f && top > 0f    -> Alignment.TopEnd
+                            right > 0f                 -> Alignment.TopEnd
+                            bottom > 0f                -> Alignment.BottomStart
+                            else                       -> Alignment.TopStart
+                        }
                     }
                     val offsetX = if (right > 0f) (-right).dp else left.dp
                     val offsetY = if (bottom > 0f) (-bottom).dp else top.dp
