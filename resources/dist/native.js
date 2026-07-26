@@ -147,6 +147,139 @@ export const Dialog = {
 export { PendingDialog };
 
 // ============================================================================
+// Toast Functions
+// ============================================================================
+
+/**
+ * PendingToast - Fluent builder for native toasts
+ *
+ * Toasts appear in a visible stack (up to 5); toasts pushed while the stack
+ * is full are silently dropped. New toasts join the stack wherever it already
+ * is, so the position below is a hint rather than a guarantee.
+ */
+class PendingToast {
+    constructor(message = null, html = null) {
+        this._message = message;
+        this._html = html;
+        this._duration = null;
+        this._position = 'bottom';
+        this._dismissible = true;
+        this._id = null;
+        this._started = false;
+    }
+
+    message(message) {
+        this._message = message;
+        return this;
+    }
+
+    /**
+     * Render your own markup as the toast, so you control how it looks
+     * @param {string} html - An HTML fragment or full document
+     */
+    html(html) {
+        this._html = html;
+        return this;
+    }
+
+    /**
+     * @param {number|string} duration - Seconds on screen, or 'short'/'long'
+     */
+    duration(duration) {
+        if (duration === 'short') duration = 2;
+        if (duration === 'long') duration = 4;
+        this._duration = duration;
+        return this;
+    }
+
+    short() {
+        return this.duration(2);
+    }
+
+    long() {
+        return this.duration(4);
+    }
+
+    /**
+     * Stay on screen until dismissed by the user or by Toast.dismiss()
+     */
+    persistent() {
+        return this.duration(0);
+    }
+
+    position(position) {
+        this._position = position;
+        return this;
+    }
+
+    top() {
+        return this.position('top');
+    }
+
+    bottom() {
+        return this.position('bottom');
+    }
+
+    /**
+     * @param {boolean} dismissible - Whether a tap or swipe dismisses the toast
+     */
+    dismissible(dismissible = true) {
+        this._dismissible = dismissible;
+        return this;
+    }
+
+    id(id) {
+        this._id = id;
+        return this;
+    }
+
+    then(resolve, reject) {
+        if (this._started) {
+            return resolve();
+        }
+
+        this._started = true;
+
+        const params = {
+            position: this._position,
+            dismissible: this._dismissible
+        };
+
+        if (this._message !== null) params.message = this._message;
+        if (this._html !== null) params.html = this._html;
+        if (this._duration !== null) params.duration = this._duration;
+        if (this._id) params.id = this._id;
+
+        return BridgeCall('Toast.Show', params).then(resolve, reject);
+    }
+}
+
+function toastMessageFunction(message) {
+    return new PendingToast(message);
+}
+
+function toastHtmlFunction(html) {
+    return new PendingToast(null, html);
+}
+
+export async function DismissToast(id) {
+    return BridgeCall('Toast.Dismiss', { id });
+}
+
+export async function DismissAllToasts() {
+    return BridgeCall('Toast.DismissAll', {});
+}
+
+export const Toast = {
+    message: toastMessageFunction,
+    html: toastHtmlFunction,
+    dismiss: DismissToast,
+    dismissAll: DismissAllToasts
+};
+
+export { PendingToast };
+
+// ============================================================================
 // Device Functions
 // ============================================================================
 

@@ -243,7 +243,7 @@ them (reserve those for fully chrome-less screens).
 
 ## Device APIs
 
-**Core built-ins** (`Native\Mobile\Facades`): `Device`, `Dialog`, `File`, `System` — these ship inside
+**Core built-ins** (`Native\Mobile\Facades`): `Device`, `Dialog`, `File`, `System`, `Toast` — these ship inside
 `nativephp/mobile` in v4. Also `System::isIos()` / `isAndroid()` and Blade directives `@ios` / `@android`.
 
 **Plugins** (separate Composer packages): browser, camera, microphone, network, share (free); biometrics,

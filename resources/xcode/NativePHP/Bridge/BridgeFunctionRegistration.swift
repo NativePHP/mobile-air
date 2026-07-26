@@ -24,6 +24,13 @@ func registerBridgeFunctions() {
     registry.register("Dialog.Alert", function: DialogFunctions.Alert())
     registry.register("Dialog.Toast", function: DialogFunctions.Toast())
 
+    // Toast.* — stacked toasts with developer-supplied views, timing,
+    // position and tap/swipe dismissal. Dialog.Toast above is the legacy
+    // plain text entry point into the same manager.
+    registry.register("Toast.Show", function: ToastFunctions.Show())
+    registry.register("Toast.Dismiss", function: ToastFunctions.Dismiss())
+    registry.register("Toast.DismissAll", function: ToastFunctions.DismissAll())
+
     // File.* — core built-in (migrated from the nativephp/mobile-file plugin).
     // Android twin: bridge/functions/FileFunctions.kt.
     registry.register("File.Move", function: FileFunctions.Move())

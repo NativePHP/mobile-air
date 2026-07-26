@@ -3,6 +3,7 @@
 namespace Native\Mobile;
 
 use Native\Mobile\Facades\Share;
+use Native\Mobile\Facades\Toast;
 
 class Dialog
 {
@@ -30,15 +31,14 @@ class Dialog
         return new PendingAlert($title, $message, $buttons);
     }
 
+    /**
+     * Show a toast.
+     *
+     * @deprecated Use \Native\Mobile\Facades\Toast::message() instead
+     */
+    #[\Deprecated(message: 'Use \Native\Mobile\Facades\Toast::message() instead', since: '4.0.0')]
     public function toast(string $message, string $duration = 'long'): void
     {
-        if (function_exists('nativephp_call')) {
-            $payload = json_encode([
-                'message' => $message,
-                'duration' => $duration,
-            ]);
-
-            nativephp_call('Dialog.Toast', $payload);
-        }
+        Toast::message($message)->duration($duration)->show();
     }
 }

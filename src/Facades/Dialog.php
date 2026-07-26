@@ -8,7 +8,7 @@ use Native\Mobile\PendingAlert;
 /**
  * @method static PendingAlert alert(string $title, string $message, array $buttons = [])
  * @method static void share(string $title, string $text, string $url)
- * @method static void toast(string $message)
+ * @method static void toast(string $message, string $duration = 'long')
  */
 class Dialog extends Facade
 {
