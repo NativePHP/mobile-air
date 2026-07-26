@@ -98,14 +98,18 @@ abstract class NativeLayout
      * Default `false` so existing layouts keep their custom-drawn chrome
      * behavior. Layouts opt in one at a time as they're ready.
      *
-     * Three-tier appearance contract once opted in:
+     * Three-tier appearance contract:
      *  - `TabBar` / `NavBar` with no `backgroundColor()` set → system
      *    Liquid Glass / Material You.
      *  - `backgroundColor()` set → opaque native bar with custom solid
      *    colors (the X / Instagram path).
      *  - Inline `<native:top-bar>` / `<native:bottom-nav>` in the screen's
-     *    blade → bypasses native chrome entirely (use this layout method
-     *    just for stacking semantics).
+     *    blade → wins over this layout's bar for that slot. The inline bar
+     *    is hoisted and drives the same native chrome sentinel the builders
+     *    feed (the other slot still comes from the layout); adding the
+     *    boolean `custom` attribute instead keeps the bar in the content
+     *    tree as a custom-drawn element while still suppressing the
+     *    layout's bar for that slot.
      */
     public function usesNativeChrome(): bool
     {

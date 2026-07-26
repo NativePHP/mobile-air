@@ -83,7 +83,7 @@ What *is* allowed per-instance:
 - `loading` (where applicable)
 - `icon` / `icon-trailing` (slot content, not styling)
 - `a11y-label`, `a11y-hint`
-- `@press`, `@change`, etc.
+- `@tap`, `@change`, etc.
 - Layout props that apply to every element (padding via spacing scale, width/fill, etc.)
 
 ### D — Theme layer
@@ -135,13 +135,13 @@ Applies to: `button`, `chip`, `tab`, `list-item` (headline), `badge`.
 
 ```blade
 {{-- Was: --}}
-<native:button label="Save" variant="primary" @press="save" />
+<native:button label="Save" variant="primary" @tap="save" />
 
 {{-- Now: --}}
-<native:button variant="primary" @press="save">Save</native:button>
+<native:button variant="primary" @tap="save">Save</native:button>
 
 {{-- Icon + text: --}}
-<native:button variant="primary" @press="add">
+<native:button variant="primary" @tap="add">
     <native:icon name="plus" />
     Add item
 </native:button>

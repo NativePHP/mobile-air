@@ -425,7 +425,7 @@ optimization, not a requirement — **zero native changes for correlation.**
 > store for the closure; correlation is *also* a PHP concern. Kotlin can't reach Laravel's DB, so
 > don't push correlation down into native — keep it in the registry.
 
-### Finding 6 — the trait rollout, and a `@press` gotcha that looks unrelated
+### Finding 6 — the trait rollout, and a `@tap` gotcha that looks unrelated
 
 The callback API is a shared trait (`HandlesNativeCallbacks`); adding it to a builder is one
 `use` line, a `failureEvents()` declaration (when there are distinct cancel/denied events), and an
@@ -434,12 +434,12 @@ The callback API is a shared trait (`HandlesNativeCallbacks`); adding it to a bu
 inside it for cancellation. (Camera/video *do* have distinct cancel events, hence
 `photoCancelled()` / `videoCancelled()`.)
 
-Gotcha that cost real time: **every `@press="method"` in the Blade view must have a matching method
-on the component.** A view referencing `@press="openVideo"` while `Home` had no `openVideo()`
-*looked* like the whole tile row failed to render — but `@press` resolves at **tap time**, not
+Gotcha that cost real time: **every `@tap="method"` in the Blade view must have a matching method
+on the component.** A view referencing `@tap="openVideo"` while `Home` had no `openVideo()`
+*looked* like the whole tile row failed to render — but `@tap` resolves at **tap time**, not
 render, so a missing handler crashes on tap, it doesn't blank the row. (The actual blank-row was a
 stale hot-reload state, fixed by a full relaunch.) When pruning component methods, grep the view
-for `@press`/`@doubleTap`/`@change` first.
+for `@tap`/`@doubleTap`/`@change` first.
 
 ### How to test in kitchensink3 (Android)
 

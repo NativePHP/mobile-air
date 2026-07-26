@@ -29,18 +29,6 @@ class NativeTagPrecompiler
         'webview' => 'html',
     ];
 
-    /**
-     * Edge navigation components — handled via Edge::add()/startContext()/endContext()
-     * instead of NativeElementCollector, so Edge.Set bridge calls work in WebView mode.
-     */
-    private const EDGE_CONTAINER_TAGS = [
-        'top-bar', 'bottom-nav', 'side-nav', 'side-nav-group',
-    ];
-
-    private const EDGE_LEAF_TAGS = [
-        'top-bar-action', 'bottom-nav-item', 'side-nav-item', 'side-nav-header',
-    ];
-
     /** camelCase modifier → Transition enum value */
     private const NAVIGATE_TRANSITIONS = [
         'fade' => 'fade',
@@ -255,11 +243,11 @@ class NativeTagPrecompiler
         );
 
         // Tap spellings are aliases of the press family — `@tap` is the
-        // mobile-native way to say `@press`, and both are supported for
+        // mobile-native way to say `@tap`, and both are supported for
         // good. They rewrite straight to the *canonical* underscored attr,
         // so nothing downstream (collector, Element, wire format, testing
         // suite) ever learns a second name, and every existing app written
-        // against `@press` compiles byte-identically.
+        // against `@tap` compiles byte-identically.
         // Longer spellings precede their prefix, as in the canonical pass
         // below. `@doubleTap` is untouched: the alternation is anchored at
         // `@`, so `tap` can't match mid-word.
@@ -269,13 +257,28 @@ class NativeTagPrecompiler
             $value
         );
 
-        // Convert @press, @pressDown, @pressUp, @longPress, @doubleTap, @change,
+        // Convert @tap, @tapDown, @tapUp, @longPress, @doubleTap, @change,
         // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
         // @pinchEnd, @navigated to underscored versions before Blade
         // interprets @ as a directive.
         // Longer spellings precede their prefix (`pressDown`/`pressUp` before
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
         $value = preg_replace('/@(pressDown|pressUp|press|longPress|doubleTap|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
+
+        // Any REMAINING `@name="..."` attribute is a child-component event
+        // binding — the tag-level half of `$this->emit()`:
+        //
+        //     <native:order-row :order="$o" @order-shipped="markShipped({{ $o->id }})" />
+        //
+        // Rewritten to a plain `_event-name` attribute (the attr parser
+        // rejects '@'), which mountChildComponent() strips off and maps to
+        // the parent method when the child emits that event. Runs AFTER
+        // every known directive pass, so only unknown `@x=` spellings reach
+        // it; the leading whitespace requirement keeps it in attribute
+        // position (an inline `a@b=` in text is left alone). On a plain
+        // element the attribute is stripped by the collector — components
+        // are resolved at runtime, so compile time can't tell the two apart.
+        $value = preg_replace('/(?<=\s)@([a-zA-Z][a-zA-Z0-9_-]*)=/', '_event-$1=', $value);
 
         // The attribute-region pattern below uses possessive quantifiers
         // (`*+`) to keep PCRE from catastrophically backtracking when a
@@ -390,13 +393,6 @@ class NativeTagPrecompiler
 
     private function compileSelfClosing(string $tag, string $rawAttrs): string
     {
-        if (in_array($tag, self::EDGE_LEAF_TAGS, true)) {
-            $type = $this->tagToType($tag);
-            $attrs = $this->compileAttributes($rawAttrs);
-
-            return '<?php \\Native\\Mobile\\Edge\\Edge::add(\''.$type.'\', '.$attrs.'); ?>';
-        }
-
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
 
@@ -436,20 +432,6 @@ class NativeTagPrecompiler
 
     private function compileOpening(string $tag, string $rawAttrs): string
     {
-        if (in_array($tag, self::EDGE_CONTAINER_TAGS, true)) {
-            $attrs = $this->compileAttributes($rawAttrs);
-            $varTag = str_replace('-', '_', $tag);
-
-            return "<?php \$__edgeCtx_{$varTag} = \\Native\\Mobile\\Edge\\Edge::startContext(); \$__edgeAttrs_{$varTag} = {$attrs}; ?>";
-        }
-
-        if (in_array($tag, self::EDGE_LEAF_TAGS, true)) {
-            $type = $this->tagToType($tag);
-            $attrs = $this->compileAttributes($rawAttrs);
-
-            return '<?php \\Native\\Mobile\\Edge\\Edge::add(\''.$type.'\', '.$attrs.'); ?>';
-        }
-
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
 
@@ -478,17 +460,6 @@ class NativeTagPrecompiler
 
     private function compileClosing(string $tag): string
     {
-        if (in_array($tag, self::EDGE_CONTAINER_TAGS, true)) {
-            $type = $this->tagToType($tag);
-            $varTag = str_replace('-', '_', $tag);
-
-            return "<?php \\Native\\Mobile\\Edge\\Edge::endContext(\$__edgeCtx_{$varTag}, '{$type}', \$__edgeAttrs_{$varTag}); ?>";
-        }
-
-        if (in_array($tag, self::EDGE_LEAF_TAGS, true)) {
-            return ''; // Leaf tags don't have closing tags in practice, but handle gracefully
-        }
-
         // <text> close — emit its captured inline runs (see textOpen).
         if ($tag === 'text') {
             return '<?php '.self::C.'::textClose(); ?>';

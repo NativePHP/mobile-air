@@ -1,1 +1,0 @@
-{{-- Native component placeholder --}}

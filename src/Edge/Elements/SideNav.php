@@ -31,6 +31,10 @@ class SideNav extends Element
         if ($gesturesEnabled !== null) {
             $this->props['gestures_enabled'] = filter_var($gesturesEnabled, FILTER_VALIDATE_BOOLEAN);
         }
+
+        if (! empty($attrs['custom'])) {
+            $this->markCustomChrome();
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

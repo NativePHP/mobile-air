@@ -13,9 +13,6 @@ use Native\Mobile\Edge\NativeElementCollector;
  * serialized to shared memory and rendered as native Android/iOS views. Each
  * component maps to a native element type (column, row, text, etc.) via
  * the elementType() method.
- *
- * This is separate from EdgeComponent, which builds navigation chrome
- * (top bar, bottom nav) via the Edge class.
  */
 abstract class NativeBladeComponent extends Component
 {
