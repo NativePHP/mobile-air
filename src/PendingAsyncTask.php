@@ -34,6 +34,9 @@ use Throwable;
  */
 class PendingAsyncTask
 {
+    /** Default watchdog window for a dispatched task, in seconds. */
+    public const DEFAULT_TIMEOUT = 60;
+
     protected string $id;
 
     /** @var array{kind: string, ...} */
@@ -52,9 +55,6 @@ class PendingAsyncTask
      * `->failed()` fires with a timeout. 0 disables the watchdog.
      */
     protected int $timeout = self::DEFAULT_TIMEOUT;
-
-    /** Default watchdog window for a dispatched task, in seconds. */
-    public const DEFAULT_TIMEOUT = 60;
 
     protected function __construct(array $work)
     {
