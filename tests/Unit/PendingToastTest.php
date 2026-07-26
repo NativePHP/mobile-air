@@ -190,7 +190,7 @@ it('falls back to Dialog.Toast on a known Android device', function () {
 it('gives a persistent toast the longest fallback duration on Android', function () {
     // Android toasts always time out, so 'until dismissed' becomes 'as long
     // as we can' rather than the 2s a zero duration would otherwise map to.
-    forcePlatform(Platform::ANDROID);
+    Platform::set(Platform::ANDROID);
 
     Toast::message('Saving')->persistent()->show();
     Toast::message('Saved')->show();
