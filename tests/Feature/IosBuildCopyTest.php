@@ -482,6 +482,10 @@ class IosBuildCopyTest extends TestCase
 
     protected function fakeRsyncAndGetAppPath(int $exitCode = 0): string
     {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('rsync command assertions require a Unix-like OS; copy() dispatches to robocopy on Windows.');
+        }
+
         Process::fake([
             'rsync*' => Process::result(output: '', errorOutput: $exitCode ? 'error' : '', exitCode: $exitCode),
         ]);
