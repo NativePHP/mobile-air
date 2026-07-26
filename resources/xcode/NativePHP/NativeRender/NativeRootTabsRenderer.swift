@@ -695,24 +695,41 @@ private struct TabsActionView: View {
 private struct BottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
+    @Environment(\.colorScheme) private var colorScheme
+
     func body(content: Content) -> some View {
-        // Always use `.safeAreaInset(.bottom)` — the battle-tested
-        // primitive for pinning content above the safe-area bottom.
+        // `.safeAreaInset(.bottom)` — the battle-tested primitive for
+        // pinning content above the safe-area bottom.
         //
         // Earlier this path branched to `.safeAreaBar(.bottom)` on iOS 26+
-        // for the floating-glass treatment iMessage uses. That implementation
-        // mis-pins on the iOS 26 simulator (bar latches mid-screen) and adds
-        // a wide glass plate behind the bar that visually washes content
-        // above it. Both symptoms cleared by reverting to `.safeAreaInset`.
-        // Re-enable `.safeAreaBar` later if Apple's implementation
-        // stabilises on real hardware AND we want the floating treatment.
+        // and was reverted when the bar latched mid-screen with a glass
+        // plate washing out the content above it. Root cause found since
+        // (see the stack renderer's twin): the inset APIs propose a FINITE
+        // height, and a FlexContainer fills any finite proposal, so a bar
+        // whose root has no explicit height inflated to the proposal —
+        // `.safeAreaBar` was never at fault. `.fixedSize(vertical:)` pins
+        // the bar to its intrinsic height either way; re-enabling
+        // `.safeAreaBar` for the floating-glass treatment is now viable
+        // but a separate, visual decision.
         if let bottomBar, let inner = bottomBar.children.first {
             content.safeAreaInset(edge: .bottom, spacing: 0) {
                 NodeView(node: inner)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+                    .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
             }
         } else {
             content
         }
+    }
+
+    /// The bar root's resolved background color for the active appearance,
+    /// extended through the bottom safe area so the strip beneath the bar
+    /// doesn't show the window background — see the stack renderer's twin.
+    private func barBackgroundColor(_ node: NativeUINode) -> Color {
+        let darkBg = colorScheme == .dark ? node.props.getColor("dark_bg_color", default: 0) : 0
+        let argb = darkBg != 0 ? darkBg : (node.style?.bgColor ?? 0)
+        return argb != 0 ? Color(argb: argb) : .clear
     }
 }
 

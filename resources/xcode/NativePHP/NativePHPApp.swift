@@ -122,7 +122,12 @@ struct NativePHPApp: App {
             NativePHPPluginRegistry.shared.executeOnAppLaunch()
         }
 
-        // 6. Start hot reload server for development
+        // 6. Reload handling + hot reload server. The coordinator must be
+        // registered before anything can post reloadWebViewNotification —
+        // HotReloadServer triggers (DEBUG) or AppUpdateManager after an OTA
+        // update (production) — and independently of the WebView, which a
+        // native-direct boot never mounts.
+        HotReloadCoordinator.shared.activate()
         #if DEBUG
         HotReloadServer.shared.start()
         #endif

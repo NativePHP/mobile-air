@@ -162,11 +162,22 @@ abstract class NativeComponent
      */
     private function renderToElement(): Element
     {
+        // Frame bookkeeping for nested child components: occurrence
+        // counters restart, and children whose tags disappeared from
+        // this render are unmounted afterwards. Reconciliation only
+        // runs on success — a throwing render must not tear down child
+        // state the next (recovered) frame still wants.
+        $this->beginChildComponentFrame();
+
         $result = $this->render();
 
-        return $result instanceof View
+        $element = $result instanceof View
             ? $this->fromView($result)
             : $result;
+
+        $this->endChildComponentFrame();
+
+        return $element;
     }
 
     /**
@@ -281,8 +292,20 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $data);
 
+        // Rendering as a nested child component: the parent's tree is live
+        // in the collector, so emit in place — no reset, no chrome, and no
+        // poll drain (a child's `native:poll` rolls up into the screen's
+        // frame-level sync after the full render). The returned marker
+        // tells renderAsChild() there is nothing left to attach.
+        if (NativeElementCollector::inComponentScope()) {
+            $this->renderBladeBoundToSelf("native.{$name}", $viewData);
+
+            return NativeElementCollector::scopeMarker();
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
@@ -311,8 +334,18 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $data);
 
+        // Inside a child component's render the hard reset below would wipe
+        // the parent's live tree — capture() collects the detached subtree
+        // against saved-and-restored collector state instead.
+        if (NativeElementCollector::inComponentScope()) {
+            return NativeElementCollector::capture(
+                fn () => $this->renderBladeBoundToSelf("native.{$name}", $viewData)
+            );
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
@@ -338,8 +371,16 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
+        // Nested child render — same in-place emission as view() above.
+        if (NativeElementCollector::inComponentScope()) {
+            $this->renderBladeBoundToSelf($view->getName(), $viewData);
+
+            return NativeElementCollector::scopeMarker();
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf($view->getName(), $viewData);
 
@@ -367,8 +408,17 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
+        // Same child-scope safety as partial() — never hard-reset the
+        // parent's live tree from inside a nested component render.
+        if (NativeElementCollector::inComponentScope()) {
+            return NativeElementCollector::capture(
+                fn () => $this->renderBladeBoundToSelf($view->getName(), $viewData)
+            );
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf($view->getName(), $viewData);
 
@@ -376,21 +426,48 @@ abstract class NativeComponent
     }
 
     /**
-     * Wrap the screen's element tree with chrome from its layout.
+     * Wrap the screen's element tree with chrome from its layout and/or
+     * inline chrome in its blade.
      *
      * - Looks up the layout class declared by the route or the component.
-     * - Asks the layout for a NavBar / TabBar.
-     * - Merges in the screen's navigationOptions() and pendingNavBarState.
-     * - Skips chrome the screen overrode inline in its blade
-     *   (i.e., a top-level <native:top-bar> or <native:bottom-nav>).
-     * - Wraps everything in a Column.fill().safeArea() with the chrome
-     *   stacked above and below the content.
+     * - Hoists inline `<native:top-bar>` / `<native:bottom-nav>` elements
+     *   out of the content tree and reconstructs NavBar / TabBar builders
+     *   from them (`fromElement`) — an inline bar WINS over the layout's
+     *   builder bar for that slot, while the other slot still comes from
+     *   the layout. Hoisted bars always drive the native-chrome sentinels
+     *   (NativeRootStack / NativeRootTabs), even with no layout at all.
+     * - A bar tagged with the boolean `custom` attribute is NOT hoisted:
+     *   it stays in the content tree and renders as an ordinary drawn
+     *   element, but still suppresses the layout's bar for that slot.
+     * - Otherwise asks the layout for a NavBar / TabBar, merges in the
+     *   screen's navigationOptions() and pendingNavBarState, and wraps
+     *   via native chrome or the custom Column path per
+     *   `NativeLayout::usesNativeChrome()`.
      */
     protected function wrapWithChrome(Element $content): Element
     {
         $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
             ? new ($this->nativeLayout)()
             : null;
+
+        // ── Inline chrome (screen blade) ──
+        // Non-custom bars are hoisted out of the content tree so they
+        // aren't drawn inline AND translated into the same native-root
+        // prop shape the layout builders produce. Custom bars stay put.
+        [$inlineTopBar, $content] = $this->hoistInlineBar($content, 'top_bar');
+        [$inlineBottomNav, $content] = $this->hoistInlineBar($content, 'bottom_nav');
+        [$inlineSideNav, $content] = $this->hoistInlineBar($content, 'side_nav');
+
+        // Whatever bars remain in the tree are `custom` — the dev took
+        // manual control of that slot, so the layout's bar is suppressed.
+        $hasCustomTopBar = $this->treeContainsType($content, 'top_bar');
+        $hasCustomBottomNav = $this->treeContainsType($content, 'bottom_nav');
+
+        // Hoist a top-level `<native:fab>` into a Stack overlay so it
+        // floats above the content (its absolute insets then resolve
+        // against the whole content area, not whatever container the
+        // blade happened to declare it in).
+        $content = $this->hoistFabOverlay($content);
 
         // Base case: no layout (or no bars) → the screen content is the root,
         // and it is the dev's own tree, so we must NOT append siblings to it
@@ -399,66 +476,232 @@ abstract class NativeComponent
         $root = $content;
         $rootOwnsChildren = false;
 
-        if ($layout !== null) {
-            // If the screen blade already contains TopBar / BottomNav at the
-            // root level, the dev took manual control — skip layout chrome
-            // for those slots.
-            $hasInlineNavBar = $this->treeContainsType($content, 'top_bar');
-            $hasInlineTabBar = $this->treeContainsType($content, 'bottom_nav');
+        // Inline (non-custom) chrome always renders through the native
+        // sentinels; a layout additionally opts its own bars in via
+        // usesNativeChrome().
+        $usesNativeChrome = $inlineTopBar !== null
+            || $inlineBottomNav !== null
+            || ($layout?->usesNativeChrome() ?? false);
 
-            $navBar = null;
-            if (! $hasInlineNavBar) {
-                $navBar = $layout->navBar($this);
-                // Per-screen opt-out ($hidesNavBar shortcut + navigationOptions()
-                // builder). On this custom-Column path hiding is identical to
-                // the layout returning null. The native-chrome path instead
-                // keeps the bar config and folds a `hide_nav_bar` prop onto
-                // the sentinel — the NavigationStack must survive for push /
-                // pop to keep working.
-                if ($navBar !== null && ! $layout->usesNativeChrome() && $this->shouldHideNavBar()) {
-                    $navBar = null;
-                }
-                if ($navBar !== null) {
-                    $navBar->mergeOptions($this->navigationOptions());
-                    if (! empty($this->nativePendingNavBarState)) {
-                        $navBar->mergeState($this->nativePendingNavBarState);
-                    }
-                    // Layout-wide chrome font — loses to any ->font() the
-                    // bar (or per-screen options/state) already set.
-                    $navBar->defaultFont($layout->chromeFont());
-                }
+        $navBar = null;
+        if ($inlineTopBar !== null) {
+            $navBar = NavBar::fromElement($inlineTopBar);
+            // Layout-wide chrome font still applies as a default — the
+            // inline bar's own font-name attribute wins.
+            $navBar->defaultFont($layout?->chromeFont());
+        } elseif (! $hasCustomTopBar && $layout !== null) {
+            $navBar = $layout->navBar($this);
+            // Per-screen opt-out ($hidesNavBar shortcut + navigationOptions()
+            // builder). On the custom-Column path hiding is identical to
+            // the layout returning null. The native-chrome path instead
+            // keeps the bar config and folds a `hide_nav_bar` prop onto
+            // the sentinel — the NavigationStack must survive for push /
+            // pop to keep working.
+            if ($navBar !== null && ! $usesNativeChrome && $this->shouldHideNavBar()) {
+                $navBar = null;
             }
-
-            $tabBar = null;
-            if (! $hasInlineTabBar) {
-                $tabBar = $layout->tabBar($this);
-                if ($tabBar !== null) {
-                    $currentUri = $this->nativeRouter?->currentUri();
-                    if ($currentUri !== null) {
-                        $tabBar->highlight($currentUri);
-                    }
-                    $tabBar->defaultFont($layout->chromeFont());
+            if ($navBar !== null) {
+                $navBar->mergeOptions($this->navigationOptions());
+                if (! empty($this->nativePendingNavBarState)) {
+                    $navBar->mergeState($this->nativePendingNavBarState);
                 }
-            }
-
-            if ($navBar !== null || $tabBar !== null) {
-                if ($layout->usesNativeChrome()) {
-                    // Native chrome path: when a layout opts in via
-                    // `usesNativeChrome()`, emit a `native_root_*` sentinel
-                    // element carrying the bar config as serialized props
-                    // instead of a Column of [navBar, content, tabBar]. The
-                    // native iOS / Android renderers for those types take over
-                    // and use NavigationStack / TabView / NavHost / Scaffold to
-                    // render chrome system-natively.
-                    $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
-                } else {
-                    $root = $this->buildChromeColumn($content, $navBar, $tabBar);
-                }
-                $rootOwnsChildren = true;
+                // Layout-wide chrome font — loses to any ->font() the
+                // bar (or per-screen options/state) already set.
+                $navBar->defaultFont($layout->chromeFont());
             }
         }
 
+        $tabBar = null;
+        if ($inlineBottomNav !== null) {
+            $tabBar = TabBar::fromElement($inlineBottomNav);
+            $tabBar->defaultFont($layout?->chromeFont());
+            // Auto-highlight the tab owning the current URI — unless the
+            // blade marked one `active` explicitly (highlight() respects
+            // explicit choices on inline items).
+            $currentUri = $this->nativeRouter?->currentUri();
+            if ($currentUri !== null) {
+                $tabBar->highlight($currentUri);
+            }
+        } elseif (! $hasCustomBottomNav && $layout !== null) {
+            $tabBar = $layout->tabBar($this);
+            if ($tabBar !== null) {
+                $currentUri = $this->nativeRouter?->currentUri();
+                if ($currentUri !== null) {
+                    $tabBar->highlight($currentUri);
+                }
+                $tabBar->defaultFont($layout->chromeFont());
+            }
+        }
+
+        if ($navBar !== null || $tabBar !== null) {
+            if ($usesNativeChrome) {
+                // Native chrome path: emit a `native_root_*` sentinel
+                // element carrying the bar config as serialized props
+                // instead of a Column of [navBar, content, tabBar]. The
+                // native iOS / Android renderers for those types take over
+                // and use NavigationStack / TabView / NavHost / Scaffold to
+                // render chrome system-natively.
+                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
+            } else {
+                $root = $this->buildChromeColumn($content, $navBar, $tabBar);
+            }
+            $rootOwnsChildren = true;
+        }
+
+        // A hoisted side_nav has no layout-builder counterpart; re-attach
+        // it as a sentinel child of the chrome root so a drawer host
+        // (plugin / NativeRootHostRegistry consumer) can pull it out —
+        // mirroring how bottom_bar and chrome-contributor sentinels ride
+        // on the root outside the flex flow.
+        if ($inlineSideNav !== null) {
+            if (! $rootOwnsChildren) {
+                $wrapper = Column::make()->fill()->safeArea();
+                $root->flexGrow(1);
+                $wrapper->addChild($root);
+                $root = $wrapper;
+                $rootOwnsChildren = true;
+            }
+            $root->addChild($inlineSideNav);
+        }
+
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * Hoist a top-level `<native:fab>` (an `Elements\Fab` — wire type
+     * `pressable`, so type-matching can't find it) out of the content's
+     * flex flow and float it over the content. The fab styles itself
+     * (absolute bottom-corner insets); this just guarantees the insets
+     * resolve against the full content area. Scope matches the other
+     * inline-chrome hoists: direct children of the root. A fab nested
+     * deeper stays where it is and positions within its own container.
+     *
+     * When the content root is a full-size flex container (which includes
+     * the collector's implicit multi-root Column — always `->fill()`),
+     * the fab simply becomes the root's LAST child: it is absolutely
+     * positioned, both platforms' flex renderers keep absolute children
+     * out of flow measurement AND draw them last (on top), and its insets
+     * resolve against the root = the full content area. Crucially the
+     * measured content tree stays byte-identical to the no-fab tree.
+     *
+     * We must NOT wrap such content in a `Stack` overlay (the previous
+     * approach): the iOS stack layout measures a non-scroll child via an
+     * `.unspecified` proposal, so a `scroll_view` nested one level down
+     * (stack → column → scroll_view) gets measured at its intrinsic
+     * CONTENT height instead of the viewport — the scrollable range
+     * collapses to ~one viewport and the list rubber-bands ("elastic"
+     * scroll that never reaches the bottom). Only roots that cannot host
+     * an overlay child (a `scroll_view` root would render the fab as a
+     * list item, plugin roots may treat children specially) still get the
+     * Stack wrapper — the shape the iOS stack layout explicitly supports
+     * (it skips scroll_view children in sizeThatFits and honors their
+     * fill modes in placement).
+     */
+    protected function hoistFabOverlay(Element $content): Element
+    {
+        $fab = null;
+        $remaining = [];
+        foreach ($content->getChildren() as $child) {
+            if ($fab === null && $child instanceof Elements\Fab) {
+                $fab = $child;
+
+                continue;
+            }
+            $remaining[] = $child;
+        }
+        if ($fab === null) {
+            return $content;
+        }
+
+        $layout = $content->getLayout();
+        $isFullSizeFlexRoot = in_array($content->getType(), ['column', 'row', 'stack'], true)
+            && ($layout['width'] ?? null) === 'fill'
+            && ($layout['height'] ?? null) === 'fill';
+
+        if ($isFullSizeFlexRoot) {
+            // Re-append LAST so the fab draws above its siblings (both
+            // renderers honor child order for z). Everything else —
+            // including any `<native:bottom-bar>` sentinel, which stays a
+            // direct child of the tree handed to `resolveBottomBar` —
+            // keeps its position; the flow layout is untouched.
+            $remaining[] = $fab;
+            $content->setChildren($remaining);
+
+            return $content;
+        }
+
+        // Non-flex root — float the fab over it in a Stack overlay.
+        $sentinels = [];
+        $kept = [];
+        foreach ($remaining as $child) {
+            // Keep hoistable sentinels (inline `<native:bottom-bar>`)
+            // discoverable as direct children of the tree handed to
+            // `resolveBottomBar` — lift them onto the Stack alongside
+            // the content instead of burying them one level deeper.
+            if ($child->getType() === 'bottom_bar') {
+                $sentinels[] = $child;
+
+                continue;
+            }
+            $kept[] = $child;
+        }
+        $content->setChildren($kept);
+
+        // The content used to receive the viewport proposal as the direct
+        // chrome child; inside the Stack it must opt into fill explicitly
+        // or the stack places it at its intrinsic content size (breaking
+        // a scroll_view root's viewport). Only fill dimensions the dev
+        // left unsized — explicit sizes still win.
+        if (! isset($layout['width'])) {
+            $content->fillWidth();
+        }
+        if (! isset($layout['height'])) {
+            $content->fillHeight();
+        }
+
+        $stack = Elements\Stack::make();
+        $stack->fill();
+        $stack->addChild($content);
+        $stack->addChild($fab);
+        foreach ($sentinels as $sentinel) {
+            $stack->addChild($sentinel);
+        }
+
+        return $stack;
+    }
+
+    /**
+     * Find (and remove) an inline chrome element of `$type` in the screen
+     * tree, returning `[bar|null, content]`. Matches the scope of
+     * `treeContainsType`: the root itself, or a direct child (the
+     * collector's implicit Column wrapper puts top-level blade tags
+     * there). Elements marked `custom` are left in place — they render
+     * as ordinary drawn elements.
+     *
+     * @return array{0: ?Element, 1: Element}
+     */
+    protected function hoistInlineBar(Element $content, string $type): array
+    {
+        // Root IS the bar (a blade whose only top-level tag is the bar).
+        if ($content->getType() === $type && ! $content->isCustomChrome()) {
+            return [$content, Column::make()->fill()];
+        }
+
+        $found = null;
+        $remaining = [];
+        foreach ($content->getChildren() as $child) {
+            if ($found === null && $child->getType() === $type && ! $child->isCustomChrome()) {
+                $found = $child;
+
+                continue;
+            }
+            $remaining[] = $child;
+        }
+        if ($found !== null) {
+            $content->setChildren($remaining);
+        }
+
+        return [$found, $content];
     }
 
     /**
@@ -563,7 +806,7 @@ abstract class NativeComponent
         Element $content,
         ?NavBar $navBar,
         ?TabBar $tabBar,
-        NativeLayout $layout,
+        ?NativeLayout $layout,
     ): Element {
         if ($tabBar !== null) {
             $root = NativeRootTabs::make();
@@ -649,23 +892,24 @@ abstract class NativeComponent
 
             $root->applyAttributes($attrs);
 
-            // Tab items as bottom_nav_item children. For the search-
-            // role tab we inject the resolved corpus above; when it's
-            // null (screen opted out — neither `searchItems()` nor
+            // Tab items as bottom_nav_item children — builder tabs and
+            // prebuilt inline items uniformly via tabElements(). For the
+            // search-role tab we inject the resolved corpus above; when
+            // it's null (screen opted out — neither `searchItems()` nor
             // `onSearchQuery()` overridden), the iOS / Android
             // renderer hides the search tab via the sticky-inclusion
             // pattern (visible only when currently selected, so the
             // TabView reconciliation stays clean).
-            foreach ($tabBar->getTabs() as $tab) {
-                if ($tab->isSearchTab() && $screenSearchItems !== null) {
-                    $tab->setSearchItems($screenSearchItems);
+            foreach ($tabBar->tabElements() as $item) {
+                if ($item->isSearchTab() && $screenSearchItems !== null) {
+                    $item->setRawSearchItems($screenSearchItems);
                 }
-                $root->addChild($tab->toElement());
+                $root->addChild($item);
             }
             // NavBar actions (if any) as top_bar_action children.
             if ($navBar !== null) {
-                foreach ($navBar->getActions() as $action) {
-                    $root->addChild($action->toElement());
+                foreach ($navBar->actionElements() as $action) {
+                    $root->addChild($action);
                 }
                 // Optional custom principal-slot content (logo / titleView)
                 // wrapped in a `TopBarTitle` marker so the renderer renders it
@@ -678,7 +922,7 @@ abstract class NativeComponent
             // (Apple's MiniPlayer pattern). Wrapped in a `TabAccessory`
             // marker element so the renderer can pick it out of children
             // alongside tabs and screen content.
-            $accessory = $layout->tabBarAccessory($this);
+            $accessory = $layout?->tabBarAccessory($this);
             if ($accessory !== null) {
                 $wrapper = TabAccessory::make();
                 $wrapper->addChild($accessory);
@@ -713,8 +957,8 @@ abstract class NativeComponent
                 $attrs['hideNavBar'] = true;
             }
             $root->applyAttributes($attrs);
-            foreach ($navBar->getActions() as $action) {
-                $root->addChild($action->toElement());
+            foreach ($navBar->actionElements() as $action) {
+                $root->addChild($action);
             }
             // Optional custom principal-slot content (logo / titleView).
             if (($titleEl = $this->topBarTitleElement($navBar)) !== null) {
@@ -741,13 +985,21 @@ abstract class NativeComponent
      * Wrap a NavBar's `titleView()` / `logo()` content in a `TopBarTitle`
      * marker for the native-chrome renderers to render in the bar's principal
      * slot, or null when the bar uses a plain string title. A Blade view is
-     * rendered against this screen (so `@press` / bindings resolve) first.
+     * rendered against this screen (so `@tap` / bindings resolve) first.
      */
     protected function topBarTitleElement(NavBar $navBar): ?Element
     {
         $titleView = $navBar->getTitleView();
         if ($titleView === null) {
             return null;
+        }
+
+        // An inline `<native:top-bar-title>` arrives already wrapped (the
+        // collector built the marker itself) — re-wrapping would nest a
+        // `top_bar_title` inside a `top_bar_title` and the renderers, which
+        // draw the marker's direct children, would paint nothing.
+        if ($titleView instanceof TopBarTitle) {
+            return $titleView;
         }
 
         $wrapper = TopBarTitle::make();
@@ -818,14 +1070,14 @@ abstract class NativeComponent
      * `Scaffold(bottomBar=)` + `imePadding()` (Android), which keeps it above
      * the software keyboard using each platform's native mechanism.
      */
-    protected function resolveBottomBar(Element $content, NativeLayout $layout): ?Element
+    protected function resolveBottomBar(Element $content, ?NativeLayout $layout): ?Element
     {
         $inline = $this->extractDirectChildOfType($content, 'bottom_bar');
         if ($inline !== null) {
             return $inline;
         }
 
-        $layoutBar = $layout->bottomBar($this);
+        $layoutBar = $layout?->bottomBar($this);
         if ($layoutBar !== null) {
             $wrapper = BottomBar::make();
             $wrapper->addChild($layoutBar);
@@ -1131,13 +1383,16 @@ abstract class NativeComponent
         $viewData = array_merge($this->getPublicProperties(), $data);
 
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
         NativeElementCollector::setStreaming(true);
 
         nphp_frame_begin();
 
         try {
             $t0 = microtime(true);
+            $this->beginChildComponentFrame();
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
+            $this->endChildComponentFrame();
             $this->syncBladePolls(NativeElementCollector::takePollIntervals());
             $t1 = microtime(true);
 
@@ -1482,7 +1737,7 @@ abstract class NativeComponent
         // loop — a warm php:// load can't route because this loop owns the PHP
         // thread. Turn it into a NAVIGATE intent and exit; NativeRouter resolves
         // the URI (with route params) and pushes the target screen, exactly like
-        // an in-app @press navigate.
+        // an in-app @tap navigate.
         if ($eventName === '__deeplink') {
             $uri = is_array($payload) ? ($payload['uri'] ?? null) : null;
             if (is_string($uri) && $uri !== '') {
@@ -1713,6 +1968,13 @@ abstract class NativeComponent
 
     public function unmount(): void
     {
+        // Tear down nested child components first (recursively) — leaving
+        // a screen unmounts its whole component subtree.
+        foreach ($this->nativeChildComponents as $child) {
+            $child->unmount();
+        }
+        $this->nativeChildComponents = [];
+
         // Run cleanup hooks (e.g. vibe unsubscribing from channels/presence
         // rooms) before dropping listeners, so leaving a screen also leaves its
         // channels. Best-effort — a failing hook must not break teardown.
@@ -2181,6 +2443,15 @@ abstract class NativeComponent
 
     public function navigate(string $uri, array $data = []): static
     {
+        // Navigation is a screen-level concern: a nested child forwards to
+        // the screen so the intent lands where the runloop reads it (and
+        // publishFinalState renders the full screen, not the child alone).
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->navigate($uri, $data);
+
+            return $this;
+        }
+
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -2190,6 +2461,12 @@ abstract class NativeComponent
 
     public function back(): static
     {
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->back();
+
+            return $this;
+        }
         // At the root of the native stack there is nothing to pop — letting
         // the intent through would empty the router's stack, exit the
         // runloop, and strand the user on the blank WebView underneath.
@@ -2215,6 +2492,13 @@ abstract class NativeComponent
 
     public function replace(string $uri, array $data = []): static
     {
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->replace($uri, $data);
+
+            return $this;
+        }
+
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -2261,6 +2545,13 @@ abstract class NativeComponent
 
     public function transition(Transition $type): static
     {
+        // Screen-level concern — the intent lives on the screen.
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->transition($type);
+
+            return $this;
+        }
+
         if ($this->nativeNavigationIntent) {
             $this->nativeNavigationIntent = new NavigationIntent(
                 $this->nativeNavigationIntent->type,
@@ -2275,6 +2566,13 @@ abstract class NativeComponent
 
     public function exitToWeb(string $uri): void
     {
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->exitToWeb($uri);
+
+            return;
+        }
+
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
         $this->stop();
     }
@@ -2686,11 +2984,332 @@ abstract class NativeComponent
         }
     }
 
+    // ── Child components (nested <native:*> component tags) ──
+
+    /**
+     * Live child component instances mounted by this component's render,
+     * keyed by stable identity: the tag's explicit `key` attribute when
+     * given, else tag name + occurrence index within this render. Reused
+     * across frames so a child's own (non-prop) state persists.
+     *
+     * @var array<string, NativeComponent>
+     */
+    protected array $nativeChildComponents = [];
+
+    /** Per-tag occurrence counters for the current render frame. */
+    private array $nativeChildTagOccurrences = [];
+
+    /** Identities mounted during the current render frame. */
+    private array $nativeChildComponentsSeen = [];
+
+    /** The component that mounted this one, or null for a screen. */
+    protected ?NativeComponent $nativeParentComponent = null;
+
+    /**
+     * Tag-level event bindings from `@event="method(...)"` attributes on
+     * THIS component's mounting tag: event name → parent-method expression.
+     * Refreshed on every parent render (the binding may interpolate loop
+     * data). Consumed by emit().
+     *
+     * @var array<string, string>
+     */
+    protected array $nativeChildEventBindings = [];
+
+    /**
+     * Start a render frame's child bookkeeping: occurrence counters restart
+     * so unkeyed identities stay positional, and the seen-set is cleared
+     * for the end-of-frame unmount reconciliation.
+     */
+    private function beginChildComponentFrame(): void
+    {
+        $this->nativeChildTagOccurrences = [];
+        $this->nativeChildComponentsSeen = [];
+    }
+
+    /**
+     * Unmount and drop every child whose identity was present last frame
+     * but absent from the one just rendered.
+     */
+    private function endChildComponentFrame(): void
+    {
+        foreach ($this->nativeChildComponents as $identity => $child) {
+            if (! isset($this->nativeChildComponentsSeen[$identity])) {
+                $child->unmount();
+                unset($this->nativeChildComponents[$identity]);
+            }
+        }
+    }
+
+    /**
+     * Mount (or re-render) the child component registered for `$tag` at the
+     * collector's current tree position. Called by NativeElementCollector
+     * when a `<native:*>` tag resolves through the ComponentRegistry.
+     *
+     * Lifecycle per identity: new → instantiate, assign props, mount(),
+     * render; existing → assign fresh props (its own non-prop state
+     * persists), render. Attributes that don't match a public property on
+     * the child are ignored. Children never get a runLoop — they are
+     * render-and-event participants inside the owning screen's loop.
+     *
+     * @internal invoked by NativeElementCollector::mountComponent()
+     */
+    public function mountChildComponent(string $tag, array $attrs): void
+    {
+        $class = ComponentRegistry::resolve($tag);
+
+        if ($class === null) {
+            throw new \RuntimeException("No child component registered for <native:{$tag}>.");
+        }
+
+        // Identity: explicit `key` attribute wins; otherwise tag name +
+        // occurrence index within this parent's render.
+        $key = $attrs['key'] ?? null;
+        unset($attrs['key']);
+
+        if ($key !== null) {
+            $identity = $tag.'|key:'.$key;
+        } else {
+            $index = $this->nativeChildTagOccurrences[$tag] ?? 0;
+            $this->nativeChildTagOccurrences[$tag] = $index + 1;
+            $identity = $tag.'|i:'.$index;
+        }
+
+        // `@event="method(...)"` tag bindings arrive as `_event-*` attrs.
+        $bindings = [];
+        foreach ($attrs as $attrName => $value) {
+            if (str_starts_with($attrName, '_event-')) {
+                $bindings[substr($attrName, 7)] = (string) $value;
+                unset($attrs[$attrName]);
+            }
+        }
+
+        $child = $this->nativeChildComponents[$identity] ?? null;
+
+        // A reused identity now resolving to a different class (registry
+        // changed, or a keyed slot renders another component) is a fresh
+        // mount, not a prop update.
+        if ($child !== null && get_class($child) !== $class) {
+            $child->unmount();
+            $child = null;
+        }
+
+        $isNew = $child === null;
+
+        if ($isNew) {
+            $child = new $class;
+            $child->nativeCallbacks = new CallbackRegistry;
+            $child->nativeParentComponent = $this;
+            if ($this->nativeRouter !== null) {
+                $child->setRouter($this->nativeRouter);
+            }
+            $child->registerNativeEventListeners();
+            $this->nativeChildComponents[$identity] = $child;
+        }
+
+        $child->nativeChildEventBindings = $bindings;
+        $this->applyChildProps($child, $attrs);
+        $this->nativeChildComponentsSeen[$identity] = true;
+
+        if ($isNew) {
+            $child->mount();
+        }
+
+        $child->renderAsChild();
+    }
+
+    /**
+     * Render this component as a nested child: open a collector scope (so
+     * callbacks and further component tags belong to this instance), reset
+     * the per-frame computed cache, run render(), and reconcile this
+     * component's own children afterwards. Elements emit into the parent's
+     * tree at the mounting tag's position.
+     */
+    protected function renderAsChild(): void
+    {
+        $scope = NativeElementCollector::beginComponentScope($this->nativeCallbacks, $this);
+        $this->beginChildComponentFrame();
+        $this->resetComputedCache();
+
+        try {
+            $result = $this->render();
+
+            if ($result instanceof View) {
+                // The child-scope guard in fromView() emits in place.
+                $this->fromView($result);
+            } elseif ($result !== NativeElementCollector::scopeMarker()) {
+                // render() built a programmatic Element tree — attach it,
+                // pinned to this child's registry (toArray() propagates the
+                // pin to descendants) so its callbacks dispatch back here.
+                NativeElementCollector::attachElement(
+                    $result->ownCallbacks($this->nativeCallbacks)
+                );
+            }
+
+            $this->endChildComponentFrame();
+        } finally {
+            NativeElementCollector::endComponentScope($scope);
+        }
+    }
+
+    /**
+     * Assign the mounting tag's attributes to the child's declared props —
+     * a prop is any public non-static property matching the attribute name
+     * (exact, or camelCase of a kebab-case attr). Scalar values are coerced
+     * to the property's builtin type; unmatched attributes are ignored.
+     */
+    private function applyChildProps(NativeComponent $child, array $attrs): void
+    {
+        $reflect = new \ReflectionClass($child);
+
+        foreach ($attrs as $attrName => $value) {
+            // Collector-internal leftovers are never props.
+            if (str_starts_with($attrName, 'native-') || str_starts_with($attrName, '_')) {
+                continue;
+            }
+
+            $property = $this->matchChildProp($reflect, $attrName);
+
+            if ($property === null) {
+                continue;
+            }
+
+            $type = $property->getType();
+            if ($type instanceof \ReflectionNamedType && $type->isBuiltin() && is_scalar($value)) {
+                $value = match ($type->getName()) {
+                    'int' => (int) $value,
+                    'float' => (float) $value,
+                    'string' => (string) $value,
+                    'bool' => (bool) $value,
+                    default => $value,
+                };
+            }
+
+            $property->setValue($child, $value);
+        }
+    }
+
+    /** Resolve an attribute name to the child's public prop, if declared. */
+    private function matchChildProp(\ReflectionClass $reflect, string $attrName): ?\ReflectionProperty
+    {
+        foreach (array_unique([$attrName, Str::camel($attrName)]) as $candidate) {
+            if ($reflect->hasProperty($candidate)) {
+                $property = $reflect->getProperty($candidate);
+                if ($property->isPublic() && ! $property->isStatic()) {
+                    return $property;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The component owning a callback id: this instance when its own
+     * registry resolves it, else the first descendant that does. The global
+     * id counter guarantees ids never collide across components, so at most
+     * one owner exists; foreign/stale ids resolve to null and are dropped.
+     */
+    protected function findCallbackOwner(int $callbackId): ?NativeComponent
+    {
+        if ($callbackId !== 0
+            && isset($this->nativeCallbacks)
+            && $this->nativeCallbacks->resolve($callbackId) !== null) {
+            return $this;
+        }
+
+        foreach ($this->nativeChildComponents as $child) {
+            if (($owner = $child->findCallbackOwner($callbackId)) !== null) {
+                return $owner;
+            }
+        }
+
+        return null;
+    }
+
+    /** The screen at the root of this component's parent chain. */
+    protected function rootScreen(): NativeComponent
+    {
+        $component = $this;
+        while ($component->nativeParentComponent !== null) {
+            $component = $component->nativeParentComponent;
+        }
+
+        return $component;
+    }
+
+    /**
+     * Emit a component event up the ancestor chain (child → parent → … →
+     * screen). Delivery, per ancestor:
+     *
+     *   1. Tag-level: an `@event-name="method(...)"` attribute on THIS
+     *      component's mounting tag invokes that method on the direct
+     *      parent, with the expression's bound arguments first and the
+     *      emit arguments appended.
+     *   2. Method-level: a `#[On('event-name')]` listener on any ancestor
+     *      receives the emit arguments.
+     *
+     * The event bubbles to ALL listening ancestors — there is no
+     * stopPropagation. Emitting from a screen (no ancestors) is a no-op.
+     * The runloop re-renders after the dispatch that triggered the emit,
+     * so state changes in handlers paint on the next frame.
+     */
+    public function emit(string $event, mixed ...$args): void
+    {
+        $parent = $this->nativeParentComponent;
+
+        if ($parent !== null && isset($this->nativeChildEventBindings[$event])) {
+            $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
+
+            if (method_exists($parent, $binding['method'])) {
+                $parent->{$binding['method']}(...[...$binding['args'], ...$args]);
+            }
+        }
+
+        for ($ancestor = $parent; $ancestor !== null; $ancestor = $ancestor->nativeParentComponent) {
+            $ancestor->invokeComponentEventListener($event, $args);
+        }
+    }
+
+    /**
+     * Fire this component's `#[On('event-name')]` listener for a component
+     * event, if one is declared. The attribute stores string names with the
+     * `native:` prefix (see Attributes\On), so both spellings are checked.
+     */
+    protected function invokeComponentEventListener(string $event, array $args): void
+    {
+        $method = $this->nativeEventListeners[$event]
+            ?? $this->nativeEventListeners['native:'.$event]
+            ?? null;
+
+        if ($method !== null && method_exists($this, $method)) {
+            $this->{$method}(...$args);
+        }
+    }
+
     // ── Event dispatch ──────────────────────────────
 
     protected function dispatch(array $event): void
     {
-        $callback = $this->nativeCallbacks->resolve($event['callback_id'] ?? 0);
+        $callbackId = (int) ($event['callback_id'] ?? 0);
+
+        // Child components own their callbacks. When this registry misses,
+        // walk the child instances (recursively) and dispatch on the owner
+        // — so `@tap` inside a child calls the child's method with the
+        // child as $this, and `native:model` syncs the child's property.
+        // Ids no component owns are dropped, exactly as before.
+        $owner = $this->findCallbackOwner($callbackId);
+
+        if ($owner === null) {
+            return;
+        }
+
+        if ($owner !== $this) {
+            $owner->dispatch($event);
+
+            return;
+        }
+
+        $callback = $this->nativeCallbacks->resolve($callbackId);
 
         if ($callback === null) {
             return;

@@ -12,12 +12,12 @@ extension View {
 /// Fires press-down the instant the finger makes contact and press-up on
 /// release. The down/up callback ids ride the props dict (`on_press_down` /
 /// `on_press_up`) and reuse the Press event type — the callback id alone
-/// routes to the @pressDown / @pressUp handler on the PHP side.
+/// routes to the @tapDown / @tapUp handler on the PHP side.
 ///
 /// `DragGesture(minimumDistance: 0)` is SwiftUI's touch-contact primitive:
 /// `.onChanged` fires on first contact (and on every move — gated by
 /// `pressed` so down fires once), `.onEnded` on release. Attached as a
-/// simultaneousGesture so it composes with an @press tap on the same node.
+/// simultaneousGesture so it composes with an @tap tap on the same node.
 /// A held button must never stick: `onDisappear` synthesizes the up if the
 /// view is torn down mid-press (navigation, sheet dismiss, re-render drop).
 struct PressDownUpModifier: ViewModifier {

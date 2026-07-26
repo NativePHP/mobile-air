@@ -567,6 +567,9 @@ class BuildIosAppCommand extends Command
             // Handle UIBackgroundModes
             $this->updateBackgroundModes($rootDict, $plistData, $pushNotificationsEnabled);
 
+            // Handle UIUserInterfaceStyle
+            $this->updateInterfaceStyle($dom, $rootDict, $plistData);
+
             // Handle BIFROST_APP_ID
             $bifrostAppId = env('BIFROST_APP_ID');
             if ($bifrostAppId) {
@@ -728,6 +731,47 @@ class BuildIosAppCommand extends Command
                 $rootDict->appendChild($arrayNode);
             }
         }
+    }
+
+    /**
+     * Lock the app to a single interface style via UIUserInterfaceStyle.
+     *
+     * `nativephp.appearance` of `dark` / `light` pins the whole app —
+     * system chrome (nav bars, sheets, keyboards, the window background
+     * behind safe areas) included — so an app with a fixed identity never
+     * shows the OS's opposite-appearance surfaces. `system` (the default)
+     * removes the key and follows the device.
+     *
+     * @param  array<string, array{keyNode: \DOMElement, valueNode: \DOMElement}>  $plistData
+     */
+    private function updateInterfaceStyle(\DOMDocument $dom, \DOMElement $rootDict, array &$plistData): void
+    {
+        $style = match (strtolower((string) config('nativephp.appearance', 'system'))) {
+            'dark' => 'Dark',
+            'light' => 'Light',
+            default => null,
+        };
+
+        if ($style === null) {
+            if (isset($plistData['UIUserInterfaceStyle'])) {
+                $this->removePlistKeyValue(
+                    $rootDict,
+                    $plistData['UIUserInterfaceStyle']['keyNode'],
+                    $plistData['UIUserInterfaceStyle']['valueNode']
+                );
+                unset($plistData['UIUserInterfaceStyle']);
+            }
+
+            return;
+        }
+
+        if (isset($plistData['UIUserInterfaceStyle'])) {
+            $plistData['UIUserInterfaceStyle']['valueNode']->nodeValue = $style;
+
+            return;
+        }
+
+        $this->addPlistKeyValue($dom, $rootDict, 'UIUserInterfaceStyle', 'string', $style);
     }
 
     /**

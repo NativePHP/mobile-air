@@ -14,36 +14,36 @@ function callbackMap(array $callbacks): array
     )->all();
 }
 
-it('extracts the canonical press-family callbacks', function () {
-    $callbacks = $this->analyzer->extractCallbacks(<<<'BLADE'
-        <native:button @press="save" />
-        <native:pressable @longPress="hold" @doubleTap="zoom">x</native:pressable>
-        <native:pressable @pressDown="charge" @pressUp="release">y</native:pressable>
-        <native:text-input @change="onChange" @submit="onSubmit" />
-        BLADE);
-
-    expect(callbackMap($callbacks))->toBe([
-        'save' => 'press',
-        'hold' => 'longPress',
-        'zoom' => 'doubleTap',
-        'charge' => 'pressDown',
-        'release' => 'pressUp',
-        'onChange' => 'change',
-        'onSubmit' => 'submit',
-    ]);
-});
-
-it('extracts the @tap alias family', function () {
+it('extracts the canonical tap-family callbacks', function () {
     $callbacks = $this->analyzer->extractCallbacks(<<<'BLADE'
         <native:button @tap="save" />
-        <native:pressable @longTap="hold" @tapDown="charge" @tapUp="release">x</native:pressable>
+        <native:pressable @longTap="hold" @doubleTap="zoom">x</native:pressable>
+        <native:pressable @tapDown="charge" @tapUp="release">y</native:pressable>
+        <native:text-input @change="onChange" @submit="onSubmit" />
         BLADE);
 
     expect(callbackMap($callbacks))->toBe([
         'save' => 'tap',
         'hold' => 'longTap',
+        'zoom' => 'doubleTap',
         'charge' => 'tapDown',
         'release' => 'tapUp',
+        'onChange' => 'change',
+        'onSubmit' => 'submit',
+    ]);
+});
+
+it('extracts the @press alias family', function () {
+    $callbacks = $this->analyzer->extractCallbacks(<<<'BLADE'
+        <native:button @press="save" />
+        <native:pressable @longPress="hold" @pressDown="charge" @pressUp="release">x</native:pressable>
+        BLADE);
+
+    expect(callbackMap($callbacks))->toBe([
+        'save' => 'press',
+        'hold' => 'longPress',
+        'charge' => 'pressDown',
+        'release' => 'pressUp',
     ]);
 });
 
@@ -55,7 +55,7 @@ it('extracts the precompiled underscored form', function () {
 
 it('skips dynamic callback values', function () {
     $callbacks = $this->analyzer->extractCallbacks(
-        '<native:button @press="{{ $method }}" /><native:button @tap="do($id)" /><native:button @tap="live" />'
+        '<native:button @tap="{{ $method }}" /><native:button @tap="do($id)" /><native:button @tap="live" />'
     );
 
     expect(callbackMap($callbacks))->toBe(['live' => 'tap']);
@@ -63,10 +63,10 @@ it('skips dynamic callback values', function () {
 
 it('ignores callbacks inside comments', function () {
     $callbacks = $this->analyzer->extractCallbacks(<<<'BLADE'
-        {{-- <native:button @press="old" /> --}}
+        {{-- <native:button @tap="old" /> --}}
         <!-- <native:button @tap="older" /> -->
-        <native:button @press="live" />
+        <native:button @tap="live" />
         BLADE);
 
-    expect(callbackMap($callbacks))->toBe(['live' => 'press']);
+    expect(callbackMap($callbacks))->toBe(['live' => 'tap']);
 });

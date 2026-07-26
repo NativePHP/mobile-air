@@ -16,7 +16,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.nativephp.mobile.ui.MaterialIcon
-import com.nativephp.mobile.ui.NativeUIState
 import com.nativephp.mobile.ui.getIconName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,16 +23,12 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "NativeNavRenderers"
 
-// ── Side Nav Drawer State (Compose bridge) ──
-
-internal object NativeEdgeDrawerState {
-    val sideNavNode = mutableStateOf<NativeUINode?>(null)
-}
-
 /**
- * Renders the drawer content from a side_nav NativeUINode tree.
- * Called from NativeSideDrawer when native EDGE data is available.
- * This remains Compose-based since the drawer itself is managed by Compose Scaffold.
+ * Renders drawer content from a `side_nav` NativeUINode tree (an inline
+ * `<native:side-nav>` hoisted onto the chrome root by the PHP side).
+ * Currently dormant in core — a drawer host (plugin via
+ * NativeRootHostRegistry) can consume the sentinel and call this to
+ * render the drawer sheet.
  */
 @Composable
 internal fun RenderSideNavDrawerContent(

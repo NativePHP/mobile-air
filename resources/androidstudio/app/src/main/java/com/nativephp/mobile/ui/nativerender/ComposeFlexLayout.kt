@@ -102,15 +102,20 @@ fun FlexContainer(
                     val right = node.layout?.positionRight ?: 0f
                     val bottom = node.layout?.positionBottom ?: 0f
 
+                    // NON-ZERO rather than positive, so NEGATIVE insets work:
+                    // `-right-8` anchors trailing and offsets OUTWARD,
+                    // deliberately overhanging the edge (Tailwind's bleed).
+                    // Zero still reads as "no anchor on that edge" — the
+                    // packed node struct has no spare byte to distinguish an
+                    // unset edge from an explicit `right-0`.
                     val anchor = when {
-                        right > 0f && bottom > 0f -> Alignment.BottomEnd
-                        right > 0f && top > 0f    -> Alignment.TopEnd
-                        right > 0f                 -> Alignment.TopEnd
-                        bottom > 0f                -> Alignment.BottomStart
-                        else                       -> Alignment.TopStart
+                        right != 0f && bottom != 0f -> Alignment.BottomEnd
+                        right != 0f                 -> Alignment.TopEnd
+                        bottom != 0f                -> Alignment.BottomStart
+                        else                        -> Alignment.TopStart
                     }
-                    val offsetX = if (right > 0f) (-right).dp else left.dp
-                    val offsetY = if (bottom > 0f) (-bottom).dp else top.dp
+                    val offsetX = if (right != 0f) (-right).dp else left.dp
+                    val offsetY = if (bottom != 0f) (-bottom).dp else top.dp
 
                     Box(
                         modifier = Modifier
@@ -242,15 +247,29 @@ private fun buildChildModifier(
     val layout = node.layout
     var mod: Modifier = Modifier
 
-    // Margins
-    if (layout != null && (layout.marginTop > 0f || layout.marginRight > 0f ||
-        layout.marginBottom > 0f || layout.marginLeft > 0f)) {
+    // Margins. Split into a positive part (padding, which reserves space and
+    // shifts siblings) and a negative part (offset, which only moves the drawn
+    // child). `Modifier.padding` THROWS on a negative dp, so the split isn't
+    // cosmetic — passing `-mt-4` straight through would crash the render.
+    //
+    // Caveat: a negative margin therefore does NOT pull siblings on Android
+    // the way it does on iOS, where FlexContainer folds margins into its own
+    // arithmetic. Use negative INSETS on an absolute child for overlap that
+    // must behave identically on both platforms.
+    if (layout != null && (layout.marginTop != 0f || layout.marginRight != 0f ||
+        layout.marginBottom != 0f || layout.marginLeft != 0f)) {
         mod = mod.padding(
-            start = layout.marginLeft.dp,
-            top = layout.marginTop.dp,
-            end = layout.marginRight.dp,
-            bottom = layout.marginBottom.dp
+            start = layout.marginLeft.coerceAtLeast(0f).dp,
+            top = layout.marginTop.coerceAtLeast(0f).dp,
+            end = layout.marginRight.coerceAtLeast(0f).dp,
+            bottom = layout.marginBottom.coerceAtLeast(0f).dp
         )
+
+        val negX = layout.marginLeft.coerceAtMost(0f) - layout.marginRight.coerceAtMost(0f)
+        val negY = layout.marginTop.coerceAtMost(0f) - layout.marginBottom.coerceAtMost(0f)
+        if (negX != 0f || negY != 0f) {
+            mod = mod.offset(x = negX.dp, y = negY.dp)
+        }
     }
 
     // Main axis: flex_grow or fill → weight

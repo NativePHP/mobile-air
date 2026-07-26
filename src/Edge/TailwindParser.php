@@ -231,6 +231,16 @@ class TailwindParser
                     : $parsed['dark'];
                 unset($parsed['dark']);
             }
+            // Same reason for gradients: direction and each colour stop arrive
+            // as separate classes contributing separate keys to one `gradient`
+            // array. A flat merge would let `to-transparent` clobber the
+            // direction and `from-` stop that came before it.
+            if (isset($parsed['gradient'])) {
+                $result['gradient'] = isset($result['gradient'])
+                    ? array_merge($result['gradient'], $parsed['gradient'])
+                    : $parsed['gradient'];
+                unset($parsed['gradient']);
+            }
             $result = array_merge($result, $parsed);
         }
 
@@ -346,6 +356,19 @@ class TailwindParser
             return ['dark' => $inner];
         }
 
+        // Negative utilities: `-mt-4`, `-right-8`, `-left-[12]`. Parsed by
+        // stripping the sign, running the positive form, then negating the
+        // result. Placed AFTER the variant prefixes so `ios:-right-8` works,
+        // and BEFORE arbitrary values so `-left-[12]` does too.
+        //
+        // Only inset and margin utilities may go negative — Tailwind itself
+        // has no negative padding/gap/size, and silently accepting one here
+        // would emit nonsense geometry instead of an obvious no-op. The
+        // negative form of anything else parses to null (class ignored).
+        if (str_starts_with($class, '-')) {
+            return self::negateSpacing(self::parseClassImpl(substr($class, 1)));
+        }
+
         // Arbitrary values: prefix-[value]
         if (str_contains($class, '[')) {
             if (preg_match('/^(.+?)-\[([^\]]+)\]$/', $class, $m)) {
@@ -427,6 +450,13 @@ class TailwindParser
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
+            // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
+            // `inset-` branch, which would otherwise match them first and try
+            // to parse "x-0" as a spacing value.
+            str_starts_with($class, 'inset-x-') => self::parseInset(substr($class, 8), ['positionLeft', 'positionRight']),
+            str_starts_with($class, 'inset-y-') => self::parseInset(substr($class, 8), ['positionTop', 'positionBottom']),
+            str_starts_with($class, 'inset-') => self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft']),
+
             str_starts_with($class, 'left-') => self::parseSpacingUniform('positionLeft', substr($class, 5)),
             str_starts_with($class, 'top-') => self::parseSpacingUniform('positionTop', substr($class, 4)),
             str_starts_with($class, 'right-') => self::parseSpacingUniform('positionRight', substr($class, 6)),
@@ -439,6 +469,16 @@ class TailwindParser
             str_starts_with($class, 'bg-theme-') => self::parseThemeBg(substr($class, 9)),
             str_starts_with($class, 'text-theme-') => self::parseThemeText(substr($class, 11)),
             str_starts_with($class, 'border-theme-') => self::parseThemeBorder(substr($class, 13)),
+
+            // Linear gradients. These MUST precede the generic `bg-` branch,
+            // which would otherwise swallow `bg-gradient-to-t` and try to
+            // resolve "gradient-to-t" as a color. `bg-linear-to-*` is the
+            // Tailwind v4 spelling; `bg-gradient-to-*` the v3 one.
+            str_starts_with($class, 'bg-gradient-to-') => self::parseGradientDirection(substr($class, 15)),
+            str_starts_with($class, 'bg-linear-to-') => self::parseGradientDirection(substr($class, 13)),
+            str_starts_with($class, 'from-') => self::parseGradientStop('from', substr($class, 5)),
+            str_starts_with($class, 'via-') => self::parseGradientStop('via', substr($class, 4)),
+            str_starts_with($class, 'to-') => self::parseGradientStop('to', substr($class, 3)),
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
@@ -629,6 +669,45 @@ class TailwindParser
     }
 
     /**
+     * Keys a leading `-` may legally flip. Mirrors Tailwind: margins and
+     * insets take negatives, padding / gap / sizing never do.
+     */
+    private const NEGATABLE = [
+        'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
+        'positionTop', 'positionRight', 'positionBottom', 'positionLeft',
+    ];
+
+    /**
+     * Flip the sign of a parsed spacing result, or reject it.
+     *
+     * Returns null when $parsed is null (the positive form didn't parse) or
+     * carries ANY key outside [NEGATABLE] — a negative form of a
+     * non-negatable utility is a typo, and dropping the class is safer than
+     * emitting geometry the author didn't ask for.
+     *
+     * @param  array<string, mixed>|null  $parsed
+     * @return array<string, float>|null
+     */
+    private static function negateSpacing(?array $parsed): ?array
+    {
+        if ($parsed === null || $parsed === []) {
+            return null;
+        }
+
+        $negated = [];
+
+        foreach ($parsed as $key => $value) {
+            if (! in_array($key, self::NEGATABLE, true) || ! is_numeric($value)) {
+                return null;
+            }
+
+            $negated[$key] = -(float) $value;
+        }
+
+        return $negated;
+    }
+
+    /**
      * Parse a `glass` token (with optional colon-chained modifiers) into a
      * bitflag stored in the `glass` prop. See the inline doc above for the
      * supported modifier set.
@@ -718,6 +797,93 @@ class TailwindParser
         }
 
         return (float) $value;
+    }
+
+    /**
+     * `inset-0` / `inset-x-2` / `inset-y-4` — one spacing value applied to
+     * several position edges at once. Anchoring an absolute child on opposing
+     * edges is what stretches it to fill its parent, which is how `inset-0`
+     * behaves in CSS.
+     *
+     * @param  list<string>  $edges
+     * @return array<string, mixed>|null
+     */
+    private static function parseInset(string $value, array $edges): ?array
+    {
+        $result = [];
+
+        foreach ($edges as $edge) {
+            $parsed = self::parseSpacingUniform($edge, $value);
+
+            if ($parsed === null) {
+                return null;
+            }
+
+            $result += $parsed;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Gradient directions, as Tailwind's `to-<edge>` suffix. The value is the
+     * unit vector the gradient travels TOWARD, in view space where y grows
+     * downward — the native side turns it into start/end unit points.
+     *
+     * @var array<string, array{float, float}>
+     */
+    private const GRADIENT_DIRECTIONS = [
+        't' => [0.0, -1.0],
+        'b' => [0.0, 1.0],
+        'l' => [-1.0, 0.0],
+        'r' => [1.0, 0.0],
+        'tl' => [-1.0, -1.0],
+        'tr' => [1.0, -1.0],
+        'bl' => [-1.0, 1.0],
+        'br' => [1.0, 1.0],
+    ];
+
+    /**
+     * `bg-gradient-to-t` / `bg-linear-to-br` — the gradient's axis.
+     *
+     * Emitted as a `gradient` sub-array that the collector forwards whole;
+     * direction and stops merge into it independently, so the classes may
+     * appear in any order (Tailwind imposes none either).
+     *
+     * @return array{gradient: array{direction: array{float, float}}}|null
+     */
+    private static function parseGradientDirection(string $edge): ?array
+    {
+        $vector = self::GRADIENT_DIRECTIONS[$edge] ?? null;
+
+        if ($vector === null) {
+            return null;
+        }
+
+        return ['gradient' => ['direction' => $vector]];
+    }
+
+    /**
+     * `from-black`, `via-black/10`, `to-transparent` — one gradient colour
+     * stop. Accepts the full colour grammar (palette names, hex, `/N` opacity)
+     * plus `theme-<token>`, so a gradient can be themed like any other fill.
+     *
+     * A stop with no gradient direction is inert: the native side only paints
+     * when it has both an axis and at least two stops.
+     *
+     * @return array{gradient: array<string, string>}|null
+     */
+    private static function parseGradientStop(string $position, string $value): ?array
+    {
+        $hex = str_starts_with($value, 'theme-')
+            ? self::resolveThemeToken(substr($value, 6), false)
+            : self::resolveColorValue($value);
+
+        if ($hex === null) {
+            return null;
+        }
+
+        return ['gradient' => [$position => $hex]];
     }
 
     private static function parseBgColor(string $value): ?array

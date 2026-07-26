@@ -182,6 +182,34 @@ struct FlexContainer: Layout {
         cache = makeCache(subviews: subviews)
     }
 
+    /// Whether the child's MAIN-axis size mode is FILL (`h-full` in a
+    /// column, `w-full` in a row).
+    private func mainFill(_ i: Int) -> Bool {
+        guard i < childNodes.count, let l = childNodes[i].layout else { return false }
+        if isRow {
+            return l.widthMode == SizeMode.fill
+        }
+
+        return l.heightMode == SizeMode.fill
+    }
+
+    /// Main-axis FILL acts as an implicit `flex-grow: 1` whenever the
+    /// container's main-axis extent is definite — mirroring
+    /// ComposeFlexLayout's `weight(1f)` rule on Android so the platforms
+    /// agree. Without this, a `h-full` child with flex_grow 0 is measured
+    /// at its intrinsic main size: a fill-height ScrollView reports full
+    /// CONTENT height and gets placed past the viewport — background
+    /// bands stop short, absolute overlays anchor to the content bottom,
+    /// and the scroll range collapses (rubber-band, bottom unreachable).
+    /// Under an INDEFINITE proposal (finiteMain false) the promotion is
+    /// skipped: 100% of an unknown extent is auto/content sizing, and
+    /// callers measuring .unspecified want the intrinsic answer.
+    private func effectiveGrow(_ info: ChildInfo, index: Int, finiteMain: Bool) -> CGFloat {
+        if info.flexGrow > 0 { return info.flexGrow }
+
+        return finiteMain && mainFill(index) ? 1 : 0
+    }
+
     // MARK: - Axis Helpers
 
     private var isRow: Bool { direction == FlexDirection.row }
@@ -252,9 +280,11 @@ struct FlexContainer: Layout {
         var maxCross: CGFloat = 0
         var hypotheticalMains = [Int: CGFloat]()
         var totalGrow: CGFloat = 0
+        var totalShrink: CGFloat = 0
 
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
+            let grow = effectiveGrow(info, index: i, finiteMain: proposedMain.isFinite)
             let crossAvail = proposedCross.isFinite ? proposedCross - crossMargin(info) : nil
             let measureProposal: ProposedViewSize
             if let crossAvail {
@@ -270,7 +300,7 @@ struct FlexContainer: Layout {
             let childMain: CGFloat
             if info.flexBasis >= 0 {
                 childMain = info.flexBasis
-            } else if info.flexGrow > 0 {
+            } else if grow > 0 {
                 childMain = 0
             } else {
                 childMain = mainSize(ideal)
@@ -278,7 +308,8 @@ struct FlexContainer: Layout {
 
             hypotheticalMains[i] = childMain
             totalMain += childMain + mainMargin(info)
-            totalGrow += info.flexGrow
+            totalGrow += grow
+            totalShrink += info.flexShrink
             maxCross = max(maxCross, crossSize(ideal) + crossMargin(info))
         }
 
@@ -295,8 +326,9 @@ struct FlexContainer: Layout {
             if remaining > 0 {
                 for i in cache.flowIndices {
                     let info = cache.childInfos[i]
-                    if info.flexGrow > 0 {
-                        hypotheticalMains[i, default: 0] += remaining * (info.flexGrow / totalGrow)
+                    let grow = effectiveGrow(info, index: i, finiteMain: true)
+                    if grow > 0 {
+                        hypotheticalMains[i, default: 0] += remaining * (grow / totalGrow)
                     }
                 }
 
@@ -306,7 +338,7 @@ struct FlexContainer: Layout {
                 // to wrap text to the right number of lines.
                 for i in cache.flowIndices {
                     let info = cache.childInfos[i]
-                    guard info.flexGrow > 0 else { continue }
+                    guard effectiveGrow(info, index: i, finiteMain: true) > 0 else { continue }
                     let distributedMain = hypotheticalMains[i, default: 0]
                     let crossAvail = proposedCross.isFinite ? proposedCross - crossMargin(info) : nil
                     let proposal: ProposedViewSize
@@ -323,6 +355,73 @@ struct FlexContainer: Layout {
                     if newCross > maxCross {
                         maxCross = newCross
                     }
+                }
+            }
+        }
+
+        // Phase B2: the mirror image — overflow with flex-shrink children.
+        // `placeSubviews` has always shrunk them; `sizeThatFits` did not, so a
+        // container reported its PRE-shrink main size to the parent. Inside a
+        // scroll view (which permits overflow) that reported width won, and
+        // e.g. a long chat bubble ran off-screen on one line instead of
+        // wrapping — Android, whose measure pass shrinks, wrapped correctly.
+        // Same ratio rule as placeSubviews so both passes agree.
+        if proposedMain.isFinite && totalShrink > 0 {
+            let remaining = proposedMain - totalMain
+            if remaining < 0 {
+                let deficit = -remaining
+                // CSS weights shrink by SCALED base size — `shrink × base` —
+                // not by shrink alone. It matters because flex-shrink defaults
+                // to 1 on every child: a row of [bubble, spacer] has
+                // totalShrink 2, so an unweighted ratio hands half the deficit
+                // to the spacer, whose base is already 0. That half evaporates
+                // (`max(0, 0 - x)`) and the bubble shrinks only halfway —
+                // measured 1113pt against a 386pt proposal. Weighting gives the
+                // zero-base spacer zero reduction and the bubble the full
+                // deficit.
+                var totalWeighted: CGFloat = 0
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    totalWeighted += info.flexShrink * hypotheticalMains[i, default: 0]
+                }
+                if totalWeighted > 0 {
+                    for i in cache.flowIndices {
+                        let info = cache.childInfos[i]
+                        guard info.flexShrink > 0 else { continue }
+                        let weight = info.flexShrink * hypotheticalMains[i, default: 0]
+                        let reduction = deficit * (weight / totalWeighted)
+                        hypotheticalMains[i, default: 0] = max(0, hypotheticalMains[i, default: 0] - reduction)
+                    }
+                }
+
+                // Re-measure the shrunk children at their reduced main: text
+                // that now wraps reports a taller cross size, which is what
+                // makes the container tall enough to show every line.
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    let reducedMain = hypotheticalMains[i, default: 0]
+                    let crossAvail = proposedCross.isFinite ? proposedCross - crossMargin(info) : nil
+                    let proposal: ProposedViewSize
+                    if isRow {
+                        proposal = ProposedViewSize(width: reducedMain, height: crossAvail)
+                    } else {
+                        proposal = ProposedViewSize(width: crossAvail, height: reducedMain)
+                    }
+                    let measured = subviews[i].sizeThatFits(proposal)
+                    cache.childInfos[i].idealSize = measured
+                    let newCross = crossSize(measured) + crossMargin(info)
+                    if newCross > maxCross {
+                        maxCross = newCross
+                    }
+                }
+
+                // Recompute from the shrunk values so `finalMain` below reports
+                // the fitted size rather than the original overflow.
+                totalMain = gaps
+                for i in cache.flowIndices {
+                    totalMain += hypotheticalMains[i, default: 0] + mainMargin(cache.childInfos[i])
                 }
             }
         }
@@ -375,6 +474,9 @@ struct FlexContainer: Layout {
 
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
+            // Placement bounds are always definite, so main-axis FILL
+            // children are grow-promoted unconditionally here.
+            let grow = effectiveGrow(info, index: i, finiteMain: true)
             // Reuse the cross-constrained measurement done in sizeThatFits.
             // Re-measuring here with .unspecified produced different results
             // than the flex base size (CSS hypothetical main size under the
@@ -386,7 +488,7 @@ struct FlexContainer: Layout {
             let childMain: CGFloat
             if info.flexBasis >= 0 {
                 childMain = info.flexBasis
-            } else if info.flexGrow > 0 {
+            } else if grow > 0 {
                 // Tailwind's `flex-1` is shorthand for `flex: 1 1 0%`. When a
                 // child has flex-grow set but no explicit flex-basis, treat
                 // its hypothetical main size as 0 (CSS shorthand semantics).
@@ -401,7 +503,7 @@ struct FlexContainer: Layout {
             childMains[i] = childMain
             childCrosses[i] = crossSize(ideal)
             totalIdealMain += childMain + mainMargin(info)
-            totalGrow += info.flexGrow
+            totalGrow += grow
             totalShrink += info.flexShrink
         }
 
@@ -410,20 +512,32 @@ struct FlexContainer: Layout {
 
         // Phase 2: Distribute remaining space (grow or shrink)
         if remaining > 0 && totalGrow > 0 {
-            // Grow: distribute extra space by flex_grow ratio
+            // Grow: distribute extra space by (effective) flex_grow ratio
             for i in cache.flowIndices {
                 let info = cache.childInfos[i]
-                if info.flexGrow > 0 {
-                    childMains[i] += remaining * (info.flexGrow / totalGrow)
+                let grow = effectiveGrow(info, index: i, finiteMain: true)
+                if grow > 0 {
+                    childMains[i] += remaining * (grow / totalGrow)
                 }
             }
         } else if remaining < 0 && totalShrink > 0 {
-            // Shrink: reduce by flex_shrink ratio
+            // Shrink: reduce by CSS's SCALED shrink factor (`shrink × base`),
+            // matching the measure pass. Weighting matters because shrink
+            // defaults to 1 everywhere — an unweighted ratio sends part of the
+            // deficit to zero-base children (spacers), where `max(0, …)`
+            // discards it and the real content shrinks short of fitting.
             let deficit = -remaining
+            var totalWeighted: CGFloat = 0
             for i in cache.flowIndices {
                 let info = cache.childInfos[i]
-                if info.flexShrink > 0 {
-                    let reduction = deficit * (info.flexShrink / totalShrink)
+                guard info.flexShrink > 0 else { continue }
+                totalWeighted += info.flexShrink * childMains[i]
+            }
+            if totalWeighted > 0 {
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    let reduction = deficit * ((info.flexShrink * childMains[i]) / totalWeighted)
                     childMains[i] = max(0, childMains[i] - reduction)
                 }
             }
@@ -457,12 +571,13 @@ struct FlexContainer: Layout {
             childCrosses[i] = crossSize(measured)
             // Update main size when the cross constraint changes it (e.g. text
             // wrapping that grows height when width is constrained). Skip
-            // flex-grow children — their main is already authoritative from
+            // flex-grow children (including grow-promoted main-axis FILL
+            // children) — their main is already authoritative from
             // Phase 2's distribution, and a re-measure with `nil` main would
             // get back the child's intrinsic content size (e.g. a ScrollView's
             // full content height), inflating the placement back past the
             // allocated bound and breaking scroll viewport sizing.
-            if info.flexGrow == 0 {
+            if effectiveGrow(info, index: i, finiteMain: true) == 0 {
                 let measuredMain = mainSize(measured)
                 if measuredMain > childMains[i] {
                     childMains[i] = measuredMain
@@ -593,15 +708,20 @@ struct FlexContainer: Layout {
     private func placeAbsolute(_ subview: LayoutSubview, info: ChildInfo, in bounds: CGRect) {
         let ideal = subview.sizeThatFits(.unspecified)
 
-        // Resolve horizontal position
+        // Resolve horizontal position. A NON-ZERO right inset (with no left)
+        // anchors to the trailing edge; `!= 0` rather than `> 0` so NEGATIVE
+        // insets work — `-right-8` resolves to maxX - width + 8, deliberately
+        // overhanging the edge (Tailwind's `-right-8` bleed). Zero still means
+        // "no right anchor", since the packed node struct has no spare byte to
+        // distinguish an unset edge from an explicit `right-0`.
         var x = bounds.minX + info.positionLeft
-        if info.positionRight > 0 && info.positionLeft == 0 {
+        if info.positionRight != 0 && info.positionLeft == 0 {
             x = bounds.maxX - ideal.width - info.positionRight
         }
 
-        // Resolve vertical position
+        // Resolve vertical position — same convention.
         var y = bounds.minY + info.positionTop
-        if info.positionBottom > 0 && info.positionTop == 0 {
+        if info.positionBottom != 0 && info.positionTop == 0 {
             y = bounds.maxY - ideal.height - info.positionBottom
         }
 

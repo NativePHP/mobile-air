@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
@@ -9,6 +10,7 @@ use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
+use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +47,18 @@ use PHPUnit\Framework\TestCase;
  */
 class TestableComponent
 {
+    // Plugins register element-specific test vocabulary here (a date plugin's
+    // pickDate(), a chart plugin's assertSeries(), ...). FakeBridge macros
+    // can't serve UI elements: the bridge holds no reference back to the
+    // component, so a macro there can't read the tree or fire node events.
+    //
+    // Aliased because this class defines its own __call for FakeBridge
+    // forwarding — a class method beats a trait method, so without the alias
+    // the trait's __call would never run and macros would be invisible.
+    use Macroable {
+        __call as macroCall;
+    }
+
     // Wire event type codes — must match EventType on the native side.
     public const EVENT_PRESS = 0;
 
@@ -157,6 +171,11 @@ class TestableComponent
         // previous test's platform); the parse cache isn't platform-keyed.
         TailwindParser::setPlatform($platform);
         TailwindParser::clearCache();
+
+        // Same for platform-resolved icons (IconResolver & friends read
+        // Platform::current()) — `platform:` means "pretend we're on that
+        // OS" everywhere, not just for Tailwind variants.
+        Platform::set($platform);
 
         $component = new $componentClass;
 
@@ -277,7 +296,7 @@ class TestableComponent
 
     /**
      * Touch-down on the element bound to a method name or ref
-     * (`@pressDown`). Down/up ride the PRESS wire event with their own
+     * (`@tapDown`). Down/up ride the PRESS wire event with their own
      * callback ids in the props dict, so dispatch is a plain press at
      * the `on_press_down` id.
      */
@@ -286,7 +305,7 @@ class TestableComponent
         return $this->firePropsPress($target, 'on_press_down');
     }
 
-    /** Touch-up counterpart of pressDown() (`@pressUp`). */
+    /** Touch-up counterpart of pressDown() (`@tapUp`). */
     public function pressUp(string $target): static
     {
         return $this->firePropsPress($target, 'on_press_up');
@@ -1248,6 +1267,13 @@ class TestableComponent
      */
     public function __call(string $method, array $arguments): mixed
     {
+        // Component-level macros win over bridge forwarding — they're the
+        // more specific registration, and a plugin naming one after a bridge
+        // method means it wants the component behaviour.
+        if (static::hasMacro($method)) {
+            return $this->macroCall($method, $arguments);
+        }
+
         if (FakeBridge::hasMacro($method) || method_exists($this->bridge, $method)) {
             $result = $this->bridge->{$method}(...$arguments);
 
@@ -1384,23 +1410,52 @@ class TestableComponent
      * Resolve a target to a callback id from the last render. Accepts a
      * full expression ("save('draft')"), a bare method name ('save'), or
      * a model-bound property name ('query' → __syncProperty binding).
+     * Searches the screen's registry first, then every mounted child
+     * component's — dispatch routes the event to the owning instance.
      */
     protected function callbackIdFor(string $target): ?int
     {
-        $registry = $this->callbacks();
-
-        if (($id = $registry->lookup($target)) !== null) {
-            return $id;
-        }
-
-        foreach ($registry->expressions() as $expression => $id) {
-            if (str_starts_with($expression, $target.'(')
-                || str_starts_with($expression, "__syncProperty('{$target}'")) {
+        foreach ($this->componentRegistries() as $registry) {
+            if (($id = $registry->lookup($target)) !== null) {
                 return $id;
+            }
+
+            foreach ($registry->expressions() as $expression => $id) {
+                if (str_starts_with($expression, $target.'(')
+                    || str_starts_with($expression, "__syncProperty('{$target}'")) {
+                    return $id;
+                }
             }
         }
 
         return null;
+    }
+
+    /**
+     * The screen's CallbackRegistry plus every mounted child component's,
+     * breadth-first down the child tree.
+     *
+     * @return array<int, CallbackRegistry>
+     */
+    protected function componentRegistries(): array
+    {
+        return $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $registries = [];
+            $queue = [$this];
+
+            while ($queue !== []) {
+                $component = array_shift($queue);
+                if (isset($component->nativeCallbacks)) {
+                    $registries[] = $component->nativeCallbacks;
+                }
+                foreach ($component->nativeChildComponents as $child) {
+                    $queue[] = $child;
+                }
+            }
+
+            return $registries;
+        });
     }
 
     /** Press callback id of the node with the given ref, if any. */

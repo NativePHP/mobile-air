@@ -72,6 +72,50 @@ abstract class Element
      */
     protected array $extraProps = [];
 
+    /**
+     * Inline-chrome placement marker — set by the boolean `custom`
+     * attribute on `<native:top-bar>` / `<native:bottom-nav>` /
+     * `<native:side-nav>`. A custom chrome element stays in the content
+     * tree and renders as an ordinary drawn element (the Column-style
+     * custom chrome), instead of being hoisted onto the native chrome
+     * root. It still suppresses the layout's bar for that slot. See
+     * NativeComponent::wrapWithChrome().
+     */
+    protected bool $customChrome = false;
+
+    /**
+     * The CallbackRegistry this element's callbacks belong to, when it was
+     * collected inside a CHILD component's render scope — set by
+     * NativeElementCollector so `toArray()` registers @tap / native:model
+     * handlers into the child's registry (dispatch then resolves the id
+     * back to the child instance). Null (the default) means "use whatever
+     * registry the caller passes", i.e. the screen's.
+     */
+    protected ?CallbackRegistry $ownedCallbacks = null;
+
+    public function markCustomChrome(bool $custom = true): static
+    {
+        $this->customChrome = $custom;
+
+        return $this;
+    }
+
+    public function isCustomChrome(): bool
+    {
+        return $this->customChrome;
+    }
+
+    /**
+     * Pin this element's callbacks to a specific registry (the owning
+     * child component's). Overrides the registry toArray() receives.
+     */
+    public function ownCallbacks(CallbackRegistry $callbacks): static
+    {
+        $this->ownedCallbacks = $callbacks;
+
+        return $this;
+    }
+
     // ── Attribute hydration ──────────────────────────────
 
     /**
@@ -780,6 +824,13 @@ abstract class Element
         array &$emittedIds = [],
         array &$lastNodeHashes = []
     ): array {
+        // An element collected inside a child component's render scope
+        // carries that child's registry — its callbacks must register
+        // there so dispatch resolves them back to the child instance.
+        // Children still receive the caller's registry as the default;
+        // each carries its own pin when it needs one.
+        $registry = $this->ownedCallbacks ?? $registry;
+
         // Id precedence:
         //   1. Explicit `$this->nodeId` (caller set it directly — respect it).
         //   2. `$this->key` non-null → hash `parentKeyPath . '/' . key`.
