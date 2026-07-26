@@ -7,6 +7,13 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
+/**
+ * A toast, built up before it's shown.
+ *
+ * Toasts appear in a visible stack; the platform decides how many fit in
+ * one (iOS keeps five, dropping anything pushed while it's full) so there
+ * is nothing to configure here.
+ */
 class PendingToast
 {
     public const POSITION_TOP = 'top';
@@ -22,12 +29,6 @@ class PendingToast
      * Seconds used for the legacy 'long' duration hint.
      */
     public const DURATION_LONG = 4.0;
-
-    /**
-     * The number of toasts that can be visible in the stack at once.
-     * Toasts pushed while the stack is full are silently dropped.
-     */
-    public const MAX_STACK = 5;
 
     protected ?string $message = null;
 
@@ -135,6 +136,10 @@ class PendingToast
     /**
      * Keep the toast on screen until it is dismissed, either by the user or
      * by calling Toast::dismiss() with this toast's ID.
+     *
+     * Android has no equivalent: its toasts always time out, so a persistent
+     * toast falls back to the longest duration available there and there is
+     * nothing left for Toast::dismiss() to dismiss.
      */
     public function persistent(): self
     {
@@ -255,8 +260,22 @@ class PendingToast
 
         nativephp_call('Dialog.Toast', json_encode([
             'message' => $this->message,
-            'duration' => $this->duration !== null && $this->duration <= self::DURATION_SHORT ? 'short' : 'long',
+            'duration' => $this->fallbackDuration(),
         ]));
+    }
+
+    /**
+     * The closest thing the plain text toast can offer to this toast's
+     * duration. It only understands 'short' and 'long', and it can't stay
+     * up until dismissed — a persistent toast gets the longest it has.
+     */
+    protected function fallbackDuration(): string
+    {
+        if ($this->duration === null || $this->duration === 0.0) {
+            return 'long';
+        }
+
+        return $this->duration <= self::DURATION_SHORT ? 'short' : 'long';
     }
 
     /**
@@ -296,11 +315,15 @@ class PendingToast
 
     /**
      * Wrap a fragment in a minimal transparent document so it can be handed
-     * to the platform's web view as-is. Full documents are left alone.
+     * to the platform's web view as-is.
+     *
+     * Content that *starts* with a doctype or an <html> tag is already a
+     * document and is left alone. Anything else is a fragment, even if it
+     * happens to talk about <html> further in (a code sample, say).
      */
     protected function document(string $content): string
     {
-        if (Str::contains(Str::lower($content), '<html')) {
+        if (preg_match('/^(<!doctype\s+html|<html[\s>])/i', ltrim($content)) === 1) {
             return $content;
         }
 

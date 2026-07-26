@@ -97,7 +97,19 @@ it('wraps an html fragment in a transparent document', function () {
 it('leaves a full html document alone', function () {
     $document = '<html><body><p>Saved</p></body></html>';
 
-    expect((new PendingToast)->html($document)->toArray()['html'])->toBe($document);
+    expect((new PendingToast)->html($document)->toArray()['html'])->toBe($document)
+        ->and((new PendingToast)->html("\n  <!DOCTYPE html><html><body>Hi</body></html>")->toArray()['html'])
+        ->toContain('<!DOCTYPE html><html><body>Hi</body></html>');
+});
+
+it('still wraps a fragment that only talks about html documents', function () {
+    $fragment = '<pre>Wrap it in &lt;html&gt;, or write <html> yourself</pre>';
+
+    $html = (new PendingToast)->html($fragment)->toArray()['html'];
+
+    expect($html)->toStartWith('<!DOCTYPE html>')
+        ->toContain('background:transparent')
+        ->toContain($fragment);
 });
 
 it('renders a view as the body of the toast', function () {
@@ -181,6 +193,23 @@ it('falls back to Dialog.Toast on a known Android device', function () {
 
     $this->bridge->assertCalled('Dialog.Toast', fn (array $p) => $p['message'] === 'Saved');
     $this->bridge->assertNotCalled('Toast.Show');
+});
+
+it('gives a persistent toast the longest fallback duration on Android', function () {
+    // Android toasts always time out, so 'until dismissed' becomes 'as long
+    // as we can' rather than the 2s a zero duration would otherwise map to.
+    forcePlatform(Platform::ANDROID);
+
+    Toast::message('Saving')->persistent()->show();
+    Toast::message('Saved')->show();
+
+    $this->bridge
+        ->assertCalled('Dialog.Toast', function (array $params) {
+            return $params['message'] === 'Saving' && $params['duration'] === 'long';
+        })
+        ->assertCalled('Dialog.Toast', function (array $params) {
+            return $params['message'] === 'Saved' && $params['duration'] === 'long';
+        });
 });
 
 it('skips a view-only toast on Android rather than sending raw markup', function () {
