@@ -75,7 +75,7 @@ it('renders a simple column with text via Blade', function () {
 
 it('renders press callbacks from Blade attributes', function () {
     $viewPath = __DIR__.'/views/test-press.blade.php';
-    file_put_contents($viewPath, '<native:row gap="16"><native:text @press="confirm">OK</native:text><native:text @press="cancel">Cancel</native:text></native:row>');
+    file_put_contents($viewPath, '<native:row gap="16"><native:text @tap="confirm">OK</native:text><native:text @tap="cancel">Cancel</native:text></native:row>');
 
     NativeElementCollector::reset();
     view('test-press')->render();

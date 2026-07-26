@@ -16,7 +16,6 @@ import android.os.Message
 import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
-import com.nativephp.mobile.ui.NativeUIState
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
 
@@ -406,59 +405,6 @@ class WebViewManager(
                 // the page's first visible commit is honest TTFD.
                 activity?.onFirstContent("web-commit")
             }
-
-            /**
-             * Process response headers - for HTML and JSON responses to handle native UI updates
-             * from both page loads and AJAX requests
-             */
-            private fun processResponseHeaders(
-                url: String,
-                response: WebResourceResponse?,
-                request: WebResourceRequest
-            ) {
-                if (response == null) {
-                    return
-                }
-
-                // Embedded webviews must not drive the app's chrome: a plain
-                // web page here would otherwise clearAll() the native UI state
-                // (top bar / tabs) out from under the native screen hosting it.
-                if (embedded) {
-                    return
-                }
-
-                val isMainFrame = request.isForMainFrame
-
-                // Get content type
-                val contentType = response.responseHeaders?.entries?.firstOrNull {
-                    it.key.equals("content-type", ignoreCase = true)
-                }?.value ?: ""
-
-                val isHtmlResponse = contentType.contains("text/html", ignoreCase = true)
-                val isJsonResponse = contentType.contains("application/json", ignoreCase = true)
-
-                // Find x-native-ui header (case-insensitive)
-                val nativeUiHeader = response.responseHeaders?.entries?.firstOrNull {
-                    it.key.equals("x-native-ui", ignoreCase = true)
-                }?.value
-
-                // Process for HTML pages (main frame) or JSON responses (AJAX)
-                if (isHtmlResponse || isJsonResponse) {
-                    if (nativeUiHeader != null) {
-                        Log.d(TAG, "✅ x-native-ui header found (${if (isJsonResponse) "JSON" else "HTML"}): $nativeUiHeader")
-                        NativeUIState.updateFromJson(nativeUiHeader)
-                    } else if (isHtmlResponse && isMainFrame) {
-                        // Only clear UI state if this is a main frame HTML response without the header
-                        // Don't clear for JSON responses to avoid clearing UI on every API call
-                        Log.d(TAG, "❌ x-native-ui header NOT in HTML main frame - clearing state")
-                        NativeUIState.clearAll()
-                    }
-                } else {
-                    // Asset request - ignore completely to avoid false negatives
-                    Log.d(TAG, "⏭️ Skipping x-native-ui check for asset: $url")
-                }
-            }
-
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)

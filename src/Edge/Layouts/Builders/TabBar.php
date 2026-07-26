@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Layouts\Builders;
 
 use Native\Mobile\Edge\Elements\BottomNav;
+use Native\Mobile\Edge\Elements\BottomNavItem;
 
 /**
  * Fluent builder for the bottom tab bar.
@@ -26,6 +27,17 @@ class TabBar
     /** @var Tab[] */
     private array $tabs = [];
 
+    /**
+     * Pre-built `bottom_nav_item` elements adopted from an inline
+     * `<native:bottom-nav>` (see {@see fromElement}). Kept as elements
+     * so collector-wired callbacks (`@tap` press handlers, `:url`
+     * navigation) survive. Emitted after the builder tabs by
+     * {@see tabElements}.
+     *
+     * @var BottomNavItem[]
+     */
+    private array $prebuiltTabElements = [];
+
     private ?string $activeColor = null;
 
     private ?string $textColor = null;
@@ -43,6 +55,38 @@ class TabBar
     public static function make(): self
     {
         return new self;
+    }
+
+    /**
+     * Reconstruct a TabBar builder from a collected `bottom_nav` element —
+     * the bridge that lets an inline `<native:bottom-nav>` in a screen's
+     * blade drive the SAME native-chrome path (NativeRootTabs props) the
+     * layout builders feed, instead of being drawn as an in-tree element.
+     *
+     * Maps the element's snake_case props back onto builder state and
+     * adopts its `bottom_nav_item` children as pre-built elements
+     * (preserving collector-wired callbacks / navigate configs).
+     */
+    public static function fromElement(BottomNav $element): self
+    {
+        $bar = new self;
+        $props = $element->getRawProps();
+
+        $bar->dark = (bool) ($props['dark'] ?? false);
+        $bar->labelVisibility = $props['label_visibility'] ?? null;
+        $bar->activeColor = $props['active_color'] ?? null;
+        $bar->backgroundColor = $props['background_color'] ?? null;
+        $bar->textColor = $props['text_color'] ?? null;
+        $bar->font = $props['font_name'] ?? null;
+        $bar->minimizeOnScroll = (bool) ($props['minimize_on_scroll'] ?? false);
+
+        foreach ($element->getChildren() as $child) {
+            if ($child instanceof BottomNavItem) {
+                $bar->prebuiltTabElements[] = $child;
+            }
+        }
+
+        return $bar;
     }
 
     public function add(Tab $tab): self
@@ -158,10 +202,21 @@ class TabBar
      */
     public function highlight(string $currentUrl): self
     {
+        // Respect an explicit choice: when this bar was reconstructed from
+        // an inline `<native:bottom-nav>` and the blade already marks a tab
+        // `active`, the dev decided — don't second-guess with URL matching.
+        foreach ($this->prebuiltTabElements as $item) {
+            if ($item->isActive()) {
+                return $this;
+            }
+        }
+
+        // Longest-prefix match across builder tabs AND prebuilt inline
+        // items, uniformly.
         $bestTab = null;
         $bestLen = -1;
 
-        foreach ($this->tabs as $tab) {
+        foreach ([...$this->tabs, ...$this->prebuiltTabElements] as $tab) {
             $tab->setActive(false);
 
             $tabUrl = $tab->getUrl();
@@ -226,6 +281,24 @@ class TabBar
         return $this->tabs;
     }
 
+    /**
+     * Every tab as a ready-to-attach `bottom_nav_item` element —
+     * builder-declared tabs first, then any pre-built elements adopted
+     * from an inline `<native:bottom-nav>`. This is what the chrome
+     * wrapper attaches to the native root (injecting the search corpus
+     * into search-role items along the way), so both sources compose
+     * uniformly.
+     *
+     * @return BottomNavItem[]
+     */
+    public function tabElements(): array
+    {
+        return [
+            ...array_map(fn (Tab $tab) => $tab->toElement(), $this->tabs),
+            ...$this->prebuiltTabElements,
+        ];
+    }
+
     public function toElement(): BottomNav
     {
         $nav = BottomNav::make();
@@ -252,8 +325,8 @@ class TabBar
 
         $nav->applyAttributes($attrs);
 
-        foreach ($this->tabs as $tab) {
-            $nav->addChild($tab->toElement());
+        foreach ($this->tabElements() as $item) {
+            $nav->addChild($item);
         }
 
         return $nav;

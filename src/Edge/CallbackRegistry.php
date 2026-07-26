@@ -106,7 +106,12 @@ class CallbackRegistry
         return $this->navigationConfigs[$key] ?? null;
     }
 
-    private static function parse(string $expression): array
+    /**
+     * Parse a `method('arg', ...)` expression into method + literal args.
+     * Public because NativeComponent::emit() reuses it for tag-level
+     * `@event="method(...)"` bindings on child-component tags.
+     */
+    public static function parse(string $expression): array
     {
         if (! str_contains($expression, '(')) {
             return ['method' => $expression, 'args' => []];

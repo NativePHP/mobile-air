@@ -542,27 +542,6 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     }
                 }
 
-                // Legacy X-Native-UI header support (now using Edge.Set bridge function instead)
-                // Note: This is kept for backward compatibility but the primary method is now
-                // via PHP's Edge::set() which calls nativephp_call('Edge.Set', ...)
-                // We no longer clear UI state here because Edge components are managed via the bridge
-                let contentType = headers["content-type"] ?? ""
-                let isHtmlResponse = contentType.contains("text/html")
-                let isJsonResponse = contentType.contains("application/json")
-                let isSuccessResponse = (200...299).contains(statusCode)
-
-                if (isHtmlResponse || isJsonResponse) && isSuccessResponse {
-                    if let nativeUIJson = headers["x-native-ui"] {
-                        // Legacy header-based update (still supported for backward compatibility)
-                        DispatchQueue.main.async {
-                            NativeUIState.shared.updateFromJson(nativeUIJson)
-                        }
-                    }
-                    // Removed: else branch that cleared UI state on HTML responses without header
-                    // This was causing EDGE components set via Edge::set() to be immediately cleared
-                }
-
-
                 var request = requestData
                 if let location = headers["location"] {
                     request.uri = location.trimmingCharacters(in: .whitespaces)

@@ -4,12 +4,27 @@ namespace Native\Mobile\Edge\Elements;
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Icon\AndroidSymbol;
+use Native\Mobile\Icon\IconResolver;
+use Native\Mobile\Icon\IosSymbol;
 
 class BottomNavItem extends Element
 {
     protected string $type = 'bottom_nav_item';
 
     protected array $props = [];
+
+    /**
+     * Platform icon overrides — `:ios-icon="Ios::House"` /
+     * `:android-icon="Android::Home"` (enum case or raw string), with the
+     * plain `icon` attr as the cross-platform fallback. Resolved to the
+     * single wire `icon` (+ `material_variant`) at serialization via
+     * IconResolver, same contract as the `<icon>` element and the Tab
+     * builder's ->icon(ios:, android:).
+     */
+    private IosSymbol|string|null $iosIcon = null;
+
+    private AndroidSymbol|string|null $androidIcon = null;
 
     /**
      * Raw search-items from the active screen's `searchItems()` /
@@ -30,8 +45,15 @@ class BottomNavItem extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        if (isset($attrs['badge-color']) && ! isset($attrs['badgeColor'])) {
-            $attrs['badgeColor'] = $attrs['badge-color'];
+        foreach ([
+            'badge-color' => 'badgeColor',
+            'material-variant' => 'material_variant',
+            'search-placeholder' => 'search_placeholder',
+            'search-debounce-ms' => 'search_debounce_ms',
+        ] as $kebab => $canonical) {
+            if (isset($attrs[$kebab]) && ! isset($attrs[$canonical])) {
+                $attrs[$canonical] = $attrs[$kebab];
+            }
         }
 
         foreach (['id', 'icon', 'material_variant', 'url', 'label', 'badge', 'badgeColor'] as $key) {
@@ -40,6 +62,12 @@ class BottomNavItem extends Element
                 $this->props[$snakeKey] = $attrs[$key];
             }
         }
+
+        // `:ios-icon` / `:android-icon` (or the `<icon>`-style `:ios` /
+        // `:android` shorthand) — precompiler keeps names verbatim, so
+        // accept kebab and camel forms.
+        $this->iosIcon = $attrs['ios-icon'] ?? $attrs['iosIcon'] ?? $attrs['ios'] ?? $this->iosIcon;
+        $this->androidIcon = $attrs['android-icon'] ?? $attrs['androidIcon'] ?? $attrs['android'] ?? $this->androidIcon;
 
         if (isset($attrs['active'])) {
             $this->props['active'] = filter_var($attrs['active'], FILTER_VALIDATE_BOOLEAN);
@@ -109,8 +137,40 @@ class BottomNavItem extends Element
         return (string) ($this->props['url'] ?? '');
     }
 
+    /** Whether this tab is currently marked active (highlighted). */
+    public function isActive(): bool
+    {
+        return (bool) ($this->props['active'] ?? false);
+    }
+
+    /**
+     * Toggle the active highlight. Used by `TabBar::highlight()` when the
+     * bar was reconstructed from an inline `<native:bottom-nav>` and no
+     * item carried an explicit `active` attribute.
+     */
+    public function setActive(bool $active): static
+    {
+        $this->props['active'] = $active;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
+        // Resolve the platform icon triple down to the single wire icon.
+        // A bound enum in the shared `icon` slot is tolerated too.
+        $shared = $this->props['icon'] ?? null;
+        if ($shared instanceof \BackedEnum) {
+            $shared = (string) $shared->value;
+        }
+        $resolved = IconResolver::resolve($shared, $this->iosIcon, $this->androidIcon);
+        if ($resolved['icon'] !== null) {
+            $this->props['icon'] = $resolved['icon'];
+            if ($resolved['variant'] !== null && ! isset($this->props['material_variant'])) {
+                $this->props['material_variant'] = $resolved['variant'];
+            }
+        }
+
         // Search-role tabs are iOS-owned (the floating Liquid Glass
         // capsule's `.searchable` lives entirely on the iOS side; PHP
         // doesn't host a destination for them). Skipping auto-navigate

@@ -82,7 +82,8 @@ class BladeTemplateAnalyzer
             // Normalize: kebab-case to snake_case
             $elementType = str_replace('-', '_', $tagName);
 
-            // Skip navigation chrome elements (handled by EdgeComponentAnalyzer)
+            // Skip navigation chrome elements (attribute surface differs
+            // per bar; no per-element validation rules for them here)
             if ($this->isNavigationElement($elementType)) {
                 continue;
             }
@@ -141,7 +142,7 @@ class BladeTemplateAnalyzer
         $stripped = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
         $stripped = preg_replace('/<!--.*?-->/s', '', $stripped);
 
-        // Match @press="method", @longPress="method", @doubleTap="method", @change="method", @submit="method"
+        // Match @tap="method", @longPress="method", @doubleTap="method", @change="method", @submit="method"
         // Also match the precompiled _press="method" form, and the @tap family
         // aliases (see NativeTagPrecompiler::TAP_ALIASES) — templates are
         // analyzed before precompilation, so the alias spellings must be

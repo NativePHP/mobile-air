@@ -284,3 +284,39 @@ it('ignores _navigated on elements without an onNavigated method', function () {
 
     expect($element->toArray(new CallbackRegistry))->not->toHaveKey('on_navigated');
 });
+
+it('wires _selectionChange to onSelectionChange when the element supports it', function () {
+    $element = new class extends Element
+    {
+        public ?string $selectionMethod = null;
+
+        public function getType(): string
+        {
+            return 'text_input';
+        }
+
+        public function onSelectionChange(string $method): static
+        {
+            $this->selectionMethod = $method;
+
+            return $this;
+        }
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_selectionChange' => 'caretMoved']);
+
+    expect($element->selectionMethod)->toBe('caretMoved');
+});
+
+it('ignores _selectionChange on elements without an onSelectionChange method', function () {
+    $element = new class extends Element
+    {
+        protected string $type = 'column';
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_selectionChange' => 'caretMoved']);
+
+    expect($element->toArray(new CallbackRegistry))->not->toHaveKey('on_selection_change');
+});

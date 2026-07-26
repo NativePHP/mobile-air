@@ -19,12 +19,54 @@ elements (`native:column`, `native:text`, `native:button`, …).** This is the w
   `nativephp-webview-to-native` skill).
 - Style EDGE elements with Tailwind utility classes via `class="..."` / `:class="..."` only — never inline
   CSS `style="..."` attributes or ad-hoc styling props.
+- Compose screens from **nested child components**: any `NativeComponent` under `app/NativeComponents` mounts
+  as a tag (`UserCard` → `<native:user-card :user="$u" key="user-@{{ $u->id }}" @saved="onSaved" />`) with live
+  props, its own persistent state, and `emit()` events bubbling to `@event` tag bindings / `#[On('event')]`
+  listeners. Prefer extracting a reusable child component over duplicating Blade across screens; give list
+  children a stable domain `key` (never the loop index).
 - Use `native:icon` (SF Symbols on iOS, Material Icons on Android) for iconography — never emoji characters in
   UI text, labels, or buttons, unless the user explicitly asks for emojis. Prefer the typed icon enums
   (`App\Icons\Ios`, `App\Icons\Android`, `App\Icons\AndroidOutlined`) bound via the `:ios` / `:android`
   attributes, e.g. `:ios="Ios::Gearshape" :android="Android::Settings"`, importing each enum into the view with
   Blade's use directive first. The enums are generated, not shipped — if `app/Icons/` doesn't exist yet, run
   `php artisan native-ui:generate-icons` first (safe to run yourself).
+
+### Theme Tokens, Font Aliases, and Layouts — the Design System Trio
+
+Every app's visual identity belongs in `config/native-ui.php` (publish with
+`php artisan vendor:publish --tag=native-ui-config`), not scattered through the markup. When building or
+reviewing screens, enforce all three:
+
+1. **Theme tokens over hardcoded colors.** Define the palette once in the config's `theme` block, then style
+   with `bg-theme-*` / `text-theme-*` / `border-theme-*` classes (`bg-theme-surface`, `text-theme-on-surface`,
+   `border-theme-outline`). Never sprinkle `bg-[#1E2021]`-style arbitrary values for what is really a theme
+   role — they can't be re-skinned and don't get automatic dark-mode pairs. Arbitrary color values are for
+   genuine data-driven color (per-category identity colors, map imagery, chart series), and those belong in
+   one PHP home (an enum or model method), never inline per view. Two capabilities that prevent hex fallbacks:
+   - **The token map is open-ended.** When a design needs a role the shipped set lacks (a success green, an
+     `outline-variant`), add it to both `light` and `dark` blocks — `bg-theme-success` works immediately; no
+     package change required.
+   - **Theme classes take opacity modifiers** just like palette classes: `bg-theme-primary/15` is the correct
+     tonal-fill idiom (applies to the dark companion too) — never approximate with a hardcoded alpha hex.
+2. **Font aliases over file tokens.** Register semantic aliases in the config's `fonts` array
+   (`'headline' => 'ArchivoNarrow-Bold'`, `'mono' => 'JetBrainsMono-Regular'`, `'default' => …` for the
+   app-wide font) and write `font="headline"` in views — never `font="ArchivoNarrow-Bold"`. Swapping a
+   typeface must be a one-line config change.
+3. **Native chrome via composable chrome elements (layouts optional).** Author nav bars, tab bars, fabs, and
+   side navs directly in the screen's Blade — `<native:top-bar>` (+ `top-bar-action`), `<native:bottom-nav>`
+   (+ `bottom-nav-item`), `<native:fab>`, `<native:bottom-bar>`, `<native:side-nav>`. They hoist onto the real
+   NavigationStack/TabView chrome (edge-swipe back, predictive back, large titles, Liquid Glass/Material You),
+   and their attributes are Blade expressions over screen state, so badges/subtitles/icons are reactive. A
+   `NativeLayout` (attached via `Route::native(...)->layout(...)` or `Route::nativeGroup(...)`) is **optional**
+   — reach for one only when many screens share identical chrome (e.g. one tabs layout for a tab section); an
+   inline chrome element on a screen always overrides the layout's bar for that slot. Add the `custom`
+   attribute to a chrome tag only for designs the system bars genuinely can't express — it renders in-tree as
+   an ordinary drawn element. Never hand-roll top bars or bottom navs out of rows and pressables — that
+   forfeits native back gestures, safe-area handling, and Liquid Glass/Material You. Chrome colors take theme
+   tokens (inline: theme classes / `theme()`-fed attributes; builders: `->activeColor(theme('primary'))`) —
+   never pasted hex. Bar icons take the platform enums via `:ios-icon` / `:android-icon` with a plain `icon`
+   string as cross-platform fallback; bar fonts take config aliases (`font="mono"` / `->font('mono')`). Only
+   screens rendered without any chrome (no layout AND no inline bars) may use `safe-area` classes.
 
 ### When a Capability Is Missing
 

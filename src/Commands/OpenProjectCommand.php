@@ -3,8 +3,8 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
-use Native\Mobile\Traits\OpensAndroidProject;
-use Native\Mobile\Traits\OpensIosProject;
+use Native\Mobile\Concerns\OpensAndroidProject;
+use Native\Mobile\Concerns\OpensIosProject;
 
 use function Laravel\Prompts\select;
 

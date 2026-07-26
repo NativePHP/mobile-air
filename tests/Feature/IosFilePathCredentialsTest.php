@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use Native\Mobile\Traits\ManagesIosSigning;
+use Native\Mobile\Concerns\ManagesIosSigning;
 use Tests\TestCase;
 
 class IosFilePathCredentialsTest extends TestCase
