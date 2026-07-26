@@ -41,7 +41,7 @@ class AsyncTaskRunner
 
         try {
             $work = unserialize($payload);
-            $result = static::invoke($work);
+            $result = static::normalizeResult(static::invoke($work));
 
             AsyncTaskTransport::complete($id, AsyncTaskFinished::class, [
                 'id' => $id,
@@ -90,5 +90,40 @@ class AsyncTaskRunner
         }
 
         throw new \RuntimeException('Unknown async task work kind ['.(string) $kind.'].');
+    }
+
+    /**
+     * Put a result through the exact JSON round trip the completion event makes
+     * on the way back to the UI context, so what `->finished()` receives is what
+     * survives the hop (objects arrive as arrays, and so on).
+     *
+     * Doing it HERE, in the background context, is what makes a non-encodable
+     * result visible: it throws, so the run reports a failure and `->failed()`
+     * fires. Left to `json_encode()` in the transport it would simply return
+     * false, nothing would be delivered, and the UI would wait forever.
+     *
+     * The test fake runs the same normalization, so a test can't pass on a value
+     * a device would never deliver.
+     *
+     * @throws \RuntimeException when the result can't be JSON-encoded
+     */
+    public static function normalizeResult(mixed $result): mixed
+    {
+        // Strings go through the encoder too — invalid UTF-8 is exactly the kind
+        // of result that would otherwise fail silently on the way out.
+        if ($result === null || is_int($result) || is_float($result) || is_bool($result)) {
+            return $result;
+        }
+
+        $encoded = json_encode($result);
+
+        if ($encoded === false) {
+            throw new \RuntimeException(
+                'The async task result could not be encoded for delivery to the UI thread ('
+                .json_last_error_msg().'). Return arrays, scalars or JsonSerializable values from async work.'
+            );
+        }
+
+        return json_decode($encoded, true);
     }
 }

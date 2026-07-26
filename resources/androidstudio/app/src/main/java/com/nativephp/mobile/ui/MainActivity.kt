@@ -934,7 +934,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 // Stop queue worker before shutdown — its TSRM context
                                 // will be destroyed by php_module_shutdown
                                 queueWorker?.stop()
-                                asyncExecutor?.stop()
+
+                                // Blocks until the async pool has drained: the
+                                // shutdown below destroys Zend state its live
+                                // contexts reference.
+                                if (asyncExecutor?.stop() == false) {
+                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
+                                }
 
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
@@ -1019,7 +1025,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 // will be destroyed by php_module_shutdown, causing SIGABRT
                                 // if still active
                                 queueWorker?.stop()
-                                asyncExecutor?.stop()
+
+                                // Blocks until the async pool has drained: the
+                                // shutdown below destroys Zend state its live
+                                // contexts reference.
+                                if (asyncExecutor?.stop() == false) {
+                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
+                                }
 
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()

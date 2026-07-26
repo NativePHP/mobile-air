@@ -108,7 +108,12 @@ It never interprets either.
 2. **Screen scoping, with an opt-out.** By default a `finished()` callback is
    **dropped if the originating screen is no longer topmost** when the result
    arrives — firing a component-bound closure against the wrong live component is
-   a footgun (see the id-collision rationale in `CallbackRegistry`). But a
+   a footgun (see the id-collision rationale in `CallbackRegistry`). The
+   originating screen is held as a **`WeakReference`, not an object id**: PHP
+   recycles `spl_object_id`s, so a popped screen's id can be handed to the next
+   component allocated and an id comparison would then deliver the callback to an
+   unrelated screen. A weak reference to a freed component reads back as `null`,
+   which never matches, so the completion is dropped as intended. But a
    component may own a UI element shared across screens (a layout chrome element,
    a mini-player) that should react regardless. For that, `->shared('alias')`
    flips delivery from a component-scoped closure to a **named global event**:
@@ -121,16 +126,49 @@ It never interprets either.
    default to **one attempt** — silent queue-style retries of a button action are
    surprising.
 
+   **Every dispatch reaches one outcome.** A spinner that never stops is the
+   worst failure mode this API can have, so the paths that could deliver
+   *nothing* are all closed:
+
+   - **A refused dispatch fails at the call site.** `AsyncTask.Dispatch` returns
+     `success`, and PHP checks it. No executor running, no free slot, no bridge,
+     or a Jump subprocess that wouldn't launch — the task never started, so
+     `->failed()` fires immediately rather than the UI waiting on a result that
+     was never coming.
+   - **A non-encodable result fails as a task failure.** The result is put
+     through its JSON round trip **in the background context**
+     (`AsyncTaskRunner::normalizeResult()`), where a failure can still be
+     reported as an ordinary `AsyncTaskFailed`. Left to `json_encode()` in the
+     transport it would just return `false` and nothing would be delivered.
+   - **A hung task times out.** Every dispatch carries a deadline (default 60s,
+     `->timeout($seconds)`, `0` to disable) plus the exact completion to post if
+     it passes. The native watchdog holds both and posts the pre-built failure
+     event when the deadline expires, so native still never has to know how a
+     failure event is shaped. The work itself is *not* killed on device — a PHP
+     interpreter mid-task can't be interrupted safely — so the timeout unblocks
+     the UI, and a late completion for a task already reported as failed is
+     discarded (its callbacks are gone). Jump has no native watchdog, so the
+     transport sweeps overdue subprocesses on each runloop tick instead.
+
 4. **Immediate, concurrent, no SQLite, not the queue worker.** Tasks must start
    *now*, not on a ≤3s `queue:work --once` poll, and a developer may run several
    at once. So async tasks get their **own lane** with a small pool of PHP
    contexts, independent of the single queue-worker thread and its SQLite
-   `database` queue. Nothing touches SQLite. Concurrency is bounded (see
-   §Concurrency); excess tasks queue in native and log when they do.
+   `database` queue. Concurrency is bounded (see §Concurrency); excess tasks
+   queue in native and log when they do.
 
-5. **Result size.** The event channel has no hard cap now, but the result still
-   round-trips as JSON. Return scalars/arrays; pass large blobs by file path or
-   cache key. Enforced only by documentation.
+   Nothing on this path touches SQLite — but only because the completion
+   callbacks are registered with `NativeCallbacks::register(..., durable: false)`.
+   Its default tier-2 copy is a cache write (SQLite-backed by default) on the UI
+   thread; async tasks skip it deliberately, since the payload and scope metadata
+   live in RAM and a temp file, so a process kill loses the whole task anyway and
+   a durable callback would have nothing to survive to.
+
+5. **Result size and shape.** The event channel has no hard cap now, but the
+   result still round-trips as JSON — objects arrive at `finished()` as arrays.
+   Return scalars/arrays; pass large blobs by file path or cache key. The fake
+   runs the same normalization, so a test can't pass on a value a device would
+   never deliver.
 
 6. **Testing + Jump.**
    - **Testing:** `AsyncTask::fake()` runs the work **inline-synchronously** and
@@ -179,10 +217,27 @@ guaranteed — each `finished()` fires when its own task completes.
 The payload moves via a temp file, so native stays a dumb courier with just two
 calls:
 
-- `AsyncTask.Dispatch` `{id}` → assign a booted async-lane context to run
-  `native:async:run --id=<id>`. Returns immediately.
+- `AsyncTask.Dispatch` `{id, timeout?, timeoutEvent?, timeoutPayload?}` → assign
+  a booted async-lane context to run `native:async:run --id=<id>`. Returns
+  immediately, with a `success` flag PHP acts on (see §3). The timeout trio is
+  the watchdog contract: native holds the deadline and the pre-built completion
+  to post if it passes, so it still never interprets a task or builds an event.
 - `AsyncTask.Complete` `{id, event, payload}` → relay `sendNativeEvent(event,
   payload)` into the UI runloop (this is what wakes the C `wait_event`).
+
+Both executors **stop synchronously**: `stop()` drains in-flight tasks and shuts
+each context down before returning, because callers stop the pool immediately
+before a persistent-runtime reboot and `php_embed_shutdown` frees Zend module
+state a live async context still references. On iOS the pool boots asynchronously,
+so `stop()` waits out an in-flight boot rather than returning early — bailing
+would leave C slots allocated with nothing able to reclaim them, and `start()`
+refusing to run twice would then drop every later dispatch for the life of the app.
+
+The lane also avoids `setenv()`. The single-threaded lanes set
+`APP_RUNNING_IN_CONSOLE`/`PHP_SELF` that way, but this one runs several contexts
+at once and `setenv`/`getenv` are neither thread-safe nor per-thread — pool
+threads would clobber each other and the UI lane. The eval'd code sets the
+per-thread `$_SERVER` entries instead, which is what Laravel's `Env` reads.
 
 C lane `async_php_*` mirrors the queue-worker / webview lanes: a pool of
 per-thread TSRM contexts that boot the persistent bootstrap once and run
@@ -192,7 +247,7 @@ coupling to the persistent runtime's request mutex. Android
 (`AsyncTaskExecutor.swift`) pins each C slot to a serial `DispatchQueue`.
 
 Payload handoff via temp file (rather than a native RAM map keyed by id) keeps
-the native surface minimal and truly persistence-free — no SQLite, no queue. The
+the native surface minimal and truly persistence-free — no database, no queue. The
 RAM-map alternative would avoid the disk write but needs a concurrent map plus
 lifecycle on each platform; revisit only if temp-file IO shows up in profiling.
 

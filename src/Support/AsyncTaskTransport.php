@@ -9,7 +9,7 @@ use Symfony\Component\Process\Process;
 /**
  * Moves an async task between the dispatching (UI) PHP context and the
  * background context that runs it, without a shared PHP heap and without
- * touching SQLite or the standard queue.
+ * touching a database or the standard queue.
  *
  * The payload (a PHP-serialized work envelope) is handed off through a temp
  * file under `storage/framework/async/` — the async lane and the UI lane share
@@ -51,11 +51,27 @@ class AsyncTaskTransport
     /**
      * Persist the work envelope and kick off a background runner for it.
      * Returns immediately; the runner delivers completion asynchronously.
+     *
+     * Returns FALSE when the background lane refused the task (no executor, no
+     * free slot, no bridge, subprocess failed to launch). The caller must treat
+     * that as a failed dispatch and fire `->failed()` itself — a task that never
+     * started can never complete, and silently dropping it leaves the UI waiting
+     * on a result that isn't coming.
+     *
+     * @param  array{timeout: int, timeoutEvent: string, timeoutPayload: array}|array{}  $watchdog
      */
-    public static function dispatch(string $id, string $payload): void
+    public static function dispatch(string $id, string $payload, array $watchdog = []): bool
     {
         static::writePayload($id, $payload);
-        static::trigger($id);
+
+        if (static::trigger($id, $watchdog)) {
+            return true;
+        }
+
+        // Nothing will read the payload now; don't leave it on disk.
+        static::forgetPayload($id);
+
+        return false;
     }
 
     protected static function writePayload(string $id, string $payload): void
@@ -65,53 +81,134 @@ class AsyncTaskTransport
         file_put_contents($dir.DIRECTORY_SEPARATOR.$id.'.task', $payload, LOCK_EX);
     }
 
-    /** Ask the async lane (device) or a subprocess (Jump) to run the task. */
-    protected static function trigger(string $id): void
+    /** Drop a spooled payload for a task that will never run. */
+    public static function forgetPayload(string $id): void
     {
-        if (static::isJump()) {
-            static::spawnJumpRunner($id);
-
-            return;
-        }
-
-        if (function_exists('nativephp_call')) {
-            nativephp_call('AsyncTask.Dispatch', json_encode(['id' => $id]));
-        }
+        @unlink(static::directory('payload').DIRECTORY_SEPARATOR.$id.'.task');
     }
 
     /**
-     * Launch `php artisan native:async:run` detached on the dev machine. The
-     * parent Jump runloop is long-lived (the screen's whole session), so the
-     * retained Process reference outlives the child's work.
+     * Ask the async lane (device) or a subprocess (Jump) to run the task.
+     * Returns whether the task was accepted.
      *
-     * @var array<int, Process>
+     * @param  array{timeout: int, timeoutEvent: string, timeoutPayload: array}|array{}  $watchdog
+     */
+    protected static function trigger(string $id, array $watchdog = []): bool
+    {
+        if (static::isJump()) {
+            return static::spawnJumpRunner($id, $watchdog);
+        }
+
+        if (! function_exists('nativephp_call')) {
+            return false;
+        }
+
+        // The watchdog travels with the dispatch: native holds the deadline and,
+        // if it passes with nothing delivered, posts the pre-built failure event
+        // back into the runloop. Native never builds the payload itself — it
+        // stays the dumb courier the design calls for.
+        $params = json_encode(['id' => $id] + $watchdog);
+
+        if ($params === false) {
+            return false;
+        }
+
+        $result = nativephp_call('AsyncTask.Dispatch', $params);
+
+        if (! is_string($result) || $result === '') {
+            return false;
+        }
+
+        $decoded = json_decode($result, true);
+
+        return is_array($decoded) && ($decoded['success'] ?? false) === true;
+    }
+
+    /**
+     * In-flight Jump runners, keyed by task id.
+     *
+     * The parent Jump runloop is long-lived (the screen's whole session), so a
+     * retained Process reference outlives the child's work. The deadline is kept
+     * alongside it because there's no native watchdog on a dev machine — see
+     * {@see sweepJumpTimeouts()}.
+     *
+     * @var array<string, array{process: Process, deadline: float|null, event: string, payload: array}>
      */
     protected static array $jumpProcesses = [];
 
-    protected static function spawnJumpRunner(string $id): void
+    /**
+     * Launch `php artisan native:async:run` detached on the dev machine.
+     *
+     * @param  array{timeout: int, timeoutEvent: string, timeoutPayload: array}|array{}  $watchdog
+     */
+    protected static function spawnJumpRunner(string $id, array $watchdog = []): bool
     {
         if (! class_exists(Process::class)) {
+            return false;
+        }
+
+        try {
+            // Symfony Process merges this over the inherited parent env, so we pass
+            // only the delta that marks this as a Jump runner (completion → spool).
+            $process = new Process(
+                [PHP_BINARY, base_path('artisan'), 'native:async:run', '--id='.$id, '--jump'],
+                base_path(),
+                ['NATIVEPHP_ASYNC_JUMP' => '1'],
+            );
+            $process->setTimeout(null);
+            $process->disableOutput();
+            $process->start();
+        } catch (\Throwable) {
+            return false;
+        }
+
+        // Prune finished runners so the map doesn't grow without bound.
+        static::$jumpProcesses = array_filter(
+            static::$jumpProcesses,
+            fn (array $entry) => $entry['process']->isRunning(),
+        );
+
+        $timeout = (int) ($watchdog['timeout'] ?? 0);
+
+        static::$jumpProcesses[$id] = [
+            'process' => $process,
+            'deadline' => $timeout > 0 ? microtime(true) + $timeout : null,
+            'event' => (string) ($watchdog['timeoutEvent'] ?? AsyncTaskFailed::class),
+            'payload' => (array) ($watchdog['timeoutPayload'] ?? ['id' => $id]),
+        ];
+
+        return true;
+    }
+
+    /**
+     * Fail any Jump runner that has outrun its deadline: stop the subprocess and
+     * spool the timeout completion so the runloop delivers `->failed()` on the
+     * next tick. The device equivalent is the native executor's watchdog.
+     */
+    protected static function sweepJumpTimeouts(): void
+    {
+        if (static::$jumpProcesses === []) {
             return;
         }
 
-        // Symfony Process merges this over the inherited parent env, so we pass
-        // only the delta that marks this as a Jump runner (completion → spool).
-        $process = new Process(
-            [PHP_BINARY, base_path('artisan'), 'native:async:run', '--id='.$id, '--jump'],
-            base_path(),
-            ['NATIVEPHP_ASYNC_JUMP' => '1'],
-        );
-        $process->setTimeout(null);
-        $process->disableOutput();
-        $process->start();
+        $now = microtime(true);
 
-        // Keep a reference so the child isn't reaped when this method returns;
-        // prune finished ones so the array doesn't grow without bound.
-        static::$jumpProcesses = array_filter(
-            static::$jumpProcesses,
-            fn (Process $p) => $p->isRunning(),
-        );
-        static::$jumpProcesses[] = $process;
+        foreach (static::$jumpProcesses as $id => $entry) {
+            if (! $entry['process']->isRunning()) {
+                unset(static::$jumpProcesses[$id]);
+
+                continue;
+            }
+
+            if ($entry['deadline'] === null || $entry['deadline'] > $now) {
+                continue;
+            }
+
+            unset(static::$jumpProcesses[$id]);
+            $entry['process']->stop(0);
+            static::forgetPayload($id);
+            static::writeCompletionSpool($id, $entry['event'], $entry['payload']);
+        }
     }
 
     // ── Runner side (background context) ────────────
@@ -145,11 +242,11 @@ class AsyncTaskTransport
         }
 
         if (function_exists('nativephp_call')) {
-            nativephp_call('AsyncTask.Complete', json_encode([
+            nativephp_call('AsyncTask.Complete', static::encodeCompletion([
                 'id' => $id,
                 'event' => $event,
                 'payload' => $payload,
-            ]));
+            ], $id));
         }
     }
 
@@ -159,9 +256,42 @@ class AsyncTaskTransport
         static::ensureDir($dir);
         file_put_contents(
             $dir.DIRECTORY_SEPARATOR.$id.'.json',
-            json_encode(['event' => $event, 'payload' => $payload]),
+            static::encodeCompletion(['event' => $event, 'payload' => $payload], $id),
             LOCK_EX,
         );
+    }
+
+    /**
+     * Encode a completion envelope, falling back to a failure envelope if the
+     * data won't encode. A completion that can't be encoded would otherwise be
+     * an empty string on the wire: nothing delivered, no callback, and a UI
+     * waiting forever on a task it can see no outcome for.
+     *
+     * {@see AsyncTaskRunner::normalizeResult()} already rejects a non-encodable
+     * result at source, so this is the belt to that braces — a message or trace
+     * carrying invalid UTF-8 can still land here.
+     */
+    protected static function encodeCompletion(array $envelope, string $id): string
+    {
+        $json = json_encode($envelope);
+
+        if ($json !== false) {
+            return $json;
+        }
+
+        $fallback = json_encode([
+            'id' => $id,
+            'event' => AsyncTaskFailed::class,
+            'payload' => [
+                'id' => $id,
+                'exceptionClass' => 'RuntimeException',
+                'message' => 'The async task outcome could not be encoded for delivery ('.json_last_error_msg().').',
+                'trace' => null,
+            ],
+        ]);
+
+        // A plain ASCII envelope always encodes; the guard keeps PHPStan honest.
+        return $fallback === false ? '' : $fallback;
     }
 
     /**
@@ -173,6 +303,10 @@ class AsyncTaskTransport
      */
     public static function drainJumpCompletion(): ?array
     {
+        // Runners that have outrun their deadline spool a failure first, so a
+        // hung task surfaces as ->failed() here rather than never completing.
+        static::sweepJumpTimeouts();
+
         $dir = static::directory('complete');
         if (! is_dir($dir)) {
             return null;

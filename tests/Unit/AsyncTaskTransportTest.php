@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\AsyncTaskTransport;
@@ -53,13 +54,55 @@ it('returns null when there is no completion to drain', function () {
 });
 
 it('stores and forgets scope metadata', function () {
-    AsyncTaskRegistry::register('t1', 12345, null);
+    $origin = new stdClass;
+
+    AsyncTaskRegistry::register('t1', $origin, null);
     AsyncTaskRegistry::register('t2', null, 'my-alias');
 
-    expect(AsyncTaskRegistry::scope('t1'))->toBe(['origin' => 12345, 'shared' => null])
+    expect(AsyncTaskRegistry::origin('t1'))->toBe($origin)
+        ->and(AsyncTaskRegistry::scope('t1')['shared'])->toBeNull()
         ->and(AsyncTaskRegistry::scope('t2'))->toBe(['origin' => null, 'shared' => 'my-alias'])
         ->and(AsyncTaskRegistry::scope('missing'))->toBeNull();
 
     AsyncTaskRegistry::forget('t1');
     expect(AsyncTaskRegistry::scope('t1'))->toBeNull();
+});
+
+it('holds the origin screen weakly so a recycled object id cannot be mistaken for it', function () {
+    $origin = new stdClass;
+    AsyncTaskRegistry::register('t3', $origin, null);
+
+    // The screen is popped and freed while the task is still running.
+    unset($origin);
+
+    expect(AsyncTaskRegistry::origin('t3'))->toBeNull()
+        // The scope itself is still there — the task is in flight, it just has
+        // no live component to deliver to.
+        ->and(AsyncTaskRegistry::scope('t3'))->toBeArray();
+});
+
+it('drops the spooled payload when the background lane refuses the task', function () {
+    $id = 'refused-'.uniqid();
+
+    // No Jump, no nativephp_call registered in-process → nothing accepts it.
+    expect(AsyncTaskTransport::dispatch($id, serialize(['kind' => 'closure'])))->toBeFalse()
+        ->and(is_file(AsyncTaskTransport::directory('payload').DIRECTORY_SEPARATOR.$id.'.task'))->toBeFalse();
+})->skip(fn () => function_exists('nativephp_call'), 'A bridge is available in this process.');
+
+it('falls back to a failure envelope when a completion will not encode', function () {
+    $encode = (new ReflectionClass(AsyncTaskTransport::class))->getMethod('encodeCompletion');
+    $encode->setAccessible(true);
+
+    // An invalid UTF-8 byte sequence — json_encode() returns false on this.
+    $json = $encode->invoke(null, [
+        'id' => 'x1',
+        'event' => AsyncTaskFinished::class,
+        'payload' => ['id' => 'x1', 'result' => "\xB1\x31"],
+    ], 'x1');
+
+    $decoded = json_decode($json, true);
+
+    expect($decoded['event'])->toBe(AsyncTaskFailed::class)
+        ->and($decoded['payload']['id'])->toBe('x1')
+        ->and($decoded['payload']['message'])->toContain('could not be encoded');
 });

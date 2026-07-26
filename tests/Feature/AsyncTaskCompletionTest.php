@@ -1,5 +1,7 @@
 <?php
 
+use Illuminate\Support\Facades\Cache;
+use Native\Mobile\AsyncTask;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
@@ -29,7 +31,7 @@ function setActiveComponent(?NativeComponent $component): void
 {
     $prop = new ReflectionProperty(NativeComponent::class, 'nativeActiveComponent');
     $prop->setAccessible(true);
-    $prop->setValue(null, $component);
+    $prop->setValue(null, $component !== null ? WeakReference::create($component) : null);
 }
 
 function finishedEvent(string $id, mixed $result): array
@@ -46,7 +48,7 @@ it('fires the finished() callback when the origin screen is still topmost', func
     setActiveComponent($screen);
 
     $id = 'a1';
-    AsyncTaskRegistry::register($id, spl_object_id($screen), null);
+    AsyncTaskRegistry::register($id, $screen, null);
     NativeCallbacks::register($id, AsyncTaskFinished::class, function ($result) {
         $this->result = $result;
     });
@@ -63,7 +65,7 @@ it('drops the callback when the user has navigated to another screen', function 
     $current = new AsyncScreenDouble;
 
     $id = 'a2';
-    AsyncTaskRegistry::register($id, spl_object_id($origin), null);
+    AsyncTaskRegistry::register($id, $origin, null);
     NativeCallbacks::register($id, AsyncTaskFinished::class, function ($result) {
         $this->result = $result;
     });
@@ -78,12 +80,33 @@ it('drops the callback when the user has navigated to another screen', function 
         ->and(AsyncTaskRegistry::scope($id))->toBeNull();
 });
 
+it('drops the callback when the origin screen has been freed and its object id recycled', function () {
+    $origin = new AsyncScreenDouble;
+    $id = 'a2b';
+    AsyncTaskRegistry::register($id, $origin, null);
+    NativeCallbacks::register($id, AsyncTaskFinished::class, function ($result) {
+        $this->result = $result;
+    });
+
+    // The origin screen is popped and freed. PHP is free to hand its object id
+    // to the next component allocated — which is what an id comparison would
+    // mistake for the origin.
+    unset($origin);
+
+    $current = new AsyncScreenDouble;
+    setActiveComponent($current);
+    $current->fireEvent(finishedEvent($id, 'DONE'));
+
+    expect($current->result)->toBeNull()
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
 it('routes a failed() callback an AsyncTaskException with the original message', function () {
     $screen = new AsyncScreenDouble;
     setActiveComponent($screen);
 
     $id = 'a3';
-    AsyncTaskRegistry::register($id, spl_object_id($screen), null);
+    AsyncTaskRegistry::register($id, $screen, null);
     NativeCallbacks::register($id, AsyncTaskFailed::class, function ($e) {
         $this->error = $e->getMessage();
     });
@@ -103,7 +126,7 @@ it('delivers a shared() task as a named event regardless of active screen', func
 
     $id = 'a4';
     // Shared alias set; origin is irrelevant for delivery.
-    AsyncTaskRegistry::register($id, spl_object_id($origin), 'report-ready');
+    AsyncTaskRegistry::register($id, $origin, 'report-ready');
 
     // Any active component listening for the alias handles it.
     $current->registerNativeEventListener('report-ready', function ($event) {
@@ -115,4 +138,36 @@ it('delivers a shared() task as a named event regardless of active screen', func
 
     expect($current->sharedResult)->toBe('SHARED')
         ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
+it('registers async callbacks in memory only, so a dispatch costs no cache write', function () {
+    $screen = new AsyncScreenDouble;
+    setActiveComponent($screen);
+
+    $fake = AsyncTask::fake();
+    // The fake runs inline, so register the callback the way a real dispatch
+    // would and check the tiers directly.
+    NativeCallbacks::register('durability', AsyncTaskFinished::class, static fn () => null, durable: false);
+
+    expect(NativeCallbacks::resolve('durability', AsyncTaskFinished::class))->not->toBeNull()
+        ->and(Cache::has('native_cb:durability:'.AsyncTaskFinished::class))->toBeFalse();
+
+    NativeCallbacks::flush();
+
+    // Tier 1 was the only copy: nothing survives the flush.
+    expect(NativeCallbacks::resolve('durability', AsyncTaskFinished::class))->toBeNull()
+        ->and($fake->count())->toBe(0);
+});
+
+it('does not keep the last active screen alive once it has been freed', function () {
+    $screen = new AsyncScreenDouble;
+    setActiveComponent($screen);
+
+    $weak = WeakReference::create($screen);
+    unset($screen);
+
+    // A strong static would pin the screen — and its whole state graph — for the
+    // life of the process.
+    expect($weak->get())->toBeNull()
+        ->and(NativeComponent::active())->toBeNull();
 });

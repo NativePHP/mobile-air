@@ -60,8 +60,14 @@ abstract class NativeComponent
      * event). Async tasks capture this at dispatch time so a completion arriving
      * after the user has navigated away can be dropped instead of firing against
      * the wrong live component. Only ever one component runs at a time.
+     *
+     * Held WEAKLY, and restored to its previous value when a runloop exits: a
+     * strong static would keep the last screen a user ever visited — and its
+     * whole state graph — alive for the life of the process.
+     *
+     * @var \WeakReference<self>|null
      */
-    private static ?self $nativeActiveComponent = null;
+    private static ?\WeakReference $nativeActiveComponent = null;
 
     private ?NativeDumpException $dumpException = null;
 
@@ -1985,8 +1991,11 @@ abstract class NativeComponent
             return;
         }
 
-        // Scoped: drop if the originating screen has been left.
-        if ($scope !== null && $scope['origin'] !== null && $scope['origin'] !== spl_object_id($this)) {
+        // Scoped: drop if the originating screen has been left. The weak
+        // reference reads back as null once that component has been freed, which
+        // is never === $this — so a recycled object id can't smuggle a callback
+        // onto an unrelated screen that happens to sit at the same address.
+        if ($scope !== null && $scope['origin'] !== null && $scope['origin']->get() !== $this) {
             NativeRouter::debugLog("async {$id}: dropped completion — origin screen no longer topmost");
             AsyncTaskRegistry::forget($id);
             NativeCallbacks::forget($id);
@@ -2056,13 +2065,34 @@ abstract class NativeComponent
     }
 
     /**
-     * The component currently driving the runloop, or null when none is active.
-     * Used by {@see PendingAsyncTask} to scope async completion
-     * callbacks to the screen that dispatched them.
+     * The component currently driving the runloop, or null when none is active
+     * (or the last active one has since been freed). Used by
+     * {@see PendingAsyncTask} to scope async completion callbacks to the screen
+     * that dispatched them.
      */
     public static function active(): ?self
     {
-        return self::$nativeActiveComponent;
+        return self::$nativeActiveComponent?->get();
+    }
+
+    /**
+     * Mark this component as the one driving the runloop, returning whatever was
+     * active before so a nested runloop can hand the baton back on the way out.
+     *
+     * @return \WeakReference<self>|null
+     */
+    private static function markActive(self $component): ?\WeakReference
+    {
+        $previous = self::$nativeActiveComponent;
+        self::$nativeActiveComponent = \WeakReference::create($component);
+
+        return $previous;
+    }
+
+    /** @param  \WeakReference<self>|null  $previous */
+    private static function restoreActive(?\WeakReference $previous): void
+    {
+        self::$nativeActiveComponent = $previous;
     }
 
     /**
@@ -2075,6 +2105,8 @@ abstract class NativeComponent
      *
      * The work MUST be a static closure — it runs in another interpreter and
      * cannot capture `$this`. Mutate state from `->finished()`/`->failed()`.
+     * `->failed()` also covers a task that never started or outran its timeout,
+     * so a spinner started here always has something to switch it off.
      */
     protected function async(\Closure $work): PendingAsyncTask
     {
@@ -2203,8 +2235,10 @@ abstract class NativeComponent
             $this->renderErrorScreen($e);
         }
 
+        $previousActiveComponent = self::markActive($this);
+
         while ($this->nativeRunning) {
-            self::$nativeActiveComponent = $this;
+            self::markActive($this);
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2296,6 +2330,10 @@ abstract class NativeComponent
             }
         }
 
+        // Hand the baton back: this screen is done driving the runloop, so it
+        // must stop being what a later AsyncTask::dispatch() scopes itself to.
+        self::restoreActive($previousActiveComponent);
+
         $this->unmount();
 
         nativephp_element_shutdown();
@@ -2364,6 +2402,8 @@ abstract class NativeComponent
             $this->registerNativeEventListeners();
         }
 
+        $previousActiveComponent = self::markActive($this);
+
         while ($this->nativeRunning) {
             // Superseded by a newer Jump native session — this runloop is an
             // orphan (its WebView is gone). The device-side bridge wakes us from
@@ -2379,7 +2419,7 @@ abstract class NativeComponent
                 break;
             }
 
-            self::$nativeActiveComponent = $this;
+            self::markActive($this);
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2509,6 +2549,10 @@ abstract class NativeComponent
                 $this->dispatch($event);
             }
         }
+
+        // Hand the baton back to whatever was driving before this hot-swapped
+        // loop took over, so a later dispatch scopes to the right screen.
+        self::restoreActive($previousActiveComponent);
     }
 
     public function getNavigationIntent(): ?NavigationIntent

@@ -15,8 +15,13 @@ use Native\Mobile\Testing\FakeAsyncTask;
  *     ->failed(fn (\Throwable $e) => $this->error = $e->getMessage());
  * ```
  *
+ * Every dispatch reaches exactly one outcome: a task that can't be started, one
+ * whose result won't survive the trip back, and one that outruns its timeout
+ * (default 60s, `->timeout($seconds)`) all arrive at `failed()` rather than
+ * leaving the UI waiting on a result that isn't coming.
+ *
  * Or subclass it (Job-like, but NOT a queued job — this never touches the
- * standard queue or SQLite):
+ * standard queue or a database):
  *
  * ```php
  * class BuildReport extends AsyncTask

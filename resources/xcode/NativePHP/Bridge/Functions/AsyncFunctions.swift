@@ -21,13 +21,34 @@ enum AsyncFunctions {
     /// Start a dispatched task on the async pool.
     /// Parameters:
     ///   - id: string — the dispatched task id (payload already spooled to disk)
+    ///   - timeout: number (optional) — seconds before the task is treated as hung
+    ///   - timeoutEvent: string (optional) — event FQCN to post on timeout
+    ///   - timeoutPayload: object (optional) — event data to post on timeout
+    ///
+    /// The `success` flag in the reply is load-bearing: PHP fails the dispatch
+    /// (and fires `->failed()`) when it isn't true, so a task that never started
+    /// can't leave the UI waiting on a result that isn't coming.
     class Dispatch: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
             guard let id = parameters["id"] as? String else {
                 return ["success": false, "error": "missing id"]
             }
 
-            AsyncTaskExecutor.shared.dispatch(taskId: id)
+            let timeout = (parameters["timeout"] as? NSNumber)?.intValue ?? 0
+            let timeoutEvent = parameters["timeoutEvent"] as? String
+            let timeoutPayload = (parameters["timeoutPayload"] as? [String: Any]).map(jsonString)
+
+            let accepted = AsyncTaskExecutor.shared.dispatch(
+                taskId: id,
+                timeout: timeout,
+                timeoutEvent: timeoutEvent,
+                timeoutPayloadJson: timeoutPayload
+            )
+
+            guard accepted else {
+                return ["success": false, "error": "task not accepted"]
+            }
+
             return ["success": true]
         }
     }
@@ -45,18 +66,21 @@ enum AsyncFunctions {
             }
 
             let payload = parameters["payload"] as? [String: Any] ?? [:]
-            let payloadJson: String
-            if let data = try? JSONSerialization.data(withJSONObject: payload),
-               let json = String(data: data, encoding: .utf8) {
-                payloadJson = json
-            } else {
-                payloadJson = "{}"
-            }
 
             // Thread-safe: sendNativeEvent is the event producer and may be
             // called from any thread (here, an async slot's queue).
-            NativeElementBridge.sendNativeEvent(eventName: event, payloadJson: payloadJson)
+            NativeElementBridge.sendNativeEvent(eventName: event, payloadJson: jsonString(payload))
             return ["success": true]
         }
     }
+}
+
+/// Re-serialize a decoded bridge parameter back to a JSON object string.
+private func jsonString(_ value: [String: Any]) -> String {
+    guard let data = try? JSONSerialization.data(withJSONObject: value),
+          let json = String(data: data, encoding: .utf8) else {
+        return "{}"
+    }
+
+    return json
 }

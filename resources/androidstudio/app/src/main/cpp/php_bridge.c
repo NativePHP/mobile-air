@@ -1378,7 +1378,7 @@ JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
 // interpreter context once, then runs `native:async:run --id=<id>` for tasks
 // handed to it. Unlike the single queue worker this lane is CONCURRENT (N
 // threads); unlike ephemeral it is reused across tasks, not torn down each time.
-// It never touches SQLite or the standard queue — task ids arrive from Kotlin,
+// It never touches a database or the standard queue — task ids arrive from Kotlin,
 // and the task payload/result travel via the PHP-side temp-file transport plus
 // the AsyncTask.Complete bridge function (which wakes the UI runloop).
 //
@@ -1442,9 +1442,6 @@ JNIEXPORT jint JNICALL native_async_boot(JNIEnv *env, jobject thiz, jstring jBoo
     pthread_mutex_lock(&g_async_boot_mutex);
     clear_collected_output();
 
-    setenv("PHP_SELF", "artisan.php", 1);
-    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
-
     if (async_embed_init() != SUCCESS) {
         LOGE("async_boot: async_embed_init() FAILED");
         pthread_mutex_unlock(&g_async_boot_mutex);
@@ -1454,6 +1451,18 @@ JNIEXPORT jint JNICALL native_async_boot(JNIEnv *env, jobject thiz, jstring jBoo
 
     zend_first_try {
         zend_activate_modules();
+
+        // Console-shaped environment for the bootstrap, set through the
+        // superglobal rather than setenv(). This lane is CONCURRENT: several
+        // pool threads boot and run at once, and setenv()/getenv() are neither
+        // thread-safe nor per-thread — the value one thread sets is the value
+        // every other thread (and the UI lane) sees. $_SERVER is per-thread, so
+        // each context gets its own copy, and Laravel's Env repository reads it.
+        zend_eval_string(
+            "$_SERVER['PHP_SELF'] = 'artisan.php';\n"
+            "$_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n",
+            NULL, "async_env");
+
         zend_file_handle fileHandle;
         zend_stream_init_filename(&fileHandle, bootstrapPath);
         php_execute_script(&fileHandle);
@@ -1479,9 +1488,9 @@ JNIEXPORT jstring JNICALL native_async_run(JNIEnv *env, jobject thiz, jstring jT
     LOGI("async_run: task %s", taskId);
 
     clear_collected_output();
-    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
-    setenv("PHP_SELF", "artisan.php", 1);
 
+    // No setenv() here — see async_boot. The eval sets the per-thread $_SERVER
+    // values this lane needs, which is what Laravel reads anyway.
     char eval_code[1024];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
@@ -1496,8 +1505,6 @@ JNIEXPORT jstring JNICALL native_async_run(JNIEnv *env, jobject thiz, jstring jT
     zend_first_try {
         zend_eval_string(eval_code, NULL, "async_run");
     } zend_end_try();
-
-    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
 
     (*env)->ReleaseStringUTFChars(env, jTaskId, taskId);
 

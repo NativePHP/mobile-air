@@ -47,6 +47,15 @@ class PendingAsyncTask
 
     protected bool $started = false;
 
+    /**
+     * Seconds the task may run before the background lane is declared hung and
+     * `->failed()` fires with a timeout. 0 disables the watchdog.
+     */
+    protected int $timeout = self::DEFAULT_TIMEOUT;
+
+    /** Default watchdog window for a dispatched task, in seconds. */
+    public const DEFAULT_TIMEOUT = 60;
+
     protected function __construct(array $work)
     {
         $this->id = (string) Str::uuid();
@@ -129,6 +138,24 @@ class PendingAsyncTask
         return $this;
     }
 
+    /**
+     * How long the task may run before it's treated as hung, in seconds
+     * (default {@see DEFAULT_TIMEOUT}). When the deadline passes with nothing
+     * delivered, `->failed()` fires with a timeout {@see AsyncTaskException} so
+     * the UI can stop waiting. Pass 0 for a task that may legitimately run for
+     * as long as it likes — nothing will ever un-stick its spinner.
+     *
+     * The work itself is NOT killed on device (a PHP interpreter mid-task can't
+     * be interrupted safely); the timeout unblocks the UI, and a late completion
+     * for a task already reported as failed is discarded.
+     */
+    public function timeout(int $seconds): static
+    {
+        $this->timeout = max(0, $seconds);
+
+        return $this;
+    }
+
     // ── Lifecycle ───────────────────────────────────
 
     /**
@@ -148,18 +175,19 @@ class PendingAsyncTask
         }
 
         // Scope this task to the component that dispatched it, unless shared.
-        $origin = $this->sharedAlias === null
-            ? (($active = NativeComponent::active()) !== null ? spl_object_id($active) : null)
-            : null;
+        $origin = $this->sharedAlias === null ? NativeComponent::active() : null;
         AsyncTaskRegistry::register($this->id, $origin, $this->sharedAlias);
 
-        // Register the completion callbacks so they survive the round trip
-        // (and a process bounce) and can be resolved when the event arrives.
+        // Register the completion callbacks so they can be resolved when the
+        // event arrives. Memory-only (durable: false): the task payload and its
+        // scope metadata are RAM/temp-file bound anyway, so a process kill loses
+        // the task regardless — a durable cache copy would only buy a SQLite
+        // write per dispatch on the UI thread with nothing to survive to.
         if ($this->finishedCallback !== null) {
-            NativeCallbacks::register($this->id, AsyncTaskFinished::class, $this->finishedCallback);
+            NativeCallbacks::register($this->id, AsyncTaskFinished::class, $this->finishedCallback, durable: false);
         }
         if ($this->failedCallback !== null) {
-            NativeCallbacks::register($this->id, AsyncTaskFailed::class, $this->failedCallback);
+            NativeCallbacks::register($this->id, AsyncTaskFailed::class, $this->failedCallback, durable: false);
         }
 
         try {
@@ -176,9 +204,68 @@ class PendingAsyncTask
             );
         }
 
-        AsyncTaskTransport::dispatch($this->id, $payload);
+        // A refused dispatch (no executor, no free slot, no bridge) has to fail
+        // HERE — nothing else will ever report on a task that never started.
+        if (! AsyncTaskTransport::dispatch($this->id, $payload, $this->watchdog())) {
+            $this->failLocally(
+                'The async task could not be started — the background lane is not available.',
+                'RuntimeException',
+            );
+
+            return false;
+        }
 
         return true;
+    }
+
+    /**
+     * The timeout contract handed to the background lane's watchdog: the
+     * deadline plus the exact completion to post if it passes. Native holds
+     * these verbatim and posts them as-is, so it never has to know how a
+     * failure event is shaped.
+     *
+     * @return array{timeout: int, timeoutEvent: string, timeoutPayload: array}|array{}
+     */
+    protected function watchdog(): array
+    {
+        if ($this->timeout <= 0) {
+            return [];
+        }
+
+        return [
+            'timeout' => $this->timeout,
+            'timeoutEvent' => AsyncTaskFailed::class,
+            'timeoutPayload' => [
+                'id' => $this->id,
+                'exceptionClass' => 'RuntimeException',
+                'message' => "The async task did not complete within {$this->timeout} seconds.",
+                'trace' => null,
+            ],
+        ];
+    }
+
+    /**
+     * Report a failure that happened on THIS side of the bridge — the task never
+     * reached a background context, so no completion event is coming. Fires the
+     * `failed()` callback directly (we're still on the UI thread, inside the
+     * dispatching handler, so a state change here still paints).
+     */
+    protected function failLocally(string $message, string $exceptionClass): void
+    {
+        AsyncTaskRegistry::forget($this->id);
+        NativeCallbacks::forget($this->id);
+
+        $callback = $this->failedCallback;
+
+        if ($callback === null) {
+            // Nothing to tell; at least make it visible in the log rather than
+            // letting the dispatch evaporate.
+            error_log('[nativephp] async task '.$this->id.': '.$message);
+
+            return;
+        }
+
+        $callback(new AsyncTaskException($message, $exceptionClass));
     }
 
     /**
@@ -191,7 +278,9 @@ class PendingAsyncTask
         $fake?->record($this->id, $this->work, $this->sharedAlias);
 
         try {
-            $result = AsyncTaskRunner::invoke($this->work);
+            // Round-trip the result exactly as the device transport would, so a
+            // test can't pass on a value that wouldn't survive the real hop.
+            $result = AsyncTaskRunner::normalizeResult(AsyncTaskRunner::invoke($this->work));
             if ($this->finishedCallback !== null) {
                 ($this->finishedCallback)($result);
             }
@@ -222,11 +311,30 @@ class PendingAsyncTask
     /**
      * Auto-start when the fluent chain falls out of scope, matching the other
      * Pending* builders. An explicit `start()` disables this (idempotent).
+     *
+     * Nothing may escape here: a destructor runs at whatever point the refcount
+     * drops — mid-statement, during GC, or while PHP is already unwinding
+     * another exception — and a throw from there surfaces nowhere near the
+     * dispatch site (and is fatal during shutdown). So a start failure is
+     * reported through the task's own `failed()` channel and the error log
+     * instead. Call `start()` explicitly if you want the exception.
      */
     public function __destruct()
     {
-        if (! $this->started) {
+        if ($this->started) {
+            return;
+        }
+
+        try {
             $this->start();
+        } catch (Throwable $e) {
+            try {
+                $this->failLocally($e->getMessage(), $e::class);
+            } catch (Throwable) {
+                // Reporting the failure must not mask the original either.
+            }
+
+            error_log('[nativephp] async task '.$this->id.' failed to start: '.$e->getMessage());
         }
     }
 }

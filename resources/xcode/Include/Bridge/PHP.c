@@ -1230,7 +1230,7 @@ int ephemeral_php_is_booted(void) {
 // own TSRM context booted once, running `native:async:run --id=<id>` for tasks
 // assigned to it. Concurrent (one in-flight task per slot) and reused across
 // tasks — unlike the single queue worker and the boot-per-invocation ephemeral
-// lane. Never touches SQLite or the standard queue; the task payload/result
+// lane. Never touches a database or the standard queue; the task payload/result
 // travel via the PHP temp-file transport + the AsyncTask.Complete bridge
 // function (which wakes the UI runloop). Android twin: the async lane in
 // php_bridge.c + AsyncTaskExecutor.kt.
@@ -1263,9 +1263,12 @@ static pthread_mutex_t async_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void do_async_run(async_php_slot_t *slot) {
     clear_output_buffer();
 
-    setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
-    setenv("PHP_SELF", "artisan.php", 1);
-
+    // No setenv() here. This lane is CONCURRENT: several slots run at once, and
+    // setenv()/getenv() are neither thread-safe nor per-thread — the value one
+    // slot sets is the value every other slot (and the UI lane) sees. The eval
+    // below sets the per-thread $_SERVER values instead, which is what Laravel
+    // reads anyway.
+    //
     // task_id is a framework-generated UUID (Str::uuid()), so it's safe to
     // embed directly; no user input reaches this string.
     char eval_code[1024];
@@ -1282,8 +1285,6 @@ static void do_async_run(async_php_slot_t *slot) {
     zend_first_try {
         zend_eval_string(eval_code, NULL, "async_run");
     } zend_end_try();
-
-    setenv("APP_RUNNING_IN_CONSOLE", "false", 1);
 
     char *out = get_collected_output();
     slot->result = out ? strdup(out) : strdup("");
@@ -1308,6 +1309,14 @@ static void *async_thread_main(void *arg) {
 
     zend_first_try {
         zend_activate_modules();
+
+        // Console-shaped environment for the bootstrap, per-thread via the
+        // superglobal rather than a process-wide setenv() (see do_async_run).
+        zend_eval_string(
+            "$_SERVER['PHP_SELF'] = 'artisan.php';\n"
+            "$_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n",
+            NULL, "async_env");
+
         zend_file_handle fileHandle;
         zend_stream_init_filename(&fileHandle, slot->bootstrap_path);
         php_execute_script(&fileHandle);
