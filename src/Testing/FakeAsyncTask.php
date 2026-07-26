@@ -4,6 +4,7 @@ namespace Native\Mobile\Testing;
 
 use Closure;
 use Native\Mobile\AsyncTask;
+use Native\Mobile\Support\AsyncTaskRunner;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -15,10 +16,9 @@ use PHPUnit\Framework\Assert;
  * dispatch is recorded for assertions.
  *
  * The result still goes through the same JSON normalization the device transport
- * applies ({@see \Native\Mobile\Support\AsyncTaskRunner::normalizeResult()}), so
- * a test can't pass on a value that wouldn't survive the real hop: objects arrive
- * as arrays, and a non-encodable result fails the task here exactly as it would
- * on a device.
+ * applies ({@see AsyncTaskRunner::normalizeResult()}), so a test can't pass on a
+ * value that wouldn't survive the real hop: objects arrive as arrays, and a
+ * non-encodable result fails the task here exactly as it would on a device.
  *
  *   $fake = AsyncTask::fake();
  *   $component->tap('generateReport');
