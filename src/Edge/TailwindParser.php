@@ -879,21 +879,21 @@ class TailwindParser
 
     private static function parseAlignItems(string $value): ?array
     {
-        return ($case = AlignItems::fromLabel($value)) !== null
+        return ($case = AlignItems::fromUtilityClass($value)) !== null
             ? ['alignItems' => $case->value]
             : null;
     }
 
     private static function parseJustifyContent(string $value): ?array
     {
-        return ($case = JustifyContent::fromLabel($value)) !== null
+        return ($case = JustifyContent::fromUtilityClass($value)) !== null
             ? ['justifyContent' => $case->value]
             : null;
     }
 
     private static function parseAlignSelf(string $value): ?array
     {
-        return ($case = AlignSelf::fromLabel($value)) !== null
+        return ($case = AlignSelf::fromUtilityClass($value)) !== null
             ? ['alignSelf' => $case->value]
             : null;
     }

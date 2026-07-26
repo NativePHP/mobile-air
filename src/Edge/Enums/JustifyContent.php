@@ -38,4 +38,22 @@ enum JustifyContent: int
             default => null,
         };
     }
+
+    /**
+     * Tailwind spells the distribution values without the `space-` prefix
+     * (`justify-between`, not `justify-space-between`), so the strict utility
+     * mapping can't fall back to the case names.
+     */
+    public static function fromUtilityClass(string $value): ?self
+    {
+        return match (strtolower(trim($value))) {
+            'start' => self::Start,
+            'center' => self::Center,
+            'end' => self::End,
+            'between' => self::SpaceBetween,
+            'around' => self::SpaceAround,
+            'evenly' => self::SpaceEvenly,
+            default => null,
+        };
+    }
 }
