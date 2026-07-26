@@ -14,16 +14,8 @@ beforeEach(function () {
 
 afterEach(function () {
     FakeBridge::disable();
-    forcePlatform(null);
+    Platform::set(null);
 });
-
-/** Platform caches its bridge probe, so poke the statics directly. */
-function forcePlatform(?string $platform): void
-{
-    $r = new ReflectionClass(Platform::class);
-    $r->setStaticPropertyValue('platform', $platform);
-    $r->setStaticPropertyValue('detected', true);
-}
 
 // ── Building ────────────────────────────────────────
 
@@ -187,7 +179,7 @@ it('falls back to Dialog.Toast on a known Android device', function () {
     // everything regardless of the connected device, so without a platform
     // check an Android device silently swallows every toast — including the
     // ones still coming through the deprecated Dialog::toast().
-    forcePlatform(Platform::ANDROID);
+    Platform::set(Platform::ANDROID);
 
     Toast::message('Saved')->short()->show();
 
@@ -213,7 +205,7 @@ it('gives a persistent toast the longest fallback duration on Android', function
 });
 
 it('skips a view-only toast on Android rather than sending raw markup', function () {
-    forcePlatform(Platform::ANDROID);
+    Platform::set(Platform::ANDROID);
 
     Toast::html('<div>Saved</div>')->show();
 
@@ -224,7 +216,7 @@ it('skips a view-only toast on Android rather than sending raw markup', function
 it('does not swallow dismissals on an unknown platform', function () {
     // Fail open: only a KNOWN Android device falls back, so tests and any
     // future platform keep the previous behaviour.
-    forcePlatform(null);
+    Platform::set(null);
 
     Toast::dismiss('saving');
 
