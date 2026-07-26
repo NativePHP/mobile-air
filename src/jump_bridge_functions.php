@@ -1,6 +1,9 @@
 <?php
 
 use Native\Mobile\JumpBridge;
+
+/** How often the Jump runloop re-checks the async spool while tasks are in flight. */
+const ASYNC_JUMP_POLL_MS = 150;
 use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Testing\FakeBridge;
 
@@ -98,6 +101,21 @@ if (! function_exists('nativephp_element_wait_event')) {
         // so ->finished()/->failed() fire in the runloop just like on device.
         if (($completion = AsyncTaskTransport::drainJumpCompletion()) !== null) {
             return $completion;
+        }
+
+        // Nothing WAKES this wait when a completion spools. On device the
+        // bridge posts an event that unblocks it; under Jump the spool is just
+        // a directory, and a screen with no #[Poll] asks for timeout -1 —
+        // block until the user does something. A task dispatched from such a
+        // screen would therefore sit finished-but-undelivered until an
+        // unrelated tap happened to wake the loop, which looks exactly like a
+        // spinner that never stops. While runners are in flight, clamp the
+        // wait so the loop comes back and re-checks the spool. Costs nothing
+        // when no async task is pending.
+        if (AsyncTaskTransport::hasPendingJumpRunners()) {
+            $timeoutMs = $timeoutMs < 0
+                ? ASYNC_JUMP_POLL_MS
+                : min($timeoutMs, ASYNC_JUMP_POLL_MS);
         }
 
         static $consecutiveErrors = 0;

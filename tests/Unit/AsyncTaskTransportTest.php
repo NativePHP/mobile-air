@@ -150,3 +150,26 @@ it('keeps the spool owner-only', function () {
     clearstatcache();
     expect(fileperms($dir) & 0777)->toBe(0700);
 });
+
+it('reports pending jump runners so the runloop does not block past a completion', function () {
+    // Nothing WAKES a blocked nativephp_element_wait_event() when a completion
+    // spools under Jump — a screen with no #[Poll] asks for timeout -1, so the
+    // completion would sit undelivered until an unrelated tap woke the loop.
+    // The polyfill clamps its wait while this returns true.
+    expect(AsyncTaskTransport::hasPendingJumpRunners())->toBeFalse();
+
+    // A spooled-but-undrained completion must keep the loop ticking even when
+    // the subprocess itself has already exited.
+    $dir = AsyncTaskTransport::directory('complete');
+    File::ensureDirectoryExists($dir);
+    file_put_contents($dir.'/pending-probe.json', json_encode([
+        'event' => AsyncTaskFinished::class,
+        'payload' => ['id' => 'pending-probe'],
+    ]));
+
+    expect(AsyncTaskTransport::hasPendingJumpRunners())->toBeTrue();
+
+    AsyncTaskTransport::drainJumpCompletion();
+
+    expect(AsyncTaskTransport::hasPendingJumpRunners())->toBeFalse();
+});

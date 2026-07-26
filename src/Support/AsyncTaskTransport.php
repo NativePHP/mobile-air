@@ -181,6 +181,32 @@ class AsyncTaskTransport
     }
 
     /**
+     * Whether any Jump runner is still in flight.
+     *
+     * The runloop needs this because nothing WAKES a blocked
+     * `nativephp_element_wait_event()` when a completion spools. On device the
+     * bridge posts an event that unblocks the wait; under Jump the spool is
+     * passive, so a screen with no `#[Poll]` (timeout -1, block forever) would
+     * never come back to look at it. See jump_bridge_functions.php.
+     */
+    public static function hasPendingJumpRunners(): bool
+    {
+        foreach (static::$jumpProcesses as $id => $entry) {
+            if ($entry['process']->isRunning()) {
+                return true;
+            }
+
+            // Finished, but its completion may not be drained yet — keep the
+            // loop ticking until the spool is actually empty.
+            unset(static::$jumpProcesses[$id]);
+        }
+
+        $dir = static::directory('complete');
+
+        return is_dir($dir) && (glob($dir.DIRECTORY_SEPARATOR.'*.json') ?: []) !== [];
+    }
+
+    /**
      * Fail any Jump runner that has outrun its deadline: stop the subprocess and
      * spool the timeout completion so the runloop delivers `->failed()` on the
      * next tick. The device equivalent is the native executor's watchdog.
