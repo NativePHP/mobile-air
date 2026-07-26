@@ -2,6 +2,7 @@
 
 namespace Native\Mobile;
 
+use Native\Mobile\Enums\Os;
 use Native\Mobile\Facades\System;
 
 /**
@@ -20,9 +21,9 @@ use Native\Mobile\Facades\System;
  */
 class Platform
 {
-    public const IOS = 'ios';
+    public const IOS = Os::Ios->value;
 
-    public const ANDROID = 'android';
+    public const ANDROID = Os::Android->value;
 
     private static ?string $platform = null;
 
@@ -95,16 +96,42 @@ class Platform
     }
 
     /**
+     * The detected platform as an enum case, or null when it isn't known.
+     * Prefer this over {@see current()} in new code — it can't be compared
+     * against a misspelt string.
+     */
+    public static function os(): ?Os
+    {
+        $platform = self::current();
+
+        return $platform === null ? null : Os::fromLabel($platform);
+    }
+
+    /**
      * Test seam — force the cached platform value. Pass `null` to reset
      * to lazy detection on the next call.
+     *
+     * Accepts an {@see Os} case or its string spelling. An unrecognised
+     * string throws rather than being stored: silently accepting
+     * `set('androdi')` leaves isAndroid() false for the rest of the
+     * process with nothing to show for it, and the whole point of a test
+     * seam is that you can trust what it says.
      *
      * Resetting the cache is the caller's responsibility for any
      * downstream consumer that also caches keyed by platform (e.g.
      * `\Native\Mobile\Edge\TailwindParser::clearCache()`).
+     *
+     * @throws \InvalidArgumentException
      */
-    public static function set(?string $platform): void
+    public static function set(Os|string|null $platform): void
     {
-        self::$platform = $platform;
+        if (is_string($platform)) {
+            $platform = Os::fromLabel($platform) ?? throw new \InvalidArgumentException(
+                "Unknown platform [{$platform}]. Use Os::Ios, Os::Android, 'ios' or 'android'."
+            );
+        }
+
+        self::$platform = $platform?->value;
         self::$detected = $platform !== null;
         self::$lastFailedAttempt = null;
     }

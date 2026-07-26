@@ -47,6 +47,10 @@ if (! function_exists('nativephp_can')) {
      */
     function nativephp_can(string $method): bool
     {
+        if ($fake = FakeBridge::current()) {
+            return $fake->can($method);
+        }
+
         return true;
     }
 }
