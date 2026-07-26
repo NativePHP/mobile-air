@@ -22,9 +22,9 @@ use Native\Mobile\Icon\IosSymbol;
  *
  * Type-hinting against the [IosSymbol] / [AndroidSymbol] marker
  * interfaces (rather than the concrete plugin enums) keeps core free of
- * the native-ui plugin dependency. Plugin-supplied enum catalogs (the
- * `Ios`, `Android`, `AndroidOutlined` enums in
- * `Nativephp\NativeUi\Icon\*`) implement these interfaces.
+ * the native-ui plugin dependency. The generated enum catalogs (the
+ * `App\Enums\Icons\Ios`, `Android`, and `AndroidOutlined` enums written
+ * by `php artisan native-ui:generate-icons`) implement these interfaces.
  *
  * Usage on a builder:
  *
