@@ -78,7 +78,7 @@ class AsyncTaskTransport
     {
         $dir = static::directory('payload');
         static::ensureDir($dir);
-        file_put_contents($dir.DIRECTORY_SEPARATOR.$id.'.task', $payload, LOCK_EX);
+        static::writeSpoolFile($dir.DIRECTORY_SEPARATOR.$id.'.task', $payload);
     }
 
     /** Drop a spooled payload for a task that will never run. */
@@ -254,10 +254,9 @@ class AsyncTaskTransport
     {
         $dir = static::directory('complete');
         static::ensureDir($dir);
-        file_put_contents(
+        static::writeSpoolFile(
             $dir.DIRECTORY_SEPARATOR.$id.'.json',
             static::encodeCompletion(['event' => $event, 'payload' => $payload], $id),
-            LOCK_EX,
         );
     }
 
@@ -318,7 +317,13 @@ class AsyncTaskTransport
         }
 
         // Oldest first, so completions surface in the order they finished.
-        sort($files);
+        // Spool names are random UUIDs, so a plain sort() would order them
+        // arbitrarily — the modification time is the only thing that actually
+        // tracks completion order. Names break ties, since filemtime has
+        // one-second granularity on some filesystems and two tasks can easily
+        // land inside the same second.
+        clearstatcache();
+        usort($files, fn ($a, $b) => [filemtime($a), $a] <=> [filemtime($b), $b]);
         $file = $files[0];
 
         $raw = @file_get_contents($file);
@@ -338,10 +343,35 @@ class AsyncTaskTransport
         ];
     }
 
+    /**
+     * Create a spool directory owner-only.
+     *
+     * The payload is a PHP-serialized work envelope that the runner hands
+     * straight to unserialize(). A closure is signed with the app key, so a
+     * tampered one fails its signature — but a task subclass's constructor
+     * arguments are not, and the completion spool carries raw result data. On
+     * device this lives in app-private storage anyway; under Jump it sits in
+     * the project's storage/, so keep it off the group/other bits.
+     */
     protected static function ensureDir(string $dir): void
     {
         if (! is_dir($dir)) {
-            @mkdir($dir, 0755, true);
+            @mkdir($dir, 0700, true);
+
+            return;
         }
+
+        // Tighten a directory left behind by an earlier run (or an earlier
+        // version of this code) that created it world-readable.
+        if ((fileperms($dir) & 0077) !== 0) {
+            @chmod($dir, 0700);
+        }
+    }
+
+    /** Write a spool file owner-only. */
+    protected static function writeSpoolFile(string $path, string $contents): void
+    {
+        file_put_contents($path, $contents, LOCK_EX);
+        @chmod($path, 0600);
     }
 }

@@ -18,6 +18,9 @@ class BuildReportTask extends AsyncTask
     }
 }
 
+/** A subclass that forgets to declare handle() — the common mistake. */
+class HandlelessTask extends AsyncTask {}
+
 /**
  * Produces a closure auto-bound to $this — exactly what happens when a closure
  * is written inside a component method.
@@ -182,4 +185,13 @@ it('invokes a task work envelope by calling handle()', function () {
     ]);
 
     expect($result)->toBe(9);
+});
+
+it('rejects an AsyncTask subclass with no handle() at dispatch time', function () {
+    AsyncTask::fake();
+
+    // Same contract as the static-closure guard: fail in the handler the
+    // developer is looking at, not as a generic ->failed() from a thread.
+    expect(fn () => HandlelessTask::dispatch('x'))
+        ->toThrow(InvalidArgumentException::class);
 });

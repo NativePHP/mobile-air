@@ -89,6 +89,16 @@ class PendingAsyncTask
      */
     public static function forTask(string $taskClass, array $args): self
     {
+        // Same reasoning as the static-closure guard: fail in the handler where
+        // the developer can see it, not as a generic ->failed() from a
+        // background thread whose only symptom is "Call to undefined method".
+        if (! method_exists($taskClass, 'handle')) {
+            throw new \InvalidArgumentException(
+                "[{$taskClass}] must declare a handle() method to be dispatched as an async task. "
+                .'Its arguments are forwarded to handle() in the background context.'
+            );
+        }
+
         return new self(['kind' => 'task', 'task' => $taskClass, 'args' => array_values($args)]);
     }
 

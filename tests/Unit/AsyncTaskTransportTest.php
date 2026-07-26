@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\File;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Support\AsyncTaskRegistry;
@@ -105,4 +106,47 @@ it('falls back to a failure envelope when a completion will not encode', functio
     expect($decoded['event'])->toBe(AsyncTaskFailed::class)
         ->and($decoded['payload']['id'])->toBe('x1')
         ->and($decoded['payload']['message'])->toContain('could not be encoded');
+});
+
+it('drains jump completions in the order they finished, not by filename', function () {
+    // Spool names are random UUIDs, so a lexicographic sort orders them
+    // arbitrarily. Stage two completions where name order is the REVERSE of
+    // completion order and assert the older one drains first.
+    $dir = AsyncTaskTransport::directory('complete');
+    File::ensureDirectoryExists($dir);
+
+    $older = $dir.'/zzzzzzzz-0000-0000-0000-000000000000.json';
+    $newer = $dir.'/aaaaaaaa-0000-0000-0000-000000000000.json';
+
+    file_put_contents($older, json_encode(['event' => 'First', 'payload' => ['id' => 'older']]));
+    file_put_contents($newer, json_encode(['event' => 'Second', 'payload' => ['id' => 'newer']]));
+
+    touch($older, time() - 60);
+    touch($newer, time());
+    clearstatcache();
+
+    // Name order would give 'aaaa…' (the NEWER one) first.
+    expect(AsyncTaskTransport::drainJumpCompletion()['payload']['id'])->toBe('older')
+        ->and(AsyncTaskTransport::drainJumpCompletion()['payload']['id'])->toBe('newer');
+});
+
+it('keeps the spool owner-only', function () {
+    if (PHP_OS_FAMILY === 'Windows') {
+        $this->markTestSkipped('POSIX permissions are not meaningful on Windows.');
+    }
+
+    // The payload is handed straight to unserialize() by the runner, and a task
+    // subclass's constructor args are not signed the way a closure is.
+    $dir = AsyncTaskTransport::directory('payload');
+    File::deleteDirectory(AsyncTaskTransport::directory());
+    AsyncTaskTransport::dispatch('perm-check', serialize(['kind' => 'closure']));
+
+    clearstatcache();
+    expect(fileperms($dir) & 0777)->toBe(0700);
+
+    // ...and a directory left world-readable by an earlier run is tightened.
+    chmod($dir, 0755);
+    AsyncTaskTransport::dispatch('perm-check-2', serialize(['kind' => 'closure']));
+    clearstatcache();
+    expect(fileperms($dir) & 0777)->toBe(0700);
 });
