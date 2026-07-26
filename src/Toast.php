@@ -61,6 +61,13 @@ class Toast
             return;
         }
 
+        // Same iOS-only gate as PendingToast::supportsStackedToasts() — under
+        // Jump nativephp_can() answers `true` regardless of the connected
+        // device, so an Android device would swallow these silently.
+        if (Platform::isAndroid()) {
+            return;
+        }
+
         if (function_exists('nativephp_can') && ! nativephp_can($method)) {
             return;
         }

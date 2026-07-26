@@ -5,6 +5,7 @@ use Illuminate\Support\HtmlString;
 use Native\Mobile\Facades\Dialog;
 use Native\Mobile\Facades\Toast;
 use Native\Mobile\PendingToast;
+use Native\Mobile\Platform;
 use Native\Mobile\Testing\FakeBridge;
 
 beforeEach(function () {
@@ -13,7 +14,16 @@ beforeEach(function () {
 
 afterEach(function () {
     FakeBridge::disable();
+    forcePlatform(null);
 });
+
+/** Platform caches its bridge probe, so poke the statics directly. */
+function forcePlatform(?string $platform): void
+{
+    $r = new ReflectionClass(Platform::class);
+    $r->setStaticPropertyValue('platform', $platform);
+    $r->setStaticPropertyValue('detected', true);
+}
 
 // ── Building ────────────────────────────────────────
 
@@ -158,4 +168,36 @@ it('still shows toasts sent through the deprecated Dialog facade', function () {
         return $params['message'] === 'Saved'
             && (float) $params['duration'] === 2.0;
     });
+});
+
+it('falls back to Dialog.Toast on a known Android device', function () {
+    // Toast.* is iOS-only. Under Jump, nativephp_can() answers `true` for
+    // everything regardless of the connected device, so without a platform
+    // check an Android device silently swallows every toast — including the
+    // ones still coming through the deprecated Dialog::toast().
+    forcePlatform(Platform::ANDROID);
+
+    Toast::message('Saved')->short()->show();
+
+    $this->bridge->assertCalled('Dialog.Toast', fn (array $p) => $p['message'] === 'Saved');
+    $this->bridge->assertNotCalled('Toast.Show');
+});
+
+it('skips a view-only toast on Android rather than sending raw markup', function () {
+    forcePlatform(Platform::ANDROID);
+
+    Toast::html('<div>Saved</div>')->show();
+
+    $this->bridge->assertNotCalled('Toast.Show');
+    $this->bridge->assertNotCalled('Dialog.Toast');
+});
+
+it('does not swallow dismissals on an unknown platform', function () {
+    // Fail open: only a KNOWN Android device falls back, so tests and any
+    // future platform keep the previous behaviour.
+    forcePlatform(null);
+
+    Toast::dismiss('saving');
+
+    $this->bridge->assertCalled('Toast.Dismiss');
 });

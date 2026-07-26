@@ -275,6 +275,22 @@ class PendingToast
 
     protected function supportsStackedToasts(): bool
     {
+        // `Toast.*` is an iOS-only bridge today; Android has `Dialog.Toast`.
+        // nativephp_can() cannot make that distinction under Jump, where it is
+        // a stub that answers `true` for everything ("assume all functions are
+        // available on the connected device"). Ask the platform instead —
+        // Platform::current() probes the real device over the bridge, so it
+        // gives an honest answer in both Jump and on-device.
+        //
+        // Deliberately only bailing on a KNOWN Android device: an unknown
+        // platform (no bridge, tests) keeps the previous behaviour rather than
+        // silently losing toasts somewhere new.
+        if (Platform::isAndroid()) {
+            return false;
+        }
+
+        // Still honour the capability check so an older iOS runtime without the
+        // Toast.* functions falls back instead of dispatching into the void.
         return ! function_exists('nativephp_can') || nativephp_can('Toast.Show');
     }
 
