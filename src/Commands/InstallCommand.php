@@ -10,7 +10,6 @@ use Native\Mobile\Concerns\InstallsAndroid;
 use Native\Mobile\Concerns\InstallsIos;
 use Native\Mobile\Concerns\PlatformFileOperations;
 
-use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
@@ -169,29 +168,6 @@ class InstallCommand extends Command
         }
 
         outro('NativePHP for Mobile installed successfully!');
-
-        if (confirm(
-            label: 'Would you mind starring us on GitHub? It really helps!',
-            yes: 'Hell Yeah! 🔥',
-            no: 'Already Did',
-            default: true,
-        )) {
-            $url = 'https://github.com/NativePHP/mobile-air';
-
-            // xdg-open may be absent on headless/minimal Linux and WSL —
-            // probe first and fall back to printing the URL. Quote the URL
-            // everywhere; `start` needs a leading "" title arg when quoting.
-            if (PHP_OS_FAMILY === 'Darwin') {
-                exec('open '.escapeshellarg($url));
-            } elseif (PHP_OS_FAMILY === 'Windows') {
-                exec('start "" "'.$url.'"');
-            } else {
-                exec('command -v xdg-open >/dev/null 2>&1', $probe, $missing);
-                $missing === 0
-                    ? exec('xdg-open '.escapeshellarg($url).' >/dev/null 2>&1')
-                    : $this->line("  Open in your browser: {$url}");
-            }
-        }
 
         $this->showSuperNativeBanner();
     }

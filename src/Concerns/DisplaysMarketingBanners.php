@@ -40,26 +40,13 @@ trait DisplaysMarketingBanners
 
         $this->newLine();
 
-        // Charge bar "powers up" left → right, then the SUPERNATIVE label sparks in.
-        $segments = 10;
-        $label = ' <fg=#FFE600;options=bold>⚡</> <fg=#5EEAD4;options=bold>S U P E R N A T I V E</>'
-            .'   <fg=gray>//</>  <fg=white;options=bold>supercharged</>';
+        // SUPERNATIVE sits centred under the wordmark, flanked by matching charge
+        // cells and bolts. 11 spaces of indent centres its 49 columns under the
+        // 72-column logo above.
+        $cells = '<fg=#34D399>'.str_repeat('▰', 10).'</>';
+        $bolt = '<fg=#FFE600;options=bold>⚡</>';
 
-        if ($animate) {
-            for ($i = 0; $i <= $segments; $i++) {
-                $filled = str_repeat('▰', $i);
-                $empty = str_repeat('▱', $segments - $i);
-                $bar = "   <fg=#34D399>{$filled}</><fg=#0E3B33>{$empty}</>";
-                // Reveal the label only once the bar is fully charged.
-                $suffix = $i === $segments ? '  '.$label : '';
-                $this->output->write("\r".$bar.$suffix);
-                usleep(60_000);
-            }
-            $this->newLine();
-        } else {
-            $bar = '   <fg=#34D399>'.str_repeat('▰', $segments).'</>';
-            $this->line($bar.'  '.$label);
-        }
+        $this->line("           {$cells} {$bolt} <fg=#5EEAD4;options=bold>S U P E R N A T I V E</> {$bolt} {$cells}");
 
         $this->newLine();
         $this->line('  <fg=white;options=bold>From</> <fg=green>laravel new</> <fg=white;options=bold>to App Store.</> <fg=#34D399;options=bold>Now supercharged.</>');
@@ -68,6 +55,10 @@ trait DisplaysMarketingBanners
         $this->line('  <fg=yellow;options=bold>⚡ Bifrost</> <fg=gray>—</> <fg=white>Ship to stores</> <fg=cyan>→</> <fg=cyan;options=underscore>bifrost.nativephp.com</>');
         $this->line('  <fg=magenta;options=bold>🔌 Plugins</> <fg=gray>—</> <fg=white>Native features</> <fg=magenta>→</> <fg=magenta;options=underscore>nativephp.com/plugins</>');
         $this->line('  <fg=white;options=bold>📚 Docs</>    <fg=gray>—</> <fg=white>Get started</> <fg=gray>→</> <fg=gray;options=underscore>nativephp.com/docs/mobile</>');
+        $this->newLine();
+
+        $this->line('  <fg=#FFD700;options=bold>★ Help keep NativePHP free: Star the project on GitHub</>');
+        $this->line('  <fg=#FFD700;options=underscore>https://github.com/NativePHP/mobile-air</>');
         $this->newLine();
     }
 
