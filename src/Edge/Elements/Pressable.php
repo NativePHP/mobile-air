@@ -35,7 +35,7 @@ class Pressable extends Element
      * children render normally; `top_bar_action` children become menu
      * rows. The `has_menu` prop signals to the renderer that it should
      * wrap content in a Menu (iOS) / DropdownMenu (Android) and treat
-     * tap as menu-open instead of firing the `@press` callback.
+     * tap as menu-open instead of firing the `@tap` callback.
      *
      * Items can be `NavAction` instances or pre-built `TopBarAction`
      * elements (the latter for cases where the dev pre-resolved them).

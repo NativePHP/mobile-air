@@ -82,6 +82,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Appearance
+    |--------------------------------------------------------------------------
+    |
+    | Pins the app to a single interface style, for apps whose identity is
+    | fixed light or fixed dark. Theme tokens only cover surfaces YOU draw —
+    | the system's own chrome (Liquid Glass bars, sheets, keyboards, the
+    | window background behind the safe areas) follows the device unless it
+    | is locked here.
+    |
+    | Options: 'system' - Follow the device (default)
+    |          'dark'   - Always dark
+    |          'light'  - Always light
+    |
+    | iOS only for now: written to the Info.plist as UIUserInterfaceStyle at
+    | build time.
+    |
+    */
+
+    'appearance' => env('NATIVEPHP_APPEARANCE', 'system'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Development Team (iOS)
     |--------------------------------------------------------------------------
     |

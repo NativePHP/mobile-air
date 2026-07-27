@@ -6,8 +6,6 @@ import SwiftUI
 func registerBridgeFunctions() {
     let registry = BridgeFunctionRegistry.shared
 
-    registry.register("Edge.Set", function: EdgeFunctions.Set())
-
     // Device.* — core built-in (migrated from the nativephp/mobile-device
     // plugin). Android twin: bridge/functions/DeviceFunctions.kt.
     registry.register("Device.Vibrate",         function: DeviceFunctions.Vibrate())

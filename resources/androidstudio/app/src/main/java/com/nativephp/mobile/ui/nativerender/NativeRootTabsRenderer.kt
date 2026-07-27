@@ -112,10 +112,51 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // Activeness flows from `BottomNavItem.active` (TabBar::highlight() set it).
     val activeTabIdx = tabs.indexOfFirst { it.props.getBool("active") }.coerceAtLeast(0)
 
+    // Stable per-tab identity for the in-flight-navigation trackers below —
+    // FlatBuffer node ids regenerate every publish, so use the PHP-side slug.
+    val tabIds = tabs.mapIndexed { idx, tab ->
+        tab.props.getString("id", "").ifEmpty { "tab_$idx" }
+    }
+    val activeTabId = tabIds.getOrElse(activeTabIdx) { "" }
+
     // Local selection mirrors PHP's active flag, but also responds to taps so
     // the bar UI updates instantly while we wait for PHP to republish.
     var selection by remember { mutableIntStateOf(activeTabIdx) }
+
+    // Rapid re-tap trackers, mirroring iOS's NativeRootTabsRenderer (see
+    // "Rapid re-taps" in its header comment). Tab navigations aren't
+    // cancellable PHP-side, so a tap sequence Home → Contacts (slow render) →
+    // Home used to settle on Contacts: the Home re-tap was swallowed
+    // (selection == active tab) and the late Contacts publish then yanked
+    // `selection` back. `pendingTabId` is the user's latest tap while its
+    // `replace` navigation is in flight; tabs it displaced go in
+    // `supersededTabIds`, whose late publishes must not move `selection`.
+    // (The content pane still keys off `activeTabIdx`, so it can show the
+    // superseded screen for the beat until the re-fired press republishes —
+    // Android keeps no per-tab tree cache to hold the selected tab's content.)
+    var pendingTabId by remember { mutableStateOf<String?>(null) }
+    val supersededTabIds = remember { mutableSetOf<String>() }
+
     LaunchedEffect(activeTabIdx) {
+        val pending = pendingTabId
+        if (pending != null && activeTabId != pending) {
+            val pendingTab = tabs.getOrNull(tabIds.indexOf(pending))
+            if (supersededTabIds.contains(activeTabId) && pendingTab != null && pendingTab.onPress != 0) {
+                // Stale publish: a navigation the user superseded by tapping
+                // again finished late. Hold `selection` where the user put it
+                // and re-fire the pending tab's press — the tap-time press
+                // carried the previous tree's callback id, which the component
+                // that just published doesn't own, so PHP dropped it. This
+                // tree's id is live.
+                NativeElementBridge.sendPressEvent(pendingTab.onPress, pendingTab.id)
+                return@LaunchedEffect
+            }
+            // Unrelated navigation won the race (programmatic replace,
+            // mount() redirect, or the pending tab left the layout) — accept
+            // the publish as authoritative.
+        }
+        pendingTabId = null
+        supersededTabIds.clear()
         if (selection != activeTabIdx) selection = activeTabIdx
     }
 
@@ -296,9 +337,22 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                 // navigation fires (it's an iOS-/Android-
                                 // side overlay). For regular tabs, the
                                 // BottomNavItem-auto-wired `replace`
-                                // press handler fires here.
+                                // press handler fires here. A tap back
+                                // to the active tab normally needs no
+                                // press — except while another tab's
+                                // navigation is in flight: PHP is
+                                // already navigating away and must be
+                                // told to come back.
                                 selection = actualIdx
-                                if (!isSearchTab && actualIdx != activeTabIdx && tab.onPress != 0) {
+                                val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
+                                if (!isSearchTab && tapNavigates && tab.onPress != 0) {
+                                    if (tab.props.getString("url", "").isNotEmpty()) {
+                                        val tappedId = tabIds.getOrElse(actualIdx) { "" }
+                                        pendingTabId?.let { prev ->
+                                            if (prev != tappedId) supersededTabIds.add(prev)
+                                        }
+                                        pendingTabId = tappedId
+                                    }
                                     NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
                                 }
                             },

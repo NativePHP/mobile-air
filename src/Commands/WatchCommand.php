@@ -3,11 +3,11 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
-use Native\Mobile\Traits\ManagesViteDevServer;
-use Native\Mobile\Traits\ManagesWatchman;
-use Native\Mobile\Traits\RunsIos;
-use Native\Mobile\Traits\WatchesAndroid;
-use Native\Mobile\Traits\WatchesIos;
+use Native\Mobile\Concerns\ManagesViteDevServer;
+use Native\Mobile\Concerns\ManagesWatchman;
+use Native\Mobile\Concerns\RunsIos;
+use Native\Mobile\Concerns\WatchesAndroid;
+use Native\Mobile\Concerns\WatchesIos;
 
 use function Laravel\Prompts\select;
 

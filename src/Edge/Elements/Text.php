@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge\Elements;
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\Enums\TextAlign;
 
 class Text extends Element
 {
@@ -91,7 +92,7 @@ class Text extends Element
             $this->color($attrs['color']);
         }
         if (isset($attrs['textAlign'])) {
-            $this->textAlign((int) $attrs['textAlign']);
+            $this->textAlign($attrs['textAlign']);
         }
         if (isset($attrs['maxLines'])) {
             $this->maxLines((int) $attrs['maxLines']);
@@ -164,9 +165,11 @@ class Text extends Element
         return $this;
     }
 
-    public function textAlign(int $align): static
+    public function textAlign(int|string|TextAlign $align): static
     {
-        $this->textProps['text_align'] = $align;
+        if (($resolved = TextAlign::parse($align)) !== null) {
+            $this->textProps['text_align'] = $resolved;
+        }
 
         return $this;
     }

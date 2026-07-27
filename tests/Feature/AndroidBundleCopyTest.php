@@ -4,8 +4,8 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Concerns\PreparesBuild;
 use Native\Mobile\Support\BundleFileManager;
-use Native\Mobile\Traits\PreparesBuild;
 use Tests\TestCase;
 
 class AndroidBundleCopyTest extends TestCase

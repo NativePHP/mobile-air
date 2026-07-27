@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
@@ -9,6 +10,7 @@ use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
+use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +47,18 @@ use PHPUnit\Framework\TestCase;
  */
 class TestableComponent
 {
+    // Plugins register element-specific test vocabulary here (a date plugin's
+    // pickDate(), a chart plugin's assertSeries(), ...). FakeBridge macros
+    // can't serve UI elements: the bridge holds no reference back to the
+    // component, so a macro there can't read the tree or fire node events.
+    //
+    // Aliased because this class defines its own __call for FakeBridge
+    // forwarding — a class method beats a trait method, so without the alias
+    // the trait's __call would never run and macros would be invisible.
+    use Macroable {
+        __call as macroCall;
+    }
+
     // Wire event type codes — must match EventType on the native side.
     public const EVENT_PRESS = 0;
 
@@ -157,6 +171,11 @@ class TestableComponent
         // previous test's platform); the parse cache isn't platform-keyed.
         TailwindParser::setPlatform($platform);
         TailwindParser::clearCache();
+
+        // Same for platform-resolved icons (IconResolver & friends read
+        // Platform::current()) — `platform:` means "pretend we're on that
+        // OS" everywhere, not just for Tailwind variants.
+        Platform::set($platform);
 
         $component = new $componentClass;
 
@@ -277,7 +296,7 @@ class TestableComponent
 
     /**
      * Touch-down on the element bound to a method name or ref
-     * (`@pressDown`). Down/up ride the PRESS wire event with their own
+     * (`@tapDown`). Down/up ride the PRESS wire event with their own
      * callback ids in the props dict, so dispatch is a plain press at
      * the `on_press_down` id.
      */
@@ -286,7 +305,7 @@ class TestableComponent
         return $this->firePropsPress($target, 'on_press_down');
     }
 
-    /** Touch-up counterpart of pressDown() (`@pressUp`). */
+    /** Touch-up counterpart of pressDown() (`@tapUp`). */
     public function pressUp(string $target): static
     {
         return $this->firePropsPress($target, 'on_press_up');
@@ -309,10 +328,67 @@ class TestableComponent
         return $this->dispatchUiEvent(['type' => self::EVENT_PRESS, 'callback_id' => $callbackId]);
     }
 
-    /** Type into an input bound to a method, model property, or ref. */
-    public function input(string $target, string $text): static
+    /**
+     * Type into an input bound to a method, model property, or ref.
+     *
+     * When caret/selection offsets are given AND the target element
+     * registered `@selectionChange` (an `on_selection_change` callback id
+     * in its props), the harness also fires the selection event after the
+     * text change — the two frames a device sends for one keystroke.
+     * Offsets are Unicode code points; omitting `$selectionEnd` means a
+     * collapsed caret at `$selectionStart`.
+     */
+    public function input(string $target, string $text, ?int $selectionStart = null, ?int $selectionEnd = null): static
     {
-        return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $text]);
+        // Resolve the selection callback from the CURRENT tree, before the
+        // text change re-renders it (ids are stable across frames, so
+        // dispatching after the re-render is safe).
+        $selectionId = $selectionStart === null ? null : $this->selectionCallbackIdFor($target);
+
+        $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $text]);
+
+        // Mirror the runloop: once the text-change handler navigated away
+        // or stopped the component, no further events are delivered.
+        if ($selectionId !== null && $this->component->getNavigationIntent() === null && $this->isRunning()) {
+            $this->startInteraction();
+
+            return $this->dispatchUiEvent([
+                'type' => self::EVENT_TEXT_CHANGE,
+                'callback_id' => $selectionId,
+                'text' => self::packSelection($text, $selectionStart, $selectionEnd),
+            ]);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Move the caret (or select a range) in an input carrying
+     * `@selectionChange`, without changing its text — fires only the
+     * selection event. `$end` defaults to a collapsed caret at `$start`;
+     * `$text` defaults to the element's current `value` prop when
+     * resolvable, else ''.
+     */
+    public function moveCaret(string $target, int $start, ?int $end = null, ?string $text = null): static
+    {
+        $this->startInteraction();
+
+        $node = $this->nodeFor($target);
+        $callbackId = $node['props']['on_selection_change'] ?? null;
+        $callbackId = is_int($callbackId) ? $callbackId : null;
+
+        Assert::assertNotNull(
+            $callbackId,
+            "No @selectionChange callback registered for [{$target}] in the last render."
+        );
+
+        $text ??= (string) ($node['props']['value'] ?? '');
+
+        return $this->dispatchUiEvent([
+            'type' => self::EVENT_TEXT_CHANGE,
+            'callback_id' => $callbackId,
+            'text' => self::packSelection($text, $start, $end),
+        ]);
     }
 
     public function submit(string $target, string $text = ''): static
@@ -1248,6 +1324,13 @@ class TestableComponent
      */
     public function __call(string $method, array $arguments): mixed
     {
+        // Component-level macros win over bridge forwarding — they're the
+        // more specific registration, and a plugin naming one after a bridge
+        // method means it wants the component behaviour.
+        if (static::hasMacro($method)) {
+            return $this->macroCall($method, $arguments);
+        }
+
         if (FakeBridge::hasMacro($method) || method_exists($this->bridge, $method)) {
             $result = $this->bridge->{$method}(...$arguments);
 
@@ -1384,23 +1467,52 @@ class TestableComponent
      * Resolve a target to a callback id from the last render. Accepts a
      * full expression ("save('draft')"), a bare method name ('save'), or
      * a model-bound property name ('query' → __syncProperty binding).
+     * Searches the screen's registry first, then every mounted child
+     * component's — dispatch routes the event to the owning instance.
      */
     protected function callbackIdFor(string $target): ?int
     {
-        $registry = $this->callbacks();
-
-        if (($id = $registry->lookup($target)) !== null) {
-            return $id;
-        }
-
-        foreach ($registry->expressions() as $expression => $id) {
-            if (str_starts_with($expression, $target.'(')
-                || str_starts_with($expression, "__syncProperty('{$target}'")) {
+        foreach ($this->componentRegistries() as $registry) {
+            if (($id = $registry->lookup($target)) !== null) {
                 return $id;
+            }
+
+            foreach ($registry->expressions() as $expression => $id) {
+                if (str_starts_with($expression, $target.'(')
+                    || str_starts_with($expression, "__syncProperty('{$target}'")) {
+                    return $id;
+                }
             }
         }
 
         return null;
+    }
+
+    /**
+     * The screen's CallbackRegistry plus every mounted child component's,
+     * breadth-first down the child tree.
+     *
+     * @return array<int, CallbackRegistry>
+     */
+    protected function componentRegistries(): array
+    {
+        return $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $registries = [];
+            $queue = [$this];
+
+            while ($queue !== []) {
+                $component = array_shift($queue);
+                if (isset($component->nativeCallbacks)) {
+                    $registries[] = $component->nativeCallbacks;
+                }
+                foreach ($component->nativeChildComponents as $child) {
+                    $queue[] = $child;
+                }
+            }
+
+            return $registries;
+        });
     }
 
     /** Press callback id of the node with the given ref, if any. */
@@ -1452,6 +1564,87 @@ class TestableComponent
         foreach ($node['children'] ?? [] as $child) {
             if (($id = $this->callbackIdByRef($child, $ref, $type)) !== null) {
                 return $id;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Pack a caret/selection payload for the TEXT_CHANGE wire frame:
+     * "{start},{end}\x1F{text}" — header before the first U+001F unit
+     * separator, exactly as the device sends it. A well-behaved device
+     * never sends negative or inverted offsets, so the harness normalizes
+     * them here; dispatch() additionally clamps to the text's code-point
+     * length.
+     */
+    protected static function packSelection(string $text, int $start, ?int $end): string
+    {
+        $start = max(0, $start);
+        $end = max($start, $end ?? $start);
+
+        return "{$start},{$end}\x1F{$text}";
+    }
+
+    /** The target element's `on_selection_change` callback id, if any. */
+    protected function selectionCallbackIdFor(string $target): ?int
+    {
+        $id = $this->nodeFor($target)['props']['on_selection_change'] ?? null;
+
+        return is_int($id) ? $id : null;
+    }
+
+    /**
+     * The rendered node a target resolves to: the node carrying `ref` ===
+     * target, else the node owning the callback id the target's method /
+     * expression / model binding registered.
+     */
+    protected function nodeFor(string $target): ?array
+    {
+        if (($node = $this->nodeByRef($this->tree(), $target)) !== null) {
+            return $node;
+        }
+
+        if (($id = $this->callbackIdFor($target)) !== null) {
+            return $this->nodeOwningCallback($this->tree(), $id);
+        }
+
+        return null;
+    }
+
+    /** The node in the subtree carrying the given ref, if any. */
+    protected function nodeByRef(array $node, string $ref): ?array
+    {
+        if (($node['ref'] ?? null) === $ref) {
+            return $node;
+        }
+
+        foreach ($node['children'] ?? [] as $child) {
+            if (($found = $this->nodeByRef($child, $ref)) !== null) {
+                return $found;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The node whose callback entries (node-level `on_*` keys or the
+     * props map) carry the given callback id, wherever the element put it.
+     */
+    protected function nodeOwningCallback(array $node, int $id): ?array
+    {
+        foreach ([$node, $node['props'] ?? []] as $bag) {
+            foreach ($bag as $key => $value) {
+                if (is_string($key) && str_starts_with($key, 'on_') && $value === $id) {
+                    return $node;
+                }
+            }
+        }
+
+        foreach ($node['children'] ?? [] as $child) {
+            if (($found = $this->nodeOwningCallback($child, $id)) !== null) {
+                return $found;
             }
         }
 

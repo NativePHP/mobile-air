@@ -236,7 +236,7 @@ private struct NodeGestureModifier: ViewModifier {
                 .contentShape(Rectangle())
                 // Double-tap attached before single-tap so the 2-count
                 // recognizer gets first claim on the gesture. Combining
-                // @press + @doubleTap on one node incurs SwiftUI's usual
+                // @tap + @doubleTap on one node incurs SwiftUI's usual
                 // tap-arbitration delay on the single tap.
                 .modifier(DoubleTapModifier(callbackId: doubleTapId, nodeId: node.id))
                 .modifier(TapModifier(callbackId: node.onPress, nodeId: node.id))

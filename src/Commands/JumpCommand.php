@@ -5,8 +5,8 @@ namespace Native\Mobile\Commands;
 use Endroid\QrCode\Builder\Builder;
 use Endroid\QrCode\ErrorCorrectionLevel;
 use Illuminate\Console\Command;
+use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Edge\NativeRouter;
-use Native\Mobile\Traits\PlatformFileOperations;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;

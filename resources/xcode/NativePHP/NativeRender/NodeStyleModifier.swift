@@ -44,7 +44,7 @@ struct NodeStyleModifier: ViewModifier {
             // set, the bg color is visible behind the glass and acts as
             // a tint — that's what you want for `bg-red-500 glass` to
             // produce tinted glass.
-            .background(backgroundColor(dark: dark))
+            .background(backgroundFill(dark: dark))
             // Liquid Glass material — iOS 26+ real glass, iOS 18-25 falls
             // back to `.regularMaterial`. Applied AFTER background so the
             // optional bg color tints through. Shape inferred from the
@@ -67,10 +67,54 @@ struct NodeStyleModifier: ViewModifier {
 
     // MARK: - Background Color
 
+    /// The node's background: a linear gradient when one is declared
+    /// (`bg-gradient-to-* from-* via-* to-*`), otherwise the flat `bg-*` color.
+    ///
+    /// A gradient wins over `bg_color` — matching CSS, where `background-image`
+    /// paints over `background-color`.
+    @ViewBuilder
+    private func backgroundFill(dark: Bool) -> some View {
+        if let gradient = linearGradient {
+            gradient
+        } else {
+            backgroundColor(dark: dark)
+        }
+    }
+
     private func backgroundColor(dark: Bool) -> Color {
         let darkBg = dark ? props.getColor("dark_bg_color", default: 0) : 0
         let argb = darkBg != 0 ? darkBg : (style?.bgColor ?? 0)
         return colorFromARGB(argb)
+    }
+
+    // MARK: - Gradient
+
+    /// Gradient props ride the props bag, not NodeStyle — the style block is a
+    /// fixed-layout region of the packed binary node with no room for a
+    /// variable-length stop list. `gradient_stops` is a comma-joined list of
+    /// two or three `#AARRGGBB` values; `gradient_dx`/`gradient_dy` are the
+    /// unit vector the gradient travels toward, in view space (y grows down).
+    private var linearGradient: LinearGradient? {
+        let raw = props.getString("gradient_stops", default: "")
+        guard !raw.isEmpty else { return nil }
+
+        let colors = raw
+            .split(separator: ",")
+            .map { colorFromARGB(ColorParser.parse(String($0))) }
+
+        guard colors.count >= 2 else { return nil }
+
+        let dx = CGFloat(props.getFloat("gradient_dx", default: 0))
+        let dy = CGFloat(props.getFloat("gradient_dy", default: 1))
+
+        // Tailwind's axis is a direction, not endpoints. Convert to the two
+        // unit points SwiftUI wants by stepping half the vector either side of
+        // center, so `to-t` runs bottom→top across the full height. Diagonals
+        // (dx and dy both non-zero) land on the corners, as in CSS.
+        let start = UnitPoint(x: 0.5 - dx / 2, y: 0.5 - dy / 2)
+        let end = UnitPoint(x: 0.5 + dx / 2, y: 0.5 + dy / 2)
+
+        return LinearGradient(colors: colors, startPoint: start, endPoint: end)
     }
 
     // MARK: - Corner Radius

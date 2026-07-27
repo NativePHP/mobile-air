@@ -258,7 +258,7 @@ struct NodeLayout: Equatable {
     let justifyContent: Int
     let gap: Float
     let safeArea: Int
-    // Extended layout fields (Yoga)
+    // Extended layout fields (flexbox)
     let minWidth: Float
     let minHeight: Float
     let maxWidth: Float
