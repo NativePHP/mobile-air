@@ -1466,6 +1466,16 @@ class NativeElementCollector
             if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
                 $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
             }
+
+            // Bring a child index into view: `:auto-scroll-to="$unreadIndex"`.
+            // Indexes the scroll-view's OWN children, so content wrapped in a
+            // <column> addresses the column, not the rows inside it. Takes
+            // precedence over `scroll-anchor="bottom"` when both are set — the
+            // author named a specific child. Mirrors the fluent
+            // ScrollView::autoScrollTo() so both authoring styles behave alike.
+            if (isset($attrs['autoScrollTo']) || isset($attrs['auto-scroll-to'])) {
+                $element->autoScrollTo((int) ($attrs['autoScrollTo'] ?? $attrs['auto-scroll-to']));
+            }
         }
     }
 }

@@ -195,6 +195,26 @@ it('applies scroll view props', function () {
     expect($tree['children'])->toHaveCount(1);
 });
 
+it('applies scroll view auto scroll target from kebab and camel attributes', function (string $attribute) {
+    NativeElementCollector::open('scroll_view', [$attribute => 7]);
+    NativeElementCollector::leaf('text', ['text' => 'Newest']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props']['auto_scroll_to'])->toBe(7);
+})->with(['auto-scroll-to', 'autoScrollTo']);
+
+it('leaves auto_scroll_to unset when the attribute is absent', function () {
+    NativeElementCollector::open('scroll_view', []);
+    NativeElementCollector::leaf('text', ['text' => 'Static']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'] ?? [])->not->toHaveKey('auto_scroll_to');
+});
+
 it('applies node-level onPress and onLongPress', function () {
     NativeElementCollector::open('column', [
         '_press' => 'tapColumn',
