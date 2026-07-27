@@ -5,6 +5,28 @@ namespace Native\Mobile\Edge;
 class NativeRouter
 {
     /**
+     * Where `native:watch` leaves a screen-change intent for the app to pick
+     * up, relative to base_path().
+     *
+     * base_path() rather than storage_path() on purpose: on device
+     * storage_path() points into a private container the host can't reach,
+     * whereas base_path() is exactly where the watcher already syncs files —
+     * so the intent rides in on the same primitives as an edited Blade file.
+     *
+     * At the root rather than under storage/framework because that directory
+     * is excluded from the bundle and so may not exist on device, and
+     * `xcrun devicectl device copy to` has no way to create it.
+     */
+    public const SCREEN_INTENT_PATH = '.native_screen';
+
+    /**
+     * How long a screen-change intent stays actionable. Bounds how far into
+     * the future an intent pushed while the app was closed can hijack a
+     * later hot reload.
+     */
+    protected const SCREEN_INTENT_TTL = 60;
+
+    /**
      * File-based debug logging — error_log() doesn't reach Android logcat,
      * so we write to a file on device instead.
      */
@@ -185,6 +207,53 @@ class NativeRouter
     public static function isNativeRoute(string $uri): bool
     {
         return static::resolve($uri) !== null;
+    }
+
+    /**
+     * Consume a screen change requested from the `native:watch` terminal UI.
+     * Returns the target URI, or null when nothing usable is waiting.
+     *
+     * The intent is always removed, even when rejected — a file we refuse to
+     * act on must not sit there and be reconsidered on every reload.
+     */
+    public static function takeScreenIntent(): ?string
+    {
+        $path = base_path(self::SCREEN_INTENT_PATH);
+
+        // The intent is written by another process (the host's watcher) into a
+        // path this long-lived runtime may already have stat'd and cached as
+        // missing, so don't trust a cached answer here.
+        clearstatcache(true, $path);
+
+        if (! is_file($path)) {
+            return null;
+        }
+
+        $raw = @file_get_contents($path);
+        @unlink($path);
+
+        $data = $raw ? json_decode($raw, true) : null;
+        $uri = is_array($data) ? ($data['uri'] ?? null) : null;
+
+        if (! is_string($uri) || $uri === '') {
+            return null;
+        }
+
+        $uri = '/'.ltrim($uri, '/');
+
+        if (time() - (int) ($data['ts'] ?? 0) > self::SCREEN_INTENT_TTL) {
+            static::debugLog("screen intent for $uri ignored — stale");
+
+            return null;
+        }
+
+        if (! static::isNativeRoute($uri)) {
+            static::debugLog("screen intent for $uri ignored — not a native route");
+
+            return null;
+        }
+
+        return $uri;
     }
 
     public static function clearRoutes(): void

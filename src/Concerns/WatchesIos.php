@@ -3,12 +3,25 @@
 namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Edge\NativeRouter;
 
 use function Laravel\Prompts\select;
 
 trait WatchesIos
 {
-    use ManagesWatchman;
+    use InteractsWithWatchTerminal, ManagesWatchman;
+
+    /**
+     * UDID of the simulator or device being watched.
+     */
+    private ?string $iosTarget = null;
+
+    /**
+     * Data container of the app on a simulator — the host can write into it
+     * directly. Null when watching a physical device, where the same writes
+     * have to go through `xcrun devicectl`.
+     */
+    private ?string $iosAppContainer = null;
 
     private array $iosWatchPaths = ['app', 'resources', 'routes', 'config'];
 
@@ -54,6 +67,7 @@ trait WatchesIos
             return;
         }
 
+        $this->iosTarget = $target;
         $isSimulator = array_key_exists($target, $this->simulators);
 
         // Start Vite dev server if the nativephpMobile plugin is installed
@@ -86,6 +100,8 @@ trait WatchesIos
                 return;
             }
 
+            $this->iosAppContainer = $derivedDataPath;
+
             $this->startIosWatching($derivedDataPath, $viteHotFile);
         } else {
             $this->startIosWatchingDevice($target, $appId);
@@ -94,19 +110,25 @@ trait WatchesIos
 
     private function startIosWatching(string $derivedDataPath, string $viteHotFile): void
     {
-        $this->info('iOS hot reload active - watching for changes...');
-        $this->line('<fg=yellow>Press Ctrl+C to stop</fg=yellow>');
-
         $basePath = base_path();
         $destinationPath = $derivedDataPath.'/Documents/app/';
 
-        $this->startWatchman(
-            $this->getIosWatchPaths(),
-            $this->getIosExcludePatterns(),
-            function (string $changedFile) use ($basePath, $destinationPath, $viteHotFile) {
-                $this->handleIosFileChange($changedFile, $basePath, $destinationPath, $viteHotFile);
-            }
-        );
+        $this->startWatchConsole('ios', $this->iosDeviceLabel());
+
+        try {
+            $this->startWatchman(
+                $this->getIosWatchPaths(),
+                $this->getIosExcludePatterns(),
+                function (string $changedFile) use ($basePath, $destinationPath, $viteHotFile) {
+                    $this->handleIosFileChange($changedFile, $basePath, $destinationPath, $viteHotFile);
+                },
+                fn () => $this->pumpWatchTerminal(),
+            );
+        } finally {
+            // Reached when the watcher stops on its own (watchman died); the
+            // quit key and signal paths tear the console down themselves.
+            $this->stopWatchConsole();
+        }
     }
 
     private function startIosWatchingDevice(string $target, string $appId): void
@@ -120,45 +142,36 @@ trait WatchesIos
             $this->line('Install it for automatic reload: <fg=cyan>brew install libimobiledevice</fg=cyan>');
         }
 
-        $this->info('iOS device hot reload active - watching for changes...');
-        $this->line('<fg=yellow>Press Ctrl+C to stop</fg=yellow>');
-
         $basePath = base_path();
 
-        $this->startWatchman(
-            $this->getIosWatchPaths(),
-            $this->getIosExcludePatterns(),
-            function (string $changedFile) use ($basePath, $target, $appId) {
-                $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId);
-            }
-        );
+        $this->startWatchConsole('ios', $this->iosDeviceLabel());
+
+        try {
+            $this->startWatchman(
+                $this->getIosWatchPaths(),
+                $this->getIosExcludePatterns(),
+                function (string $changedFile) use ($basePath, $target, $appId) {
+                    $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId);
+                },
+                fn () => $this->pumpWatchTerminal(),
+            );
+        } finally {
+            // Reached when the watcher stops on its own (watchman died); the
+            // quit key and signal paths tear the console down themselves.
+            $this->stopWatchConsole();
+        }
     }
 
     private function handleIosFileChangeDevice(string $changedFile, string $basePath, string $target, string $appId): void
     {
         $relativePath = str_replace($basePath.'/', '', $changedFile);
 
-        $this->line("<fg=blue>File changed:</fg=blue> {$relativePath}");
-
         if (file_exists($changedFile) && ! is_dir($changedFile)) {
-            $result = Process::timeout(30)->run([
-                'xcrun', 'devicectl', 'device', 'copy', 'to',
-                '--device', $target,
-                '--domain-type', 'appDataContainer',
-                '--domain-identifier', $appId,
-                '--source', $changedFile,
-                '--destination', 'Documents/app/'.$relativePath,
-            ]);
-
-            if ($result->successful()) {
-                $this->line("<fg=green>Synced to device:</fg=green> {$relativePath}");
-            } else {
-                $this->line("<fg=red>Failed to sync:</fg=red> {$relativePath}");
-
-                if ($errorOutput = trim($result->errorOutput())) {
-                    $this->line("<fg=gray>{$errorOutput}</fg=gray>");
-                }
+            if (! $this->copyToIosDevice($changedFile, 'Documents/app/'.$relativePath, $target, $appId)) {
+                return;
             }
+
+            $this->watchSynced($relativePath);
         }
 
         // Physical devices can't reach the Vite dev server on localhost,
@@ -172,8 +185,6 @@ trait WatchesIos
         $relativePath = str_replace($basePath.'/', '', $changedFile);
         $destinationFile = $destinationPath.$relativePath;
 
-        $this->line("<fg=blue>File changed:</fg=blue> {$relativePath}");
-
         // Create destination directory if needed
         $destinationDir = dirname($destinationFile);
         if (! is_dir($destinationDir)) {
@@ -183,7 +194,7 @@ trait WatchesIos
         // Copy the specific file
         if (file_exists($changedFile) && ! is_dir($changedFile)) {
             copy($changedFile, $destinationFile);
-            $this->line("<fg=green>Synced to iOS:</fg=green> {$relativePath}");
+            $this->watchSynced($relativePath);
         }
 
         // Skip reload for files that Vite handles via HMR
@@ -192,6 +203,77 @@ trait WatchesIos
         }
 
         $this->triggerIosReload();
+    }
+
+    /**
+     * Push a single file into the app's data container on a physical device.
+     */
+    private function copyToIosDevice(string $source, string $destination, string $target, string $appId): bool
+    {
+        $result = Process::timeout(30)->run([
+            'xcrun', 'devicectl', 'device', 'copy', 'to',
+            '--device', $target,
+            '--domain-type', 'appDataContainer',
+            '--domain-identifier', $appId,
+            '--source', $source,
+            '--destination', $destination,
+        ]);
+
+        if ($result->successful()) {
+            return true;
+        }
+
+        $this->watchNote(
+            '<fg=red>Failed to sync</> <fg=cyan>'.basename($destination).'</>'
+            .(($error = trim($result->errorOutput())) !== '' ? " <fg=gray>{$error}</>" : '')
+        );
+
+        return false;
+    }
+
+    /**
+     * Human-readable name of the watched simulator/device for the footer.
+     */
+    private function iosDeviceLabel(): ?string
+    {
+        $entry = $this->simulators[$this->iosTarget] ?? $this->devices[$this->iosTarget] ?? null;
+
+        return $entry['name'] ?? $this->iosTarget;
+    }
+
+    /**
+     * Make $uri the app's active native screen.
+     *
+     * The intent goes to the same place edited files do — base_path() inside
+     * the app's container — and the standard reload trigger makes PHP pick it
+     * up on its way through the hot-reload handler. See
+     * NativeRouter::takeScreenIntent().
+     */
+    private function navigateIosTo(string $uri): bool
+    {
+        $intentFile = $this->writeScreenIntentFile($uri);
+        $relativePath = NativeRouter::SCREEN_INTENT_PATH;
+
+        try {
+            if ($this->iosAppContainer !== null) {
+                if (! @copy($intentFile, $this->iosAppContainer.'/Documents/app/'.$relativePath)) {
+                    return false;
+                }
+            } elseif (! $this->copyToIosDevice(
+                $intentFile,
+                'Documents/app/'.$relativePath,
+                (string) $this->iosTarget,
+                (string) config('nativephp.app_id'),
+            )) {
+                return false;
+            }
+        } finally {
+            @unlink($intentFile);
+        }
+
+        $this->triggerIosReload();
+
+        return true;
     }
 
     private function triggerIosReload(): void
@@ -206,9 +288,10 @@ trait WatchesIos
             // it to the device over USB before we close
             usleep(200000);
             fclose($socket);
-            $this->line('<fg=green>Reload triggered</fg=green>');
         } else {
-            $this->line("<fg=yellow>Reload failed:</fg=yellow> Could not connect to port 9999 ({$errstr})");
+            // Transient rather than a scrollback line: the app being down is a
+            // state, not an event, so repeating it once per save is just noise.
+            $this->watchActivity("reload failed — nothing listening on port 9999 ({$errstr})", 'yellow');
         }
     }
 
