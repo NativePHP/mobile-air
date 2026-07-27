@@ -2,14 +2,14 @@
 
 namespace Native\Mobile\Concerns;
 
+use Laravel\Prompts\Key;
 use Laravel\Prompts\Prompt;
+use Laravel\Prompts\SearchPrompt;
+use Laravel\Prompts\SelectPrompt;
+use Laravel\Prompts\TextPrompt;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Exceptions\WatchPromptCancelled;
 use Native\Mobile\Support\Watch\WatchConsole;
-
-use function Laravel\Prompts\search;
-use function Laravel\Prompts\select;
-use function Laravel\Prompts\text;
 
 /**
  * Drives the interactive side of `native:watch`: the sticky footer, the keys
@@ -276,15 +276,15 @@ trait InteractsWithWatchTerminal
         // A handful of screens reads better as a list; a real app's worth of
         // them is much faster to filter than to scroll.
         if (count($options) <= 12) {
-            return select(
+            return $this->cancelOnEscape(new SelectPrompt(
                 label: 'Go to native screen',
                 options: $options,
                 scroll: 12,
-                hint: 'Ctrl+C to stay put',
-            );
+                hint: 'Esc or Ctrl+C to stay put',
+            ))->prompt();
         }
 
-        return search(
+        return $this->cancelOnEscape(new SearchPrompt(
             label: 'Go to native screen',
             placeholder: 'Type to filter…',
             options: fn (string $value) => $value === ''
@@ -294,8 +294,31 @@ trait InteractsWithWatchTerminal
                     fn (string $label) => str_contains(strtolower($label), strtolower($value)),
                 ),
             scroll: 12,
-            hint: 'Arrow keys to pick a match, Ctrl+C to stay put',
-        );
+            hint: 'Arrow keys to pick a match, Esc to stay put',
+        ))->prompt();
+    }
+
+    /**
+     * Make Esc back out of a prompt, the way Ctrl+C already does.
+     *
+     * Prompts has no hook for this — Esc is simply an unhandled key — so the
+     * throw comes from a `key` listener, which unwinds straight out of
+     * `prompt()`. Safe to throw through: Prompts restores the tty in its
+     * destructor, and WatchConsole re-applies the mode it captured at start()
+     * rather than re-reading whatever state the terminal was left in.
+     *
+     * Compares against a bare Esc, so arrow keys (`\e[A` and friends, which
+     * Prompts reads in one go) don't trip it.
+     */
+    private function cancelOnEscape(Prompt $prompt): Prompt
+    {
+        $prompt->on('key', function (string $key) {
+            if ($key === Key::ESCAPE) {
+                throw new WatchPromptCancelled;
+            }
+        });
+
+        return $prompt;
     }
 
     /**
@@ -315,11 +338,11 @@ trait InteractsWithWatchTerminal
         $uri = $pattern;
 
         foreach ($matches[1] as $index => $name) {
-            $value = text(
+            $value = $this->cancelOnEscape(new TextPrompt(
                 label: "Value for {{$name}}",
                 required: true,
-                hint: 'Ctrl+C to stay put',
-            );
+                hint: 'Esc or Ctrl+C to stay put',
+            ))->prompt();
 
             $uri = str_replace($matches[0][$index], rawurlencode(trim($value)), $uri);
         }

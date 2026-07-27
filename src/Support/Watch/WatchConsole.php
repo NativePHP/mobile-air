@@ -105,7 +105,7 @@ class WatchConsole
             $this->output->write("\033[?25h");
         }
 
-        $this->disableRawInput();
+        $this->restoreTtyMode(forget: true);
         $this->started = false;
     }
 
@@ -122,7 +122,7 @@ class WatchConsole
             $this->output->write("\033[?25h");
         }
 
-        $this->disableRawInput();
+        $this->restoreTtyMode(forget: false);
     }
 
     public function resume(): void
@@ -445,6 +445,13 @@ class WatchConsole
      * Switch the tty to character-at-a-time, no-echo, fully non-blocking
      * reads. `isig` is deliberately left on so Ctrl+C keeps working
      * alongside the quit key.
+     *
+     * The mode to hand back later is captured once, on the first call, and
+     * reused by every subsequent resume() — never re-read. Between suspend()
+     * and resume() something else owns the terminal, and a prompt that throws
+     * (Esc or Ctrl+C out of the picker) can be mid-restore when we come back;
+     * re-reading here would capture that transient state as the mode to leave
+     * the user's terminal in at exit.
      */
     private function enableRawInput(): bool
     {
@@ -452,14 +459,16 @@ class WatchConsole
             return false;
         }
 
-        $mode = @shell_exec('stty -g 2>/dev/null');
-        $mode = is_string($mode) ? trim($mode) : '';
+        if ($this->originalTtyMode === null) {
+            $mode = @shell_exec('stty -g 2>/dev/null');
+            $mode = is_string($mode) ? trim($mode) : '';
 
-        if ($mode === '') {
-            return false;
+            if ($mode === '') {
+                return false;
+            }
+
+            $this->originalTtyMode = $mode;
         }
-
-        $this->originalTtyMode = $mode;
 
         @shell_exec('stty -icanon -echo min 0 time 0 2>/dev/null');
         @stream_set_blocking(STDIN, false);
@@ -467,7 +476,12 @@ class WatchConsole
         return true;
     }
 
-    private function disableRawInput(): void
+    /**
+     * Put the tty back the way start() found it. `$forget` also releases the
+     * captured mode, so only stop() ends the console's ownership of it —
+     * suspend() keeps it for the resume() that follows.
+     */
+    private function restoreTtyMode(bool $forget): void
     {
         if ($this->originalTtyMode === null) {
             return;
@@ -481,8 +495,11 @@ class WatchConsole
         // instead of keys.
         @stream_set_blocking(STDIN, true);
 
-        $this->originalTtyMode = null;
         $this->rawInput = false;
+
+        if ($forget) {
+            $this->originalTtyMode = null;
+        }
     }
 
     private function supportsRawInput(): bool
