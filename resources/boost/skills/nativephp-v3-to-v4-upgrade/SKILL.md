@@ -146,7 +146,7 @@ not fixed inline. Keep the entire data layer (Saloon requests, caches, DTOs, ser
   `navigationOptions`/`bottomBar`; `hideTabBar` → `$hidesTabBar`.
 - **Traits calling Livewire's `$this->redirect()`**: add a screen-local `redirect()` proxy forwarding
   to `navigate()` rather than editing the shared trait mid-migration; port it properly in cleanup.
-- **Icons**: `App\Icons` enums via `:ios`/`:android`; a raw SF Symbol / Material name string is
+- **Icons**: the generated icon enums via `:ios`/`:android`; a raw SF Symbol / Material name string is
   accepted when an enum case is missing.
 - **Event directives interpolate**: `@tap="{{ $action }}({{ $id }})"` works — enables parametrizable
   partials.

@@ -195,8 +195,8 @@ Author chrome directly in the screen's Blade. These elements hoist onto the **re
 titles, and Liquid Glass/Material You all come for free, exactly as with a layout:
 
 ```blade
-@use('App\Icons\Ios')
-@use('App\Icons\Android')
+@use('App\Enums\Icons\Ios')
+@use('App\Enums\Icons\Android')
 
 <native:top-bar title="Inbox" subtitle="{{ $unread }} unread" display-mode="large">
     <native:top-bar-action id="compose" label="Compose" @tap="compose"
