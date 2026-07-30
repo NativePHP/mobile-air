@@ -66,6 +66,12 @@ class BundleFileManager
         } else {
             self::copyWithRsync($source, $destination, $configPaths);
         }
+
+        // Put back what the exclusions removed but Laravel still needs to
+        // boot, since composer install runs package:discover in here.
+        foreach (BundleExclusions::REQUIRED_DIRECTORIES as $directory) {
+            File::ensureDirectoryExists($destination.'/'.$directory);
+        }
     }
 
     private static function copyWithRsync(string $source, string $destination, array $configPaths): void

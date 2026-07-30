@@ -147,6 +147,27 @@ class IosBuildCopyTest extends TestCase
         });
     }
 
+    public function test_copy_recreates_the_directories_laravel_needs_to_boot(): void
+    {
+        // composer install runs package:discover inside this copy, which boots
+        // the app. These directories have their contents excluded on purpose,
+        // but they still have to exist: a fresh skeleton publishes no
+        // config/view.php, so the framework default applies, and that
+        // wraps the path in realpath() — false for a directory that
+        // is absent, which the Blade compiler refuses with
+        // "Please provide a valid cache path".
+        $appPath = $this->fakeRsyncAndGetAppPath();
+
+        BundleFileManager::copy(base_path(), $appPath);
+
+        foreach (BundleExclusions::REQUIRED_DIRECTORIES as $directory) {
+            $this->assertDirectoryExists(
+                rtrim($appPath, '/').'/'.$directory,
+                "Laravel cannot boot in the copied tree without {$directory}"
+            );
+        }
+    }
+
     public function test_copy_throws_on_rsync_failure(): void
     {
         $appPath = $this->fakeRsyncAndGetAppPath(exitCode: 1);
