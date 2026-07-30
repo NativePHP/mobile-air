@@ -14,6 +14,18 @@ trait PreparesBuild
     use CleansEnvFile, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
 
     /**
+     * Runtime directories Laravel needs at boot. Excluded from the source
+     * copy, so they must exist before composer install (package:discover
+     * boots the app) and be re-added as empty entries in the final bundle.
+     */
+    private const RUNTIME_DIRS = [
+        'bootstrap/cache',
+        'storage/framework/cache',
+        'storage/framework/sessions',
+        'storage/framework/views',
+    ];
+
+    /**
      * Validate required environment variables for building
      */
     protected function validateBuildEnvironment(): bool
@@ -248,7 +260,9 @@ trait PreparesBuild
             $this->logToFile('  Copying Laravel source...');
             $this->components->task('Copying Laravel source', fn () => BundleFileManager::copy($source, $tempDir, $configExcludes));
 
-            File::ensureDirectoryExists($tempDir.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache');
+            foreach (self::RUNTIME_DIRS as $dir) {
+                File::ensureDirectoryExists($tempDir.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $dir));
+            }
 
             $composerArgs = $excludeDevDependencies ? '--no-dev --no-interaction' : '--no-interaction';
 
@@ -381,14 +395,7 @@ trait PreparesBuild
             // Pre-create the runtime dirs Laravel needs at boot so they land in
             // the archive — 7-Zip stores empty dirs matched by "$source\*",
             // mirroring the addEmptyDir() guarantee of the ZipArchive branch
-            $requiredDirs = [
-                'bootstrap/cache',
-                'storage/framework/cache',
-                'storage/framework/sessions',
-                'storage/framework/views',
-            ];
-
-            foreach ($requiredDirs as $dir) {
+            foreach (self::RUNTIME_DIRS as $dir) {
                 File::ensureDirectoryExists($source.DIRECTORY_SEPARATOR.str_replace('/', '\\', $dir));
             }
 
@@ -446,14 +453,7 @@ trait PreparesBuild
 
         $this->addDirectoryToZip($zip, $source, '', $configExcludes);
 
-        $requiredDirs = [
-            'bootstrap/cache',
-            'storage/framework/cache',
-            'storage/framework/sessions',
-            'storage/framework/views',
-        ];
-
-        foreach ($requiredDirs as $dir) {
+        foreach (self::RUNTIME_DIRS as $dir) {
             if (! $zip->statName($dir)) {
                 $zip->addEmptyDir($dir);
             }

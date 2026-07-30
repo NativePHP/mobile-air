@@ -113,6 +113,41 @@ class ReleaseBuildBundleTest extends TestCase
         $zip->close();
     }
 
+    public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void
+    {
+        // storage/framework is excluded from the copy, but composer install
+        // triggers package:discover, which boots Laravel and resolves the
+        // Blade compiler's cache path — realpath(storage/framework/views)
+        // must not be false at that point (#245). The fake closure runs at
+        // install time, so it observes the tree exactly as composer would.
+        $missingAtInstallTime = [];
+
+        Process::fake([
+            'composer install*' => function () use (&$missingAtInstallTime) {
+                foreach ([
+                    'bootstrap/cache',
+                    'storage/framework/cache',
+                    'storage/framework/sessions',
+                    'storage/framework/views',
+                ] as $dir) {
+                    if (! is_dir($this->testProjectPath.'/nativephp/android/laravel/'.$dir)) {
+                        $missingAtInstallTime[] = $dir;
+                    }
+                }
+
+                return Process::result();
+            },
+            'composer dump-autoload*' => Process::result(),
+        ]);
+
+        $this->createAndroidProjectFixture();
+
+        (new ReleaseBuildTester)->testPrepareLaravelBundle();
+
+        Process::assertRan('composer install --no-dev --no-interaction');
+        $this->assertSame([], $missingAtInstallTime);
+    }
+
     protected function createAndroidProjectFixture(): void
     {
         File::ensureDirectoryExists($this->testProjectPath.'/app');
