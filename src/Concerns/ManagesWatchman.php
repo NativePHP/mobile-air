@@ -91,8 +91,15 @@ trait ManagesWatchman
         // Register shutdown handler to clean up
         register_shutdown_function([$this, 'onWatchmanShutdown']);
 
-        // Handle SIGINT (Ctrl+C) and SIGTERM gracefully
+        // Handle SIGINT (Ctrl+C) and SIGTERM gracefully. Async delivery is
+        // required: nothing in the loop below calls pcntl_signal_dispatch(),
+        // so without it the handlers are installed but never run and Ctrl+C
+        // is simply swallowed.
         if (function_exists('pcntl_signal')) {
+            if (function_exists('pcntl_async_signals')) {
+                pcntl_async_signals(true);
+            }
+
             pcntl_signal(SIGINT, [$this, 'onWatchmanShutdown']);
             pcntl_signal(SIGTERM, [$this, 'onWatchmanShutdown']);
         }
@@ -102,7 +109,7 @@ trait ManagesWatchman
 
         if (! $this->watchmanProcess->isRunning()) {
             $errorOutput = $this->watchmanProcess->getErrorOutput();
-            $this->error('Watchman failed to start: '.$errorOutput);
+            $this->watchmanLine('<fg=red>Watchman failed to start:</> '.$errorOutput);
 
             return;
         }
@@ -113,7 +120,7 @@ trait ManagesWatchman
             $errorOutput = $this->watchmanProcess->getIncrementalErrorOutput();
 
             if ($errorOutput) {
-                $this->line("<fg=yellow>Watchman:</fg=yellow> {$errorOutput}");
+                $this->watchmanLine("<fg=yellow>Watchman:</fg=yellow> {$errorOutput}");
             }
 
             if ($output) {
@@ -152,8 +159,23 @@ trait ManagesWatchman
         $errorOutput = $this->watchmanProcess->getErrorOutput();
 
         if ($exitCode !== 0) {
-            $this->error("Watchman exited with code {$exitCode}: {$errorOutput}");
+            $this->watchmanLine("<fg=red>Watchman exited with code {$exitCode}:</> {$errorOutput}");
         }
+    }
+
+    /**
+     * Write a line without trampling the interactive watch footer, when one
+     * is being drawn.
+     */
+    protected function watchmanLine(string $message): void
+    {
+        if (method_exists($this, 'watchNote')) {
+            $this->watchNote($message);
+
+            return;
+        }
+
+        $this->line($message);
     }
 
     /**
@@ -203,6 +225,12 @@ trait ManagesWatchman
      */
     public function onWatchmanShutdown(): void
     {
+        // Hand the terminal back first — this method exits, so anything
+        // queued behind it in the shutdown sequence may never run.
+        if (method_exists($this, 'stopWatchConsole')) {
+            $this->stopWatchConsole();
+        }
+
         $this->stopWatchman();
 
         // Clean up Vite dev server and hot file if the trait is available

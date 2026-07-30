@@ -5,7 +5,6 @@ namespace Native\Mobile\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
-use Illuminate\Support\Str;
 use Native\Mobile\Concerns\ChecksLatestBuildNumber;
 use Native\Mobile\Concerns\CleansEnvFile;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
@@ -17,6 +16,7 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
+use Native\Mobile\Support\BundleFileManager;
 
 use function Laravel\Prompts\error;
 
@@ -95,7 +95,11 @@ class BuildIosAppCommand extends Command
     {
         @mkdir($this->appPath, 0755, true);
 
-        $this->copyLaravelAppIntoIosApp();
+        $this->components->task('Copying Laravel app', fn () => BundleFileManager::copy(
+            base_path(),
+            $this->appPath,
+            config('nativephp.cleanup_exclude_files', [])
+        ));
 
         // Set ASSET_URL in .env
         file_put_contents($this->appPath.'.env', PHP_EOL.'ASSET_URL="/_assets"'.PHP_EOL, FILE_APPEND);
@@ -129,7 +133,10 @@ class BuildIosAppCommand extends Command
             return true;
         });
 
-        $this->components->task('Removing unnecessary files', fn () => $this->removeUnnecessaryFiles());
+        $this->components->task('Removing unnecessary files', fn () => BundleFileManager::removeUnnecessaryFiles(
+            $this->appPath,
+            config('nativephp.cleanup_exclude_files', [])
+        ));
         $this->cleanEnvFile($this->appPath.'.env');
         $this->createAppZip();
     }
@@ -187,68 +194,6 @@ class BuildIosAppCommand extends Command
         }
 
         $this->components->twoColumnDetail('ICU support', 'Enabled');
-    }
-
-    private function copyLaravelAppIntoIosApp()
-    {
-        $destination = $this->appPath;
-
-        // Make sure we clear out any old version
-        shell_exec("rm -rf {$destination}/*");
-
-        $source = rtrim(str_replace('\\', '/', base_path()), '/').'/';
-
-        $visitedRealPaths = [];
-        $files = [];
-
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $source,
-                \RecursiveDirectoryIterator::SKIP_DOTS | \FilesystemIterator::FOLLOW_SYMLINKS
-            ),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-
-        foreach ($iterator as $file) {
-            $realPath = $file->getRealPath();
-
-            // Skip if we've already visited this real path (prevents infinite loops from circular symlinks)
-            if ($realPath === false || isset($visitedRealPaths[$realPath])) {
-                continue;
-            }
-
-            $visitedRealPaths[$realPath] = true;
-            $files[] = $file;
-        }
-
-        foreach ($files as $file) {
-            // Where the *link* lives (keeps relative paths correct)
-            $logicalPath = str_replace('\\', '/', $file->getPathname());
-            // Where the link **points** (or the same file if not a link)
-            $realPath = str_replace('\\', '/', $file->getRealPath());
-
-            $relativePath = ltrim(substr($logicalPath, strlen($source)), '/');
-
-            if (Str::startsWith($relativePath, 'vendor/nativephp/mobile/resources') ||
-                Str::startsWith($relativePath, 'vendor/nativephp/mobile/vendor') ||
-                Str::startsWith($relativePath, 'vendor/endroid') ||
-                Str::startsWith($relativePath, 'nativephp') ||
-                Str::startsWith($relativePath, 'output/') ||
-                Str::startsWith($relativePath, 'build/') ||
-                Str::startsWith($relativePath, 'dist/') ||
-                Str::startsWith($relativePath, 'artifacts/') ||
-                Str::startsWith($relativePath, '.git/') ||
-                Str::startsWith($relativePath, 'bootstrap/cache/') ||
-                Str::startsWith($relativePath, 'storage/logs/') ||
-                Str::startsWith($relativePath, 'storage/framework/cache/')) {
-                continue;
-            }
-
-            @File::makeDirectory(dirname($destination.$relativePath), recursive: true, force: true);
-            @File::copy($realPath, $destination.$relativePath);
-        }
-
-        File::ensureDirectoryExists($destination.'bootstrap/cache');
     }
 
     private function updateAppVersion(): void
@@ -887,53 +832,6 @@ class BuildIosAppCommand extends Command
 
         $destinationPath = $this->containerPath.'GoogleService-Info.plist';
         @copy($path, $destinationPath);
-    }
-
-    private function removeUnnecessaryFiles(): void
-    {
-
-        $directoriesToRemove = [
-            '.git',
-            '.github',
-            'node_modules',
-            'vendor/bin',
-            'tests',
-            'storage/logs',
-            'storage/framework',
-            'vendor/laravel/pint/builds',
-            'public/storage',
-        ];
-
-        foreach ($directoriesToRemove as $dir) {
-            if (is_dir($this->appPath.$dir)) {
-                File::deleteDirectory($this->appPath.$dir);
-            }
-        }
-
-        $filesToRemove = [
-            'database/database.sqlite',
-            '*.js',
-            '*.md',
-            '*.lock',
-            '*.xml',
-            '.env.example',
-            'artisan',
-            '.gitignore',
-            '.gitattributes',
-            '.gitkeep',
-            '.editorconfig',
-            '.DS_Store',
-            'vendor/livewire/livewire/src/Features/SupportFileUploads/browser_test_image_big.jpg',
-        ];
-
-        foreach ($filesToRemove as $pattern) {
-            $files = glob($this->appPath.$pattern);
-            foreach ($files as $file) {
-                if (is_file($file)) {
-                    unlink($file);
-                }
-            }
-        }
     }
 
     private function determineApsEnvironment(): string

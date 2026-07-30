@@ -2115,18 +2115,7 @@ abstract class NativeComponent
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->flushCompiledViews();
-                // Prefer the native router's top-of-stack URI (where the
-                // user actually IS after SPA-style internal navigation)
-                // over `request()->path()` (the original HTTP entry-
-                // point URI, typically `/`). Otherwise hot reload always
-                // lands the user back on the root screen.
-                $uri = $this->nativeRouter?->currentUri()
-                    ?? '/'.ltrim(request()->path(), '/');
-                // Serialize the full stack so back-button history
-                // survives the reboot. `Route::native`'s handler reads
-                // this on the way back in and preloads entries below
-                // the top via `NativeRouter::preloadStack`.
-                $stack = $this->nativeRouter?->getStackEntries() ?? [];
+                ['uri' => $uri, 'stack' => $stack] = $this->hotRestartPayload();
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
@@ -2312,18 +2301,7 @@ abstract class NativeComponent
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->flushCompiledViews();
-                // Prefer the native router's top-of-stack URI (where the
-                // user actually IS after SPA-style internal navigation)
-                // over `request()->path()` (the original HTTP entry-
-                // point URI, typically `/`). Otherwise hot reload always
-                // lands the user back on the root screen.
-                $uri = $this->nativeRouter?->currentUri()
-                    ?? '/'.ltrim(request()->path(), '/');
-                // Serialize the full stack so back-button history
-                // survives the reboot. `Route::native`'s handler reads
-                // this on the way back in and preloads entries below
-                // the top via `NativeRouter::preloadStack`.
-                $stack = $this->nativeRouter?->getStackEntries() ?? [];
+                ['uri' => $uri, 'stack' => $stack] = $this->hotRestartPayload();
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
@@ -2404,6 +2382,38 @@ abstract class NativeComponent
     public function resetNavigationIntent(): void
     {
         $this->nativeNavigationIntent = null;
+    }
+
+    /**
+     * Where the rebooted runtime should land after a hot reload, plus the
+     * history to restore beneath it.
+     *
+     * Normally that's wherever the user actually IS — the native router's
+     * top-of-stack URI, not `request()->path()` (the original HTTP entry
+     * point, typically `/`), otherwise every reload dumps them back at the
+     * root — with the full stack serialized so the back button survives the
+     * reboot. `Route::native`'s handler replays the entries below the top via
+     * NativeRouter::preloadStack().
+     *
+     * A screen change requested from the `native:watch` terminal wins over
+     * the live stack: it is asking to GO somewhere, so the chosen screen
+     * becomes the new root rather than being pushed onto history the user is
+     * no longer in.
+     *
+     * @return array{uri: string, stack: list<array{uri: string, params: array}>}
+     */
+    private function hotRestartPayload(): array
+    {
+        if ($requested = NativeRouter::takeScreenIntent()) {
+            NativeRouter::debugLog("HOT_RELOAD: screen change requested — $requested");
+
+            return ['uri' => $requested, 'stack' => []];
+        }
+
+        return [
+            'uri' => $this->nativeRouter?->currentUri() ?? '/'.ltrim(request()->path(), '/'),
+            'stack' => $this->nativeRouter?->getStackEntries() ?? [],
+        ];
     }
 
     /**

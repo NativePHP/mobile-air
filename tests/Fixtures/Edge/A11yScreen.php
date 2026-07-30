@@ -37,8 +37,13 @@ class A11yScreen extends NativeComponent
                 Icon::make('gear')->onPress('noop'),
                 // Clickable image, no alt.
                 Image::make('https://example.com/tap.png')->onPress('noop'),
-                // Pressable with neither text nor a11y label.
-                Pressable::make()->onPress('noop'),
+                // Pressable with neither text nor a11y label. Styled with a
+                // color prop and wrapping an icon — string props that aren't
+                // announced text must not satisfy the visible-text check
+                // (regression: `dark_bg_color` used to count as text).
+                Pressable::make(Icon::make('paperplane'))
+                    ->setProp('dark_bg_color', '#8B5CF6')
+                    ->onPress('noop'),
                 // Input with no label, placeholder, or a11y label.
                 TextInput::make()->onChange("__syncProperty('accessible')"),
                 // Toggle with no label of any kind.

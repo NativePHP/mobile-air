@@ -21,8 +21,14 @@ trait ManagesPollingWatcher
         // Register shutdown handler
         register_shutdown_function([$this, 'onPollingWatcherShutdown']);
 
-        // Handle SIGINT (Ctrl+C) and SIGTERM gracefully
+        // Handle SIGINT (Ctrl+C) and SIGTERM gracefully. Async delivery is
+        // required: nothing in the loop below calls pcntl_signal_dispatch(),
+        // so the handlers would otherwise be installed but never run.
         if (function_exists('pcntl_signal')) {
+            if (function_exists('pcntl_async_signals')) {
+                pcntl_async_signals(true);
+            }
+
             pcntl_signal(SIGINT, [$this, 'onPollingWatcherShutdown']);
             pcntl_signal(SIGTERM, [$this, 'onPollingWatcherShutdown']);
         }
@@ -130,6 +136,12 @@ trait ManagesPollingWatcher
      */
     public function onPollingWatcherShutdown(): void
     {
+        // Hand the terminal back first — this method exits, so anything
+        // queued behind it in the shutdown sequence may never run.
+        if (method_exists($this, 'stopWatchConsole')) {
+            $this->stopWatchConsole();
+        }
+
         $this->stopPollingWatcher();
 
         // Clean up Vite dev server if the trait is available

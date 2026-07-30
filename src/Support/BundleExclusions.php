@@ -57,12 +57,6 @@ class BundleExclusions
      * machine's sessions, but the directories themselves are not optional:
      * composer install runs package:discover in the copied tree, and that
      * boots Laravel.
-     *
-     * storage/framework/views is the one that stops a build outright. A
-     * fresh skeleton publishes no config/view.php, so the framework
-     * default applies, and it wraps the path in realpath(), which
-     * answers false for a directory that is not there. Blade
-     * refuses a false path, and nothing is built.
      */
     public const REQUIRED_DIRECTORIES = [
         'bootstrap/cache',
@@ -71,7 +65,7 @@ class BundleExclusions
         'storage/framework/views',
     ];
 
-    /** Non-runtime patterns inside vendor packages. */
+    /** Non-runtime patterns matched only inside vendor packages. */
     public const VENDOR_PATTERNS = [
         '*.md',
         'LICENSE*',
