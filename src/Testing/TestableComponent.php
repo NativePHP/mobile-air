@@ -1700,7 +1700,29 @@ class TestableComponent
         return false;
     }
 
-    /** Every string prop value in the subtree (visible text, titles, …). */
+    /**
+     * Prop keys whose values are user-visible / announced text. collectText()
+     * harvests only these, so string props that merely configure appearance
+     * (colors, icon names, font names) don't count as "visible text" for
+     * assertSee(), tap()-by-text, or the a11y audit — a styled icon-only
+     * pressable used to slip past the audit because its `dark_bg_color`
+     * string satisfied the visible-text check.
+     *
+     * The *_json keys carry serialized swipe-action / badge specs whose
+     * `label` fields are user-visible; the whole blob is searched so
+     * assertSee('Archive') keeps matching swipe actions.
+     *
+     * @var list<string>
+     */
+    protected const TEXT_PROP_KEYS = [
+        'text', 'label', 'title', 'subtitle', 'placeholder', 'value',
+        'alt', 'a11y_label', 'a11y_hint', 'headline', 'supporting',
+        'overline', 'heading', 'options', 'leading_value', 'trailing_value',
+        'nav_title', 'nav_subtitle', 'search_placeholder', 'nav_search_placeholder',
+        'leading_actions_json', 'trailing_actions_json', 'trailing_badges_json',
+    ];
+
+    /** Every announced-text prop value in the subtree (visible text, titles, …). */
     protected function collectText(array $node, array &$found = []): array
     {
         $walkProps = function ($value) use (&$walkProps, &$found): void {
@@ -1713,7 +1735,11 @@ class TestableComponent
             }
         };
 
-        $walkProps($node['props'] ?? []);
+        foreach (self::TEXT_PROP_KEYS as $key) {
+            if (isset($node['props'][$key])) {
+                $walkProps($node['props'][$key]);
+            }
+        }
 
         foreach ($node['children'] ?? [] as $child) {
             $this->collectText($child, $found);
