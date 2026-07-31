@@ -279,7 +279,7 @@ it('interpolates array access inside {{ }} in attribute values', function () {
 // ── Chrome tags compile through the collector (Gen-B Edge bridge is gone) ──
 
 it('compiles chrome container tags into collector open/close calls', function () use ($collector) {
-    foreach (['top-bar', 'bottom-nav', 'side-nav', 'side-nav-group'] as $tag) {
+    foreach (['top-bar', 'top-bar-group', 'top-bar-section', 'bottom-nav', 'side-nav', 'side-nav-group'] as $tag) {
         $type = str_replace('-', '_', $tag);
         $result = ($this->precompiler)("<native:{$tag} title=\"X\">body</native:{$tag}>");
 

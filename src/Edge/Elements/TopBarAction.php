@@ -34,7 +34,7 @@ class TopBarAction extends Element
             $attrs['material_variant'] = $attrs['material-variant'];
         }
 
-        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'label', 'subtitle', 'url', 'event', 'role'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }
@@ -44,6 +44,9 @@ class TopBarAction extends Element
         $this->androidIcon = $attrs['android-icon'] ?? $attrs['androidIcon'] ?? $attrs['android'] ?? $this->androidIcon;
         if (isset($attrs['destructive'])) {
             $this->props['destructive'] = (bool) $attrs['destructive'];
+            if (! isset($this->props['role']) && $this->props['destructive']) {
+                $this->props['role'] = 'destructive';
+            }
         }
         if (isset($attrs['divider'])) {
             $this->props['divider'] = (bool) $attrs['divider'];
