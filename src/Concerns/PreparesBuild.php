@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
@@ -246,9 +247,10 @@ trait PreparesBuild
             $srcDir = base_path('vendor/nativephp/mobile/bootstrap/android');
 
             $this->logToFile('  Copying Laravel source...');
+            // The copy restores BundleExclusions::REQUIRED_DIRECTORIES on the
+            // way out, so the tree composer install boots into below already
+            // has the directories Laravel needs.
             $this->components->task('Copying Laravel source', fn () => BundleFileManager::copy($source, $tempDir, $configExcludes));
-
-            File::ensureDirectoryExists($tempDir.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache');
 
             $composerArgs = $excludeDevDependencies ? '--no-dev --no-interaction' : '--no-interaction';
 
@@ -381,14 +383,7 @@ trait PreparesBuild
             // Pre-create the runtime dirs Laravel needs at boot so they land in
             // the archive — 7-Zip stores empty dirs matched by "$source\*",
             // mirroring the addEmptyDir() guarantee of the ZipArchive branch
-            $requiredDirs = [
-                'bootstrap/cache',
-                'storage/framework/cache',
-                'storage/framework/sessions',
-                'storage/framework/views',
-            ];
-
-            foreach ($requiredDirs as $dir) {
+            foreach (BundleExclusions::REQUIRED_DIRECTORIES as $dir) {
                 File::ensureDirectoryExists($source.DIRECTORY_SEPARATOR.str_replace('/', '\\', $dir));
             }
 
@@ -446,14 +441,9 @@ trait PreparesBuild
 
         $this->addDirectoryToZip($zip, $source, '', $configExcludes);
 
-        $requiredDirs = [
-            'bootstrap/cache',
-            'storage/framework/cache',
-            'storage/framework/sessions',
-            'storage/framework/views',
-        ];
-
-        foreach ($requiredDirs as $dir) {
+        // The cleanup pass strips these before the archive is built, so they
+        // are re-added as empty entries to match the copy's carve-out.
+        foreach (BundleExclusions::REQUIRED_DIRECTORIES as $dir) {
             if (! $zip->statName($dir)) {
                 $zip->addEmptyDir($dir);
             }
