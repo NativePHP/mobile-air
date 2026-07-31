@@ -8,17 +8,19 @@ use Illuminate\Support\Facades\Process;
 class BundleFileManager
 {
     /**
-     * All exclusion patterns. Project-level paths are anchored by a leading slash,
-     * vendor patterns are scoped under vendor/** so they never match app files,
-     * and bare patterns match at any depth. When a source path is given the
-     * export-ignore patterns from vendor .gitattributes are also included.
-     * Optional config paths are anchored and merged in (deduplicated).
+     * All exclusion patterns, with project-level paths anchored by leading /.
+     * Patterns without / match at any depth; patterns with / are project-root only.
+     *
+     * When a source path is given, export-ignore patterns from vendor .gitattributes
+     * are included automatically.
+     *
+     * Optional config paths are anchored and merged (deduplicated).
      */
     public static function excludes(array $configPaths = [], ?string $sourcePath = null): array
     {
         $excludes = array_merge(
             BundleExclusions::ANY_DEPTH,
-            array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::VENDOR_PATTERNS),
+            BundleExclusions::VENDOR_PATTERNS,
             BundleExclusions::VENDOR_PATHS,
             array_map(fn ($p) => '/'.$p, BundleExclusions::PROJECT),
             array_map(fn ($p) => '/'.$p, BundleExclusions::COPY_ONLY),
@@ -64,12 +66,6 @@ class BundleFileManager
         } else {
             self::copyWithRsync($source, $destination, $configPaths);
         }
-
-        // Put back what the exclusions removed but Laravel still needs to
-        // boot, since composer install runs package:discover in here.
-        foreach (BundleExclusions::REQUIRED_DIRECTORIES as $directory) {
-            File::ensureDirectoryExists($destination.'/'.$directory);
-        }
     }
 
     private static function copyWithRsync(string $source, string $destination, array $configPaths): void
@@ -87,95 +83,20 @@ class BundleFileManager
     private static function copyWithRobocopy(string $source, string $destination, array $configPaths): void
     {
         $excludes = self::excludes($configPaths, $source);
-        $source = rtrim($source, '/');
 
-        // Robocopy path matching requires backslashes, but callers build
-        // their paths with forward slashes (base_path('x')). /XD only
-        // excludes directories, so files are registered via /XF.
+        // Robocopy uses /XD for directories with absolute paths
         $excludeArgs = '';
-        $append = function (string $path) use (&$excludeArgs): void {
-            $flag = is_file($path) ? '/XF' : '/XD';
-            $excludeArgs .= ' '.$flag.' "'.str_replace('/', '\\', $path).'"';
-        };
-
         foreach ($excludes as $pattern) {
-            // Bare names match at any depth, mirroring rsync's unanchored
-            // semantics. A name can be a file or a directory and unused
-            // robocopy flags are harmless, so register it as both.
-            if (! str_contains($pattern, '/')) {
-                $excludeArgs .= " /XD \"{$pattern}\" /XF \"{$pattern}\"";
-
-                continue;
-            }
-
-            // Multi-level wildcards (vendor/**/*.md) cannot be expressed
-            // with /XD or /XF, so they are pruned from the destination
-            // after robocopy finishes instead.
-            if (str_contains($pattern, '**')) {
-                continue;
-            }
-
-            // Single-level wildcards (vendor/*/*/vendor) are expanded here
-            // because robocopy cannot. This also keeps robocopy from
-            // cycling through composer path-repo junctions.
-            if (str_contains($pattern, '*')) {
-                foreach (glob($source.'/'.ltrim($pattern, '/')) ?: [] as $match) {
-                    $append($match);
-                }
-
-                continue;
-            }
-
-            $append($source.'/'.ltrim($pattern, '/'));
+            $dir = ltrim($pattern, '/\\');
+            $dir = str_replace('/', '\\', $dir);
+            $excludeArgs .= " /XD \"{$source}\\{$dir}\"";
         }
 
-        $sourceWin = str_replace('/', '\\', $source);
-        $destinationWin = str_replace('/', '\\', $destination);
-
-        $result = Process::run("robocopy \"{$sourceWin}\" \"{$destinationWin}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}");
+        $result = Process::run("robocopy \"{$source}\" \"{$destination}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}");
 
         // Robocopy exit codes < 8 are success
         if ($result->exitCode() >= 8) {
             throw new \Exception('Failed to copy app bundle (robocopy exit code '.$result->exitCode().')');
-        }
-
-        self::pruneVendorPatterns($destination);
-    }
-
-    /**
-     * Delete files matching VENDOR_PATTERNS from a copied vendor tree.
-     * Robocopy cannot express the multi-level vendor wildcards rsync
-     * handles natively, so the Windows backend prunes them here to
-     * keep the copy contract identical on every platform.
-     */
-    private static function pruneVendorPatterns(string $destination): void
-    {
-        $vendorPath = $destination.'/vendor';
-
-        if (! is_dir($vendorPath)) {
-            return;
-        }
-
-        $items = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($vendorPath, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::CHILD_FIRST
-        );
-
-        foreach ($items as $item) {
-            // rsync's vendor/**/<pattern> form needs at least one directory
-            // level below vendor/, so files sitting directly in vendor/
-            // (only autoload.php in practice) are never matched.
-            if ($items->getDepth() < 1) {
-                continue;
-            }
-
-            foreach (BundleExclusions::VENDOR_PATTERNS as $pattern) {
-                if (fnmatch($pattern, $item->getFilename())) {
-                    $item->isDir() ? File::deleteDirectory($item->getPathname()) : unlink($item->getPathname());
-
-                    break;
-                }
-            }
         }
     }
 

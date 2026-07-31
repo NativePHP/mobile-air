@@ -4,14 +4,14 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
-use Native\Mobile\Concerns\ChecksLatestBuildNumber;
-use Native\Mobile\Concerns\DisplaysMarketingBanners;
-use Native\Mobile\Concerns\PackagesIos;
-use Native\Mobile\Concerns\PlatformFileOperations;
-use Native\Mobile\Concerns\PublishesToPlayStore;
-use Native\Mobile\Concerns\RunsAndroid;
-use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Traits\ChecksLatestBuildNumber;
+use Native\Mobile\Traits\DisplaysMarketingBanners;
+use Native\Mobile\Traits\PackagesIos;
+use Native\Mobile\Traits\PlatformFileOperations;
+use Native\Mobile\Traits\PublishesToPlayStore;
+use Native\Mobile\Traits\RunsAndroid;
+use Native\Mobile\Traits\ValidatesAppConfig;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\outro;
@@ -471,17 +471,6 @@ class PackageCommand extends Command
         } elseif (PHP_OS_FAMILY === 'Darwin') {
             exec("open \"$directory\"");
         } elseif (PHP_OS_FAMILY === 'Linux') {
-            // In WSL there's usually no desktop session (so no xdg-open), but
-            // Windows Explorer is reachable via interop — open it there instead
-            if ($this->isRunningInWSL()) {
-                $windowsPath = trim((string) shell_exec('wslpath -w '.escapeshellarg($directory).' 2>/dev/null'));
-                if ($windowsPath !== '') {
-                    exec('explorer.exe '.escapeshellarg($windowsPath).' >/dev/null 2>&1');
-
-                    return;
-                }
-            }
-
             if (shell_exec('which xdg-open')) {
                 exec("xdg-open \"$directory\"");
             }

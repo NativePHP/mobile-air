@@ -9,29 +9,15 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
-import kotlin.concurrent.withLock
 
 class PHPBridge(private val context: Context) {
     private var lastPostData: String? = null
     private val requestDataMap = ConcurrentHashMap<String, String>()
     private val postDataByKey = ConcurrentHashMap<String, String>()
+    private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private val nativePhpScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/native.php"
-
-    /**
-     * Serves this bridge's requests on a dedicated per-webview PHP context
-     * instead of phpExecutor — REQUIRED for php-mode webviews embedded in
-     * native screens, where phpExecutor is parked inside the screen's
-     * event-loop dispatch and would never answer.
-     */
-    var dedicatedWebviewRuntime: WebviewPHPRuntime? = null
-
-    internal val webviewBootstrapScript: String
-        get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/persistent.php"
-
-    internal val webviewNativeScript: String
-        get() = nativePhpScript
 
     private val persistentBootstrapScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/persistent.php"
@@ -72,6 +58,7 @@ class PHPBridge(private val context: Context) {
     ): String
     external fun nativePersistentArtisan(command: String): String
     external fun nativePersistentShutdown()
+    external fun nativePersistentReboot(): Int
 
     // Worker (background queue) JNI methods — runs on a separate thread with its own TSRM context
     external fun nativeWorkerBoot(bootstrapPath: String): Int
@@ -83,19 +70,14 @@ class PHPBridge(private val context: Context) {
     external fun nativeEphemeralArtisan(command: String): String
     external fun nativeEphemeralShutdown()
 
-    // Webview runtime (dedicated context per embedded php-mode webview).
-    // Call ONLY from that webview's single-thread executor — the TSRM
-    // context is bound to the calling thread.
-    external fun nativeWebviewPhpBoot(bootstrapPath: String): Int
-    external fun nativeWebviewPhpRequest(
-        method: String,
-        uri: String,
-        cookieHeader: String,
-        body: String,
-        contentType: String,
-        scriptPath: String
-    ): String
-    external fun nativeWebviewPhpShutdown()
+    @Volatile
+    private var runtimeInitialized = false
+
+    @Volatile
+    private var persistentMode = false
+
+    @Volatile
+    private var persistentBooted = false
 
     fun ensureRuntimeInitialized() {
         if (!runtimeInitialized) {
@@ -109,27 +91,6 @@ class PHPBridge(private val context: Context) {
         private const val TAG = "PHPBridge"
         private const val MAX_REQUEST_AGE = 5 * 60 * 1000L
 
-        // ── PROCESS-level runtime state ──────────────────────────────
-        // MainActivity constructs a fresh PHPBridge per activity, but the
-        // native PHP runtime, its single executor thread, and the
-        // booted/initialized flags belong to the PROCESS. When a plugin
-        // foreground service keeps the process alive across activity
-        // re-creation, a new activity's bridge instance must see (and
-        // reuse) the runtime the previous one booted — instance-level
-        // flags made it boot a SECOND runtime beside the live one, which
-        // hangs in native code. Park/reuse only works with this state
-        // shared here.
-        private val phpExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
-
-        @Volatile
-        private var runtimeInitialized = false
-
-        @Volatile
-        private var persistentMode = false
-
-        @Volatile
-        private var persistentBooted = false
-
         init {
             System.loadLibrary("php_wrapper")
         }
@@ -139,25 +100,7 @@ class PHPBridge(private val context: Context) {
      * Boot the persistent PHP runtime. Call once during app startup.
      * PHP interpreter stays alive — no init/shutdown per request.
      */
-    fun bootPersistentRuntime(): Boolean = LaravelEnvironment.extractionLock.withLock {
-        // The lock is shared with LaravelEnvironment.initialize(): a
-        // concurrently-created activity may still be extracting the bundle or
-        // cycling classic-embed artisan commands, and the persistent
-        // php_embed_init must not overlap either (different native mutexes;
-        // a classic php_embed_shutdown mid-boot guts the persistent
-        // interpreter — it "boots" in ~10ms with no classes loaded and every
-        // dispatch 500s until the process dies).
-
-        // Process reuse: a plugin foreground service kept the process alive
-        // past the previous activity, which parked (not tore down) the
-        // runtime. Reuse it — native PHP re-init in a used process is
-        // exactly what SEGVs/hangs.
-        if (persistentBooted) {
-            Log.i(TAG, "Persistent runtime already booted — reusing (process outlived its activity)")
-            WebviewPHPRuntime.resumeAfterRuntimeReboot()
-            return true
-        }
-
+    fun bootPersistentRuntime(): Boolean {
         val future = phpExecutor.submit<Boolean> {
             val start = System.currentTimeMillis()
 
@@ -177,86 +120,20 @@ class PHPBridge(private val context: Context) {
                 false
             }
         }
-        val booted = future.get()
-
-        // Re-open the window shutdownPersistentRuntime() closed, so webview
-        // contexts suspended for this reboot can boot again. No-op on a cold
-        // launch.
-        WebviewPHPRuntime.resumeAfterRuntimeReboot()
-
-        return booted
+        return future.get()
     }
 
     /**
-     * Park the persistent runtime: end the element runloop (freeing the
-     * single PHP executor thread) but leave the runtime booted and all
-     * native PHP state untouched. Used at activity destroy — the process
-     * may outlive the activity (plugin foreground services), and native
-     * PHP does not survive a full teardown + re-init in the same process
-     * (TSRM SEGV in ts_resource_ex; nativePersistentBoot hangs). A
-     * re-created activity reuses the parked runtime via
-     * bootPersistentRuntime()'s already-booted guard; when nothing pins
-     * the process, the OS reclaims everything anyway.
-     *
-     * No blocking wait: the loop exits asynchronously, and any work a new
-     * activity queues on phpExecutor is naturally serialized behind it.
-     */
-    fun parkPersistentRuntime() {
-        if (!persistentBooted) return
-        Log.i(TAG, "Parking persistent runtime — asking runloop to exit")
-        try {
-            com.nativephp.mobile.ui.nativerender.NativeElementBridge.sendShutdownEvent()
-        } catch (t: Throwable) {
-            Log.d(TAG, "park wake skipped: ${t.javaClass.simpleName}")
-        }
-    }
-
-    /**
-     * Shut down the persistent runtime. Called before hot reload reboot,
-     * which re-boots immediately afterwards on the same executor — the one
-     * teardown/re-init cycle native PHP handles reliably.
-     *
-     * The PHP runloop occupies the single phpExecutor thread, parked inside
-     * `nativephp_element_wait_event`, so a shutdown task queued here can only
-     * run after the loop exits. Post a SHUTDOWN event first to wake the loop
-     * and make it return (hot reload already worked because it posts its own
-     * HOT_RELOAD event; a plain activity destroy posted nothing and hung the
-     * main thread forever once a foreground service kept the process alive).
-     * The bounded get() is a backstop: an unkillable runtime must not take
-     * the main thread down with it — worst case we leak the runtime thread
-     * in a process that is already tearing down.
+     * Shut down the persistent runtime. Called before hot reload reboot or app destroy.
      */
     fun shutdownPersistentRuntime() {
         if (!persistentBooted) return
-
-        // Embedded php-mode webviews each own a PHP context on their own
-        // thread, built on the process-wide Zend module state that
-        // php_embed_shutdown() is about to destroy. Take them down first or
-        // they are left dereferencing freed memory — same hazard as the
-        // queue worker, and why a hot reload with a php webview on screen
-        // crashed. They re-boot on their next request once
-        // bootPersistentRuntime() reopens the window.
-        WebviewPHPRuntime.suspendAllForRuntimeReboot()
-
-        try {
-            com.nativephp.mobile.ui.nativerender.NativeElementBridge.sendShutdownEvent()
-        } catch (t: Throwable) {
-            // No element region (webview-only screen) or JNI unavailable —
-            // the executor may already be free; fall through to the wait.
-            Log.d(TAG, "shutdown wake skipped: ${t.javaClass.simpleName}")
-        }
-
         val future = phpExecutor.submit<Unit> {
             nativePersistentShutdown()
             persistentBooted = false
             Log.i(TAG, "Persistent runtime shut down")
         }
-        try {
-            future.get(5, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (e: java.util.concurrent.TimeoutException) {
-            Log.e(TAG, "Persistent runtime shutdown timed out — runloop did not exit; abandoning")
-            future.cancel(true)
-        }
+        future.get()
     }
 
     /**
@@ -274,6 +151,31 @@ class PHPBridge(private val context: Context) {
     }
 
     fun isPersistentMode(): Boolean = persistentMode && persistentBooted
+
+    /**
+     * Reboot the persistent runtime without restarting the PHP interpreter.
+     * Flushes the Laravel app, clears opcache and compiled views, then re-bootstraps.
+     * Used by hot reload to pick up file changes while keeping persistent mode speed.
+     */
+    fun rebootPersistentRuntime(): Boolean {
+        if (!persistentBooted) {
+            Log.w(TAG, "Cannot reboot — persistent runtime not booted")
+            return false
+        }
+        val future = phpExecutor.submit<Boolean> {
+            val start = System.currentTimeMillis()
+            val result = nativePersistentReboot()
+            val elapsed = System.currentTimeMillis() - start
+            if (result == 0) {
+                Log.i(TAG, "Persistent runtime rebooted in ${elapsed}ms")
+                true
+            } else {
+                Log.e(TAG, "Persistent runtime reboot failed (code=$result) after ${elapsed}ms")
+                false
+            }
+        }
+        return future.get()
+    }
 
     /**
      * Boot the worker PHP runtime on a dedicated TSRM context.
@@ -307,13 +209,6 @@ class PHPBridge(private val context: Context) {
     }
 
     fun handleLaravelRequest(request: PHPRequest): String {
-        // Embedded php-mode webview — its own context serves the request;
-        // phpExecutor may be parked inside a native screen's event-loop
-        // dispatch and would never answer.
-        dedicatedWebviewRuntime?.let {
-            return processRawPHPResponse(it.request(request))
-        }
-
         val requestStart = System.currentTimeMillis()
 
         val future = phpExecutor.submit<String> {
@@ -450,23 +345,6 @@ class PHPBridge(private val context: Context) {
         return data
     }
 
-    /**
-     * Re-execute a native route with a fresh PHP process.
-     * Used by hot reload to restart native UI with updated class definitions.
-     * Blocks the calling thread for the duration of the native UI session.
-     */
-    fun executeNativeRoute(uri: String) {
-        val future = phpExecutor.submit<Unit> {
-            if (persistentMode && persistentBooted) {
-                nativePersistentDispatch("GET", uri, null, nativePhpScript)
-            } else {
-                ensureRuntimeInitialized()
-                nativeHandleRequest("GET", uri, null, nativePhpScript)
-            }
-        }
-        future.get()  // Block caller — native UI route runs until navigation exits
-    }
-
     fun getLastPostData(): String? {
         return lastPostData
     }
@@ -494,16 +372,15 @@ class PHPBridge(private val context: Context) {
                 // Extract the cookie value (after "Set-Cookie:")
                 val cookieValue = cookieLine.substringAfter(":", "").trim()
                 if (cookieValue.isNotEmpty()) {
-                    // Store is the source of truth; the WebView jar is a
-                    // gated mirror (no-op until a WebRenderer exists, so a
-                    // native-only boot never loads the Chromium provider).
-                    com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
-                    com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
-                    Log.d(TAG, "Stored cookie: $cookieValue")
+                    // Manually set this cookie
+                    val cookieManager = CookieManager.getInstance()
+                    cookieManager.setCookie("http://127.0.0.1", cookieValue)
+                    Log.d(TAG, "Manually set cookie: $cookieValue")
                 }
             }
 
-            com.nativephp.mobile.security.WebCookieMirror.flush()
+            // Make sure to flush the cookies
+            CookieManager.getInstance().flush()
             Log.d(TAG, "Flushed cookies after extraction")
         } else {
             Log.d(TAG, "No Set-Cookie headers found in the response")

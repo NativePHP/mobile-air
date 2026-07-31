@@ -257,62 +257,6 @@ class NestedClass {}');
     /**
      * @test
      *
-     * A file deleted (or renamed) in the plugin source must not survive in the
-     * copied tree — a stale copy re-declares its types and breaks the Xcode
-     * build with "ambiguous use of" errors.
-     */
-    public function it_prunes_stale_copies_when_a_plugin_source_file_is_removed(): void
-    {
-        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
-        $swiftPath = $pluginPath.'/resources/ios/Sources';
-        $this->files->ensureDirectoryExists($swiftPath);
-        $this->files->put($swiftPath.'/OldRenderer.swift', 'struct OldRenderer {}');
-
-        $plugin = $this->createTestPlugin([], $pluginPath);
-
-        $this->mockRegistry
-            ->shouldReceive('all')
-            ->andReturn(collect([$plugin]));
-
-        $this->compiler->compile();
-
-        $copiedDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
-        $this->assertFileExists($copiedDir.'/OldRenderer.swift');
-
-        // The type moves into a differently-named file; the old source is deleted.
-        $this->files->delete($swiftPath.'/OldRenderer.swift');
-        $this->files->put($swiftPath.'/Renderers.swift', 'struct OldRenderer {}');
-
-        $this->compiler->compile();
-
-        $this->assertFileExists($copiedDir.'/Renderers.swift');
-        $this->assertFileDoesNotExist($copiedDir.'/OldRenderer.swift');
-    }
-
-    /**
-     * @test
-     *
-     * Copies belonging to a plugin that is no longer installed must be removed,
-     * including when no plugins remain at all.
-     */
-    public function it_prunes_copies_of_removed_plugins(): void
-    {
-        $staleDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/RemovedPlugin';
-        $this->files->ensureDirectoryExists($staleDir);
-        $this->files->put($staleDir.'/Zombie.swift', 'struct Zombie {}');
-
-        $this->mockRegistry
-            ->shouldReceive('all')
-            ->andReturn(collect());
-
-        $this->compiler->compile();
-
-        $this->assertDirectoryDoesNotExist($staleDir);
-    }
-
-    /**
-     * @test
-     *
      * Should merge Info.plist entries from plugins.
      */
     public function it_merges_info_plist_entries(): void

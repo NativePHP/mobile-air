@@ -2,21 +2,8 @@
 
 namespace Native\Mobile;
 
-use Illuminate\Support\Str;
-use Native\Mobile\Concerns\HandlesNativeCallbacks;
-use Native\Mobile\Events\Scanner\CodeScanned;
-use Native\Mobile\Events\Scanner\ScannerCancelled;
-
-/**
- * @method $this codeScanned(\Closure|array|string $callback)
- * @method $this scannerCancelled(\Closure|array|string $callback)
- */
 class PendingScanner
 {
-    use HandlesNativeCallbacks;
-
-    protected ?string $eventClass = CodeScanned::class;
-
     protected ?string $prompt = null;
 
     protected bool $continuous = false;
@@ -75,23 +62,9 @@ class PendingScanner
     /**
      * Get the scan session ID (generates one if not set).
      */
-    public function getId(): string
+    public function getId(): ?string
     {
-        if ($this->id === null) {
-            $this->id = (string) Str::uuid();
-        }
-
         return $this->id;
-    }
-
-    /**
-     * Failure events for a scan: cancellation / permission denial.
-     *
-     * @return array<int, class-string>
-     */
-    protected function failureEvents(): array
-    {
-        return [ScannerCancelled::class];
     }
 
     /**
@@ -112,8 +85,7 @@ class PendingScanner
                     'prompt' => $this->prompt ?? 'Scan QR Code',
                     'continuous' => $this->continuous,
                     'formats' => $this->formats,
-                    'id' => $this->getId(),
-                    'event' => $this->eventClass,
+                    'id' => $this->id,
                 ])
             );
         }

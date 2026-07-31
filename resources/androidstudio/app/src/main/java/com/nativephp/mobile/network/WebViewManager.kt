@@ -12,22 +12,17 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.content.pm.ActivityInfo
 import android.app.Activity
-import android.os.Message
 import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
+import com.nativephp.mobile.ui.NativeUIState
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
 
 class WebViewManager(
     private val context: Context,
     private val webView: WebView,
-    private val phpBridge: PHPBridge,
-    // An embedded webview lives INSIDE the native tree (php-mode <webview>
-    // element). It must never drive app-level state: no native/web mode
-    // flips, no chrome updates from response headers — those belong to the
-    // root webview alone.
-    private val embedded: Boolean = false
+    private val phpBridge: PHPBridge
 ) {
     private val TAG = "PHPMonitor"
     private var fullscreenView: View? = null
@@ -126,50 +121,6 @@ class WebViewManager(
                 )
                 return true
             }
-
-            override fun onCreateWindow(
-                view: WebView,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message
-            ): Boolean {
-                // target="_blank" links and window.open() land here because
-                // multiple windows are enabled; without this override they are
-                // silently dropped. There is no second window in the app, so
-                // resolve the URL through a throwaway WebView and route it
-                // like a normal navigation: external → system browser,
-                // local-server → the main WebView.
-                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-                val popup = WebView(view.context)
-                popup.webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(
-                        popupView: WebView,
-                        request: WebResourceRequest
-                    ): Boolean {
-                        val url = request.url.toString()
-                        Log.d(TAG, "🪟 onCreateWindow resolved: $url")
-                        if ((url.startsWith("http://") || url.startsWith("https://")) &&
-                            !url.contains("127.0.0.1") &&
-                            !url.contains("localhost")
-                        ) {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                context.startActivity(intent)
-                            } catch (e: ActivityNotFoundException) {
-                                Toast.makeText(context, "No app can handle this link", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            webView.loadUrl(url)
-                        }
-                        popupView.post { popupView.destroy() }
-                        return true
-                    }
-                }
-                transport.webView = popup
-                resultMsg.sendToTarget()
-                return true
-            }
         }
     }
 
@@ -215,23 +166,6 @@ class WebViewManager(
                     }
 
                     return true // prevent WebView from loading it
-                }
-
-                // Jump webview-forward session: the served app generates
-                // absolute links with ITS host (http://<devhost>:<port>/…).
-                // The WebView's origin is 127.0.0.1, so without this those
-                // links classify as "external site" below and open the system
-                // browser. Rewrite them onto 127.0.0.1 — the interception
-                // layer forwards them back to the dev server.
-                if (JumpWebViewSession.isActive &&
-                    request.url.host == JumpWebViewSession.host &&
-                    (if (request.url.port == -1) "80" else request.url.port.toString()) == JumpWebViewSession.port
-                ) {
-                    val rewritten = "http://127.0.0.1${request.url.encodedPath ?: "/"}" +
-                        (request.url.encodedQuery?.let { "?$it" } ?: "")
-                    Log.d(TAG, "🛰️ [JUMP-FORWARD] Rewriting session link → $rewritten")
-                    view.loadUrl(rewritten)
-                    return true
                 }
 
                 if ((url.startsWith("http://") || url.startsWith("https://")) &&
@@ -315,14 +249,8 @@ class WebViewManager(
                             url.contains("/css/") ||
                             url.contains("/fonts/") ||
                             url.contains("/images/") -> {
-                        // Jump webview-forward session: assets live on the
-                        // remote dev server, not in the local bundle.
-                        if (JumpWebViewSession.isActive) {
-                            phpHandler.forwardToRemote(request, null)
-                        } else {
-                            Log.d(TAG, "🖼️ Handling asset request")
-                            phpHandler.handleAssetRequest(url, request.requestHeaders)
-                        }
+                        Log.d(TAG, "🖼️ Handling asset request")
+                        phpHandler.handleAssetRequest(url, request.requestHeaders)
                     }
                     // Regular PHP requests
                     url.contains("127.0.0.1") -> {
@@ -349,14 +277,7 @@ class WebViewManager(
                                 data
                             }
                         } else null
-                        // Jump webview-forward session: hand the request
-                        // (with any consumed POST body) to the remote dev
-                        // server instead of the embedded PHP runtime.
-                        if (JumpWebViewSession.isActive) {
-                            phpHandler.forwardToRemote(request, postData)
-                        } else {
-                            phpHandler.handlePHPRequest(request, postData)
-                        }
+                        phpHandler.handlePHPRequest(request, postData)
                     }
                     else -> {
                         Log.d(TAG, "↪️ Delegating to system handler: $url")
@@ -369,42 +290,56 @@ class WebViewManager(
                 super.onPageStarted(view, url, favicon)
                 Log.d(TAG, "🚀 Page started loading: $url")
 
-                // A WebView page load means we are (back) in WebView mode. For a
-                // Route::native screen the response's native-tree publish re-sets
-                // isActive = true (NativeElementBridge), so this is safe; for a
-                // plain web route it stays false. Without this, exit-to-web leaves
-                // the frozen native tree on screen over the loaded WebView page.
-                //
-                // Commit-gated EXIT_WEB swap: while pendingWebSwap is set, keep
-                // the frozen native tree visible through Chromium init — the
-                // flip happens in onPageCommitVisible instead, so the swap never
-                // flashes a blank/stale WebView.
-                val activity = context as? MainActivity
-                if (!embedded && activity?.pendingWebSwap != true) {
-                    com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
-                }
-
-                if (!embedded) {
-                    // Inject safe area insets IMMEDIATELY when page starts loading
-                    // This ensures CSS variables are available before DOM parsing
-                    activity?.injectSafeAreaInsetsToWebView()
-                }
+                // Inject safe area insets IMMEDIATELY when page starts loading
+                // This ensures CSS variables are available before DOM parsing
+                (context as? MainActivity)?.injectSafeAreaInsetsToWebView()
             }
 
-            override fun onPageCommitVisible(view: WebView, url: String) {
-                super.onPageCommitVisible(view, url)
-                if (embedded) {
+            /**
+             * Process response headers - for HTML and JSON responses to handle native UI updates
+             * from both page loads and AJAX requests
+             */
+            private fun processResponseHeaders(
+                url: String,
+                response: WebResourceResponse?,
+                request: WebResourceRequest
+            ) {
+                if (response == null) {
                     return
                 }
-                val activity = context as? MainActivity
-                if (activity?.pendingWebSwap == true) {
-                    activity.pendingWebSwap = false
-                    com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
+
+                val isMainFrame = request.isForMainFrame
+
+                // Get content type
+                val contentType = response.responseHeaders?.entries?.firstOrNull {
+                    it.key.equals("content-type", ignoreCase = true)
+                }?.value ?: ""
+
+                val isHtmlResponse = contentType.contains("text/html", ignoreCase = true)
+                val isJsonResponse = contentType.contains("application/json", ignoreCase = true)
+
+                // Find x-native-ui header (case-insensitive)
+                val nativeUiHeader = response.responseHeaders?.entries?.firstOrNull {
+                    it.key.equals("x-native-ui", ignoreCase = true)
+                }?.value
+
+                // Process for HTML pages (main frame) or JSON responses (AJAX)
+                if (isHtmlResponse || isJsonResponse) {
+                    if (nativeUiHeader != null) {
+                        Log.d(TAG, "✅ x-native-ui header found (${if (isJsonResponse) "JSON" else "HTML"}): $nativeUiHeader")
+                        NativeUIState.updateFromJson(nativeUiHeader)
+                    } else if (isHtmlResponse && isMainFrame) {
+                        // Only clear UI state if this is a main frame HTML response without the header
+                        // Don't clear for JSON responses to avoid clearing UI on every API call
+                        Log.d(TAG, "❌ x-native-ui header NOT in HTML main frame - clearing state")
+                        NativeUIState.clearAll()
+                    }
+                } else {
+                    // Asset request - ignore completely to avoid false negatives
+                    Log.d(TAG, "⏭️ Skipping x-native-ui check for asset: $url")
                 }
-                // Renderer-agnostic first-content signal (web renderer):
-                // the page's first visible commit is honest TTFD.
-                activity?.onFirstContent("web-commit")
             }
+
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)

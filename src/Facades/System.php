@@ -10,10 +10,6 @@ use Illuminate\Support\Facades\Facade;
  * @method static bool isIos()
  * @method static bool isMobile()
  * @method static void appSettings()
- * @method static string appearance()
- * @method static bool isDarkMode()
- * @method static bool isLightMode()
- * @method static void rememberAppearance(string $mode)
  */
 class System extends Facade
 {

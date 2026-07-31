@@ -4,20 +4,10 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use Native\Mobile\Concerns\HandlesNativeCallbacks;
-use Native\Mobile\Events\Camera\PermissionDenied;
-use Native\Mobile\Events\Camera\VideoCancelled;
 use Native\Mobile\Events\Camera\VideoRecorded;
 
-/**
- * @method $this videoRecorded(\Closure|array|string $callback)
- * @method $this videoCancelled(\Closure|array|string $callback)
- * @method $this permissionDenied(\Closure|array|string $callback)
- */
 class PendingVideoRecorder
 {
-    use HandlesNativeCallbacks;
-
     protected ?string $id = null;
 
     protected ?string $eventClass = null;
@@ -29,16 +19,6 @@ class PendingVideoRecorder
     ) {
         // Default to the VideoRecorded event
         $this->eventClass = VideoRecorded::class;
-    }
-
-    /**
-     * Failure events for a video recording: cancellation and permission denial.
-     *
-     * @return array<int, class-string>
-     */
-    protected function failureEvents(): array
-    {
-        return [VideoCancelled::class, PermissionDenied::class];
     }
 
     /**

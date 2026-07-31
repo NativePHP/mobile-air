@@ -26,7 +26,6 @@ final class PHPQueueWorker {
 
     private var workerThread: Thread?
     private var running = false
-    private var stopped: DispatchSemaphore?
 
     private init() {}
 
@@ -40,7 +39,6 @@ final class PHPQueueWorker {
         }
 
         running = true
-        stopped = DispatchSemaphore(value: 0)
 
         let thread = Thread {
             self.workerLoop()
@@ -53,7 +51,7 @@ final class PHPQueueWorker {
         NSLog("PHPQueueWorker: thread launched")
     }
 
-    /// Stop the worker thread (non-blocking — thread exits on next loop iteration).
+    /// Stop the worker thread and shut down the worker runtime.
     func stop() {
         guard running else { return }
 
@@ -61,21 +59,6 @@ final class PHPQueueWorker {
         running = false
         // Thread will exit on next loop iteration
         workerThread = nil
-    }
-
-    /// Stop the worker thread and block until it has fully exited and called
-    /// _worker_php_shutdown(). This MUST be called before php_embed_shutdown()
-    /// (i.e. PersistentPHPRuntime.reboot()) — the global shutdown destroys
-    /// shared Zend module state that would corrupt the worker's live TSRM context.
-    func stopAndWait() {
-        guard running else { return }
-
-        NSLog("PHPQueueWorker: stopAndWait — waiting for worker to exit")
-        running = false
-        stopped?.wait()
-        stopped = nil
-        workerThread = nil
-        NSLog("PHPQueueWorker: stopAndWait — worker exited")
     }
 
     var isRunning: Bool { running }
@@ -120,7 +103,6 @@ final class PHPQueueWorker {
         }
 
         _worker_php_shutdown()
-        stopped?.signal()
         NSLog("PHPQueueWorker: stopped")
     }
 

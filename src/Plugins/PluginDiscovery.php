@@ -7,8 +7,6 @@ use Illuminate\Support\Collection;
 
 class PluginDiscovery
 {
-    protected const PLUGIN_TYPES = ['nativephp-plugin', 'nativephp-ui-plugin'];
-
     protected ?Collection $cachedPlugins = null;
 
     protected ?array $allowedPlugins = null;
@@ -44,7 +42,7 @@ class PluginDiscovery
         $allowedPlugins = $this->getAllowedPlugins();
 
         return $this->cachedPlugins = collect($packages)
-            ->filter(fn ($package) => in_array($package['type'] ?? null, self::PLUGIN_TYPES, true))
+            ->filter(fn ($package) => ($package['type'] ?? null) === 'nativephp-plugin')
             ->filter(fn ($package) => $this->isPluginAllowed($package, $allowedPlugins))
             ->map(fn ($package) => $this->loadPlugin($package))
             ->filter()
@@ -69,7 +67,7 @@ class PluginDiscovery
         $packages = $installed['packages'] ?? $installed;
 
         return collect($packages)
-            ->filter(fn ($package) => in_array($package['type'] ?? null, self::PLUGIN_TYPES, true))
+            ->filter(fn ($package) => ($package['type'] ?? null) === 'nativephp-plugin')
             ->map(fn ($package) => $this->loadPlugin($package))
             ->filter()
             ->values();
@@ -152,8 +150,7 @@ class PluginDiscovery
         }
 
         if (! $this->files->exists($manifestPath)) {
-            $this->warnPluginSkipped($package['name'] ?? '?', "manifest not found at {$manifestPath}");
-
+            // Log warning: Plugin missing manifest
             return null;
         }
 
@@ -169,31 +166,12 @@ class PluginDiscovery
                 path: $packagePath,
                 manifest: $manifest,
                 description: $package['description'] ?? '',
-                serviceProvider: $serviceProvider,
-                composerType: $package['type'] ?? 'nativephp-plugin'
+                serviceProvider: $serviceProvider
             );
-        } catch (\Throwable $e) {
-            $this->warnPluginSkipped(
-                $package['name'] ?? '?',
-                $e->getMessage().' ('.basename($e->getFile()).':'.$e->getLine().')'
-            );
-
+        } catch (\Exception $e) {
+            // Log error: Failed to load plugin
             return null;
         }
-    }
-
-    /**
-     * Surface a skipped plugin. A missing/malformed manifest makes the WHOLE
-     * plugin vanish from discovery — which otherwise shows up only as a
-     * baffling downstream failure (e.g. an iOS build error about missing
-     * native symbols, because the plugin's renderers were never copied in).
-     * Write to the PHP error log / stderr so it's visible during `native:run`
-     * instead of being silently swallowed. We still skip the offending plugin
-     * (return null) so one bad manifest doesn't take down the whole build.
-     */
-    protected function warnPluginSkipped(string $name, string $reason): void
-    {
-        error_log("[NativePHP] Skipping plugin '{$name}': {$reason}");
     }
 
     /**

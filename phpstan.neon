@@ -3,15 +3,8 @@ parameters:
         - src/
     excludePaths:
         - src/Attributes/OnNative.php
-        - src/Testing/
     level: 0
-    # Several ignores below are environment-specific (native functions that
-    # only exist in the compiled runtime, PHP-version-dependent attributes),
-    # so don't fail when a pattern happens not to match in a given run.
-    reportUnmatchedIgnoredErrors: false
     ignoreErrors:
-        - '#Function nativephp_call not found#'
-        - '#Function nphp_[a-zA-Z_]+ not found#'
         - '#Unsafe usage of new static#'
         - '#Access to an undefined property#'
         - '#Attribute class Deprecated does not exist#'

@@ -3,9 +3,9 @@
 namespace Tests\Unit;
 
 use Illuminate\Support\Facades\File;
-use Native\Mobile\Concerns\InstallsAndroid;
-use Native\Mobile\Concerns\PlatformFileOperations;
-use Native\Mobile\Concerns\RunsAndroid;
+use Native\Mobile\Traits\InstallsAndroid;
+use Native\Mobile\Traits\PlatformFileOperations;
+use Native\Mobile\Traits\RunsAndroid;
 use Tests\TestCase;
 
 class EdgeCasesAndErrorHandlingTest extends TestCase

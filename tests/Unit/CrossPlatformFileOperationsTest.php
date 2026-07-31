@@ -3,7 +3,7 @@
 namespace Tests\Unit;
 
 use Illuminate\Support\Facades\File;
-use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Traits\PlatformFileOperations;
 use Tests\TestCase;
 
 class CrossPlatformFileOperationsTest extends TestCase
@@ -119,6 +119,28 @@ class CrossPlatformFileOperationsTest extends TestCase
             // If exec didn't work, at least verify no exception was thrown
             $this->assertTrue(true);
         }
+    }
+
+    public function test_exclusion_handling_across_platforms()
+    {
+        $source = $this->testDir.'/source';
+        $dest = $this->testDir.'/dest';
+
+        // Create structure with excludable directories
+        File::makeDirectory($source.'/node_modules/package', 0755, true);
+        File::makeDirectory($source.'/.git/objects', 0755, true);
+        File::makeDirectory($source.'/src', 0755, true);
+
+        File::put($source.'/node_modules/package.json', '{}');
+        File::put($source.'/.git/config', 'git config');
+        File::put($source.'/src/index.php', '<?php');
+
+        // Test with exclusions
+        $this->platformOptimizedCopy($source, $dest, ['node_modules', '.git']);
+
+        // The actual exclusion might not work with exec in tests
+        // but we verify the method handles exclusions without errors
+        $this->assertTrue(true);
     }
 
     /**

@@ -10,8 +10,6 @@
 #include <sys/resource.h>
 #include <syscall.h>
 #include <android/log.h>
-#include <string.h>
-#include <langinfo.h>
 #include <glob.h>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "Compat", __VA_ARGS__)
@@ -35,18 +33,12 @@ extern "C" ssize_t copy_file_range(int fd_in, off64_t *off_in,
                    fd_out, off_out, len, flags);
 }
 
-// nl_langinfo: not available on Android < API 26.
-// PHP uses it for locale charset detection — return safe defaults.
 __attribute__((visibility("default")))
-extern "C" char* nl_langinfo(nl_item item) {
-    if (item == CODESET) {
-        return (char*)"UTF-8";
-    }
+extern "C" char* nl_langinfo(int item) {
+    // Android bionic doesn't provide nl_langinfo; return empty string
     return (char*)"";
 }
 
-// ctermid: not available on Android.
-// PHP's posix_ctermid() calls this — return /dev/null as safe fallback.
 __attribute__((visibility("default")))
 extern "C" char* ctermid(char* s) {
     static char buf[] = "/dev/null";
@@ -57,12 +49,8 @@ extern "C" char* ctermid(char* s) {
     return buf;
 }
 
-// glob/globfree: not available on Android API < 28.
-// The build scripts compile libglob_compat.a targeting API 28, so those
-// implementations get compiled out. We provide them here since CMake
-// compiles against the app's minSdkVersion (API 24).
+// glob/globfree for Android API < 28 (bionic doesn't provide them)
 #if __ANDROID_API__ < 28
-
 __attribute__((visibility("default")))
 extern "C" int glob(const char *pattern, int flags,
                     int (*errfunc)(const char *epath, int eerrno),

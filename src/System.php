@@ -53,58 +53,6 @@ class System
     }
 
     /**
-     * Process-cached current appearance. Seeded on first read via a bridge
-     * probe (`System.GetAppearance`) and kept fresh by the AppearanceChanged
-     * event — a listener registered in NativeServiceProvider calls
-     * rememberAppearance() when the OS flips the theme. Mirrors the Platform
-     * caching pattern so hot-path reads (isDark() in render logic) avoid a
-     * bridge round-trip per call.
-     */
-    private static ?string $appearance = null;
-
-    /**
-     * Current system appearance: 'light' or 'dark'. Off the device (tests, web
-     * preview) the bridge is absent and this returns 'light'.
-     */
-    public function appearance(): string
-    {
-        if (self::$appearance !== null) {
-            return self::$appearance;
-        }
-
-        if (function_exists('nativephp_call')) {
-            $result = nativephp_call('System.GetAppearance', '{}');
-            $mode = json_decode($result ?: '{}', true)['appearance'] ?? null;
-            if ($mode === 'light' || $mode === 'dark') {
-                return self::$appearance = $mode;
-            }
-        }
-
-        return 'light';
-    }
-
-    public function isDarkMode(): bool
-    {
-        return $this->appearance() === 'dark';
-    }
-
-    public function isLightMode(): bool
-    {
-        return $this->appearance() === 'light';
-    }
-
-    /**
-     * Update the process-cached appearance. Called by the AppearanceChanged
-     * listener so `appearance()` stays fresh without re-probing the bridge.
-     */
-    public static function rememberAppearance(string $mode): void
-    {
-        if ($mode === 'light' || $mode === 'dark') {
-            self::$appearance = $mode;
-        }
-    }
-
-    /**
      * Open the app's settings screen in the device settings.
      *
      * This allows users to manage permissions (e.g., push notifications,

@@ -4,18 +4,10 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use Native\Mobile\Concerns\HandlesNativeCallbacks;
-use Native\Mobile\Events\Microphone\MicrophoneCancelled;
 use Native\Mobile\Events\Microphone\MicrophoneRecorded;
 
-/**
- * @method $this microphoneRecorded(\Closure|array|string $callback)
- * @method $this microphoneCancelled(\Closure|array|string $callback)
- */
 class PendingMicrophone
 {
-    use HandlesNativeCallbacks;
-
     protected ?string $id = null;
 
     protected ?string $eventClass = null;
@@ -26,14 +18,6 @@ class PendingMicrophone
     {
         // Default to the MicrophoneRecorded event
         $this->eventClass = MicrophoneRecorded::class;
-    }
-
-    /**
-     * @return array<int, class-string>
-     */
-    protected function failureEvents(): array
-    {
-        return [MicrophoneCancelled::class];
     }
 
     /**

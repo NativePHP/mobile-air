@@ -68,9 +68,8 @@ class PluginValidateCommand extends Command
         $installed = json_decode($this->files->get($installedPath), true);
         $packages = $installed['packages'] ?? $installed;
 
-        $validTypes = ['nativephp-plugin', 'nativephp-ui-plugin'];
-        $plugins = collect($packages)->filter(function ($package) use ($validTypes) {
-            return in_array($package['type'] ?? null, $validTypes, true);
+        $plugins = collect($packages)->filter(function ($package) {
+            return ($package['type'] ?? null) === 'nativephp-plugin';
         });
 
         if ($plugins->isEmpty()) {
@@ -134,9 +133,8 @@ class PluginValidateCommand extends Command
         }
 
         // Check type
-        $validTypes = ['nativephp-plugin', 'nativephp-ui-plugin'];
-        if (! in_array($composer['type'] ?? null, $validTypes, true)) {
-            $this->errors[] = 'composer.json "type" must be "nativephp-plugin" or "nativephp-ui-plugin"';
+        if (($composer['type'] ?? null) !== 'nativephp-plugin') {
+            $this->errors[] = 'composer.json "type" must be "nativephp-plugin"';
         }
 
         // Check nativephp extra

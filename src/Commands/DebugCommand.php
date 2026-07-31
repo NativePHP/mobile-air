@@ -155,20 +155,11 @@ class DebugCommand extends Command
                 '/Applications/Android Studio.app/Contents/Resources/product-info.json',
             ],
             'Linux' => [
-                '/opt/android-studio/product-info.json',
-                '/usr/local/android-studio/product-info.json',
-                $home.'/android-studio/product-info.json',
-                // JetBrains Toolbox 2.x layout
-                $home.'/.local/share/JetBrains/Toolbox/apps/android-studio*/product-info.json',
-                // JetBrains Toolbox 1.x channel layout (glob * does not cross /, so spell out the nesting)
-                $home.'/.local/share/JetBrains/Toolbox/apps/AndroidStudio/ch-*/*/product-info.json',
-                // Snap
-                '/snap/android-studio/current/android-studio/product-info.json',
+                $home.'/.local/share/Google/AndroidStudio*/product-info.json',
+                $home.'/.config/Google/AndroidStudio*/product-info.json',
             ],
             'Windows' => [
-                'C:/Program Files/Android/Android Studio*/product-info.json',
-                // JetBrains Toolbox 2.x default install location
-                ($_SERVER['LOCALAPPDATA'] ?? '').'/Programs/Android Studio*/product-info.json',
+                ($_SERVER['APPDATA'] ?? '').'/Google/AndroidStudio*/product-info.json',
             ],
             default => [],
         };
@@ -176,23 +167,19 @@ class DebugCommand extends Command
 
     protected function getGradleVersion(): string
     {
-        // Check for the Gradle wrapper in the NativePHP android project first;
-        // cmd.exe can't execute the unix shell script, so use the batch wrapper on Windows
-        $wrapper = PHP_OS_FAMILY === 'Windows' ? 'gradlew.bat' : 'gradlew';
-        $gradlew = base_path('nativephp/android/'.$wrapper);
+        // Check for the Gradle wrapper in the NativePHP android project first
+        $gradlew = base_path('nativephp/android/gradlew');
 
         if (file_exists($gradlew)) {
-            // 2>&1 works on both sh and cmd.exe (2>/dev/null does not);
-            // extractGradleVersion() only matches 'Gradle ' lines so stderr noise is harmless
             return $this->getCommandVersion(
-                escapeshellarg($gradlew).' --version 2>&1',
+                escapeshellarg($gradlew).' --version 2>/dev/null',
                 fn ($output) => $this->extractGradleVersion($output)
             );
         }
 
         // Fall back to a globally installed gradle
         return $this->getCommandVersion(
-            'gradle --version 2>&1',
+            'gradle --version 2>/dev/null',
             fn ($output) => $this->extractGradleVersion($output)
         );
     }

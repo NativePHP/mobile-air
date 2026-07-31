@@ -18,13 +18,6 @@ class Dialog
         Share::url($title, $text, $url);
     }
 
-    /**
-     * Show a native alert dialog.
-     *
-     * Each button is either a plain string or an array with a style:
-     * ['label' => 'Delete', 'style' => 'destructive']. Styles: default,
-     * cancel, destructive.
-     */
     public function alert(string $title, string $message, array $buttons = []): PendingAlert
     {
         return new PendingAlert($title, $message, $buttons);

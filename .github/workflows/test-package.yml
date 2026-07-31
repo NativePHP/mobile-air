@@ -1,13 +1,8 @@
 name: Test Package Installation
 
-# Temporarily manual-only: the Android AAB build requires compileSdk 36
-# (+ NDK 27 / cmake), but the CI runner image
-# (mobiledevops/android-sdk-image:34.0.1) ships SDK 34, so Gradle can't
-# resolve the android-36 platform. The build succeeds locally where SDK 36
-# is installed — this is a CI-environment gap, not a code regression. Re-enable
-# the pull_request trigger once the runner provides SDK 36.
 on:
-  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
 
 jobs:
   test-package:

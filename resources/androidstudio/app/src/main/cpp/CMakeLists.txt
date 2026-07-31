@@ -62,6 +62,7 @@ set_target_properties(php PROPERTIES
 add_library(php_wrapper SHARED
         PHP.c
         php_bridge.c
+        libphp_wrapper.cpp
         bridge_jni.cpp
         compat/android_compat.cpp
 )
@@ -86,13 +87,6 @@ target_link_libraries(php_wrapper
         -Wl,--defsym,iconv_close=libiconv_close
         -Wl,--defsym,iconv=libiconv
 )
-
-# Conditionally link ICU libraries if they exist
-foreach(ICU_NAME icui18n icuuc icudata icuio)
-    if(EXISTS ${PHP_LIB_DIR}/lib${ICU_NAME}.a)
-        target_link_libraries(php_wrapper ${ICU_NAME})
-    endif()
-endforeach()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_definitions(DEBUG=1)

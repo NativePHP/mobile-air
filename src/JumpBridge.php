@@ -16,8 +16,6 @@ class JumpBridge
 
     private $socket = null;
 
-    private bool $muted = false;
-
     private int $port;
 
     private string $host;
@@ -29,22 +27,6 @@ class JumpBridge
         $this->host = $host;
         $this->port = $port;
         $this->timeout = $timeout;
-    }
-
-    /**
-     * Silence this bridge for the remainder of the request and drop the
-     * socket. Used when a Jump runloop discovers it has been superseded by a
-     * newer native session: it must tear down (unmount → element_shutdown)
-     * WITHOUT sending anything to the device, otherwise its Element.Shutdown /
-     * Reset / final publish would wipe the live session's tree. Subsequent
-     * calls become benign no-op successes. Per-request instance (the dev
-     * server is share-nothing), so this never touches the live session, which
-     * runs in a different worker with its own bridge.
-     */
-    public function mute(): void
-    {
-        $this->muted = true;
-        $this->disconnect();
     }
 
     public function setTimeout(float $timeout): void
@@ -73,10 +55,6 @@ class JumpBridge
      */
     public function call(string $method, string $paramsJson = '{}'): ?string
     {
-        if ($this->muted) {
-            return json_encode([]);
-        }
-
         $this->ensureConnected();
 
         if ($this->socket === null) {

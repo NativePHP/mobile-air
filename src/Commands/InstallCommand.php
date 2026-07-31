@@ -5,11 +5,12 @@ namespace Native\Mobile\Commands;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Console\Command;
-use Native\Mobile\Concerns\DisplaysMarketingBanners;
-use Native\Mobile\Concerns\InstallsAndroid;
-use Native\Mobile\Concerns\InstallsIos;
-use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Traits\DisplaysMarketingBanners;
+use Native\Mobile\Traits\InstallsAndroid;
+use Native\Mobile\Traits\InstallsIos;
+use Native\Mobile\Traits\PlatformFileOperations;
 
+use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
@@ -169,7 +170,22 @@ class InstallCommand extends Command
 
         outro('NativePHP for Mobile installed successfully!');
 
-        $this->showSuperNativeBanner();
+        if (confirm(
+            label: 'Would you mind starring us on GitHub? It really helps!',
+            yes: 'Hell Yeah! 🔥',
+            no: 'Already Did',
+            default: true,
+        )) {
+            $url = 'https://github.com/NativePHP/mobile-air';
+
+            match (PHP_OS_FAMILY) {
+                'Darwin' => exec("open {$url}"),
+                'Windows' => exec("start {$url}"),
+                default => exec("xdg-open {$url}"),
+            };
+        }
+
+        $this->showProBanner();
     }
 
     protected function ensureAppIdIsSet(): void
@@ -241,17 +257,14 @@ class InstallCommand extends Command
         $envPath = base_path('.env');
         $envContents = file_exists($envPath) ? file_get_contents($envPath) : '';
 
-        // [^\r\n]* instead of .*$ so a CRLF file's trailing \r isn't consumed
-        // by the replacement (which would leave mixed line endings on Windows)
-        $pattern = "/^{$key}=[^\\r\\n]*/m";
+        $pattern = "/^{$key}=.*$/m";
 
         if (preg_match($pattern, $envContents)) {
             // Update existing value
             $envContents = preg_replace($pattern, "{$key}={$value}", $envContents);
         } else {
-            // Append new value, matching the file's existing line endings
-            $eol = str_contains($envContents, "\r\n") ? "\r\n" : "\n";
-            $envContents = rtrim($envContents).$eol.$eol."{$key}={$value}".$eol;
+            // Append new value
+            $envContents = rtrim($envContents)."\n\n{$key}={$value}\n";
         }
 
         file_put_contents($envPath, $envContents);

@@ -9,7 +9,6 @@ use Illuminate\Support\Str;
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\outro;
-use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
 
 class PluginCreateCommand extends Command
@@ -73,16 +72,6 @@ class PluginCreateCommand extends Command
     protected function gatherPluginInfo(): void
     {
         intro('Create a new NativePHP Mobile plugin');
-
-        // Get plugin type
-        $pluginType = select(
-            label: 'What type of plugin are you creating?',
-            options: [
-                'system' => 'System / SDK plugin (wraps native APIs, camera, sensors, SDKs)',
-                'ui' => 'UI Component plugin (custom native UI elements for Blade templates)',
-            ],
-            default: 'system',
-        );
 
         // Get plugin name
         $name = $this->argument('name') ?? text(
@@ -151,8 +140,6 @@ class PluginCreateCommand extends Command
             'namespace' => $namespace,
             'description' => $description,
             'path' => $path,
-            'pluginType' => $pluginType,
-            'composerType' => $pluginType === 'ui' ? 'nativephp-ui-plugin' : 'nativephp-plugin',
             'includeBoost' => $includeBoost,
             'installAgents' => $installAgents,
             'phpNamespace' => Str::studly($vendor).'\\'.Str::studly(str_replace('plugin-', '', $package)),
@@ -163,43 +150,29 @@ class PluginCreateCommand extends Command
     protected function createPluginStructure(): void
     {
         $path = $this->pluginData['path'];
-        $isUiPlugin = $this->pluginData['pluginType'] === 'ui';
 
         $this->newLine();
-        $typeLabel = $isUiPlugin ? 'UI component plugin' : 'system plugin';
-        $this->components->twoColumnDetail("<fg=yellow>Creating {$typeLabel}</>", $path);
+        $this->components->twoColumnDetail('<fg=yellow>Creating plugin</>', $path);
         $this->newLine();
 
-        if ($isUiPlugin) {
-            $this->createUiPluginStructure($path);
-        } else {
-            $this->createSystemPluginStructure($path);
-        }
-
-        // Common files
-        $this->components->task('Creating README', fn () => $this->createReadme($path));
-        $this->components->task('Creating .gitignore', fn () => $this->createGitignore($path));
-
-        if ($this->pluginData['includeBoost']) {
-            $this->components->task('Creating Boost AI guidelines', fn () => $this->createBoostGuidelines($path));
-        }
-
-        if ($this->pluginData['installAgents']) {
-            $this->components->task('Installing AI agents', fn () => $this->installAgents());
-        }
-    }
-
-    protected function createSystemPluginStructure(string $path): void
-    {
+        // Create directory structure - keep it flat for native code
         $directories = [
-            '', '/src', '/src/Facades', '/src/Events', '/src/Commands',
-            '/resources/android', '/resources/ios', '/resources/js', '/tests',
+            '',
+            '/src',
+            '/src/Facades',
+            '/src/Events',
+            '/src/Commands',
+            '/resources/android',
+            '/resources/ios',
+            '/resources/js',
+            '/tests',
         ];
 
         foreach ($directories as $dir) {
             $this->files->ensureDirectoryExists($path.$dir);
         }
 
+        // Create files with task-style output
         $this->components->task('Creating composer.json', fn () => $this->createComposerJson($path));
         $this->components->task('Creating nativephp.json', fn () => $this->createNativephpJson($path));
         $this->components->task('Creating service provider', fn () => $this->createServiceProvider($path));
@@ -210,28 +183,17 @@ class PluginCreateCommand extends Command
         $this->components->task('Creating JavaScript module', fn () => $this->createJavaScript($path));
         $this->components->task('Creating example event', fn () => $this->createExampleEvent($path));
         $this->components->task('Creating copy assets hook', fn () => $this->createCopyAssetsHookCommand($path));
+        $this->components->task('Creating README', fn () => $this->createReadme($path));
+        $this->components->task('Creating .gitignore', fn () => $this->createGitignore($path));
         $this->components->task('Creating tests', fn () => $this->createTests($path));
-    }
 
-    protected function createUiPluginStructure(string $path): void
-    {
-        $directories = [
-            '', '/src', '/src/Elements', '/src/Components',
-            '/resources/android', '/resources/ios', '/tests',
-        ];
-
-        foreach ($directories as $dir) {
-            $this->files->ensureDirectoryExists($path.$dir);
+        if ($this->pluginData['includeBoost']) {
+            $this->components->task('Creating Boost AI guidelines', fn () => $this->createBoostGuidelines($path));
         }
 
-        $this->components->task('Creating composer.json', fn () => $this->createComposerJson($path));
-        $this->components->task('Creating nativephp.json', fn () => $this->createUiPluginManifest($path));
-        $this->components->task('Creating service provider', fn () => $this->createUiServiceProvider($path));
-        $this->components->task('Creating Element class', fn () => $this->createElementClass($path));
-        $this->components->task('Creating Blade component', fn () => $this->createBladeComponentClass($path));
-        $this->components->task('Creating Android Kotlin renderer', fn () => $this->createKotlinRenderer($path));
-        $this->components->task('Creating iOS Swift renderer', fn () => $this->createSwiftRenderer($path));
-        $this->components->task('Creating tests', fn () => $this->createUiPluginTests($path));
+        if ($this->pluginData['installAgents']) {
+            $this->components->task('Installing AI agents', fn () => $this->installAgents());
+        }
     }
 
     protected function installAgents(): void
@@ -270,7 +232,7 @@ class PluginCreateCommand extends Command
         $content = [
             'name' => $this->pluginData['name'],
             'description' => $this->pluginData['description'],
-            'type' => $this->pluginData['composerType'],
+            'type' => 'nativephp-plugin',
             'license' => 'MIT',
             'authors' => [
                 [
@@ -1201,397 +1163,29 @@ PHP;
         $this->files->put($composerPath, json_encode($composer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 
-    protected function createUiPluginManifest(string $path): void
-    {
-        $namespace = $this->pluginData['namespace'];
-        $phpNamespace = $this->pluginData['phpNamespace'];
-        $kotlinPackage = $this->pluginData['kotlinPackage'];
-
-        // Build a dot-namespaced component type from namespace
-        $componentType = Str::camel($namespace).'.default';
-
-        $content = [
-            'name' => $this->pluginData['name'],
-            'version' => '1.0.0',
-            'description' => $this->pluginData['description'],
-            'namespace' => $namespace,
-
-            'platforms' => ['android', 'ios'],
-
-            'components' => [
-                [
-                    'type' => $componentType,
-                    'element' => $phpNamespace.'\\Elements\\'.$namespace,
-                    'blade' => $phpNamespace.'\\Components\\'.$namespace,
-                    'android_renderer' => $kotlinPackage.'.ui.'.$namespace.'Renderer',
-                    'ios_renderer' => $namespace.'Renderer',
-                    'self_closing' => true,
-                ],
-            ],
-
-            'android' => [
-                'dependencies' => [
-                    'implementation' => [],
-                ],
-            ],
-
-            'ios' => [
-                'dependencies' => [
-                    'swift_packages' => [],
-                    'pods' => [],
-                ],
-            ],
-        ];
-
-        $this->files->put(
-            $path.'/nativephp.json',
-            json_encode($content, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
-        );
-    }
-
-    protected function createUiServiceProvider(string $path): void
-    {
-        $namespace = $this->pluginData['phpNamespace'];
-        $name = $this->pluginData['namespace'];
-
-        $content = <<<PHP
-<?php
-
-namespace {$namespace};
-
-use Illuminate\Support\ServiceProvider;
-
-class {$name}ServiceProvider extends ServiceProvider
-{
-    public function register(): void
-    {
-        //
-    }
-
-    public function boot(): void
-    {
-        //
-    }
-}
-PHP;
-
-        $this->files->put($path."/src/{$name}ServiceProvider.php", $content);
-    }
-
-    protected function createElementClass(string $path): void
-    {
-        $namespace = $this->pluginData['phpNamespace'];
-        $name = $this->pluginData['namespace'];
-        $componentType = Str::camel($name).'.default';
-
-        $content = <<<PHP
-<?php
-
-namespace {$namespace}\\Elements;
-
-use Native\\Mobile\\Edge\\Element;
-use Native\\Mobile\\Edge\\CallbackRegistry;
-
-class {$name} extends Element
-{
-    protected string \$type = '{$componentType}';
-
-    protected array \$componentProps = [];
-
-    public static function make(): static
-    {
-        return new static;
-    }
-
-    public function value(mixed \$value): static
-    {
-        \$this->componentProps['value'] = \$value;
-
-        return \$this;
-    }
-
-    public function onChange(string \$method): static
-    {
-        \$this->componentProps['on_change'] = \$method;
-
-        return \$this;
-    }
-
-    protected function resolveProps(CallbackRegistry \$registry): array
-    {
-        \$props = \$this->componentProps;
-
-        if (isset(\$props['on_change'])) {
-            \$props['on_change'] = \$registry->register(\$props['on_change']);
-        }
-
-        return \$props;
-    }
-}
-PHP;
-
-        $this->files->put($path."/src/Elements/{$name}.php", $content);
-    }
-
-    protected function createBladeComponentClass(string $path): void
-    {
-        $namespace = $this->pluginData['phpNamespace'];
-        $name = $this->pluginData['namespace'];
-        $componentType = Str::camel($name).'.default';
-
-        $content = <<<PHP
-<?php
-
-namespace {$namespace}\\Components;
-
-use Native\\Mobile\\Edge\\Components\\Native\\NativeBladeComponent;
-
-class {$name} extends NativeBladeComponent
-{
-    protected bool \$isSelfClosing = true;
-
-    protected function elementType(): string
-    {
-        return '{$componentType}';
-    }
-}
-PHP;
-
-        $this->files->put($path."/src/Components/{$name}.php", $content);
-    }
-
-    protected function createKotlinRenderer(string $path): void
-    {
-        $namespace = $this->pluginData['namespace'];
-        $kotlinPackage = $this->pluginData['kotlinPackage'];
-
-        $content = <<<KOTLIN
-package {$kotlinPackage}.ui
-
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import com.nativephp.mobile.ui.nativerender.NativeUINode
-import com.nativephp.mobile.ui.nativerender.NativeUIBridge
-
-object {$namespace}Renderer {
-    @Composable
-    fun Render(node: NativeUINode, modifier: Modifier) {
-        val p = node.props
-
-        // Read props from the wire format
-        // val myValue = p.getString("value", "")
-        // val onChangeCb = p.getCallbackId("on_change")
-
-        // TODO: Replace with your custom Compose UI
-        Box(modifier = modifier.padding(16.dp)) {
-            Text(text = "{$namespace} Component")
-        }
-
-        // To send events back to PHP:
-        // NativeUIBridge.sendTextChangeEvent(onChangeCb, newValue)
-    }
-}
-KOTLIN;
-
-        $this->files->put($path."/resources/android/{$namespace}Renderer.kt", $content);
-    }
-
-    protected function createSwiftRenderer(string $path): void
-    {
-        $namespace = $this->pluginData['namespace'];
-
-        $content = <<<SWIFT
-import SwiftUI
-
-struct {$namespace}Renderer: View {
-    let node: NativeUINode
-
-    var body: some View {
-        // Read props from the wire format
-        // let myValue = node.props.getString("value", default: "")
-
-        // TODO: Replace with your custom SwiftUI view
-        Text("{$namespace} Component")
-            .padding()
-    }
-}
-SWIFT;
-
-        $this->files->put($path."/resources/ios/{$namespace}Renderer.swift", $content);
-    }
-
-    protected function createUiPluginTests(string $path): void
-    {
-        $namespace = $this->pluginData['namespace'];
-        $phpNamespace = $this->pluginData['phpNamespace'];
-
-        // Pest.php
-        $pestContent = <<<'PHP'
-<?php
-
-uses()->in('.');
-PHP;
-
-        $this->files->put($path.'/tests/Pest.php', $pestContent);
-
-        $componentType = Str::camel($namespace).'.default';
-
-        $testContent = <<<PHP
-<?php
-
-beforeEach(function () {
-    \$this->pluginPath = dirname(__DIR__);
-    \$this->manifestPath = \$this->pluginPath . '/nativephp.json';
-});
-
-describe('Plugin Manifest', function () {
-    it('has a valid nativephp.json file', function () {
-        expect(file_exists(\$this->manifestPath))->toBeTrue();
-
-        \$content = file_get_contents(\$this->manifestPath);
-        \$manifest = json_decode(\$content, true);
-
-        expect(json_last_error())->toBe(JSON_ERROR_NONE);
-    });
-
-    it('has required fields', function () {
-        \$manifest = json_decode(file_get_contents(\$this->manifestPath), true);
-
-        expect(\$manifest)->toHaveKeys(['namespace', 'components']);
-        expect(\$manifest['namespace'])->toBe('{$namespace}');
-    });
-
-    it('has valid components', function () {
-        \$manifest = json_decode(file_get_contents(\$this->manifestPath), true);
-
-        expect(\$manifest['components'])->toBeArray()->not->toBeEmpty();
-
-        foreach (\$manifest['components'] as \$component) {
-            expect(\$component)->toHaveKeys(['type', 'element', 'blade']);
-            // Component types must be dot-namespaced
-            expect(\$component['type'])->toContain('.');
-            // At least one platform renderer
-            expect(
-                !empty(\$component['android_renderer']) || !empty(\$component['ios_renderer'])
-            )->toBeTrue();
-        }
-    });
-});
-
-describe('PHP Classes', function () {
-    it('has Element class', function () {
-        \$file = \$this->pluginPath . '/src/Elements/{$namespace}.php';
-        expect(file_exists(\$file))->toBeTrue();
-
-        \$content = file_get_contents(\$file);
-        expect(\$content)->toContain('extends Element');
-        expect(\$content)->toContain("'{$componentType}'");
-    });
-
-    it('has Blade component class', function () {
-        \$file = \$this->pluginPath . '/src/Components/{$namespace}.php';
-        expect(file_exists(\$file))->toBeTrue();
-
-        \$content = file_get_contents(\$file);
-        expect(\$content)->toContain('extends NativeBladeComponent');
-        expect(\$content)->toContain("'{$componentType}'");
-    });
-
-    it('has service provider', function () {
-        \$file = \$this->pluginPath . '/src/{$namespace}ServiceProvider.php';
-        expect(file_exists(\$file))->toBeTrue();
-    });
-});
-
-describe('Native Renderers', function () {
-    it('has Android Kotlin renderer', function () {
-        \$file = \$this->pluginPath . '/resources/android/{$namespace}Renderer.kt';
-        expect(file_exists(\$file))->toBeTrue();
-
-        \$content = file_get_contents(\$file);
-        expect(\$content)->toContain('object {$namespace}Renderer');
-        expect(\$content)->toContain('@Composable');
-        expect(\$content)->toContain('fun Render(');
-    });
-
-    it('has iOS Swift renderer', function () {
-        \$file = \$this->pluginPath . '/resources/ios/{$namespace}Renderer.swift';
-        expect(file_exists(\$file))->toBeTrue();
-
-        \$content = file_get_contents(\$file);
-        expect(\$content)->toContain('{$namespace}Renderer');
-    });
-});
-
-describe('Composer Configuration', function () {
-    it('has valid composer.json with UI plugin type', function () {
-        \$composerPath = \$this->pluginPath . '/composer.json';
-        expect(file_exists(\$composerPath))->toBeTrue();
-
-        \$composer = json_decode(file_get_contents(\$composerPath), true);
-
-        expect(json_last_error())->toBe(JSON_ERROR_NONE);
-        expect(\$composer['type'])->toBe('nativephp-ui-plugin');
-    });
-});
-PHP;
-
-        $this->files->put($path.'/tests/PluginTest.php', $testContent);
-
-        // Add pest to composer.json
-        $composerPath = $path.'/composer.json';
-        $composer = json_decode($this->files->get($composerPath), true);
-        $composer['require-dev'] = ['pestphp/pest' => '^3.0'];
-        $composer['scripts'] = ['test' => 'pest'];
-        $composer['config'] = ['allow-plugins' => ['pestphp/pest-plugin' => true]];
-        $this->files->put($composerPath, json_encode($composer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    }
-
     protected function displayNextSteps(): void
     {
         outro('Plugin created successfully!');
 
-        $isUiPlugin = $this->pluginData['pluginType'] === 'ui';
-        $namespace = $this->pluginData['namespace'];
-
         $this->newLine();
         $this->components->twoColumnDetail('Next steps', '');
+        $this->components->bulletList([
+            'Implement native functions in:',
+            "  <comment>resources/android/{$this->pluginData['namespace']}Functions.kt</comment>",
+            "  <comment>resources/ios/{$this->pluginData['namespace']}Functions.swift</comment>",
+            'Edit <comment>nativephp.json</comment> to add permissions and dependencies',
+            'Customize the copy_assets hook in:',
+            '  <comment>src/Commands/CopyAssetsCommand.php</comment>',
+        ]);
 
-        if ($isUiPlugin) {
-            $componentType = Str::camel($namespace).'.default';
-            $bladeTag = 'native:'.str_replace(['.', '_'], '-', $componentType);
-
-            $this->components->bulletList([
-                'Implement the Element class in:',
-                "  <comment>src/Elements/{$namespace}.php</comment>",
-                'Implement native renderers in:',
-                "  <comment>resources/android/{$namespace}Renderer.kt</comment>",
-                "  <comment>resources/ios/{$namespace}Renderer.swift</comment>",
-                'Edit <comment>nativephp.json</comment> to add dependencies',
-                "Use in Blade: <info><{$bladeTag} /></info>",
-            ]);
-        } else {
-            $this->components->bulletList([
-                'Implement native functions in:',
-                "  <comment>resources/android/{$namespace}Functions.kt</comment>",
-                "  <comment>resources/ios/{$namespace}Functions.swift</comment>",
-                'Edit <comment>nativephp.json</comment> to add permissions and dependencies',
-                'Customize the copy_assets hook in:',
-                '  <comment>src/Commands/CopyAssetsCommand.php</comment>',
-            ]);
-
-            $this->newLine();
-            $this->components->twoColumnDetail('Available hooks', '');
-            $this->components->bulletList([
-                '<info>pre_compile</info> - Before native code is compiled',
-                '<info>post_compile</info> - After native code compilation',
-                '<info>copy_assets</info> - Copy ML models, binary files, etc.',
-                '<info>post_build</info> - After native build completes',
-            ]);
-        }
+        $this->newLine();
+        $this->components->twoColumnDetail('Available hooks', '');
+        $this->components->bulletList([
+            '<info>pre_compile</info> - Before native code is compiled',
+            '<info>post_compile</info> - After native code compilation',
+            '<info>copy_assets</info> - Copy ML models, binary files, etc.',
+            '<info>post_build</info> - After native build completes',
+        ]);
 
         if (! $this->pluginData['includeBoost']) {
             $this->newLine();
@@ -1604,13 +1198,7 @@ PHP;
         $this->components->twoColumnDetail('To install in your app', '');
         $this->line('  Add to composer.json <comment>"repositories"</comment> section:');
         $this->newLine();
-        // Forward slashes keep the snippet valid JSON on Windows (backslashes
-        // would need escaping) and Composer path repositories accept them there.
-        $repoJson = json_encode([
-            'type' => 'path',
-            'url' => str_replace('\\', '/', $this->pluginData['path']),
-        ], JSON_UNESCAPED_SLASHES);
-        $this->line('  <info>'.$repoJson.'</info>');
+        $this->line('  <info>{"type": "path", "url": "'.$this->pluginData['path'].'"}</info>');
         $this->newLine();
         $this->line('  Then run:');
         $this->line('  <comment>composer require '.$this->pluginData['name'].'</comment>');

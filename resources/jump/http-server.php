@@ -39,11 +39,9 @@
 declare(strict_types=1);
 
 use Endroid\QrCode\Builder\Builder;
-use Workerman\Connection\AsyncTcpConnection;
 use Workerman\Connection\TcpConnection;
 use Workerman\Protocols\Http\Request;
 use Workerman\Protocols\Http\Response;
-use Workerman\Timer;
 use Workerman\Worker;
 
 // --- Argument + environment parsing -------------------------------------
@@ -121,44 +119,24 @@ $worker->name = 'JumpHttpProxy';
 
 $worker->onMessage = function (TcpConnection $connection, Request $request) {
     try {
-        $response = jumpHandleRequest($request, $connection);
+        $response = jumpHandleRequest($request);
     } catch (Throwable $e) {
         jumpRouterLog($request->method().' '.$request->uri().' [500 handler-exception] '.$e->getMessage());
         $response = new Response(500, ['Content-Type' => 'text/plain; charset=utf-8'], 'Internal proxy error: '.$e->getMessage());
     }
 
-    // A null response means the handler went asynchronous (the Laravel proxy)
-    // and will call jumpSendResponse() itself once the upstream replies. This
-    // is what keeps the single Windows worker free: `Route::native` requests
-    // are held open for the whole native-screen lifetime, and a blocking wait
-    // here would stall every other request behind them (see jumpProxyToLaravel).
-    if ($response === null) {
-        return;
-    }
-
-    jumpSendResponse($connection, $response);
+    // Force connection teardown after every response. PHP -S can't do this
+    // (it decides keep-alive purely from the request); Workerman can, and
+    // that's the whole point of moving to it for the Windows code path.
+    // Setting the response header is for client correctness; the actual
+    // close happens via $connection->close() once send() drains.
+    $response = $response->withHeader('Connection', 'close');
+    $connection->close($response);
 };
-
-/**
- * Send a response and tear the connection down.
- *
- * Forcing teardown after every response is the whole point of moving the
- * Windows path to Workerman: PHP -S decides keep-alive purely from the
- * request, Workerman lets us close explicitly. Setting the header is for
- * client correctness; the actual close happens via close() once send() drains.
- */
-function jumpSendResponse(TcpConnection $connection, Response $response): void
-{
-    $connection->close($response->withHeader('Connection', 'close'));
-}
 
 // --- Dispatch -----------------------------------------------------------
 
-/**
- * Route a request. Returns a Response to send immediately, or null when the
- * handler has taken ownership of $connection and will respond asynchronously.
- */
-function jumpHandleRequest(Request $request, TcpConnection $connection): ?Response
+function jumpHandleRequest(Request $request): Response
 {
     global $JUMP;
 
@@ -201,13 +179,6 @@ function jumpHandleRequest(Request $request, TcpConnection $connection): ?Respon
             'app_name' => $JUMP['appName'],
             'version' => '1.0.0',
             'type' => 'nativephp-server',
-            // How the client should render this app: 'native-ui' (stream
-            // Element.* frames over the WS bridge) or 'webview' (forward HTTP
-            // responses). Set by JumpCommand via JUMP_APP_UI. Must match
-            // router.php — omitting it makes the Jump app fall back to webview
-            // and HTTP-forward a native-ui route, which blocks in the native
-            // event loop (appears to the user as a hung/500 webview).
-            'ui' => getenv('JUMP_APP_UI') ?: 'native-ui',
         ];
         if ($JUMP['wsPort']) {
             $info['ws_port'] = (string) $JUMP['wsPort'];
@@ -258,9 +229,7 @@ function jumpHandleRequest(Request $request, TcpConnection $connection): ?Respon
         }
     }
 
-    jumpProxyToLaravel($request, $method, $uri, $connection);
-
-    return null; // async — jumpProxyToLaravel owns the connection from here
+    return jumpProxyToLaravel($request, $method, $uri);
 }
 
 // --- /jump/qr renderer --------------------------------------------------
@@ -428,29 +397,11 @@ function jumpProxyToVite(Request $request, string $method, string $uri, string $
 
 // --- Laravel proxy ------------------------------------------------------
 
-/**
- * Proxy a request to the Laravel dev server — asynchronously.
- *
- * WHY ASYNC (this is load-bearing on Windows, do not "simplify" back to curl):
- * a `Route::native` route deliberately holds its HTTP response open for the
- * entire native-screen lifetime — the request reaches Laravel, renders the
- * component, and parks in nativephp_element_wait_event() publishing frames over
- * the WS bridge. macOS/Linux absorb that with PHP_CLI_SERVER_WORKERS (php -S
- * forks a pool, see JumpCommand), so router.php can afford a blocking curl with
- * CURLOPT_TIMEOUT 0. Workerman on Windows cannot fork: $worker->count is pinned
- * to 1, so a blocking curl here freezes the ONLY worker for the whole screen
- * lifetime and every other request — /jump/info, assets, and the app's
- * re-entry handshake — queues behind it. The old 90s CURLOPT_TIMEOUT turned
- * that into a 502-then-retry loop that wedged the proxy indefinitely.
- *
- * Using AsyncTcpConnection keeps the event loop free while the runloop request
- * is parked, which lets us drop the timeout entirely and match router.php.
- * Only the transport changed: the response post-processing is untouched and
- * still runs, verbatim, in jumpBuildLaravelResponse().
- */
-function jumpProxyToLaravel(Request $request, string $method, string $uri, TcpConnection $connection): void
+function jumpProxyToLaravel(Request $request, string $method, string $uri): Response
 {
     global $JUMP;
+
+    $laravelUrl = "http://127.0.0.1:{$JUMP['laravelPort']}{$uri}";
 
     $headers = jumpBuildUpstreamHeaders($request);
     if ($ct = $request->header('content-type')) {
@@ -468,217 +419,50 @@ function jumpProxyToLaravel(Request $request, string $method, string $uri, TcpCo
     if (in_array($method, ['POST', 'PUT', 'PATCH'], true)) {
         $body = $request->rawBody();
     }
-    // Only on methods that carry a body — curl didn't send Content-Length on
-    // GET and some handlers treat a bodyless GET with one as malformed.
+
+    $ch = curl_init($laravelUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HEADER, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 90);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
     if ($body !== null) {
-        $headers[] = 'Content-Length: '.strlen($body);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
     }
-
-    // Ask for a close-delimited response: the upstream ends the body by closing
-    // the socket, so onClose is an unambiguous "response complete" signal and we
-    // never have to second-guess Content-Length.
-    $headers[] = 'Connection: close';
-
-    $wire = sprintf("%s %s HTTP/1.1\r\n", $method, $uri)
-        .implode("\r\n", $headers)
-        ."\r\n\r\n"
-        .((string) $body);
 
     $start = microtime(true);
-    $raw = '';
-    $settled = false;
-    $connectTimer = null;
+    $raw = curl_exec($ch);
+    $upstreamMs = (int) ((microtime(true) - $start) * 1000);
+    $error = curl_error($ch);
+    $errno = curl_errno($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
 
-    try {
-        $upstream = new AsyncTcpConnection("tcp://127.0.0.1:{$JUMP['laravelPort']}");
-    } catch (Throwable $e) {
-        jumpSendResponse($connection, jumpLaravelError(
-            $method, $uri,
-            "Could not open a connection to Laravel on port {$JUMP['laravelPort']}: ".$e->getMessage()
-        ));
+    if ($raw === false) {
+        if ($errno === CURLE_COULDNT_CONNECT) {
+            $detail = "Laravel dev server is not listening on 127.0.0.1:{$JUMP['laravelPort']}. Is `artisan serve` running?";
+        } elseif ($errno === CURLE_OPERATION_TIMEDOUT) {
+            $detail = "Request to Laravel on port {$JUMP['laravelPort']} timed out. The handler took longer than 90s to respond.";
+        } else {
+            $detail = "Could not reach Laravel on port {$JUMP['laravelPort']}. cURL error ({$errno}): {$error}";
+        }
 
-        return;
+        jumpRouterLog("{$method} {$uri} [502] {$detail}");
+
+        return new Response(502, ['Content-Type' => 'text/plain; charset=utf-8'], "Bad Gateway: {$detail}");
     }
 
-    // Settle exactly once, whichever of the four paths gets there first
-    // (response complete / upstream error / connect timeout / client hang-up).
-    $finish = function (?Response $response) use (&$settled, &$connectTimer, $connection, $upstream) {
-        if ($settled) {
-            return;
-        }
-        $settled = true;
-        if ($connectTimer !== null) {
-            Timer::del($connectTimer);
-            $connectTimer = null;
-        }
-        $upstream->onClose = null; // our own close() must not re-enter
-        $upstream->close();
-        if ($response !== null) {
-            jumpSendResponse($connection, $response);
-        }
-    };
-
-    $upstream->onConnect = function (AsyncTcpConnection $c) use ($wire, &$connectTimer) {
-        if ($connectTimer !== null) {
-            Timer::del($connectTimer);
-            $connectTimer = null;
-        }
-        $c->send($wire);
-    };
-
-    $upstream->onMessage = function (AsyncTcpConnection $c, $chunk) use (&$raw) {
-        $raw .= $chunk;
-    };
-
-    // Upstream closed — with `Connection: close` that means the response is
-    // complete. NOTE: there is deliberately no read timeout here; a parked
-    // native runloop request is expected to stay open indefinitely.
-    $upstream->onClose = function () use (&$raw, $method, $uri, $start, $finish) {
-        if ($raw === '') {
-            $ms = (int) ((microtime(true) - $start) * 1000);
-            $finish(jumpLaravelError(
-                $method, $uri,
-                "Laravel closed the connection after {$ms}ms without sending a response."
-            ));
-
-            return;
-        }
-
-        $finish(jumpBuildLaravelResponse($raw, $method, $uri));
-    };
-
-    $upstream->onError = function (AsyncTcpConnection $c, $code, $msg) use ($method, $uri, $finish) {
-        global $JUMP;
-        $finish(jumpLaravelError(
-            $method, $uri,
-            "Laravel dev server is not listening on 127.0.0.1:{$JUMP['laravelPort']}. Is `artisan serve` running? (error {$code}: {$msg})"
-        ));
-    };
-
-    // Client hung up — app exited, re-entered, or dismissed the screen. Drop
-    // the upstream with it, otherwise every exit/re-enter strands another
-    // Laravel worker parked in the native runloop until the server restarts.
-    $connection->onClose = function () use (&$settled, &$connectTimer, $upstream) {
-        if ($settled) {
-            return;
-        }
-        $settled = true;
-        if ($connectTimer !== null) {
-            Timer::del($connectTimer);
-            $connectTimer = null;
-        }
-        $upstream->onClose = null;
-        $upstream->close();
-    };
-
-    // AsyncTcpConnection has no built-in connect timeout; reproduce the 5s
-    // CONNECTTIMEOUT the curl implementation used. Cancelled on connect.
-    $connectTimer = Timer::add(5, function () use ($method, $uri, $finish) {
-        global $JUMP;
-        $finish(jumpLaravelError(
-            $method, $uri,
-            "Timed out connecting to Laravel on 127.0.0.1:{$JUMP['laravelPort']} after 5s. Is `artisan serve` running?"
-        ));
-    }, [], false);
-
-    $upstream->connect();
-}
-
-/**
- * Log and build the 502 the client sees when the upstream is unreachable.
- * Kept as a real status + human-readable detail so the native error screens
- * planned for v4 have something meaningful to render.
- */
-function jumpLaravelError(string $method, string $uri, string $detail): Response
-{
-    jumpRouterLog("{$method} {$uri} [502] {$detail}");
-
-    return new Response(502, ['Content-Type' => 'text/plain; charset=utf-8'], "Bad Gateway: {$detail}");
-}
-
-/**
- * Decode a chunked transfer-encoded body. curl did this for us; over a raw
- * socket we have to do it ourselves.
- */
-function jumpDechunk(string $body): string
-{
-    $out = '';
-    $offset = 0;
-    $len = strlen($body);
-
-    while ($offset < $len) {
-        $lineEnd = strpos($body, "\r\n", $offset);
-        if ($lineEnd === false) {
-            break;
-        }
-        $sizeHex = substr($body, $offset, $lineEnd - $offset);
-        if (($semi = strpos($sizeHex, ';')) !== false) { // chunk extensions
-            $sizeHex = substr($sizeHex, 0, $semi);
-        }
-        $sizeHex = trim($sizeHex);
-        if ($sizeHex === '' || ! ctype_xdigit($sizeHex)) {
-            break;
-        }
-        $size = (int) hexdec($sizeHex);
-        if ($size <= 0) {
-            break; // terminal chunk
-        }
-        $out .= substr($body, $lineEnd + 2, $size);
-        $offset = $lineEnd + 2 + $size + 2; // chunk data + trailing CRLF
-    }
-
-    // If it didn't parse as chunked at all, hand back what we got rather than
-    // silently serving an empty body.
-    if ($out === '' && ! str_starts_with(ltrim($body), '0')) {
-        return $body;
-    }
-
-    return $out;
-}
-
-/**
- * Turn a raw upstream HTTP response into a Workerman Response.
- *
- * Everything below the header/body split is carried over verbatim from the
- * previous curl implementation — Set-Cookie batching and Vite origin rewriting
- * are unchanged on purpose, so the async switch is a transport-only change.
- */
-function jumpBuildLaravelResponse(string $raw, string $method, string $uri): Response
-{
-    global $JUMP;
-
-    // Split status line + headers from the body, stepping over any 1xx
-    // informational block (e.g. "100 Continue") that precedes the real one.
-    $rawHeaders = $raw;
-    $body = '';
-    while (true) {
-        $split = strpos($raw, "\r\n\r\n");
-        if ($split === false) {
-            $rawHeaders = $raw;
-            $body = '';
-            break;
-        }
-        $rawHeaders = substr($raw, 0, $split);
-        $body = substr($raw, $split + 4);
-        if (preg_match('#^HTTP/\d\.\d\s+1\d\d#', $rawHeaders)) {
-            $raw = $body; // informational — the real response follows
-
-            continue;
-        }
-        break;
-    }
-
-    $httpCode = 200;
-    if (preg_match('#^HTTP/\d\.\d\s+(\d{3})#', $rawHeaders, $m)) {
-        $httpCode = (int) $m[1];
-    }
+    $rawHeaders = substr((string) $raw, 0, $headerSize);
+    $body = substr((string) $raw, $headerSize);
 
     $laravelOrigin = "http://127.0.0.1:{$JUMP['laravelPort']}";
     $jumpOrigin = "http://{$JUMP['displayHost']}:{$JUMP['httpPort']}";
 
     $response = new Response($httpCode);
     $setCookies = [];
-    $isChunked = false;
 
     foreach (explode("\r\n", $rawHeaders) as $line) {
         if ($line === '' || str_starts_with($line, 'HTTP/')) {
@@ -693,11 +477,6 @@ function jumpBuildLaravelResponse(string $raw, string $method, string $uri): Res
         $lower = strtolower($name);
 
         if (in_array($lower, ['transfer-encoding', 'connection', 'keep-alive'], true)) {
-            // curl de-chunked for us; over a raw socket we have to notice.
-            if ($lower === 'transfer-encoding' && stripos($value, 'chunked') !== false) {
-                $isChunked = true;
-            }
-
             continue;
         }
 
@@ -721,10 +500,6 @@ function jumpBuildLaravelResponse(string $raw, string $method, string $uri): Res
 
     if (! empty($setCookies)) {
         $response = $response->withHeader('Set-Cookie', $setCookies);
-    }
-
-    if ($isChunked) {
-        $body = jumpDechunk($body);
     }
 
     // Rewrite any Vite dev-server origins the Inertia template emitted,

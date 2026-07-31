@@ -4,23 +4,12 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use Native\Mobile\Concerns\HandlesNativeCallbacks;
 use Native\Mobile\Events\Geolocation\LocationReceived;
 use Native\Mobile\Events\Geolocation\PermissionRequestResult;
 use Native\Mobile\Events\Geolocation\PermissionStatusReceived;
 
-/**
- * The result event depends on the action this builder was created for, so only
- * the matching handler is valid on a given instance (the others throw):
- *
- * @method $this locationReceived(\Closure|array|string $callback)          getCurrentPosition()
- * @method $this permissionStatusReceived(\Closure|array|string $callback)  checkPermissions()
- * @method $this permissionRequestResult(\Closure|array|string $callback)   requestPermissions()
- */
 class PendingGeolocation
 {
-    use HandlesNativeCallbacks;
-
     protected ?string $id = null;
 
     protected ?string $eventClass = null;

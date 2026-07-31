@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <item name="tag_node_id" type="id"/>
-    <item name="tag_callback_id" type="id"/>
-    <item name="tag_long_press_cb" type="id"/>
-</resources>

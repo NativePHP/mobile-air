@@ -21,6 +21,9 @@ private func _persistent_php_artisan(_ command: UnsafePointer<CChar>?) -> Unsafe
 @_silgen_name("persistent_php_shutdown")
 private func _persistent_php_shutdown()
 
+@_silgen_name("persistent_php_reboot")
+private func _persistent_php_reboot() -> Int32
+
 @_silgen_name("persistent_php_is_booted")
 private func _persistent_php_is_booted() -> Int32
 
@@ -96,17 +99,21 @@ final class PersistentPHPRuntime {
             print("PersistentPHPRuntime: boot FAILED (\(result)) error: \(bootError)")
         }
 
-        // Re-open the window shutdown() closed, so webview contexts
-        // suspended for this reboot can boot again. No-op on a cold launch.
-        WebviewPHPRuntime.resumeAfterRuntimeReboot()
-
         return isBooted
     }
 
-    /// Re-boot the persistent runtime (shutdown then boot).
+    /// Reboot the persistent runtime without restarting the PHP interpreter.
+    /// Flushes the Laravel app, clears opcache and compiled views, then re-bootstraps.
     func reboot() -> Bool {
-        shutdown()
-        return boot()
+        guard isBooted else { return false }
+        let result = _persistent_php_reboot()
+        if result == 0 {
+            print("PersistentPHPRuntime: reboot succeeded")
+            return true
+        } else {
+            print("PersistentPHPRuntime: reboot FAILED (\(result))")
+            return false
+        }
     }
 
 
@@ -190,15 +197,6 @@ final class PersistentPHPRuntime {
 
     /// Shutdown the persistent runtime.
     func shutdown() {
-        // Embedded php-mode webviews each own a PHP context on their own
-        // thread, built on the process-wide Zend module state that
-        // php_embed_shutdown() is about to destroy. Take them down first or
-        // they are left dereferencing freed memory — same hazard as the
-        // queue worker, and why a hot reload with a php webview on screen
-        // crashed. They re-boot on their next request once boot() reopens
-        // the window.
-        WebviewPHPRuntime.suspendAllForRuntimeReboot()
-
         _persistent_php_shutdown()
         isBooted = false
     }

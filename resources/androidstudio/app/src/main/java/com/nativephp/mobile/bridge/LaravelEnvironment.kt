@@ -12,6 +12,7 @@ import java.util.zip.ZipInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -39,25 +40,7 @@ class LaravelEnvironment(private val context: Context) {
         // APK + queued WorkManager job can run an ephemeral PHP task against a
         // mid-delete / mid-extract vendor/ tree and fail with
         // `Class "Native\Mobile\Runtime" not found`.
-        //
-        // Internal (not private): PHPBridge.bootPersistentRuntime takes this
-        // same lock so the persistent php_embed_init can never overlap the
-        // classic embed init/shutdown cycles of runBaseArtisanCommands from a
-        // concurrently-created activity — the two paths use different native
-        // mutexes, and a classic php_embed_shutdown mid-boot guts the
-        // persistent interpreter's module/class state (boots "in 13ms", then
-        // every dispatch 500s with `Class "Native\Mobile\Runtime" not found`).
-        internal val extractionLock = ReentrantLock()
-
-        // Classic (embed-per-command) artisan cannot run a second time in a
-        // process where the persistent PHP runtime has been shut down — the
-        // TSRM re-init SEGVs in ts_resource_ex. That happens when an activity
-        // is re-created in a process a plugin foreground service kept alive.
-        // The base commands are idempotent per install, so run them at most
-        // once per process; the re-created activity skips straight to the
-        // persistent boot (the same shutdown→boot cycle hot reload already
-        // exercises safely).
-        @Volatile private var baseArtisanRanThisProcess = false
+        private val extractionLock = ReentrantLock()
 
         private const val TAG = "LaravelEnvironment"
 
@@ -175,18 +158,6 @@ class LaravelEnvironment(private val context: Context) {
 
     fun initialize() {
         try {
-            // Process reuse: a live/parked persistent runtime means this
-            // process was started by the current APK install (a new install
-            // always kills the process), so the extracted tree is already
-            // this build's. Re-extracting would rm -rf vendor/ + views
-            // UNDER the running PHP runtime, poisoning its realpath/stat
-            // caches — the next request dies with "PHP Startup: stat
-            // failed" on files that exist on disk. Skip entirely.
-            if (phpBridge.isPersistentMode()) {
-                Log.d(TAG, "⚡ Persistent runtime alive — skipping bundle extraction (process reuse)")
-                return
-            }
-
             setupDirectories()
 
             // OTA check commented out — adds ~300ms network latency on every cold boot
@@ -197,25 +168,16 @@ class LaravelEnvironment(private val context: Context) {
             // } else {
             //     extractLaravelBundle()
             // }
+            val didExtract = extractLaravelBundle()
 
-            // Hold the lock across extraction AND the post-extraction steps
-            // (.env writes + classic artisan). A second activity's init thread
-            // otherwise unblocks after the extraction alone, skips artisan via
-            // baseArtisanRanThisProcess, and boots the persistent runtime
-            // while THIS thread is still cycling classic embeds — see the
-            // extractionLock comment for the failure that causes.
-            extractionLock.withLock {
-                val didExtract = extractLaravelBundleUnlocked()
+            setupEnvironment()
 
-                setupEnvironment(didExtract)
-
-                // Only run artisan commands when files were actually extracted/changed
-                if (didExtract) {
-                    Log.d(TAG, "📦 Running post-extraction artisan commands...")
-                    runBaseArtisanCommands()
-                } else {
-                    Log.d(TAG, "⚡ Skipping artisan commands — no extraction needed")
-                }
+            // Only run artisan commands when files were actually extracted/changed
+            if (didExtract) {
+                Log.d(TAG, "📦 Running post-extraction artisan commands...")
+                runBaseArtisanCommands()
+            } else {
+                Log.d(TAG, "⚡ Skipping artisan commands — no extraction needed")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing Laravel environment", e)
@@ -271,19 +233,10 @@ class LaravelEnvironment(private val context: Context) {
 
         Log.d(TAG, "🔍 DEBUG: embeddedId from bundle = '$embeddedId'")
 
-        // Identity of what's currently extracted. The .version marker written
-        // after extraction is authoritative — it records the embedded composite
-        // verbatim. Recomputing from the extracted .env is only a legacy
-        // fallback, and it MUST NOT be preferred: .env carries no
-        // NATIVEPHP_APP_VERSION_CODE line, so the recompute yields "…b0"
-        // against bundle_meta.json's "…b1" and the app re-extracts the whole
-        // bundle on EVERY cold boot — several seconds of splash each launch.
+        // Build composite from extracted .env if it exists
         val currentId = if (laravelDir.exists()) {
-            val versionFile = File(laravelDir, VERSION_FILE)
             val envFile = File(laravelDir, ENV_FILE)
-            if (versionFile.exists()) {
-                versionFile.readText().trim().ifEmpty { null }
-            } else if (envFile.exists()) {
+            if (envFile.exists()) {
                 buildVersionId(getVersionFromEnvFile(envFile), getVersionCodeFromEnvFile(envFile))
             } else {
                 null
@@ -338,13 +291,14 @@ class LaravelEnvironment(private val context: Context) {
                 otaMarkerFile.delete()
             }
 
-            // Record WHAT WAS JUST EXTRACTED: the embedded composite, verbatim.
-            // Recomputing from the extracted .env loses the version code (no
-            // NATIVEPHP_APP_VERSION_CODE line) and wrote "…b0" here while the
-            // staleness check compared against "…b1" — a permanent
-            // re-extraction loop.
-            File(laravelDir, VERSION_FILE).writeText(embeddedId)
-            Log.d(TAG, "✅ Updated .version file to: $embeddedId")
+            // Update .version file with the composite identity so it stays in sync
+            // with the bundled .version (and survives a re-read for the staleness check).
+            val envFile = File(laravelDir, ENV_FILE)
+            val installedId = buildVersionId(getVersionFromEnvFile(envFile), getVersionCodeFromEnvFile(envFile))
+            if (installedId != null) {
+                File(laravelDir, VERSION_FILE).writeText(installedId)
+                Log.d(TAG, "✅ Updated .version file to: $installedId")
+            }
 
             Log.d(TAG, "✅ Extraction complete to ${laravelDir.absolutePath}")
 
@@ -716,6 +670,22 @@ class LaravelEnvironment(private val context: Context) {
         zis.close()
     }
 
+    /**
+     * Calculate MD5 checksum of an input stream
+     */
+    private fun calculateMD5(input: java.io.InputStream): String {
+        val md = MessageDigest.getInstance("MD5")
+        val buffer = ByteArray(8192)
+        var bytesRead: Int
+
+        while (input.read(buffer).also { bytesRead = it } != -1) {
+            md.update(buffer, 0, bytesRead)
+        }
+
+        val digest = md.digest()
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
     private fun copyAssetToInternalStorage(assetName: String, targetFileName: String, forceUpdate: Boolean = false): File {
         val outFile = File(context.filesDir, targetFileName)
 
@@ -724,15 +694,25 @@ class LaravelEnvironment(private val context: Context) {
             Log.d(TAG, "📋 Copying asset $assetName to ${outFile.absolutePath} (new file)")
             copyAssetFile(assetName, outFile)
         } else if (forceUpdate) {
-            // Forced refresh (DEBUG build, or the Laravel bundle was just
-            // re-extracted for an app update), copy without checksum verification
+            // Force update requested, copy without checksum verification
             Log.d(TAG, "📋 Force updating asset $assetName")
             copyAssetFile(assetName, outFile)
         } else {
-            // File exists and no forced refresh — trust it. This asset only changes
-            // with an app update, which re-extracts the bundle and forces a refresh
-            // above. Avoids MD5-hashing two ~200KB streams on every cold boot.
-            Log.d(TAG, "📋 Asset $assetName present — skipping (no forced refresh)")
+            // File exists and no force update - verify checksum
+            try {
+                val existingHash = FileInputStream(outFile).use { calculateMD5(it) }
+                val bundledHash = context.assets.open(assetName).use { calculateMD5(it) }
+
+                if (existingHash != bundledHash) {
+                    Log.d(TAG, "📋 Asset $assetName has changed (checksum mismatch), updating")
+                    copyAssetFile(assetName, outFile)
+                } else {
+                    Log.d(TAG, "📋 Asset $assetName already up to date (checksum match)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Failed to verify checksum for $assetName, re-copying to be safe", e)
+                copyAssetFile(assetName, outFile)
+            }
         }
 
         return outFile
@@ -754,12 +734,6 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     private fun runBaseArtisanCommands() {
-        if (baseArtisanRanThisProcess) {
-            Log.d(TAG, "⚡ Base artisan already ran in this process — skipping (classic embed can't re-init after persistent shutdown)")
-            return
-        }
-        baseArtisanRanThisProcess = true
-
         val dbFile = File(appStorageDir, "persisted_data/database/database.sqlite")
         if (!dbFile.exists()) {
             Log.d(TAG, "📄 Creating empty SQLite file: ${dbFile.absolutePath}")
@@ -773,18 +747,6 @@ class LaravelEnvironment(private val context: Context) {
         phpBridge.runArtisanCommand("storage:unlink")
         phpBridge.runArtisanCommand("storage:link")
         phpBridge.runArtisanCommand("migrate --force")
-
-        // Cache the Laravel bootstrap so every subsequent cold boot skips config
-        // parsing, event discovery, and Blade compilation. Built HERE — once per app
-        // update, with the device's real paths — rather than at build time on the host
-        // (where the cached paths would be wrong, which is why we optimize:clear above
-        // first). This is the biggest Laravel-side cold-start lever; view:cache in
-        // particular precompiles every Blade view so the first page render doesn't have
-        // to. `route:cache` is intentionally omitted — NativePHP registers internal
-        // closure routes (e.g. /_native/api/events) that can't be serialized.
-        phpBridge.runArtisanCommand("config:cache")
-        phpBridge.runArtisanCommand("event:cache")
-        phpBridge.runArtisanCommand("view:cache")
     }
 
     private fun setupDirectories() {
@@ -808,7 +770,7 @@ class LaravelEnvironment(private val context: Context) {
         }
     }
 
-    private fun setupEnvironment(forceCertRefresh: Boolean = false) {
+    private fun setupEnvironment() {
         try {
             val appKeyFile = File(appStorageDir, APP_KEY_FILE)
             val appKey: String = if (appKeyFile.exists()) {
@@ -901,11 +863,7 @@ class LaravelEnvironment(private val context: Context) {
                 }
 
                 Log.d(TAG, "🔍 Certificate copy - DEBUG mode: $isDebugMode")
-                // Force a refresh in DEBUG, or when the Laravel bundle was just
-                // re-extracted (app update). Otherwise trust the existing copy —
-                // see copyAssetToInternalStorage — so we don't MD5 two ~200KB
-                // streams on every cold boot.
-                copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode || forceCertRefresh)
+                copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode)
 
                 val phpIni = """
 curl.cainfo="${context.filesDir.absolutePath}/$CACERT_FILE"
@@ -923,17 +881,18 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
         }
     }
 
-    // APP_KEY is just 32 random bytes, base64-encoded — generate it locally
-    // instead of booting PHP just to run key:generate (matches iOS).
     private fun generateAndSaveAppKey(file: File): String {
-        val keyBytes = ByteArray(32)
-        java.security.SecureRandom().nextBytes(keyBytes)
-        val generatedKey = "base64:" + android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP)
+        val result = phpBridge.runArtisanCommand("key:generate --show")
+        var generatedKey = result.trim()
+
+        if (!generatedKey.startsWith("base64:")) {
+            generatedKey = "base64:3a3I14QgnAhKUHROy1bn6A/UpTeELNI2flsl+Ud0bF4="
+        }
 
         file.parentFile?.mkdirs()
         file.writeText(generatedKey)
 
-        Log.d(TAG, "🔐 Generated and stored new APP_KEY locally (no PHP boot)")
+        Log.d(TAG, "🔐 Generated and stored new APP_KEY: $generatedKey")
         return generatedKey
     }
 
@@ -982,13 +941,6 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
      */
     fun initializeForBackground() {
         try {
-            // Same process-reuse guard as initialize(): never re-extract
-            // under a live persistent runtime (poisons its stat caches).
-            if (phpBridge.isPersistentMode()) {
-                Log.d(TAG, "⚡ Persistent runtime alive — skipping background extraction (process reuse)")
-                return
-            }
-
             setupDirectories()
             // Run extraction too. If MainActivity already extracted, the isUpToDate
             // check returns false (no work). If MainActivity is mid-extract, the
@@ -996,7 +948,7 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             // If we arrived first (WorkManager cold start after an app update), we
             // do the extraction ourselves before the ephemeral runtime touches vendor/.
             val didExtract = extractLaravelBundle()
-            setupEnvironment(didExtract)
+            setupEnvironment()
             if (didExtract) {
                 Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
                 runBaseArtisanCommands()

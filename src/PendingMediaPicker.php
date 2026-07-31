@@ -4,16 +4,10 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use Native\Mobile\Concerns\HandlesNativeCallbacks;
 use Native\Mobile\Events\Gallery\MediaSelected;
 
-/**
- * @method $this mediaSelected(\Closure|array|string $callback)
- */
 class PendingMediaPicker
 {
-    use HandlesNativeCallbacks;
-
     protected ?string $id = null;
 
     protected ?string $eventClass = null;

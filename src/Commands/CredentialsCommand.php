@@ -3,8 +3,8 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
-use Native\Mobile\Concerns\CreatesAndroidCredentials;
-use Native\Mobile\Concerns\CreatesIosCredentials;
+use Native\Mobile\Traits\CreatesAndroidCredentials;
+use Native\Mobile\Traits\CreatesIosCredentials;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\outro;

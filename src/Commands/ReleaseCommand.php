@@ -68,8 +68,7 @@ class ReleaseCommand extends Command
         if (str_contains($envContent, 'NATIVEPHP_APP_VERSION=')) {
             // Update existing version
             $updatedContent = preg_replace(
-                // [^\r\n] (without '$') keeps the \r intact on CRLF .env files (Windows)
-                '/^NATIVEPHP_APP_VERSION=[^\r\n]+/m',
+                '/^NATIVEPHP_APP_VERSION=.+$/m',
                 "NATIVEPHP_APP_VERSION={$newVersion}",
                 $envContent
             );

@@ -89,24 +89,6 @@ android {
                 debugSymbolLevel = "REPLACE_DEBUG_SYMBOLS"
             }
         }
-        // Release-optimized build that shell profilers (Macrobenchmark, simpleperf,
-        // Perfetto) can attach to. `isProfileable` injects <profileable shell="true">
-        // for THIS variant only, so it never leaks into the production release/bundle.
-        // Debug-signed so it installs with `adb install` — no release keystore, no
-        // manual zipalign/apksigner. Driven by `native:run --build=profileable`.
-        create("profileable") {
-            initWith(getByName("release"))
-            isDebuggable = false
-            isProfileable = true
-            // Always R8-minify, regardless of the app's minify_enabled config.
-            // Play-delivered releases run R8, so an unminified profileable build
-            // measures a cold start no user ever sees — with the native-ui
-            // plugin's icon/coil deps that's ~58MB of dex vs ~9MB and ~+90ms
-            // of bindApplication on a Pixel 9.
-            isMinifyEnabled = true
-            signingConfig = signingConfigs.getByName("debug")
-            matchingFallbacks += listOf("release")
-        }
     }
 
     compileOptions {
@@ -137,6 +119,15 @@ android {
         jniLibs {
             useLegacyPackaging = true
             keepDebugSymbols.add("**/*.so")
+            pickFirsts.add("lib/arm64-v8a/libc++_shared.so")
+            pickFirsts.add("lib/armeabi-v7a/libc++_shared.so")
+            pickFirsts.add("lib/x86/libc++_shared.so")
+            pickFirsts.add("lib/x86_64/libc++_shared.so")
+        }
+
+        // Exclude conflicting native libraries
+        resources {
+            excludes += "/lib/arm64-v8a/libstdc++.so"
         }
     }
 
@@ -156,7 +147,11 @@ android {
     // NDK version specification
     ndkVersion = "27.0.12077973" // Updated to NDK r27
 
-    // Static libs are linked by CMake into libphp_wrapper.so — no pre-built jniLibs needed
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
 }
 
 dependencies {
@@ -178,13 +173,6 @@ dependencies {
 
     // Compose integration with Views
     implementation("androidx.compose.ui:ui-viewbinding")
-
-    // Installs the APK-embedded baseline profile (library-shipped Compose/activity
-    // rules merged by AGP, plus app/src/main/baseline-prof.txt if present) so ART
-    // AOT-compiles the startup path on first launch instead of JIT-ing it. Without
-    // this, adb-installed release builds run the whole first-frame path interpreted
-    // until background dexopt kicks in days later — a direct cold-start TTID hit.
-    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
     // Debug tools
     debugImplementation("androidx.compose.ui:ui-tooling")
@@ -211,12 +199,11 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
+    implementation(platform(libs.firebase.bom))
+    implementation("com.google.firebase:firebase-messaging")
+
     // AndroidX Security for encrypted storage
     implementation(libs.androidx.security.crypto)
-
-    // Coil3 for image loading
-    implementation("io.coil-kt.coil3:coil-compose:3.1.0")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.1.0")
 
     // CameraX for camera preview
     val camerax_version = "1.4.1"

@@ -39,9 +39,6 @@ object LaravelCookieStore {
 
     fun has(name: String): Boolean = cookies.containsKey(name)
 
-    /** Snapshot of every stored cookie — used to seed the WebView jar on lazy WebRenderer creation. */
-    fun all(): Map<String, String> = cookies.toMap()
-
     fun get(name: String): String? = cookies[name]
 
     fun clear() {

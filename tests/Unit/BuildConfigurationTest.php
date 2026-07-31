@@ -3,7 +3,7 @@
 namespace Tests\Unit;
 
 use Illuminate\Support\Facades\File;
-use Native\Mobile\Concerns\PreparesBuild;
+use Native\Mobile\Traits\PreparesBuild;
 use Tests\TestCase;
 
 class BuildConfigurationTest extends TestCase

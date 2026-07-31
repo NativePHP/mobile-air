@@ -1,6 +1,6 @@
 # NativePHP Plugin Best Practices
 
-Guidelines for building and publishing NativePHP v4 plugins.
+Guidelines for building and publishing NativePHP v3 plugins.
 
 ## What Plugins Are
 
@@ -20,16 +20,6 @@ Plugins can leverage:
 - **Lifecycle hooks** — build-time commands
 - **Secrets** — environment variables with validation
 - **init_function** — native code called during app initialization
-- **Native EDGE components** — plugins can ship their own SwiftUI/Compose EDGE elements
-
-## v4 Compatibility
-
-- Require the SDK with a constraint that allows v4: `"nativephp/mobile": "^3.0|^4.0"`.
-- Never depend on `nativephp/mobile-device`, `mobile-dialog`, `mobile-file`, or `mobile-system` — these are core
-  built-ins in v4 and `nativephp/mobile` declares a Composer conflict with them. Use the core
-  `Native\Mobile\Facades\{Device, Dialog, File, System}` facades directly.
-- Test your plugin's events and facades from a `NativeComponent` (SuperNative screen) using `#[On]` — native UI
-  is the primary consumer context in v4 — in addition to the Livewire/Inertia web-view contexts below.
 
 ## Directory Structure
 
@@ -116,8 +106,7 @@ public function handleResult($data) { } // Listen for events
 
 ## Requirements
 
-- **SuperNative support**: Facades and events must work from `NativeComponent` screens with `#[On]` listeners — the primary v4 context.
-- **JavaScript library**: Export JS functions for each bridge method. Must work across Livewire v3/v4, Inertia + Vue, and Inertia + React (legacy web-view apps). Document any stack limitations.
+- **JavaScript library**: Export JS functions for each bridge method. Must work across Livewire v3/v4, Inertia + Vue, and Inertia + React. Document any stack limitations.
 - **Real device testing**: Test on physical Android and iOS devices — emulators lack camera, biometrics, and hardware features. Provide TestFlight / Google Play test builds.
 - **Documentation**: README must include installation steps, PHP and JS usage examples, method/event/permission docs, and environment variable configuration.
 
@@ -161,8 +150,7 @@ This adds the service provider to `NativeServiceProvider.php` and acts as a secu
 - Android Kotlin files use vendor-namespaced packages
 - Manifest validated with zero errors (`native:plugin:validate`)
 - Tested on physical Android and iOS devices
-- `composer.json` requires `"nativephp/mobile": "^3.0|^4.0"` and does not require the four core-v4 plugins
-- Works from NativeComponent screens (`#[On]`) and with Livewire v3/v4, Inertia + Vue, Inertia + React
+- Works with Livewire v3/v4, Inertia + Vue, Inertia + React
 - Boost guidelines included (`native:plugin:boost`)
 - Test build links provided (TestFlight / Google Play)
 - Secrets and environment variables documented

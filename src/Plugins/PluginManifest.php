@@ -23,8 +23,6 @@ class PluginManifest implements JsonSerializable
 
     public readonly array $secrets;
 
-    public readonly array $components;
-
     public function __construct(array $data)
     {
         $this->validate($data);
@@ -34,7 +32,6 @@ class PluginManifest implements JsonSerializable
 
         $this->namespace = $data['namespace'];
         $this->bridgeFunctions = $data['bridge_functions'] ?? [];
-        $this->components = $data['components'] ?? [];
         $this->android = $data['android'] ?? [];
         $this->ios = $data['ios'] ?? [];
         $this->assets = $data['assets'] ?? [];
@@ -127,7 +124,6 @@ class PluginManifest implements JsonSerializable
             isset($data['android']['services']) ||
             isset($data['android']['receivers']) ||
             isset($data['android']['providers']) ||
-            isset($data['android']['gradle_plugins']) ||
             isset($data['android']['min_version'])
         );
 
@@ -181,34 +177,6 @@ class PluginManifest implements JsonSerializable
                 );
             }
         }
-
-        // Validate components structure (for UI plugins)
-        foreach ($data['components'] ?? [] as $index => $component) {
-            if (empty($component['type'])) {
-                throw new InvalidArgumentException(
-                    "Component at index {$index} missing 'type'"
-                );
-            }
-
-            if (empty($component['element'])) {
-                throw new InvalidArgumentException(
-                    "Component '{$component['type']}' missing 'element' class"
-                );
-            }
-
-            if (empty($component['blade'])) {
-                throw new InvalidArgumentException(
-                    "Component '{$component['type']}' missing 'blade' class"
-                );
-            }
-
-            // At least one platform renderer required
-            if (empty($component['android_renderer']) && empty($component['ios_renderer'])) {
-                throw new InvalidArgumentException(
-                    "Component '{$component['type']}' missing platform renderer (android_renderer or ios_renderer)"
-                );
-            }
-        }
     }
 
     public static function fromFile(string $path): static
@@ -236,7 +204,6 @@ class PluginManifest implements JsonSerializable
         return [
             'namespace' => $this->namespace,
             'bridge_functions' => $this->bridgeFunctions,
-            'components' => $this->components,
             'android' => $this->android,
             'ios' => $this->ios,
             'assets' => $this->assets,
