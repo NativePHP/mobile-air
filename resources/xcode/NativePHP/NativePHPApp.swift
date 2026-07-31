@@ -20,8 +20,6 @@ struct NativePHPApp: App {
 
     static var shared: NativePHPApp?
 
-    @Environment(\.scenePhase) private var scenePhase
-
     init() {
         Self.shared = self
 
@@ -86,10 +84,37 @@ struct NativePHPApp: App {
             }
         }
 
-        // 4. Now that PHP is booted, allow WebView to render
-        DispatchQueue.main.async {
-            DeepLinkRouter.shared.markPhpReady()
-            AppState.shared.markReadyToLoad()
+        // 4. Now that PHP is booted, decide the boot transport (native-first).
+        // NATIVE_DIRECT: dispatch the start route straight into the persistent
+        // runtime — no WKWebView, no WebContent/Networking processes — and let
+        // the first published native tree dismiss the splash (honest first
+        // content; ContentView flips it via onChange(isActive)). WEB_LEGACY:
+        // byte-identical to the old flow.
+        let startPath = NativePHPApp.getStartURL()
+        let hasPendingDeepLink = DeepLinkRouter.shared.hasPendingURL()
+        let plan: BootPlanner.Entry = hasPendingDeepLink
+            ? .webLegacy // cold deep links keep the proven WebView path for now
+            : BootPlanner.plan(startPath: startPath)
+
+        switch plan {
+        case .nativeDirect:
+            DispatchQueue.main.async {
+                NSLog("TRACE[15]: native-direct boot — WebView withheld")
+                BootState.shared.webViewAllowed = false
+                DeepLinkRouter.shared.markPhpReady()
+                AppState.shared.markReadyToLoad()
+                // markInitialized deliberately NOT called here — the splash
+                // dismisses on first native content, or via the watchdog.
+            }
+            startNativeSession(startPath)
+            startFirstContentWatchdog()
+        case .webLegacy:
+            DispatchQueue.main.async {
+                NSLog("TRACE[15]: markPhpReady + markReadyToLoad + markInitialized on main thread")
+                DeepLinkRouter.shared.markPhpReady()
+                AppState.shared.markReadyToLoad()
+                AppState.shared.markInitialized()
+            }
         }
 
         // 5. Execute plugin initialization callbacks (on main thread)
@@ -97,14 +122,23 @@ struct NativePHPApp: App {
             NativePHPPluginRegistry.shared.executeOnAppLaunch()
         }
 
-        // 6. Start hot reload server for development
+        // 6. Reload handling + hot reload server. The coordinator must be
+        // registered before anything can post reloadWebViewNotification —
+        // HotReloadServer triggers (DEBUG) or AppUpdateManager after an OTA
+        // update (production) — and independently of the WebView, which a
+        // native-direct boot never mounts.
+        HotReloadCoordinator.shared.activate()
         #if DEBUG
         HotReloadServer.shared.start()
         #endif
 
-        // 7. Check for OTA updates (after everything is set up)
-        NSLog("[NativePHP] checkForUpdates START")
-        AppUpdateManager.shared.checkForUpdates()
+        // 7. OTA check commented out — parity with Android, where the boot-time
+        // Bifrost request was disabled for its network latency on cold boot.
+        // TODO: Re-enable on BOTH platforms together when OTA is ready for
+        // production, as an async check after first content — never on the
+        // boot path.
+        // NSLog("[NativePHP] checkForUpdates START")
+        // AppUpdateManager.shared.checkForUpdates()
 
         // 8. Defer queue worker boot — start AFTER critical path completes
         //    so it doesn't compete for CPU/memory during first page render
@@ -116,6 +150,74 @@ struct NativePHPApp: App {
         }
 
         NSLog("[NativePHP] Deferred initialization completed")
+    }
+
+    /// Native-first boot: dispatch the start route directly into the
+    /// persistent runtime (same entry hot reload uses — the iOS analog of
+    /// Android's executeNativeRoute). The dispatch blocks its queue for the
+    /// life of the native session; the eventual response is the session's
+    /// exit envelope: 3xx+Location = EXIT_WEB, 204 = hot-restart, else the
+    /// stack emptied.
+    private func startNativeSession(_ uri: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            NSLog("[NativeBoot] 🚀 Direct native dispatch: \(uri)")
+            let request = RequestData(
+                method: "GET",
+                uri: uri,
+                data: nil,
+                query: nil,
+                headers: [:]
+            )
+            let raw = PersistentPHPRuntime.shared.dispatch(request: request)
+            handleNativeSessionExit(raw)
+        }
+    }
+
+    private func handleNativeSessionExit(_ rawResponse: String) {
+        let head = rawResponse.components(separatedBy: "\r\n\r\n").first ?? rawResponse
+        let lines = head.components(separatedBy: "\r\n")
+        let status = lines.first?
+            .components(separatedBy: " ")
+            .dropFirst().first.flatMap { Int($0) } ?? 200
+        let location = lines
+            .first { $0.lowercased().hasPrefix("location:") }?
+            .components(separatedBy: ":").dropFirst().joined(separator: ":")
+            .trimmingCharacters(in: .whitespaces)
+
+        NSLog("[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
+
+        if (300...399).contains(status), let location, !location.isEmpty {
+            let path = location.hasPrefix("http") || location.hasPrefix("php:")
+                ? (URL(string: location)?.path ?? "/")
+                : location
+            DispatchQueue.main.async {
+                NSLog("[NativeBoot] ⇄ EXIT_WEB → \(path)")
+                BootState.shared.allowWebView(loading: path)
+                // Drop the native branch explicitly. The usual clearers can't
+                // run here: didCommit needs the WebView to load, but the
+                // WebView only MOUNTS once the native branch unmounts — and
+                // the region teardown may be preserve-tree'd. Without this
+                // the exit deadlocks on a frozen native screen.
+                NativeUIBridge.shared.isActive = false
+                AppState.shared.markInitialized()
+            }
+        }
+        // 204 = hot restart in flight (the reload path re-dispatches);
+        // anything else = the native stack emptied — iOS apps can't finish()
+        // themselves, so the splash-free native background simply remains.
+    }
+
+    /// A broken PHP boot in native-direct mode would otherwise wedge on the
+    /// splash forever (no WebView error page to fall back on). After 10s
+    /// without content, fall back to the legacy WebView path.
+    private func startFirstContentWatchdog() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            if !AppState.shared.isInitialized {
+                NSLog("[NativeBoot] ⏰ No content 10s after native boot — falling back to WebView")
+                BootState.shared.allowWebView(loading: nil)
+                AppState.shared.markInitialized()
+            }
+        }
     }
 
     var body: some Scene {
@@ -140,6 +242,12 @@ struct NativePHPApp: App {
                         }
                 }
             }
+            // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
+            // Driven by CADisplayLink via FrameTracker.shared. Sits on
+            // top of ContentView AND the splash so it's visible during
+            // boot / hot-reload too. Toggle off for production
+            // screenshots via FrameTracker.shared.enabled = false.
+            .perfOverlay()
             .animation(.easeInOut(duration: 0.3), value: appState.isInitialized)
             .onOpenURL { url in
                 // Only handle if not already handled by AppDelegate during cold start

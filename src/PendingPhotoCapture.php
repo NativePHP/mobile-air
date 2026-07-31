@@ -4,10 +4,20 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Native\Mobile\Concerns\HandlesNativeCallbacks;
+use Native\Mobile\Events\Camera\PermissionDenied;
+use Native\Mobile\Events\Camera\PhotoCancelled;
 use Native\Mobile\Events\Camera\PhotoTaken;
 
+/**
+ * @method $this photoTaken(\Closure|array|string $callback)
+ * @method $this photoCancelled(\Closure|array|string $callback)
+ * @method $this permissionDenied(\Closure|array|string $callback)
+ */
 class PendingPhotoCapture
 {
+    use HandlesNativeCallbacks;
+
     protected ?string $id = null;
 
     protected ?string $eventClass = null;
@@ -76,6 +86,16 @@ class PendingPhotoCapture
     public static function lastId(): ?string
     {
         return session('_native_photo_capture_id');
+    }
+
+    /**
+     * Failure events for a photo capture: cancellation and permission denial.
+     *
+     * @return array<int, class-string>
+     */
+    protected function failureEvents(): array
+    {
+        return [PhotoCancelled::class, PermissionDenied::class];
     }
 
     /**

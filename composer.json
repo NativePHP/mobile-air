@@ -22,7 +22,7 @@
         }
     ],
     "require": {
-        "php": "^8.3",
+        "php": "^8.4",
         "ext-dom": "*",
         "ext-simplexml": "*",
         "workerman/workerman": "^4.1",
@@ -47,10 +47,22 @@
         "phpstan/phpstan-phpunit": "^1.0",
         "spatie/laravel-ray": "^1.26"
     },
+    "suggest": {
+        "ext-zip": "Required by native:install to validate and extract the downloaded Android PHP binary archives"
+    },
+    "conflict": {
+        "nativephp/mobile-device": "*",
+        "nativephp/mobile-dialog": "*",
+        "nativephp/mobile-file": "*",
+        "nativephp/mobile-system": "*"
+    },
     "autoload": {
         "psr-4": {
             "Native\\Mobile\\": "src/"
-        }
+        },
+        "files": [
+            "src/helpers.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {
