@@ -228,12 +228,6 @@ struct TopBarActionComponent: Codable, Equatable {
             } else {
                 data = nil
             }
-        case "top_bar_group":
-            if let group = try? container.decode(TopBarGroup.self, forKey: .data) {
-                data = .group(group)
-            } else {
-                data = nil
-            }
         default:
             if let action = try? container.decode(TopBarAction.self, forKey: .data) {
                 data = .action(action)
@@ -252,8 +246,6 @@ struct TopBarActionComponent: Codable, Equatable {
             try container.encode(action, forKey: .data)
         case .section(let section):
             try container.encode(section, forKey: .data)
-        case .group(let group):
-            try container.encode(group, forKey: .data)
         case .none:
             try container.encodeNil(forKey: .data)
         }
@@ -270,13 +262,6 @@ struct TopBarAction: Codable, Equatable {
     let children: [TopBarActionComponent]?
 }
 
-struct TopBarGroup: Codable, Equatable {
-    let id: String
-    let icon: String
-    let label: String
-    let children: [TopBarActionComponent]?
-}
-
 struct TopBarSection: Codable, Equatable {
     let title: String
     let children: [TopBarActionComponent]?
@@ -284,7 +269,6 @@ struct TopBarSection: Codable, Equatable {
 
 enum TopBarActionData: Equatable {
     case action(TopBarAction)
-    case group(TopBarGroup)
     case section(TopBarSection)
 }
 

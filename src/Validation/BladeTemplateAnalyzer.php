@@ -12,7 +12,7 @@ class BladeTemplateAnalyzer
         'text', 'button', 'text_input', 'toggle', 'checkbox',
         'image', 'spacer', 'divider', 'progress_bar',
         'radio_group', 'radio', 'activity_indicator',
-        'top_bar', 'top_bar_group', 'top_bar_section', 'top_bar_action', 'bottom_nav', 'bottom_nav_item',
+        'top_bar', 'top_bar_action', 'bottom_nav', 'bottom_nav_item',
         'fab', 'horizontal_divider',
         'side_nav', 'side_nav_item', 'side_nav_group', 'side_nav_header',
     ];
@@ -31,7 +31,7 @@ class BladeTemplateAnalyzer
      */
     protected const CONTAINERS = [
         'column', 'row', 'stack', 'scroll_view', 'radio_group',
-        'top_bar', 'top_bar_group', 'top_bar_section', 'bottom_nav', 'side_nav', 'side_nav_group',
+        'top_bar', 'bottom_nav', 'side_nav', 'side_nav_group',
     ];
 
     /**
@@ -177,7 +177,6 @@ class BladeTemplateAnalyzer
     {
         return in_array($type, [
             'top_bar', 'bottom_nav', 'bottom_nav_item',
-            'top_bar_group', 'top_bar_section',
             'side_nav', 'side_nav_item', 'side_nav_group', 'side_nav_header',
             'top_bar_action', 'fab', 'horizontal_divider',
         ]);
