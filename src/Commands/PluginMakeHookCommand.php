@@ -61,7 +61,7 @@ class PluginMakeHookCommand extends Command
         }
 
         // Resolve relative paths
-        if (! str_starts_with($pluginPath, '/')) {
+        if (! $this->isAbsolutePath($pluginPath)) {
             $pluginPath = base_path($pluginPath);
         }
 
@@ -163,6 +163,18 @@ class PluginMakeHookCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Detect absolute paths on all platforms — Windows drive (C:\ or C:/) and
+     * UNC (\\server\share) paths would otherwise be treated as relative and
+     * wrongly prefixed with base_path().
+     */
+    protected function isAbsolutePath(string $path): bool
+    {
+        return str_starts_with($path, '/')          // unix
+            || str_starts_with($path, '\\\\')       // UNC \\server\share
+            || preg_match('/^[A-Za-z]:[\\\\\\/]/', $path) === 1; // C:\ or C:/
     }
 
     protected function selectPlugin(): ?string

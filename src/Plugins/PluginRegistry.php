@@ -85,6 +85,32 @@ class PluginRegistry implements IteratorAggregate
         return $this->all()->count();
     }
 
+    /**
+     * Get only system plugins (nativephp-plugin type).
+     */
+    public function systemPlugins(): Collection
+    {
+        return $this->all()->filter(fn (Plugin $p) => $p->isSystemPlugin());
+    }
+
+    /**
+     * Get only UI plugins (nativephp-ui-plugin type).
+     */
+    public function uiPlugins(): Collection
+    {
+        return $this->all()->filter(fn (Plugin $p) => $p->isUiPlugin());
+    }
+
+    /**
+     * Get all UI component declarations from all plugins.
+     */
+    public function components(): array
+    {
+        return $this->all()
+            ->flatMap(fn (Plugin $plugin) => $plugin->getComponents())
+            ->all();
+    }
+
     public function bridgeFunctions(): array
     {
         return $this->discovery->getAllBridgeFunctions();
@@ -186,6 +212,7 @@ class PluginRegistry implements IteratorAggregate
 
         $namespaces = [];
         $functionNames = [];
+        $componentTypes = [];
 
         foreach ($plugins as $plugin) {
             $ns = $plugin->getNamespace();
@@ -211,6 +238,19 @@ class PluginRegistry implements IteratorAggregate
                     ];
                 }
                 $functionNames[$name] = $plugin->name;
+            }
+
+            // Check component type collision
+            foreach ($plugin->getComponents() as $component) {
+                $compType = $component['type'];
+                if (isset($componentTypes[$compType])) {
+                    $conflicts[] = [
+                        'type' => 'component',
+                        'value' => $compType,
+                        'plugins' => [$componentTypes[$compType], $plugin->name],
+                    ];
+                }
+                $componentTypes[$compType] = $plugin->name;
             }
         }
 

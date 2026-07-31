@@ -5,17 +5,18 @@ namespace Native\Mobile\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Concerns\ChecksLatestBuildNumber;
+use Native\Mobile\Concerns\CleansEnvFile;
+use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\InstallsAppIcon;
+use Native\Mobile\Concerns\InstallsSplashScreen;
+use Native\Mobile\Concerns\ValidatesAppConfig;
+use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
 use Native\Mobile\Support\BundleFileManager;
-use Native\Mobile\Traits\ChecksLatestBuildNumber;
-use Native\Mobile\Traits\CleansEnvFile;
-use Native\Mobile\Traits\DisplaysMarketingBanners;
-use Native\Mobile\Traits\InstallsAppIcon;
-use Native\Mobile\Traits\InstallsSplashScreen;
-use Native\Mobile\Traits\ValidatesAppConfig;
 
 use function Laravel\Prompts\error;
 
@@ -47,6 +48,14 @@ class BuildIosAppCommand extends Command
 
     public function handle(): int|string
     {
+        // Building iOS apps needs Xcode and its command-line tools, so bail out
+        // early before we touch the build log or copy any files.
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            $this->error('native:build requires macOS — building iOS apps needs Xcode and its command-line tools.');
+
+            return Command::FAILURE;
+        }
+
         $this->basePath = base_path('nativephp/ios');
         $this->logPath = base_path('nativephp/ios-build.log');
 
@@ -96,7 +105,7 @@ class BuildIosAppCommand extends Command
         file_put_contents($this->appPath.'.env', PHP_EOL.'ASSET_URL="/_assets"'.PHP_EOL, FILE_APPEND);
 
         $this->components->task('Installing Composer dependencies', function () {
-            Process::path($this->appPath)
+            $result = Process::path($this->appPath)
                 ->forever()
                 ->run([
                     'composer',
@@ -109,6 +118,19 @@ class BuildIosAppCommand extends Command
                         $this->output->write($output);
                     }
                 });
+
+            if (! $result->successful()) {
+                $errorOutput = $result->errorOutput();
+                if ($errorOutput) {
+                    file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
+                }
+
+                error('Composer install failed. Check your dependencies and try again.');
+                file_put_contents($this->logPath, 'ERROR: composer install failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
+                exit(1);
+            }
+
+            return true;
         });
 
         $this->components->task('Removing unnecessary files', fn () => BundleFileManager::removeUnnecessaryFiles(
@@ -490,6 +512,9 @@ class BuildIosAppCommand extends Command
             // Handle UIBackgroundModes
             $this->updateBackgroundModes($rootDict, $plistData, $pushNotificationsEnabled);
 
+            // Handle UIUserInterfaceStyle
+            $this->updateInterfaceStyle($dom, $rootDict, $plistData);
+
             // Handle BIFROST_APP_ID
             $bifrostAppId = env('BIFROST_APP_ID');
             if ($bifrostAppId) {
@@ -654,6 +679,47 @@ class BuildIosAppCommand extends Command
     }
 
     /**
+     * Lock the app to a single interface style via UIUserInterfaceStyle.
+     *
+     * `nativephp.appearance` of `dark` / `light` pins the whole app —
+     * system chrome (nav bars, sheets, keyboards, the window background
+     * behind safe areas) included — so an app with a fixed identity never
+     * shows the OS's opposite-appearance surfaces. `system` (the default)
+     * removes the key and follows the device.
+     *
+     * @param  array<string, array{keyNode: \DOMElement, valueNode: \DOMElement}>  $plistData
+     */
+    private function updateInterfaceStyle(\DOMDocument $dom, \DOMElement $rootDict, array &$plistData): void
+    {
+        $style = match (strtolower((string) config('nativephp.appearance', 'system'))) {
+            'dark' => 'Dark',
+            'light' => 'Light',
+            default => null,
+        };
+
+        if ($style === null) {
+            if (isset($plistData['UIUserInterfaceStyle'])) {
+                $this->removePlistKeyValue(
+                    $rootDict,
+                    $plistData['UIUserInterfaceStyle']['keyNode'],
+                    $plistData['UIUserInterfaceStyle']['valueNode']
+                );
+                unset($plistData['UIUserInterfaceStyle']);
+            }
+
+            return;
+        }
+
+        if (isset($plistData['UIUserInterfaceStyle'])) {
+            $plistData['UIUserInterfaceStyle']['valueNode']->nodeValue = $style;
+
+            return;
+        }
+
+        $this->addPlistKeyValue($dom, $rootDict, 'UIUserInterfaceStyle', 'string', $style);
+    }
+
+    /**
      * Remove a plist key-value pair from the dict
      */
     private function removePlistKeyValue(\DOMElement $dict, \DOMElement $keyNode, \DOMElement $valueNode): void
@@ -800,15 +866,28 @@ class BuildIosAppCommand extends Command
         $escapedAppPath = escapeshellarg($this->appPath);
         $escapedZipPath = escapeshellarg($zipPath);
 
-        $command = $this->option('release')
-            ? "cd {$escapedAppPath} && zip -9 -r {$escapedZipPath} . -x '*.DS_Store' '*/.*'"
-            : "cd {$escapedAppPath} && zip -0 -r {$escapedZipPath} . -x '*.DS_Store' '*/.*'";
+        // Build-time-only artifacts that don't belong in the runtime bundle —
+        // mirrors the Android packer's exclusions (see PreparesBuild). Biggest
+        // win is the native project templates/headers under mobile/resources
+        // (~11 MB of Android C/PHP headers alone), which the runtime app never
+        // reads. The `vendor/*/vendor/...` glob also drops nested duplicates
+        // that slip in when a plugin ships its own vendor/ dir. In `zip`'s
+        // matcher `*` spans `/`, so each prefix excludes the whole subtree.
+        $excludes = "-x '*.DS_Store' '*/.*'"
+            ." 'vendor/nativephp/mobile/resources/*'"
+            ." 'vendor/*/vendor/nativephp/mobile/resources/*'"
+            ." 'vendor/nativephp/mobile/vendor/*'"
+            ." 'vendor/endroid/*'";
+
+        // -9 max compression for release; -0 (stored) in debug for faster
+        // build + boot at the cost of on-disk size.
+        $level = $this->option('release') ? '-9' : '-0';
+        $command = "cd {$escapedAppPath} && zip {$level} -r {$escapedZipPath} . {$excludes}";
 
         $result = Process::run($command);
 
         if (! $result->successful()) {
-            $error = trim($result->errorOutput()) ?: trim($result->output());
-            throw new \Exception('Failed to create ZIP file: '.($error ?: 'exit code '.$result->exitCode()));
+            throw new \Exception('Failed to create ZIP file');
         }
 
         $this->createBundledVersionFile($zipPath);
@@ -835,11 +914,21 @@ class BuildIosAppCommand extends Command
             }
         }
 
+        // Native-first boot manifest (mirrors Android PreparesBuild): the
+        // device-side BootPlanner matches the start URL against these patterns
+        // to decide whether the first screen dispatches directly into the
+        // persistent runtime (no WKWebView) or through the legacy WebView
+        // path. NATIVEPHP_BOOT_MODE=web forces the legacy path.
+        $nativeRoutes = array_keys(NativeRouter::registeredRoutes());
+        $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
+
         $bundleMeta = json_encode([
             'version' => $appVersion,
             'version_code' => $versionCode,
             'bifrost_app_id' => $bifrostAppId,
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+            'entry_mode' => $entryMode,
+            'native_routes' => $nativeRoutes,
         ], JSON_PRETTY_PRINT);
 
         file_put_contents(dirname($zipPath).'/bundle_meta.json', $bundleMeta);
@@ -1094,9 +1183,8 @@ class BuildIosAppCommand extends Command
     {
         $plugins = app(PluginRegistry::class);
 
-        if ($plugins->count() === 0) {
-            return true;
-        }
+        // Always compile, even with zero plugins — the compiler regenerates the
+        // registration files with empty stubs so stale plugin references never build.
 
         // Validate plugin secrets before compilation
         $secretsValidator = new PluginSecretsValidator($plugins->all());

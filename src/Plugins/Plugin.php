@@ -10,7 +10,8 @@ class Plugin
         public readonly string $path,
         public readonly PluginManifest $manifest,
         public readonly string $description = '',
-        public readonly ?string $serviceProvider = null
+        public readonly ?string $serviceProvider = null,
+        public readonly string $composerType = 'nativephp-plugin'
     ) {}
 
     public function getNamespace(): string
@@ -28,9 +29,38 @@ class Plugin
         return $this->manifest->bridgeFunctions;
     }
 
+    public function getComponents(): array
+    {
+        return $this->manifest->components;
+    }
+
+    public function isUiPlugin(): bool
+    {
+        return $this->composerType === 'nativephp-ui-plugin';
+    }
+
+    public function isSystemPlugin(): bool
+    {
+        return $this->composerType === 'nativephp-plugin';
+    }
+
     public function getAndroidPermissions(): array
     {
         return $this->manifest->android['permissions'] ?? [];
+    }
+
+    /**
+     * Extra ProGuard/R8 rules this plugin needs in minified builds, declared
+     * as `android.proguard_rules` in nativephp.json. Keep rules for the
+     * plugin's own classes are generated automatically from its Kotlin
+     * package declarations — this is for dependency quirks the compiler
+     * can't infer (e.g. `-dontwarn` for a library's optional reflection).
+     *
+     * @return list<string>
+     */
+    public function getAndroidProguardRules(): array
+    {
+        return $this->manifest->android['proguard_rules'] ?? [];
     }
 
     public function getIosInfoPlist(): array
@@ -116,6 +146,19 @@ class Plugin
     public function getAndroidRepositories(): array
     {
         return $this->manifest->android['repositories'] ?? [];
+    }
+
+    /**
+     * Gradle plugins this plugin needs declared in the root build.gradle.kts
+     * plugins {} block, as `android.gradle_plugins` in nativephp.json.
+     * Each entry: ['id' => string, 'version' => string, 'apply' => bool (default false)].
+     * `apply => false` puts the plugin on the build classpath only, so the
+     * app module can apply it conditionally (e.g. google-services when a
+     * google-services.json is present).
+     */
+    public function getAndroidGradlePlugins(): array
+    {
+        return $this->manifest->android['gradle_plugins'] ?? [];
     }
 
     public function getAndroidFeatures(): array
