@@ -99,6 +99,14 @@ class IOSPluginCompiler
         // Run pre-compile hooks
         $hookRunner->runPreCompileHooks();
 
+        // The generated plugin tree is fully derived from the installed
+        // plugins, so start from a clean slate. Copying over the previous
+        // output would leave stale files behind when a plugin deletes or
+        // renames a source file (or is removed entirely), producing
+        // duplicate-symbol build failures in Xcode.
+        $this->clean();
+        $this->files->ensureDirectoryExists($this->generatedPath);
+
         // Get plugins with iOS code (for copying files)
         $pluginsWithCode = $allPlugins->filter(fn (Plugin $p) => $p->hasIosCode());
 
@@ -119,31 +127,44 @@ class IOSPluginCompiler
             return ! empty($p->getIosInfoPlist()) || ! empty($p->getIosDependencies());
         });
 
+        // Check for plugins with iOS UI component renderers
+        $pluginsWithRenderers = $allPlugins->filter(function (Plugin $p) {
+            foreach ($p->getComponents() as $component) {
+                if (! empty($component['ios_renderer'])) {
+                    return true;
+                }
+            }
+
+            return false;
+        });
+
         // The app may declare per-locale permission strings without depending on
         // any plugin shipping iOS data — keep going past the early return below
         // so writeInfoPlistLocalizations() can run on app config alone.
         $hasAppLocalizations = ! empty($this->getAppInfoPlistLocalizations());
 
-        // If no plugins have any iOS-related data, generate empty registration
+        // If no plugins have any iOS-related data, generate empty registrations
         if (
             $pluginsWithCode->isEmpty()
             && $pluginsWithFunctions->isEmpty()
             && $pluginsWithIosData->isEmpty()
+            && $pluginsWithRenderers->isEmpty()
             && ! $hasAppLocalizations
         ) {
             $this->generateEmptyRegistration();
+            $this->generateEmptyRendererRegistration();
 
             return;
         }
-
-        // Ensure generated directory exists
-        $this->files->ensureDirectoryExists($this->generatedPath);
 
         // Copy plugin source files
         $pluginsWithCode->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));
 
         // Generate the registration file (uses all plugins, filters for iOS functions internally)
         $this->generateBridgeFunctionRegistration($allPlugins);
+
+        // Generate UI plugin renderer registration
+        $this->generateRendererRegistration($allPlugins);
 
         // Merge Info.plist entries (for any plugins with iOS permissions)
         $this->mergeInfoPlistEntries($allPlugins);
@@ -299,6 +320,59 @@ class IOSPluginCompiler
         $content = Stub::make('ios/PluginBridgeFunctionRegistration.empty.swift.stub')->render();
 
         $this->files->put($this->generatedPath.'/PluginBridgeFunctionRegistration.swift', $content);
+    }
+
+    /**
+     * Generate PluginRendererRegistration.swift for UI plugin renderers
+     */
+    protected function generateRendererRegistration(Collection $plugins): void
+    {
+        $registrations = [];
+
+        foreach ($plugins as $plugin) {
+            foreach ($plugin->getComponents() as $component) {
+                if (empty($component['ios_renderer'])) {
+                    continue;
+                }
+
+                $registrations[] = [
+                    'type' => $component['type'],
+                    'renderer' => $component['ios_renderer'],
+                    'plugin' => $plugin->name,
+                ];
+            }
+        }
+
+        if (empty($registrations)) {
+            $this->generateEmptyRendererRegistration();
+
+            return;
+        }
+
+        $registerCalls = collect($registrations)
+            ->map(function ($reg) {
+                return "    // Plugin: {$reg['plugin']}\n    SwiftUIRendererRegistry.shared.register(\"{$reg['type']}\") { AnyView({$reg['renderer']}(node: \$0)) }";
+            })
+            ->implode("\n\n");
+
+        $content = Stub::make('ios/PluginRendererRegistration.swift.stub')
+            ->replace('REGISTRATIONS', $registerCalls)
+            ->render();
+
+        $path = $this->generatedPath.'/PluginRendererRegistration.swift';
+        $this->files->put($path, $content);
+    }
+
+    /**
+     * Generate empty renderer registration when no UI plugins
+     */
+    protected function generateEmptyRendererRegistration(): void
+    {
+        $this->files->ensureDirectoryExists($this->generatedPath);
+
+        $content = Stub::make('ios/PluginRendererRegistration.empty.swift.stub')->render();
+
+        $this->files->put($this->generatedPath.'/PluginRendererRegistration.swift', $content);
     }
 
     /**

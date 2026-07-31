@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
-use Native\Mobile\Traits\RunsAndroid;
+use Native\Mobile\Concerns\RunsAndroid;
 use Tests\TestCase;
 
 class AndroidBuildIntegrationTest extends TestCase

@@ -192,7 +192,11 @@ class PluginRegisterCommand extends Command
             return self::FAILURE;
         }
 
-        $content = preg_replace_callback($pattern, function ($matches) use ($serviceProvider) {
+        // Preserve the provider file's existing line endings (CRLF on typical
+        // Windows checkouts) so we don't splice in mixed EOLs
+        $eol = str_contains($content, "\r\n") ? "\r\n" : "\n";
+
+        $content = preg_replace_callback($pattern, function ($matches) use ($serviceProvider, $eol) {
             $before = $matches[1];
             $existing = $matches[2];
             $after = $matches[3];
@@ -207,10 +211,10 @@ class PluginRegisterCommand extends Command
 
             if ($isPlaceholder) {
                 // Empty or only has placeholder comment - replace with plugin
-                $newContent = "\n            \\{$serviceProvider}::class,\n        ";
+                $newContent = "{$eol}            \\{$serviceProvider}::class,{$eol}        ";
             } else {
                 // Has existing plugins - append
-                $newContent = rtrim($existing, " \t\n")."\n            \\{$serviceProvider}::class,\n        ";
+                $newContent = rtrim($existing, " \t\r\n").$eol."            \\{$serviceProvider}::class,{$eol}        ";
             }
 
             return $before.$newContent.$after;
@@ -233,13 +237,17 @@ class PluginRegisterCommand extends Command
         }
 
         // Remove the plugin line (handles both ::class format)
+        // \r?\n? keeps the tail EOL-agnostic for CRLF files on Windows checkouts
         $escapedProvider = preg_quote($serviceProvider, '/');
-        $pattern = "/\s*\\\\?{$escapedProvider}::class,?\n?/";
+        $pattern = "/\s*\\\\?{$escapedProvider}::class,?\r?\n?/";
 
-        $content = preg_replace($pattern, "\n", $content);
+        // Preserve the provider file's existing line endings (see addPlugin)
+        $eol = str_contains($content, "\r\n") ? "\r\n" : "\n";
 
-        // Clean up any double newlines in the array
-        $content = preg_replace('/(\[\s*)\n\n+/', "$1\n", $content);
+        $content = preg_replace($pattern, $eol, $content);
+
+        // Clean up any double newlines in the array (CRLF-aware)
+        $content = preg_replace('/(\[\s*)(?:\r?\n){2,}/', '$1'.$eol, $content);
 
         $this->files->put($providerPath, $content);
 

@@ -82,6 +82,15 @@ dependencies {
 }'
         );
 
+        // Create minimal root build.gradle.kts (target for gradle plugin injection)
+        $this->files->put(
+            $this->testBasePath.'/android/build.gradle.kts',
+            'plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+}'
+        );
+
         $this->compiler = new AndroidPluginCompiler(
             $this->files,
             $this->mockRegistry,
@@ -259,6 +268,31 @@ object TestFunctions {
         $copiedPath = $this->testBasePath.'/android/app/src/main/java/com/test/plugin/TestFunctions.kt';
 
         $this->assertFileExists($copiedPath);
+    }
+
+    /**
+     * @test
+     *
+     * Fallback copies under bridge/plugins from a plugin that is no longer
+     * installed must be removed — a stale copy re-declares its classes and
+     * breaks the Gradle build.
+     */
+    public function it_prunes_stale_generated_plugin_copies(): void
+    {
+        $staleDir = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/removed_plugin';
+        $this->files->ensureDirectoryExists($staleDir);
+        $this->files->put($staleDir.'/Zombie.kt', 'class Zombie {}');
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect());
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryDoesNotExist($staleDir);
+        $this->assertFileExists(
+            $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt'
+        );
     }
 
     /**
@@ -1105,6 +1139,159 @@ object TestFunctions {
     /**
      * Helper method to create a test Plugin instance.
      */
+    /**
+     * @test
+     *
+     * A plugin's android.gradle_plugins should be declared in the root
+     * build.gradle.kts plugins {} block, defaulting to apply false.
+     */
+    public function it_declares_plugin_gradle_plugins_in_root_build_file(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/build.gradle.kts');
+
+        $this->assertStringContainsString('// BEGIN nativephp-plugin-gradle-plugins', $content);
+        $this->assertStringContainsString('id("com.google.gms.google-services") version "4.4.3" apply false', $content);
+        $this->assertStringContainsString('// END nativephp-plugin-gradle-plugins', $content);
+
+        // Declaration must land inside the plugins {} block
+        $this->assertMatchesRegularExpression(
+            '/plugins\s*\{.*id\("com\.google\.gms\.google-services"\).*\n\}/s',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Recompiling must not duplicate gradle plugin declarations.
+     */
+    public function it_does_not_duplicate_gradle_plugin_declarations(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/build.gradle.kts');
+
+        $this->assertEquals(1, substr_count($content, 'id("com.google.gms.google-services")'));
+    }
+
+    /**
+     * @test
+     *
+     * Removing a plugin must clear its gradle plugin declaration on the
+     * next compile.
+     */
+    public function it_clears_gradle_plugin_declarations_when_plugin_removed(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        // Recompile with the plugin removed
+        $emptyRegistry = Mockery::mock(PluginRegistry::class);
+        $emptyRegistry->shouldReceive('detectConflicts')->andReturn([]);
+        $emptyRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        (new AndroidPluginCompiler($this->files, $emptyRegistry, $this->testBasePath))->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/build.gradle.kts');
+
+        $this->assertStringNotContainsString('com.google.gms.google-services', $content);
+    }
+
+    /**
+     * @test
+     *
+     * A gradle plugin id already declared outside the marker block (e.g.
+     * hand-added by the developer) must not be declared a second time.
+     */
+    public function it_skips_gradle_plugins_already_declared_outside_markers(): void
+    {
+        $rootPath = $this->testBasePath.'/android/build.gradle.kts';
+        $this->files->put(
+            $rootPath,
+            'plugins {
+    alias(libs.plugins.android.application) apply false
+    id("com.google.gms.google-services") version "4.4.0" apply false
+}'
+        );
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($rootPath);
+
+        $this->assertEquals(1, substr_count($content, 'id("com.google.gms.google-services")'));
+        $this->assertStringContainsString('version "4.4.0"', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Malformed gradle plugin declarations (missing version, id with
+     * characters that could inject Kotlin) are skipped.
+     */
+    public function it_skips_invalid_gradle_plugin_declarations(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.example.missing-version'],
+                    ['id' => 'bad") ; System.exit(0) //', 'version' => '1.0.0'],
+                    ['id' => 'com.example.valid', 'version' => '2.0.0', 'apply' => true],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/build.gradle.kts');
+
+        $this->assertStringNotContainsString('missing-version', $content);
+        $this->assertStringNotContainsString('System.exit', $content);
+        $this->assertStringContainsString('id("com.example.valid") version "2.0.0" apply true', $content);
+    }
+
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin
     {
         $defaultData = [

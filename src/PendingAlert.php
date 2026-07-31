@@ -4,12 +4,21 @@ namespace Native\Mobile;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Native\Mobile\Concerns\HandlesNativeCallbacks;
+use Native\Mobile\Events\Alert\ButtonPressed;
 
+/**
+ * @method $this buttonPressed(\Closure|array|string $callback)
+ */
 class PendingAlert
 {
+    use HandlesNativeCallbacks;
+
+    public const BUTTON_STYLES = ['default', 'cancel', 'destructive'];
+
     protected ?string $id = null;
 
-    protected ?string $eventClass = null;
+    protected ?string $eventClass = ButtonPressed::class;
 
     protected bool $shown = false;
 
@@ -17,7 +26,40 @@ class PendingAlert
         protected string $title,
         protected string $message,
         protected array $buttons = []
-    ) {}
+    ) {
+        $this->buttons = array_map(
+            fn ($button) => $this->normalizeButton($button),
+            array_values($buttons)
+        );
+    }
+
+    /**
+     * Buttons may be plain strings ("Delete") or arrays with a style:
+     * ['label' => 'Delete', 'style' => 'destructive']. Strings stay strings
+     * on the wire so older app shells keep working unchanged.
+     */
+    protected function normalizeButton(mixed $button): string|array
+    {
+        if (is_string($button)) {
+            return $button;
+        }
+
+        if (! is_array($button) || ! is_string($button['label'] ?? null)) {
+            throw new InvalidArgumentException(
+                'Alert buttons must be strings or arrays with a string "label" key'
+            );
+        }
+
+        $style = $button['style'] ?? 'default';
+
+        if (! in_array($style, self::BUTTON_STYLES, true)) {
+            throw new InvalidArgumentException(
+                'Alert button style must be one of: '.implode(', ', self::BUTTON_STYLES)
+            );
+        }
+
+        return ['label' => $button['label'], 'style' => $style];
+    }
 
     /**
      * Set a unique identifier for this alert to correlate button press events.

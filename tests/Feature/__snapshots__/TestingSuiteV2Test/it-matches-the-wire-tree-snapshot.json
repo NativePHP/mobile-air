@@ -1,0 +1,58 @@
+{
+    "type": "column",
+    "children": [
+        {
+            "type": "text",
+            "props": {
+                "text": "Count: 0"
+            }
+        },
+        {
+            "type": "text",
+            "props": {
+                "text": "Doubled: 0"
+            }
+        },
+        {
+            "type": "text",
+            "props": {
+                "text": "Query: "
+            }
+        },
+        {
+            "type": "button",
+            "props": {
+                "label": "Increment"
+            },
+            "on_press": "@increment",
+            "ref": "increment-btn"
+        },
+        {
+            "type": "button",
+            "props": {
+                "label": "Add five"
+            },
+            "on_press": "@add(5)"
+        },
+        {
+            "type": "button",
+            "props": {
+                "label": "Open detail"
+            },
+            "on_press": "@openDetail"
+        },
+        {
+            "type": "toggle",
+            "props": {
+                "on_change": "@setEnabled"
+            }
+        },
+        {
+            "type": "text_input",
+            "props": {
+                "on_change": "@__syncProperty('query')"
+            },
+            "ref": "query-input"
+        }
+    ]
+}

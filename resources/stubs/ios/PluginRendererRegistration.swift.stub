@@ -1,0 +1,8 @@
+import SwiftUI
+
+// AUTO-GENERATED FILE - DO NOT EDIT
+// Generated from installed NativePHP UI plugins
+
+func registerPluginRenderers() {
+{{ REGISTRATIONS }}
+}

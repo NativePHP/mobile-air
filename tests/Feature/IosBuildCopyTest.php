@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
 use Tests\TestCase;
@@ -53,7 +54,8 @@ class IosBuildCopyTest extends TestCase
         $paths = BundleFileManager::excludes();
 
         foreach (['*.md', 'LICENSE*', 'docs', '*.yml', '*.yaml', '*.neon', '*.neon.dist'] as $pattern) {
-            $this->assertContains($pattern, $paths);
+            $this->assertContains('vendor/**/'.$pattern, $paths);
+            $this->assertNotContains($pattern, $paths);
         }
     }
 
@@ -63,11 +65,13 @@ class IosBuildCopyTest extends TestCase
 
         $anchored = array_filter($paths, fn ($p) => str_starts_with($p, '/'));
         $anyDepth = array_filter($paths, fn ($p) => ! str_starts_with($p, '/') && ! str_starts_with($p, 'vendor/'));
+        $vendorScoped = array_filter($paths, fn ($p) => str_starts_with($p, 'vendor/'));
 
         $this->assertNotEmpty($anchored);
         $this->assertNotEmpty($anyDepth);
         $this->assertContains('node_modules', $anyDepth);
         $this->assertContains('/nativephp', $anchored);
+        $this->assertContains('vendor/**/*.md', $vendorScoped);
     }
 
     public function test_export_ignore_returns_empty_when_no_vendor_dir(): void
@@ -181,12 +185,12 @@ class IosBuildCopyTest extends TestCase
         Process::assertRan(function ($process) {
             $cmd = $process->command;
 
-            return str_contains($cmd, "--exclude='*.md'")
-                && str_contains($cmd, "--exclude='LICENSE*'")
-                && str_contains($cmd, "--exclude='docs'")
-                && str_contains($cmd, "--exclude='*.yml'")
-                && str_contains($cmd, "--exclude='*.yaml'")
-                && str_contains($cmd, "--exclude='*.neon'")
+            return str_contains($cmd, "--exclude='vendor/**/*.md'")
+                && str_contains($cmd, "--exclude='vendor/**/LICENSE*'")
+                && str_contains($cmd, "--exclude='vendor/**/docs'")
+                && str_contains($cmd, "--exclude='vendor/**/*.yml'")
+                && str_contains($cmd, "--exclude='vendor/**/*.yaml'")
+                && str_contains($cmd, "--exclude='vendor/**/*.neon'")
                 && str_contains($cmd, "--exclude='vendor/*/*/vendor'");
         });
     }
@@ -205,6 +209,52 @@ class IosBuildCopyTest extends TestCase
                 && str_contains($cmd, "--exclude='/storage/framework'")
                 && str_contains($cmd, "--exclude='/bootstrap/cache/*'");
         });
+    }
+
+    /**
+     * The vendor slimming patterns must only match inside vendor packages.
+     * An unanchored *.md or *.yaml exclude silently strips the app's own
+     * resources, and string-matching the rsync flags never caught it,
+     * so this test stages a real tree and asserts the outcome.
+     */
+    public function test_copy_strips_vendor_docs_but_preserves_app_files(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Behavioral rsync test requires a Unix-like OS.');
+        }
+
+        $source = $this->testProjectPath.'/app-source/';
+        $this->createDirectoryStructure($source, [
+            'resources' => ['keep.md' => '# keep'],
+            'config' => ['keep.yaml' => 'keep: true'],
+            'docs' => ['index.md' => '# app docs'],
+            'app' => ['Models' => ['User.php' => '<?php']],
+            'vendor' => ['acme' => ['pkg' => [
+                'README.md' => '# strip',
+                'LICENSE' => 'MIT',
+                'phpstan.neon' => 'includes: []',
+                'docs' => ['guide.md' => '# strip'],
+                'src' => ['Pkg.php' => '<?php', 'deep' => ['notes.md' => '# strip']],
+            ]]],
+        ]);
+
+        $destination = $this->testProjectPath.'/bundle';
+
+        BundleFileManager::copy($source, $destination);
+
+        // The app's own markdown, yaml and docs survive the copy.
+        $this->assertFileExists($destination.'/resources/keep.md');
+        $this->assertFileExists($destination.'/config/keep.yaml');
+        $this->assertFileExists($destination.'/docs/index.md');
+        $this->assertFileExists($destination.'/app/Models/User.php');
+
+        // Vendor non-runtime files are stripped at any depth.
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/README.md');
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/LICENSE');
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/phpstan.neon');
+        $this->assertDirectoryDoesNotExist($destination.'/vendor/acme/pkg/docs');
+        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/src/deep/notes.md');
+        $this->assertFileExists($destination.'/vendor/acme/pkg/src/Pkg.php');
     }
 
     public function test_remove_deletes_standard_directories(): void
@@ -359,21 +409,6 @@ class IosBuildCopyTest extends TestCase
         }
     }
 
-    /**
-     * Copy delegates to an external process (rsync/robocopy) so PHP never
-     * loads the file tree into memory.
-     */
-    public function test_copy_delegates_to_external_process_not_php_iterator(): void
-    {
-        $source = file_get_contents(
-            (new \ReflectionMethod(BundleFileManager::class, 'copyWithRsync'))->getFileName()
-        );
-
-        $this->assertStringContainsString('Process::run', $source);
-        $this->assertStringNotContainsString('RecursiveIteratorIterator', $source);
-        $this->assertStringNotContainsString('RecursiveDirectoryIterator', $source);
-    }
-
     public function test_excluded_paths_includes_config_cleanup_exclude_files(): void
     {
         $paths = BundleFileManager::excludes([
@@ -498,5 +533,21 @@ class IosBuildCopyTest extends TestCase
         $this->createDirectoryStructure($appPath, $structure);
 
         return $appPath;
+    }
+
+    public function test_ios_bundle_delegates_exclusions_to_bundle_file_manager(): void
+    {
+        // Regression guard. The iOS build must route its copy and cleanup
+        // through BundleFileManager so config('nativephp.cleanup_exclude_files')
+        // is honoured. A prior change reverted this to an inline directory
+        // iterator that ignored the config, and the suite stayed green
+        // because nothing asserted the command uses BundleFileManager.
+        $source = file_get_contents(
+            (new \ReflectionClass(BuildIosAppCommand::class))->getFileName()
+        );
+
+        $this->assertStringContainsString('BundleFileManager::copy(', $source);
+        $this->assertStringContainsString('BundleFileManager::removeUnnecessaryFiles(', $source);
+        $this->assertStringNotContainsString('RecursiveDirectoryIterator', $source);
     }
 }

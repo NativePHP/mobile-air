@@ -117,6 +117,29 @@ if (($_SERVER['HTTP_UPGRADE'] ?? '') === 'websocket') {
     exit;
 }
 
+// Handle deep link redirect — camera scans HTTP URL, browser redirects to jump:// app
+if ($path === '/jump/open') {
+    $deepLink = "jump://connect?host={$displayHost}&port={$httpPort}";
+    $appName = getenv('APP_NAME') ?: 'Laravel';
+    header('Content-Type: text/html; charset=UTF-8');
+    echo <<<HTML
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Opening {$appName} in Jump...</title>
+<script>window.location.href = "{$deepLink}";</script>
+</head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#111;color:#fff;text-align:center">
+<div>
+<h2>Opening in Jump...</h2>
+<p style="color:#888">If the app doesn't open, <a href="{$deepLink}" style="color:#8B5CF6">tap here</a>.</p>
+<p style="color:#666;font-size:14px;margin-top:24px">Don't have Jump? <a href="https://apps.apple.com/app/jump/id6738194400" style="color:#8B5CF6">Download for iOS</a></p>
+</div>
+</body></html>
+HTML;
+    exit;
+}
+
 // Handle info endpoint
 if ($path === '/jump/info') {
     header('Content-Type: application/json');
@@ -129,6 +152,9 @@ if ($path === '/jump/info') {
         'app_name' => getenv('APP_NAME') ?: 'Laravel',
         'version' => '1.0.0',
         'type' => 'nativephp-server',
+        // How the client should render this app: 'native-ui' (stream Element.*
+        // frames) or 'webview' (forward HTTP responses). Set by JumpCommand.
+        'ui' => getenv('JUMP_APP_UI') ?: 'native-ui',
     ];
 
     // Include WebSocket port for hybrid mode
@@ -1148,6 +1174,12 @@ function patchViteClient(string $body): string
  */
 function proxyToLaravel($laravelPort)
 {
+    // The router process waits (via cURL below) for the proxied response. For a
+    // native UI route that wait lasts the whole screen lifetime, so the router
+    // script must not be killed by its own execution-time limit — otherwise it
+    // dies ~30s in, closes the proxy connection, and the native app freezes.
+    @set_time_limit(0);
+
     $method = $_SERVER['REQUEST_METHOD'];
     $uri = $_SERVER['REQUEST_URI'];
     $laravelUrl = "http://127.0.0.1:{$laravelPort}{$uri}";
@@ -1188,11 +1220,17 @@ function proxyToLaravel($laravelPort)
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-    // Generous transfer timeout — PHP's built-in server is single-threaded,
-    // so a cold first request (opcache empty, Inertia/Wayfinder boot) can
-    // easily exceed 30s on Windows + Herd. JumpCommand pre-warms Laravel
-    // before printing the QR, but keep headroom here for slow handlers.
-    curl_setopt($ch, CURLOPT_TIMEOUT, 90);
+    // No total-request timeout: a native UI route (`Route::native`) holds its
+    // `GET /` open for the ENTIRE lifetime of the screen — the PHP runloop
+    // blocks in `nativephp_element_wait_event()` between interactions and only
+    // returns when the screen exits. A finite timeout here (was 30s) cuts off
+    // that long-lived request mid-session, killing the native app exactly 30s
+    // in regardless of activity. An unbounded timeout also subsumes the slow
+    // cold-first-request case (single-threaded PHP built-in server on Windows +
+    // Herd, opcache empty, Inertia/Wayfinder boot) that a finite cap risked
+    // clipping. The connect timeout still guards against the Laravel server
+    // being down; only the total duration is unbounded.
+    curl_setopt($ch, CURLOPT_TIMEOUT, 0);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
 
     if ($body !== null) {

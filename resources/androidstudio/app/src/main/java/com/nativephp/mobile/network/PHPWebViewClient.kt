@@ -121,7 +121,7 @@ class PHPWebViewClient(
                     method = "GET",
                     body = "",
                     headers = mapOf("Accept" to "*/*"),
-                    queryString = Uri.parse(url).encodedQuery ?: ""
+                    getParameters = emptyMap()
                 )
 
                 val response = phpBridge.handleLaravelRequest(phpRequest)
@@ -183,7 +183,9 @@ class PHPWebViewClient(
             method = request.method,
             body = if (method in listOf("POST", "PUT", "PATCH")) postData ?: "" else "",
             headers = headers,
-            queryString = request.url.encodedQuery ?: ""
+            getParameters = request.url.queryParameterNames?.associateWith {
+                request.url.getQueryParameter(it) ?: ""
+            } ?: emptyMap()
         )
 
         val prepTime = System.currentTimeMillis() - requestStart
@@ -199,15 +201,16 @@ class PHPWebViewClient(
         val parseTime = System.currentTimeMillis() - parseStart
         Log.d("PerfTiming", "⏱️ WEBCLIENT [$path] prep=${prepTime}ms php=${phpTime}ms parse=${parseTime}ms")
 
-        // ✅ Handle Set-Cookie headers
+        // ✅ Handle Set-Cookie headers (jar mirror is gated; parseResponse
+        // already stored them in LaravelCookieStore)
         responseHeaders.entries
             .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
             .forEach { (_, value) ->
                 Log.d(TAG, "🍪 Setting cookie from response: $value")
-                CookieManager.getInstance().setCookie("http://127.0.0.1", value)
+                com.nativephp.mobile.security.WebCookieMirror.set(value)
             }
 
-        CookieManager.getInstance().flush()
+        com.nativephp.mobile.security.WebCookieMirror.flush()
 
         // ✅ Handle redirects
         if (statusCode in 300..399) {
@@ -215,12 +218,7 @@ class PHPWebViewClient(
             if (!location.isNullOrEmpty()) {
                 val redirectUrl = when {
                     location.startsWith("/") -> location
-                    location.startsWith("http") -> {
-                        val parsedUri = Uri.parse(location)
-                        val path = parsedUri.encodedPath ?: "/"
-                        val query = parsedUri.encodedQuery
-                        if (!query.isNullOrEmpty()) "$path?$query" else path
-                    }
+                    location.startsWith("http") -> Uri.parse(location).encodedPath ?: "/"
                     else -> "/$location"
                 }
 
@@ -306,17 +304,146 @@ class PHPWebViewClient(
            .flatMap { it.value.split("\n") }
            .forEach { cookie ->
                LaravelCookieStore.storeFromSetCookieHeader(cookie)
-               CookieManager.getInstance().setCookie("http://127.0.0.1", cookie)
+               com.nativephp.mobile.security.WebCookieMirror.set(cookie)
                Log.d(TAG, "🍪 Stored cookie from Set-Cookie header: $cookie")
            }
 
-       CookieManager.getInstance().flush()
+       com.nativephp.mobile.security.WebCookieMirror.flush()
        LaravelCookieStore.logAll()
 
        return Triple(headers, body.trim(), statusCode)
    }
 
 
+
+    /**
+     * Jump webview-forward: proxy a 127.0.0.1 request (page or asset) to the
+     * remote Jump dev server over the LAN and wrap its response for the
+     * WebView. Mirrors iOS `PHPSchemeHandler.forwardToRemote`, plus binary
+     * bodies (bytes end-to-end, so images/fonts work).
+     *
+     * Runs on the WebView's intercept thread (network allowed). Remote
+     * Set-Cookies are persisted through the same stores as the local path
+     * (LaravelCookieStore + WebCookieMirror) so Livewire sessions/CSRF
+     * survive across forwards. Redirects are followed manually (max 5) as
+     * GETs because WebResourceResponse rejects 3xx status codes outright.
+     */
+    fun forwardToRemote(request: WebResourceRequest, postData: String?): WebResourceResponse {
+        val remoteHost = JumpWebViewSession.host
+        val remotePort = JumpWebViewSession.port
+        val path = request.url.encodedPath ?: "/"
+        val query = request.url.encodedQuery
+        var urlString = "http://$remoteHost:$remotePort$path" +
+            if (query.isNullOrEmpty()) "" else "?$query"
+        var method = request.method.uppercase()
+        var body: String? = postData
+
+        try {
+            var redirects = 0
+            while (true) {
+                val conn = java.net.URL(urlString).openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = method
+                conn.connectTimeout = 10_000
+                conn.readTimeout = 15_000
+                // Manual redirect handling: HttpURLConnection won't reliably
+                // convert POST→GET across a 302, and WebResourceResponse
+                // rejects 3xx codes, so we must resolve them here either way.
+                conn.instanceFollowRedirects = false
+                for ((k, v) in request.requestHeaders) {
+                    val lk = k.lowercase()
+                    // Skip hop-by-hop headers the stack owns. Dropping
+                    // accept-encoding makes the platform handle gzip
+                    // transparently, so the body arrives decoded.
+                    if (lk == "host" || lk == "content-length" || lk == "accept-encoding") continue
+                    conn.setRequestProperty(k, v)
+                }
+                conn.setRequestProperty("Cookie", LaravelCookieStore.asCookieHeader())
+
+                if (method in listOf("POST", "PUT", "PATCH") && body != null) {
+                    conn.doOutput = true
+                    conn.outputStream.use { it.write(body!!.toByteArray()) }
+                }
+
+                val status = conn.responseCode
+
+                // Persist remote session cookies exactly like the local path.
+                conn.headerFields.entries
+                    .filter { it.key?.equals("Set-Cookie", ignoreCase = true) == true }
+                    .flatMap { it.value }
+                    .forEach { v ->
+                        LaravelCookieStore.storeFromSetCookieHeader(v)
+                        com.nativephp.mobile.security.WebCookieMirror.set(v)
+                    }
+                com.nativephp.mobile.security.WebCookieMirror.flush()
+
+                if (status in 300..399 && redirects < 5) {
+                    val location = conn.getHeaderField("Location") ?: break
+                    urlString = when {
+                        location.startsWith("http") -> {
+                            // Rebind absolute redirects onto the dev server —
+                            // the remote app believes it lives at 127.0.0.1.
+                            val u = Uri.parse(location)
+                            "http://$remoteHost:$remotePort${u.encodedPath ?: "/"}" +
+                                if (u.encodedQuery.isNullOrEmpty()) "" else "?${u.encodedQuery}"
+                        }
+                        location.startsWith("/") -> "http://$remoteHost:$remotePort$location"
+                        else -> "http://$remoteHost:$remotePort/$location"
+                    }
+                    method = "GET"
+                    body = null
+                    redirects++
+                    conn.disconnect()
+                    continue
+                }
+
+                var bytes = (if (status >= 400) conn.errorStream else conn.inputStream)
+                    ?.use { it.readBytes() } ?: ByteArray(0)
+
+                Log.d(TAG, "🛰️ [JUMP-FORWARD] $method $urlString → $status (${bytes.size} bytes)")
+
+                val contentType = conn.contentType ?: guessMimeType(path)
+
+                // Rewrite the dev server's origin to 127.0.0.1 in text bodies.
+                // The served app bakes ABSOLUTE URLs into its HTML/JS/JSON
+                // (Livewire's update endpoint, asset links, Boost's logger…).
+                // The WebView's origin is 127.0.0.1, so those would be
+                // cross-origin: XHR/fetch then sends a CORS preflight straight
+                // over the LAN, the jump router answers without CORS headers,
+                // and the browser blocks the real request — every wire:click
+                // silently dies. Same-origin URLs flow through the
+                // interception forward (with captured POST bodies) instead.
+                val isText = contentType.contains("html", true) ||
+                    contentType.contains("json", true) ||
+                    contentType.contains("javascript", true) ||
+                    contentType.contains("css", true)
+                if (isText && bytes.isNotEmpty()) {
+                    val rewritten = String(bytes, Charsets.UTF_8)
+                        .replace("http://$remoteHost:$remotePort", "http://127.0.0.1")
+                    bytes = rewritten.toByteArray(Charsets.UTF_8)
+                }
+                val mime = contentType.substringBefore(';').trim()
+                val encoding = if (contentType.contains("charset=", ignoreCase = true)) {
+                    contentType.substringAfter("charset=").trim()
+                } else "utf-8"
+                val responseHeaders = conn.headerFields.entries
+                    .filter { (k, _) ->
+                        k != null && k.lowercase() !in listOf(
+                            "set-cookie", "transfer-encoding", "content-encoding", "content-length",
+                        )
+                    }
+                    .associate { (k, v) -> k!! to v.joinToString(", ") }
+                val reason = conn.responseMessage?.takeIf { it.isNotBlank() } ?: "OK"
+
+                return WebResourceResponse(
+                    mime, encoding, status, reason, responseHeaders, ByteArrayInputStream(bytes)
+                )
+            }
+            return errorResponse(502, "Unresolvable redirect from Jump dev server")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ [JUMP-FORWARD] $urlString failed: ${e.message}")
+            return errorResponse(502, "Jump dev server unreachable")
+        }
+    }
 
     private fun errorResponse(code: Int, message: String): WebResourceResponse {
         return WebResourceResponse(
@@ -337,9 +464,6 @@ class PHPWebViewClient(
             "png" -> "image/png"
             "jpg", "jpeg" -> "image/jpeg"
             "gif" -> "image/gif"
-            "webp" -> "image/webp"
-            "heic" -> "image/heic"
-            "heif" -> "image/heif"
             "svg" -> "image/svg+xml"
             "json" -> "application/json"
             "pdf" -> "application/pdf"
@@ -351,26 +475,6 @@ class PHPWebViewClient(
             "eot" -> "application/vnd.ms-fontobject"
             "otf" -> "font/otf"
             "ico" -> "image/x-icon"
-            // Video — Chromium WebView refuses to play <video src> without an
-            // explicit video/* Content-Type. Without these entries the asset
-            // handler returned application/octet-stream and the player
-            // stayed black on Android.
-            "mp4" -> "video/mp4"
-            "m4v" -> "video/x-m4v"
-            "mov" -> "video/quicktime"
-            "webm" -> "video/webm"
-            "mkv" -> "video/x-matroska"
-            "avi" -> "video/x-msvideo"
-            "3gp" -> "video/3gpp"
-            // HLS playlist + segments for locally served streams.
-            "m3u8" -> "application/vnd.apple.mpegurl"
-            "ts" -> "video/mp2t"
-            // Audio
-            "mp3" -> "audio/mpeg"
-            "wav" -> "audio/wav"
-            "m4a" -> "audio/mp4"
-            "aac" -> "audio/aac"
-            "ogg" -> "audio/ogg"
             else -> {
                 Log.w(TAG, "⚠️ Unknown file extension for: $fileName. Defaulting to application/octet-stream")
                 "application/octet-stream"
