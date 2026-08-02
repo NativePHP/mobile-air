@@ -3,6 +3,7 @@
 namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
+use Native\Mobile\Contracts\GatedBridge;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 
@@ -32,7 +33,7 @@ use PHPUnit\Framework\Assert;
  * TestableComponent forwards unknown methods here, so macros (and the
  * built-in helpers) chain straight off the harness.
  */
-class FakeBridge implements \Native\Mobile\Contracts\GatedBridge
+class FakeBridge implements GatedBridge
 {
     use Macroable;
 
