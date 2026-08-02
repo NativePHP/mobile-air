@@ -101,6 +101,20 @@ class NativeElementCollector
      */
     protected static array $textFrames = [];
 
+    /**
+     * Web render target (browser HTML instead of a native tree consumer).
+     * When on, createElement() stashes the raw `class` string on each
+     * element as the `web_class` prop so WebRenderer can pass it through
+     * to the DOM untouched. Set by Web\WebScreenRunner for the duration
+     * of a web request.
+     */
+    protected static bool $webMode = false;
+
+    public static function setWebMode(bool $on): void
+    {
+        static::$webMode = $on;
+    }
+
     // ── Streaming control ────────────────────────────
 
     public static function setStreaming(bool $enabled): void
@@ -566,6 +580,9 @@ class NativeElementCollector
         }
         if (isset($attrs['flexWrap'])) {
             $layout['flex_wrap'] = (int) $attrs['flexWrap'];
+        }
+        if (isset($attrs['flexDirection'])) {
+            $layout['flex_direction'] = (int) $attrs['flexDirection'];
         }
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
@@ -1142,6 +1159,12 @@ class NativeElementCollector
 
     protected static function createElement(string $type, array $attrs): Element
     {
+        // Web render target: keep the author's raw Tailwind class string so
+        // the HTML renderer can pass it straight to the DOM (real Tailwind
+        // runs in the browser). Native parse still runs below so nothing
+        // else changes shape.
+        $rawClass = static::$webMode ? ($attrs['class'] ?? null) : null;
+
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
@@ -1177,6 +1200,33 @@ class NativeElementCollector
             default => ElementRegistry::resolve($type)
                 ?? throw new \RuntimeException("Unknown native element type: {$type}"),
         };
+
+        if ($rawClass !== null) {
+            $element->setProp('web_class', $rawClass);
+        }
+
+        // Raw inline-CSS passthrough for the web renderer: `style="..."`
+        // carries runtime-computed values (e.g. `width: {{ $battery }}%`)
+        // that the build-time class scan (edge:css) can never see in
+        // source. Captured like web_class and stripped so it never leaks
+        // onto the native wire as a junk prop — native ignores it.
+        if (isset($attrs['style'])) {
+            if (static::$webMode && is_string($attrs['style']) && $attrs['style'] !== '') {
+                $element->setProp('web_style', $attrs['style']);
+            }
+            unset($attrs['style']);
+        }
+
+        // Web sibling of the `:ios`/`:android` icon attrs: `web="arrow-up"`
+        // names a heroicon for the web renderer. Captured generically here
+        // (like web_class) so no element subclass needs to know about it,
+        // and stripped so it never leaks onto the native wire as a junk prop.
+        if (isset($attrs['web'])) {
+            if (static::$webMode) {
+                $element->setProp('web_icon', (string) $attrs['web']);
+            }
+            unset($attrs['web']);
+        }
 
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
@@ -1252,6 +1302,9 @@ class NativeElementCollector
         }
         if (isset($attrs['height'])) {
             $element->height($attrs['height']);
+        }
+        if (isset($attrs['flexDirection'])) {
+            $element->flexDirection((int) $attrs['flexDirection']);
         }
         // Padding (uniform + directional from Tailwind classes)
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;

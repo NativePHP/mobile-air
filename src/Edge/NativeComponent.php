@@ -2093,6 +2093,9 @@ abstract class NativeComponent
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element);
                         nativephp_element_publish($tree);
+                        \Native\Mobile\Edge\Recording\TreeRecorder::tree(
+                            $tree, $this->nativeRouter?->currentUri() ?? '/'
+                        );
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
@@ -2110,6 +2113,15 @@ abstract class NativeComponent
                 $this->runDuePolls();
 
                 continue;
+            }
+
+            // Session recording: UI events only (system frames like hot
+            // reload / shutdown are dev-loop noise, not user actions).
+            if (! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                \Native\Mobile\Edge\Recording\TreeRecorder::event(
+                    $event,
+                    $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
+                );
             }
 
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
@@ -2272,6 +2284,9 @@ abstract class NativeComponent
                         $this->nativeRouter?->flushDeferredTransition();
 
                         nativephp_element_publish($tree);
+                        \Native\Mobile\Edge\Recording\TreeRecorder::tree(
+                            $tree, $this->nativeRouter?->currentUri() ?? '/'
+                        );
 
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
@@ -2296,6 +2311,15 @@ abstract class NativeComponent
                 $this->runDuePolls();
 
                 continue;
+            }
+
+            // Session recording: UI events only (system frames like hot
+            // reload / shutdown are dev-loop noise, not user actions).
+            if (! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                \Native\Mobile\Edge\Recording\TreeRecorder::event(
+                    $event,
+                    $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
+                );
             }
 
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
