@@ -240,14 +240,6 @@ class NativeServiceProvider extends PackageServiceProvider
 
     public function packageBooted()
     {
-        // Session recording: carry the raw Tailwind class string on every
-        // element (web_class prop) so recorded device trees replay fully
-        // styled in the web viewer. Native renderers ignore unknown props;
-        // costs a few wire bytes only while recording is enabled.
-        if (\Native\Mobile\Edge\Recording\TreeRecorder::enabled()) {
-            \Native\Mobile\Edge\NativeElementCollector::setWebMode(true);
-        }
-
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->registerNativeComponents();
