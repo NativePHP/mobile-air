@@ -585,9 +585,20 @@ struct FlexContainer: Layout {
             }
         }
 
-        // Phase 4: Compute justify_content offsets
+        // Phase 4: Compute justify_content offsets.
+        //
+        // Recompute the leftover from the POST-Phase-3 childMains: Phase 3
+        // can grow a child's main size past its Phase-1 ideal (stale/zero
+        // cached ideals, cross-constrained re-measures). Using the Phase-1
+        // `remaining` here over-offsets justify-center/end and pushes
+        // content low/right — the "icons sit low in fixed circles" bug.
+        var placedMain: CGFloat = 0
+        for i in cache.flowIndices {
+            placedMain += childMains[i] + mainMargin(cache.childInfos[i])
+        }
+        let placeRemaining = containerMain - placedMain - gaps
         let (startOffset, interItemSpacing) = justifyOffsets(
-            remaining: remaining > 0 && totalGrow <= 0 ? remaining : 0,
+            remaining: placeRemaining > 0 && totalGrow <= 0 ? placeRemaining : 0,
             count: flowCount
         )
 
