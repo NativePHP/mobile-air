@@ -80,6 +80,13 @@ it('parses height from spacing scale', function () {
 
 // ── Flex & Alignment ────────────────────────────────
 
+it('parses flex direction', function () {
+    expect(TailwindParser::parse('flex-row'))->toBe(['flexDirection' => 1]);
+    expect(TailwindParser::parse('flex-row-reverse'))->toBe(['flexDirection' => 1]);
+    expect(TailwindParser::parse('flex-col'))->toBe(['flexDirection' => 0]);
+    expect(TailwindParser::parse('flex-col-reverse'))->toBe(['flexDirection' => 0]);
+});
+
 it('parses flex utilities', function () {
     // flex-1 is `flex: 1 1 0%` in Tailwind — grow, shrink, AND zero basis.
     expect(TailwindParser::parse('flex-1'))->toBe(['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0]);
