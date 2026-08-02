@@ -9,6 +9,7 @@ use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
+use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
@@ -19,6 +20,7 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
@@ -2093,7 +2095,7 @@ abstract class NativeComponent
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element);
                         nativephp_element_publish($tree);
-                        \Native\Mobile\Edge\TreeObservers::tree(
+                        TreeObservers::tree(
                             $tree, $this->nativeRouter?->currentUri() ?? '/'
                         );
                     }
@@ -2117,9 +2119,9 @@ abstract class NativeComponent
 
             // Broadcast user-facing frames to observers; system frames like
             // reload / shutdown are dev-loop noise, not user actions).
-            if (\Native\Mobile\Edge\TreeObservers::any()
+            if (TreeObservers::any()
                 && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
-                \Native\Mobile\Edge\TreeObservers::event(
+                TreeObservers::event(
                     $event,
                     $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
                 );
@@ -2285,7 +2287,7 @@ abstract class NativeComponent
                         $this->nativeRouter?->flushDeferredTransition();
 
                         nativephp_element_publish($tree);
-                        \Native\Mobile\Edge\TreeObservers::tree(
+                        TreeObservers::tree(
                             $tree, $this->nativeRouter?->currentUri() ?? '/'
                         );
 
@@ -2316,9 +2318,9 @@ abstract class NativeComponent
 
             // Broadcast user-facing frames to observers; system frames like
             // reload / shutdown are dev-loop noise, not user actions).
-            if (\Native\Mobile\Edge\TreeObservers::any()
+            if (TreeObservers::any()
                 && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
-                \Native\Mobile\Edge\TreeObservers::event(
+                TreeObservers::event(
                     $event,
                     $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
                 );
@@ -3007,8 +3009,8 @@ abstract class NativeComponent
             return;
         }
 
-        if ((new \ReflectionProperty($this, $property))->getAttributes(\Native\Mobile\Attributes\Locked::class) !== []) {
-            throw new \Native\Mobile\Edge\Exceptions\LockedPropertyException(static::class, $property);
+        if ((new \ReflectionProperty($this, $property))->getAttributes(Locked::class) !== []) {
+            throw new LockedPropertyException(static::class, $property);
         }
 
         $this->{$property} = $value;

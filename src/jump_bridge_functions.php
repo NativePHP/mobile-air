@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Contracts\GatedBridge;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\Testing\FakeBridge;
 
@@ -53,7 +54,7 @@ if (! function_exists('nativephp_can')) {
     {
         $bridge = FakeBridge::current();
 
-        if ($bridge instanceof \Native\Mobile\Contracts\GatedBridge) {
+        if ($bridge instanceof GatedBridge) {
             return $bridge->can($method);
         }
 
