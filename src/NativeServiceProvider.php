@@ -13,6 +13,7 @@ use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
 use Native\Mobile\Commands\CredentialsCommand;
 use Native\Mobile\Commands\DebugCommand;
+use Native\Mobile\Commands\EdgeCssCommand;
 use Native\Mobile\Commands\InstallCommand;
 use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\LaunchEmulatorCommand;
@@ -67,6 +68,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 CheckBuildNumberCommand::class,
                 CredentialsCommand::class,
                 DebugCommand::class,
+                EdgeCssCommand::class,
                 InstallCommand::class,
                 RunCommand::class,
                 OpenProjectCommand::class,
@@ -240,6 +242,14 @@ class NativeServiceProvider extends PackageServiceProvider
 
     public function packageBooted()
     {
+        // Session recording: carry the raw Tailwind class string on every
+        // element (web_class prop) so recorded device trees replay fully
+        // styled in the web viewer. Native renderers ignore unknown props;
+        // costs a few wire bytes only while recording is enabled.
+        if (\Native\Mobile\Edge\Recording\TreeRecorder::enabled()) {
+            \Native\Mobile\Edge\NativeElementCollector::setWebMode(true);
+        }
+
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->registerNativeComponents();
@@ -315,6 +325,13 @@ class NativeServiceProvider extends PackageServiceProvider
                         "Native screen [{$componentClass}] — test it with Native::test() / Native::visit().",
                         200
                     );
+                }
+
+                // Web render target (POC): a plain browser request — no
+                // native runtime env — renders the screen as HTML instead
+                // of entering the native runloop.
+                if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')) {
+                    return \Native\Mobile\Edge\Web\WebScreenRunner::screen($componentClass);
                 }
 
                 $router = new NativeRouter;
@@ -400,6 +417,62 @@ class NativeServiceProvider extends PackageServiceProvider
 
             return $this;
         });
+
+        // Web render target (POC): the Livewire-style update endpoint the
+        // edge-web.js runtime posts UI events to. Only off-device.
+        if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')) {
+            // Web bridge: resolving WebBridge from the container yields the
+            // per-request instance (enabling one if the screen runner hasn't
+            // yet), so app drivers can queue effects or inspect calls via
+            // app(WebBridge::class). enable() later swaps in the concrete
+            // instance binding for the rest of the request.
+            $this->app->bind(
+                \Native\Mobile\Edge\Web\Bridge\WebBridge::class,
+                fn () => \Native\Mobile\Edge\Web\Bridge\WebBridge::current()
+                    ?? \Native\Mobile\Edge\Web\Bridge\WebBridge::enable(),
+            );
+
+            // Per-installation paths (APP_KEY-derived, Livewire v4-style):
+            // a unique prefix per app instead of a well-known endpoint, so
+            // universal scanners can't target the update route. The page
+            // embeds the real path in #edge-state for the client runtime.
+            $edgePrefix = \Native\Mobile\Edge\Web\EdgeEndpoint::prefix();
+
+            Route::post($edgePrefix.'/update', [\Native\Mobile\Edge\Web\WebScreenRunner::class, 'update'])
+                ->middleware('web')
+                ->name('edge.web.update');
+
+            // Temporary file uploads (Livewire-style): multipart POST that
+            // stores to storage/app/edge-tmp and returns HMAC-signed paths
+            // consumable via EdgeUpload::validatePath(). CSRF via `web`.
+            Route::post($edgePrefix.'/upload', [\Native\Mobile\Edge\Web\EdgeUpload::class, 'store'])
+                ->middleware('web')
+                ->name('edge.web.upload');
+
+            // Serve the app's bundled font files (resources/fonts) so the
+            // generated @font-face rules resolve — same faces as native.
+            Route::get($edgePrefix.'/fonts/{file}', function (string $file) {
+                $path = resource_path('fonts/'.basename($file));
+
+                abort_unless(is_file($path) && preg_match('/\.(ttf|otf|woff2?)$/i', $path), 404);
+
+                return response()->file($path, [
+                    'Content-Type' => match (strtolower(pathinfo($path, PATHINFO_EXTENSION))) {
+                        'otf' => 'font/otf',
+                        'woff' => 'font/woff',
+                        'woff2' => 'font/woff2',
+                        default => 'font/ttf',
+                    },
+                    'Cache-Control' => 'public, max-age=86400',
+                ]);
+            })->where('file', '[^/]+')->name('edge.web.font');
+
+            // POC time-travel replay viewer for recorded sessions.
+            Route::get($edgePrefix.'/replay', [\Native\Mobile\Edge\Recording\ReplayViewer::class, 'index'])
+                ->middleware('web')->name('edge.replay.index');
+            Route::get($edgePrefix.'/replay/{name}', [\Native\Mobile\Edge\Recording\ReplayViewer::class, 'show'])
+                ->where('name', '[A-Za-z0-9]+')->middleware('web')->name('edge.replay.show');
+        }
     }
 
     protected function registerBladeDirectives(): void
