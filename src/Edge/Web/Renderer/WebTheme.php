@@ -1,6 +1,6 @@
 <?php
 
-namespace Native\Mobile\Edge\Web;
+namespace Native\Mobile\Edge\Web\Renderer;
 
 /**
  * Bridges the mobile-ui Theme token store into CSS-consumable colors for

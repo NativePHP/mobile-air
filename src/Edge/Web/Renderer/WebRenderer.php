@@ -1,6 +1,6 @@
 <?php
 
-namespace Native\Mobile\Edge\Web;
+namespace Native\Mobile\Edge\Web\Renderer;
 
 /**
  * POC HTML renderer for the EDGE element tree ("React Native Web" mode).
@@ -43,6 +43,13 @@ class WebRenderer
 
         $type = $node['type'] ?? '';
         $p = $node['props'] ?? [];
+
+        // Plugin-registered renderers win over the built-ins, so UI
+        // plugins own their vocabulary here the same way they do in the
+        // native renderer registries (and can override a core type).
+        if (($renderer = HtmlRendererRegistry::resolve($type)) !== null) {
+            return $renderer($node, $ctx);
+        }
 
         return match ($type) {
             'column' => static::container($node, 'div', 'flex flex-col', $ctx),
@@ -178,7 +185,7 @@ class WebRenderer
         return '<div'.static::idAttr($node).static::styleAttr($node).' class="'.static::cls($node, $base).'"></div>';
     }
 
-    protected static function children(array $node, array $ctx): string
+    public static function children(array $node, array $ctx): string
     {
         $html = '';
 
@@ -1079,7 +1086,7 @@ class WebRenderer
 
     // ── Attribute helpers ───────────────────────────
 
-    protected static function idAttr(array $node): string
+    public static function idAttr(array $node): string
     {
         return ' data-edge-id="'.((int) ($node['id'] ?? 0)).'"'.static::ariaAttr($node);
     }
@@ -1101,7 +1108,7 @@ class WebRenderer
      * Press bindings. $isNativeButton controls whether cursor styling is
      * already implied by the element type.
      */
-    protected static function pressAttrs(array $node, bool $isNativeButton): string
+    public static function pressAttrs(array $node, bool $isNativeButton): string
     {
         $attrs = '';
         $p = $node['props'] ?? [];
@@ -1129,7 +1136,7 @@ class WebRenderer
     }
 
     /** Combined class attribute: type base + author's raw Tailwind classes. */
-    protected static function cls(array $node, string $base): string
+    public static function cls(array $node, string $base): string
     {
         $web = static::webClass($node);
         $press = isset($node['on_press']) ? 'cursor-pointer ' : '';
@@ -1277,7 +1284,7 @@ class WebRenderer
         return str_replace('-', '_', $name);
     }
 
-    protected static function e(?string $s): string
+    public static function e(?string $s): string
     {
         return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
     }

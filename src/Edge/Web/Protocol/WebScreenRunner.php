@@ -1,6 +1,6 @@
 <?php
 
-namespace Native\Mobile\Edge\Web;
+namespace Native\Mobile\Edge\Web\Protocol;
 
 use Illuminate\Http\Request;
 use Native\Mobile\Edge\CallbackRegistry;
@@ -9,6 +9,7 @@ use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\Web\Bridge\WebBridge;
+use Native\Mobile\Edge\Web\Renderer\WebRenderer;
 use Native\Mobile\Testing\FakeBridge;
 
 /**
@@ -61,9 +62,9 @@ use Native\Mobile\Testing\FakeBridge;
  * no mount()) and the client immediately posts `{type: 'lazy'}` for the
  * real first frame — see update() for both string-typed events.
  */
-class WebScreenRunner
+class WebScreenRunner implements \Native\Mobile\Edge\Contracts\WebRunner
 {
-    public static function screen(string $componentClass)
+    public function screen(string $componentClass)
     {
         $path = '/'.ltrim(request()->path(), '/');
         $resolved = NativeRouter::resolve($path);
@@ -134,7 +135,7 @@ class WebScreenRunner
         return response(WebShell::page(html: $html, state: [...$state, 'effects' => $effects], title: $title));
     }
 
-    public static function update(Request $request)
+    public function update(Request $request)
     {
         // Raw body, NOT $request->input(): the TransformsRequest middleware
         // (ConvertEmptyStringsToNull, TrimStrings) would mangle snapshot

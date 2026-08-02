@@ -4,8 +4,8 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Native\Mobile\Edge\Recording\ReplayViewer;
-use Native\Mobile\Edge\Web\WebRenderer;
-use Native\Mobile\Edge\Web\WebShell;
+use Native\Mobile\Edge\Web\Renderer\WebRenderer;
+use Native\Mobile\Edge\Web\Protocol\WebShell;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 

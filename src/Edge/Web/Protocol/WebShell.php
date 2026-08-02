@@ -1,6 +1,8 @@
 <?php
 
-namespace Native\Mobile\Edge\Web;
+namespace Native\Mobile\Edge\Web\Protocol;
+
+use Native\Mobile\Edge\Web\Renderer\WebTheme;
 
 /**
  * Full-page HTML shell for the web render target (POC).
@@ -24,7 +26,7 @@ class WebShell
             'csrf' => csrf_token(),
         ], JSON_HEX_TAG | JSON_HEX_AMP);
 
-        $runtime = file_get_contents(__DIR__.'/../../../resources/js/edge-web.js');
+        $runtime = file_get_contents(__DIR__.'/../../../../resources/js/edge-web.js');
         $tailwind = static::tailwindHead();
         $fonts = static::fontCss();
         $titleEsc = htmlspecialchars($title, ENT_QUOTES, 'UTF-8');

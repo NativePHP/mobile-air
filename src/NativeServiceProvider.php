@@ -327,11 +327,14 @@ class NativeServiceProvider extends PackageServiceProvider
                     );
                 }
 
-                // Web render target (POC): a plain browser request — no
-                // native runtime env — renders the screen as HTML instead
-                // of entering the native runloop.
+                // Web render target: a plain browser request — no native
+                // runtime env — renders the screen as HTML through whatever
+                // WebRunner is bound. Core knows only the contract; without
+                // a binding (no web package installed) the route 404s.
                 if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')) {
-                    return \Native\Mobile\Edge\Web\WebScreenRunner::screen($componentClass);
+                    abort_unless(app()->bound(\Native\Mobile\Edge\Contracts\WebRunner::class), 404);
+
+                    return app(\Native\Mobile\Edge\Contracts\WebRunner::class)->screen($componentClass);
                 }
 
                 $router = new NativeRouter;
@@ -418,9 +421,21 @@ class NativeServiceProvider extends PackageServiceProvider
             return $this;
         });
 
-        // Web render target (POC): the Livewire-style update endpoint the
+        // Web render target: the Livewire-style update endpoint the
         // edge-web.js runtime posts UI events to. Only off-device.
+        //
+        // NOTE (package-split seam): everything inside this block belongs
+        // to the future web package's service provider — core's only
+        // lasting responsibility is resolving the WebRunner contract.
         if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')) {
+            // The contract the Route::native fallthrough and the update
+            // route dispatch through. A separate web package would own
+            // this binding instead.
+            $this->app->singleton(
+                \Native\Mobile\Edge\Contracts\WebRunner::class,
+                \Native\Mobile\Edge\Web\Protocol\WebScreenRunner::class,
+            );
+
             // Web bridge: resolving WebBridge from the container yields the
             // per-request instance (enabling one if the screen runner hasn't
             // yet), so app drivers can queue effects or inspect calls via
@@ -436,16 +451,16 @@ class NativeServiceProvider extends PackageServiceProvider
             // a unique prefix per app instead of a well-known endpoint, so
             // universal scanners can't target the update route. The page
             // embeds the real path in #edge-state for the client runtime.
-            $edgePrefix = \Native\Mobile\Edge\Web\EdgeEndpoint::prefix();
+            $edgePrefix = \Native\Mobile\Edge\Web\Protocol\EdgeEndpoint::prefix();
 
-            Route::post($edgePrefix.'/update', [\Native\Mobile\Edge\Web\WebScreenRunner::class, 'update'])
+            Route::post($edgePrefix.'/update', [\Native\Mobile\Edge\Contracts\WebRunner::class, 'update'])
                 ->middleware('web')
                 ->name('edge.web.update');
 
             // Temporary file uploads (Livewire-style): multipart POST that
             // stores to storage/app/edge-tmp and returns HMAC-signed paths
             // consumable via EdgeUpload::validatePath(). CSRF via `web`.
-            Route::post($edgePrefix.'/upload', [\Native\Mobile\Edge\Web\EdgeUpload::class, 'store'])
+            Route::post($edgePrefix.'/upload', [\Native\Mobile\Edge\Web\Protocol\EdgeUpload::class, 'store'])
                 ->middleware('web')
                 ->name('edge.web.upload');
 

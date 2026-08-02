@@ -1,6 +1,6 @@
 <?php
 
-namespace Native\Mobile\Edge\Web;
+namespace Native\Mobile\Edge\Web\Protocol;
 
 /**
  * Per-installation endpoint paths for the EDGE web target.

@@ -2,7 +2,7 @@
 
 namespace Native\Mobile\Edge\Recording;
 
-use Native\Mobile\Edge\Web\WebRenderer;
+use Native\Mobile\Edge\Web\Renderer\WebRenderer;
 
 /**
  * POC time-travel viewer: server-renders every recorded tree frame to
@@ -18,7 +18,7 @@ class ReplayViewer
         foreach (TreeRecorder::recordings() as $r) {
             $when = date('M j, H:i:s', $r['mtime']);
             $kb = round($r['bytes'] / 1024, 1);
-            $rows .= "<a href=\"".\Native\Mobile\Edge\Web\EdgeEndpoint::replayPath()."/{$r['name']}\" class=\"block px-5 py-4 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800\">
+            $rows .= "<a href=\"".\Native\Mobile\Edge\Web\Protocol\EdgeEndpoint::replayPath()."/{$r['name']}\" class=\"block px-5 py-4 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800\">
                 <div class=\"font-semibold\">{$r['name']}</div>
                 <div class=\"text-sm text-neutral-400\">{$when} · {$r['frames']} frames · {$kb} KB</div>
             </a>";
@@ -76,7 +76,7 @@ class ReplayViewer
 
         $json = json_encode($timeline, JSON_HEX_TAG | JSON_HEX_AMP);
         $nameEsc = htmlspecialchars($name, ENT_QUOTES);
-        $replayIndex = \Native\Mobile\Edge\Web\EdgeEndpoint::replayPath();
+        $replayIndex = \Native\Mobile\Edge\Web\Protocol\EdgeEndpoint::replayPath();
 
         $body = <<<HTML
 <div class="h-screen flex flex-col">
@@ -219,7 +219,7 @@ HTML;
     protected static function shell(string $title, string $body): string
     {
         $titleEsc = htmlspecialchars($title, ENT_QUOTES);
-        [$light, $dark] = \Native\Mobile\Edge\Web\WebTheme::palette();
+        [$light, $dark] = \Native\Mobile\Edge\Web\Renderer\WebTheme::palette();
         $vars = '';
         foreach ($light as $token => $hex) {
             $vars .= "  --color-theme-{$token}: {$hex};\n";

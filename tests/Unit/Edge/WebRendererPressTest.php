@@ -1,6 +1,6 @@
 <?php
 
-use Native\Mobile\Edge\Web\WebRenderer;
+use Native\Mobile\Edge\Web\Renderer\WebRenderer;
 
 // Press callbacks arrive on the wire two ways: most elements carry a
 // node-level `on_press`, but some plugin elements (notably mobile-ui

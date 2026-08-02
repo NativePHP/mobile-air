@@ -1,6 +1,6 @@
 <?php
 
-namespace Native\Mobile\Edge\Web;
+namespace Native\Mobile\Edge\Web\Protocol;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
