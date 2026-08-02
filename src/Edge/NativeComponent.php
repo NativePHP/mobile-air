@@ -9,6 +9,7 @@ use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
+use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
@@ -19,6 +20,7 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
@@ -2981,8 +2983,8 @@ abstract class NativeComponent
             return;
         }
 
-        if ((new \ReflectionProperty($this, $property))->getAttributes(\Native\Mobile\Attributes\Locked::class) !== []) {
-            throw new \Native\Mobile\Edge\Exceptions\LockedPropertyException(static::class, $property);
+        if ((new \ReflectionProperty($this, $property))->getAttributes(Locked::class) !== []) {
+            throw new LockedPropertyException(static::class, $property);
         }
 
         $this->{$property} = $value;
