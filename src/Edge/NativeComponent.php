@@ -3107,7 +3107,11 @@ abstract class NativeComponent
 
         if ($isNew) {
             $child = new $class;
-            $child->nativeCallbacks = new CallbackRegistry;
+            $child->nativeCallbacks = new CallbackRegistry(
+                ($parentScope = $this->nativeCallbacks->scope()) === ''
+                    ? $identity
+                    : $parentScope.'>'.$identity
+            );
             $child->nativeParentComponent = $this;
             if ($this->nativeRouter !== null) {
                 $child->setRouter($this->nativeRouter);
