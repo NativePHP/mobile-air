@@ -9,8 +9,14 @@ abstract class TestCase extends BaseTestCase
 {
     protected function getPackageProviders($app)
     {
+        // The web render target lives in nativephp/mobile-web
+        // (~/Herd/plugins/nativephp/web, autoload-dev'd from there).
+        // Apps get its provider via composer auto-discovery; testbench
+        // has no discovery, so register it explicitly — the web suite
+        // (WebUpdateTest etc.) exercises the contract end-to-end.
         return [
             NativeServiceProvider::class,
+            \Native\Mobile\Edge\Web\WebServiceProvider::class,
         ];
     }
 
