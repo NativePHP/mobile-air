@@ -2981,6 +2981,10 @@ abstract class NativeComponent
             return;
         }
 
+        if ((new \ReflectionProperty($this, $property))->getAttributes(\Native\Mobile\Attributes\Locked::class) !== []) {
+            throw new \Native\Mobile\Edge\Exceptions\LockedPropertyException(static::class, $property);
+        }
+
         $this->{$property} = $value;
 
         // A state change can invalidate any computed value (incl.
