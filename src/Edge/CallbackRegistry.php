@@ -63,9 +63,9 @@ class CallbackRegistry
      *
      * Cross-expression hash collision (different expression, same id —
      * ~1 in 2^31): rehash with a salt suffix until free. The result is
-     * deterministic given insertion order, and the wire expression map
-     * preserves insertion order across requests, so re-registration
-     * reproduces identical ids.
+     * deterministic given insertion order, and registration follows
+     * tree order, so replaying the same render reproduces identical
+     * ids.
      */
     protected function deriveId(string $expression): int
     {
