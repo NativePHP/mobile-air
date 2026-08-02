@@ -32,9 +32,33 @@ use PHPUnit\Framework\Assert;
  * TestableComponent forwards unknown methods here, so macros (and the
  * built-in helpers) chain straight off the harness.
  */
-class FakeBridge
+class FakeBridge implements \Native\Mobile\Contracts\GatedBridge
 {
     use Macroable;
+
+    /**
+     * Methods this fake claims NOT to support — the seam for testing
+     * nativephp_can()-gated fallback paths, which previously could not
+     * be exercised at all (every bridge answered "available").
+     *
+     *     FakeBridge::enable()->withoutCapability('Camera.GetPhoto');
+     *     expect(nativephp_can('Camera.GetPhoto'))->toBeFalse();
+     *
+     * @var string[]
+     */
+    protected array $unsupported = [];
+
+    public function withoutCapability(string ...$methods): static
+    {
+        array_push($this->unsupported, ...$methods);
+
+        return $this;
+    }
+
+    public function can(string $method): bool
+    {
+        return ! in_array($method, $this->unsupported, true);
+    }
 
     /** Every tree passed to nativephp_element_publish(), oldest first. */
     public array $publishes = [];
