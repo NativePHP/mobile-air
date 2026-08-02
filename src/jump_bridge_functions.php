@@ -42,18 +42,18 @@ if (! function_exists('nativephp_can')) {
     /**
      * Check if a native bridge function is available.
      *
-     * Web target: when a WebBridge is driving (plain-browser render via
-     * WebScreenRunner), only methods with a registered web driver — PHP
-     * or client effect — are available, so app code can feature-gate
-     * honestly. Device behavior is untouched (this file never loads
-     * there), and Jump hybrid mode / plain FakeBridge tests keep
-     * assuming everything is available.
+     * When a capability-gated bridge is driving (a browser render
+     * today, a desktop shell later), only what that runtime actually
+     * provides is available, so app code can feature-gate honestly.
+     * Device behavior is untouched (this file never loads there), and
+     * Jump hybrid mode / plain FakeBridge tests keep assuming
+     * everything is available.
      */
     function nativephp_can(string $method): bool
     {
         $bridge = FakeBridge::current();
 
-        if ($bridge instanceof \Native\Mobile\Edge\Web\Bridge\WebBridge) {
+        if ($bridge instanceof \Native\Mobile\Contracts\GatedBridge) {
             return $bridge->can($method);
         }
 
