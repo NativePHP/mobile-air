@@ -17,6 +17,9 @@ abstract class TestCase extends BaseTestCase
     protected function getEnvironmentSetUp($app)
     {
         // Set up default config values for testing
+        // (app.key must exist at provider boot: the EDGE web update route's
+        // hashed prefix and snapshot HMAC both derive from it.)
+        $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('k', 32)));
         $app['config']->set('nativephp.app_id', 'com.test.app');
         $app['config']->set('nativephp.version', '1.0.0');
         $app['config']->set('nativephp.version_code', 1);
