@@ -622,6 +622,16 @@ struct FlexContainer: Layout {
                 finalCross = containerCross - crossMargin(info)
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
             } else {
+                // Measure the child's natural cross size against the main size
+                // it will actually be placed at, not `.unspecified`. A flexed
+                // child (`flex-1`) is narrower than its unconstrained width, so
+                // an unconstrained measure reports a single-line height for text
+                // that will really wrap. Centring on that stale height places the
+                // child too high and it then overflows downward.
+                let naturalProposal = isRow
+                    ? ProposedViewSize(width: childMain, height: nil)
+                    : ProposedViewSize(width: nil, height: childMain)
+
                 switch effectiveAlign {
                 case AlignItems.stretch:
                     // No FILL: use natural size, align to start (like Android).
@@ -629,19 +639,19 @@ struct FlexContainer: Layout {
                     // proposes crossAvail, which makes container children (e.g.
                     // a flex column) fill the cross axis and report container
                     // cross size, not their natural content size.
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
                 case AlignItems.center:
                     // Center: measure natural size, center within container
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + (containerCross - finalCross) / 2
 
                 case AlignItems.end:
                     // End: measure natural size, align to end
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
 
