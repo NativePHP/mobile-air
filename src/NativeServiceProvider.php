@@ -51,6 +51,7 @@ use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
+use Symfony\Component\HttpFoundation\Response;
 
 class NativeServiceProvider extends PackageServiceProvider
 {
@@ -302,9 +303,7 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Route::macro('native', function (string $uri, string $componentClass) {
-            NativeRouter::register($uri, $componentClass);
-
-            return Route::get($uri, function () use ($componentClass) {
+            $route = Route::get($uri, function () use ($componentClass) {
                 // HTTP feature tests ($this->get('/')) must never enter the
                 // runloop: it blocks in wait_event against the REAL bridge —
                 // with a live Jump session that's ~90s of reconnect spinning
@@ -366,6 +365,10 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 $exitUri = $router->start($componentClass, $params, $path);
 
+                if ($exitUri instanceof Response) {
+                    return $exitUri;
+                }
+
                 if ($exitUri !== null) {
                     return redirect($exitUri);
                 }
@@ -377,6 +380,10 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+
+            NativeRouter::register($uri, $componentClass, route: $route);
+
+            return $route;
         });
 
         // Route::nativeGroup(layout: TabsLayout::class, function () { ... })

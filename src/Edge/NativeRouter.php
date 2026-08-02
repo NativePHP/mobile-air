@@ -2,6 +2,12 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Http\Request;
+use Illuminate\Routing\Pipeline;
+use Illuminate\Routing\Route;
+use Illuminate\Support\Facades\Facade;
+use Symfony\Component\HttpFoundation\Response;
+
 class NativeRouter
 {
     /**
@@ -80,9 +86,9 @@ class NativeRouter
      * URI → component class registry.
      * Populated by Route::native() calls.
      *
-     * Each entry: ['class' => string, 'layout' => ?string]
+     * Each entry: ['class' => string, 'layout' => ?string, 'route' => ?Route]
      *
-     * @var array<string, array{class: string, layout: ?string}>
+     * @var array<string, array{class: string, layout: ?string, route: ?Route}>
      */
     protected static array $routes = [];
 
@@ -128,12 +134,13 @@ class NativeRouter
 
     // ── Static registry ─────────────────────────────
 
-    public static function register(string $uri, string $class, ?string $layout = null): void
+    public static function register(string $uri, string $class, ?string $layout = null, ?Route $route = null): void
     {
         $pattern = '/'.ltrim($uri, '/');
         static::$routes[$pattern] = [
             'class' => $class,
             'layout' => $layout ?? static::$currentGroupLayout,
+            'route' => $route,
         ];
     }
 
@@ -145,7 +152,10 @@ class NativeRouter
      */
     public static function registeredRoutes(): array
     {
-        return static::$routes;
+        return array_map(fn (array $entry) => [
+            'class' => $entry['class'],
+            'layout' => $entry['layout'],
+        ], static::$routes);
     }
 
     /**
@@ -338,6 +348,12 @@ class NativeRouter
                 continue;
             }
 
+            if ($this->runRouteMiddleware($uri) !== null) {
+                static::debugLog("preloadStack: skipped $uri — route middleware blocked navigation");
+
+                continue;
+            }
+
             try {
                 $component = $this->createComponent(
                     $resolved['class'],
@@ -367,9 +383,9 @@ class NativeRouter
      * Entry point. Init shared memory, run the navigation loop,
      * shutdown when done.
      *
-     * @return string|null Exit URI for redirect, or null
+     * @return Response|string|null Middleware response, exit URI, or null
      */
-    public function start(string $class, array $params = [], string $uri = ''): ?string
+    public function start(string $class, array $params = [], string $uri = ''): Response|string|null
     {
         NativeComponent::registerDumpHandler();
 
@@ -406,7 +422,7 @@ class NativeRouter
      * Navigation loop — runs until the stack is empty or
      * we need to exit to a web route.
      */
-    protected function loop(): ?string
+    protected function loop(): Response|string|null
     {
         $freshPush = true;
 
@@ -474,6 +490,15 @@ class NativeRouter
                         return $intent->uri;
                     }
 
+                    $middlewareResponse = $this->runRouteMiddleware($intent->uri);
+                    if ($middlewareResponse !== null) {
+                        static::debugLog('NAVIGATE: route middleware blocked navigation with status '.$middlewareResponse->getStatusCode());
+                        $component->unmount();
+                        $this->stack = [];
+
+                        return $middlewareResponse;
+                    }
+
                     static::debugLog("NAVIGATE: resolved to {$resolved['class']}, deferring transition");
                     $this->deferredTransition = $intent->transition ?? Transition::SlideFromRight;
 
@@ -523,6 +548,15 @@ class NativeRouter
                         $this->stack = [];
 
                         return $intent->uri;
+                    }
+
+                    $middlewareResponse = $this->runRouteMiddleware($intent->uri);
+                    if ($middlewareResponse !== null) {
+                        static::debugLog('REPLACE: route middleware blocked navigation with status '.$middlewareResponse->getStatusCode());
+                        $component->unmount();
+                        $this->stack = [];
+
+                        return $middlewareResponse;
                     }
 
                     static::debugLog("REPLACE: resolved to {$resolved['class']}");
@@ -580,6 +614,120 @@ class NativeRouter
         }
 
         static::debugLog('loop: stack empty, returning null');
+
+        return null;
+    }
+
+    /**
+     * Run the Laravel route middleware associated with an in-app navigation.
+     *
+     * A null response means the middleware pipeline reached its destination.
+     * Any response means middleware short-circuited and the screen must not mount.
+     */
+    protected function runRouteMiddleware(string $uri): ?Response
+    {
+        $resolved = static::resolve($uri);
+        if ($resolved === null) {
+            return null;
+        }
+
+        $pattern = $this->routePatternFor($uri);
+        $registeredRoute = $pattern !== null ? (static::$routes[$pattern]['route'] ?? null) : null;
+        if (! $registeredRoute instanceof Route) {
+            return null;
+        }
+        $route = clone $registeredRoute;
+
+        $currentRequest = app('request');
+        $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+        $queryString = parse_url($uri, PHP_URL_QUERY) ?: '';
+        parse_str($queryString, $query);
+
+        $server = $currentRequest->server->all();
+        $server['REQUEST_METHOD'] = 'GET';
+        $server['REQUEST_URI'] = $uri;
+        $server['PATH_INFO'] = $path;
+        $server['QUERY_STRING'] = $queryString;
+
+        /** @var Request $request */
+        $request = $currentRequest->duplicate(
+            query: $query,
+            request: [],
+            attributes: [],
+            files: [],
+            server: $server,
+        );
+        $request->setMethod('GET');
+
+        $route->setContainer(app());
+        $route->bind($request);
+        $request->setRouteResolver(fn () => $route);
+
+        $router = app('router');
+        $currentRoute = $router->getCurrentRoute();
+        $currentRouterRequest = $router->getCurrentRequest();
+        $middleware = app()->bound('middleware.disable') && app('middleware.disable') === true
+            ? []
+            : $router->gatherRouteMiddleware($route);
+        $destination = new \stdClass;
+
+        $hadRouteBinding = app()->bound(Route::class);
+        $currentRouteBinding = $hadRouteBinding ? app(Route::class) : null;
+
+        app()->instance('request', $request);
+        app()->instance(Route::class, $route);
+        Facade::clearResolvedInstance('request');
+
+        // Router has no public current-route setter, but route middleware may
+        // legitimately use the Route facade. Scope the same context Laravel's
+        // normal dispatch establishes, then restore the long-lived request.
+        (function (Route $route): void {
+            $this->current = $route;
+        })->call($router, $route);
+        (function (Request $request): void {
+            $this->currentRequest = $request;
+        })->call($router, $request);
+
+        try {
+            $result = (new Pipeline(app()))
+                ->send($request)
+                ->through($middleware)
+                ->then(fn () => $destination);
+
+            return $result === $destination
+                ? null
+                : $router->prepareResponse($request, $result);
+        } finally {
+            app()->instance('request', $currentRequest);
+            if ($hadRouteBinding) {
+                app()->instance(Route::class, $currentRouteBinding);
+            } else {
+                app()->forgetInstance(Route::class);
+            }
+            (function (?Route $route): void {
+                $this->current = $route;
+            })->call($router, $currentRoute);
+            (function (?Request $request): void {
+                $this->currentRequest = $request;
+            })->call($router, $currentRouterRequest);
+            Facade::clearResolvedInstance('request');
+        }
+    }
+
+    protected function routePatternFor(string $uri): ?string
+    {
+        $path = '/'.ltrim(parse_url($uri, PHP_URL_PATH) ?: '/', '/');
+
+        if (isset(static::$routes[$path])) {
+            return $path;
+        }
+
+        foreach (array_keys(static::$routes) as $pattern) {
+            $regex = preg_replace('/\{(\w+)\}/', '[^/]+', $pattern);
+            if (preg_match('#^'.$regex.'$#', $path)) {
+                return $pattern;
+            }
+        }
 
         return null;
     }
