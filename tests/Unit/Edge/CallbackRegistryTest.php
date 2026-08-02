@@ -49,3 +49,15 @@ it('resolves a registered id back to its parsed expression', function () {
     expect($r->resolve($r->register('add(5)')))->toBe(['method' => 'add', 'args' => [5]])
         ->and($r->resolve(123456789))->toBeNull();
 });
+
+it('derives distinct ids for the same expression under different scopes', function () {
+    $screen = new CallbackRegistry;
+    $childA = new CallbackRegistry('card|key:a');
+    $childB = new CallbackRegistry('card|key:b');
+
+    $ids = [$screen->register('bump'), $childA->register('bump'), $childB->register('bump')];
+
+    expect(array_unique($ids))->toHaveCount(3)
+        // Same scope reproduces the same id — determinism survives scoping.
+        ->and((new CallbackRegistry('card|key:a'))->register('bump'))->toBe($ids[1]);
+});

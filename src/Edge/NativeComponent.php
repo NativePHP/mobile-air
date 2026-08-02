@@ -2115,7 +2115,7 @@ abstract class NativeComponent
                 continue;
             }
 
-            // Session recording: UI events only (system frames like hot
+            // Broadcast user-facing frames to observers; system frames like
             // reload / shutdown are dev-loop noise, not user actions).
             if (\Native\Mobile\Edge\TreeObservers::any()
                 && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
@@ -2314,7 +2314,7 @@ abstract class NativeComponent
                 continue;
             }
 
-            // Session recording: UI events only (system frames like hot
+            // Broadcast user-facing frames to observers; system frames like
             // reload / shutdown are dev-loop noise, not user actions).
             if (\Native\Mobile\Edge\TreeObservers::any()
                 && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
@@ -3137,7 +3137,11 @@ abstract class NativeComponent
 
         if ($isNew) {
             $child = new $class;
-            $child->nativeCallbacks = new CallbackRegistry;
+            $child->nativeCallbacks = new CallbackRegistry(
+                ($parentScope = $this->nativeCallbacks->scope()) === ''
+                    ? $identity
+                    : $parentScope.'>'.$identity
+            );
             $child->nativeParentComponent = $this;
             if ($this->nativeRouter !== null) {
                 $child->setRouter($this->nativeRouter);

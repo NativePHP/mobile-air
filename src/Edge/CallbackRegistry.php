@@ -4,6 +4,17 @@ namespace Native\Mobile\Edge;
 
 class CallbackRegistry
 {
+    /**
+     * Scope salt folded into every derived id — empty for a screen's
+     * own registry. Child-component registries pass their identity key
+     * ('user-card|key:a'), so identical expressions in sibling children
+     * ('bump', 'save') derive DISTINCT ids and dispatch resolves
+     * ownership unambiguously. Identity keys are stable across renders
+     * and processes (explicit `key` attr, else tag + occurrence index),
+     * so scoped ids are exactly as deterministic as unscoped ones.
+     */
+    protected string $scope = '';
+
     protected array $map = [];
 
     protected array $expressionMap = [];
@@ -34,6 +45,22 @@ class CallbackRegistry
      * expression share an id — semantically safe: same expression means
      * same method + literal args.
      */
+    public function __construct(string $scope = '')
+    {
+        $this->scope = $scope;
+    }
+
+    /**
+     * This registry's scope — parents prepend it when scoping their
+     * children, so nested children chain ('cards|key:a>badge|i:0') and
+     * the same tag at the same index under DIFFERENT parents still
+     * derives distinct ids.
+     */
+    public function scope(): string
+    {
+        return $this->scope;
+    }
+
     public function register(string $expression, ?string $kind = null): int
     {
         if (isset($this->expressionMap[$expression])) {
@@ -69,14 +96,16 @@ class CallbackRegistry
      */
     protected function deriveId(string $expression): int
     {
-        $id = Element::fnv1a32($expression) & 0x7FFFFFFF;
+        $input = $this->scope === '' ? $expression : $this->scope."\x1F".$expression;
+
+        $id = Element::fnv1a32($input) & 0x7FFFFFFF;
 
         if ($id === 0) {
             $id = 1;
         }
 
         for ($salt = 1; isset($this->map[$id]); $salt++) {
-            $id = Element::fnv1a32($expression."\x00".$salt) & 0x7FFFFFFF;
+            $id = Element::fnv1a32($input."\x00".$salt) & 0x7FFFFFFF;
 
             if ($id === 0) {
                 $id = 1;
