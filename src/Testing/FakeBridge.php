@@ -113,6 +113,12 @@ class FakeBridge
 
     // ── Hooks called by the nativephp_* polyfills ───
 
+    /** @var array<int, string> Bridge functions a test has marked unavailable. */
+    protected array $unavailable = [];
+
+    /** @var array<int, string> Every capability probe made, in order. */
+    protected array $capabilityChecks = [];
+
     public function call(string $method, string $params = '{}'): ?string
     {
         $decoded = json_decode($params, true);
@@ -133,6 +139,50 @@ class FakeBridge
         }
 
         return $response;
+    }
+
+    /**
+     * Answer a capability probe. Everything is available unless a test has
+     * said otherwise via {@see cannot()}.
+     *
+     * Without this, capability-gated branches are untestable: the polyfill's
+     * nativephp_can() hardcodes `true`, so the fallback arm of every
+     * `nativephp_can(...)` check is dead code as far as the suite is
+     * concerned. That is how an iOS-only bridge function reached main
+     * swallowing Android toasts (#237).
+     */
+    public function can(string $method): bool
+    {
+        $this->capabilityChecks[] = $method;
+
+        return ! in_array($method, $this->unavailable, true);
+    }
+
+    /**
+     * Mark bridge functions as absent, so `nativephp_can()` reports false for
+     * them and the caller's fallback path runs.
+     */
+    public function cannot(string ...$methods): static
+    {
+        foreach ($methods as $method) {
+            if (! in_array($method, $this->unavailable, true)) {
+                $this->unavailable[] = $method;
+            }
+        }
+
+        return $this;
+    }
+
+    /** Assert the code asked whether a bridge function was available. */
+    public function assertCapabilityChecked(string $method): static
+    {
+        Assert::assertContains(
+            $method,
+            $this->capabilityChecks,
+            "Expected a capability check for [{$method}], but none was made."
+        );
+
+        return $this;
     }
 
     public function elementInit(): void
