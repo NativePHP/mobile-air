@@ -21,6 +21,21 @@ trait RunsAndroid
 {
     use PreparesBuild, WatchesAndroid;
 
+    /**
+     * The Gradle plugin that processes google-services.json into Android
+     * resources. Applied by the app module whenever that file is present.
+     */
+    private const GOOGLE_SERVICES_PLUGIN_ID = 'com.google.gms.google-services';
+
+    private const GOOGLE_SERVICES_PLUGIN_VERSION = '4.4.3';
+
+    /**
+     * The same plugin as a buildscript classpath coordinate — the shape the
+     * Firebase documentation used before the plugins DSL, and the one people
+     * reach for when they patch this in by hand.
+     */
+    private const GOOGLE_SERVICES_ARTIFACT = 'com.google.gms:google-services';
+
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
     /**
@@ -380,6 +395,114 @@ XML;
         if (File::exists($source)) {
             File::copy($source, $target);
         }
+
+        $this->updateGoogleServicesClasspath(File::exists($target));
+    }
+
+    /**
+     * Put the Google Services Gradle plugin on the build classpath when the
+     * project has a google-services.json, and take it off again when it does
+     * not.
+     *
+     * The app module already applies it conditionally — see
+     * resources/androidstudio/app/build.gradle.kts:
+     *
+     *     val googleServicesJson = file("google-services.json")
+     *     if (googleServicesJson.exists()) {
+     *         apply(plugin = "com.google.gms.google-services")
+     *     }
+     *
+     * but nothing declares it anywhere, so that conditional fires into
+     * nothing and the build stops at "Plugin with id
+     * 'com.google.gms.google-services' not found". Every Firebase feature
+     * needs that file, so the conditional cannot fire without breaking.
+     *
+     * This is done here, on the generated root build file, rather than in the
+     * project template, because the template is copied by `native:install`
+     * and never rewritten afterwards: a template-only fix leaves every
+     * already-installed project broken. And it is conditional so an app that
+     * is not using Firebase does not resolve a plugin it has no use for —
+     * `apply false` still resolves the marker artifact.
+     */
+    private function updateGoogleServicesClasspath(bool $enabled): void
+    {
+        $path = base_path('nativephp/android/build.gradle.kts');
+
+        if (! File::exists($path)) {
+            return;
+        }
+
+        $content = File::get($path);
+        $updated = $this->applyGoogleServicesClasspath($content, $enabled);
+
+        if ($updated === null) {
+            if ($enabled) {
+                $this->components->warn(
+                    'Could not declare the Google Services Gradle plugin: no plugins {} block in '
+                    .'nativephp/android/build.gradle.kts. Add `id("'.self::GOOGLE_SERVICES_PLUGIN_ID.'") '
+                    .'version "'.self::GOOGLE_SERVICES_PLUGIN_VERSION.'" apply false` to it by hand.'
+                );
+            }
+
+            return;
+        }
+
+        if ($updated !== $content) {
+            File::put($path, $updated);
+        }
+    }
+
+    /**
+     * Add or remove the marker-delimited declaration in a root build.gradle.kts.
+     *
+     * Pure, so it can be tested without an Android project on disk. Returns
+     * null when the declaration is wanted and there is no plugins {} block to
+     * put it in — the one case the caller has to report rather than swallow.
+     */
+    public function applyGoogleServicesClasspath(string $content, bool $enabled): ?string
+    {
+        $begin = '// BEGIN nativephp-google-services';
+        $end = '// END nativephp-google-services';
+
+        $blockPattern = '/\n?[ \t]*'.preg_quote($begin, '/').'.*?'.preg_quote($end, '/').'[ \t]*\n?/s';
+
+        // Whatever happens next, the old block goes: it is rebuilt from the
+        // current state rather than patched.
+        $withoutBlock = preg_replace($blockPattern, "\n", $content, 1);
+
+        if (! $enabled) {
+            return $withoutBlock;
+        }
+
+        // Somebody else already declared it — a plugin through
+        // `android.gradle_plugins`, or a hand-written buildscript classpath in
+        // the pre-plugins-DSL shape, which is what people patch in by hand when
+        // they hit this. Declaring it twice is a Gradle error, so theirs wins.
+        $declared = [self::GOOGLE_SERVICES_PLUGIN_ID, self::GOOGLE_SERVICES_ARTIFACT];
+
+        foreach ($declared as $needle) {
+            if (str_contains($withoutBlock, $needle)) {
+                return $withoutBlock;
+            }
+        }
+
+        $block = "\n    ".$begin."\n"
+            ."    // Added because this project has a google-services.json; removed when it goes.\n"
+            .'    id("'.self::GOOGLE_SERVICES_PLUGIN_ID.'") version "'.self::GOOGLE_SERVICES_PLUGIN_VERSION.'" apply false'."\n"
+            .'    '.$end;
+
+        // Insert at the end of the plugins {} block. The root build file's
+        // plugins block contains no nested braces, so the first closing brace
+        // on its own line terminates it.
+        $result = preg_replace(
+            '/(plugins\s*\{.*?)(\n\})/s',
+            '$1'.str_replace('$', '\$', $block).'$2',
+            $withoutBlock,
+            1,
+            $count
+        );
+
+        return $count === 1 ? $result : null;
     }
 
     private function updateIcuConfiguration(): void
