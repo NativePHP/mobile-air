@@ -887,7 +887,9 @@ class BuildIosAppCommand extends Command
         $result = Process::run($command);
 
         if (! $result->successful()) {
-            throw new \Exception('Failed to create ZIP file');
+            $error = trim($result->errorOutput()) ?: trim($result->output());
+
+            throw new \Exception('Failed to create ZIP file: '.($error ?: 'exit code '.$result->exitCode()));
         }
 
         $this->createBundledVersionFile($zipPath);
