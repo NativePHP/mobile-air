@@ -29,7 +29,10 @@ import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.animation.core.animate
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -356,23 +359,71 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 levelPaddings[uri] ?: padding
             }
-            Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
-                val levelNode = coordinator.rootNodeCache[uri]
-                val levelContent = levelNode?.children?.firstOrNull {
-                    it.type != "top_bar_action" && it.type != "top_bar_title" &&
-                        it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
-                }
-                if (levelContent != null) {
-                    NodeView(node = levelContent)
-                } else if (uri == currentUri && screenContent != null) {
-                    NodeView(node = screenContent)
+            // Expose the bar's collapse state to scrolling content. Only when
+            // the bar actually reacts to scroll — a pinned bar stays put, and
+            // handing content a controller that silently does nothing would be
+            // worse than handing it null.
+            val chromeScrollController = remember(scrollBehavior, barReactsToScroll) {
+                if (!barReactsToScroll) {
+                    null
                 } else {
-                    Box(modifier = Modifier.fillMaxSize())
+                    object : ChromeScrollController {
+                        override suspend fun collapse() {
+                            val state = scrollBehavior.state
+                            val target = state.heightOffsetLimit
+                            if (target >= 0f || state.heightOffset <= target) {
+                                return
+                            }
+                            animate(
+                                initialValue = state.heightOffset,
+                                targetValue = target,
+                                animationSpec = tween(durationMillis = 250),
+                            ) { value, _ -> state.heightOffset = value }
+                        }
+                    }
+                }
+            }
+
+            CompositionLocalProvider(LocalChromeScrollController provides chromeScrollController) {
+                Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
+                    val levelNode = coordinator.rootNodeCache[uri]
+                    val levelContent = levelNode?.children?.firstOrNull {
+                        it.type != "top_bar_action" && it.type != "top_bar_title" &&
+                            it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
+                    }
+                    if (levelContent != null) {
+                        NodeView(node = levelContent)
+                    } else if (uri == currentUri && screenContent != null) {
+                        NodeView(node = screenContent)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize())
+                    }
                 }
             }
         }
     }
 }
+
+/**
+ * Lets scrolling content drive the top bar's collapse state.
+ *
+ * Compose only moves the bar via nested-scroll deltas, and a PROGRAMMATIC
+ * scroll (`animateScrollToItem`) emits none — so a chat log that auto-scrolls
+ * to a new message leaves a large title stranded fully expanded, even though
+ * the content underneath moved exactly as far as a drag would have moved it.
+ *
+ * Renderers that scroll themselves should call [collapse] alongside that
+ * scroll. Deliberately a narrow interface rather than the Material 3
+ * `TopAppBarState`, so plugin renderers don't take a hard dependency on the
+ * chrome's implementation.
+ */
+interface ChromeScrollController {
+    /** Animate the top bar to fully collapsed. No-op if it can't collapse. */
+    suspend fun collapse()
+}
+
+/** Null when the screen has no collapsible chrome (pinned bar, or no bar). */
+val LocalChromeScrollController = compositionLocalOf<ChromeScrollController?> { null }
 
 /**
  * Renders a single trailing toolbar action — plain IconButton when no
