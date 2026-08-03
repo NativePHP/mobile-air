@@ -101,6 +101,41 @@ class NativeElementCollector
      */
     protected static array $textFrames = [];
 
+    /**
+     * Plugin-registered attribute capture.
+     *
+     * Lets a package ship a custom Blade attribute that works on ANY
+     * element — e.g. an analytics plugin capturing `track="signup-cta"`
+     * into a prop its device SDK reads — without every Element subclass
+     * having to know about it. Registered attributes are lifted into
+     * props in createElement() and stripped before native attribute
+     * handling, so they never leak onto the wire as junk.
+     *
+     * The reserved name 'class' captures the author's RAW class string
+     * as written (Tailwind parsing still runs and is unaffected) — for
+     * tooling that wants the classes themselves rather than the parsed
+     * layout they produce.
+     *
+     * @var array<string, string> attribute name => prop name
+     */
+    protected static array $capturedAttributes = [];
+
+    public static function captureAttribute(string $attribute, string $prop): void
+    {
+        static::$capturedAttributes[$attribute] = $prop;
+    }
+
+    /** @return array<string, string> */
+    public static function capturedAttributes(): array
+    {
+        return static::$capturedAttributes;
+    }
+
+    public static function stopCapturingAttributes(): void
+    {
+        static::$capturedAttributes = [];
+    }
+
     // ── Streaming control ────────────────────────────
 
     public static function setStreaming(bool $enabled): void
@@ -1142,6 +1177,9 @@ class NativeElementCollector
 
     protected static function createElement(string $type, array $attrs): Element
     {
+        // Raw-class capture happens BEFORE parsing consumes the attribute.
+        $rawClass = isset(static::$capturedAttributes['class']) ? ($attrs['class'] ?? null) : null;
+
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
@@ -1177,6 +1215,25 @@ class NativeElementCollector
             default => ElementRegistry::resolve($type)
                 ?? throw new \RuntimeException("Unknown native element type: {$type}"),
         };
+
+        if ($rawClass !== null) {
+            $element->setProp(static::$capturedAttributes['class'], $rawClass);
+        }
+
+        // Registered capture attributes: lift into props, strip from the
+        // attrs the native pipeline sees. Empty strings are stripped but
+        // not captured — an attribute left blank means "not set".
+        foreach (static::$capturedAttributes as $attribute => $prop) {
+            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
+                continue;
+            }
+
+            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
+                $element->setProp($prop, $attrs[$attribute]);
+            }
+
+            unset($attrs[$attribute]);
+        }
 
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
