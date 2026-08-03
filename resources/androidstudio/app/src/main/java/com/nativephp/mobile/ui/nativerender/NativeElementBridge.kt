@@ -374,7 +374,7 @@ class NativeElementBridge private constructor() {
                             // animation with a slide overlay.
                             if (isFreshStackMount) NavigationCoordinator.reset()
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
-                            NativeUIBridge.currentTree.value = diffedTree
+                            NativeUIBridge.publishTree(diffedTree)
                             // First publish after a hot-reload dismisses
                             // the "Reloading…" pill and clears the
                             // tree-preservation flag. Both are set by
