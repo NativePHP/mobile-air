@@ -169,10 +169,10 @@ class CallbackRegistry
     }
 
     /**
-     * All stored navigation configs, keyed by content-addressed key.
-     * The web runner ships these over the wire so `__navigate` presses
-     * resolve on update without a pre-dispatch render; re-registering a
-     * config recomputes the identical key.
+     * All stored navigation configs, keyed by content-addressed key —
+     * the introspection counterpart to expressions(). Re-registering a
+     * config recomputes the identical key, so consumers (tooling, the
+     * testing harness) can enumerate exactly what a render registered.
      *
      * @return array<string, array>
      */

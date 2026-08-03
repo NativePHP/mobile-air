@@ -1,6 +1,6 @@
 <?php
 
-use Native\Mobile\Edge\Contracts\WebRunner;
+use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\NativeRouter;
 use Tests\Fixtures\Edge\WebLazyScreen;
 use Tests\Fixtures\Edge\WebProbeScreen;
@@ -24,7 +24,7 @@ function webBoot(string $class): array
     NativeRouter::register('/', $class);
 
     // Resolve through the contract — the same seam the route macro uses.
-    $page = app(WebRunner::class)->screen($class);
+    $page = app(NativeRouteFallback::class)->handle($class);
     $html = $page instanceof \Symfony\Component\HttpFoundation\Response
         ? (string) $page->getContent()
         : (string) $page;

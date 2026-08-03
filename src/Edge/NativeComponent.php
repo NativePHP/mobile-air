@@ -3299,6 +3299,30 @@ abstract class NativeComponent
      * The runloop re-renders after the dispatch that triggered the emit,
      * so state changes in handlers paint on the next frame.
      */
+    /**
+     * Monotonic token published as `nav_search_dismiss` on the tabs root.
+     * Bumping it tells the native search overlay (the iOS 26 search-role
+     * tab) to close and return to the content tab — process-static so
+     * navigating to a fresh screen republishes the same value and never
+     * re-triggers a dismissal.
+     */
+    private static int $searchDismissToken = 0;
+
+    public static function searchDismissToken(): int
+    {
+        return self::$searchDismissToken;
+    }
+
+    /**
+     * Close the native search overlay. Call from a search-result row's
+     * handler when the action leaves search context (adding the found
+     * item, navigating, …).
+     */
+    public function dismissSearch(): void
+    {
+        self::$searchDismissToken++;
+    }
+
     public function emit(string $event, mixed ...$args): void
     {
         $parent = $this->nativeParentComponent;

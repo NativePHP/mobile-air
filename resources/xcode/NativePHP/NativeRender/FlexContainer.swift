@@ -715,27 +715,58 @@ struct FlexContainer: Layout {
         }
     }
 
+    /// Whether an absolute inset edge was authored. The packed node has no
+    /// spare byte for a "set" bitmask, so the wire convention is: +0.0 means
+    /// unset, any non-zero value (including negatives — Tailwind's `-right-8`
+    /// bleed) means set, and IEEE **-0.0** means "the author wrote an explicit
+    /// zero" (`bottom-0`, `inset-0`). The PHP TailwindParser emits -0.0 for
+    /// authored zeros; the sign bit survives the f32 wire bit-exactly.
+    private static func insetIsSet(_ v: CGFloat) -> Bool {
+        v != 0 || v.sign == .minus
+    }
+
     /// Place an absolute-positioned child using position insets.
+    ///
+    /// CSS semantics: one edge set anchors to it; BOTH opposing edges set
+    /// stretches the child between them (`inset-0` fills the container).
+    /// Neither set falls back to the top/leading origin.
     private func placeAbsolute(_ subview: LayoutSubview, info: ChildInfo, in bounds: CGRect) {
-        let ideal = subview.sizeThatFits(.unspecified)
+        let hasLeft = Self.insetIsSet(info.positionLeft)
+        let hasRight = Self.insetIsSet(info.positionRight)
+        let hasTop = Self.insetIsSet(info.positionTop)
+        let hasBottom = Self.insetIsSet(info.positionBottom)
 
-        // Resolve horizontal position. A NON-ZERO right inset (with no left)
-        // anchors to the trailing edge; `!= 0` rather than `> 0` so NEGATIVE
-        // insets work — `-right-8` resolves to maxX - width + 8, deliberately
-        // overhanging the edge (Tailwind's `-right-8` bleed). Zero still means
-        // "no right anchor", since the packed node struct has no spare byte to
-        // distinguish an unset edge from an explicit `right-0`.
-        var x = bounds.minX + info.positionLeft
-        if info.positionRight != 0 && info.positionLeft == 0 {
-            x = bounds.maxX - ideal.width - info.positionRight
+        let stretchWidth: CGFloat? = hasLeft && hasRight
+            ? max(0, bounds.width - info.positionLeft - info.positionRight)
+            : nil
+        let stretchHeight: CGFloat? = hasTop && hasBottom
+            ? max(0, bounds.height - info.positionTop - info.positionBottom)
+            : nil
+
+        // Measure with any stretched dimension proposed, so content that
+        // adapts (text wrapping, maps, images) sizes against the real box.
+        let measured = subview.sizeThatFits(ProposedViewSize(
+            width: stretchWidth, height: stretchHeight
+        ))
+        let size = CGSize(
+            width: stretchWidth ?? measured.width,
+            height: stretchHeight ?? measured.height
+        )
+
+        var x = bounds.minX
+        if hasLeft {
+            x = bounds.minX + info.positionLeft
+        } else if hasRight {
+            x = bounds.maxX - size.width - info.positionRight
         }
 
-        // Resolve vertical position — same convention.
-        var y = bounds.minY + info.positionTop
-        if info.positionBottom != 0 && info.positionTop == 0 {
-            y = bounds.maxY - ideal.height - info.positionBottom
+        var y = bounds.minY
+        if hasTop {
+            y = bounds.minY + info.positionTop
+        } else if hasBottom {
+            y = bounds.maxY - size.height - info.positionBottom
         }
 
-        subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(ideal))
+        subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
     }
 }

@@ -95,26 +95,38 @@ fun NativeUIContent() {
             // exiting pane keeps the last tree it showed and releases it
             // when its exit animation completes.
             val treesByKey = remember { HashMap<Int, NativeUITree>() }
-            AnimatedContent(
-                targetState = screenKey,
-                transitionSpec = { transitionFor(pendingTransition) },
-                label = "screen-transition"
-            ) { key ->
-                DisposableEffect(key) {
-                    onDispose { treesByKey.remove(key) }
-                }
-                val paneTree = if (key == screenKey) {
-                    tree?.also { treesByKey[key] = it }
+            // Fold plugin-registered root hosts (side drawers, global
+            // overlays, persistent background layers, …) around the WHOLE
+            // transition container, not per-pane: chrome hosted here keeps
+            // its composition identity across navigations, so e.g. a
+            // background map survives screen swaps instead of re-mounting
+            // with each pane. Hosts read sentinels from the LIVE tree —
+            // during a transition the exiting pane still shows its pinned
+            // tree while chrome already reflects the destination, which is
+            // the desired behavior for global chrome. A no-op pass-through
+            // when no hosts are registered.
+            val liveTree = tree
+            val wrapHosts: @Composable (@Composable () -> Unit) -> Unit =
+                if (liveTree != null) {
+                    { inner -> NativeRootHostRegistry.Wrap(root = liveTree.root) { inner() } }
                 } else {
-                    treesByKey[key]
+                    { inner -> inner() }
                 }
-                paneTree?.let { t ->
-                    // Fold any plugin-registered root hosts (side drawers,
-                    // global overlays, …) around the rendered tree. A host
-                    // pulls its own sentinel child out of `t.root` and renders
-                    // nothing when absent. A no-op pass-through when none are
-                    // registered, so trees using no plugin chrome pay nothing.
-                    NativeRootHostRegistry.Wrap(root = t.root) {
+            wrapHosts {
+                AnimatedContent(
+                    targetState = screenKey,
+                    transitionSpec = { transitionFor(pendingTransition) },
+                    label = "screen-transition"
+                ) { key ->
+                    DisposableEffect(key) {
+                        onDispose { treesByKey.remove(key) }
+                    }
+                    val paneTree = if (key == screenKey) {
+                        tree?.also { treesByKey[key] = it }
+                    } else {
+                        treesByKey[key]
+                    }
+                    paneTree?.let { t ->
                         NodeView(node = t.root)
                     }
                 }

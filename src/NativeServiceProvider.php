@@ -305,6 +305,17 @@ class NativeServiceProvider extends PackageServiceProvider
             NativeRouter::register($uri, $componentClass);
 
             return Route::get($uri, function () use ($componentClass) {
+                // Native route reached without a native runtime — a shared
+                // app link opened in a plain browser, a crawler, a
+                // misconfigured deploy. The runloop can never satisfy these
+                // (no device is attached to the request), so if the app
+                // bound a fallback, let it answer (landing page, app-store
+                // redirect). Unbound, everything below is unchanged.
+                if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')
+                    && app()->bound(\Native\Mobile\Edge\Contracts\NativeRouteFallback::class)) {
+                    return app(\Native\Mobile\Edge\Contracts\NativeRouteFallback::class)->handle($componentClass);
+                }
+
                 // HTTP feature tests ($this->get('/')) must never enter the
                 // runloop: it blocks in wait_event against the REAL bridge —
                 // with a live Jump session that's ~90s of reconnect spinning
@@ -315,16 +326,6 @@ class NativeServiceProvider extends PackageServiceProvider
                         "Native screen [{$componentClass}] — test it with Native::test() / Native::visit().",
                         200
                     );
-                }
-
-                // Web render target: a plain browser request — no native
-                // runtime env — renders the screen as HTML through whatever
-                // WebRunner is bound. Core knows only the contract; without
-                // a binding (no web package installed) the route 404s.
-                if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')) {
-                    abort_unless(app()->bound(\Native\Mobile\Edge\Contracts\WebRunner::class), 404);
-
-                    return app(\Native\Mobile\Edge\Contracts\WebRunner::class)->screen($componentClass);
                 }
 
                 $router = new NativeRouter;
@@ -411,11 +412,6 @@ class NativeServiceProvider extends PackageServiceProvider
             return $this;
         });
 
-        // Web render target: lives in the nativephp/mobile-web package
-        // (auto-discovered WebServiceProvider binds the WebRunner
-        // contract and registers the web routes; it self-disables on
-        // device). Core's only web knowledge is the WebRunner contract
-        // the Route::native fallthrough resolves — unbound → 404.
     }
 
     protected function registerBladeDirectives(): void

@@ -747,9 +747,24 @@ it('emits gradient props only when there is an axis and two stops', function () 
 
 it('expands inset shorthands to the position edges', function () {
     expect(TailwindParser::parse('inset-0'))->toBe([
-        'positionTop' => 0, 'positionRight' => 0, 'positionBottom' => 0, 'positionLeft' => 0,
+        'positionTop' => -0.0, 'positionRight' => -0.0, 'positionBottom' => -0.0, 'positionLeft' => -0.0,
     ]);
     expect(TailwindParser::parse('inset-x-2'))->toBe(['positionLeft' => 8, 'positionRight' => 8]);
     expect(TailwindParser::parse('inset-y-4'))->toBe(['positionTop' => 16, 'positionBottom' => 16]);
     expect(TailwindParser::parse('inset-bogus'))->toBe([]);
+});
+
+it('marks authored zero insets with the -0.0 sentinel so bottom-0 can anchor', function () {
+    // +0.0 on the wire means "edge unset"; an authored zero must be
+    // distinguishable or `bottom-0` / `right-0` silently anchor top-left.
+    // The sign bit is the only spare storage in the packed f32 slot.
+    $bottom = TailwindParser::parse('bottom-0')['positionBottom'];
+    expect(fdiv(1, $bottom))->toBe(-INF);
+
+    $right = TailwindParser::parse('right-0')['positionRight'];
+    expect(fdiv(1, $right))->toBe(-INF);
+
+    // Non-zero insets are unaffected, negatives keep their bleed meaning.
+    expect(TailwindParser::parse('bottom-2'))->toBe(['positionBottom' => 8]);
+    expect(TailwindParser::parse('-right-8'))->toBe(['positionRight' => -32.0]);
 });

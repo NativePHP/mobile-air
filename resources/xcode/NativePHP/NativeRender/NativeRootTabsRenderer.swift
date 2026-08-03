@@ -147,6 +147,10 @@ struct NativeRootTabsRenderer: View {
         let searchMode = node.props.getString("nav_search_mode", default: "static")
         let searchDebounceMs = node.props.getInt("nav_search_debounce_ms", default: 250)
         let searchOnQueryCb = Int(node.props.getCallbackId("nav_search_on_query"))
+        // Monotonic dismissal token — PHP bumps it (dismissSearch()) when a
+        // result-row action leaves search context; we hop selection back to
+        // the content tab and the container clears its query.
+        let searchDismissToken = node.props.getInt("nav_search_dismiss", default: 0)
         // Each search item is a `search_item` child node of the tabs
         // root (parallel to `bottom_nav_item`). PHP couldn't carry the
         // mixed string/object/element item shapes through the prop
@@ -187,6 +191,9 @@ struct NativeRootTabsRenderer: View {
         let shouldShowSearchTab = searchMode == "dynamic"
             || !searchItemNodes.isEmpty
             || selection == searchTabIdString
+            // Press-mode search tab (Tab::search()->press(...)): always a
+            // tappable button, no query state needed for it to be useful.
+            || searchTabIdx.map { tabs[$0].onPress != 0 } ?? false
 
         return TabView(selection: $selection) {
             // Regular (non-search) tabs via ForEach. Keyed off the
@@ -256,7 +263,8 @@ struct NativeRootTabsRenderer: View {
                         itemNodes: searchItemNodes,
                         mode: searchMode,
                         onQueryCallbackId: searchOnQueryCb,
-                        debounceMs: searchDebounceMs
+                        debounceMs: searchDebounceMs,
+                        dismissToken: searchDismissToken
                     )
                 }
                 .badge(badgeFor(searchTab))
@@ -272,6 +280,13 @@ struct NativeRootTabsRenderer: View {
         .modifier(TabBarAccessoryModifier(accessory: accessory))
         .onAppear {
             selection = owningId
+        }
+        .onChange(of: searchDismissToken) { _, _ in
+            // PHP asked to close the search overlay — return to the tab
+            // that owns the current content.
+            if selection == searchTabIdString {
+                selection = owningId
+            }
         }
         .onChange(of: owningId) { newId in
             // PHP-driven owning-tab change (publish landed under a
@@ -344,17 +359,20 @@ struct NativeRootTabsRenderer: View {
                 }
                 NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
             }
-            // Action-only tab (no URL, no press handler) — the press
-            // fires something off-screen instead of navigating, so PHP
-            // won't republish to switch the owning tab. Snap selection
-            // back so the visible "selected" indicator doesn't get
-            // stuck: to the pending tab when a navigation is in flight
-            // (that's where the user is headed), else to the owning
-            // tab. Search-role tabs also have `on_press == 0` (they're
-            // iOS-owned, no PHP destination) but should keep selection
-            // on themselves while the user interacts with the search
-            // UI — we skip snap-back for them.
-            if url.isEmpty && !isSearch {
+            // Momentary tabs — the press fires something off-screen
+            // instead of navigating, so PHP won't republish to switch the
+            // owning tab. Snap selection back so the visible "selected"
+            // indicator doesn't get stuck: to the pending tab when a
+            // navigation is in flight (that's where the user is headed),
+            // else to the owning tab. Two flavors:
+            //   - Action tabs (no URL, not search-role).
+            //   - Search-role tabs WITH a press handler: the app opens
+            //     its own search/add UI (`Tab::search()->press(...)`)
+            //     instead of the iOS overlay — keep the Liquid Glass
+            //     capsule look, skip the searchable presentation.
+            // A plain search-role tab (no press) stays selected while
+            // the user interacts with the iOS-owned search UI.
+            if url.isEmpty && (!isSearch || tab.onPress != 0) {
                 DispatchQueue.main.async {
                     selection = pendingTabId ?? owningId
                 }
@@ -987,6 +1005,7 @@ private struct SearchTabContainer: View {
     let mode: String
     let onQueryCallbackId: Int
     let debounceMs: Int
+    let dismissToken: Int
 
     @State private var query: String = ""
     @State private var debounceTask: Task<Void, Never>? = nil
@@ -996,6 +1015,11 @@ private struct SearchTabContainer: View {
             NativeSearchTabRoot(query: query, itemNodes: itemNodes, mode: mode)
         }
         .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
+        .onChange(of: dismissToken) { _, _ in
+            // PHP-side dismissSearch(): reset so the next search starts fresh.
+            debounceTask?.cancel()
+            query = ""
+        }
         .onChange(of: query) { _, newValue in
             guard mode == "dynamic", onQueryCallbackId != 0 else { return }
             debounceTask?.cancel()

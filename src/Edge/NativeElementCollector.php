@@ -102,17 +102,38 @@ class NativeElementCollector
     protected static array $textFrames = [];
 
     /**
-     * Web render target (browser HTML instead of a native tree consumer).
-     * When on, createElement() stashes the raw `class` string on each
-     * element as the `web_class` prop so WebRenderer can pass it through
-     * to the DOM untouched. Set by Web\WebScreenRunner for the duration
-     * of a web request.
+     * Plugin-registered attribute capture.
+     *
+     * Lets a package ship a custom Blade attribute that works on ANY
+     * element — e.g. an analytics plugin capturing `track="signup-cta"`
+     * into a prop its device SDK reads — without every Element subclass
+     * having to know about it. Registered attributes are lifted into
+     * props in createElement() and stripped before native attribute
+     * handling, so they never leak onto the wire as junk.
+     *
+     * The reserved name 'class' captures the author's RAW class string
+     * as written (Tailwind parsing still runs and is unaffected) — for
+     * tooling that wants the classes themselves rather than the parsed
+     * layout they produce.
+     *
+     * @var array<string, string> attribute name => prop name
      */
-    protected static bool $webMode = false;
+    protected static array $capturedAttributes = [];
 
-    public static function setWebMode(bool $on): void
+    public static function captureAttribute(string $attribute, string $prop): void
     {
-        static::$webMode = $on;
+        static::$capturedAttributes[$attribute] = $prop;
+    }
+
+    /** @return array<string, string> */
+    public static function capturedAttributes(): array
+    {
+        return static::$capturedAttributes;
+    }
+
+    public static function stopCapturingAttributes(): void
+    {
+        static::$capturedAttributes = [];
     }
 
     // ── Streaming control ────────────────────────────
@@ -1159,11 +1180,8 @@ class NativeElementCollector
 
     protected static function createElement(string $type, array $attrs): Element
     {
-        // Web render target: keep the author's raw Tailwind class string so
-        // the HTML renderer can pass it straight to the DOM (real Tailwind
-        // runs in the browser). Native parse still runs below so nothing
-        // else changes shape.
-        $rawClass = static::$webMode ? ($attrs['class'] ?? null) : null;
+        // Raw-class capture happens BEFORE parsing consumes the attribute.
+        $rawClass = isset(static::$capturedAttributes['class']) ? ($attrs['class'] ?? null) : null;
 
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
@@ -1202,30 +1220,22 @@ class NativeElementCollector
         };
 
         if ($rawClass !== null) {
-            $element->setProp('web_class', $rawClass);
+            $element->setProp(static::$capturedAttributes['class'], $rawClass);
         }
 
-        // Raw inline-CSS passthrough for the web renderer: `style="..."`
-        // carries runtime-computed values (e.g. `width: {{ $battery }}%`)
-        // that the build-time class scan (edge:css) can never see in
-        // source. Captured like web_class and stripped so it never leaks
-        // onto the native wire as a junk prop — native ignores it.
-        if (isset($attrs['style'])) {
-            if (static::$webMode && is_string($attrs['style']) && $attrs['style'] !== '') {
-                $element->setProp('web_style', $attrs['style']);
+        // Registered capture attributes: lift into props, strip from the
+        // attrs the native pipeline sees. Empty strings are stripped but
+        // not captured — an attribute left blank means "not set".
+        foreach (static::$capturedAttributes as $attribute => $prop) {
+            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
+                continue;
             }
-            unset($attrs['style']);
-        }
 
-        // Web sibling of the `:ios`/`:android` icon attrs: `web="arrow-up"`
-        // names a heroicon for the web renderer. Captured generically here
-        // (like web_class) so no element subclass needs to know about it,
-        // and stripped so it never leaks onto the native wire as a junk prop.
-        if (isset($attrs['web'])) {
-            if (static::$webMode) {
-                $element->setProp('web_icon', (string) $attrs['web']);
+            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
+                $element->setProp($prop, $attrs[$attribute]);
             }
-            unset($attrs['web']);
+
+            unset($attrs[$attribute]);
         }
 
         // Let plugin elements apply their own attributes

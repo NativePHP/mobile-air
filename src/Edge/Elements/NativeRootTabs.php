@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge\Elements;
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\NativeComponent;
 
 /**
  * Sentinel element emitted by `wrapWithChrome` when a layout opts into
@@ -188,6 +189,9 @@ class NativeRootTabs extends Element
         foreach ($searchItemsToAdopt as $item) {
             $this->children[] = $item;
         }
+
+        // Search-overlay dismissal token — see NativeComponent::dismissSearch().
+        $this->props['nav_search_dismiss'] = NativeComponent::searchDismissToken();
 
         return $this->props;
     }

@@ -211,6 +211,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val shouldShowSearchTab = searchMode == "dynamic"
         || searchItemNodes.isNotEmpty()
         || (searchTabIdx >= 0 && selection == searchTabIdx)
+        // Press-mode search tab (Tab::search()->press(...)): always a
+        // tappable button — the app opens its own UI, not the overlay.
+        || (searchTabIdx >= 0 && tabs[searchTabIdx].onPress != 0)
 
     val visibleTabs = if (searchTabIdx >= 0 && !shouldShowSearchTab) {
         tabs.filterIndexed { idx, _ -> idx != searchTabIdx }
@@ -241,6 +244,13 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
 
     Scaffold(
+        // A persistent background layer (map behind the app) needs the
+        // content canvas transparent; otherwise keep the themed surface.
+        containerColor = if (LocalBackgroundLayerPresent.current) {
+            androidx.compose.ui.graphics.Color.Transparent
+        } else {
+            MaterialTheme.colorScheme.background
+        },
         topBar = {
             if (hasNavBar && !hideNavBar && !isOnSearchTab) {
                 TopAppBar(
@@ -343,6 +353,14 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                 // navigation is in flight: PHP is
                                 // already navigating away and must be
                                 // told to come back.
+                                // Press-mode search tab: momentary button.
+                                // Fire the press, keep selection on the
+                                // active content tab, never open the
+                                // search overlay (mirrors iOS).
+                                if (isSearchTab && tab.onPress != 0) {
+                                    NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
+                                    return@NavigationBarItem
+                                }
                                 selection = actualIdx
                                 val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
                                 if (!isSearchTab && tapNavigates && tab.onPress != 0) {

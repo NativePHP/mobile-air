@@ -15,6 +15,10 @@ afterEach(function () {
 });
 
 it('answers native routes with a stub response instead of entering the runloop', function () {
+    // This asserts the UNBOUND default — a package may have bound a
+    // NativeRouteFallback, which takes precedence over the stub.
+    unset(app()[\Native\Mobile\Edge\Contracts\NativeRouteFallback::class]);
+
     Route::native('/native-home', CounterScreen::class);
 
     $this->get('/native-home')
