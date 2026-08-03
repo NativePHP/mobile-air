@@ -24,6 +24,11 @@ class HotReloadCoordinator {
     private var reloadPending = false
     private var activated = false
 
+    /// Invalidation counter for the hot-reload event retrigger loop — see
+    /// `scheduleEventRetrigger`. Bumping it orphans any scheduled re-post.
+    /// Only touched on the main queue.
+    private var retriggerGeneration = 0
+
     private init() {}
 
     /// Register for reload notifications. Called once at app launch —
@@ -51,6 +56,41 @@ class HotReloadCoordinator {
 
         DispatchQueue.main.async { [weak self] in
             self?.reload()
+        }
+    }
+
+    private func startEventRetrigger() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.retriggerGeneration += 1
+            self.scheduleEventRetrigger(self.retriggerGeneration, attempt: 0)
+        }
+    }
+
+    private func stopEventRetrigger() {
+        retriggerGeneration += 1
+    }
+
+    /// Re-post the hot-reload event every 500ms until the reboot block starts.
+    ///
+    /// Re-posts that land while the region is dead are destroyed with it —
+    /// harmless. The first one to land after the rebooted PHP re-registers the
+    /// region and enters its event loop unblocks the serial queue, at which
+    /// point the reboot block cancels this loop. Fires and cancellation both
+    /// run on the main queue, so no re-post can slip in after cancellation.
+    /// Bounded as a backstop: if PHP hasn't come back after 30s something
+    /// bigger is wrong, and re-posting forever would only mask it.
+    private func scheduleEventRetrigger(_ generation: Int, attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.retriggerGeneration == generation else { return }
+
+            guard attempt < 60 else {
+                print("⚠️ Hot reload retrigger gave up after 30s — PHP never left its event loop")
+                return
+            }
+
+            NativeUIBridge.sendHotReloadEvent()
+            self.scheduleEventRetrigger(generation, attempt: attempt + 1)
         }
     }
 
@@ -85,11 +125,26 @@ class HotReloadCoordinator {
             // loop and return from dispatch() — which frees the serial queue so
             // the block below can execute.
             NativeUIBridge.sendHotReloadEvent()
+
+            // That post is fire-and-forget, and the event ring buffer does not
+            // survive a runtime reboot. When this trigger lands inside another
+            // reload's reboot window (a rapid second save, or the
+            // `reloadPending` replay — `finishReload` runs before the previous
+            // pass's dispatch re-registers the region), the event is destroyed
+            // with the buffer. The serial queue then stays blocked by the
+            // previous dispatch, the block below never runs, and
+            // `reloadInProgress` latches shut for the rest of the app session.
+            // Keep re-posting until the block below starts and cancels us.
+            startEventRetrigger()
         }
 
         // All reboot work runs off the main thread — persistent_php_shutdown
         // blocks on a semaphore and must not run on the main queue.
         PersistentPHPRuntime.shared.executeOnPHPThreadAsync { [weak self] in
+            // Reaching here proves the serial queue was freed — the hot-reload
+            // event was consumed — so stop re-posting it.
+            DispatchQueue.main.async { self?.stopEventRetrigger() }
+
             // By the time this block runs, the native route dispatch has already
             // returned (the hot reload event caused PHP to exit its event loop).
             if isNativeUI {
