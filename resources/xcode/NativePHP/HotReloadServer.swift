@@ -16,6 +16,12 @@ class HotReloadCoordinator {
     static let shared = HotReloadCoordinator()
 
     private var reloadInProgress = false
+
+    /// A trigger that arrived while a reload was in flight. The watcher emits
+    /// one event per changed file (and one for the containing directory), so
+    /// dropping the extras outright can discard the *last* file's trigger and
+    /// leave the app running stale code until the next save.
+    private var reloadPending = false
     private var activated = false
 
     private init() {}
@@ -35,11 +41,29 @@ class HotReloadCoordinator {
         )
     }
 
+    /// Release the in-flight guard and, if a trigger arrived while we were
+    /// busy, run exactly one more pass so the newest files are picked up.
+    private func finishReload() {
+        reloadInProgress = false
+
+        guard reloadPending else { return }
+        reloadPending = false
+
+        DispatchQueue.main.async { [weak self] in
+            self?.reload()
+        }
+    }
+
     @objc func reload() {
         // Guard against rapid-fire file change events (file + directory)
         // triggering concurrent reboots that race on php_embed_shutdown.
-        guard !reloadInProgress else { return }
+        guard !reloadInProgress else {
+            reloadPending = true
+
+            return
+        }
         reloadInProgress = true
+        reloadPending = false
 
         let isNativeUI = NativeUIBridge.shared.isActive
         // Capture current route for native UI re-execution
@@ -101,7 +125,7 @@ class HotReloadCoordinator {
                 // The serial queue will be blocked by the new dispatch, but the
                 // next reload() can still send a hot reload event (above)
                 // to break out of it.
-                self?.reloadInProgress = false
+                self?.finishReload()
 
                 // Prefer the URI PHP wrote into .hot_restart over the WebView's
                 // URL — for native-chrome routes the WebView URL isn't kept in
@@ -149,7 +173,7 @@ class HotReloadCoordinator {
                 // WebView mode: reload with cache-bust
                 DispatchQueue.main.async {
                     guard let webView = SharedWebView.shared.webView else {
-                        self?.reloadInProgress = false
+                        self?.finishReload()
                         return
                     }
                     webView.stopLoading()
@@ -159,7 +183,7 @@ class HotReloadCoordinator {
                     if let url = URL(string: cacheBustUrl) {
                         webView.load(URLRequest(url: url))
                     }
-                    self?.reloadInProgress = false
+                    self?.finishReload()
                 }
             }
         }
