@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Validation;
 
+use Native\Mobile\Support\Path;
+
 class BladeTemplateAnalyzer
 {
     /**
@@ -189,8 +191,6 @@ class BladeTemplateAnalyzer
 
     protected function relativePath(string $path): string
     {
-        $base = base_path().'/';
-
-        return str_starts_with($path, $base) ? substr($path, strlen($base)) : $path;
+        return Path::relativeTo($path, base_path());
     }
 }

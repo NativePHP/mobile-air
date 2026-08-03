@@ -49,6 +49,7 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
+use Native\Mobile\Support\Path;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -784,7 +785,9 @@ class NativeServiceProvider extends PackageServiceProvider
                 continue;
             }
 
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            // Relative to the directory we started at — no base-path
+            // arithmetic, and it survives Windows separators after normalizing.
+            $relativePath = Path::normalize($iterator->getSubPathname());
             $classPath = substr($relativePath, 0, -4);
 
             // Tag name from the class basename: UserCard → user-card.
@@ -820,9 +823,8 @@ class NativeServiceProvider extends PackageServiceProvider
                 continue;
             }
 
-            // Get relative path from Components directory (normalize separators for Windows compatibility)
-            $normalizedBase = str_replace('\\', '/', $componentPath).'/';
-            $relativePath = substr(str_replace('\\', '/', $file->getPathname()), strlen($normalizedBase));
+            // Get relative path from Components directory
+            $relativePath = Path::normalize($iterator->getSubPathname());
 
             // Remove .php extension
             $classPath = substr($relativePath, 0, -4);
