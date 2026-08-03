@@ -69,7 +69,7 @@ trait ManagesWatchman
      * @param  callable  $onChange  Callback that receives the changed file path
      * @param  callable|null  $onTick  Optional callback for periodic tasks (called every 100ms)
      */
-    protected function startWatchman(array $paths, array $excludePatterns, callable $onChange, ?callable $onTick = null): void
+    protected function startWatchman(array $paths, array $excludePatterns, callable $onChange, ?callable $onTick = null, ?callable $onBatch = null): void
     {
         $this->watchmanRoot = base_path();
 
@@ -126,6 +126,8 @@ trait ManagesWatchman
             if ($output) {
                 $lines = array_filter(explode("\n", trim($output)));
 
+                $batch = [];
+
                 foreach ($lines as $changedFile) {
                     if (empty($changedFile)) {
                         continue;
@@ -142,7 +144,17 @@ trait ManagesWatchman
                     // Check if file matches any of our watch paths
                     if ($this->fileMatchesWatchPaths($changedFile, $paths)) {
                         $onChange($absolutePath);
+                        $batch[] = $absolutePath;
                     }
+                }
+
+                // One save typically emits several lines — the file plus its
+                // containing directory. Handing the whole cycle over at once
+                // lets the caller sync every file and then trigger a single
+                // reload, instead of firing one per file and relying on the
+                // app to discard the extras.
+                if ($batch !== [] && $onBatch !== null) {
+                    $onBatch($batch);
                 }
             }
 
@@ -151,7 +163,9 @@ trait ManagesWatchman
                 $onTick();
             }
 
-            usleep(100_000); // 100ms
+            // Short poll: this interval is pure latency between watchman
+            // reporting a change and the file reaching the device.
+            usleep(25_000); // 25ms
         }
 
         // If we get here, the process stopped unexpectedly

@@ -9,6 +9,7 @@ use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
+use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
@@ -19,6 +20,7 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
@@ -2093,6 +2095,9 @@ abstract class NativeComponent
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element);
                         nativephp_element_publish($tree);
+                        TreeObservers::tree(
+                            $tree, $this->nativeRouter?->currentUri() ?? '/'
+                        );
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
@@ -2110,6 +2115,16 @@ abstract class NativeComponent
                 $this->runDuePolls();
 
                 continue;
+            }
+
+            // Broadcast user-facing frames to observers; system frames like
+            // hot reload / shutdown are dev-loop noise, not user actions.
+            if (TreeObservers::any()
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                TreeObservers::event(
+                    $event,
+                    $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
+                );
             }
 
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
@@ -2272,6 +2287,9 @@ abstract class NativeComponent
                         $this->nativeRouter?->flushDeferredTransition();
 
                         nativephp_element_publish($tree);
+                        TreeObservers::tree(
+                            $tree, $this->nativeRouter?->currentUri() ?? '/'
+                        );
 
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
@@ -2296,6 +2314,16 @@ abstract class NativeComponent
                 $this->runDuePolls();
 
                 continue;
+            }
+
+            // Broadcast user-facing frames to observers; system frames like
+            // hot reload / shutdown are dev-loop noise, not user actions.
+            if (TreeObservers::any()
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                TreeObservers::event(
+                    $event,
+                    $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
+                );
             }
 
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
@@ -2981,6 +3009,10 @@ abstract class NativeComponent
             return;
         }
 
+        if ((new \ReflectionProperty($this, $property))->getAttributes(Locked::class) !== []) {
+            throw new LockedPropertyException(static::class, $property);
+        }
+
         $this->{$property} = $value;
 
         // A state change can invalidate any computed value (incl.
@@ -3107,7 +3139,11 @@ abstract class NativeComponent
 
         if ($isNew) {
             $child = new $class;
-            $child->nativeCallbacks = new CallbackRegistry;
+            $child->nativeCallbacks = new CallbackRegistry(
+                ($parentScope = $this->nativeCallbacks->scope()) === ''
+                    ? $identity
+                    : $parentScope.'>'.$identity
+            );
             $child->nativeParentComponent = $this;
             if ($this->nativeRouter !== null) {
                 $child->setRouter($this->nativeRouter);

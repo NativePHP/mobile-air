@@ -585,9 +585,20 @@ struct FlexContainer: Layout {
             }
         }
 
-        // Phase 4: Compute justify_content offsets
+        // Phase 4: Compute justify_content offsets.
+        //
+        // Recompute the leftover from the POST-Phase-3 childMains: Phase 3
+        // can grow a child's main size past its Phase-1 ideal (stale/zero
+        // cached ideals, cross-constrained re-measures). Using the Phase-1
+        // `remaining` here over-offsets justify-center/end and pushes
+        // content low/right — the "icons sit low in fixed circles" bug.
+        var placedMain: CGFloat = 0
+        for i in cache.flowIndices {
+            placedMain += childMains[i] + mainMargin(cache.childInfos[i])
+        }
+        let placeRemaining = containerMain - placedMain - gaps
         let (startOffset, interItemSpacing) = justifyOffsets(
-            remaining: remaining > 0 && totalGrow <= 0 ? remaining : 0,
+            remaining: placeRemaining > 0 && totalGrow <= 0 ? placeRemaining : 0,
             count: flowCount
         )
 
@@ -622,6 +633,16 @@ struct FlexContainer: Layout {
                 finalCross = containerCross - crossMargin(info)
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
             } else {
+                // Measure the child's natural cross size against the main size
+                // it will actually be placed at, not `.unspecified`. A flexed
+                // child (`flex-1`) is narrower than its unconstrained width, so
+                // an unconstrained measure reports a single-line height for text
+                // that will really wrap. Centring on that stale height places the
+                // child too high and it then overflows downward.
+                let naturalProposal = isRow
+                    ? ProposedViewSize(width: childMain, height: nil)
+                    : ProposedViewSize(width: nil, height: childMain)
+
                 switch effectiveAlign {
                 case AlignItems.stretch:
                     // No FILL: use natural size, align to start (like Android).
@@ -629,19 +650,19 @@ struct FlexContainer: Layout {
                     // proposes crossAvail, which makes container children (e.g.
                     // a flex column) fill the cross axis and report container
                     // cross size, not their natural content size.
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
                 case AlignItems.center:
                     // Center: measure natural size, center within container
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + (containerCross - finalCross) / 2
 
                 case AlignItems.end:
                     // End: measure natural size, align to end
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
 

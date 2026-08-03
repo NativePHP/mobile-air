@@ -258,7 +258,16 @@ struct NativeRootStackRenderer: View {
             // a container, the per-glass-effect animation isn't scoped
             // and the press transition renders as a visible flicker
             // behind the touched element. iOS 26+ only.
-            NodeView(node: node).withGlassContainer()
+            NodeView(node: node)
+                .withGlassContainer()
+                // NavigationStack hosts screens on its own container
+                // background (systemBackground — white in light mode) and
+                // SwiftUI exposes no override hook for it, so a dark app
+                // gets a white band in the bottom safe-area inset. When
+                // PHP set a window background (`UI.SetBackground`), paint
+                // it behind the screen extended through the safe areas.
+                // No-op when unset, preserving the stock appearance.
+                .modifier(StackScreenBackgroundModifier())
         } else {
             Color.clear
         }
@@ -438,3 +447,21 @@ private struct NavigationSubtitleModifier: ViewModifier {
     }
 }
 
+
+/// Backgrounds a stack-hosted screen with the PHP-set window background
+/// (`UI.SetBackground`), extended through the safe areas. NavigationStack
+/// draws its own `systemBackground` container behind screen content with
+/// no SwiftUI override hook — without this, a dark app shows a white band
+/// in the bottom safe-area inset on every stack screen. No-op when no
+/// override is set, preserving the stock appearance.
+private struct StackScreenBackgroundModifier: ViewModifier {
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
+
+    func body(content: Content) -> some View {
+        if let color = windowBackground.color {
+            content.background(color.ignoresSafeArea())
+        } else {
+            content
+        }
+    }
+}

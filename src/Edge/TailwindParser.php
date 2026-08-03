@@ -380,6 +380,10 @@ class TailwindParser
 
         // Exact matches
         return match (true) {
+            // Direction — lets any container (notably pressable, which
+            // defaults to column) flip axis via class, matching web flexbox.
+            $class === 'flex-row', $class === 'flex-row-reverse' => ['flexDirection' => 1],
+            $class === 'flex-col', $class === 'flex-col-reverse' => ['flexDirection' => 0],
             $class === 'flex-1' => ['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0],
             $class === 'flex-grow' => ['flexGrow' => 1],
             $class === 'flex-grow-0' => ['flexGrow' => 0],
