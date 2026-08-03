@@ -567,6 +567,9 @@ class NativeElementCollector
         if (isset($attrs['flexWrap'])) {
             $layout['flex_wrap'] = (int) $attrs['flexWrap'];
         }
+        if (isset($attrs['flexDirection'])) {
+            $layout['flex_direction'] = (int) $attrs['flexDirection'];
+        }
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
         }
@@ -1252,6 +1255,9 @@ class NativeElementCollector
         }
         if (isset($attrs['height'])) {
             $element->height($attrs['height']);
+        }
+        if (isset($attrs['flexDirection'])) {
+            $element->flexDirection((int) $attrs['flexDirection']);
         }
         // Padding (uniform + directional from Tailwind classes)
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;
