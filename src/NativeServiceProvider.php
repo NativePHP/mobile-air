@@ -37,6 +37,7 @@ use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\ComponentRegistry;
+use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeComponent;
@@ -312,8 +313,8 @@ class NativeServiceProvider extends PackageServiceProvider
                 // bound a fallback, let it answer (landing page, app-store
                 // redirect). Unbound, everything below is unchanged.
                 if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')
-                    && app()->bound(\Native\Mobile\Edge\Contracts\NativeRouteFallback::class)) {
-                    return app(\Native\Mobile\Edge\Contracts\NativeRouteFallback::class)->handle($componentClass);
+                    && app()->bound(NativeRouteFallback::class)) {
+                    return app(NativeRouteFallback::class)->handle($componentClass);
                 }
 
                 // HTTP feature tests ($this->get('/')) must never enter the
@@ -411,7 +412,6 @@ class NativeServiceProvider extends PackageServiceProvider
 
             return $this;
         });
-
     }
 
     protected function registerBladeDirectives(): void

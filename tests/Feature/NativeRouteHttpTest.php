@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\CounterScreen;
@@ -17,7 +18,7 @@ afterEach(function () {
 it('answers native routes with a stub response instead of entering the runloop', function () {
     // This asserts the UNBOUND default — a package may have bound a
     // NativeRouteFallback, which takes precedence over the stub.
-    unset(app()[\Native\Mobile\Edge\Contracts\NativeRouteFallback::class]);
+    unset(app()[NativeRouteFallback::class]);
 
     Route::native('/native-home', CounterScreen::class);
 
