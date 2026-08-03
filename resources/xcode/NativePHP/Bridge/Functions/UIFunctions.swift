@@ -42,13 +42,30 @@ enum UIFunctions {
     /// insets (same contract as the Android implementation).
     ///
     /// Parameters:
-    ///   - color: string - hex color e.g. "#0F172A" (#RGB / #RRGGBB / #AARRGGBB)
+    ///   - color: string|null - hex color e.g. "#0F172A" (#RGB / #RRGGBB /
+    ///     #AARRGGBB). null / missing / "" CLEARS the override, restoring
+    ///     the platform default — the call is app-global sticky state, so
+    ///     screens that set it should clear it in unmount().
     /// Returns:
     ///   - success: boolean
     class SetBackground: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            guard let colorStr = parameters["color"] as? String,
-                  let uiColor = UIColor(nativePhpHex: colorStr) else {
+            let colorStr = parameters["color"] as? String ?? ""
+            guard !colorStr.isEmpty else {
+                DispatchQueue.main.async {
+                    WindowBackgroundState.shared.color = nil
+                    for scene in UIApplication.shared.connectedScenes {
+                        guard let windowScene = scene as? UIWindowScene else { continue }
+                        for window in windowScene.windows {
+                            window.backgroundColor = nil
+                        }
+                    }
+                }
+
+                return ["success": true]
+            }
+
+            guard let uiColor = UIColor(nativePhpHex: colorStr) else {
                 return ["success": false, "error": "Invalid color"]
             }
 
