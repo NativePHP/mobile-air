@@ -408,9 +408,20 @@ private struct StackBarBackgroundModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if argb != 0 {
-            if #available(iOS 26.0, *) {
+            if #available(iOS 18.0, *) {
+                // `containerBackground(for: .navigation)` themes the WHOLE
+                // navigation surface — the scroll edge, the expanded
+                // large-title region, and the status-bar area — while bar
+                // visibility stays automatic. Without it the bar color only
+                // renders after scrolling (toolbarBackground alone does not
+                // paint at the scroll edge, exactly where a large title
+                // lives), and forcing `.visible` paints the band but
+                // suppresses the large title at the scroll edge under
+                // Liquid Glass. toolbarBackground still tints the collapsed
+                // bar after scrolling.
                 content
                     .toolbarBackground(Color(argb: argb), for: .navigationBar)
+                    .containerBackground(Color(argb: argb), for: .navigation)
             } else {
                 content
                     .toolbarBackground(Color(argb: argb), for: .navigationBar)
