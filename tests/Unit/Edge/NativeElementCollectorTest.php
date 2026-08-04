@@ -2,7 +2,9 @@
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\LazyGrid;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
 
@@ -199,7 +201,7 @@ it('applies lazy grid scroll-indicator props', function () {
     // The lazy_grid type is registered by the native-ui plugin's manifest,
     // but the element class is core-owned — register it explicitly so this
     // stays testable without the plugin.
-    \Native\Mobile\Edge\ElementRegistry::register('lazy_grid', \Native\Mobile\Edge\Elements\LazyGrid::class);
+    ElementRegistry::register('lazy_grid', LazyGrid::class);
 
     NativeElementCollector::open('lazy_grid', [
         'columns' => 3,
@@ -214,7 +216,7 @@ it('applies lazy grid scroll-indicator props', function () {
     expect($tree['props']['columns'])->toBe(3);
     expect($tree['props']['shows_indicators'])->toBeTrue();
 
-    \Native\Mobile\Edge\ElementRegistry::reset();
+    ElementRegistry::reset();
 });
 
 it('applies refreshable scroll-indicator props', function () {
