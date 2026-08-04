@@ -457,14 +457,14 @@ class TailwindParser
             // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
             // `inset-` branch, which would otherwise match them first and try
             // to parse "x-0" as a spacing value.
-            str_starts_with($class, 'inset-x-') => self::parseInset(substr($class, 8), ['positionLeft', 'positionRight']),
-            str_starts_with($class, 'inset-y-') => self::parseInset(substr($class, 8), ['positionTop', 'positionBottom']),
-            str_starts_with($class, 'inset-') => self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft']),
+            str_starts_with($class, 'inset-x-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionLeft', 'positionRight'])),
+            str_starts_with($class, 'inset-y-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionTop', 'positionBottom'])),
+            str_starts_with($class, 'inset-') => self::explicitInsets(self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft'])),
 
-            str_starts_with($class, 'left-') => self::parseSpacingUniform('positionLeft', substr($class, 5)),
-            str_starts_with($class, 'top-') => self::parseSpacingUniform('positionTop', substr($class, 4)),
-            str_starts_with($class, 'right-') => self::parseSpacingUniform('positionRight', substr($class, 6)),
-            str_starts_with($class, 'bottom-') => self::parseSpacingUniform('positionBottom', substr($class, 7)),
+            str_starts_with($class, 'left-') => self::explicitInsets(self::parseSpacingUniform('positionLeft', substr($class, 5))),
+            str_starts_with($class, 'top-') => self::explicitInsets(self::parseSpacingUniform('positionTop', substr($class, 4))),
+            str_starts_with($class, 'right-') => self::explicitInsets(self::parseSpacingUniform('positionRight', substr($class, 6))),
+            str_starts_with($class, 'bottom-') => self::explicitInsets(self::parseSpacingUniform('positionBottom', substr($class, 7))),
 
             // Colors and text
             // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
@@ -812,6 +812,29 @@ class TailwindParser
      * @param  list<string>  $edges
      * @return array<string, mixed>|null
      */
+    /**
+     * Mark explicitly-authored zero insets as IEEE -0.0. The wire's packed
+     * node has no spare byte to distinguish "unset" from "explicit 0", so
+     * +0.0 means unset and the sign bit carries "the author wrote
+     * `bottom-0`" — which must anchor to the bottom edge, not fall through
+     * to the top default. -0.0 survives the f32 wire bit-exactly; the
+     * native layout treats `!= 0 || signbit` as "edge is set".
+     */
+    private static function explicitInsets(?array $parsed): ?array
+    {
+        if ($parsed === null) {
+            return null;
+        }
+
+        foreach ($parsed as $key => $value) {
+            if ($value === 0 || $value === 0.0) {
+                $parsed[$key] = -0.0;
+            }
+        }
+
+        return $parsed;
+    }
+
     private static function parseInset(string $value, array $edges): ?array
     {
         $result = [];

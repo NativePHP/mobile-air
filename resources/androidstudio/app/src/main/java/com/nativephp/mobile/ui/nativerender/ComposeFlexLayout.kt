@@ -92,9 +92,12 @@ fun FlexContainer(
             }
             // Render absolute children on top — anchor to the appropriate
             // corner based on which edge insets are set, then offset inward.
-            // Same convention as iOS FlexContainer.placeAbsolute: when
-            // `right` is set and `left` is 0, anchor to the right edge;
-            // same for bottom vs top.
+            // Same convention as iOS FlexContainer.placeAbsolute: +0.0 means
+            // unset, any non-zero value anchors (negatives overhang — the
+            // `-right-8` Tailwind bleed), and IEEE -0.0 is an authored
+            // explicit zero (`bottom-0`, `right-0`), which anchors to that
+            // edge too. When both opposing edges are authored, left/top win
+            // (CSS precedence).
             childNodes.forEachIndexed { i, node ->
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
                     val left = node.layout?.positionLeft ?: 0f
@@ -102,20 +105,19 @@ fun FlexContainer(
                     val right = node.layout?.positionRight ?: 0f
                     val bottom = node.layout?.positionBottom ?: 0f
 
-                    // NON-ZERO rather than positive, so NEGATIVE insets work:
-                    // `-right-8` anchors trailing and offsets OUTWARD,
-                    // deliberately overhanging the edge (Tailwind's bleed).
-                    // Zero still reads as "no anchor on that edge" — the
-                    // packed node struct has no spare byte to distinguish an
-                    // unset edge from an explicit `right-0`.
+                    // -0.0f == 0f in Kotlin, so authored zeros need the
+                    // raw sign bit.
+                    fun isSet(v: Float) = v != 0f || v.toRawBits() != 0
+                    val anchorEnd = isSet(right) && !isSet(left)
+                    val anchorBottom = isSet(bottom) && !isSet(top)
                     val anchor = when {
-                        right != 0f && bottom != 0f -> Alignment.BottomEnd
-                        right != 0f                 -> Alignment.TopEnd
-                        bottom != 0f                -> Alignment.BottomStart
-                        else                        -> Alignment.TopStart
+                        anchorEnd && anchorBottom -> Alignment.BottomEnd
+                        anchorEnd                 -> Alignment.TopEnd
+                        anchorBottom              -> Alignment.BottomStart
+                        else                      -> Alignment.TopStart
                     }
-                    val offsetX = if (right != 0f) (-right).dp else left.dp
-                    val offsetY = if (bottom != 0f) (-bottom).dp else top.dp
+                    val offsetX = if (anchorEnd) (-right).dp else left.dp
+                    val offsetY = if (anchorBottom) (-bottom).dp else top.dp
 
                     Box(
                         modifier = Modifier
