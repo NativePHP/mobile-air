@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge;
 
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Refreshable;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
 use Native\Mobile\Edge\Elements\Stack;
@@ -1520,6 +1521,15 @@ class NativeElementCollector
             // Accept both kebab (`shows-indicators`) and camel
             // (`showsIndicators`) — the precompiler keeps attribute names
             // verbatim, and the rest of the API takes either form.
+            if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
+                $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
+            }
+        }
+
+        if ($element instanceof Refreshable) {
+            // Refreshable IS the scrolling container, so it honours the same
+            // indicator prop as scroll-view (iOS-only in effect — Compose's
+            // LazyColumn draws no indicators to begin with).
             if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
                 $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
             }

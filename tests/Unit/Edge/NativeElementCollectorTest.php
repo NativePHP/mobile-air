@@ -195,6 +195,20 @@ it('applies scroll view props', function () {
     expect($tree['children'])->toHaveCount(1);
 });
 
+it('applies refreshable scroll-indicator props', function () {
+    NativeElementCollector::open('refreshable', [
+        'shows-indicators' => false,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Scrollable']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('refreshable');
+    expect($tree['props']['shows_indicators'])->toBeFalse();
+    expect($tree['children'])->toHaveCount(1);
+});
+
 it('applies node-level onPress and onLongPress', function () {
     NativeElementCollector::open('column', [
         '_press' => 'tapColumn',
