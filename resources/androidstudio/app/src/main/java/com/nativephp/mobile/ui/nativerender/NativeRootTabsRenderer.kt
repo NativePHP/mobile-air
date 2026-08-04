@@ -241,6 +241,13 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
 
     Scaffold(
+        // A persistent background layer (map behind the app) needs the
+        // content canvas transparent; otherwise keep the themed surface.
+        containerColor = if (LocalBackgroundLayerPresent.current) {
+            androidx.compose.ui.graphics.Color.Transparent
+        } else {
+            MaterialTheme.colorScheme.background
+        },
         topBar = {
             if (hasNavBar && !hideNavBar && !isOnSearchTab) {
                 TopAppBar(
