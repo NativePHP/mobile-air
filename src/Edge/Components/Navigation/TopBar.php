@@ -28,6 +28,6 @@ class TopBar extends EdgeComponent
             'background_color' => $this->backgroundColor,
             'text_color' => $this->textColor,
             'elevation' => $this->elevation,
-        ], fn ($value) => $value !== null && $value !== false);
+        ], fn ($value) => $value !== null);
     }
 }
