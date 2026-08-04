@@ -195,6 +195,28 @@ it('applies scroll view props', function () {
     expect($tree['children'])->toHaveCount(1);
 });
 
+it('applies lazy grid scroll-indicator props', function () {
+    // The lazy_grid type is registered by the native-ui plugin's manifest,
+    // but the element class is core-owned — register it explicitly so this
+    // stays testable without the plugin.
+    \Native\Mobile\Edge\ElementRegistry::register('lazy_grid', \Native\Mobile\Edge\Elements\LazyGrid::class);
+
+    NativeElementCollector::open('lazy_grid', [
+        'columns' => 3,
+        'shows-indicators' => true,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Cell']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('lazy_grid');
+    expect($tree['props']['columns'])->toBe(3);
+    expect($tree['props']['shows_indicators'])->toBeTrue();
+
+    \Native\Mobile\Edge\ElementRegistry::reset();
+});
+
 it('applies refreshable scroll-indicator props', function () {
     NativeElementCollector::open('refreshable', [
         'shows-indicators' => false,
