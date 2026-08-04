@@ -4,7 +4,7 @@ namespace Native\Mobile\Validation;
 
 use Illuminate\Filesystem\Filesystem;
 use Native\Mobile\Edge\NativeComponent;
-use Native\Mobile\Support\Path;
+use Native\Mobile\Support\PathHelper;
 
 class NativeComponentAnalyzer
 {
@@ -231,7 +231,7 @@ class NativeComponentAnalyzer
 
     protected function resolveClassName(string $filePath, string $basePath): ?string
     {
-        $relative = Path::relativeTo($filePath, $basePath);
+        $relative = PathHelper::relativeTo($filePath, $basePath);
         $relative = substr($relative, 0, -4); // Remove .php
         $relative = str_replace('/', '\\', $relative);
 
@@ -240,6 +240,6 @@ class NativeComponentAnalyzer
 
     protected function relativePath(string $path): string
     {
-        return Path::relativeTo($path, base_path());
+        return PathHelper::relativeTo($path, base_path());
     }
 }

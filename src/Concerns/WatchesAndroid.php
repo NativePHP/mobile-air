@@ -3,7 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use Native\Mobile\Edge\NativeRouter;
-use Native\Mobile\Support\Path;
+use Native\Mobile\Support\PathHelper;
 use Symfony\Component\Process\Process;
 
 trait WatchesAndroid
@@ -252,7 +252,7 @@ trait WatchesAndroid
     private function handleAndroidFileChange(string $filePath): void
     {
         // Forward slashes throughout, so the comparisons below hold on Windows too
-        $relativePath = Path::relativeTo($filePath, base_path());
+        $relativePath = PathHelper::relativeTo($filePath, base_path());
 
         if (str_starts_with($relativePath, 'public/build')) {
             $this->publicBuildChangeTime = microtime(true);
@@ -436,12 +436,12 @@ trait WatchesAndroid
         $deviceBasePath = "/data/data/{$packageName}/app_storage/laravel";
 
         // Normalize paths for cross-platform compatibility
-        $localPath = Path::normalize($localPath);
-        $base = Path::normalize(base_path());
+        $localPath = PathHelper::normalize($localPath);
+        $base = PathHelper::normalize(base_path());
 
         // Outside the project root we keep the relative path the caller worked out.
         if (str_starts_with($localPath, $base.'/')) {
-            $relativePath = Path::relativeTo($localPath, $base);
+            $relativePath = PathHelper::relativeTo($localPath, $base);
         }
 
         $devicePath = "{$deviceBasePath}/{$relativePath}";

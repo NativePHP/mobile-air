@@ -6,7 +6,7 @@ use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Str;
 use Native\Mobile\Plugins\PluginRegistry;
-use Native\Mobile\Support\Path;
+use Native\Mobile\Support\PathHelper;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\multiselect;
@@ -196,7 +196,7 @@ class PluginMakeHookCommand extends Command
             $namespace = $plugin->getNamespace();
 
             // Make path relative for display
-            $relativePath = Path::relativeTo($path, base_path());
+            $relativePath = PathHelper::relativeTo($path, base_path());
 
             $options[$path] = "{$name} ({$namespace}) - {$relativePath}";
         }

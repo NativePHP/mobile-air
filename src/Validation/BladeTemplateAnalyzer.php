@@ -2,7 +2,7 @@
 
 namespace Native\Mobile\Validation;
 
-use Native\Mobile\Support\Path;
+use Native\Mobile\Support\PathHelper;
 
 class BladeTemplateAnalyzer
 {
@@ -191,6 +191,6 @@ class BladeTemplateAnalyzer
 
     protected function relativePath(string $path): string
     {
-        return Path::relativeTo($path, base_path());
+        return PathHelper::relativeTo($path, base_path());
     }
 }

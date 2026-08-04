@@ -2,7 +2,7 @@
 
 namespace Native\Mobile\Support;
 
-class Path
+class PathHelper
 {
     /**
      * Rewrite a path to use forward slashes.
