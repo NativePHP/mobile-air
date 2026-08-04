@@ -25,12 +25,38 @@ class PluginManifest implements JsonSerializable
 
     public readonly array $components;
 
-    public function __construct(array $data)
+    /**
+     * Names of the optional feature bundles whose env gate is enabled, in
+     * manifest order. Everything they declare is already merged into the
+     * sections above — this is what they were, for tooling and diagnostics.
+     *
+     * @var list<string>
+     */
+    public readonly array $enabledFeatures;
+
+    /**
+     * Every feature bundle declared by the manifest, enabled or not, keyed
+     * by name. `native:plugin:list` reads this to show what an app could
+     * turn on.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    public readonly array $features;
+
+    public function __construct(array $data, ?callable $envResolver = null)
     {
         $this->validate($data);
 
         // Normalize the data to new format
         $data = $this->normalizeToNewFormat($data);
+
+        // Fold enabled feature bundles into the platform sections BEFORE
+        // they're assigned: every downstream consumer (both compilers,
+        // plugin:list, the Plugin accessors) then sees one effective
+        // manifest and needs no feature awareness of its own.
+        $this->features = $data['features'] ?? [];
+        [$data, $enabled] = $this->resolveFeatures($data, $envResolver);
+        $this->enabledFeatures = $enabled;
 
         $this->namespace = $data['namespace'];
         $this->bridgeFunctions = $data['bridge_functions'] ?? [];
@@ -41,6 +67,158 @@ class PluginManifest implements JsonSerializable
         $this->events = $data['events'] ?? [];
         $this->hooks = $data['hooks'] ?? [];
         $this->secrets = $data['secrets'] ?? [];
+    }
+
+    /**
+     * Merge every enabled feature bundle into the manifest's own sections.
+     *
+     * A bundle looks like a miniature manifest — it may declare
+     * `bridge_functions`, `events`, and `ios` / `android` sections — and
+     * is gated by one environment variable:
+     *
+     *   "features": {
+     *       "crashlytics": {
+     *           "env": "NATIVEPHP_FIREBASE_CRASHLYTICS",
+     *           "bridge_functions": [ ... ],
+     *           "ios": {"dependencies": {"swift_packages": [ ... ]}},
+     *           "android": {"dependencies": {"implementation": [ ... ]}}
+     *       }
+     *   }
+     *
+     * A bundle with no `env` key is always on (a way to group related
+     * declarations); an unset or falsy variable leaves every trace of the
+     * feature out of the build — no sources, no SDK products, no bridge
+     * registrations pointing at classes that were never compiled.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array{0: array<string, mixed>, 1: list<string>}
+     */
+    protected function resolveFeatures(array $data, ?callable $envResolver): array
+    {
+        $features = $data['features'] ?? [];
+        unset($data['features']);
+
+        if ($features === []) {
+            return [$data, []];
+        }
+
+        $envResolver ??= static fn (string $key) => env($key);
+        $enabled = [];
+
+        foreach ($features as $name => $feature) {
+            if (! is_array($feature)) {
+                continue;
+            }
+
+            if (! $this->featureIsEnabled($feature, $envResolver)) {
+                continue;
+            }
+
+            $enabled[] = (string) $name;
+
+            $data['bridge_functions'] = array_merge(
+                $data['bridge_functions'] ?? [],
+                $feature['bridge_functions'] ?? [],
+            );
+
+            $data['events'] = array_values(array_unique(array_merge(
+                $data['events'] ?? [],
+                $feature['events'] ?? [],
+            )));
+
+            foreach (['ios', 'android'] as $platform) {
+                if (isset($feature[$platform]) && is_array($feature[$platform])) {
+                    $data[$platform] = $this->mergePlatformSection(
+                        $data[$platform] ?? [],
+                        $feature[$platform],
+                    );
+                }
+            }
+        }
+
+        return [$data, $enabled];
+    }
+
+    /**
+     * A bundle without an `env` key is unconditional; otherwise the
+     * variable is read with Laravel's truthiness ("false"/"0"/"" are off).
+     *
+     * @param  array<string, mixed>  $feature
+     */
+    protected function featureIsEnabled(array $feature, callable $envResolver): bool
+    {
+        if (! isset($feature['env'])) {
+            return true;
+        }
+
+        return filter_var($envResolver((string) $feature['env']), FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * Merge one platform section of a feature bundle into the plugin's.
+     *
+     * List-valued keys concatenate (permissions, capabilities, gradle
+     * plugins, …); maps merge key-wise (info_plist, entitlements);
+     * `dependencies` recurses so a feature can add Gradle coordinates or
+     * Swift package PRODUCTS without restating the package itself.
+     *
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $addition
+     * @return array<string, mixed>
+     */
+    protected function mergePlatformSection(array $base, array $addition): array
+    {
+        foreach ($addition as $key => $value) {
+            if ($key === 'dependencies' && is_array($value)) {
+                $base['dependencies'] = $this->mergeDependencies($base['dependencies'] ?? [], $value);
+
+                continue;
+            }
+
+            if (! isset($base[$key])) {
+                $base[$key] = $value;
+
+                continue;
+            }
+
+            if (is_array($value) && is_array($base[$key])) {
+                $base[$key] = array_is_list($value) && array_is_list($base[$key])
+                    ? array_merge($base[$key], $value)
+                    : array_replace($base[$key], $value);
+
+                continue;
+            }
+
+            $base[$key] = $value;
+        }
+
+        return $base;
+    }
+
+    /**
+     * Merge dependency blocks. Everything concatenates — including
+     * `swift_packages`: the iOS compiler already resolves a repeated
+     * package url to the existing XCRemoteSwiftPackageReference and just
+     * attaches the new products to the target, so a feature declares the
+     * same package url with only the products it needs.
+     *
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $addition
+     * @return array<string, mixed>
+     */
+    protected function mergeDependencies(array $base, array $addition): array
+    {
+        foreach ($addition as $key => $value) {
+            if (! is_array($value)) {
+                $base[$key] = $value;
+
+                continue;
+            }
+
+            $base[$key] = array_values(array_unique(array_merge($base[$key] ?? [], $value), SORT_REGULAR));
+        }
+
+        return $base;
     }
 
     /**
@@ -211,7 +389,7 @@ class PluginManifest implements JsonSerializable
         }
     }
 
-    public static function fromFile(string $path): static
+    public static function fromFile(string $path, ?callable $envResolver = null): static
     {
         if (! file_exists($path)) {
             throw new InvalidArgumentException(
@@ -228,7 +406,7 @@ class PluginManifest implements JsonSerializable
             );
         }
 
-        return new static($data);
+        return new static($data, $envResolver);
     }
 
     public function toArray(): array
@@ -243,6 +421,8 @@ class PluginManifest implements JsonSerializable
             'events' => $this->events,
             'hooks' => $this->hooks,
             'secrets' => $this->secrets,
+            'features' => $this->features,
+            'enabled_features' => $this->enabledFeatures,
         ];
     }
 

@@ -204,7 +204,12 @@ class IOSPluginCompiler
     {
         $sourcePath = $plugin->getIosSourcePath();
 
-        if (! $this->files->isDirectory($sourcePath)) {
+        // Sources from enabled feature bundles only — a disabled feature's
+        // Swift never reaches the project, so it can't reference SDK
+        // products the build didn't link.
+        $featurePaths = $plugin->getFeatureSourcePaths('ios');
+
+        if (! $this->files->isDirectory($sourcePath) && $featurePaths === []) {
             return;
         }
 
@@ -213,7 +218,13 @@ class IOSPluginCompiler
         $this->files->ensureDirectoryExists($pluginDir);
 
         // Copy all Swift files recursively
-        $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+        if ($this->files->isDirectory($sourcePath)) {
+            $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+        }
+
+        foreach ($featurePaths as $featurePath) {
+            $this->copySwiftFilesRecursively($featurePath, $pluginDir);
+        }
     }
 
     /**
