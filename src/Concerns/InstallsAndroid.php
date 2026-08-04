@@ -5,6 +5,7 @@ namespace Native\Mobile\Concerns;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Support\PhpBinaries;
 use ZipArchive;
 
 use function Laravel\Prompts\error;
@@ -129,8 +130,15 @@ trait InstallsAndroid
         $phpVersion = $this->phpVersion;
         $versions = $this->versionsManifest;
 
-        if (! $versions || ! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries not available");
+        // No manifest at all means the fetch already failed and explained
+        // itself. Repeating "not available" here would point at the PHP
+        // version, which isn't the problem.
+        if (! $versions) {
+            return;
+        }
+
+        if (! isset($versions['versions'][$phpVersion])) {
+            error("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
 
             return;
         }
