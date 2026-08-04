@@ -94,14 +94,12 @@ class IOSPluginCompiler
             throw new PluginConflictException($conflicts);
         }
 
-        $allPlugins = $this->registry->all();
-        $hookRunner = $this->getHookRunner();
-
         // A plugin that declares `platforms: ["android"]` contributes nothing
         // to an iOS build: no sources, no registrations, no Info.plist keys.
         // Hooks still run for every plugin — a hook is the plugin's own code
         // and gets to decide for itself.
-        $iosPlugins = $allPlugins->filter(fn (Plugin $p) => $p->supportsPlatform('ios'));
+        $allPlugins = $this->registry->all()->filter(fn (Plugin $p) => $p->supportsPlatform('ios'));
+        $hookRunner = $this->getHookRunner();
 
         // Run pre-compile hooks
         $hookRunner->runPreCompileHooks();
@@ -115,10 +113,10 @@ class IOSPluginCompiler
         $this->files->ensureDirectoryExists($this->generatedPath);
 
         // Get plugins with iOS code (for copying files)
-        $pluginsWithCode = $iosPlugins->filter(fn (Plugin $p) => $p->hasIosCode());
+        $pluginsWithCode = $allPlugins->filter(fn (Plugin $p) => $p->hasIosCode());
 
         // Get plugins with iOS bridge functions (for registration)
-        $pluginsWithFunctions = $iosPlugins->filter(function (Plugin $p) {
+        $pluginsWithFunctions = $allPlugins->filter(function (Plugin $p) {
             $functions = $p->getBridgeFunctions();
             foreach ($functions as $function) {
                 if (! empty($function['ios'])) {
@@ -130,12 +128,12 @@ class IOSPluginCompiler
         });
 
         // Get plugins with iOS info_plist entries or dependencies
-        $pluginsWithIosData = $iosPlugins->filter(function (Plugin $p) {
+        $pluginsWithIosData = $allPlugins->filter(function (Plugin $p) {
             return ! empty($p->getIosInfoPlist()) || ! empty($p->getIosDependencies());
         });
 
         // Check for plugins with iOS UI component renderers
-        $pluginsWithRenderers = $iosPlugins->filter(function (Plugin $p) {
+        $pluginsWithRenderers = $allPlugins->filter(function (Plugin $p) {
             foreach ($p->getComponents() as $component) {
                 if (! empty($component['ios_renderer'])) {
                     return true;
@@ -168,31 +166,31 @@ class IOSPluginCompiler
         $pluginsWithCode->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));
 
         // Generate the registration file (filters for iOS functions internally)
-        $this->generateBridgeFunctionRegistration($iosPlugins);
+        $this->generateBridgeFunctionRegistration($allPlugins);
 
         // Generate UI plugin renderer registration
-        $this->generateRendererRegistration($iosPlugins);
+        $this->generateRendererRegistration($allPlugins);
 
         // Merge Info.plist entries (for any plugins with iOS permissions)
-        $this->mergeInfoPlistEntries($iosPlugins);
+        $this->mergeInfoPlistEntries($allPlugins);
 
         // Write per-locale InfoPlist.strings for any localized permission entries
-        $this->writeInfoPlistLocalizations($iosPlugins);
+        $this->writeInfoPlistLocalizations($allPlugins);
 
         // Merge background modes into Info.plist
-        $this->mergeBackgroundModes($iosPlugins);
+        $this->mergeBackgroundModes($allPlugins);
 
         // Merge entitlements from plugins
-        $this->mergeEntitlements($iosPlugins);
+        $this->mergeEntitlements($allPlugins);
 
         // Add Swift Package dependencies
-        $this->addSwiftPackageDependencies($iosPlugins);
+        $this->addSwiftPackageDependencies($allPlugins);
 
         // Add CocoaPods dependencies
-        $this->addPodDependencies($iosPlugins);
+        $this->addPodDependencies($allPlugins);
 
         // Update Xcode project file
-        $this->updateXcodeProject($iosPlugins);
+        $this->updateXcodeProject($allPlugins);
 
         // Copy manifest-declared assets
         $hookRunner->copyManifestAssets();
