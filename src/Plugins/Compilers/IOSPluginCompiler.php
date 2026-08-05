@@ -8,6 +8,7 @@ use Native\Mobile\Exceptions\PluginConflictException;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Plugins\SwiftSourceFilter;
 use Native\Mobile\Support\Stub;
 
 class IOSPluginCompiler
@@ -93,7 +94,11 @@ class IOSPluginCompiler
             throw new PluginConflictException($conflicts);
         }
 
-        $allPlugins = $this->registry->all();
+        // A plugin that declares `platforms: ["android"]` contributes nothing
+        // to an iOS build: no sources, no registrations, no Info.plist keys.
+        // Hooks still run for every plugin — a hook is the plugin's own code
+        // and gets to decide for itself.
+        $allPlugins = $this->registry->all()->filter(fn (Plugin $p) => $p->supportsPlatform('ios'));
         $hookRunner = $this->getHookRunner();
 
         // Run pre-compile hooks
@@ -160,7 +165,7 @@ class IOSPluginCompiler
         // Copy plugin source files
         $pluginsWithCode->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));
 
-        // Generate the registration file (uses all plugins, filters for iOS functions internally)
+        // Generate the registration file (filters for iOS functions internally)
         $this->generateBridgeFunctionRegistration($allPlugins);
 
         // Generate UI plugin renderer registration
@@ -217,46 +222,77 @@ class IOSPluginCompiler
         $pluginDir = $this->generatedPath.'/'.$plugin->getNamespace();
         $this->files->ensureDirectoryExists($pluginDir);
 
-        // Copy all Swift files recursively
-        if ($this->files->isDirectory($sourcePath)) {
+        $explicit = $plugin->getIosSources();
+
+        if ($explicit !== []) {
+            $this->copyDeclaredSwiftSources($plugin, $sourcePath, $pluginDir, $explicit);
+        } elseif ($this->files->isDirectory($sourcePath)) {
             $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
         }
 
+        // Enabled feature bundles contribute their own directories in EITHER
+        // mode — a plugin that names explicit `ios.sources` still gets the
+        // sources of whatever features the app turned on.
         foreach ($featurePaths as $featurePath) {
             $this->copySwiftFilesRecursively($featurePath, $pluginDir);
         }
     }
 
     /**
-     * Recursively copy Swift files, preserving directory structure
+     * Copy only the paths a plugin names in `ios.sources`.
+     *
+     * A named file is copied as-is; a named directory is walked with the same
+     * exclusions as the automatic path, so an explicit list still cannot drag
+     * a test target into the app.
+     *
+     * @param  list<string>  $sources
+     */
+    protected function copyDeclaredSwiftSources(Plugin $plugin, string $source, string $destination, array $sources): void
+    {
+        foreach ($sources as $relative) {
+            $relative = trim($relative, '/');
+            $path = $source.'/'.$relative;
+
+            if ($this->files->isDirectory($path)) {
+                $this->copySwiftFilesRecursively($path, $destination.'/'.$relative);
+
+                continue;
+            }
+
+            if (! $this->files->isFile($path)) {
+                $this->warn("Plugin '{$plugin->name}': ios.sources names a path that does not exist: {$relative}");
+
+                continue;
+            }
+
+            $this->files->ensureDirectoryExists(dirname($destination.'/'.$relative));
+            $this->files->copy($path, $destination.'/'.$relative);
+        }
+    }
+
+    /**
+     * Recursively copy Swift files, preserving directory structure.
+     *
+     * SwiftPM manifests, test targets and build residue are skipped —
+     * see SwiftSourceFilter for why each one cannot compile in an app target.
      */
     protected function copySwiftFilesRecursively(string $source, string $destination): void
     {
-        // First, copy any Swift files at the root level
-        $rootFiles = glob($source.'/*.swift') ?: [];
-        foreach ($rootFiles as $file) {
-            $filename = basename($file);
-            $this->files->copy($file, $destination.'/'.$filename);
-        }
-
-        // Then recursively handle subdirectories
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::SELF_FIRST
-        );
-
-        foreach ($iterator as $item) {
-            $relativePath = substr($item->getPathname(), strlen($source) + 1);
+        foreach (SwiftSourceFilter::collect($source) as $relativePath) {
             $destPath = $destination.'/'.$relativePath;
 
-            if ($item->isDir()) {
-                $this->files->ensureDirectoryExists($destPath);
-            } elseif ($item->isFile() && $item->getExtension() === 'swift') {
-                // Skip root files (already copied above)
-                if (dirname($item->getPathname()) !== $source) {
-                    $this->files->copy($item->getPathname(), $destPath);
-                }
-            }
+            $this->files->ensureDirectoryExists(dirname($destPath));
+            $this->files->copy($source.'/'.$relativePath, $destPath);
+        }
+    }
+
+    /**
+     * Surface a build-time warning, when there is an output to surface it on.
+     */
+    protected function warn(string $message): void
+    {
+        if ($this->output !== null && method_exists($this->output, 'warn')) {
+            $this->output->warn($message);
         }
     }
 

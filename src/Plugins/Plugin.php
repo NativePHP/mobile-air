@@ -19,6 +19,21 @@ class Plugin
         return $this->manifest->namespace;
     }
 
+    /**
+     * Platforms this plugin declares native code for.
+     *
+     * @return list<string>
+     */
+    public function getPlatforms(): array
+    {
+        return $this->manifest->platforms;
+    }
+
+    public function supportsPlatform(string $platform): bool
+    {
+        return in_array(strtolower($platform), $this->manifest->platforms, true);
+    }
+
     public function getDescription(): string
     {
         return $this->description;
@@ -291,6 +306,10 @@ class Plugin
 
     public function hasAndroidCode(): bool
     {
+        if (! $this->supportsPlatform('android')) {
+            return false;
+        }
+
         $path = $this->getAndroidSourcePath();
 
         if (! is_dir($path)) {
@@ -319,30 +338,31 @@ class Plugin
 
     public function hasIosCode(): bool
     {
-        $path = $this->getIosSourcePath();
-
-        if (! is_dir($path)) {
+        if (! $this->supportsPlatform('ios')) {
             return false;
         }
 
-        // Check if there are any .swift files in the directory
-        $files = glob($path.'/*.swift') ?: [];
-        if (! empty($files)) {
-            return true;
-        }
+        return SwiftSourceFilter::hasAny($this->getIosSourcePath());
+    }
 
-        // Check subdirectories recursively
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-        );
+    /**
+     * An explicit allow-list of iOS sources, from the manifest's
+     * `ios.sources`. Paths are relative to the plugin's iOS source path and
+     * may name a file or a directory.
+     *
+     * When present it is authoritative: nothing outside it is copied. It is
+     * the escape hatch for a layout the automatic exclusions get wrong.
+     *
+     * @return list<string>
+     */
+    public function getIosSources(): array
+    {
+        $sources = $this->manifest->ios['sources'] ?? [];
 
-        foreach ($iterator as $file) {
-            if ($file->isFile() && $file->getExtension() === 'swift') {
-                return true;
-            }
-        }
-
-        return false;
+        return array_values(array_filter(
+            is_array($sources) ? $sources : [],
+            fn ($source) => is_string($source) && $source !== ''
+        ));
     }
 
     public function getAndroidSourceFiles(): array
@@ -374,21 +394,12 @@ class Plugin
             return [];
         }
 
-        $files = [];
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $this->getIosSourcePath(),
-                \RecursiveDirectoryIterator::SKIP_DOTS
-            )
+        $root = $this->getIosSourcePath();
+
+        return array_map(
+            fn (string $relative) => $root.'/'.$relative,
+            SwiftSourceFilter::collect($root)
         );
-
-        foreach ($iterator as $file) {
-            if ($file->isFile() && $file->getExtension() === 'swift') {
-                $files[] = $file->getPathname();
-            }
-        }
-
-        return $files;
     }
 
     public function toArray(): array

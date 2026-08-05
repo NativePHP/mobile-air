@@ -134,7 +134,10 @@ class AndroidPluginCompiler
             throw new PluginConflictException($conflicts);
         }
 
-        $allPlugins = $this->registry->all();
+        // A plugin that declares `platforms: ["ios"]` contributes nothing to an
+        // Android build. Hooks still run for every plugin — a hook is the
+        // plugin's own code and gets to decide for itself.
+        $allPlugins = $this->registry->all()->filter(fn (Plugin $p) => $p->supportsPlatform('android'));
         $hookRunner = $this->getHookRunner();
 
         // Run pre-compile hooks
