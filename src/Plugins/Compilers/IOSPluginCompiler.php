@@ -625,6 +625,10 @@ class IOSPluginCompiler
             if (str_contains($plist, "<key>{$key}</key>")) {
                 if (is_array($value)) {
                     $plist = $this->mergeArrayEntry($plist, $key, $value);
+                } elseif (is_bool($value)) {
+                    $plist = $this->updateBooleanEntry($plist, $key, $value);
+                } elseif (is_int($value)) {
+                    $plist = $this->updateIntegerEntry($plist, $key, $value);
                 } elseif (is_string($value)) {
                     $plist = $this->updateStringEntry($plist, $key, $this->substituteEnvPlaceholders($value));
                 }
@@ -640,6 +644,14 @@ class IOSPluginCompiler
                     $arrayContent .= "\n\t\t<string>{$item}</string>";
                 }
                 $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
+            } elseif (is_bool($value)) {
+                // Booleans are their own plist type. Falling through to the
+                // string branch wrote `(string) false` — an EMPTY STRING —
+                // which frameworks read as "unset" and quietly ignore
+                // (e.g. FirebaseAppDelegateProxyEnabled stayed enabled).
+                $entry = "\n\t<key>{$key}</key>\n\t<".($value ? 'true' : 'false').'/>';
+            } elseif (is_int($value)) {
+                $entry = "\n\t<key>{$key}</key>\n\t<integer>{$value}</integer>";
             } else {
                 // Handle string values - substitute placeholders
                 $value = $this->substituteEnvPlaceholders($value);
@@ -661,6 +673,38 @@ class IOSPluginCompiler
     /**
      * Update an existing string entry's value in the plist
      */
+    /**
+     * Replace an existing entry with a boolean, whatever type it currently
+     * holds. A key previously written as an empty `<string></string>` (the
+     * old boolean bug) must become a real `<true/>`/`<false/>` rather than
+     * being skipped, or a rebuild would never repair it.
+     */
+    protected function updateBooleanEntry(string $plist, string $key, bool $value): string
+    {
+        return $this->replaceTypedEntry($plist, $key, '<'.($value ? 'true' : 'false').'/>');
+    }
+
+    protected function updateIntegerEntry(string $plist, string $key, int $value): string
+    {
+        return $this->replaceTypedEntry($plist, $key, "<integer>{$value}</integer>");
+    }
+
+    /**
+     * Swap the VALUE node following a key, regardless of its current type
+     * (string, integer, true/false).
+     */
+    protected function replaceTypedEntry(string $plist, string $key, string $valueNode): string
+    {
+        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*)(<string>[^<]*<\/string>|<integer>[^<]*<\/integer>|<true\/>|<false\/>)/';
+
+        return preg_replace_callback(
+            $pattern,
+            fn (array $matches): string => $matches[1].$valueNode,
+            $plist,
+            1
+        );
+    }
+
     protected function updateStringEntry(string $plist, string $key, string $value): string
     {
         $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<string>)([^<]*)(<\/string>)/';
