@@ -177,7 +177,7 @@ class HotReloadCoordinator {
                 PHPQueueWorker.shared.start()
                 AsyncTaskExecutor.shared.start()
             } else {
-                _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
+                _ = NativePHPApp.artisan(additionalArgs: ["view:clear"])
             }
 
             if isNativeUI {
