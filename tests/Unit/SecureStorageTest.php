@@ -24,9 +24,11 @@ it('reports a hit with its value', function () {
 });
 
 it('reports a key that holds nothing', function () {
+    // The native side answers a miss with the empty string, as it always
+    // has — `status` is what separates it from a stored "".
     FakeBridge::enable()->respondTo('SecureStorage.Get', [
         'status' => 'not_found',
-        'value' => null,
+        'value' => '',
     ]);
 
     $result = (new SecureStorage)->read('access_token');
@@ -36,10 +38,32 @@ it('reports a key that holds nothing', function () {
         ->and($result->value)->toBeNull();
 });
 
+it('lets an explicit status outrank an empty value', function () {
+    FakeBridge::enable()->respondTo('SecureStorage.Get', [
+        'status' => 'found',
+        'value' => '',
+    ]);
+
+    $result = (new SecureStorage)->read('access_token');
+
+    expect($result->found())->toBeTrue()
+        ->and($result->missing())->toBeFalse()
+        ->and($result->value)->toBe('');
+});
+
+it('tolerates a null value where the native side sends an empty string', function () {
+    FakeBridge::enable()->respondTo('SecureStorage.Get', [
+        'status' => 'not_found',
+        'value' => null,
+    ]);
+
+    expect((new SecureStorage)->read('access_token')->missing())->toBeTrue();
+});
+
 it('reports a locked device apart from a missing key', function () {
     FakeBridge::enable()->respondTo('SecureStorage.Get', [
         'status' => 'unavailable',
-        'value' => null,
+        'value' => '',
         'code' => 'INTERACTION_NOT_ALLOWED',
         'message' => 'Protected data is unavailable while the device is locked',
     ]);
@@ -141,8 +165,8 @@ it('still returns null from get for every non-hit', function (array $response) {
 
     expect((new SecureStorage)->get('access_token'))->toBeNull();
 })->with([
-    'not found' => [['status' => 'not_found', 'value' => null]],
-    'unavailable' => [['status' => 'unavailable', 'value' => null]],
+    'not found' => [['status' => 'not_found', 'value' => '']],
+    'unavailable' => [['status' => 'unavailable', 'value' => '']],
     'failed' => [['status' => 'error', 'code' => 'EXECUTION_FAILED']],
     'legacy empty string' => [['value' => '']],
 ]);

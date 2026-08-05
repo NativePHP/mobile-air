@@ -1349,7 +1349,7 @@ export async function secureStorageSet(key, value, accessibility) {
  * won't decrypt an item that may well be there.
  *
  * @param {string} key - The key to retrieve
- * @returns {Promise<{status: 'found'|'not_found'|'unavailable'|'error', value: string|null, code?: string, message?: string}>}
+ * @returns {Promise<{status: 'found'|'not_found'|'unavailable'|'error', value: string, code?: string, message?: string}>}
  */
 export async function secureStorageGet(key) {
     return bridgeCall('SecureStorage.Get', { key });

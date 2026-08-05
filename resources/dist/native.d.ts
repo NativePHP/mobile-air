@@ -149,7 +149,7 @@ export type SecureStorageAccessibility = 'when_unlocked' | 'after_first_unlock' 
 export type SecureStorageReadStatus = 'found' | 'not_found' | 'unavailable' | 'error';
 
 export function SecureStorageSet(key: string, value: string | null, accessibility?: SecureStorageAccessibility): Promise<{ success: boolean }>;
-export function SecureStorageGet(key: string): Promise<{ status: SecureStorageReadStatus; value: string | null; code?: string; message?: string }>;
+export function SecureStorageGet(key: string): Promise<{ status: SecureStorageReadStatus; value: string; code?: string; message?: string }>;
 export function SecureStorageDelete(key: string): Promise<{ success: boolean }>;
 
 export const SecureStorage: {

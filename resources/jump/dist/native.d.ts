@@ -733,7 +733,7 @@ export function secureStorageSet(key: string, value: string | null, accessibilit
 /**
  * Retrieve a value from secure storage
  */
-export function secureStorageGet(key: string): Promise<{ status: SecureStorageReadStatus; value: string | null; code?: string; message?: string }>;
+export function secureStorageGet(key: string): Promise<{ status: SecureStorageReadStatus; value: string; code?: string; message?: string }>;
 
 /**
  * Delete a value from secure storage
