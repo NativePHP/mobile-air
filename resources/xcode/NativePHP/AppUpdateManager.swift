@@ -739,16 +739,11 @@ class AppUpdateManager {
     private func runMigrationsAndClearCaches() {
         print("🔄 Running migrations and clearing caches...")
 
-        guard let app = NativePHPApp.shared else {
-            print("❌ NativePHPApp.shared not available")
-            return
-        }
-
         // Run migrations
-        _ = app.artisan(additionalArgs: ["migrate", "--force"])
+        _ = NativePHPApp.artisan(additionalArgs: ["migrate", "--force"])
 
         // Clear caches
-        _ = app.artisan(additionalArgs: ["view:clear"])
+        _ = NativePHPApp.artisan(additionalArgs: ["view:clear"])
 
         print("✅ Migrations and cache clearing completed")
     }

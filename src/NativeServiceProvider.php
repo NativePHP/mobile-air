@@ -157,6 +157,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->app->singleton(System::class, fn () => new System);
         $this->app->singleton(Dialog::class, fn () => new Dialog);
         $this->app->singleton(File::class, fn () => new File);
+        $this->app->singleton(ExecutionContext::class, fn () => new ExecutionContext);
     }
 
     protected function registerPluginServices(): void

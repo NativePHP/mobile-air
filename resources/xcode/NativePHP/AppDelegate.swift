@@ -36,6 +36,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Record WHY this process started before anything can boot off it.
+        // iOS cold-launches the app into the background for BGTaskScheduler
+        // work, silent pushes and background fetch — often on a locked device.
+        // ExecutionContext turns that into the gate the boot path and PHP both
+        // read, so the interactive start route stays parked until the app is
+        // genuinely on screen.
+        ExecutionContext.shared.start(launchState: application.applicationState)
+
         // Check if the app was launched from a URL (custom scheme)
         if let url = launchOptions?[UIApplication.LaunchOptionsKey.url] as? URL {
             DebugLogger.shared.log("📱 AppDelegate: Cold start with custom scheme URL: \(url)")
@@ -51,6 +59,17 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             DebugLogger.shared.log("📱 AppDelegate: Cold start with Universal Link: \(url)")
             // Pass the URL to the DeepLinkRouter
             DeepLinkRouter.shared.handle(url: url)
+        }
+
+        // A background launch never connects a scene, so SplashView.onAppear
+        // never fires and nothing would boot the PHP runtime that the work we
+        // were woken for needs. Boot it here instead — headlessly: the
+        // interactive phase stays parked inside NativePHPBootstrap until the
+        // app becomes active. (Idempotent, so a foreground launch that
+        // reaches onAppear first is unaffected.)
+        if ExecutionContext.shared.launchedInBackground {
+            DebugLogger.shared.log("📱 AppDelegate: headless background cold launch — booting PHP without UI")
+            NativePHPBootstrap.shared.start()
         }
 
         return true
