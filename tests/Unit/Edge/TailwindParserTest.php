@@ -96,6 +96,13 @@ it('parses flex utilities', function () {
     expect(TailwindParser::parse('flex-shrink-0'))->toBe(['flexShrink' => 0]);
 });
 
+it('parses the current Tailwind grow and shrink aliases', function () {
+    expect(TailwindParser::parse('grow'))->toBe(['flexGrow' => 1]);
+    expect(TailwindParser::parse('grow-0'))->toBe(['flexGrow' => 0]);
+    expect(TailwindParser::parse('shrink'))->toBe(['flexShrink' => 1]);
+    expect(TailwindParser::parse('shrink-0'))->toBe(['flexShrink' => 0]);
+});
+
 it('parses items alignment', function () {
     expect(TailwindParser::parse('items-start'))->toBe(['alignItems' => 0]);
     expect(TailwindParser::parse('items-center'))->toBe(['alignItems' => 1]);
