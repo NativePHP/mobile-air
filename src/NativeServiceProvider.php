@@ -436,7 +436,7 @@ class NativeServiceProvider extends PackageServiceProvider
             return "<?php
                 \$__nativeErrorArgs = [{$expression}];
                 \$__nativeErrorField = \$__nativeErrorArgs[0];
-                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? '#FF0000';
+                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? theme('destructive', '#FF0000');
                 if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
                     \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
                         'text' => \$errors[\$__nativeErrorField],

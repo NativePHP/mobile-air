@@ -351,6 +351,26 @@ BLADE);
     expect($errorNode['props']['font_size'])->toBe(12.0);
 });
 
+it('uses the destructive theme color for errors by default', function () {
+    config([
+        'native-ui.theme.light.destructive' => '#B42318',
+        'native-ui.theme.dark.destructive' => '#B42318',
+    ]);
+
+    $viewPath = __DIR__.'/views/test-error-themed.blade.php';
+    file_put_contents($viewPath, <<<'BLADE'
+<native:column>
+    @nativeError('email')
+</native:column>
+BLADE);
+
+    NativeElementCollector::reset();
+    view('test-error-themed', ['errors' => ['email' => 'Invalid email']])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['children'][0]['props']['color'])->toBe('#B42318');
+});
+
 it('renders error text with custom color', function () {
     $viewPath = __DIR__.'/views/test-error-custom-color.blade.php';
     file_put_contents($viewPath, <<<'BLADE'
