@@ -19,6 +19,16 @@ use PHPUnit\Framework\Assert;
  * applies ({@see AsyncTaskRunner::normalizeResult()}), so a test can't pass on a
  * value that wouldn't survive the real hop: objects arrive as arrays, and a
  * non-encodable result fails the task here exactly as it would on a device.
+ * Task-subclass arguments are deep-copied through serialize/unserialize for the
+ * same reason.
+ *
+ * One divergence remains on purpose: a work CLOSURE is invoked directly rather
+ * than round-tripped, so anything it captured is shared by identity here and a
+ * deep copy on a device. Unserializing a closure re-evaluates its source in the
+ * namespace reflection reports for it, which for a closure written in a test
+ * file is the test runner's compiled namespace — so reproducing the hop here
+ * would break class resolution in a way a real dispatch never does. Assert on
+ * what the work returns, not on objects it mutates through a capture.
  *
  *   $fake = AsyncTask::fake();
  *   $component->tap('generateReport');

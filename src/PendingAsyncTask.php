@@ -292,13 +292,24 @@ class PendingAsyncTask
         $fake?->record($this->id, $this->work, $this->sharedAlias);
 
         try {
-            // Round-trip the WORK the way the transport does too, not just the
-            // result. On a device the envelope is serialized to a temp file and
-            // unserialized in another interpreter, so the task gets a deep copy
-            // of everything it captured; running the original array here would
-            // share captured objects by identity and let a test pass on
-            // mutations a device would never see.
-            $work = unserialize(serialize($this->work));
+            // Round-trip the task ARGUMENTS the way the transport does, not just
+            // the result: on a device the envelope crosses via a temp file, so
+            // the task gets a deep copy of what it was handed. Running the
+            // original array here would share those objects by identity and let
+            // a test pass on mutations a device would never see.
+            //
+            // The closure is deliberately NOT round-tripped. Unserializing one
+            // re-evaluates its source in the namespace ReflectionClosure reports
+            // — which for a closure written in a Pest test file is Pest's
+            // compiled namespace, not the global one it was written in, so an
+            // unqualified `new RuntimeException` resolves somewhere that doesn't
+            // exist. That's an artifact of re-evaluating a test-file closure in
+            // this process, not something a device does, and reproducing it here
+            // would fail tests over a problem real dispatches don't have.
+            $work = $this->work;
+            if (($work['kind'] ?? null) === 'task' && isset($work['args'])) {
+                $work['args'] = unserialize(serialize($work['args']));
+            }
 
             // Then round-trip the result exactly as the completion event would,
             // so a test can't pass on a value that wouldn't survive the hop.
