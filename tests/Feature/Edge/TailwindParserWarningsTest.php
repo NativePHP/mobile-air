@@ -24,6 +24,9 @@ final class SecondTailwindWarningScreen extends NativeComponent
 
 beforeEach(function () {
     $viewPath = __DIR__.'/views';
+    if (! is_dir($viewPath)) {
+        mkdir($viewPath, 0755, true);
+    }
     app('view')->addLocation($viewPath);
 
     file_put_contents(
