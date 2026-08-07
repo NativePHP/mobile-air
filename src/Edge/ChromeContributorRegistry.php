@@ -21,7 +21,7 @@ use Native\Mobile\Edge\Layouts\NativeLayout;
  * - `$screen`        — the component being rendered (read its per-screen overrides).
  * - `$layout`        — the screen's layout instance, or null if it has none.
  * - `$renderPartial` — `fn(\Illuminate\View\View): Element`, renders a Blade view
- *                      through the screen's own bound path so `@press` / wire
+ *                      through the screen's own bound path so `@tap` / wire
  *                      bindings inside the chrome resolve against the screen.
  *   Return an Element to hoist, or null to contribute nothing.
  *

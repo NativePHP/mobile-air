@@ -80,6 +80,13 @@ it('parses height from spacing scale', function () {
 
 // ── Flex & Alignment ────────────────────────────────
 
+it('parses flex direction', function () {
+    expect(TailwindParser::parse('flex-row'))->toBe(['flexDirection' => 1]);
+    expect(TailwindParser::parse('flex-row-reverse'))->toBe(['flexDirection' => 1]);
+    expect(TailwindParser::parse('flex-col'))->toBe(['flexDirection' => 0]);
+    expect(TailwindParser::parse('flex-col-reverse'))->toBe(['flexDirection' => 0]);
+});
+
 it('parses flex utilities', function () {
     // flex-1 is `flex: 1 1 0%` in Tailwind — grow, shrink, AND zero basis.
     expect(TailwindParser::parse('flex-1'))->toBe(['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0]);
@@ -642,4 +649,129 @@ it('explicit attrs override class attrs', function () {
 
     // explicit fontSize=32 should override text-xl (20)
     expect($tree['props']['font_size'])->toBe(32.0);
+});
+
+// ── Negative utilities ──────────────────────────────
+
+it('parses negative margins', function () {
+    expect(TailwindParser::parse('-mt-4'))->toBe(['marginTop' => -16.0]);
+    expect(TailwindParser::parse('-ml-2'))->toBe(['marginLeft' => -8.0]);
+    expect(TailwindParser::parse('-m-1'))->toBe(['margin' => -4.0]);
+    expect(TailwindParser::parse('-mx-4'))->toBe(['marginLeft' => -16.0, 'marginRight' => -16.0]);
+    expect(TailwindParser::parse('-my-2'))->toBe(['marginTop' => -8.0, 'marginBottom' => -8.0]);
+});
+
+it('parses negative insets so an absolute child can overhang its container', function () {
+    expect(TailwindParser::parse('-right-8'))->toBe(['positionRight' => -32.0]);
+    expect(TailwindParser::parse('-top-2'))->toBe(['positionTop' => -8.0]);
+    expect(TailwindParser::parse('-bottom-px'))->toBe(['positionBottom' => -1.0]);
+    expect(TailwindParser::parse('-left-0.5'))->toBe(['positionLeft' => -2.0]);
+});
+
+it('parses negative arbitrary values', function () {
+    expect(TailwindParser::parse('-right-[12]'))->toBe(['positionRight' => -12.0]);
+    expect(TailwindParser::parse('-mt-[6]'))->toBe(['marginTop' => -6.0]);
+});
+
+it('composes negatives with platform and dark variants', function () {
+    TailwindParser::setPlatform('ios');
+    expect(TailwindParser::parse('ios:-right-8'))->toBe(['positionRight' => -32.0]);
+    expect(TailwindParser::parse('android:-right-8'))->toBe([]);
+    TailwindParser::setPlatform(null);
+
+    expect(TailwindParser::parse('dark:-mt-4'))->toBe(['dark' => ['marginTop' => -16.0]]);
+});
+
+it('rejects negatives on utilities that have no negative form', function () {
+    // Tailwind has no negative padding / gap / sizing; emitting geometry the
+    // author never asked for would be worse than dropping the class.
+    expect(TailwindParser::parse('-p-4'))->toBe([]);
+    expect(TailwindParser::parse('-gap-2'))->toBe([]);
+    expect(TailwindParser::parse('-w-4'))->toBe([]);
+    expect(TailwindParser::parse('-bg-red-500'))->toBe([]);
+    expect(TailwindParser::parse('-nonsense'))->toBe([]);
+});
+
+it('keeps positive spacing untouched', function () {
+    expect(TailwindParser::parse('mt-4'))->toBe(['marginTop' => 16]);
+    expect(TailwindParser::parse('right-8'))->toBe(['positionRight' => 32]);
+});
+
+// ── Linear gradients ────────────────────────────────
+
+it('parses a gradient axis and its colour stops into one gradient key', function () {
+    expect(TailwindParser::parse('bg-gradient-to-t from-black via-black/10 to-transparent'))
+        ->toBe(['gradient' => [
+            'direction' => [0.0, -1.0],
+            'from' => '#000000',
+            'via' => '#1A000000',
+            'to' => '#00000000',
+        ]]);
+});
+
+it('accepts the tailwind v4 bg-linear spelling and every direction', function () {
+    expect(TailwindParser::parse('bg-linear-to-br from-black to-white')['gradient']['direction'])
+        ->toBe([1.0, 1.0]);
+    expect(TailwindParser::parse('bg-gradient-to-l from-black to-white')['gradient']['direction'])
+        ->toBe([-1.0, 0.0]);
+});
+
+it('merges gradient classes regardless of the order they appear in', function () {
+    // The parsed array's KEY order follows the class order, so compare the
+    // emitted props, where stops are normalised to from → via → to.
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('to-transparent from-black bg-gradient-to-t')))
+        ->toBe(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-t from-black to-transparent')));
+});
+
+it('resolves theme tokens as gradient stops', function () {
+    TailwindParser::setThemeResolver(fn (string $token) => $token === 'primary' ? '#9BE500' : null);
+
+    expect(TailwindParser::parse('bg-gradient-to-t from-theme-primary to-transparent')['gradient']['from'])
+        ->toBe('#9BE500');
+
+    TailwindParser::setThemeResolver(null);
+});
+
+it('does not let a gradient swallow the plain bg- branch', function () {
+    expect(TailwindParser::parse('bg-black'))->toBe(['bg' => '#000000']);
+});
+
+it('emits gradient props only when there is an axis and two stops', function () {
+    $complete = TailwindParser::parse('bg-gradient-to-t from-black to-transparent');
+    expect(NativeElementCollector::buildGradientProps($complete))->toBe([
+        'gradient_dx' => 0.0,
+        'gradient_dy' => -1.0,
+        'gradient_stops' => '#000000,#00000000',
+    ]);
+
+    // A stop with no axis, and an axis with one stop, are both inert.
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('from-black to-white')))->toBe([]);
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-t from-black')))->toBe([]);
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-nowhere from-black to-white')))->toBe([]);
+});
+
+// ── Inset shorthands ────────────────────────────────
+
+it('expands inset shorthands to the position edges', function () {
+    expect(TailwindParser::parse('inset-0'))->toBe([
+        'positionTop' => -0.0, 'positionRight' => -0.0, 'positionBottom' => -0.0, 'positionLeft' => -0.0,
+    ]);
+    expect(TailwindParser::parse('inset-x-2'))->toBe(['positionLeft' => 8, 'positionRight' => 8]);
+    expect(TailwindParser::parse('inset-y-4'))->toBe(['positionTop' => 16, 'positionBottom' => 16]);
+    expect(TailwindParser::parse('inset-bogus'))->toBe([]);
+});
+
+it('marks authored zero insets with the -0.0 sentinel so bottom-0 can anchor', function () {
+    // +0.0 on the wire means "edge unset"; an authored zero must be
+    // distinguishable or `bottom-0` / `right-0` silently anchor top-left.
+    // The sign bit is the only spare storage in the packed f32 slot.
+    $bottom = TailwindParser::parse('bottom-0')['positionBottom'];
+    expect(fdiv(1, $bottom))->toBe(-INF);
+
+    $right = TailwindParser::parse('right-0')['positionRight'];
+    expect(fdiv(1, $right))->toBe(-INF);
+
+    // Non-zero insets are unaffected, negatives keep their bleed meaning.
+    expect(TailwindParser::parse('bottom-2'))->toBe(['positionBottom' => 8]);
+    expect(TailwindParser::parse('-right-8'))->toBe(['positionRight' => -32.0]);
 });

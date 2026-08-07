@@ -502,6 +502,182 @@ object TestFunctions {
     /**
      * @test
      *
+     * The dependency block is marker-delimited and rewritten in full, so a
+     * project that is built repeatedly does not grow a header per build.
+     *
+     * The individual dependency lines were already guarded against
+     * duplication; the header comment above them was not, so it was appended
+     * on every single compile.
+     */
+    public function it_does_not_accumulate_a_dependency_header_per_build(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        for ($i = 0; $i < 5; $i++) {
+            $this->compiler->compile();
+        }
+
+        $content = $this->files->get($gradlePath);
+
+        $this->assertEquals(1, substr_count($content, 'BEGIN nativephp-plugin-dependencies'));
+        $this->assertEquals(1, substr_count($content, 'END nativephp-plugin-dependencies'));
+        $this->assertStringNotContainsString('// NativePHP Plugin Dependencies', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Two consecutive compiles with nothing changed in between leave
+     * build.gradle.kts byte-identical. Without that, no build downstream of
+     * it can be reproducible.
+     */
+    public function it_leaves_the_build_file_byte_identical_across_compiles(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                    'api' => ['com.example:api-lib:2.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        $this->compiler->compile();
+        $after = $this->files->get($gradlePath);
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $this->assertSame($after, $this->files->get($gradlePath));
+    }
+
+    /**
+     * @test
+     *
+     * Headers left behind by a version that did not delimit the block are
+     * removed, so upgrading cleans a project up rather than freezing its
+     * existing pile in place.
+     */
+    public function it_removes_headers_left_by_an_earlier_version(): void
+    {
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        $this->files->put($gradlePath, str_replace(
+            "dependencies {\n",
+            "dependencies {\n".str_repeat("\n    // NativePHP Plugin Dependencies\n", 12),
+            $this->files->get($gradlePath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($gradlePath);
+
+        $this->assertStringNotContainsString('// NativePHP Plugin Dependencies', $content);
+        $this->assertStringContainsString('implementation("com.example:library:1.0.0")', $content);
+    }
+
+    /**
+     * @test
+     *
+     * A platform() BOM is declared once. The presence check compared the raw
+     * `platform(group:artifact:version)` form against a file that holds
+     * `platform("group:artifact:version")`, so it never matched and every
+     * build declared the BOM again.
+     */
+    public function it_declares_a_platform_bom_once(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['platform(com.google.firebase:firebase-bom:33.1.0)'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/app/build.gradle.kts');
+
+        $this->assertEquals(
+            1,
+            substr_count($content, 'platform("com.google.firebase:firebase-bom:33.1.0")')
+        );
+    }
+
+    /**
+     * @test
+     *
+     * A dependency the app already declares by hand is not declared a second
+     * time inside the generated block.
+     */
+    public function it_does_not_redeclare_a_dependency_the_app_already_has(): void
+    {
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        $this->files->put($gradlePath, str_replace(
+            "dependencies {\n",
+            "dependencies {\n    implementation(\"com.example:library:1.0.0\")\n",
+            $this->files->get($gradlePath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($gradlePath);
+
+        $this->assertEquals(1, substr_count($content, 'com.example:library:1.0.0'));
+    }
+
+    /**
+     * @test
+     *
      * Should clean generated plugin files.
      */
     public function it_cleans_generated_files(): void
@@ -725,6 +901,90 @@ object TestFunctions {
         $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="abc123" />', $content);
         // Service should use closing tag (not self-closing) when it has nested content
         $this->assertStringContainsString('</service>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Application-level meta-data values should have ${ENV_VAR} placeholders
+     * substituted from the environment, matching iOS info_plist handling.
+     */
+    public function it_substitutes_env_placeholders_in_application_meta_data(): void
+    {
+        putenv('NATIVEPHP_TEST_META_KEY=resolved-secret');
+        $_ENV['NATIVEPHP_TEST_META_KEY'] = 'resolved-secret';
+
+        try {
+            $plugin = $this->createTestPlugin([
+                'android' => [
+                    'permissions' => [],
+                    'dependencies' => [],
+                    'meta_data' => [
+                        ['name' => 'com.example.API_KEY', 'value' => '${NATIVEPHP_TEST_META_KEY}'],
+                    ],
+                ],
+            ]);
+
+            $this->mockRegistry
+                ->shouldReceive('all')
+                ->andReturn(collect([$plugin]));
+
+            $this->compiler->compile();
+
+            $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+            $content = $this->files->get($manifestPath);
+
+            $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="resolved-secret" />', $content);
+            $this->assertStringNotContainsString('${NATIVEPHP_TEST_META_KEY}', $content);
+        } finally {
+            putenv('NATIVEPHP_TEST_META_KEY');
+            unset($_ENV['NATIVEPHP_TEST_META_KEY']);
+        }
+    }
+
+    /**
+     * @test
+     *
+     * Component-level (service) meta-data values should also have ${ENV_VAR}
+     * placeholders substituted from the environment.
+     */
+    public function it_substitutes_env_placeholders_in_service_meta_data(): void
+    {
+        putenv('NATIVEPHP_TEST_META_KEY=resolved-secret');
+        $_ENV['NATIVEPHP_TEST_META_KEY'] = 'resolved-secret';
+
+        try {
+            $plugin = $this->createTestPlugin([
+                'android' => [
+                    'permissions' => [],
+                    'dependencies' => [],
+                    'services' => [
+                        [
+                            'name' => 'com.example.MyService',
+                            'exported' => false,
+                            'meta_data' => [
+                                ['name' => 'com.example.API_KEY', 'value' => '${NATIVEPHP_TEST_META_KEY}'],
+                            ],
+                        ],
+                    ],
+                ],
+            ]);
+
+            $this->mockRegistry
+                ->shouldReceive('all')
+                ->andReturn(collect([$plugin]));
+
+            $this->compiler->compile();
+
+            $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+            $content = $this->files->get($manifestPath);
+
+            $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="resolved-secret" />', $content);
+            $this->assertStringNotContainsString('${NATIVEPHP_TEST_META_KEY}', $content);
+        } finally {
+            putenv('NATIVEPHP_TEST_META_KEY');
+            unset($_ENV['NATIVEPHP_TEST_META_KEY']);
+        }
     }
 
     /**

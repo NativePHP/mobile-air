@@ -30,6 +30,8 @@ class Refreshable extends Element
 
     private ?string $refreshMethod = null;
 
+    private ?bool $showsIndicators = null;
+
     public static function make(): static
     {
         return new static;
@@ -42,11 +44,26 @@ class Refreshable extends Element
         return $this;
     }
 
+    /**
+     * Show or hide the scroll indicators, matching scroll-view's prop of
+     * the same name. iOS-only in effect: Compose's LazyColumn draws no
+     * indicators to begin with, so Android accepts and ignores it.
+     */
+    public function showsIndicators(bool $value = true): static
+    {
+        $this->showsIndicators = $value;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         $props = [];
         if ($this->refreshMethod !== null) {
             $props['on_refresh'] = $registry->register($this->refreshMethod);
+        }
+        if ($this->showsIndicators !== null) {
+            $props['shows_indicators'] = $this->showsIndicators;
         }
 
         return $props;

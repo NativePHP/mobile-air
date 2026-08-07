@@ -5,7 +5,6 @@ namespace Native\Mobile\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Native\Mobile\Validation\BladeTemplateAnalyzer;
-use Native\Mobile\Validation\EdgeComponentAnalyzer;
 use Native\Mobile\Validation\NativeComponentAnalyzer;
 use Native\Mobile\Validation\RouteAnalyzer;
 use Native\Mobile\Validation\ValidationResult;
@@ -40,13 +39,7 @@ class ValidateCommand extends Command
         $componentAnalyzer = new NativeComponentAnalyzer($this->files, $bladeAnalyzer);
         $componentAnalyzer->analyze($result, $componentFilter);
 
-        // 2. Validate navigation chrome in all views
-        if ($componentFilter === null) {
-            $edgeAnalyzer = new EdgeComponentAnalyzer($this->files);
-            $edgeAnalyzer->analyze($result);
-        }
-
-        // 3. Check Route::native() registrations
+        // 2. Check Route::native() registrations
         $routeAnalyzer = new RouteAnalyzer($this->files);
         $this->checkRouteRegistrations($routeAnalyzer, $result, $componentFilter);
 
@@ -70,9 +63,10 @@ class ValidateCommand extends Command
                 continue;
             }
 
-            $relative = str_replace($componentPath.'/', '', $file->getPathname());
-            $relative = substr($relative, 0, -4);
-            $relative = str_replace('/', '\\', $relative);
+            // Use the Finder-relative path so the mapping works regardless of
+            // platform directory separators (Windows returns backslashes).
+            $relative = substr($file->getRelativePathname(), 0, -4);
+            $relative = str_replace(['/', DIRECTORY_SEPARATOR], '\\', $relative);
             $className = 'App\\NativeComponents\\'.$relative;
 
             if ($componentFilter !== null) {

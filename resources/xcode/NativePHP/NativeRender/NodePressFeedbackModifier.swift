@@ -12,7 +12,7 @@ import SwiftUI
 /// Press detection uses a zero-distance `DragGesture` attached via
 /// `simultaneousGesture` so it composes with the existing tap and
 /// long-press handlers — the visual feedback happens immediately on
-/// press-in, `@press` still fires on tap, and scrolls aren't blocked.
+/// press-in, `@tap` still fires on tap, and scrolls aren't blocked.
 ///
 /// Multiplies / adds onto the base `NodeAnimationModifier` transforms,
 /// so `<column :scale="1.2" :press-scale="0.95">` shows a base scale

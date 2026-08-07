@@ -5,13 +5,17 @@ namespace Native\Mobile\Commands;
 use Endroid\QrCode\Builder\Builder;
 use Endroid\QrCode\ErrorCorrectionLevel;
 use Illuminate\Console\Command;
+use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Edge\NativeRouter;
 
 use function Laravel\Prompts\intro;
+use function Laravel\Prompts\note;
 use function Laravel\Prompts\select;
 
 class JumpCommand extends Command
 {
+    use PlatformFileOperations;
+
     protected $signature = 'native:jump
                             {--host=0.0.0.0 : The host address to serve the application on}
                             {--ip= : The IP address to display in the QR code (overrides auto-detection)}
@@ -48,6 +52,9 @@ class JumpCommand extends Command
     /** Handle to the mDNS/Bonjour advertiser subprocess (LAN discovery). */
     private $mdnsProcess = null;
 
+    /** True when $mdnsProcess is our pure-PHP responder (needs stop-file teardown, not a hard kill). */
+    private bool $mdnsIsPhpResponder = false;
+
     /** @var resource|null Router (php -S) proc_open handle. */
     private $routerProcess = null;
 
@@ -74,6 +81,27 @@ class JumpCommand extends Command
         $this->verbose = $this->output->isVerbose();
 
         intro('NativePHP Jump Server');
+
+        // WSL2's default NAT networking gives eth0 a virtual-switch address
+        // (172.x) that a phone on the LAN cannot reach — the QR code would
+        // encode an IP that silently hangs on scan. Mirrored networking mode
+        // puts the real LAN IP on eth0, so only warn when NOT mirrored.
+        if ($this->isRunningInWSL()) {
+            $mode = trim((string) @shell_exec('wslinfo --networking-mode 2>/dev/null'));
+            if ($mode !== 'mirrored') {
+                $this->warn('WSL2 NAT networking detected — the auto-detected IP (172.x) is NOT reachable from your phone.');
+                note(<<<'NOTE'
+                    Scanning the QR code will hang unless you do one of the following:
+
+                      - Enable mirrored networking: set networkingMode=mirrored under [wsl2]
+                        in %UserProfile%\.wslconfig, then run `wsl --shutdown` (Windows 11).
+                        Jump then works with no further setup.
+                      - Set up `netsh interface portproxy` on Windows for the HTTP, WebSocket
+                        and Vite-proxy ports, and pass your Windows LAN IP via --ip.
+                      - Run `php artisan native:jump` from Windows directly instead of WSL.
+                    NOTE);
+            }
+        }
 
         // Arm teardown BEFORE any spawn so a Cmd+C during the blocking startup
         // (port waits, the 120s Laravel warmup, the interactive IP prompt) is
@@ -129,9 +157,15 @@ class JumpCommand extends Command
 
         // Start or detect the Laravel dev server
         if ($this->option('no-serve')) {
-            // User is running their own artisan serve — tell them what to export
+            // User is running their own artisan serve — tell them what to export.
+            // The VAR=value command prefix is POSIX-shell-only, so Windows gets
+            // the PowerShell form (cmd.exe's `set X=v && …` embeds a trailing
+            // space in the value).
             if (! $this->isPortInUse($this->laravelPort)) {
-                $this->warn("No server detected on port {$this->laravelPort}. Start one with: JUMP_BRIDGE_PORT={$bridgePort} php artisan serve --port={$this->laravelPort}");
+                $hint = PHP_OS_FAMILY === 'Windows'
+                    ? "\$env:JUMP_BRIDGE_PORT={$bridgePort}; php artisan serve --port={$this->laravelPort}"
+                    : "JUMP_BRIDGE_PORT={$bridgePort} php artisan serve --port={$this->laravelPort}";
+                $this->warn("No server detected on port {$this->laravelPort}. Start one with: {$hint}");
             }
         } else {
             $this->startLaravelServer($this->laravelPort, $bridgePort, $wsPort);
@@ -343,7 +377,7 @@ class JumpCommand extends Command
         if (PHP_OS_FAMILY !== 'Windows') {
             $command = trim((string) @shell_exec('ps -p '.$leaderPid.' -o command= 2>/dev/null'));
             $ppid = (int) trim((string) @shell_exec('ps -p '.$leaderPid.' -o ppid= 2>/dev/null'));
-            if ($command === '' || ! $this->isJumpOwnedProcess($command, $ppid)) {
+            if ($command === '' || ! $this->isJumpOwnedProcess($command, $ppid, $leaderPid)) {
                 return; // recycled or not ours — never group-kill a stranger
             }
         }
@@ -480,11 +514,29 @@ class JumpCommand extends Command
         $phpBinary = PHP_BINARY;
         $serverHost = $host === '0.0.0.0' ? '0.0.0.0' : $host;
 
-        $descriptorSpec = [
-            0 => ['pipe', 'r'],  // stdin
-            1 => ['pipe', 'w'],  // stdout
-            2 => ['pipe', 'w'],  // stderr
-        ];
+        if ($useWorkerman) {
+            // Windows: stream_set_blocking() has no effect on proc_open pipes
+            // (PHP bugs #51800/#65650), so the main loop's fgets() would block
+            // forever once the Workerman proxy goes quiet — freezing log relay,
+            // the liveness check AND the artisan-serve pipe drain. Log to a
+            // file instead (same pattern as startBridgeServer).
+            $logDir = base_path('storage/logs');
+            if (! is_dir($logDir)) {
+                @mkdir($logDir, 0755, true);
+            }
+            $httpLogFile = $logDir.'/jump-http.log';
+            $descriptorSpec = [
+                0 => ['pipe', 'r'],  // stdin
+                1 => ['file', $httpLogFile, 'a'],
+                2 => ['file', $httpLogFile, 'a'],
+            ];
+        } else {
+            $descriptorSpec = [
+                0 => ['pipe', 'r'],  // stdin
+                1 => ['pipe', 'w'],  // stdout
+                2 => ['pipe', 'w'],  // stderr
+            ];
+        }
 
         if ($useWorkerman) {
             // Workerman script takes positional args: base_path, host, port,
@@ -500,6 +552,7 @@ class JumpCommand extends Command
             );
 
             $this->components->twoColumnDetail('HTTP proxy', '<fg=cyan>workerman</> (windows: avoids `php -S` dead-socket wedge)');
+            $this->components->twoColumnDetail('HTTP proxy log', "powershell -Command Get-Content -Path '{$httpLogFile}' -Tail 20 -Wait");
         } else {
             $cmd = sprintf(
                 '%s -S %s:%d %s',
@@ -529,9 +582,13 @@ class JumpCommand extends Command
         // the parent is still recoverable by group next run.
         $this->writeInstanceRegistry();
 
-        // Set pipes to non-blocking
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
+        // Set pipes to non-blocking. Windows has no stdout/stderr pipes here
+        // (file descriptors above) — and stream_set_blocking wouldn't work on
+        // them anyway (PHP bugs #51800/#65650).
+        if (! $useWorkerman) {
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
+        }
 
         // Close stdin - we don't need to write to the server
         fclose($pipes[0]);
@@ -547,9 +604,13 @@ class JumpCommand extends Command
             usleep(100000);
         }
         if (! is_resource($this->mdnsProcess)) {
-            $this->warn($this->isPortInUse($httpPort)
-                ? 'LAN discovery unavailable (no dns-sd/avahi) — use the QR code.'
-                : "Server did not start on port {$httpPort} — not advertising on the network.");
+            if (! $this->isPortInUse($httpPort)) {
+                $this->warn("Server did not start on port {$httpPort} — not advertising on the network.");
+            } elseif (PHP_OS_FAMILY !== 'Windows') {
+                // Windows falls back to the pure-PHP responder, which warns for
+                // itself if it can't bind — so only warn here on macOS/Linux.
+                $this->warn('LAN discovery unavailable (no dns-sd/avahi) — use the QR code.');
+            }
         }
 
         // Signal handlers and the advertiser/registry shutdown functions are
@@ -580,25 +641,30 @@ class JumpCommand extends Command
                 break;
             }
 
-            // Read stdout (PHP server access log)
-            $stdout = fgets($pipes[1]);
-            if ($stdout) {
-                // Filter out noisy requests (unless verbose)
-                if ($this->verbose || (! str_contains($stdout, 'favicon.ico') && ! str_contains($stdout, '.map'))) {
-                    // Parse and format the output
-                    $this->formatServerOutput($stdout);
+            // Relay server output. Windows skips this: its stdout/stderr go to
+            // jump-http.log (non-blocking pipes are impossible there and a
+            // blocking fgets() would wedge the whole loop — see descriptor spec).
+            if (! $useWorkerman) {
+                // Read stdout (PHP server access log)
+                $stdout = fgets($pipes[1]);
+                if ($stdout) {
+                    // Filter out noisy requests (unless verbose)
+                    if ($this->verbose || (! str_contains($stdout, 'favicon.ico') && ! str_contains($stdout, '.map'))) {
+                        // Parse and format the output
+                        $this->formatServerOutput($stdout);
+                    }
                 }
-            }
 
-            // Read stderr (our custom log messages from router)
-            $stderr = fgets($pipes[2]);
-            if ($stderr) {
-                // Our router logs to stderr with [Jump] prefix
-                if (str_contains($stderr, '[Jump]')) {
-                    $message = trim(str_replace('[Jump]', '', $stderr));
-                    $this->components->twoColumnDetail('Device', $message);
-                } elseif ($this->verbose) {
-                    $this->line('  <fg=gray>[php] '.trim($stderr).'</>');
+                // Read stderr (our custom log messages from router)
+                $stderr = fgets($pipes[2]);
+                if ($stderr) {
+                    // Our router logs to stderr with [Jump] prefix
+                    if (str_contains($stderr, '[Jump]')) {
+                        $message = trim(str_replace('[Jump]', '', $stderr));
+                        $this->components->twoColumnDetail('Device', $message);
+                    } elseif ($this->verbose) {
+                        $this->line('  <fg=gray>[php] '.trim($stderr).'</>');
+                    }
                 }
             }
 
@@ -633,12 +699,76 @@ class JumpCommand extends Command
                 pcntl_signal_dispatch();
             }
 
-            // Small sleep to prevent CPU spinning
-            usleep(10000); // 10ms
+            // Small sleep to prevent CPU spinning. Windows sleeps longer — the
+            // loop is only a proc_get_status liveness check there (no log relay).
+            usleep($useWorkerman ? 200000 : 10000); // 200ms / 10ms
         }
 
         // Router died on its own (crash / external kill) — same idempotent teardown.
         $this->shutdownEverything();
+    }
+
+    /**
+     * Windows fallback advertiser: spawn the pure-PHP DNS-SD responder
+     * (resources/jump/mdns-server.php) when no Bonjour dns-sd.exe is present.
+     * Stored on $this->mdnsProcess so the existing stopAdvertiser() teardown
+     * reaps it unchanged. Best-effort — if it can't bind UDP 5353 the QR still
+     * works, so we only warn.
+     */
+    private function startPhpMdnsResponder(int $httpPort, string $ip, string $label): void
+    {
+        $serverPath = __DIR__.'/../../resources/jump/mdns-server.php';
+        if (! file_exists($serverPath)) {
+            return;
+        }
+
+        $logDir = base_path('storage/logs');
+        if (! is_dir($logDir)) {
+            @mkdir($logDir, 0755, true);
+        }
+        $logFile = $logDir.'/jump-mdns.log';
+
+        // Pass our own PID so the responder can watch it: if Jump is hard-killed
+        // or crashes (no graceful stopAdvertiser), the responder notices the
+        // parent is gone and multicasts its own goodbye instead of lingering.
+        $cmd = sprintf(
+            '%s %s %s %s %d %s %d',
+            escapeshellarg(PHP_BINARY),
+            escapeshellarg($serverPath),
+            escapeshellarg(base_path()),
+            escapeshellarg($label),
+            $httpPort,
+            escapeshellarg($ip),
+            getmypid() ?: 0,
+        );
+        $desc = [
+            0 => ['file', 'NUL', 'r'],
+            1 => ['file', $logFile, 'a'],
+            2 => ['file', $logFile, 'a'],
+        ];
+
+        // bypass_shell so stopAdvertiser()'s proc_terminate() signals php.exe
+        // itself (not a wrapping cmd.exe), matching the bridge/vite spawns.
+        $proc = @proc_open($cmd, $desc, $pipes, base_path(), null, ['bypass_shell' => true]);
+        if (! is_resource($proc)) {
+            return;
+        }
+
+        // Give it a beat to bind (or fail on a missing ext-sockets / busy port).
+        usleep(400000);
+        if (! (@proc_get_status($proc)['running'] ?? false)) {
+            proc_close($proc);
+            $this->warn('LAN discovery unavailable — the pure-PHP mDNS responder exited (see storage/logs/jump-mdns.log). Use the QR code.');
+
+            return;
+        }
+
+        $this->mdnsProcess = $proc;
+        $this->mdnsIsPhpResponder = true;
+        if (($pid = (int) (@proc_get_status($proc)['pid'] ?? 0)) > 0) {
+            $this->childPids[] = $pid;
+        }
+        $this->components->info("Discoverable on this network as \"{$label}\" — open the app to connect without scanning.");
     }
 
     /**
@@ -649,11 +779,39 @@ class JumpCommand extends Command
      */
     public function stopAdvertiser(): void
     {
-        if (is_resource($this->mdnsProcess)) {
-            proc_terminate($this->mdnsProcess);
-            proc_close($this->mdnsProcess);
-            $this->mdnsProcess = null;
+        if (! is_resource($this->mdnsProcess)) {
+            return;
         }
+
+        if ($this->mdnsIsPhpResponder) {
+            // The pure-PHP responder can't catch proc_terminate() (a hard
+            // TerminateProcess on Windows), so a plain kill would skip the
+            // DNS-SD goodbye and leave a phantom "server nearby" in the app for
+            // the record TTL. Instead drop the stop-file it polls: it multicasts
+            // the goodbye (TTL-0) and exits on its own. proc_terminate stays as a
+            // backstop only if it doesn't exit within the grace window.
+            $stopFile = base_path('storage/framework/jump-mdns.stop');
+            @touch($stopFile);
+            for ($i = 0; $i < 15; $i++) { // up to ~1.5s
+                if (! (@proc_get_status($this->mdnsProcess)['running'] ?? false)) {
+                    break;
+                }
+                usleep(100000);
+            }
+            @unlink($stopFile);
+            if (@proc_get_status($this->mdnsProcess)['running'] ?? false) {
+                @proc_terminate($this->mdnsProcess);
+            }
+            @proc_close($this->mdnsProcess);
+            $this->mdnsProcess = null;
+            $this->mdnsIsPhpResponder = false;
+
+            return;
+        }
+
+        proc_terminate($this->mdnsProcess);
+        proc_close($this->mdnsProcess);
+        $this->mdnsProcess = null;
     }
 
     /**
@@ -763,7 +921,12 @@ class JumpCommand extends Command
         // Give it a moment to start
         usleep(500000);
 
-        $this->components->twoColumnDetail('Bridge log', "tail -f {$logFile}");
+        // `tail` doesn't exist on stock Windows — show a paste-able PowerShell
+        // equivalent there (works from cmd.exe or an existing PS session).
+        $tailHint = PHP_OS_FAMILY === 'Windows'
+            ? "powershell -Command Get-Content -Path '{$logFile}' -Tail 20 -Wait"
+            : "tail -f {$logFile}";
+        $this->components->twoColumnDetail('Bridge log', $tailHint);
 
         // On Windows, Workerman cannot start multiple Worker instances from
         // one PHP file (no fork() — the second Worker is silently dropped
@@ -835,11 +998,29 @@ class JumpCommand extends Command
         $phpBinary = PHP_BINARY;
         $artisan = base_path('artisan');
 
-        $descriptorSpec = [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
+        if (PHP_OS_FAMILY === 'Windows') {
+            // Windows: pipes can't be made non-blocking (PHP bugs #51800/#65650)
+            // and nothing drains them once the main loop stalls — artisan serve
+            // logs a line per request, so a full 4KB anonymous pipe would block
+            // the Laravel server mid-session. Log to a file instead; the main
+            // loop's drain self-disables via its is_resource() guards.
+            $logDir = base_path('storage/logs');
+            if (! is_dir($logDir)) {
+                @mkdir($logDir, 0755, true);
+            }
+            $laravelLogFile = $logDir.'/jump-laravel.log';
+            $descriptorSpec = [
+                0 => ['pipe', 'r'],
+                1 => ['file', $laravelLogFile, 'a'],
+                2 => ['file', $laravelLogFile, 'a'],
+            ];
+        } else {
+            $descriptorSpec = [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ];
+        }
 
         // --no-reload is REQUIRED for two reasons:
         //  1. It lets artisan serve honour PHP_CLI_SERVER_WORKERS — Laravel only
@@ -885,9 +1066,12 @@ class JumpCommand extends Command
             return;
         }
 
-        // Set pipes to non-blocking so we don't hang
-        stream_set_blocking($this->laravelPipes[1], false);
-        stream_set_blocking($this->laravelPipes[2], false);
+        // Set pipes to non-blocking so we don't hang. On Windows stdout/stderr
+        // are file descriptors (see above) — only stdin exists as a pipe.
+        if (PHP_OS_FAMILY !== 'Windows') {
+            stream_set_blocking($this->laravelPipes[1], false);
+            stream_set_blocking($this->laravelPipes[2], false);
+        }
         fclose($this->laravelPipes[0]);
 
         // Wait for Laravel to actually start listening
@@ -926,8 +1110,23 @@ class JumpCommand extends Command
             return;
         }
 
+        // Which path to warm on. For a native-UI app, `GET /` runs the element
+        // runloop, which BLOCKS for the whole lifetime of the screen — the same
+        // property that makes PHP_CLI_SERVER_WORKERS necessary. Warming it means
+        // the request never returns and every single start burns the full 120s
+        // timeout before continuing:
+        //
+        //   Laravel warmup  failed after 120s: Operation timed out … 0 bytes received
+        //
+        // Any request boots the framework (autoload, providers, config, opcache),
+        // which is what warming is actually for, so native-UI apps are warmed on
+        // a deliberately unrouted path: full bootstrap, 404, no runloop. WebView
+        // apps keep warming `/`, where compiling the actual page is the point.
+        $startUrl = config('nativephp.start_url') ?: '/';
+        $warmPath = NativeRouter::isNativeRoute($startUrl) ? '/__nativephp_warmup' : '/';
+
         $start = microtime(true);
-        $ch = curl_init("http://127.0.0.1:{$port}/");
+        $ch = curl_init("http://127.0.0.1:{$port}{$warmPath}");
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_NOBODY, false);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
@@ -952,6 +1151,7 @@ class JumpCommand extends Command
             return;
         }
 
+        // A 404 is the expected, healthy result on the native-UI warm path.
         $this->components->twoColumnDetail(
             'Laravel warmup',
             "<fg=green>ready in {$elapsed}s (HTTP {$httpCode})</>"
@@ -1178,8 +1378,19 @@ class JumpCommand extends Command
         $txtPort = 'port='.$httpPort;
         $txtName = 'name='.$label;
 
-        $dnssd = trim((string) @shell_exec('command -v dns-sd 2>/dev/null'));
-        $avahi = $dnssd === '' ? trim((string) @shell_exec('command -v avahi-publish-service 2>/dev/null')) : '';
+        // `command -v` is a POSIX-shell builtin — on Windows shell_exec runs via
+        // cmd.exe, where it fails (and /dev/null is a bad redirect target), so
+        // resolution always came up empty even with Bonjour's dns-sd.exe
+        // installed. Use `where` there (first line of output); avahi is
+        // unix-only so skip that probe. dns-sd.exe accepts the identical
+        // `-R <name> _jump._tcp local <port> <txt…>` syntax.
+        if (PHP_OS_FAMILY === 'Windows') {
+            $dnssd = trim((string) strtok((string) @shell_exec('where dns-sd 2>NUL'), "\r\n"));
+            $avahi = '';
+        } else {
+            $dnssd = trim((string) @shell_exec('command -v dns-sd 2>/dev/null'));
+            $avahi = $dnssd === '' ? trim((string) @shell_exec('command -v avahi-publish-service 2>/dev/null')) : '';
+        }
 
         if ($dnssd !== '') {
             // macOS / Bonjour: dns-sd -R <name> <type> <domain> <port> [k=v ...]
@@ -1203,16 +1414,30 @@ class JumpCommand extends Command
                 escapeshellarg($txtPort),
                 escapeshellarg($txtName),
             );
+        } elseif (PHP_OS_FAMILY === 'Windows') {
+            // No Bonjour dns-sd.exe on this Windows box — fall back to our
+            // self-contained pure-PHP DNS-SD responder so LAN discovery still
+            // works without asking the user to install Bonjour. It advertises
+            // the identical _jump._tcp record (host/port/name) the QR encodes.
+            $this->startPhpMdnsResponder($httpPort, $ip, $label);
+
+            return;
         } else {
             return; // no advertiser on this platform — QR-only, no harm
         }
 
+        $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
         $spec = [
             0 => ['pipe', 'r'],
-            1 => ['file', '/dev/null', 'w'],
-            2 => ['file', '/dev/null', 'w'],
+            1 => ['file', $null, 'w'],
+            2 => ['file', $null, 'w'],
         ];
-        $proc = @proc_open($cmd, $spec, $pipes);
+        // bypass_shell on Windows (same pattern as startBridgeServer) so
+        // stopAdvertiser()'s proc_terminate() signals dns-sd.exe itself — not a
+        // wrapping cmd.exe — preserving the goodbye-packet deregistration.
+        $proc = PHP_OS_FAMILY === 'Windows'
+            ? @proc_open($cmd, $spec, $pipes, base_path(), null, ['bypass_shell' => true])
+            : @proc_open($cmd, $spec, $pipes);
         if (is_resource($proc)) {
             $this->mdnsProcess = $proc;
             $this->components->info("Discoverable on this network as \"{$label}\" — open the app to connect without scanning.");
@@ -1227,17 +1452,19 @@ class JumpCommand extends Command
         if (PHP_OS_FAMILY === 'Darwin') {
             $this->openOrRefreshMacOS($url);
         } elseif (PHP_OS_FAMILY === 'Linux') {
-            $commands = [
-                'xdg-open '.escapeshellarg($url).' > /dev/null 2>&1 &',
-                'sensible-browser '.escapeshellarg($url).' > /dev/null 2>&1 &',
-                'x-www-browser '.escapeshellarg($url).' > /dev/null 2>&1 &',
-            ];
-            foreach ($commands as $command) {
-                exec($command, $output, $returnCode);
-                if ($returnCode === 0) {
-                    break;
+            // Backgrounding with `&` makes the shell exit 0 whether or not the
+            // opener exists, so probe availability first instead of trusting
+            // the exit code. The redirect + & stay: they keep a slow opener
+            // from blocking the serve loop.
+            foreach (['xdg-open', 'sensible-browser', 'x-www-browser'] as $bin) {
+                $path = trim((string) @shell_exec('command -v '.escapeshellarg($bin).' 2>/dev/null'));
+                if ($path !== '') {
+                    exec(escapeshellarg($path).' '.escapeshellarg($url).' > /dev/null 2>&1 &');
+
+                    return;
                 }
             }
+            $this->components->warn("No browser opener found (xdg-open/sensible-browser/x-www-browser). Open {$url} manually.");
         } elseif (PHP_OS_FAMILY === 'Windows') {
             exec('start "" '.escapeshellarg($url));
         }
@@ -1315,11 +1542,28 @@ APPLESCRIPT;
             // (router + Workerman bridge + Windows vite-hmr proxy), not just the
             // router, and tree-kill (/T) so php -S workers and Workerman worker
             // processes are reaped too — otherwise ws/bridge/vite ports escalate.
+            // Match by the package path fragment WITH FORWARD SLASHES — the
+            // spawned command lines embed __DIR__.'/../../resources/jump/…'
+            // verbatim (no realpath), so the tail keeps '/'. Bare filenames
+            // ('router.php') would tree-kill unrelated `php -S … router.php`
+            // dev servers. Also scope to THIS project — base_path() is an
+            // argument of every jump child — so live siblings serving other
+            // projects survive, matching the Unix branch's multi-project
+            // behaviour. http-server.php is the Windows HTTP proxy (was
+            // never reaped before).
             $pids = [];
-            foreach (['router.php', 'websocket-server.php', 'vite-hmr-server.php'] as $needle) {
-                $output = shell_exec('wmic process where "commandline like \'%'.$needle.'%\'" get processid 2>NUL');
+            $base = base_path();
+            $wqlBase = str_replace('\\', '\\\\', $base); // backslashes must be doubled in WQL
+            $needles = [
+                'resources/jump/router.php',
+                'resources/jump/http-server.php',
+                'resources/jump/websocket-server.php',
+                'resources/jump/vite-hmr-server.php',
+            ];
+            foreach ($needles as $needle) {
+                $output = shell_exec('wmic process where "commandline like \'%'.$needle.'%\' and commandline like \'%'.$wqlBase.'%\'" get processid 2>NUL');
                 if (! $output) {
-                    $output = shell_exec('powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like \'*'.$needle.'*\' } | Select-Object -ExpandProperty ProcessId" 2>NUL');
+                    $output = shell_exec('powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like \'*'.$needle.'*\' -and $_.CommandLine -like \'*'.$base.'*\' } | Select-Object -ExpandProperty ProcessId" 2>NUL');
                 }
                 if ($output) {
                     foreach (preg_split('/\s+/', trim($output)) as $pid) {
@@ -1484,10 +1728,25 @@ APPLESCRIPT;
             return;
         }
         $out = trim((string) @shell_exec('lsof -nP -iTCP:'.$port.' -sTCP:LISTEN -t 2>/dev/null'));
-        if ($out === '') {
+        $pids = $out === '' ? [] : preg_split('/\s+/', $out);
+
+        // lsof isn't installed on minimal Debian/Ubuntu, many Docker images and
+        // some WSL distros — without a fallback the reap silently no-ops and
+        // every restart escalates to higher ports. Fall back to ss on Linux
+        // only (macOS always ships lsof and has no ss). `ss -p` only emits
+        // pid= for same-user sockets — exactly the jump-owned set — and every
+        // PID found still passes through the identity gate below.
+        if (empty($pids) && PHP_OS_FAMILY === 'Linux') {
+            $ssOut = (string) @shell_exec('ss -ltnpH "sport = :'.$port.'" 2>/dev/null');
+            if (preg_match_all('/pid=(\d+)/', $ssOut, $m)) {
+                $pids = $m[1];
+            }
+        }
+
+        if (empty($pids)) {
             return;
         }
-        foreach (array_unique(preg_split('/\s+/', $out)) as $pid) {
+        foreach (array_unique($pids) as $pid) {
             if (! is_numeric($pid) || (int) $pid === getmypid()) {
                 continue;
             }
@@ -1499,7 +1758,7 @@ APPLESCRIPT;
             $ppid = (int) $m[1];
             $command = trim($m[2]);
 
-            if (! $this->isJumpOwnedProcess($command, $ppid)) {
+            if (! $this->isJumpOwnedProcess($command, $ppid, (int) $pid)) {
                 $this->warn("Port {$port} is held by an unrelated process (pid {$pid}) — leaving it alone.");
 
                 continue;
@@ -1517,7 +1776,7 @@ APPLESCRIPT;
      * ORPHANED `php -S … server.php` workers (PPID 1 — a live user server's
      * workers still have their artisan parent).
      */
-    private function isJumpOwnedProcess(string $command, int $ppid): bool
+    private function isJumpOwnedProcess(string $command, int $ppid, int $pid = 0): bool
     {
         if (str_contains($command, 'resources/jump/router.php')
             || str_contains($command, 'resources/jump/websocket-server.php')
@@ -1538,6 +1797,29 @@ APPLESCRIPT;
             return true;
         }
 
+        // The managed Laravel dev server. `artisan serve` execs
+        // `php -S <host>:<port> …/Foundation/resources/server.php`, and with
+        // PHP_CLI_SERVER_WORKERS that master forks a worker per slot. NONE of
+        // them carry "artisan serve" in their command line, and their ppid is
+        // the master (or the serve process) — not 1 — so the ppid===1 test below
+        // rejected all ~11 of them and left port 8000 held forever:
+        //
+        //   Port 8000 is held by an unrelated process (pid 2000) — leaving it alone.
+        //   … once per worker, every shutdown
+        //
+        // startLaravelServer() exports JUMP_BRIDGE_PORT into that server's
+        // environment and the forked workers inherit it, so it is a definitive
+        // marker: it distinguishes our server from a plain `php artisan serve`
+        // the user started themselves, which must never be killed.
+        if ($pid > 0
+            && preg_match('/php[^ ]* -S \S+:\d+/', $command)
+            && str_contains($command, 'server.php')
+            && str_contains($this->processEnvironment($pid), 'JUMP_BRIDGE_PORT=')) {
+            return true;
+        }
+
+        // Fallback for when the environment isn't readable (Windows, or a
+        // process we can't inspect): an orphaned `php -S` on loopback.
         if ($ppid === 1
             && preg_match('/php[^ ]* -S 127\.0\.0\.1:\d+/', $command)
             && str_contains($command, 'server.php')) {
@@ -1545,6 +1827,30 @@ APPLESCRIPT;
         }
 
         return false;
+    }
+
+    /**
+     * A process's environment as a flat string, for identity checks. Empty when
+     * it can't be read — callers must treat that as "unknown", never as "ours".
+     */
+    private function processEnvironment(int $pid): string
+    {
+        if ($pid <= 0) {
+            return '';
+        }
+
+        // Linux: /proc is authoritative and NUL-separated.
+        if (PHP_OS_FAMILY === 'Linux' && @is_readable("/proc/{$pid}/environ")) {
+            return str_replace("\0", ' ', (string) @file_get_contents("/proc/{$pid}/environ"));
+        }
+
+        // macOS: `ps -E` appends the environment after the command line. Only
+        // works for our own processes, which is exactly the case we care about.
+        if (PHP_OS_FAMILY === 'Darwin') {
+            return (string) @shell_exec('ps -Ewww -p '.$pid.' 2>/dev/null');
+        }
+
+        return '';
     }
 
     /**
@@ -1649,7 +1955,7 @@ APPLESCRIPT;
             if ($pid === getmypid() || $ppid !== 1) {
                 continue; // only reap processes orphaned to init
             }
-            if ($this->isJumpOwnedProcess($command, $ppid)) {
+            if ($this->isJumpOwnedProcess($command, $ppid, $pid)) {
                 @exec('kill -9 '.$pid.' 2>/dev/null');
             }
         }

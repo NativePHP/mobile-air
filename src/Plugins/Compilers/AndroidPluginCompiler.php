@@ -134,7 +134,10 @@ class AndroidPluginCompiler
             throw new PluginConflictException($conflicts);
         }
 
-        $allPlugins = $this->registry->all();
+        // A plugin that declares `platforms: ["ios"]` contributes nothing to an
+        // Android build. Hooks still run for every plugin — a hook is the
+        // plugin's own code and gets to decide for itself.
+        $allPlugins = $this->registry->all()->filter(fn (Plugin $p) => $p->supportsPlatform('android'));
         $hookRunner = $this->getHookRunner();
 
         // Run pre-compile hooks
@@ -808,6 +811,9 @@ class AndroidPluginCompiler
         // Handle different value types
         if (is_bool($value)) {
             $value = $value ? 'true' : 'false';
+        } elseif (is_string($value)) {
+            // Substitute ${ENV_VAR} placeholders, mirroring iOS info_plist handling
+            $value = $this->substituteEnvPlaceholders($value);
         }
 
         return "<meta-data android:name=\"{$name}\" android:value=\"{$value}\" />";
@@ -960,6 +966,9 @@ class AndroidPluginCompiler
             } elseif ($value !== null) {
                 if (is_bool($value)) {
                     $value = $value ? 'true' : 'false';
+                } elseif (is_string($value)) {
+                    // Substitute ${ENV_VAR} placeholders, mirroring iOS info_plist handling
+                    $value = $this->substituteEnvPlaceholders($value);
                 }
                 $xml .= "            <meta-data android:name=\"{$name}\" android:value=\"{$value}\" />\n";
             }
@@ -1102,7 +1111,8 @@ class AndroidPluginCompiler
         }
 
         // First, remove any existing plugin permission comments to avoid duplicates
-        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Permissions -->\n/s', '', $manifest);
+        // (\r?\n tolerates CRLF manifests generated/committed on Windows)
+        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Permissions -->\r?\n/s', '', $manifest);
 
         $permissionBlock = "\n    <!-- NativePHP Plugin Permissions -->\n";
         $hasNewPermissions = false;
@@ -1141,7 +1151,8 @@ class AndroidPluginCompiler
         }
 
         // First, remove any existing plugin feature comments to avoid duplicates
-        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Features -->\n/s', '', $manifest);
+        // (\r?\n tolerates CRLF manifests generated/committed on Windows)
+        $manifest = preg_replace('/\s*<!-- NativePHP Plugin Features -->\r?\n/s', '', $manifest);
 
         $featureBlock = "\n    <!-- NativePHP Plugin Features -->\n";
         $hasNewFeatures = false;
@@ -1353,56 +1364,122 @@ KOTLIN;
     }
 
     /**
-     * Add Gradle dependencies from plugins
+     * Declare each plugin's Android dependencies in the app module's
+     * dependencies {} block, inside a marker-delimited block rebuilt on every
+     * compile — the same shape as injectGradlePlugins() and the proguard
+     * rules block. Declared from `android.dependencies` in nativephp.json.
+     *
+     * Before this was marker-delimited, every compile appended a fresh
+     * "// NativePHP Plugin Dependencies" header: the dependency lines under
+     * it were guarded against duplication, the header was not. A project
+     * built a few hundred times accumulates a few hundred header comments,
+     * and — more importantly than the noise — its build.gradle.kts is a
+     * different file after every build, so nothing downstream of it can be
+     * reproducible. Those stale headers are removed here as well.
      */
     protected function addGradleDependencies(Collection $plugins): void
     {
         $buildGradlePath = $this->androidProjectPath.'/app/build.gradle.kts';
         $buildGradle = $this->files->get($buildGradlePath);
 
+        $original = $buildGradle;
+
+        // Drop headers written by versions that did not delimit the block.
+        // Comments only: the dependency lines an earlier build wrote are
+        // valid declarations and are left exactly where they are, which is
+        // also what keeps buildGradleDependenciesBlock() from declaring them
+        // a second time.
+        $buildGradle = preg_replace(
+            '/\n[ \t]*\/\/ NativePHP Plugin Dependencies[ \t]*(?=\n)/',
+            '',
+            $buildGradle
+        );
+
+        $begin = '// BEGIN nativephp-plugin-dependencies';
+        $end = '// END nativephp-plugin-dependencies';
+
+        $block = $this->buildGradleDependenciesBlock($plugins, $buildGradle);
+
+        if (str_contains($buildGradle, $begin) && str_contains($buildGradle, $end)) {
+            $buildGradle = preg_replace(
+                '/[ \t]*'.preg_quote($begin, '/').'.*?'.preg_quote($end, '/').'\n?/s',
+                $block,
+                $buildGradle,
+                1
+            );
+        } elseif ($block !== '') {
+            $buildGradle = preg_replace(
+                '/(dependencies\s*\{[ \t]*\r?\n)/s',
+                '$1'.$block,
+                $buildGradle,
+                1
+            );
+        }
+
+        if ($buildGradle === $original) {
+            return;
+        }
+
+        $this->files->put($buildGradlePath, $buildGradle);
+    }
+
+    /**
+     * Build the marker-delimited dependency declarations. Pure (no IO on the
+     * android project) so it is unit-testable. Returns '' when no plugin
+     * declares anything. $existingContent is used to skip coordinates the
+     * build file already declares outside our markers.
+     */
+    public function buildGradleDependenciesBlock(Collection $plugins, string $existingContent = ''): string
+    {
+        // What the build file declares outside our own block. Our block is
+        // excluded, or a rebuild would consider everything it wrote last time
+        // "already present" and emit an empty block.
+        $outside = $existingContent === '' ? '' : (preg_replace(
+            '/\/\/ BEGIN nativephp-plugin-dependencies.*?\/\/ END nativephp-plugin-dependencies/s',
+            '',
+            $existingContent
+        ) ?? $existingContent);
+
         $dependenciesByType = [];
 
         foreach ($plugins as $plugin) {
-            $androidDeps = $plugin->getAndroidDependencies();
-
-            foreach ($androidDeps as $type => $libraries) {
-                if (! isset($dependenciesByType[$type])) {
-                    $dependenciesByType[$type] = [];
-                }
+            foreach ($plugin->getAndroidDependencies() as $type => $libraries) {
                 foreach ($libraries as $library) {
                     $dependenciesByType[$type][] = $library;
                 }
             }
         }
 
-        if (empty($dependenciesByType)) {
-            return;
-        }
+        $lines = [];
 
-        // Find dependencies block and add new ones
-        $dependencyBlock = "\n    // NativePHP Plugin Dependencies\n";
         foreach ($dependenciesByType as $type => $libraries) {
             foreach (array_unique($libraries) as $dep) {
-                if (! str_contains($buildGradle, $dep)) {
-                    // Handle platform() BOMs specially - they need platform() outside the quotes
-                    if (preg_match('/^platform\((.+)\)$/', $dep, $matches)) {
-                        $dependencyBlock .= "    {$type}(platform(\"{$matches[1]}\"))\n";
-                    } else {
-                        $dependencyBlock .= "    {$type}(\"{$dep}\")\n";
-                    }
+                // Handle platform() BOMs specially - they need platform() outside the quotes
+                $isBom = (bool) preg_match('/^platform\((.+)\)$/', $dep, $matches);
+                $coordinate = $isBom ? $matches[1] : $dep;
+
+                // Compare on the coordinate rather than on the declaration:
+                // a BOM arrives as `platform(group:artifact:version)` and is
+                // written as `platform("group:artifact:version")`, so testing
+                // the raw form never matched and every build re-declared it.
+                if ($outside !== '' && str_contains($outside, $coordinate)) {
+                    continue;
                 }
+
+                $lines[] = $isBom
+                    ? "    {$type}(platform(\"{$coordinate}\"))"
+                    : "    {$type}(\"{$coordinate}\")";
             }
         }
 
-        // Insert into dependencies block
-        $buildGradle = preg_replace(
-            '/(dependencies\s*\{)/s',
-            '$1'.$dependencyBlock,
-            $buildGradle,
-            1
-        );
+        if (empty($lines)) {
+            return '';
+        }
 
-        $this->files->put($buildGradlePath, $buildGradle);
+        return "    // BEGIN nativephp-plugin-dependencies\n"
+            ."    // Auto-generated on every build from installed plugins — do not edit.\n"
+            .implode("\n", $lines)."\n"
+            ."    // END nativephp-plugin-dependencies\n";
     }
 
     /**

@@ -7,18 +7,14 @@ use Native\Mobile\Facades\Device;
 class System
 {
     /**
-     * Toggle the device flashlight on/off.
-     *
-     * @deprecated Use \Native\Mobile\Facades\Device::toggleFlashlight() instead
+     * Process-cached current appearance. Seeded on first read via a bridge
+     * probe (`System.GetAppearance`) and kept fresh by the AppearanceChanged
+     * event — a listener registered in NativeServiceProvider calls
+     * rememberAppearance() when the OS flips the theme. Mirrors the Platform
+     * caching pattern so hot-path reads (isDark() in render logic) avoid a
+     * bridge round-trip per call.
      */
-    #[\Deprecated(message: 'Use \Native\Mobile\Facades\Device::flashlight() instead', since: '2.0.0')]
-    public function flashlight(): void
-    {
-        // Use the new god method pattern via Device class
-        if (function_exists('nativephp_call')) {
-            nativephp_call('Device.ToggleFlashlight', '{}');
-        }
-    }
+    private static ?string $appearance = null;
 
     public function isIos(): bool
     {
@@ -51,16 +47,6 @@ class System
 
         return false;
     }
-
-    /**
-     * Process-cached current appearance. Seeded on first read via a bridge
-     * probe (`System.GetAppearance`) and kept fresh by the AppearanceChanged
-     * event — a listener registered in NativeServiceProvider calls
-     * rememberAppearance() when the OS flips the theme. Mirrors the Platform
-     * caching pattern so hot-path reads (isDark() in render logic) avoid a
-     * bridge round-trip per call.
-     */
-    private static ?string $appearance = null;
 
     /**
      * Current system appearance: 'light' or 'dark'. Off the device (tests, web

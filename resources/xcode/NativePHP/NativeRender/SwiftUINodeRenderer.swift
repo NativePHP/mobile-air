@@ -146,6 +146,10 @@ struct NodeView: View, Equatable {
             // `.textSelection` is inherited) — container-scoped like Android's
             // SelectionContainer. No-op when the prop is absent.
             .modifier(NodeTextSelectionModifier(props: node.props))
+            // Content transition (numeric roll / crossfade) for in-place
+            // text changes. Environment-propagating like text selection;
+            // no-op when `content_transition` is absent.
+            .modifier(NodeContentTransitionModifier(props: node.props))
             // Animation modifier runs AFTER style so it sees the resolved
             // opacity. No-op when `animate-duration` is not set, so the
             // hot path is unchanged for non-animated nodes.
@@ -232,7 +236,7 @@ private struct NodeGestureModifier: ViewModifier {
                 .contentShape(Rectangle())
                 // Double-tap attached before single-tap so the 2-count
                 // recognizer gets first claim on the gesture. Combining
-                // @press + @doubleTap on one node incurs SwiftUI's usual
+                // @tap + @doubleTap on one node incurs SwiftUI's usual
                 // tap-arbitration delay on the single tap.
                 .modifier(DoubleTapModifier(callbackId: doubleTapId, nodeId: node.id))
                 .modifier(TapModifier(callbackId: node.onPress, nodeId: node.id))

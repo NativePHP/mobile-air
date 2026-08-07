@@ -906,6 +906,175 @@ class NestedClass {}');
     }
 
     /**
+     * @test
+     *
+     * A Swift Package under resources/ios/ must not be copied into the app
+     * target. The app's NativePHP folder is a synchronized root group, so
+     * every file copied under it joins the compile sources phase — and a
+     * SwiftPM manifest imports PackageDescription, which an app target has no
+     * access to.
+     */
+    public function it_does_not_copy_an_embedded_swift_package(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/swiftpm-plugin';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath.'/Core/Sources/Core');
+        $this->files->ensureDirectoryExists($iosPath.'/Core/Tests/CoreTests');
+        $this->files->ensureDirectoryExists($iosPath.'/Core/.build/debug');
+
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+        $this->files->put($iosPath.'/Core/Package.swift', "import PackageDescription\nlet package = Package(name: \"Core\")");
+        $this->files->put($iosPath.'/Core/Sources/Core/Core.swift', 'public enum Core {}');
+        $this->files->put($iosPath.'/Core/Tests/CoreTests/CoreTests.swift', "import XCTest\n@testable import Core");
+        $this->files->put($iosPath.'/Core/.build/debug/Generated.swift', 'let generated = true');
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $copiedDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+
+        // The bridge file is the plugin's actual iOS surface.
+        $this->assertFileExists($copiedDir.'/PluginFunctions.swift');
+
+        // None of the package's files may reach the app target.
+        $this->assertFileDoesNotExist($copiedDir.'/Core/Package.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Core/Sources/Core/Core.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Core/Tests/CoreTests/CoreTests.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Core/.build/debug/Generated.swift');
+    }
+
+    /**
+     * @test
+     *
+     * A Tests/ directory is SwiftPM's test-target convention. Its files import
+     * XCTest and use @testable, neither of which an app target has.
+     */
+    public function it_does_not_copy_a_tests_directory(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/tests-plugin';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath.'/Tests');
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+        $this->files->put($iosPath.'/Tests/PluginTests.swift', 'import XCTest');
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $copiedDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+
+        $this->assertFileExists($copiedDir.'/PluginFunctions.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Tests/PluginTests.swift');
+    }
+
+    /**
+     * @test
+     *
+     * A plugin that declares `platforms: ["android"]` contributes nothing to
+     * an iOS build, whatever it happens to have under resources/ios/.
+     */
+    public function it_skips_plugins_that_do_not_declare_ios_support(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/android-only';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath);
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+
+        $plugin = $this->createTestPlugin([
+            'platforms' => ['android'],
+            'bridge_functions' => [
+                ['name' => 'Test.Execute', 'android' => 'com.test.Execute', 'ios' => 'TestFunctions.Execute'],
+            ],
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Should not be merged']],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/PluginFunctions.swift'
+        );
+
+        // No registration for a class that was never copied — that would be a
+        // link error rather than a compile error.
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginBridgeFunctionRegistration.swift'
+        );
+        $this->assertStringNotContainsString('TestFunctions.Execute', $registration);
+
+        // And no Info.plist keys from a plugin that is not part of this build.
+        $plist = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+        $this->assertStringNotContainsString('NSCameraUsageDescription', $plist);
+    }
+
+    /**
+     * @test
+     *
+     * A plugin whose manifest says nothing about platforms is treated as
+     * supporting both, so nothing that worked before this key was read breaks.
+     */
+    public function it_still_copies_sources_when_platforms_is_absent(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/no-platforms';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath);
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/PluginFunctions.swift'
+        );
+    }
+
+    /**
+     * @test
+     *
+     * `ios.sources` is the escape hatch for a layout the exclusions get wrong:
+     * when it is present, it is the whole list.
+     */
+    public function it_copies_only_the_declared_ios_sources(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/declared-sources';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath.'/Renderers');
+        $this->files->ensureDirectoryExists($iosPath.'/Scratch');
+
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+        $this->files->put($iosPath.'/Renderers/Badge.swift', 'import SwiftUI');
+        $this->files->put($iosPath.'/Scratch/Draft.swift', 'import Foundation');
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['sources' => ['PluginFunctions.swift', 'Renderers']],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $copiedDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+
+        $this->assertFileExists($copiedDir.'/PluginFunctions.swift');
+        $this->assertFileExists($copiedDir.'/Renderers/Badge.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Scratch/Draft.swift');
+    }
+
+    /**
      * Helper method to create a test Plugin instance.
      */
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin

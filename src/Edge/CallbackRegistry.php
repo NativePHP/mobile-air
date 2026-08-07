@@ -5,19 +5,15 @@ namespace Native\Mobile\Edge;
 class CallbackRegistry
 {
     /**
-     * Process-wide ID counter. Was per-instance, but per-instance IDs
-     * collide across components — when component A registers
-     * `closeSheet` as ID 5 and component B registers `confirmDelete` as
-     * ID 5, an event meant for A's sheet (still visible from a stale
-     * tree) lands on B's active runloop and fires `confirmDelete`
-     * instead. Global counter guarantees IDs from different components
-     * never collide; if an event arrives with an ID this component
-     * doesn't own, `resolve()` returns null and `dispatch()` drops it
-     * instead of mis-firing.
-     *
-     * u32 wire range (≈4B IDs) is plenty even for long-lived sessions.
+     * Scope salt folded into every derived id — empty for a screen's
+     * own registry. Child-component registries pass their identity key
+     * ('user-card|key:a'), so identical expressions in sibling children
+     * ('bump', 'save') derive DISTINCT ids and dispatch resolves
+     * ownership unambiguously. Identity keys are stable across renders
+     * and processes (explicit `key` attr, else tag + occurrence index),
+     * so scoped ids are exactly as deterministic as unscoped ones.
      */
-    protected static int $globalNextId = 1;
+    protected string $scope = '';
 
     protected array $map = [];
 
@@ -36,18 +32,84 @@ class CallbackRegistry
      */
     protected array $kindMap = [];
 
+    /**
+     * IDs are content-addressed: a pure function of the expression string
+     * (fnv1a32). Same expression always yields the same id — in any
+     * process, any request, any registry instance. That removes every
+     * positional-determinism assumption from the protocol: no counter,
+     * no render-order dependence, nothing to replay to rebuild ids.
+     *
+     * Distinct expressions across components get hash-distinct ids, so
+     * the old cross-component collision hazard (two counters both
+     * handing out id 5) can't occur. Two components sharing an
+     * expression share an id — semantically safe: same expression means
+     * same method + literal args.
+     */
+    public function __construct(string $scope = '')
+    {
+        $this->scope = $scope;
+    }
+
+    /**
+     * This registry's scope — parents prepend it when scoping their
+     * children, so nested children chain ('cards|key:a>badge|i:0') and
+     * the same tag at the same index under DIFFERENT parents still
+     * derives distinct ids.
+     */
+    public function scope(): string
+    {
+        return $this->scope;
+    }
+
     public function register(string $expression, ?string $kind = null): int
     {
         if (isset($this->expressionMap[$expression])) {
             $id = $this->expressionMap[$expression];
         } else {
-            $id = self::$globalNextId++;
+            $id = $this->deriveId($expression);
             $this->expressionMap[$expression] = $id;
             $this->map[$id] = self::parse($expression);
         }
 
         if ($kind !== null) {
             $this->kindMap[$id] = $kind;
+        }
+
+        return $id;
+    }
+
+    /**
+     * Hash an expression to a callback id.
+     *
+     * Masked to 31 bits: the Kotlin side reads callback ids as signed
+     * Int (`getInt("on_press")`, `sendPressEvent(callbackId: Int, …)`),
+     * so the sign bit must stay clear or full-u32 ids wrap negative on
+     * the round trip and `resolve()` misses. fnv1a32 never returns 0,
+     * but the mask can produce 0 — nudge to 1 (0 is the "no callback"
+     * sentinel on the native side).
+     *
+     * Cross-expression hash collision (different expression, same id —
+     * ~1 in 2^31): rehash with a salt suffix until free. The result is
+     * deterministic given insertion order, and registration follows
+     * tree order, so replaying the same render reproduces identical
+     * ids.
+     */
+    protected function deriveId(string $expression): int
+    {
+        $input = $this->scope === '' ? $expression : $this->scope."\x1F".$expression;
+
+        $id = Element::fnv1a32($input) & 0x7FFFFFFF;
+
+        if ($id === 0) {
+            $id = 1;
+        }
+
+        for ($salt = 1; isset($this->map[$id]); $salt++) {
+            $id = Element::fnv1a32($input."\x00".$salt) & 0x7FFFFFFF;
+
+            if ($id === 0) {
+                $id = 1;
+            }
         }
 
         return $id;
@@ -106,7 +168,25 @@ class CallbackRegistry
         return $this->navigationConfigs[$key] ?? null;
     }
 
-    private static function parse(string $expression): array
+    /**
+     * All stored navigation configs, keyed by content-addressed key —
+     * the introspection counterpart to expressions(). Re-registering a
+     * config recomputes the identical key, so consumers (tooling, the
+     * testing harness) can enumerate exactly what a render registered.
+     *
+     * @return array<string, array>
+     */
+    public function navigations(): array
+    {
+        return $this->navigationConfigs;
+    }
+
+    /**
+     * Parse a `method('arg', ...)` expression into method + literal args.
+     * Public because NativeComponent::emit() reuses it for tag-level
+     * `@event="method(...)"` bindings on child-component tags.
+     */
+    public static function parse(string $expression): array
     {
         if (! str_contains($expression, '(')) {
             return ['method' => $expression, 'args' => []];

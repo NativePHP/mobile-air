@@ -3,8 +3,8 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
-use Native\Mobile\Traits\ChecksLatestBuildNumber;
-use Native\Mobile\Traits\PublishesToPlayStore;
+use Native\Mobile\Concerns\ChecksLatestBuildNumber;
+use Native\Mobile\Concerns\PublishesToPlayStore;
 
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\outro;

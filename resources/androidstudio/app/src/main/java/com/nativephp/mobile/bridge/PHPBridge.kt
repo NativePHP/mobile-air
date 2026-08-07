@@ -154,6 +154,7 @@ class PHPBridge(private val context: Context) {
         // exactly what SEGVs/hangs.
         if (persistentBooted) {
             Log.i(TAG, "Persistent runtime already booted — reusing (process outlived its activity)")
+            WebviewPHPRuntime.resumeAfterRuntimeReboot()
             return true
         }
 
@@ -176,7 +177,14 @@ class PHPBridge(private val context: Context) {
                 false
             }
         }
-        return future.get()
+        val booted = future.get()
+
+        // Re-open the window shutdownPersistentRuntime() closed, so webview
+        // contexts suspended for this reboot can boot again. No-op on a cold
+        // launch.
+        WebviewPHPRuntime.resumeAfterRuntimeReboot()
+
+        return booted
     }
 
     /**
@@ -220,6 +228,15 @@ class PHPBridge(private val context: Context) {
      */
     fun shutdownPersistentRuntime() {
         if (!persistentBooted) return
+
+        // Embedded php-mode webviews each own a PHP context on their own
+        // thread, built on the process-wide Zend module state that
+        // php_embed_shutdown() is about to destroy. Take them down first or
+        // they are left dereferencing freed memory — same hazard as the
+        // queue worker, and why a hot reload with a php webview on screen
+        // crashed. They re-boot on their next request once
+        // bootPersistentRuntime() reopens the window.
+        WebviewPHPRuntime.suspendAllForRuntimeReboot()
 
         try {
             com.nativephp.mobile.ui.nativerender.NativeElementBridge.sendShutdownEvent()

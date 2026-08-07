@@ -3,11 +3,11 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
-use Native\Mobile\Traits\ManagesViteDevServer;
-use Native\Mobile\Traits\ManagesWatchman;
-use Native\Mobile\Traits\RunsIos;
-use Native\Mobile\Traits\WatchesAndroid;
-use Native\Mobile\Traits\WatchesIos;
+use Native\Mobile\Concerns\ManagesViteDevServer;
+use Native\Mobile\Concerns\ManagesWatchman;
+use Native\Mobile\Concerns\RunsIos;
+use Native\Mobile\Concerns\WatchesAndroid;
+use Native\Mobile\Concerns\WatchesIos;
 
 use function Laravel\Prompts\select;
 
@@ -27,10 +27,6 @@ class WatchCommand extends Command
 
     public function handle(): int
     {
-        if (! $this->checkWatchmanDependencies()) {
-            return self::FAILURE;
-        }
-
         // Get platform (flags take priority over argument)
         if ($this->option('ios')) {
             $platform = 'ios';
@@ -40,13 +36,18 @@ class WatchCommand extends Command
             $platform = $this->argument('platform');
 
             if (! $platform) {
-                $platform = select(
-                    label: 'Select platform to watch',
-                    options: [
-                        'ios' => 'iOS',
-                        'android' => 'Android',
-                    ]
-                );
+                // iOS watching needs the Xcode toolchain, so only offer it on macOS
+                if (PHP_OS_FAMILY !== 'Darwin') {
+                    $platform = 'android';
+                } else {
+                    $platform = select(
+                        label: 'Select platform to watch',
+                        options: [
+                            'ios' => 'iOS',
+                            'android' => 'Android',
+                        ]
+                    );
+                }
             } else {
                 // Support shorthands: 'a' for android, 'i' for ios
                 $platform = match (strtolower($platform)) {
@@ -55,6 +56,14 @@ class WatchCommand extends Command
                     default => $platform,
                 };
             }
+        }
+
+        // iOS watching depends on the Xcode toolchain (xcrun), which only exists
+        // on macOS — fail fast with a clear error for explicit --ios / ios / i
+        if ($platform === 'ios' && PHP_OS_FAMILY !== 'Darwin') {
+            $this->error('Watching iOS apps requires macOS (Xcode toolchain).');
+
+            return self::FAILURE;
         }
 
         $targetUdid = $this->argument('target');

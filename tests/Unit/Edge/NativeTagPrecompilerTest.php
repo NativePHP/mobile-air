@@ -1,6 +1,10 @@
 <?php
 
+use Native\Mobile\Edge\Components\EdgeComponent;
+use Native\Mobile\Edge\Components\Navigation\TopBar;
+use Native\Mobile\Edge\Edge;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 
 beforeEach(function () {
     $this->precompiler = new NativeTagPrecompiler;
@@ -89,11 +93,11 @@ it('lets an explicit :html attribute win over webview slot content', function ()
     expect($result)->toContain("!isset(\$__nativeSlotAttrs['html'])");
 });
 
-it('rewrites @press to _press', function () {
-    $result = ($this->precompiler)('<native:button label="+" @press="increment" />');
+it('rewrites @tap to _press', function () {
+    $result = ($this->precompiler)('<native:button label="+" @tap="increment" />');
 
     expect($result)->toContain("'_press' => 'increment'");
-    expect($result)->not->toContain('@press');
+    expect($result)->not->toContain('@tap');
 });
 
 it('rewrites @longPress to _longPress', function () {
@@ -110,22 +114,75 @@ it('rewrites @doubleTap to _doubleTap', function () {
     expect($result)->not->toContain('@doubleTap');
 });
 
-it('rewrites @pressDown and @pressUp to underscored versions', function () {
-    $result = ($this->precompiler)('<native:pressable @pressDown="startLeft" @pressUp="stopLeft">x</native:pressable>');
+it('rewrites @tapDown and @tapUp to underscored versions', function () {
+    $result = ($this->precompiler)('<native:pressable @tapDown="startLeft" @tapUp="stopLeft">x</native:pressable>');
 
     expect($result)->toContain("'_pressDown' => 'startLeft'");
     expect($result)->toContain("'_pressUp' => 'stopLeft'");
-    expect($result)->not->toContain('@pressDown');
-    expect($result)->not->toContain('@pressUp');
+    expect($result)->not->toContain('@tapDown');
+    expect($result)->not->toContain('@tapUp');
 });
 
-it('keeps @press and @pressDown distinct on the same tag', function () {
-    // `pressDown` precedes `press` in the alternation — a plain @press must
+it('rewrites @selectionChange to _selectionChange', function () {
+    $result = ($this->precompiler)('<native:column @selectionChange="caretMoved">x</native:column>');
+
+    expect($result)->toContain("'_selectionChange' => 'caretMoved'");
+    expect($result)->not->toContain('@selectionChange');
+});
+
+it('rewrites @selectionChange and @change independently on the same tag', function () {
+    // `change` is a suffix of `selectionChange` — the @-anchored alternation
+    // must never rewrite one into the other.
+    $result = ($this->precompiler)('<native:column @change="updateDraft" @selectionChange="caretMoved">x</native:column>');
+
+    expect($result)->toContain("'_change' => 'updateDraft'");
+    expect($result)->toContain("'_selectionChange' => 'caretMoved'");
+    expect($result)->not->toContain('@change');
+    expect($result)->not->toContain('@selectionChange');
+});
+
+it('keeps @tap and @tapDown distinct on the same tag', function () {
+    // `pressDown` precedes `press` in the alternation — a plain @tap must
     // still rewrite to _press, never swallow the Down/Up suffix.
-    $result = ($this->precompiler)('<native:pressable @press="fire" @pressDown="charge">x</native:pressable>');
+    $result = ($this->precompiler)('<native:pressable @tap="fire" @tapDown="charge">x</native:pressable>');
 
     expect($result)->toContain("'_press' => 'fire'");
     expect($result)->toContain("'_pressDown' => 'charge'");
+});
+
+it('rewrites the @press alias to _press', function () {
+    $result = ($this->precompiler)('<native:button label="+" @press="increment" />');
+
+    expect($result)->toContain("'_press' => 'increment'");
+    expect($result)->not->toContain('@press');
+});
+
+it('rewrites the rest of the press-family aliases onto the same wire attrs', function () {
+    $result = ($this->precompiler)(
+        '<native:pressable @longTap="hold" @pressDown="charge" @pressUp="release">x</native:pressable>'
+    );
+
+    expect($result)->toContain("'_longPress' => 'hold'");
+    expect($result)->toContain("'_pressDown' => 'charge'");
+    expect($result)->toContain("'_pressUp' => 'release'");
+});
+
+it('leaves @doubleTap alone when aliasing @tap', function () {
+    // The alias alternation is anchored at `@`, so `tap` can never match the
+    // tail of `doubleTap`.
+    $result = ($this->precompiler)('<native:column @doubleTap="two" @tap="one">x</native:column>');
+
+    expect($result)->toContain("'_doubleTap' => 'two'");
+    expect($result)->toContain("'_press' => 'one'");
+});
+
+it('accepts @tap and @tap side by side on the same screen', function () {
+    $result = ($this->precompiler)(
+        '<native:column><native:button label="a" @tap="old" /><native:button label="b" @tap="new" /></native:column>'
+    );
+
+    expect($result)->toContain("'_press' => 'old'");
+    expect($result)->toContain("'_press' => 'new'");
 });
 
 it('rewrites @change and @submit', function () {
@@ -164,7 +221,7 @@ it('handles dynamic attributes with colon prefix', function () {
 });
 
 it('handles multiple native tags in one template', function () {
-    $input = '<native:column fill><native:text :fontSize="20">Hi</native:text><native:button label="OK" @press="ok" /></native:column>';
+    $input = '<native:column fill><native:text :fontSize="20">Hi</native:text><native:button label="OK" @tap="ok" /></native:column>';
     $result = ($this->precompiler)($input);
 
     expect($result)->toContain("::open('column', ['fill' => true])");
@@ -217,4 +274,47 @@ it('interpolates array access inside {{ }} in attribute values', function () {
     $result = ($this->precompiler)('<native:image :src="$listing[\'imageUrl\']" />');
 
     expect($result)->toContain("'src' => (\$listing['imageUrl'])");
+});
+
+// ── Chrome tags compile through the collector (Gen-B Edge bridge is gone) ──
+
+it('compiles chrome container tags into collector open/close calls', function () use ($collector) {
+    foreach (['top-bar', 'bottom-nav', 'side-nav', 'side-nav-group'] as $tag) {
+        $type = str_replace('-', '_', $tag);
+        $result = ($this->precompiler)("<native:{$tag} title=\"X\">body</native:{$tag}>");
+
+        expect($result)->toContain("{$collector}::open('{$type}',")
+            ->toContain("{$collector}::close();")
+            ->not->toContain('Edge::');
+    }
+});
+
+it('compiles chrome leaf tags into collector leaf calls', function () use ($collector) {
+    foreach (['top-bar-action', 'bottom-nav-item', 'side-nav-item', 'side-nav-header'] as $tag) {
+        $type = str_replace('-', '_', $tag);
+        $result = ($this->precompiler)("<native:{$tag} id=\"x\" />");
+
+        expect($result)->toContain("{$collector}::leaf('{$type}',")
+            ->not->toContain('Edge::');
+    }
+});
+
+it('compiles a self-closing fab into a collector leaf', function () use ($collector) {
+    $result = ($this->precompiler)('<native:fab icon="add" @tap="create" />');
+
+    expect($result)->toContain("{$collector}::leaf('fab',")
+        ->toContain("'_press' => 'create'");
+});
+
+it('preserves the boolean custom attribute on chrome tags', function () {
+    $result = ($this->precompiler)('<native:top-bar custom title="Drawn">x</native:top-bar>');
+
+    expect($result)->toContain("'custom' => true");
+});
+
+it('has fully removed the Gen-B Edge bridge classes', function () {
+    expect(class_exists(Edge::class))->toBeFalse()
+        ->and(class_exists(EdgeComponent::class))->toBeFalse()
+        ->and(class_exists(TopBar::class))->toBeFalse()
+        ->and(class_exists(RenderEdgeComponents::class))->toBeFalse();
 });

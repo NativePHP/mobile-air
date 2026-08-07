@@ -6,6 +6,8 @@ use Illuminate\View\View;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Elements\Image;
 use Native\Mobile\Edge\Elements\TopBar;
+use Native\Mobile\Edge\Elements\TopBarAction;
+use Native\Mobile\Edge\Elements\TopBarTitle;
 
 /**
  * Fluent builder for the top navigation bar.
@@ -70,6 +72,18 @@ class NavBar
     private array $actions = [];
 
     /**
+     * Pre-built `top_bar_action` elements adopted from an inline
+     * `<native:top-bar>` (see {@see fromElement}). Kept as elements —
+     * not converted back to NavAction builders — so callbacks the
+     * collector already wired (`@tap` → pressMethod, `:url` navigation)
+     * survive untouched. Emitted after the builder actions by
+     * {@see actionElements}.
+     *
+     * @var TopBarAction[]
+     */
+    private array $prebuiltActionElements = [];
+
+    /**
      * Inline search bar config — same shape as
      * [NavBarOptions::$searchBar]. Set via [searchBar] or merged in
      * via [mergeOptions]. Folded into the chrome sentinel as
@@ -84,6 +98,56 @@ class NavBar
     public static function make(): self
     {
         return new self;
+    }
+
+    /**
+     * Reconstruct a NavBar builder from a collected `top_bar` element —
+     * the bridge that lets an inline `<native:top-bar>` in a screen's
+     * blade drive the SAME native-chrome path (NativeRootStack /
+     * NativeRootTabs props) the layout builders feed, instead of being
+     * drawn as an in-tree element.
+     *
+     * Maps the element's snake_case props back onto builder state and
+     * adopts its `top_bar_action` children as pre-built elements
+     * (preserving any collector-wired callbacks / navigate configs).
+     */
+    public static function fromElement(TopBar $element): self
+    {
+        $bar = new self;
+        $props = $element->getRawProps();
+
+        $bar->title = $props['title'] ?? null;
+        $bar->subtitle = $props['subtitle'] ?? null;
+        $bar->back = (bool) ($props['show_navigation_icon'] ?? false);
+        $bar->backgroundColor = $props['background_color'] ?? null;
+        $bar->textColor = $props['text_color'] ?? null;
+        $bar->font = $props['font_name'] ?? null;
+        $bar->elevation = isset($props['elevation']) ? (int) $props['elevation'] : null;
+        $bar->displayMode = $props['display_mode'] ?? null;
+        $bar->scrollBehavior = $props['scroll_behavior'] ?? null;
+
+        if (isset($props['search_placeholder']) || isset($props['search_on_query'])) {
+            $bar->searchBar = [
+                'placeholder' => $props['search_placeholder'] ?? '',
+                'onQuery' => $props['search_on_query'] ?? null,
+                'debounceMs' => (int) ($props['search_debounce_ms'] ?? 300),
+            ];
+        }
+
+        foreach ($element->getChildren() as $child) {
+            if ($child instanceof TopBarAction) {
+                $bar->prebuiltActionElements[] = $child;
+            }
+            // An inline `<native:top-bar-title>` is the blade spelling of
+            // `titleView()`. Kept as the collected marker element (callbacks
+            // its children carry survive); NativeComponent emits it as-is
+            // rather than re-wrapping.
+            if ($child instanceof TopBarTitle) {
+                $bar->titleView = $child;
+            }
+        }
+
+        return $bar;
     }
 
     public function title(?string $title): self
@@ -388,6 +452,22 @@ class NavBar
         return $this->actions;
     }
 
+    /**
+     * Every action as a ready-to-attach `top_bar_action` element —
+     * builder-declared actions first, then any pre-built elements adopted
+     * from an inline `<native:top-bar>`. This is what the chrome wrapper
+     * attaches to the native root, so both sources compose uniformly.
+     *
+     * @return TopBarAction[]
+     */
+    public function actionElements(): array
+    {
+        return [
+            ...array_map(fn (NavAction $action) => $action->toElement(), $this->actions),
+            ...$this->prebuiltActionElements,
+        ];
+    }
+
     /** The custom principal-slot content (element or Blade view), or null. */
     public function getTitleView(): Element|View|null
     {
@@ -420,8 +500,8 @@ class NavBar
 
         $bar->applyAttributes($attrs);
 
-        foreach ($this->actions as $action) {
-            $bar->addChild($action->toElement());
+        foreach ($this->actionElements() as $action) {
+            $bar->addChild($action);
         }
 
         return $bar;

@@ -1,5 +1,249 @@
 import Foundation
 import Network
+import WebKit
+
+/// Owns the actual reload work triggered by `reloadWebViewNotification`
+/// (hot reload connections in DEBUG, OTA updates via `AppUpdateManager`).
+///
+/// This observer used to live on the WebView's Coordinator, registered inside
+/// `WebView.makeUIView` — but a native-direct boot withholds the WebView
+/// entirely (and ContentView unmounts it whenever native UI is active), so
+/// fully-native apps never registered an observer and reload triggers were
+/// silently dropped. Registering here at app launch decouples reload handling
+/// from the WebView lifecycle; the WebView, when one exists, is resolved
+/// lazily through `SharedWebView.shared`.
+class HotReloadCoordinator {
+    static let shared = HotReloadCoordinator()
+
+    private var reloadInProgress = false
+
+    /// A trigger that arrived while a reload was in flight. The watcher emits
+    /// one event per changed file (and one for the containing directory), so
+    /// dropping the extras outright can discard the *last* file's trigger and
+    /// leave the app running stale code until the next save.
+    private var reloadPending = false
+    private var activated = false
+
+    /// Invalidation counter for the hot-reload event retrigger loop — see
+    /// `scheduleEventRetrigger`. Bumping it orphans any scheduled re-post.
+    /// Only touched on the main queue.
+    private var retriggerGeneration = 0
+
+    private init() {}
+
+    /// Register for reload notifications. Called once at app launch —
+    /// unconditionally, not only in DEBUG, because `AppUpdateManager`
+    /// posts the same notification after applying an OTA update.
+    func activate() {
+        guard !activated else { return }
+        activated = true
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(reload),
+            name: .reloadWebViewNotification,
+            object: nil
+        )
+    }
+
+    /// Release the in-flight guard and, if a trigger arrived while we were
+    /// busy, run exactly one more pass so the newest files are picked up.
+    private func finishReload() {
+        reloadInProgress = false
+
+        guard reloadPending else { return }
+        reloadPending = false
+
+        DispatchQueue.main.async { [weak self] in
+            self?.reload()
+        }
+    }
+
+    private func startEventRetrigger() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.retriggerGeneration += 1
+            self.scheduleEventRetrigger(self.retriggerGeneration, attempt: 0)
+        }
+    }
+
+    private func stopEventRetrigger() {
+        retriggerGeneration += 1
+    }
+
+    /// Re-post the hot-reload event every 500ms until the reboot block starts.
+    ///
+    /// Re-posts that land while the region is dead are destroyed with it —
+    /// harmless. The first one to land after the rebooted PHP re-registers the
+    /// region and enters its event loop unblocks the serial queue, at which
+    /// point the reboot block cancels this loop. Fires and cancellation both
+    /// run on the main queue, so no re-post can slip in after cancellation.
+    /// Bounded as a backstop: if PHP hasn't come back after 30s something
+    /// bigger is wrong, and re-posting forever would only mask it.
+    private func scheduleEventRetrigger(_ generation: Int, attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.retriggerGeneration == generation else { return }
+
+            guard attempt < 60 else {
+                print("⚠️ Hot reload retrigger gave up after 30s — PHP never left its event loop")
+                return
+            }
+
+            NativeUIBridge.sendHotReloadEvent()
+            self.scheduleEventRetrigger(generation, attempt: attempt + 1)
+        }
+    }
+
+    @objc func reload() {
+        // Guard against rapid-fire file change events (file + directory)
+        // triggering concurrent reboots that race on php_embed_shutdown.
+        guard !reloadInProgress else {
+            reloadPending = true
+
+            return
+        }
+        reloadInProgress = true
+        reloadPending = false
+
+        let isNativeUI = NativeUIBridge.shared.isActive
+        // Capture current route for native UI re-execution
+        let currentPath = SharedWebView.shared.webView?.url?.path ?? NativePHPApp.getStartURL()
+
+        if isNativeUI {
+            // Show the "Reloading…" overlay (ContentView watches this).
+            // Cleared in `NativeElementBridge.postTreeUpdateFromRegion`
+            // when the first new tree from the rebooted PHP arrives.
+            DispatchQueue.main.async {
+                NativeUIBridge.shared.isReloading = true
+            }
+
+            // CRITICAL: Send the hot reload event BEFORE queuing on the serial
+            // dispatch queue. For native UI routes the serial queue is blocked by
+            // the component's event-loop dispatch (PHPSchemeHandler also uses
+            // executeOnPHPThreadAsync). Writing the event to the mmap region here
+            // wakes nativephp_element_wait_event(), causing PHP to exit the event
+            // loop and return from dispatch() — which frees the serial queue so
+            // the block below can execute.
+            NativeUIBridge.sendHotReloadEvent()
+
+            // That post is fire-and-forget, and the event ring buffer does not
+            // survive a runtime reboot. When this trigger lands inside another
+            // reload's reboot window (a rapid second save, or the
+            // `reloadPending` replay — `finishReload` runs before the previous
+            // pass's dispatch re-registers the region), the event is destroyed
+            // with the buffer. The serial queue then stays blocked by the
+            // previous dispatch, the block below never runs, and
+            // `reloadInProgress` latches shut for the rest of the app session.
+            // Keep re-posting until the block below starts and cancels us.
+            startEventRetrigger()
+        }
+
+        // All reboot work runs off the main thread — persistent_php_shutdown
+        // blocks on a semaphore and must not run on the main queue.
+        PersistentPHPRuntime.shared.executeOnPHPThreadAsync { [weak self] in
+            // Reaching here proves the serial queue was freed — the hot-reload
+            // event was consumed — so stop re-posting it.
+            DispatchQueue.main.async { self?.stopEventRetrigger() }
+
+            // By the time this block runs, the native route dispatch has already
+            // returned (the hot reload event caused PHP to exit its event loop).
+            if isNativeUI {
+                // `preserveTree: true` keeps the last published tree
+                // on screen while PHP reboots (~500ms). The next
+                // publish from the dispatch below replaces it
+                // atomically — no white flash through the WebView
+                // root.
+                NativeElementBridge.stopWatching(preserveTree: true)
+                NativeElementBridge.unregisterRegion()
+            }
+
+            // Reboot persistent runtime to pick up changed code.
+            // The queue worker MUST be stopped first — php_embed_shutdown()
+            // destroys global Zend module state, and the worker's live TSRM
+            // context would reference freed memory, causing a heap-corruption crash.
+            // Embedded php-mode webviews own TSRM contexts with the same
+            // hazard; `PersistentPHPRuntime.shutdown()` suspends those itself
+            // (see `WebviewPHPRuntime.suspendAllForRuntimeReboot`).
+            if PersistentPHPRuntime.shared.isBooted {
+                PHPQueueWorker.shared.stopAndWait()
+                _ = PersistentPHPRuntime.shared.reboot()
+                // Clear compiled Blade views so templates are recompiled from
+                // the updated source files copied by the watcher.
+                _ = PersistentPHPRuntime.shared.artisan(command: "view:clear")
+                PHPQueueWorker.shared.start()
+            } else {
+                _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
+            }
+
+            if isNativeUI {
+                // Allow future hot reloads BEFORE re-entering the event loop.
+                // The serial queue will be blocked by the new dispatch, but the
+                // next reload() can still send a hot reload event (above)
+                // to break out of it.
+                self?.finishReload()
+
+                // Prefer the URI PHP wrote into .hot_restart over the WebView's
+                // URL — for native-chrome routes the WebView URL isn't kept in
+                // sync with the active component, so otherwise we'd lose the
+                // screen on every reload and land on `/`. Android already does
+                // the same (MainActivity.kt::startHotReloadWatcher).
+                //
+                // The file is written by `NativeComponent::runLoop` after the
+                // EVENT_HOT_RELOAD event fires (PHP-side), and by this point
+                // PHP has already exited the event loop and the file is on
+                // disk. Read once, delete, then use.
+                // Peek at the URI PHP wrote into `.hot_restart`
+                // (full stack + top URI). We don't delete the
+                // file here — the PHP-side `Route::native` macro
+                // handler is the sole consumer; it reads the full
+                // stack and removes the file. Otherwise we'd lose
+                // the back-history payload.
+                let hotRestartUri: String? = {
+                    let storageDir = FileManager.default
+                        .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                        .first
+                    guard let path = storageDir?
+                        .appendingPathComponent("storage/framework/.hot_restart")
+                        .path,
+                        let data = FileManager.default.contents(atPath: path),
+                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                        let uri = json["uri"] as? String,
+                        !uri.isEmpty
+                    else { return nil }
+                    return uri
+                }()
+
+                // Native element mode: re-execute the route directly through
+                // the persistent runtime (same as Android's executeNativeRoute).
+                // PHP re-registers the mmap region and publishes a new tree.
+                let request = RequestData(
+                    method: "GET",
+                    uri: hotRestartUri ?? currentPath,
+                    data: nil,
+                    query: nil,
+                    headers: [:]
+                )
+                _ = PersistentPHPRuntime.shared.dispatch(request: request)
+            } else {
+                // WebView mode: reload with cache-bust
+                DispatchQueue.main.async {
+                    guard let webView = SharedWebView.shared.webView else {
+                        self?.finishReload()
+                        return
+                    }
+                    webView.stopLoading()
+                    let currentUrl = webView.url?.absoluteString ?? "php://127.0.0.1/"
+                    let separator = currentUrl.contains("?") ? "&" : "?"
+                    let cacheBustUrl = "\(currentUrl)\(separator)_cb=\(Int(Date().timeIntervalSince1970 * 1000))"
+                    if let url = URL(string: cacheBustUrl) {
+                        webView.load(URLRequest(url: url))
+                    }
+                    self?.finishReload()
+                }
+            }
+        }
+    }
+}
 
 class HotReloadServer {
     private var listener: NWListener?

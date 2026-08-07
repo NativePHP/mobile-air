@@ -26,7 +26,7 @@ import java.util.concurrent.locks.LockSupport
  *  62: flex_grow          66: flex_shrink         70: align_self (u8)
  *  71: align_items (u8)   72: justify_content     73: gap (f32)
  *  77: safe_area (u8)
- *  --- Extended layout (Yoga) ---
+ *  --- Extended layout (flexbox) ---
  *  78: min_width          82: min_height          86: max_width
  *  90: max_height         94: flex_basis           98: flex_basis_mode (u8)
  *  99: flex_wrap (u8)    100: flex_direction (u8) 101: position_type (u8)
@@ -374,7 +374,7 @@ class NativeElementBridge private constructor() {
                             // animation with a slide overlay.
                             if (isFreshStackMount) NavigationCoordinator.reset()
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
-                            NativeUIBridge.currentTree.value = diffedTree
+                            NativeUIBridge.publishTree(diffedTree)
                             // First publish after a hot-reload dismisses
                             // the "Reloading…" pill and clears the
                             // tree-preservation flag. Both are set by
@@ -482,8 +482,6 @@ class NativeElementBridge private constructor() {
                 mainHandler.post {
                     NativeUIBridge.isActive.value = false
                     NativeUIBridge.currentTree.value = null
-                    // Don't clear sideNavNode — the new page's RenderSideNav will overwrite it.
-                    // Clearing it mid-navigation causes a null→non-null flicker that glitches the drawer.
                 }
             }
         }

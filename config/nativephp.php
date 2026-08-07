@@ -82,6 +82,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Appearance
+    |--------------------------------------------------------------------------
+    |
+    | Pins the app to a single interface style, for apps whose identity is
+    | fixed light or fixed dark. Theme tokens only cover surfaces YOU draw —
+    | the system's own chrome (Liquid Glass bars, sheets, keyboards, the
+    | window background behind the safe areas) follows the device unless it
+    | is locked here.
+    |
+    | Options: 'system' - Follow the device (default)
+    |          'dark'   - Always dark
+    |          'light'  - Always light
+    |
+    | iOS only for now: written to the Info.plist as UIUserInterfaceStyle at
+    | build time.
+    |
+    */
+
+    'appearance' => env('NATIVEPHP_APPEARANCE', 'system'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Development Team (iOS)
     |--------------------------------------------------------------------------
     |
@@ -147,24 +169,14 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Environment Keys to Clean Up
-    |--------------------------------------------------------------------------
-    |
-    | These are keys that will be removed from the .env file during app
-    | bundling to prevent secrets or development credentials from being
-    | leaked. Wildcards are supported (e.g. AWS_* or *_SECRET).
-    |
-    */
-
-    /*
-    |--------------------------------------------------------------------------
     | Runtime Configuration
     |--------------------------------------------------------------------------
     |
     | Controls how the PHP interpreter runs on device. In 'persistent' mode,
     | PHP boots once and stays alive — subsequent requests dispatch through
     | the running interpreter (~5-30ms instead of ~200-300ms). In 'classic'
-    | mode, each request does a full php_embed_init/shutdown cycle.
+    | mode, each request does a full php_embed_init/shutdown cycle. Falls
+    | back to 'classic' mode if persistent boot fails.
     |
     | reset_instances:        Clear resolved facade instances between dispatches
     | gc_between_dispatches:  Run gc_collect_cycles() between dispatches
@@ -176,6 +188,17 @@ return [
         'reset_instances' => true,
         'gc_between_dispatches' => false,
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Environment Keys to Clean Up
+    |--------------------------------------------------------------------------
+    |
+    | These are keys that will be removed from the .env file during app
+    | bundling to prevent secrets or development credentials from being
+    | leaked. Wildcards are supported (e.g. AWS_* or *_SECRET).
+    |
+    */
 
     'cleanup_env_keys' => [
         'AWS_*',
@@ -202,42 +225,6 @@ return [
         'storage/framework/cache',
         'storage/framework/testing',
         'storage/logs/laravel.log',
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Runtime Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Controls the persistent PHP runtime behavior. In 'persistent' mode,
-    | Laravel boots once and the kernel is reused across requests (~5-30ms
-    | per dispatch instead of ~200-300ms). Falls back to 'classic' mode
-    | (full init/shutdown per request) if persistent boot fails.
-    |
-    */
-
-    'runtime' => [
-        'mode' => 'persistent', // 'classic' or 'persistent'
-        'reset_instances' => true,
-        'gc_between_dispatches' => false,
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Runtime Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Controls the persistent PHP runtime behavior. In 'persistent' mode,
-    | Laravel boots once and the kernel is reused across requests (~5-30ms
-    | per dispatch instead of ~200-300ms). Falls back to 'classic' mode
-    | (full init/shutdown per request) if persistent boot fails.
-    |
-    */
-
-    'runtime' => [
-        'mode' => env('NATIVEPHP_RUNTIME_MODE', 'persistent'),
-        'reset_instances' => true,
-        'gc_between_dispatches' => false,
     ],
 
     /*

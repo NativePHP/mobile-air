@@ -3,13 +3,13 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
+use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\ManagesViteDevServer;
+use Native\Mobile\Concerns\ManagesWatchman;
+use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Concerns\RunsAndroid;
+use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
-use Native\Mobile\Traits\DisplaysMarketingBanners;
-use Native\Mobile\Traits\ManagesViteDevServer;
-use Native\Mobile\Traits\ManagesWatchman;
-use Native\Mobile\Traits\PlatformFileOperations;
-use Native\Mobile\Traits\RunsAndroid;
-use Native\Mobile\Traits\RunsIos;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
@@ -67,6 +67,15 @@ class RunCommand extends Command
                 'android', 'a' => 'android',
                 'ios', 'i' => 'ios',
             };
+        }
+
+        // iOS builds depend on the Xcode toolchain (xcrun, xcodebuild), which only
+        // exists on macOS — fail fast before touching logs, Vite, or devices
+        if ($os === 'ios' && PHP_OS_FAMILY !== 'Darwin') {
+            error('iOS builds require macOS (Xcode toolchain).');
+            note('You can build and run the Android app on this machine with `php artisan native:run android`.');
+
+            return self::FAILURE;
         }
 
         // Check for WSL environment - Android is not supported in WSL

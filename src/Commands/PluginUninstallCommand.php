@@ -4,11 +4,14 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Collection;
+use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginRegistry;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\info;
+use function Laravel\Prompts\multiselect;
 use function Laravel\Prompts\warning;
 
 class PluginUninstallCommand extends Command
@@ -51,9 +54,7 @@ class PluginUninstallCommand extends Command
         $pluginName = $this->argument('plugin');
 
         if (! $pluginName) {
-            error('Provide a plugin package name, or pass --core-v4 to remove the plugins that moved into core.');
-
-            return self::FAILURE;
+            return $this->handleInteractive();
         }
 
         // Find the plugin in installed packages
@@ -70,17 +71,7 @@ class PluginUninstallCommand extends Command
 
         // Show what will be removed
         $this->newLine();
-        $this->components->twoColumnDetail('Package', $pluginName);
-
-        if ($pluginInfo['path_repository']) {
-            $this->components->twoColumnDetail('Source directory', $pluginInfo['source_path']);
-            $this->components->twoColumnDetail('Repository URL', $pluginInfo['repository_url']);
-        }
-
-        if ($pluginInfo['service_provider']) {
-            $this->components->twoColumnDetail('Service provider', $pluginInfo['service_provider']);
-        }
-
+        $this->showPluginDetails($pluginName, $pluginInfo);
         $this->newLine();
 
         // Confirm unless --force
@@ -100,32 +91,250 @@ class PluginUninstallCommand extends Command
 
         $this->newLine();
 
-        // Step 1: Unregister from NativeServiceProvider
+        $succeeded = $this->uninstallPlugins([$pluginName => $pluginInfo]);
+
+        $this->newLine();
+
+        if (! $succeeded) {
+            error("Plugin '{$pluginName}' could not be fully uninstalled. Re-run with -v for Composer output.");
+
+            return self::FAILURE;
+        }
+
+        info("Plugin '{$pluginName}' has been uninstalled.");
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * No package given: let the user pick what to uninstall from the plugins
+     * that are actually removable in this project.
+     */
+    protected function handleInteractive(): int
+    {
+        if (! $this->input->isInteractive()) {
+            error('Provide a plugin package name, or pass --core-v4 to remove the plugins that moved into core.');
+
+            return self::FAILURE;
+        }
+
+        $candidates = $this->uninstallCandidates();
+
+        if ($candidates->isEmpty()) {
+            info('No uninstallable NativePHP plugins found in this project.');
+
+            $this->noteTransitivePlugins();
+
+            return self::SUCCESS;
+        }
+
+        $selected = multiselect(
+            label: 'Which plugins would you like to uninstall?',
+            options: $candidates->all(),
+            hint: 'Space to toggle, Enter to confirm',
+        );
+
+        if (empty($selected)) {
+            info('No plugins selected.');
+
+            return self::SUCCESS;
+        }
+
+        $pluginInfo = [];
+
+        foreach ($selected as $packageName) {
+            $info = $this->getPluginInfo($packageName);
+
+            if (! $info) {
+                warning("Plugin '{$packageName}' is not installed. Skipping.");
+
+                continue;
+            }
+
+            $pluginInfo[$packageName] = $info;
+        }
+
+        if (empty($pluginInfo)) {
+            return self::FAILURE;
+        }
+
+        $this->newLine();
+        $this->components->info('Uninstalling '.count($pluginInfo).' plugin(s)');
+        $this->newLine();
+
+        foreach ($pluginInfo as $packageName => $info) {
+            $this->showPluginDetails($packageName, $info);
+        }
+
+        $this->newLine();
+
+        if (! $this->option('force')) {
+            $confirmed = confirm(
+                label: 'Are you sure you want to uninstall the selected plugin(s)?',
+                default: false,
+                hint: 'This will remove the packages and optionally delete source files'
+            );
+
+            if (! $confirmed) {
+                warning('Uninstall cancelled.');
+
+                return self::SUCCESS;
+            }
+        }
+
+        $this->newLine();
+
+        $succeeded = $this->uninstallPlugins($pluginInfo);
+
+        $this->newLine();
+
+        if (! $succeeded) {
+            error('Some packages could not be removed. Re-run with -v for Composer output.');
+
+            return self::FAILURE;
+        }
+
+        info('Uninstalled: '.implode(', ', array_keys($pluginInfo)));
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Plugins that can actually be uninstalled: installed NativePHP plugins that
+     * this project requires directly, plus any core-v4 leftovers still required.
+     *
+     * @return Collection<string, string> Package name => multiselect label
+     */
+    protected function uninstallCandidates(): Collection
+    {
+        $required = $this->directRequirements();
+        $candidates = collect();
+
+        foreach ($this->registry->allInstalled() as $plugin) {
+            /** @var Plugin $plugin */
+            if (! isset($required[$plugin->name])) {
+                continue;
+            }
+
+            $candidates[$plugin->name] = $this->candidateLabel($plugin);
+        }
+
+        // Core-v4 packages are plain libraries, so they never surface via the
+        // registry - offer them here too rather than hiding them behind the flag.
+        foreach ($this->coreV4Plugins as $package => $provider) {
+            if (! isset($required[$package]) || $candidates->has($package)) {
+                continue;
+            }
+
+            $candidates[$package] = "{$package} [now built into core]";
+        }
+
+        return $candidates;
+    }
+
+    protected function candidateLabel(Plugin $plugin): string
+    {
+        $description = $plugin->description ? " - {$plugin->description}" : '';
+        $status = $this->registry->isRegistered($plugin->name) ? 'registered' : 'not registered';
+
+        $label = "{$plugin->name} (v{$plugin->version}){$description} [{$status}]";
+
+        if (isset($this->coreV4Plugins[$plugin->name])) {
+            $label .= ' [now built into core]';
+        }
+
+        return $label;
+    }
+
+    /**
+     * Mention plugins that are installed but pulled in by another package, since
+     * they can't be removed from this project directly.
+     */
+    protected function noteTransitivePlugins(): void
+    {
+        $required = $this->directRequirements();
+
+        $transitive = $this->registry->allInstalled()
+            ->reject(fn (Plugin $plugin) => isset($required[$plugin->name]));
+
+        if ($transitive->isEmpty()) {
+            return;
+        }
+
+        $this->newLine();
+        $this->components->warn('Installed as a dependency of another package (not directly removable):');
+
+        foreach ($transitive as $plugin) {
+            $this->line("  - {$plugin->name} (v{$plugin->version})");
+        }
+    }
+
+    /**
+     * Print the "here's what will be removed" block for a single plugin.
+     */
+    protected function showPluginDetails(string $pluginName, array $pluginInfo): void
+    {
+        $this->components->twoColumnDetail('Package', $pluginName);
+
+        if ($pluginInfo['path_repository']) {
+            $this->components->twoColumnDetail('Source directory', $pluginInfo['source_path']);
+            $this->components->twoColumnDetail('Repository URL', $pluginInfo['repository_url']);
+        }
+
         if ($pluginInfo['service_provider']) {
-            $this->components->task('Unregistering plugin', function () use ($pluginInfo) {
-                return $this->unregisterPlugin($pluginInfo['service_provider']);
-            });
+            $this->components->twoColumnDetail('Service provider', $pluginInfo['service_provider']);
+        }
+    }
+
+    /**
+     * Run the uninstall steps for one or more plugins. Packages are removed in a
+     * single Composer call so a multi-select doesn't pay for a resolve per plugin.
+     *
+     * @param  array<string, array>  $pluginInfo  Package name => info from getPluginInfo()
+     */
+    protected function uninstallPlugins(array $pluginInfo): bool
+    {
+        // Step 1: Unregister from NativeServiceProvider
+        foreach ($pluginInfo as $packageName => $info) {
+            if ($info['service_provider']) {
+                $this->components->task("Unregistering {$packageName}", function () use ($info) {
+                    return $this->unregisterPlugin($info['service_provider']);
+                });
+            }
         }
 
         // Step 2: Run composer remove
-        $this->components->task('Removing package via Composer', function () use ($pluginName) {
-            return $this->removePackage($pluginName);
+        $packages = array_keys($pluginInfo);
+        $removed = false;
+
+        $this->components->task('Removing package(s) via Composer', function () use ($packages, &$removed) {
+            return $removed = $this->removePackage(implode(' ', $packages));
         });
 
-        // Step 3: Remove repository from composer.json (if path repository)
-        if ($pluginInfo['path_repository'] && $pluginInfo['repository_url']) {
-            $this->components->task('Removing repository from composer.json', function () use ($pluginInfo) {
-                return $this->removeRepository($pluginInfo['repository_url']);
-            });
+        // Step 3: Remove repositories from composer.json (if path repositories)
+        foreach ($pluginInfo as $packageName => $info) {
+            if ($info['path_repository'] && $info['repository_url']) {
+                $this->components->task("Removing repository for {$packageName} from composer.json", function () use ($info) {
+                    return $this->removeRepository($info['repository_url']);
+                });
+            }
         }
 
-        // Step 4: Delete source directory (if path repository and not --keep-files)
-        if ($pluginInfo['path_repository'] && $pluginInfo['source_path'] && ! $this->option('keep-files')) {
-            $sourcePath = $pluginInfo['source_path'];
+        // Step 4: Delete source directories (if path repositories and not --keep-files)
+        if (! $this->option('keep-files')) {
+            foreach ($pluginInfo as $packageName => $info) {
+                if (! $info['path_repository'] || ! $info['source_path']) {
+                    continue;
+                }
 
-            if ($this->files->isDirectory($sourcePath)) {
+                $sourcePath = $info['source_path'];
+
+                if (! $this->files->isDirectory($sourcePath)) {
+                    continue;
+                }
+
                 $deleteFiles = $this->option('force') || confirm(
-                    label: 'Delete plugin source directory?',
+                    label: "Delete plugin source directory for {$packageName}?",
                     default: true,
                     hint: $sourcePath
                 );
@@ -138,10 +347,7 @@ class PluginUninstallCommand extends Command
             }
         }
 
-        $this->newLine();
-        info("Plugin '{$pluginName}' has been uninstalled.");
-
-        return self::SUCCESS;
+        return $removed;
     }
 
     /**
@@ -157,11 +363,7 @@ class PluginUninstallCommand extends Command
             return self::FAILURE;
         }
 
-        $composerJson = json_decode($this->files->get($composerJsonPath), true);
-        $required = array_merge(
-            $composerJson['require'] ?? [],
-            $composerJson['require-dev'] ?? []
-        );
+        $required = $this->directRequirements();
 
         // Which of the four are actually present as direct requirements?
         $present = array_filter(
@@ -222,12 +424,32 @@ class PluginUninstallCommand extends Command
     }
 
     /**
+     * The project's direct Composer requirements (require + require-dev).
+     *
+     * @return array<string, string>
+     */
+    protected function directRequirements(): array
+    {
+        $composerJsonPath = base_path('composer.json');
+
+        if (! $this->files->exists($composerJsonPath)) {
+            return [];
+        }
+
+        $composerJson = json_decode($this->files->get($composerJsonPath), true) ?: [];
+
+        return array_merge(
+            $composerJson['require'] ?? [],
+            $composerJson['require-dev'] ?? []
+        );
+    }
+
+    /**
      * Get information about an installed plugin.
      */
     protected function getPluginInfo(string $pluginName): ?array
     {
         $composerJsonPath = base_path('composer.json');
-        $composerLockPath = base_path('composer.lock');
         $installedJsonPath = base_path('vendor/composer/installed.json');
 
         if (! $this->files->exists($composerJsonPath)) {
@@ -237,10 +459,7 @@ class PluginUninstallCommand extends Command
         $composerJson = json_decode($this->files->get($composerJsonPath), true);
 
         // Check if package is in require or require-dev
-        $isRequired = isset($composerJson['require'][$pluginName])
-            || isset($composerJson['require-dev'][$pluginName]);
-
-        if (! $isRequired) {
+        if (! isset($this->directRequirements()[$pluginName])) {
             return null;
         }
 
@@ -297,7 +516,8 @@ class PluginUninstallCommand extends Command
      */
     protected function resolveRepositoryPath(string $url): string
     {
-        if (str_starts_with($url, '/')) {
+        // Absolute: unix (/...), Windows drive-letter (C:\ or C:/), or UNC (\\server\share)
+        if (str_starts_with($url, '/') || preg_match('#^(?:[A-Za-z]:[\\\\/]|\\\\{2})#', $url)) {
             return $url;
         }
 
@@ -323,7 +543,7 @@ class PluginUninstallCommand extends Command
 
         // Drop the `use Vendor\Plugin\ServiceProvider;` import line entirely.
         $newContent = preg_replace(
-            '/^use\s+\\\\?'.preg_quote($serviceProvider, '/').';[ \t]*\n/m',
+            '/^use\s+\\\\?'.preg_quote($serviceProvider, '/').';[ \t]*\r?\n/m',
             '',
             $content
         );

@@ -2,7 +2,7 @@
 
 namespace Native\Mobile;
 
-use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
@@ -36,12 +36,15 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
+use Native\Mobile\Edge\ComponentRegistry;
+use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Events\System\AppearanceChanged;
-use Native\Mobile\Http\Middleware\RenderEdgeComponents;
+use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
@@ -241,13 +244,14 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->registerNativeComponents();
+        $this->registerChildComponents();
         $this->registerCoreElements();
         $this->registerUiPluginComponents();
-        $this->registerMiddleware();
         $this->registerFilesystems();
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
         $this->applyFpsOverlayConfig();
+        $this->registerScreenIntentMiddleware();
 
         if (config('nativephp-internal.running')) {
             $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
@@ -302,6 +306,17 @@ class NativeServiceProvider extends PackageServiceProvider
             NativeRouter::register($uri, $componentClass);
 
             return Route::get($uri, function () use ($componentClass) {
+                // Native route reached without a native runtime — a shared
+                // app link opened in a plain browser, a crawler, a
+                // misconfigured deploy. The runloop can never satisfy these
+                // (no device is attached to the request), so if the app
+                // bound a fallback, let it answer (landing page, app-store
+                // redirect). Unbound, everything below is unchanged.
+                if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')
+                    && app()->bound(NativeRouteFallback::class)) {
+                    return app(NativeRouteFallback::class)->handle($componentClass);
+                }
+
                 // HTTP feature tests ($this->get('/')) must never enter the
                 // runloop: it blocks in wait_event against the REAL bridge —
                 // with a live Jump session that's ~90s of reconnect spinning
@@ -433,12 +448,6 @@ class NativeServiceProvider extends PackageServiceProvider
         });
     }
 
-    protected function registerMiddleware(): void
-    {
-        $kernel = $this->app->make(Kernel::class);
-        $kernel->pushMiddleware(RenderEdgeComponents::class);
-    }
-
     protected function registerFilesystems(): void
     {
         // Only register these filesystems when running in a NativePHP shell app
@@ -544,6 +553,28 @@ class NativeServiceProvider extends PackageServiceProvider
         $enabled = (bool) config('nativephp.fps_overlay', false);
 
         nativephp_call('Perf.SetFpsOverlayEnabled', json_encode(['enabled' => $enabled]));
+    }
+
+    /**
+     * Let a screen change requested from `native:watch` be picked up by an
+     * ordinary request, not just by the runloop's hot-reload handler — that's
+     * the only way back to a native screen once the app has fallen through to
+     * the WebView (a 404, say), where no runloop exists to read the intent.
+     *
+     * On device only: NATIVEPHP_PLATFORM is set by the iOS and Android hosts,
+     * so a normal web app never pays for this.
+     */
+    private function registerScreenIntentMiddleware(): void
+    {
+        if (! in_array(env('NATIVEPHP_PLATFORM'), ['ios', 'android'], true)) {
+            return;
+        }
+
+        // Deliberately not gated on runningInConsole(): that reads PHP_SAPI,
+        // which the embedded runtime does not necessarily report as a web SAPI,
+        // and getting it wrong would silently disable the middleware. Pushing
+        // it in a console context is harmless — nothing dispatches a request.
+        $this->app->make(HttpKernel::class)->pushMiddleware(HonorsRequestedNativeScreen::class);
     }
 
     private function setupComposerPostUpdateScript()
@@ -693,12 +724,14 @@ class NativeServiceProvider extends PackageServiceProvider
             // Navigation chrome
             'top_bar' => Elements\TopBar::class,
             'top_bar_action' => Elements\TopBarAction::class,
+            'top_bar_title' => Elements\TopBarTitle::class,
             'bottom_nav' => Elements\BottomNav::class,
             'bottom_nav_item' => Elements\BottomNavItem::class,
             'side_nav' => Elements\SideNav::class,
             'side_nav_item' => Elements\SideNavItem::class,
             'side_nav_group' => Elements\SideNavGroup::class,
             'side_nav_header' => Elements\SideNavHeader::class,
+            'fab' => Elements\Fab::class,
 
             // Gesture / interaction
             'gesture_area' => Elements\GestureArea::class,
@@ -736,6 +769,51 @@ class NativeServiceProvider extends PackageServiceProvider
         require_once __DIR__.'/jump_bridge_functions.php';
     }
 
+    /**
+     * Auto-discover app **child components** — NativeComponent subclasses
+     * under app/NativeComponents (the `native:make` convention) — and
+     * register them with the ComponentRegistry so `<native:user-card>`
+     * mounts App\NativeComponents\UserCard as a nested component.
+     *
+     * Explicit ComponentRegistry::components() registrations made before
+     * boot are never overridden, and registered element types always win
+     * over component tags at resolution time (see NativeElementCollector).
+     */
+    protected function registerChildComponents(): void
+    {
+        $componentPath = app_path('NativeComponents');
+
+        if (! is_dir($componentPath)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($componentPath, \RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+
+            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            $classPath = substr($relativePath, 0, -4);
+
+            // Tag name from the class basename: UserCard → user-card.
+            $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', basename($classPath))), '-');
+
+            if (ComponentRegistry::has($kebabName)) {
+                continue;
+            }
+
+            $componentClass = 'App\\NativeComponents\\'.str_replace('/', '\\', $classPath);
+
+            if (class_exists($componentClass) && is_subclass_of($componentClass, NativeComponent::class)) {
+                ComponentRegistry::register($kebabName, $componentClass);
+            }
+        }
+    }
+
     protected function registerNativeComponents(): void
     {
         $componentPath = __DIR__.'/Edge/Components';
@@ -771,7 +849,7 @@ class NativeServiceProvider extends PackageServiceProvider
             // Convert BottomNav -> bottom-nav
             $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', $className)), '-');
 
-            // Build the full namespaced class name (e.g., Native\Mobile\NativeUI\Components\Navigation\BottomNav)
+            // Build the full namespaced class name (e.g., Native\Mobile\Edge\Components\Native\Column)
             $componentClass = 'Native\\Mobile\\Edge\\Components\\'.str_replace('/', '\\', $classPath);
 
             if (class_exists($componentClass)) {

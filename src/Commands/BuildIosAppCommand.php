@@ -5,18 +5,18 @@ namespace Native\Mobile\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
-use Illuminate\Support\Str;
+use Native\Mobile\Concerns\ChecksLatestBuildNumber;
+use Native\Mobile\Concerns\CleansEnvFile;
+use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\InstallsAppIcon;
+use Native\Mobile\Concerns\InstallsSplashScreen;
+use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
-use Native\Mobile\Traits\ChecksLatestBuildNumber;
-use Native\Mobile\Traits\CleansEnvFile;
-use Native\Mobile\Traits\DisplaysMarketingBanners;
-use Native\Mobile\Traits\InstallsAppIcon;
-use Native\Mobile\Traits\InstallsSplashScreen;
-use Native\Mobile\Traits\ValidatesAppConfig;
+use Native\Mobile\Support\BundleFileManager;
 
 use function Laravel\Prompts\error;
 
@@ -48,6 +48,14 @@ class BuildIosAppCommand extends Command
 
     public function handle(): int|string
     {
+        // Building iOS apps needs Xcode and its command-line tools, so bail out
+        // early before we touch the build log or copy any files.
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            $this->error('native:build requires macOS — building iOS apps needs Xcode and its command-line tools.');
+
+            return Command::FAILURE;
+        }
+
         $this->basePath = base_path('nativephp/ios');
         $this->logPath = base_path('nativephp/ios-build.log');
 
@@ -87,13 +95,17 @@ class BuildIosAppCommand extends Command
     {
         @mkdir($this->appPath, 0755, true);
 
-        $this->copyLaravelAppIntoIosApp();
+        $this->components->task('Copying Laravel app', fn () => BundleFileManager::copy(
+            base_path(),
+            $this->appPath,
+            config('nativephp.cleanup_exclude_files', [])
+        ));
 
         // Set ASSET_URL in .env
         file_put_contents($this->appPath.'.env', PHP_EOL.'ASSET_URL="/_assets"'.PHP_EOL, FILE_APPEND);
 
         $this->components->task('Installing Composer dependencies', function () {
-            Process::path($this->appPath)
+            $result = Process::path($this->appPath)
                 ->forever()
                 ->run([
                     'composer',
@@ -106,9 +118,25 @@ class BuildIosAppCommand extends Command
                         $this->output->write($output);
                     }
                 });
+
+            if (! $result->successful()) {
+                $errorOutput = $result->errorOutput();
+                if ($errorOutput) {
+                    file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
+                }
+
+                error('Composer install failed. Check your dependencies and try again.');
+                file_put_contents($this->logPath, 'ERROR: composer install failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
+                exit(1);
+            }
+
+            return true;
         });
 
-        $this->components->task('Removing unnecessary files', fn () => $this->removeUnnecessaryFiles());
+        $this->components->task('Removing unnecessary files', fn () => BundleFileManager::removeUnnecessaryFiles(
+            $this->appPath,
+            config('nativephp.cleanup_exclude_files', [])
+        ));
         $this->cleanEnvFile($this->appPath.'.env');
         $this->createAppZip();
     }
@@ -166,65 +194,6 @@ class BuildIosAppCommand extends Command
         }
 
         $this->components->twoColumnDetail('ICU support', 'Enabled');
-    }
-
-    private function copyLaravelAppIntoIosApp()
-    {
-        $destination = $this->appPath;
-
-        // Make sure we clear out any old version
-        shell_exec("rm -rf {$destination}/*");
-
-        $source = rtrim(str_replace('\\', '/', base_path()), '/').'/';
-
-        $visitedRealPaths = [];
-        $files = [];
-
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $source,
-                \RecursiveDirectoryIterator::SKIP_DOTS | \FilesystemIterator::FOLLOW_SYMLINKS
-            ),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
-
-        foreach ($iterator as $file) {
-            $realPath = $file->getRealPath();
-
-            // Skip if we've already visited this real path (prevents infinite loops from circular symlinks)
-            if ($realPath === false || isset($visitedRealPaths[$realPath])) {
-                continue;
-            }
-
-            $visitedRealPaths[$realPath] = true;
-            $files[] = $file;
-        }
-
-        foreach ($files as $file) {
-            // Where the *link* lives (keeps relative paths correct)
-            $logicalPath = str_replace('\\', '/', $file->getPathname());
-            // Where the link **points** (or the same file if not a link)
-            $realPath = str_replace('\\', '/', $file->getRealPath());
-
-            $relativePath = ltrim(substr($logicalPath, strlen($source)), '/');
-
-            if (Str::startsWith($relativePath, 'vendor/nativephp/mobile/resources') ||
-                Str::startsWith($relativePath, 'vendor/nativephp/mobile/vendor') ||
-                Str::startsWith($relativePath, 'vendor/endroid') ||
-                Str::startsWith($relativePath, 'nativephp') ||
-                Str::startsWith($relativePath, 'output/') ||
-                Str::startsWith($relativePath, 'build/') ||
-                Str::startsWith($relativePath, 'dist/') ||
-                Str::startsWith($relativePath, 'artifacts/') ||
-                Str::startsWith($relativePath, '.git/') ||
-                Str::startsWith($relativePath, 'storage/logs/') ||
-                Str::startsWith($relativePath, 'storage/framework/cache/')) {
-                continue;
-            }
-
-            @File::makeDirectory(dirname($destination.$relativePath), recursive: true, force: true);
-            @File::copy($realPath, $destination.$relativePath);
-        }
     }
 
     private function updateAppVersion(): void
@@ -543,6 +512,9 @@ class BuildIosAppCommand extends Command
             // Handle UIBackgroundModes
             $this->updateBackgroundModes($rootDict, $plistData, $pushNotificationsEnabled);
 
+            // Handle UIUserInterfaceStyle
+            $this->updateInterfaceStyle($dom, $rootDict, $plistData);
+
             // Handle BIFROST_APP_ID
             $bifrostAppId = env('BIFROST_APP_ID');
             if ($bifrostAppId) {
@@ -707,6 +679,47 @@ class BuildIosAppCommand extends Command
     }
 
     /**
+     * Lock the app to a single interface style via UIUserInterfaceStyle.
+     *
+     * `nativephp.appearance` of `dark` / `light` pins the whole app —
+     * system chrome (nav bars, sheets, keyboards, the window background
+     * behind safe areas) included — so an app with a fixed identity never
+     * shows the OS's opposite-appearance surfaces. `system` (the default)
+     * removes the key and follows the device.
+     *
+     * @param  array<string, array{keyNode: \DOMElement, valueNode: \DOMElement}>  $plistData
+     */
+    private function updateInterfaceStyle(\DOMDocument $dom, \DOMElement $rootDict, array &$plistData): void
+    {
+        $style = match (strtolower((string) config('nativephp.appearance', 'system'))) {
+            'dark' => 'Dark',
+            'light' => 'Light',
+            default => null,
+        };
+
+        if ($style === null) {
+            if (isset($plistData['UIUserInterfaceStyle'])) {
+                $this->removePlistKeyValue(
+                    $rootDict,
+                    $plistData['UIUserInterfaceStyle']['keyNode'],
+                    $plistData['UIUserInterfaceStyle']['valueNode']
+                );
+                unset($plistData['UIUserInterfaceStyle']);
+            }
+
+            return;
+        }
+
+        if (isset($plistData['UIUserInterfaceStyle'])) {
+            $plistData['UIUserInterfaceStyle']['valueNode']->nodeValue = $style;
+
+            return;
+        }
+
+        $this->addPlistKeyValue($dom, $rootDict, 'UIUserInterfaceStyle', 'string', $style);
+    }
+
+    /**
      * Remove a plist key-value pair from the dict
      */
     private function removePlistKeyValue(\DOMElement $dict, \DOMElement $keyNode, \DOMElement $valueNode): void
@@ -821,53 +834,6 @@ class BuildIosAppCommand extends Command
         @copy($path, $destinationPath);
     }
 
-    private function removeUnnecessaryFiles(): void
-    {
-
-        $directoriesToRemove = [
-            '.git',
-            '.github',
-            'node_modules',
-            'vendor/bin',
-            'tests',
-            'storage/logs',
-            'storage/framework',
-            'vendor/laravel/pint/builds',
-            'public/storage',
-        ];
-
-        foreach ($directoriesToRemove as $dir) {
-            if (is_dir($this->appPath.$dir)) {
-                File::deleteDirectory($this->appPath.$dir);
-            }
-        }
-
-        $filesToRemove = [
-            'database/database.sqlite',
-            '*.js',
-            '*.md',
-            '*.lock',
-            '*.xml',
-            '.env.example',
-            'artisan',
-            '.gitignore',
-            '.gitattributes',
-            '.gitkeep',
-            '.editorconfig',
-            '.DS_Store',
-            'vendor/livewire/livewire/src/Features/SupportFileUploads/browser_test_image_big.jpg',
-        ];
-
-        foreach ($filesToRemove as $pattern) {
-            $files = glob($this->appPath.$pattern);
-            foreach ($files as $file) {
-                if (is_file($file)) {
-                    unlink($file);
-                }
-            }
-        }
-    }
-
     private function determineApsEnvironment(): string
     {
         // Check if we're in a package command with export method
@@ -921,7 +887,9 @@ class BuildIosAppCommand extends Command
         $result = Process::run($command);
 
         if (! $result->successful()) {
-            throw new \Exception('Failed to create ZIP file');
+            $error = trim($result->errorOutput()) ?: trim($result->output());
+
+            throw new \Exception('Failed to create ZIP file: '.($error ?: 'exit code '.$result->exitCode()));
         }
 
         $this->createBundledVersionFile($zipPath);

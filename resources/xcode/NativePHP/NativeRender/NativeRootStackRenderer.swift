@@ -113,6 +113,22 @@ struct NativeRootStackRenderer: View {
         let textColor: Color = textArgb != 0 ? Color(argb: textArgb) : .primary
         let hasExplicitBg = bgArgb != 0
 
+        // `textColor` only reaches chrome WE draw — the back chevron, the
+        // principal-slot title, and the trailing actions. System-drawn titles
+        // (`.navigationTitle`, which is what `large` / `automatic` display
+        // modes use) take their color from the bar's color scheme instead, so
+        // an explicit `background_color` could otherwise leave a light bar with
+        // a dark-mode white title — invisible. Derive the scheme from the
+        // developer's `text_color`, matching NativeRootTabsRenderer.
+        let toolbarScheme: ColorScheme? = {
+            guard textArgb != 0 else { return nil }
+            let r = Double((textArgb >> 16) & 0xFF) / 255.0
+            let g = Double((textArgb >>  8) & 0xFF) / 255.0
+            let b = Double( textArgb        & 0xFF) / 255.0
+            let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            return luminance > 0.5 ? .dark : .light
+        }()
+
         // Map the PHP-side string to SwiftUI's NavigationBarItem.TitleDisplayMode.
         //   `large`     — iOS-native big title, left-aligned, collapses on scroll
         //   `automatic` — iOS picks (large at root, inline after a push)
@@ -211,6 +227,7 @@ struct NativeRootStackRenderer: View {
                     }
                 }
             }
+            .toolbarColorScheme(toolbarScheme, for: .navigationBar)
             .modifier(HideNavBarModifier(hidden: hideNavBar))
             .modifier(StackBarBackgroundModifier(argb: bgArgb))
             .modifier(StackBottomBarInsetModifier(bottomBar: bottomBar))
@@ -241,7 +258,16 @@ struct NativeRootStackRenderer: View {
             // a container, the per-glass-effect animation isn't scoped
             // and the press transition renders as a visible flicker
             // behind the touched element. iOS 26+ only.
-            NodeView(node: node).withGlassContainer()
+            NodeView(node: node)
+                .withGlassContainer()
+                // NavigationStack hosts screens on its own container
+                // background (systemBackground — white in light mode) and
+                // SwiftUI exposes no override hook for it, so a dark app
+                // gets a white band in the bottom safe-area inset. When
+                // PHP set a window background (`UI.SetBackground`), paint
+                // it behind the screen extended through the safe areas.
+                // No-op when unset, preserving the stock appearance.
+                .modifier(StackScreenBackgroundModifier())
         } else {
             Color.clear
         }
@@ -314,20 +340,51 @@ struct NativeRootStackRenderer: View {
 private struct StackBottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
+    @Environment(\.colorScheme) private var colorScheme
+
     func body(content: Content) -> some View {
         if let bottomBar, let inner = bottomBar.children.first {
+            // `.fixedSize(vertical:)` matters: the inset APIs propose a
+            // FINITE height to their content, and a FlexContainer fills any
+            // finite proposal (CSS block semantics). Without it a bar whose
+            // root has no explicit height inflates to the proposed height —
+            // the input floats mid-screen over a giant empty bar, and on the
+            // `.safeAreaBar` path the bar's scroll-edge effect then dims the
+            // whole content region behind it.
             if #available(iOS 26.0, *) {
                 content.safeAreaBar(edge: .bottom) {
-                    NodeView(node: inner)
+                    barContent(inner)
                 }
             } else {
                 content.safeAreaInset(edge: .bottom, spacing: 0) {
-                    NodeView(node: inner)
+                    barContent(inner)
                 }
             }
         } else {
             content
         }
+    }
+
+    /// The bar view plus a home-indicator bleed: the inset APIs place the
+    /// bar ABOVE the bottom safe area, so the strip beneath it shows the
+    /// window background (`systemBackground`) — a black band under a themed
+    /// bar in dark mode. Re-paint the bar's own background color extended
+    /// through the bottom safe area (the iMessage treatment). Bars without
+    /// an explicit background keep `.clear` and are unaffected.
+    @ViewBuilder
+    private func barContent(_ inner: NativeUINode) -> some View {
+        NodeView(node: inner)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+    }
+
+    /// The bar root's resolved background color for the active appearance —
+    /// same resolution order as `NodeStyleModifier.backgroundColor`.
+    private func barBackgroundColor(_ node: NativeUINode) -> Color {
+        let darkBg = colorScheme == .dark ? node.props.getColor("dark_bg_color", default: 0) : 0
+        let argb = darkBg != 0 ? darkBg : (node.style?.bgColor ?? 0)
+        return argb != 0 ? Color(argb: argb) : .clear
     }
 }
 
@@ -335,14 +392,41 @@ private struct StackBottomBarInsetModifier: ViewModifier {
 /// `.toolbarBackground` entirely when the layout didn't supply an
 /// explicit color, so iOS 26 keeps its adaptive Liquid Glass material
 /// on the navigation bar instead of having `.clear` forcibly applied.
+///
+/// The visibility request is dropped on iOS 26. Under Liquid Glass, forcing
+/// the navigation bar background visible doesn't just recolor the bar — it
+/// drops the large-title row entirely, leaving the toolbar items behind on
+/// an empty bar. Verified on a device: both spellings do it, the deprecated
+/// `.toolbarBackground(.visible, for:)` and the renamed
+/// `.toolbarBackgroundVisibility(_:for:)`, so this is the request itself and
+/// not the API name. The style overload alone already makes the bar opaque
+/// there, so the explicit visibility call buys nothing. Pre-26 still needs
+/// the pair — without it the color is applied to a hidden bar and never
+/// shows.
 private struct StackBarBackgroundModifier: ViewModifier {
     let argb: Int
 
     func body(content: Content) -> some View {
         if argb != 0 {
-            content
-                .toolbarBackground(Color(argb: argb), for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
+            if #available(iOS 18.0, *) {
+                // `containerBackground(for: .navigation)` themes the WHOLE
+                // navigation surface — the scroll edge, the expanded
+                // large-title region, and the status-bar area — while bar
+                // visibility stays automatic. Without it the bar color only
+                // renders after scrolling (toolbarBackground alone does not
+                // paint at the scroll edge, exactly where a large title
+                // lives), and forcing `.visible` paints the band but
+                // suppresses the large title at the scroll edge under
+                // Liquid Glass. toolbarBackground still tints the collapsed
+                // bar after scrolling.
+                content
+                    .toolbarBackground(Color(argb: argb), for: .navigationBar)
+                    .containerBackground(Color(argb: argb), for: .navigation)
+            } else {
+                content
+                    .toolbarBackground(Color(argb: argb), for: .navigationBar)
+                    .toolbarBackground(.visible, for: .navigationBar)
+            }
         } else {
             content
         }
@@ -374,3 +458,21 @@ private struct NavigationSubtitleModifier: ViewModifier {
     }
 }
 
+
+/// Backgrounds a stack-hosted screen with the PHP-set window background
+/// (`UI.SetBackground`), extended through the safe areas. NavigationStack
+/// draws its own `systemBackground` container behind screen content with
+/// no SwiftUI override hook — without this, a dark app shows a white band
+/// in the bottom safe-area inset on every stack screen. No-op when no
+/// override is set, preserving the stock appearance.
+private struct StackScreenBackgroundModifier: ViewModifier {
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
+
+    func body(content: Content) -> some View {
+        if let color = windowBackground.color {
+            content.background(color.ignoresSafeArea())
+        } else {
+            content
+        }
+    }
+}
