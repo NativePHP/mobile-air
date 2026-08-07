@@ -3,9 +3,13 @@
 namespace Native\Mobile\Edge;
 
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Refreshable;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
 use Native\Mobile\Edge\Elements\Stack;
+use Native\Mobile\Edge\Enums\AlignItems;
+use Native\Mobile\Edge\Enums\AlignSelf;
+use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
 
 class NativeElementCollector
@@ -97,6 +101,41 @@ class NativeElementCollector
      * (children === null means a leaf run).
      */
     protected static array $textFrames = [];
+
+    /**
+     * Plugin-registered attribute capture.
+     *
+     * Lets a package ship a custom Blade attribute that works on ANY
+     * element — e.g. an analytics plugin capturing `track="signup-cta"`
+     * into a prop its device SDK reads — without every Element subclass
+     * having to know about it. Registered attributes are lifted into
+     * props in createElement() and stripped before native attribute
+     * handling, so they never leak onto the wire as junk.
+     *
+     * The reserved name 'class' captures the author's RAW class string
+     * as written (Tailwind parsing still runs and is unaffected) — for
+     * tooling that wants the classes themselves rather than the parsed
+     * layout they produce.
+     *
+     * @var array<string, string> attribute name => prop name
+     */
+    protected static array $capturedAttributes = [];
+
+    public static function captureAttribute(string $attribute, string $prop): void
+    {
+        static::$capturedAttributes[$attribute] = $prop;
+    }
+
+    /** @return array<string, string> */
+    public static function capturedAttributes(): array
+    {
+        return static::$capturedAttributes;
+    }
+
+    public static function stopCapturingAttributes(): void
+    {
+        static::$capturedAttributes = [];
+    }
 
     // ── Streaming control ────────────────────────────
 
@@ -335,7 +374,7 @@ class NativeElementCollector
                 $props['on_press_up'] = $pressUp;
             }
 
-            // ScrollView needs overflow: scroll so Yoga doesn't constrain children
+            // ScrollView needs overflow: scroll so the flex layout doesn't constrain children
             if ($type === 'scroll_view' && ! isset($layout['overflow'])) {
                 $layout['overflow'] = 2;
             }
@@ -567,14 +606,14 @@ class NativeElementCollector
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
         }
-        if (isset($attrs['alignSelf'])) {
-            $layout['align_self'] = (int) $attrs['alignSelf'];
+        if (isset($attrs['alignSelf']) && ($alignSelf = AlignSelf::parse($attrs['alignSelf'])) !== null) {
+            $layout['align_self'] = $alignSelf;
         }
-        if (isset($attrs['alignItems'])) {
-            $layout['align_items'] = (int) $attrs['alignItems'];
+        if (isset($attrs['alignItems']) && ($alignItems = AlignItems::parse($attrs['alignItems'])) !== null) {
+            $layout['align_items'] = $alignItems;
         }
-        if (isset($attrs['justifyContent'])) {
-            $layout['justify_content'] = (int) $attrs['justifyContent'];
+        if (isset($attrs['justifyContent']) && ($justifyContent = JustifyContent::parse($attrs['justifyContent'])) !== null) {
+            $layout['justify_content'] = $justifyContent;
         }
         if (isset($attrs['positionType'])) {
             $layout['position_type'] = (int) $attrs['positionType'];
@@ -1139,6 +1178,9 @@ class NativeElementCollector
 
     protected static function createElement(string $type, array $attrs): Element
     {
+        // Raw-class capture happens BEFORE parsing consumes the attribute.
+        $rawClass = isset(static::$capturedAttributes['class']) ? ($attrs['class'] ?? null) : null;
+
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
@@ -1174,6 +1216,25 @@ class NativeElementCollector
             default => ElementRegistry::resolve($type)
                 ?? throw new \RuntimeException("Unknown native element type: {$type}"),
         };
+
+        if ($rawClass !== null) {
+            $element->setProp(static::$capturedAttributes['class'], $rawClass);
+        }
+
+        // Registered capture attributes: lift into props, strip from the
+        // attrs the native pipeline sees. Empty strings are stripped but
+        // not captured — an attribute left blank means "not set".
+        foreach (static::$capturedAttributes as $attribute => $prop) {
+            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
+                continue;
+            }
+
+            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
+                $element->setProp($prop, $attrs[$attribute]);
+            }
+
+            unset($attrs[$attribute]);
+        }
 
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
@@ -1323,13 +1384,13 @@ class NativeElementCollector
             $element->aspectRatio((float) $attrs['aspectRatio']);
         }
         if (isset($attrs['alignSelf'])) {
-            $element->alignSelf((int) $attrs['alignSelf']);
+            $element->alignSelf($attrs['alignSelf']);
         }
         if (isset($attrs['alignItems'])) {
-            $element->alignItems((int) $attrs['alignItems']);
+            $element->alignItems($attrs['alignItems']);
         }
         if (isset($attrs['justifyContent'])) {
-            $element->justifyContent((int) $attrs['justifyContent']);
+            $element->justifyContent($attrs['justifyContent']);
         }
         if (isset($attrs['positionType'])) {
             $element->positionType((int) $attrs['positionType']);
@@ -1412,6 +1473,9 @@ class NativeElementCollector
         if (isset($attrs['_change']) && method_exists($element, 'onChange')) {
             $element->onChange($attrs['_change']);
         }
+        if (isset($attrs['_selectionChange']) && method_exists($element, 'onSelectionChange')) {
+            $element->onSelectionChange($attrs['_selectionChange']);
+        }
         if (isset($attrs['_submit']) && method_exists($element, 'onSubmit')) {
             $element->onSubmit($attrs['_submit']);
         }
@@ -1457,6 +1521,15 @@ class NativeElementCollector
             // Accept both kebab (`shows-indicators`) and camel
             // (`showsIndicators`) — the precompiler keeps attribute names
             // verbatim, and the rest of the API takes either form.
+            if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
+                $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
+            }
+        }
+
+        if ($element instanceof Refreshable) {
+            // Refreshable IS the scrolling container, so it honours the same
+            // indicator prop as scroll-view (iOS-only in effect — Compose's
+            // LazyColumn draws no indicators to begin with).
             if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
                 $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
             }

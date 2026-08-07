@@ -5,12 +5,12 @@ namespace Native\Mobile\Commands;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Console\Command;
-use Native\Mobile\Traits\DisplaysMarketingBanners;
-use Native\Mobile\Traits\InstallsAndroid;
-use Native\Mobile\Traits\InstallsIos;
-use Native\Mobile\Traits\PlatformFileOperations;
+use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\InstallsAndroid;
+use Native\Mobile\Concerns\InstallsIos;
+use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Support\PhpBinaries;
 
-use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
@@ -170,29 +170,6 @@ class InstallCommand extends Command
 
         outro('NativePHP for Mobile installed successfully!');
 
-        if (confirm(
-            label: 'Would you mind starring us on GitHub? It really helps!',
-            yes: 'Hell Yeah! 🔥',
-            no: 'Already Did',
-            default: true,
-        )) {
-            $url = 'https://github.com/NativePHP/mobile-air';
-
-            // xdg-open may be absent on headless/minimal Linux and WSL —
-            // probe first and fall back to printing the URL. Quote the URL
-            // everywhere; `start` needs a leading "" title arg when quoting.
-            if (PHP_OS_FAMILY === 'Darwin') {
-                exec('open '.escapeshellarg($url));
-            } elseif (PHP_OS_FAMILY === 'Windows') {
-                exec('start "" "'.$url.'"');
-            } else {
-                exec('command -v xdg-open >/dev/null 2>&1', $probe, $missing);
-                $missing === 0
-                    ? exec('xdg-open '.escapeshellarg($url).' >/dev/null 2>&1')
-                    : $this->line("  Open in your browser: {$url}");
-            }
-        }
-
         $this->showSuperNativeBanner();
     }
 
@@ -289,7 +266,7 @@ class InstallCommand extends Command
     protected function fetchVersionsManifest(): void
     {
         $branch = $this->getBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
+        $versionsUrl = PhpBinaries::manifestUrl($branch);
 
         try {
             $this->versionsManifest = json_decode(
@@ -297,7 +274,22 @@ class InstallCommand extends Command
                 true
             );
         } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
+            // A 404 here is specific: the manifest is named for the binary
+            // release this package pins, so a missing one means that release
+            // was withdrawn — not that the CDN is down. Say which, because the
+            // fixes are completely different.
+            if ($e->getResponse()?->getStatusCode() === 404) {
+                error(sprintf(
+                    'PHP binaries release %s is no longer published.'
+                    ."\n".'Update nativephp/mobile to a version that pins a current release:'
+                    ."\n".'    composer update nativephp/mobile',
+                    PhpBinaries::VERSION
+                ));
+
+                return;
+            }
+
+            error("Failed to fetch the PHP binaries manifest from: {$versionsUrl}");
         }
     }
 

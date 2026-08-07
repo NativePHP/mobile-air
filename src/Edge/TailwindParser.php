@@ -2,11 +2,25 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Support\Facades\Log;
+use Native\Mobile\Edge\Enums\AlignItems;
+use Native\Mobile\Edge\Enums\AlignSelf;
+use Native\Mobile\Edge\Enums\JustifyContent;
+use Native\Mobile\Edge\Enums\TextAlign;
 use Native\Mobile\Platform;
 
 class TailwindParser
 {
     private static array $cache = [];
+
+    /** @var array<string, list<string>> */
+    private static array $unsupportedCache = [];
+
+    /** @var list<array{view: string, enabled: bool, classes: array<string, true>}> */
+    private static array $diagnosticScopes = [];
+
+    /** @var array<string, array<string, true>> */
+    private static array $reportedUnsupportedByView = [];
 
     /**
      * Plugin-provided resolver for `bg-theme-*` / `text-theme-*` classes —
@@ -31,13 +45,13 @@ class TailwindParser
     public static function setThemeResolver(?callable $resolver): void
     {
         static::$themeResolver = $resolver;
-        static::$cache = [];
+        static::clearCache();
     }
 
     public static function setThemeDarkResolver(?callable $resolver): void
     {
         static::$themeDarkResolver = $resolver;
-        static::$cache = [];
+        static::clearCache();
     }
 
     /**
@@ -48,7 +62,7 @@ class TailwindParser
     public static function setPlatform(?string $platform): void
     {
         Platform::set($platform);
-        static::$cache = [];
+        static::clearCache();
     }
 
     private static function currentPlatform(): ?string
@@ -207,15 +221,22 @@ class TailwindParser
     public static function parse(string $classString): array
     {
         if (isset(self::$cache[$classString])) {
+            self::recordUnsupported(self::$unsupportedCache[$classString] ?? []);
+
             return self::$cache[$classString];
         }
 
         $result = [];
+        $unsupported = [];
         $classes = preg_split('/\s+/', trim($classString), -1, PREG_SPLIT_NO_EMPTY);
 
         foreach ($classes as $class) {
             $parsed = self::parseClass($class);
             if ($parsed === null) {
+                if (! self::isInactivePlatformVariant($class)) {
+                    $unsupported[$class] = true;
+                }
+
                 continue;
             }
             // Merge dark companion separately so a class that contributes BOTH
@@ -241,6 +262,8 @@ class TailwindParser
         }
 
         self::$cache[$classString] = $result;
+        self::$unsupportedCache[$classString] = array_keys($unsupported);
+        self::recordUnsupported(self::$unsupportedCache[$classString]);
 
         return $result;
     }
@@ -248,6 +271,75 @@ class TailwindParser
     public static function clearCache(): void
     {
         self::$cache = [];
+        self::$unsupportedCache = [];
+    }
+
+    /**
+     * Group unsupported utility diagnostics under the Blade view currently
+     * being rendered. Scopes nest for child components and partials, so each
+     * warning points back to the view that authored the dropped classes.
+     */
+    public static function beginViewDiagnostics(string $view): void
+    {
+        self::$diagnosticScopes[] = [
+            'view' => $view,
+            'enabled' => (bool) config('app.debug', false),
+            'classes' => [],
+        ];
+    }
+
+    public static function endViewDiagnostics(): void
+    {
+        $scope = array_pop(self::$diagnosticScopes);
+
+        if ($scope === null || ! $scope['enabled'] || $scope['classes'] === []) {
+            return;
+        }
+
+        $reported = self::$reportedUnsupportedByView[$scope['view']] ?? [];
+        $classes = array_values(array_filter(
+            array_keys($scope['classes']),
+            fn (string $class): bool => ! isset($reported[$class])
+        ));
+
+        if ($classes === []) {
+            return;
+        }
+
+        foreach ($classes as $class) {
+            self::$reportedUnsupportedByView[$scope['view']][$class] = true;
+        }
+
+        Log::warning('NativePHP EDGE dropped unsupported Tailwind classes.', [
+            'view' => $scope['view'],
+            'classes' => $classes,
+        ]);
+    }
+
+    /** @param  list<string>  $classes */
+    private static function recordUnsupported(array $classes): void
+    {
+        $scopeIndex = array_key_last(self::$diagnosticScopes);
+
+        if ($scopeIndex === null || ! self::$diagnosticScopes[$scopeIndex]['enabled']) {
+            return;
+        }
+
+        foreach ($classes as $class) {
+            self::$diagnosticScopes[$scopeIndex]['classes'][$class] = true;
+        }
+    }
+
+    /**
+     * Platform variants that target another platform are intentional no-ops,
+     * not unsupported utilities. A malformed class containing both platform
+     * targets is still reported when one target matches the current platform.
+     */
+    private static function isInactivePlatformVariant(string $class): bool
+    {
+        $targets = array_values(array_intersect(explode(':', $class), ['ios', 'android']));
+
+        return $targets !== [] && ! in_array(self::currentPlatform(), $targets, true);
     }
 
     /**
@@ -376,11 +468,15 @@ class TailwindParser
 
         // Exact matches
         return match (true) {
+            // Direction — lets any container (notably pressable, which
+            // defaults to column) flip axis via class, matching web flexbox.
+            $class === 'flex-row', $class === 'flex-row-reverse' => ['flexDirection' => 1],
+            $class === 'flex-col', $class === 'flex-col-reverse' => ['flexDirection' => 0],
             $class === 'flex-1' => ['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0],
-            $class === 'flex-grow' => ['flexGrow' => 1],
-            $class === 'flex-grow-0' => ['flexGrow' => 0],
-            $class === 'flex-shrink' => ['flexShrink' => 1],
-            $class === 'flex-shrink-0' => ['flexShrink' => 0],
+            $class === 'flex-grow', $class === 'grow' => ['flexGrow' => 1],
+            $class === 'flex-grow-0', $class === 'grow-0' => ['flexGrow' => 0],
+            $class === 'flex-shrink', $class === 'shrink' => ['flexShrink' => 1],
+            $class === 'flex-shrink-0', $class === 'shrink-0' => ['flexShrink' => 0],
             $class === 'flex-wrap' => ['flexWrap' => 1],
             $class === 'flex-nowrap' => ['flexWrap' => 0],
             $class === 'flex-wrap-reverse' => ['flexWrap' => 2],
@@ -449,14 +545,14 @@ class TailwindParser
             // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
             // `inset-` branch, which would otherwise match them first and try
             // to parse "x-0" as a spacing value.
-            str_starts_with($class, 'inset-x-') => self::parseInset(substr($class, 8), ['positionLeft', 'positionRight']),
-            str_starts_with($class, 'inset-y-') => self::parseInset(substr($class, 8), ['positionTop', 'positionBottom']),
-            str_starts_with($class, 'inset-') => self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft']),
+            str_starts_with($class, 'inset-x-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionLeft', 'positionRight'])),
+            str_starts_with($class, 'inset-y-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionTop', 'positionBottom'])),
+            str_starts_with($class, 'inset-') => self::explicitInsets(self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft'])),
 
-            str_starts_with($class, 'left-') => self::parseSpacingUniform('positionLeft', substr($class, 5)),
-            str_starts_with($class, 'top-') => self::parseSpacingUniform('positionTop', substr($class, 4)),
-            str_starts_with($class, 'right-') => self::parseSpacingUniform('positionRight', substr($class, 6)),
-            str_starts_with($class, 'bottom-') => self::parseSpacingUniform('positionBottom', substr($class, 7)),
+            str_starts_with($class, 'left-') => self::explicitInsets(self::parseSpacingUniform('positionLeft', substr($class, 5))),
+            str_starts_with($class, 'top-') => self::explicitInsets(self::parseSpacingUniform('positionTop', substr($class, 4))),
+            str_starts_with($class, 'right-') => self::explicitInsets(self::parseSpacingUniform('positionRight', substr($class, 6))),
+            str_starts_with($class, 'bottom-') => self::explicitInsets(self::parseSpacingUniform('positionBottom', substr($class, 7))),
 
             // Colors and text
             // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
@@ -548,7 +644,7 @@ class TailwindParser
             $class === 'object-fill' => ['fit' => 3],
             $class === 'object-scale-down' => ['fit' => 1],
 
-            // Aspect ratio — sets Yoga's `aspect_ratio` layout field
+            // Aspect ratio — sets the `aspect_ratio` flex layout field
             // (applied natively via AspectRatioModifier on iOS/Android).
             $class === 'aspect-square' => ['aspectRatio' => 1.0],
             $class === 'aspect-video' => ['aspectRatio' => 16 / 9],
@@ -804,6 +900,29 @@ class TailwindParser
      * @param  list<string>  $edges
      * @return array<string, mixed>|null
      */
+    /**
+     * Mark explicitly-authored zero insets as IEEE -0.0. The wire's packed
+     * node has no spare byte to distinguish "unset" from "explicit 0", so
+     * +0.0 means unset and the sign bit carries "the author wrote
+     * `bottom-0`" — which must anchor to the bottom edge, not fall through
+     * to the top default. -0.0 survives the f32 wire bit-exactly; the
+     * native layout treats `!= 0 || signbit` as "edge is set".
+     */
+    private static function explicitInsets(?array $parsed): ?array
+    {
+        if ($parsed === null) {
+            return null;
+        }
+
+        foreach ($parsed as $key => $value) {
+            if ($value === 0 || $value === 0.0) {
+                $parsed[$key] = -0.0;
+            }
+        }
+
+        return $parsed;
+    }
+
     private static function parseInset(string $value, array $edges): ?array
     {
         $result = [];
@@ -971,9 +1090,9 @@ class TailwindParser
 
         // Alignment
         return match ($value) {
-            'left' => ['textAlign' => 0],
-            'center' => ['textAlign' => 1],
-            'right' => ['textAlign' => 2],
+            'left' => ['textAlign' => TextAlign::Left->value],
+            'center' => ['textAlign' => TextAlign::Center->value],
+            'right' => ['textAlign' => TextAlign::Right->value],
             'white' => ['color' => '#FFFFFF'],
             'black' => ['color' => '#000000'],
             'transparent' => ['color' => '#00000000'],
@@ -1041,37 +1160,23 @@ class TailwindParser
 
     private static function parseAlignItems(string $value): ?array
     {
-        return match ($value) {
-            'start' => ['alignItems' => 0],
-            'center' => ['alignItems' => 1],
-            'end' => ['alignItems' => 2],
-            'stretch' => ['alignItems' => 3],
-            default => null,
-        };
+        return ($case = AlignItems::fromUtilityClass($value)) !== null
+            ? ['alignItems' => $case->value]
+            : null;
     }
 
     private static function parseJustifyContent(string $value): ?array
     {
-        return match ($value) {
-            'start' => ['justifyContent' => 0],
-            'center' => ['justifyContent' => 1],
-            'end' => ['justifyContent' => 2],
-            'between' => ['justifyContent' => 3],
-            'around' => ['justifyContent' => 4],
-            'evenly' => ['justifyContent' => 5],
-            default => null,
-        };
+        return ($case = JustifyContent::fromUtilityClass($value)) !== null
+            ? ['justifyContent' => $case->value]
+            : null;
     }
 
     private static function parseAlignSelf(string $value): ?array
     {
-        return match ($value) {
-            'start' => ['alignSelf' => 0],
-            'center' => ['alignSelf' => 1],
-            'end' => ['alignSelf' => 2],
-            'stretch' => ['alignSelf' => 3],
-            default => null,
-        };
+        return ($case = AlignSelf::fromUtilityClass($value)) !== null
+            ? ['alignSelf' => $case->value]
+            : null;
     }
 
     private static function parseArbitrary(string $prefix, string $value): ?array

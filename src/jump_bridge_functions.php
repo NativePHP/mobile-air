@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Contracts\GatedBridge;
 use Native\Mobile\JumpBridge;
 
 /** How often the Jump runloop re-checks the async spool while tasks are in flight. */
@@ -46,11 +47,21 @@ if (! function_exists('nativephp_can')) {
     /**
      * Check if a native bridge function is available.
      *
-     * In Jump hybrid mode, we assume all functions are available
-     * on the connected device.
+     * When a capability-gated bridge is driving, only what that bridge
+     * actually provides is available, so app code can feature-gate
+     * honestly — and tests can finally exercise the capability-missing
+     * branch. Device behavior is untouched (this file never loads
+     * there); bridges that don't implement the contract keep assuming
+     * everything is available.
      */
     function nativephp_can(string $method): bool
     {
+        $bridge = FakeBridge::current();
+
+        if ($bridge instanceof GatedBridge) {
+            return $bridge->can($method);
+        }
+
         return true;
     }
 }

@@ -20,7 +20,7 @@ elements (`native:column`, `native:text`, `native:button`, …).** This is the w
 - Style EDGE elements with Tailwind utility classes via `class="..."` / `:class="..."` only — never inline
   CSS `style="..."` attributes or ad-hoc styling props.
 - Compose screens from **nested child components**: any `NativeComponent` under `app/NativeComponents` mounts
-  as a tag (`UserCard` → `<native:user-card :user="$u" key="user-{{ $u->id }}" @saved="onSaved" />`) with live
+  as a tag (`UserCard` → `<native:user-card :user="$u" key="user-@{{ $u->id }}" @saved="onSaved" />`) with live
   props, its own persistent state, and `emit()` events bubbling to `@event` tag bindings / `#[On('event')]`
   listeners. Prefer extracting a reusable child component over duplicating Blade across screens; give list
   children a stable domain `key` (never the loop index).

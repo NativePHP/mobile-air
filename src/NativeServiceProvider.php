@@ -2,6 +2,7 @@
 
 namespace Native\Mobile;
 
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
@@ -37,12 +38,14 @@ use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\ComponentRegistry;
+use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Events\System\AppearanceChanged;
+use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
@@ -250,6 +253,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
         $this->applyFpsOverlayConfig();
+        $this->registerScreenIntentMiddleware();
 
         if (config('nativephp-internal.running')) {
             $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
@@ -304,6 +308,17 @@ class NativeServiceProvider extends PackageServiceProvider
             NativeRouter::register($uri, $componentClass);
 
             return Route::get($uri, function () use ($componentClass) {
+                // Native route reached without a native runtime — a shared
+                // app link opened in a plain browser, a crawler, a
+                // misconfigured deploy. The runloop can never satisfy these
+                // (no device is attached to the request), so if the app
+                // bound a fallback, let it answer (landing page, app-store
+                // redirect). Unbound, everything below is unchanged.
+                if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')
+                    && app()->bound(NativeRouteFallback::class)) {
+                    return app(NativeRouteFallback::class)->handle($componentClass);
+                }
+
                 // HTTP feature tests ($this->get('/')) must never enter the
                 // runloop: it blocks in wait_event against the REAL bridge —
                 // with a live Jump session that's ~90s of reconnect spinning
@@ -542,6 +557,28 @@ class NativeServiceProvider extends PackageServiceProvider
         nativephp_call('Perf.SetFpsOverlayEnabled', json_encode(['enabled' => $enabled]));
     }
 
+    /**
+     * Let a screen change requested from `native:watch` be picked up by an
+     * ordinary request, not just by the runloop's hot-reload handler — that's
+     * the only way back to a native screen once the app has fallen through to
+     * the WebView (a 404, say), where no runloop exists to read the intent.
+     *
+     * On device only: NATIVEPHP_PLATFORM is set by the iOS and Android hosts,
+     * so a normal web app never pays for this.
+     */
+    private function registerScreenIntentMiddleware(): void
+    {
+        if (! in_array(env('NATIVEPHP_PLATFORM'), ['ios', 'android'], true)) {
+            return;
+        }
+
+        // Deliberately not gated on runningInConsole(): that reads PHP_SAPI,
+        // which the embedded runtime does not necessarily report as a web SAPI,
+        // and getting it wrong would silently disable the middleware. Pushing
+        // it in a console context is harmless — nothing dispatches a request.
+        $this->app->make(HttpKernel::class)->pushMiddleware(HonorsRequestedNativeScreen::class);
+    }
+
     private function setupComposerPostUpdateScript()
     {
         // Temporarily disabled for testing
@@ -689,6 +726,7 @@ class NativeServiceProvider extends PackageServiceProvider
             // Navigation chrome
             'top_bar' => Elements\TopBar::class,
             'top_bar_action' => Elements\TopBarAction::class,
+            'top_bar_title' => Elements\TopBarTitle::class,
             'bottom_nav' => Elements\BottomNav::class,
             'bottom_nav_item' => Elements\BottomNavItem::class,
             'side_nav' => Elements\SideNav::class,

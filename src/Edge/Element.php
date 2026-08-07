@@ -2,6 +2,10 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Edge\Enums\AlignItems;
+use Native\Mobile\Edge\Enums\AlignSelf;
+use Native\Mobile\Edge\Enums\JustifyContent;
+
 abstract class Element
 {
     use Concerns\HasA11y;
@@ -272,23 +276,29 @@ abstract class Element
         return $this;
     }
 
-    public function alignSelf(int $value): static
+    public function alignSelf(int|string|AlignSelf $value): static
     {
-        $this->layout['align_self'] = $value;
+        if (($resolved = AlignSelf::parse($value)) !== null) {
+            $this->layout['align_self'] = $resolved;
+        }
 
         return $this;
     }
 
-    public function alignItems(int $value): static
+    public function alignItems(int|string|AlignItems $value): static
     {
-        $this->layout['align_items'] = $value;
+        if (($resolved = AlignItems::parse($value)) !== null) {
+            $this->layout['align_items'] = $resolved;
+        }
 
         return $this;
     }
 
-    public function justifyContent(int $value): static
+    public function justifyContent(int|string|JustifyContent $value): static
     {
-        $this->layout['justify_content'] = $value;
+        if (($resolved = JustifyContent::parse($value)) !== null) {
+            $this->layout['justify_content'] = $resolved;
+        }
 
         return $this;
     }
@@ -338,7 +348,7 @@ abstract class Element
         return $this;
     }
 
-    // ── Extended layout methods (Yoga) ──────────────
+    // ── Extended layout methods (flexbox) ──────────────
 
     public function minWidth(float $value): static
     {

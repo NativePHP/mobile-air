@@ -24,6 +24,11 @@ func registerBridgeFunctions() {
     registry.register("System.OpenAppSettings", function: SystemFunctions.OpenAppSettings())
     registry.register("System.GetAppearance", function: SystemFunctions.GetAppearance())
 
+    // UI.* — core built-in. Android twin: bridge/functions/UIFunctions.kt
+    // (which also registers UI.SetTransition; iOS transitions ride the
+    // tree publish path, so only SetBackground is implemented here).
+    registry.register("UI.SetBackground", function: UIFunctions.SetBackground())
+
     // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog
     // plugin). Android twin: bridge/functions/DialogFunctions.kt.
     registry.register("Dialog.Alert", function: DialogFunctions.Alert())

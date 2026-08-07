@@ -280,6 +280,7 @@ struct FlexContainer: Layout {
         var maxCross: CGFloat = 0
         var hypotheticalMains = [Int: CGFloat]()
         var totalGrow: CGFloat = 0
+        var totalShrink: CGFloat = 0
 
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
@@ -308,6 +309,7 @@ struct FlexContainer: Layout {
             hypotheticalMains[i] = childMain
             totalMain += childMain + mainMargin(info)
             totalGrow += grow
+            totalShrink += info.flexShrink
             maxCross = max(maxCross, crossSize(ideal) + crossMargin(info))
         }
 
@@ -353,6 +355,73 @@ struct FlexContainer: Layout {
                     if newCross > maxCross {
                         maxCross = newCross
                     }
+                }
+            }
+        }
+
+        // Phase B2: the mirror image — overflow with flex-shrink children.
+        // `placeSubviews` has always shrunk them; `sizeThatFits` did not, so a
+        // container reported its PRE-shrink main size to the parent. Inside a
+        // scroll view (which permits overflow) that reported width won, and
+        // e.g. a long chat bubble ran off-screen on one line instead of
+        // wrapping — Android, whose measure pass shrinks, wrapped correctly.
+        // Same ratio rule as placeSubviews so both passes agree.
+        if proposedMain.isFinite && totalShrink > 0 {
+            let remaining = proposedMain - totalMain
+            if remaining < 0 {
+                let deficit = -remaining
+                // CSS weights shrink by SCALED base size — `shrink × base` —
+                // not by shrink alone. It matters because flex-shrink defaults
+                // to 1 on every child: a row of [bubble, spacer] has
+                // totalShrink 2, so an unweighted ratio hands half the deficit
+                // to the spacer, whose base is already 0. That half evaporates
+                // (`max(0, 0 - x)`) and the bubble shrinks only halfway —
+                // measured 1113pt against a 386pt proposal. Weighting gives the
+                // zero-base spacer zero reduction and the bubble the full
+                // deficit.
+                var totalWeighted: CGFloat = 0
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    totalWeighted += info.flexShrink * hypotheticalMains[i, default: 0]
+                }
+                if totalWeighted > 0 {
+                    for i in cache.flowIndices {
+                        let info = cache.childInfos[i]
+                        guard info.flexShrink > 0 else { continue }
+                        let weight = info.flexShrink * hypotheticalMains[i, default: 0]
+                        let reduction = deficit * (weight / totalWeighted)
+                        hypotheticalMains[i, default: 0] = max(0, hypotheticalMains[i, default: 0] - reduction)
+                    }
+                }
+
+                // Re-measure the shrunk children at their reduced main: text
+                // that now wraps reports a taller cross size, which is what
+                // makes the container tall enough to show every line.
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    let reducedMain = hypotheticalMains[i, default: 0]
+                    let crossAvail = proposedCross.isFinite ? proposedCross - crossMargin(info) : nil
+                    let proposal: ProposedViewSize
+                    if isRow {
+                        proposal = ProposedViewSize(width: reducedMain, height: crossAvail)
+                    } else {
+                        proposal = ProposedViewSize(width: crossAvail, height: reducedMain)
+                    }
+                    let measured = subviews[i].sizeThatFits(proposal)
+                    cache.childInfos[i].idealSize = measured
+                    let newCross = crossSize(measured) + crossMargin(info)
+                    if newCross > maxCross {
+                        maxCross = newCross
+                    }
+                }
+
+                // Recompute from the shrunk values so `finalMain` below reports
+                // the fitted size rather than the original overflow.
+                totalMain = gaps
+                for i in cache.flowIndices {
+                    totalMain += hypotheticalMains[i, default: 0] + mainMargin(cache.childInfos[i])
                 }
             }
         }
@@ -452,12 +521,23 @@ struct FlexContainer: Layout {
                 }
             }
         } else if remaining < 0 && totalShrink > 0 {
-            // Shrink: reduce by flex_shrink ratio
+            // Shrink: reduce by CSS's SCALED shrink factor (`shrink × base`),
+            // matching the measure pass. Weighting matters because shrink
+            // defaults to 1 everywhere — an unweighted ratio sends part of the
+            // deficit to zero-base children (spacers), where `max(0, …)`
+            // discards it and the real content shrinks short of fitting.
             let deficit = -remaining
+            var totalWeighted: CGFloat = 0
             for i in cache.flowIndices {
                 let info = cache.childInfos[i]
-                if info.flexShrink > 0 {
-                    let reduction = deficit * (info.flexShrink / totalShrink)
+                guard info.flexShrink > 0 else { continue }
+                totalWeighted += info.flexShrink * childMains[i]
+            }
+            if totalWeighted > 0 {
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    let reduction = deficit * ((info.flexShrink * childMains[i]) / totalWeighted)
                     childMains[i] = max(0, childMains[i] - reduction)
                 }
             }
@@ -505,9 +585,20 @@ struct FlexContainer: Layout {
             }
         }
 
-        // Phase 4: Compute justify_content offsets
+        // Phase 4: Compute justify_content offsets.
+        //
+        // Recompute the leftover from the POST-Phase-3 childMains: Phase 3
+        // can grow a child's main size past its Phase-1 ideal (stale/zero
+        // cached ideals, cross-constrained re-measures). Using the Phase-1
+        // `remaining` here over-offsets justify-center/end and pushes
+        // content low/right — the "icons sit low in fixed circles" bug.
+        var placedMain: CGFloat = 0
+        for i in cache.flowIndices {
+            placedMain += childMains[i] + mainMargin(cache.childInfos[i])
+        }
+        let placeRemaining = containerMain - placedMain - gaps
         let (startOffset, interItemSpacing) = justifyOffsets(
-            remaining: remaining > 0 && totalGrow <= 0 ? remaining : 0,
+            remaining: placeRemaining > 0 && totalGrow <= 0 ? placeRemaining : 0,
             count: flowCount
         )
 
@@ -542,6 +633,16 @@ struct FlexContainer: Layout {
                 finalCross = containerCross - crossMargin(info)
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
             } else {
+                // Measure the child's natural cross size against the main size
+                // it will actually be placed at, not `.unspecified`. A flexed
+                // child (`flex-1`) is narrower than its unconstrained width, so
+                // an unconstrained measure reports a single-line height for text
+                // that will really wrap. Centring on that stale height places the
+                // child too high and it then overflows downward.
+                let naturalProposal = isRow
+                    ? ProposedViewSize(width: childMain, height: nil)
+                    : ProposedViewSize(width: nil, height: childMain)
+
                 switch effectiveAlign {
                 case AlignItems.stretch:
                     // No FILL: use natural size, align to start (like Android).
@@ -549,19 +650,19 @@ struct FlexContainer: Layout {
                     // proposes crossAvail, which makes container children (e.g.
                     // a flex column) fill the cross axis and report container
                     // cross size, not their natural content size.
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
                 case AlignItems.center:
                     // Center: measure natural size, center within container
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + (containerCross - finalCross) / 2
 
                 case AlignItems.end:
                     // End: measure natural size, align to end
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
 
@@ -624,27 +725,58 @@ struct FlexContainer: Layout {
         }
     }
 
+    /// Whether an absolute inset edge was authored. The packed node has no
+    /// spare byte for a "set" bitmask, so the wire convention is: +0.0 means
+    /// unset, any non-zero value (including negatives — Tailwind's `-right-8`
+    /// bleed) means set, and IEEE **-0.0** means "the author wrote an explicit
+    /// zero" (`bottom-0`, `inset-0`). The PHP TailwindParser emits -0.0 for
+    /// authored zeros; the sign bit survives the f32 wire bit-exactly.
+    private static func insetIsSet(_ v: CGFloat) -> Bool {
+        v != 0 || v.sign == .minus
+    }
+
     /// Place an absolute-positioned child using position insets.
+    ///
+    /// CSS semantics: one edge set anchors to it; BOTH opposing edges set
+    /// stretches the child between them (`inset-0` fills the container).
+    /// Neither set falls back to the top/leading origin.
     private func placeAbsolute(_ subview: LayoutSubview, info: ChildInfo, in bounds: CGRect) {
-        let ideal = subview.sizeThatFits(.unspecified)
+        let hasLeft = Self.insetIsSet(info.positionLeft)
+        let hasRight = Self.insetIsSet(info.positionRight)
+        let hasTop = Self.insetIsSet(info.positionTop)
+        let hasBottom = Self.insetIsSet(info.positionBottom)
 
-        // Resolve horizontal position. A NON-ZERO right inset (with no left)
-        // anchors to the trailing edge; `!= 0` rather than `> 0` so NEGATIVE
-        // insets work — `-right-8` resolves to maxX - width + 8, deliberately
-        // overhanging the edge (Tailwind's `-right-8` bleed). Zero still means
-        // "no right anchor", since the packed node struct has no spare byte to
-        // distinguish an unset edge from an explicit `right-0`.
-        var x = bounds.minX + info.positionLeft
-        if info.positionRight != 0 && info.positionLeft == 0 {
-            x = bounds.maxX - ideal.width - info.positionRight
+        let stretchWidth: CGFloat? = hasLeft && hasRight
+            ? max(0, bounds.width - info.positionLeft - info.positionRight)
+            : nil
+        let stretchHeight: CGFloat? = hasTop && hasBottom
+            ? max(0, bounds.height - info.positionTop - info.positionBottom)
+            : nil
+
+        // Measure with any stretched dimension proposed, so content that
+        // adapts (text wrapping, maps, images) sizes against the real box.
+        let measured = subview.sizeThatFits(ProposedViewSize(
+            width: stretchWidth, height: stretchHeight
+        ))
+        let size = CGSize(
+            width: stretchWidth ?? measured.width,
+            height: stretchHeight ?? measured.height
+        )
+
+        var x = bounds.minX
+        if hasLeft {
+            x = bounds.minX + info.positionLeft
+        } else if hasRight {
+            x = bounds.maxX - size.width - info.positionRight
         }
 
-        // Resolve vertical position — same convention.
-        var y = bounds.minY + info.positionTop
-        if info.positionBottom != 0 && info.positionTop == 0 {
-            y = bounds.maxY - ideal.height - info.positionBottom
+        var y = bounds.minY
+        if hasTop {
+            y = bounds.minY + info.positionTop
+        } else if hasBottom {
+            y = bounds.maxY - size.height - info.positionBottom
         }
 
-        subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(ideal))
+        subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
     }
 }

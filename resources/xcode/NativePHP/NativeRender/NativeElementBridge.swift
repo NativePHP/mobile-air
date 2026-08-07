@@ -14,7 +14,7 @@ import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags 
 ///  62: flex_grow           66: flex_shrink         70: align_self (u8)
 ///  71: align_items (u8)   72: justify_content    73: gap (f32)
 ///  77: safe_area (u8)
-///  --- Extended layout (Yoga) ---
+///  --- Extended layout (flexbox) ---
 ///  78: min_width          82: min_height          86: max_width
 ///  90: max_height         94: flex_basis           98: flex_basis_mode (u8)
 ///  99: flex_wrap (u8)    100: flex_direction (u8) 101: position_type (u8)
@@ -26,7 +26,7 @@ import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags 
 /// 142: border_color      146: opacity             150: elevation
 /// 154: prop_offset       158: prop_size (u16)
 final class NativeElementBridge {
-    /// Node stride: 161 bytes — Yoga-aware base (160) plus the Phase 2
+    /// Node stride: 161 bytes — flex-layout base (160) plus the Phase 2
     /// appended `flags` byte at offset 160. Bumped in lockstep with
     /// NPHP_FORMAT_VERSION = 2. Legacy 108-byte and 160-byte nodes are
     /// not supported (format-version guard rejects mismatched producers).
@@ -48,6 +48,14 @@ final class NativeElementBridge {
         static let nodeCount: Int        = 16
         static let flatBufferSize: Int   = 20
         static let propBufferSize: Int   = 24
+        // Event fields — DEAD, do not use. Kept only because removing them
+        // would make the offsets below look like they'd shifted (they haven't).
+        //
+        // Post events with `nphp_element_post_event()` instead. As of format
+        // v4 the channel is a queue of separately allocated frames: eventBuffer
+        // is never written, eventSize is the head frame's size rather than "the"
+        // event's, and eventCount is a depth rather than a 0/1 flag. Writing
+        // here would be silently ignored; reading would be garbage.
         static let eventMutex: Int       = 144
         static let eventCond: Int        = 208
         static let eventSize: Int        = 256
@@ -73,7 +81,15 @@ final class NativeElementBridge {
     /// v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
     /// v3 — event-channel framing widened uint16 → uint32 (header data_size +
     ///      body string length prefixes); lifts the 64KB native→PHP cap.
-    private static let expectedFormatVersion: UInt32 = 3
+    /// v4 — native→PHP event channel is a FIFO queue instead of a single slot,
+    ///      so concurrent posts (async-task pool + watchdog) queue instead of
+    ///      overwriting each other. Nothing changes for this reader: the
+    ///      per-frame wire format is identical, the flat/prop buffers are
+    ///      untouched, and events are still posted through
+    ///      `nativeElementWriteEvent` → `nphp_element_post_event`. The version
+    ///      moved because the region's event fields changed meaning, and a
+    ///      stale libphp.a should fail loud rather than be quietly wrong.
+    private static let expectedFormatVersion: UInt32 = 4
 
     /// Phase 0 — latched after the one-shot check in `postTreeUpdateFromRegion()`.
     /// NPHP_FLAG_* bitfield in nphp_element.h.
@@ -519,10 +535,16 @@ final class NativeElementBridge {
     /// Event format: [magic:u32][type:u8][callback_id:u32][node_id:u32][timestamp:u64][data_size:u16][data...]
     static func nativeElementWriteEvent(_ type: Int32, _ callbackId: Int32, _ nodeId: Int32, _ data: UnsafePointer<UInt8>?, _ dataSize: Int32) {
         // Hand the body bytes to the PHP extension, which owns the event mutex,
-        // the growable heap buffer, and the header framing
-        // (nphp_element_post_event in nphp_element.c). No more region poking by
-        // offset, no 4KB cap, no hand-rolled framing.
-        nphp_element_post_event(type, callbackId, nodeId, data, UInt32(max(0, dataSize)))
+        // the event queue, and the header framing (nphp_element_post_event in
+        // nphp_element.c). No more region poking by offset, no 4KB cap, no
+        // hand-rolled framing.
+        //
+        // The return value (1 = queued, 0 = dropped) is discarded: a UI event
+        // has nothing useful to do about a drop, and a dropped one is already
+        // logged by the extension with the callback_id it would have woken.
+        // A caller that DOES care — an async-task completion, say — should
+        // check it rather than copy this.
+        _ = nphp_element_post_event(type, callbackId, nodeId, data, UInt32(max(0, dataSize)))
     }
 
     static func sendPressEvent(_ callbackId: Int, nodeId: Int) {
@@ -774,7 +796,7 @@ final class NativeElementBridge {
             let gap = Float(bitPattern: base.loadUnaligned(fromByteOffset: 73, as: UInt32.self).littleEndian)
             let safeArea = Int(base.load(fromByteOffset: 77, as: UInt8.self))
 
-            // Extended layout fields (Yoga) — only present in 160-byte nodes
+            // Extended layout fields (flexbox) — only present in 160-byte nodes
             let minWidth: Float, minHeight: Float, maxWidth: Float, maxHeight: Float
             let flexBasis: Float, flexBasisMode: Int, flexWrap: Int, flexDirection: Int
             let positionType: Int
@@ -787,7 +809,7 @@ final class NativeElementBridge {
             let borderColor: Int, opacity: Float, elevation: Float
             let propOffset: Int, propSize: Int
 
-            // 160-byte node: extended Yoga fields at 78..129, style at 130, props at 154
+            // 160-byte node: extended flex fields at 78..129, style at 130, props at 154
             minWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 78, as: UInt32.self).littleEndian)
             minHeight = Float(bitPattern: base.loadUnaligned(fromByteOffset: 82, as: UInt32.self).littleEndian)
             maxWidth = Float(bitPattern: base.loadUnaligned(fromByteOffset: 86, as: UInt32.self).littleEndian)

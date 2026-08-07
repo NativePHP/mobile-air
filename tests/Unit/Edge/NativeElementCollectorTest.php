@@ -2,7 +2,9 @@
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\LazyGrid;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
 
@@ -195,6 +197,42 @@ it('applies scroll view props', function () {
     expect($tree['children'])->toHaveCount(1);
 });
 
+it('applies lazy grid scroll-indicator props', function () {
+    // The lazy_grid type is registered by the native-ui plugin's manifest,
+    // but the element class is core-owned — register it explicitly so this
+    // stays testable without the plugin.
+    ElementRegistry::register('lazy_grid', LazyGrid::class);
+
+    NativeElementCollector::open('lazy_grid', [
+        'columns' => 3,
+        'shows-indicators' => true,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Cell']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('lazy_grid');
+    expect($tree['props']['columns'])->toBe(3);
+    expect($tree['props']['shows_indicators'])->toBeTrue();
+
+    ElementRegistry::reset();
+});
+
+it('applies refreshable scroll-indicator props', function () {
+    NativeElementCollector::open('refreshable', [
+        'shows-indicators' => false,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Scrollable']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('refreshable');
+    expect($tree['props']['shows_indicators'])->toBeFalse();
+    expect($tree['children'])->toHaveCount(1);
+});
+
 it('applies node-level onPress and onLongPress', function () {
     NativeElementCollector::open('column', [
         '_press' => 'tapColumn',
@@ -283,4 +321,40 @@ it('ignores _navigated on elements without an onNavigated method', function () {
     $apply->invoke(null, $element, ['_navigated' => 'urlChanged']);
 
     expect($element->toArray(new CallbackRegistry))->not->toHaveKey('on_navigated');
+});
+
+it('wires _selectionChange to onSelectionChange when the element supports it', function () {
+    $element = new class extends Element
+    {
+        public ?string $selectionMethod = null;
+
+        public function getType(): string
+        {
+            return 'text_input';
+        }
+
+        public function onSelectionChange(string $method): static
+        {
+            $this->selectionMethod = $method;
+
+            return $this;
+        }
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_selectionChange' => 'caretMoved']);
+
+    expect($element->selectionMethod)->toBe('caretMoved');
+});
+
+it('ignores _selectionChange on elements without an onSelectionChange method', function () {
+    $element = new class extends Element
+    {
+        protected string $type = 'column';
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_selectionChange' => 'caretMoved']);
+
+    expect($element->toArray(new CallbackRegistry))->not->toHaveKey('on_selection_change');
 });

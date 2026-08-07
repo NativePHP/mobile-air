@@ -259,11 +259,14 @@ class NativeTagPrecompiler
 
         // Convert @tap, @tapDown, @tapUp, @longPress, @doubleTap, @change,
         // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
-        // @pinchEnd, @navigated to underscored versions before Blade
+        // @pinchEnd, @navigated, @selectionChange to underscored versions before Blade
         // interprets @ as a directive.
         // Longer spellings precede their prefix (`pressDown`/`pressUp` before
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
-        $value = preg_replace('/@(pressDown|pressUp|press|longPress|doubleTap|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
+        // `selectionChange` shares no prefix with `change` — the alternation
+        // is anchored at `@`, so `change` can't match mid-word — but it sits
+        // before it anyway to keep the longer-first convention obvious.
+        $value = preg_replace('/@(tapDown|tapUp|tap|pressDown|pressUp|press|longPress|doubleTap|selectionChange|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
 
         // Any REMAINING `@name="..."` attribute is a child-component event
         // binding — the tag-level half of `$this->emit()`:
