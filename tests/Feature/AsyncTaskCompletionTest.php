@@ -7,6 +7,7 @@ use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\Testing\FakeBridge;
 
 /**
  * Minimal component double that lets a test drive the native-event path and
@@ -144,19 +145,25 @@ it('registers async callbacks in memory only, so a dispatch costs no cache write
     $screen = new AsyncScreenDouble;
     setActiveComponent($screen);
 
-    $fake = AsyncTask::fake();
-    // The fake runs inline, so register the callback the way a real dispatch
-    // would and check the tiers directly.
-    NativeCallbacks::register('durability', AsyncTaskFinished::class, static fn () => null, durable: false);
+    // Go through a REAL dispatch (fake off, bridge accepting) rather than
+    // hand-calling register(): the point of the test is that PendingAsyncTask
+    // passes durable: false, and hand-registering would pass whatever the test
+    // itself chose no matter what the dispatch path does.
+    FakeBridge::enable()->respondTo('AsyncTask.Dispatch', ['success' => true]);
 
-    expect(NativeCallbacks::resolve('durability', AsyncTaskFinished::class))->not->toBeNull()
-        ->and(Cache::has('native_cb:durability:'.AsyncTaskFinished::class))->toBeFalse();
+    $pending = AsyncTask::dispatch(static fn () => 'x')->finished(static fn () => null);
+    $pending->start();
+    $id = $pending->getId();
+
+    expect(NativeCallbacks::resolve($id, AsyncTaskFinished::class))->not->toBeNull()
+        ->and(Cache::has('native_cb:'.$id.':'.AsyncTaskFinished::class))->toBeFalse();
 
     NativeCallbacks::flush();
 
     // Tier 1 was the only copy: nothing survives the flush.
-    expect(NativeCallbacks::resolve('durability', AsyncTaskFinished::class))->toBeNull()
-        ->and($fake->count())->toBe(0);
+    expect(NativeCallbacks::resolve($id, AsyncTaskFinished::class))->toBeNull();
+
+    FakeBridge::disable();
 });
 
 it('does not keep the last active screen alive once it has been freed', function () {
@@ -170,4 +177,27 @@ it('does not keep the last active screen alive once it has been freed', function
     // life of the process.
     expect($weak->get())->toBeNull()
         ->and(NativeComponent::active())->toBeNull();
+});
+
+it('scopes a task dispatched from mount() to the screen being mounted', function () {
+    // "Start loading when the screen opens" is the canonical async dispatch and
+    // it lives in mount() — which runs BEFORE the runloop marks itself active.
+    // If the previous screen were still active at that moment, the completion
+    // and its timeout would both be dropped as off-screen and the spinner would
+    // never stop.
+    $previous = new AsyncScreenDouble;
+    setActiveComponent($previous);
+
+    $opening = new AsyncScreenDouble;
+
+    // What NativeRouter now does around mount()/onResume() + runLoop().
+    $restore = NativeComponent::markActive($opening);
+
+    // ...the dispatch that mount() would make.
+    $origin = NativeComponent::active();
+
+    NativeComponent::restoreActive($restore);
+
+    expect($origin)->toBe($opening)
+        ->and(NativeComponent::active())->toBe($previous);
 });

@@ -203,7 +203,11 @@ class PendingAsyncTask
         try {
             $payload = serialize($this->work);
         } catch (Throwable $e) {
-            // A non-serializable capture (resource, PDO handle, bound object).
+            // A capture PHP refuses outright — an unserializable object, a
+            // Closure that isn't wrapped. Note this does NOT catch a captured
+            // resource: PHP serializes those to i:0 without complaint, so a
+            // task capturing a file or PDO handle fails inside the work with a
+            // type error rather than here.
             AsyncTaskRegistry::forget($this->id);
             NativeCallbacks::forget($this->id);
             throw new \InvalidArgumentException(
@@ -288,9 +292,17 @@ class PendingAsyncTask
         $fake?->record($this->id, $this->work, $this->sharedAlias);
 
         try {
-            // Round-trip the result exactly as the device transport would, so a
-            // test can't pass on a value that wouldn't survive the real hop.
-            $result = AsyncTaskRunner::normalizeResult(AsyncTaskRunner::invoke($this->work));
+            // Round-trip the WORK the way the transport does too, not just the
+            // result. On a device the envelope is serialized to a temp file and
+            // unserialized in another interpreter, so the task gets a deep copy
+            // of everything it captured; running the original array here would
+            // share captured objects by identity and let a test pass on
+            // mutations a device would never see.
+            $work = unserialize(serialize($this->work));
+
+            // Then round-trip the result exactly as the completion event would,
+            // so a test can't pass on a value that wouldn't survive the hop.
+            $result = AsyncTaskRunner::normalizeResult(AsyncTaskRunner::invoke($work));
             if ($this->finishedCallback !== null) {
                 ($this->finishedCallback)($result);
             }

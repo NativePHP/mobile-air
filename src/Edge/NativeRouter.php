@@ -347,6 +347,14 @@ class NativeRouter
 
             static::debugLog('loop: top, component='.get_class($component).' freshPush='.($freshPush ? 'Y' : 'N').' stack='.count($this->stack));
 
+            // This component is what's driving the screen from here until its
+            // runLoop() returns — including mount()/onResume(), which run before
+            // runLoop() gets to mark itself. "Start loading when the screen
+            // opens" is the canonical async dispatch and it lives in mount(), so
+            // without this the task would scope to the screen being replaced and
+            // its completion (and its timeout) would be dropped as off-screen.
+            $previousActiveComponent = NativeComponent::markActive($component);
+
             try {
                 if ($freshPush) {
                     // For #[Lazy] screens, paint the placeholder before the
@@ -368,6 +376,8 @@ class NativeRouter
             static::debugLog('loop: entering runLoop() on '.get_class($component));
             $component->runLoop();
             static::debugLog('loop: runLoop() returned on '.get_class($component));
+
+            NativeComponent::restoreActive($previousActiveComponent);
 
             $intent = $component->getNavigationIntent();
 

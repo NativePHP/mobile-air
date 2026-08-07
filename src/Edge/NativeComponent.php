@@ -2079,9 +2079,13 @@ abstract class NativeComponent
      * Mark this component as the one driving the runloop, returning whatever was
      * active before so a nested runloop can hand the baton back on the way out.
      *
+     * @internal Public only so {@see NativeRouter} can cover the mount() it runs
+     *           before handing over to runLoop() — a task dispatched from mount()
+     *           must scope to the screen being mounted, not the one it replaced.
+     *
      * @return \WeakReference<self>|null
      */
-    private static function markActive(self $component): ?\WeakReference
+    public static function markActive(self $component): ?\WeakReference
     {
         $previous = self::$nativeActiveComponent;
         self::$nativeActiveComponent = \WeakReference::create($component);
@@ -2089,8 +2093,12 @@ abstract class NativeComponent
         return $previous;
     }
 
-    /** @param  \WeakReference<self>|null  $previous */
-    private static function restoreActive(?\WeakReference $previous): void
+    /**
+     * @internal Pairs with {@see markActive()}.
+     *
+     * @param  \WeakReference<self>|null  $previous
+     */
+    public static function restoreActive(?\WeakReference $previous): void
     {
         self::$nativeActiveComponent = $previous;
     }
@@ -2226,6 +2234,13 @@ abstract class NativeComponent
         // (potentially slow) mount() so the first frame is instant.
         $this->publishPlaceholder();
 
+        // Before mount(), not after: "start loading when the screen opens" is
+        // the canonical async dispatch, and it happens IN mount(). Marking
+        // active afterwards would scope that task to the previous screen, so
+        // its completion — and its timeout failure, dropped by the same
+        // origin check — would never reach the screen that asked for it.
+        $previousActiveComponent = self::markActive($this);
+
         try {
             $this->mount();
         } catch (NativeDumpException $e) {
@@ -2234,8 +2249,6 @@ abstract class NativeComponent
             NativeRouter::debugLog('mount() FAILED in '.static::class.': '.$e->getMessage());
             $this->renderErrorScreen($e);
         }
-
-        $previousActiveComponent = self::markActive($this);
 
         while ($this->nativeRunning) {
             self::markActive($this);

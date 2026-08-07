@@ -156,7 +156,10 @@ class AsyncTaskTransport
                 ['NATIVEPHP_ASYNC_JUMP' => '1'],
             );
             $process->setTimeout(null);
-            $process->disableOutput();
+            // Output stays enabled (this is the dev machine, and the volume is
+            // a task's own echo at most): when a runner dies without spooling,
+            // its stderr is the only thing that says why. disableOutput() would
+            // also make getErrorOutput() throw at exactly that moment.
             $process->start();
         } catch (\Throwable) {
             return false;
@@ -197,8 +200,11 @@ class AsyncTaskTransport
             }
 
             // Finished, but its completion may not be drained yet — keep the
-            // loop ticking until the spool is actually empty.
+            // loop ticking until the spool is actually empty. A runner that
+            // died without spooling gets its failure written here, so dropping
+            // the entry can't drop the task's only chance of an outcome.
             unset(static::$jumpProcesses[$id]);
+            static::failIfDiedSilently($id, $entry);
         }
 
         $dir = static::directory('complete');
@@ -222,6 +228,7 @@ class AsyncTaskTransport
         foreach (static::$jumpProcesses as $id => $entry) {
             if (! $entry['process']->isRunning()) {
                 unset(static::$jumpProcesses[$id]);
+                static::failIfDiedSilently($id, $entry);
 
                 continue;
             }
@@ -235,6 +242,54 @@ class AsyncTaskTransport
             static::forgetPayload($id);
             static::writeCompletionSpool($id, $entry['event'], $entry['payload']);
         }
+    }
+
+    /**
+     * A runner that exited without spooling anything delivered no outcome, and
+     * dropping its entry drops its deadline with it — so nothing would ever
+     * report on the task. That's the dev loop's most likely failure: a parse
+     * error from a half-saved file, a fatal during bootstrap, an OOM, a SIGKILL.
+     * Synthesize the failure here instead, carrying the exit code so the cause
+     * is visible rather than a generic timeout 60 seconds later.
+     *
+     * @param  array{process: Process, deadline: float|null, event: string, payload: array}  $entry
+     */
+    protected static function failIfDiedSilently(string $id, array $entry): void
+    {
+        // It completed normally — its own outcome is already spooled (or has
+        // been drained already), so there's nothing to report.
+        if (is_file(static::directory('complete').DIRECTORY_SEPARATOR.$id.'.json')) {
+            return;
+        }
+
+        // A payload still on disk means the runner never got as far as reading
+        // it; if it's gone, the runner read it and then died before completing.
+        // Either way no completion is coming.
+        static::forgetPayload($id);
+
+        $exitCode = $entry['process']->getExitCode();
+
+        // Whatever the runner managed to say on its way down — a parse error, a
+        // fatal, an OOM notice — is the actual diagnosis.
+        $stderr = '';
+        try {
+            $stderr = trim($entry['process']->getErrorOutput() ?: $entry['process']->getOutput());
+        } catch (\Throwable) {
+            // Output was disabled or the pipes are gone; the exit code stands alone.
+        }
+
+        if ($stderr !== '') {
+            $stderr = ' '.mb_substr(preg_replace('/\s+/', ' ', $stderr) ?? '', -500);
+        }
+
+        static::writeCompletionSpool($id, AsyncTaskFailed::class, [
+            'id' => $id,
+            'exceptionClass' => 'RuntimeException',
+            'message' => 'The async task runner exited without reporting a result'
+                .($exitCode === null ? '.' : " (exit code {$exitCode}).")
+                .$stderr,
+            'trace' => null,
+        ]);
     }
 
     // ── Runner side (background context) ────────────

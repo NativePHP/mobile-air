@@ -5,8 +5,12 @@ use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\AsyncTaskTransport;
+use Native\Mobile\Testing\FakeBridge;
+use Symfony\Component\Process\Process;
 
 afterEach(function () {
+    FakeBridge::disable();
+
     // Clean the spool dirs between tests.
     foreach (['payload', 'complete'] as $sub) {
         $dir = AsyncTaskTransport::directory($sub);
@@ -83,12 +87,44 @@ it('holds the origin screen weakly so a recycled object id cannot be mistaken fo
 });
 
 it('drops the spooled payload when the background lane refuses the task', function () {
+    // Drive the refusal through the bridge rather than skipping when one
+    // exists: the Jump polyfill defines nativephp_call() in every testbench
+    // boot, so a function_exists() guard here would never run at all.
+    $bridge = FakeBridge::enable();
+    $bridge->respondTo('AsyncTask.Dispatch', ['success' => false, 'error' => 'executor not running']);
+
     $id = 'refused-'.uniqid();
 
-    // No Jump, no nativephp_call registered in-process → nothing accepts it.
     expect(AsyncTaskTransport::dispatch($id, serialize(['kind' => 'closure'])))->toBeFalse()
         ->and(is_file(AsyncTaskTransport::directory('payload').DIRECTORY_SEPARATOR.$id.'.task'))->toBeFalse();
-})->skip(fn () => function_exists('nativephp_call'), 'A bridge is available in this process.');
+
+    FakeBridge::disable();
+});
+
+it('accepts the task when the lane reports success', function () {
+    $bridge = FakeBridge::enable();
+    $bridge->respondTo('AsyncTask.Dispatch', ['success' => true]);
+
+    $id = 'accepted-'.uniqid();
+
+    expect(AsyncTaskTransport::dispatch($id, serialize(['kind' => 'closure'])))->toBeTrue()
+        // Payload stays on disk for the background runner to consume.
+        ->and(is_file(AsyncTaskTransport::directory('payload').DIRECTORY_SEPARATOR.$id.'.task'))->toBeTrue();
+
+    FakeBridge::disable();
+});
+
+it('treats an unanswered dispatch as a refusal', function () {
+    // No scripted response → the polyfill returns null. A bridge that says
+    // nothing hasn't accepted anything.
+    FakeBridge::enable();
+
+    $id = 'silent-'.uniqid();
+
+    expect(AsyncTaskTransport::dispatch($id, serialize(['kind' => 'closure'])))->toBeFalse();
+
+    FakeBridge::disable();
+});
 
 it('falls back to a failure envelope when a completion will not encode', function () {
     $encode = (new ReflectionClass(AsyncTaskTransport::class))->getMethod('encodeCompletion');
@@ -172,4 +208,66 @@ it('reports pending jump runners so the runloop does not block past a completion
     AsyncTaskTransport::drainJumpCompletion();
 
     expect(AsyncTaskTransport::hasPendingJumpRunners())->toBeFalse();
+});
+
+it('fails a jump runner that exits without spooling a completion', function () {
+    // The dev-loop failure: a parse error from a half-saved file, a fatal in
+    // bootstrap, an OOM, a SIGKILL. The process is gone and nothing was
+    // spooled, so dropping its entry would drop the deadline with it and
+    // nothing would ever report on the task.
+    $id = 'died-'.uniqid();
+
+    $process = new Process([PHP_BINARY, '-r', 'fwrite(STDERR, "Parse error: syntax error"); exit(255);']);
+    $process->run();
+
+    $entries = new ReflectionProperty(AsyncTaskTransport::class, 'jumpProcesses');
+    $entries->setAccessible(true);
+    $entries->setValue(null, [$id => [
+        'process' => $process,
+        'deadline' => microtime(true) + 60,
+        'event' => AsyncTaskFailed::class,
+        'payload' => ['id' => $id],
+    ]]);
+
+    $event = AsyncTaskTransport::drainJumpCompletion();
+
+    expect($event)->toBeArray()
+        ->and($event['event'])->toBe(AsyncTaskFailed::class)
+        ->and($event['payload']['id'])->toBe($id)
+        ->and($event['payload']['message'])->toContain('exit code 255')
+        // The runner's own words, so the cause is visible rather than a
+        // generic timeout a minute later.
+        ->and($event['payload']['message'])->toContain('Parse error')
+        // Entry cleared, so the failure is delivered exactly once.
+        ->and($entries->getValue())->toBe([]);
+});
+
+it('leaves a jump runner that exited cleanly alone', function () {
+    $id = 'clean-'.uniqid();
+
+    $dir = AsyncTaskTransport::directory('complete');
+    File::ensureDirectoryExists($dir);
+    file_put_contents($dir.DIRECTORY_SEPARATOR.$id.'.json', json_encode([
+        'event' => AsyncTaskFinished::class,
+        'payload' => ['id' => $id, 'result' => 'DONE'],
+    ]));
+
+    $process = new Process([PHP_BINARY, '-r', 'exit(0);']);
+    $process->run();
+
+    $entries = new ReflectionProperty(AsyncTaskTransport::class, 'jumpProcesses');
+    $entries->setAccessible(true);
+    $entries->setValue(null, [$id => [
+        'process' => $process,
+        'deadline' => microtime(true) + 60,
+        'event' => AsyncTaskFailed::class,
+        'payload' => ['id' => $id],
+    ]]);
+
+    // Its real outcome is already spooled; no synthesized failure on top of it.
+    $event = AsyncTaskTransport::drainJumpCompletion();
+
+    expect($event['event'])->toBe(AsyncTaskFinished::class)
+        ->and($event['payload']['result'])->toBe('DONE')
+        ->and(AsyncTaskTransport::drainJumpCompletion())->toBeNull();
 });
