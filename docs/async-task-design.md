@@ -150,20 +150,24 @@ It never interprets either.
      discarded (its callbacks are gone). Jump has no native watchdog, so the
      transport sweeps overdue subprocesses on each runloop tick instead.
 
-   ⚠️ **This guarantee is currently bounded by the event channel underneath it.**
-   `nphp_element_post_event()` (in `build-scripts`, `shared/nativephp/nphp_element.c`)
-   is a **single slot, not a queue**: it always writes at offset 0 and sets
-   `event_count` to 1 as a flag. A second post landing before PHP drains the
-   first overwrites it silently. This lane is the first thing to post into that
-   channel from several OS threads at once — four pool threads plus the watchdog
-   — so it is the first thing to expose it, and concurrent completions can be
-   dropped (measured: 6 dispatches → 4–5 delivered). Every path *above* the
-   channel reaches an outcome; the channel can still lose the frame carrying it,
-   and that includes the watchdog's own timeout event. Not platform-specific —
-   iOS goes through the same C function and simply loses the race less often.
-   The fix is to make `event_heap` a real FIFO, which is a `build-scripts` change
-   needing a PHP rebuild and a lib re-ship, so it is deferred past v4. Until it
-   lands, treat the guarantee as holding for one in-flight task at a time.
+   **A note on the event channel underneath it.** Until format v4,
+   `nphp_element_post_event()` was a **single slot, not a queue** — it always
+   wrote at offset 0 and set `event_count` to 1 as a flag, so a second post
+   landing before PHP drained the first overwrote it silently. This lane was the
+   first thing to post into that channel from several OS threads at once (four
+   pool threads plus the watchdog), so it was the first thing to expose it:
+   measured at 6 concurrent dispatches → 4–5 delivered, the watchdog's own
+   timeout event included. **Format v4 made it a real FIFO**, so that bound is
+   gone; the app-side handshake is 4 in both readers, and a stale `libphp.a`
+   now fails loud rather than being quietly wrong.
+
+   One residual, worth knowing rather than fearing: `nphp_element_post_event()`
+   returns `1` queued / `0` dropped, and it drops when the queue is over its
+   backlog cap — i.e. when PHP has stopped draining entirely. The general UI
+   writer discards that result deliberately (a dropped tap is a dropped tap),
+   but a completion is exactly the case that should care, since dropping one
+   puts the task back to relying on the watchdog. `AsyncTask.Complete` does not
+   check it yet — see the native follow-ups.
 
 4. **Immediate, concurrent, no SQLite, not the queue worker.** Tasks must start
    *now*, not on a ≤3s `queue:work --once` poll, and a developer may run several
