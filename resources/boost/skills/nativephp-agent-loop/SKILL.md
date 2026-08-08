@@ -18,6 +18,27 @@ and the target is a **simulator/emulator with a debug build**. If those conditio
 **Always ask the user first** before: physical devices, release/bundle builds, `native:install`, uninstalling
 apps, or `simctl shutdown`/`erase`.
 
+## Starting from zero (no app yet)
+
+When the goal is a NEW app, scaffold before entering the loop:
+
+```bash
+composer create-project nativephp/mobile-starter <dir> --no-interaction
+cd <dir>
+# The starter pre-fills NATIVEPHP_APP_ID (unique) and version envs in .env.
+# Add NATIVEPHP_DEEPLINK_SCHEME=<scheme> so native:open-url can drive navigation.
+php artisan native:install --force --no-interaction   # runtime + nativephp/{ios,android}
+```
+
+Then the first `native:run <os> <udid> --build=debug --no-tty --json` is the baseline build and the loop below
+applies unchanged. Install `nativephp/devtools` (composer require in the app + `native:plugin:register`, then
+`php artisan vendor:publish --tag=nativephp-plugins-provider` if the app has no NativeServiceProvider yet) to
+get the exception pipeline from the first boot.
+
+Until the headless commands ship in a core release, a scaffolded app needs the development core: add a path
+repository for the local nativephp/mobile checkout and `composer require "nativephp/mobile:dev-<branch> as
+4.99.0"`. If `native:run --json` prints nothing, you're on a released core without the flag.
+
 ## Preconditions & claiming a device
 
 1. `php artisan native:devices --json` — list simulators/emulators. Prefer one that is already `booted`.
@@ -75,16 +96,25 @@ capped `trace`. This is the source of truth — read past your last-seen line co
 Note: in discrete build-loop mode (repeated `native:run`, no `--watch`) the listener isn't running, so use
 `native:devtools:pull` after launch to collect device-side events, or run `native:watch` in the background.
 
-## Exercising the app (v1 limits)
+## Exercising the app
 
-v1 verification is **screenshots + deep links + logs/events**. Navigate with
-`native:open-url "<scheme>://<route>"` and screenshot each screen.
+For EDGE (native UI) screens, use `native:ui` — no coordinates, no drivers, both platforms:
 
-- iOS simulators show a one-time "Open in <App>?" confirmation for custom-scheme deep links opened via
-  `simctl openurl`; there is no blessed CLI tap. Prefer verifying screens that are reachable from the app's
-  launch/start URL, or set `NATIVEPHP_START_URL` and relaunch to land directly on a screen.
-- Android only: you may drive UI with raw adb — `adb -s <serial> shell input tap X Y`, `input text '...'`,
-  `input keyevent 66`, and `adb -s <serial> exec-out uiautomator dump` to find coordinates.
+```bash
+php artisan native:ui dump <os> --json          # what's on screen + what each handler fires
+php artisan native:ui tap "Following" <os> --json      # press by visible text (or ref)
+php artisan native:ui invoke "toggleLike(1)" <os> --json  # fire a handler expression directly
+```
+
+Dump lists every node with text/ref/handlers; tap matches a pressable by ref or subtree text and dispatches
+through the same guarded path as a real finger tap; after any interaction, re-dump (state is visible as new
+text) and screenshot to judge visuals. Requires the app running a debug build with nativephp/devtools on a
+core with the EdgeTicker seam — `no_snapshot`/`timeout` errors mean it isn't.
+
+Fallbacks: `native:open-url "<scheme>://<route>"` for navigation (note iOS sims show a one-time "Open in
+<App>?" confirmation for custom schemes; prefer `native:ui tap` on nav pressables instead); raw adb input
+(`input tap/text/keyevent`, `uiautomator dump`) for Android system UI or webview-mode screens, which
+`native:ui` does not cover yet.
 
 ## Hygiene
 
