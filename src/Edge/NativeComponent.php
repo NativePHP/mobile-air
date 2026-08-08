@@ -1579,11 +1579,17 @@ abstract class NativeComponent
             $deadlines[] = $next;
         }
 
+        // A bound devtools ticker needs regular idle turns even with no
+        // polls; without one the loop keeps its block-forever behavior.
+        $cap = \Native\Mobile\DevTools\LoopTick::active() ? 250 : null;
+
         if (empty($deadlines)) {
-            return -1;
+            return $cap ?? -1;
         }
 
-        return max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
+        $timeout = max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
+
+        return $cap !== null ? min($timeout, $cap) : $timeout;
     }
 
     /**
@@ -2119,6 +2125,7 @@ abstract class NativeComponent
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
                 $this->runDuePolls();
+                \Native\Mobile\DevTools\LoopTick::run($this);
 
                 continue;
             }
@@ -2318,6 +2325,7 @@ abstract class NativeComponent
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
                 $this->runDuePolls();
+                \Native\Mobile\DevTools\LoopTick::run($this);
 
                 continue;
             }
@@ -3341,6 +3349,26 @@ abstract class NativeComponent
     }
 
     // ── Event dispatch ──────────────────────────────
+
+    /**
+     * Devtools/test surface: inject an event exactly as if the native side
+     * delivered it (same path as a real tap). Callers build the event from
+     * the callback registry — see callbackRegistry().
+     */
+    public function dispatchSyntheticEvent(array $event): void
+    {
+        $this->dispatch($event);
+    }
+
+    /**
+     * Devtools/test surface: the live callback registry, for resolving an
+     * expression like "toggleLike(1)" to the callback id a synthetic event
+     * needs, or for labeling a dumped tree's handler ids.
+     */
+    public function callbackRegistry(): CallbackRegistry
+    {
+        return $this->nativeCallbacks ??= new CallbackRegistry;
+    }
 
     protected function dispatch(array $event): void
     {
