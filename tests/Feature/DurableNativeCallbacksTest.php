@@ -104,3 +104,13 @@ it('onSuccess registers for the builder success event', function () {
 
     expect(NativeCallbacks::has('closure-pick', MediaSelected::class))->toBeTrue();
 });
+
+// ── #[On] prefix idempotence ────────────────────────
+
+it('normalizes an already-prefixed #[On] event name instead of double-prefixing', function () {
+    $bare = new \Native\Mobile\Attributes\On(MediaSelected::class);
+    $prefixed = new \Native\Mobile\Attributes\On('native:'.MediaSelected::class);
+
+    expect($bare->event)->toBe('native:'.MediaSelected::class)
+        ->and($prefixed->event)->toBe('native:'.MediaSelected::class);
+});

@@ -31,6 +31,11 @@ class On
 
     public function __construct(string $event)
     {
-        $this->event = 'native:'.$event;
+        // Idempotent prefixing: the bridge docs' older examples spell the
+        // prefix out (#[On('native:Foo')]), and double-prefixing silently
+        // registers a listener no event name can ever match.
+        $this->event = str_starts_with($event, 'native:')
+            ? $event
+            : 'native:'.$event;
     }
 }
