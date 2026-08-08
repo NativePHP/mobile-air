@@ -66,11 +66,14 @@ class DispatchEventFromAppController
             return false;
         }
 
-        // Method-name strings (->mediaSelected('onPicked')) name a method on
-        // the OWNING COMPONENT — like $this-closures, only the Edge loop can
-        // fire them. Peek-and-bail BEFORE consuming, or the durable copy is
-        // destroyed here and the Edge loop finds nothing.
-        if (is_string($peek) && ! class_exists($peek)) {
+        // The ONLY string shape this controller can fire is an invokable
+        // class. Everything else — method-name strings like 'onPicked',
+        // but also method names that happen to shadow a loadable class
+        // ('error', 'log', any materialized facade alias) — names a method
+        // on the OWNING COMPONENT, which only the Edge loop can fire.
+        // Peek-and-bail BEFORE consuming, or the durable copy is destroyed
+        // here and the Edge loop finds nothing.
+        if (is_string($peek) && (! class_exists($peek) || ! method_exists($peek, '__invoke'))) {
             return false;
         }
 

@@ -64,6 +64,22 @@ class PickerScreen extends NativeComponent
         (new PendingMediaPicker)->id('fc-pick')->onSuccess($this->onPicked(...));
     }
 
+    /** Auto-UUID id, fixed source line — the stale same-line-mapping case. */
+    public function startUuidPicker(): void
+    {
+        (new PendingMediaPicker)->onSuccess(fn () => $this->status = 'uuid-picked');
+    }
+
+    public function startDtoResource(): void
+    {
+        $dto = new \stdClass;
+        $dto->handle = fopen('php://memory', 'r');
+
+        (new PendingMediaPicker)->id('dto-pick')->onSuccess(function () use ($dto) {
+            $this->status = 'dto:'.get_debug_type($dto->handle);
+        });
+    }
+
     public function startResourceClosure(): void
     {
         $handle = fopen('php://memory', 'r');

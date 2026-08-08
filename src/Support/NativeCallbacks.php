@@ -81,7 +81,20 @@ class NativeCallbacks
         // Tier 2: best-effort durable copy so the callback survives a process kill.
         try {
             $serializable = $callback;
+
+            // Owner class rides the durable entry so a post-kill cold
+            // start on a DIFFERENT screen skips it (resolve(for:)). For
+            // closures it comes from the binding; for method-name strings
+            // and [$component, 'method'] arrays — which would otherwise
+            // fire a same-named method on whatever screen is live — from
+            // the registering call stack.
             $ownerClass = null;
+
+            if (is_string($callback) && ! class_exists($callback)) {
+                $ownerClass = static::callingComponentClass();
+            } elseif (is_array($callback) && ($callback[0] ?? null) instanceof NativeComponent) {
+                $ownerClass = get_class($callback[0]);
+            }
 
             if ($serializable instanceof Closure) {
                 $reflection = new \ReflectionFunction($serializable);
@@ -104,13 +117,19 @@ class NativeCallbacks
                     // serializable-closure extracts code by START LINE, so
                     // two anonymous closures registered from one line get
                     // the SAME body durably — running the success body on
-                    // cancel after a kill. Drop durability for both.
+                    // cancel after a kill. Drop durability for both — but
+                    // ONLY while the other registration is still pending:
+                    // builders default to fresh UUID ids, so a completed
+                    // capture's mapping is stale, not a conflation, and
+                    // treating it as one would permanently kill durability
+                    // for that code line after its first use.
                     $line = $reflection->getFileName().':'.$reflection->getStartLine();
+                    $existing = static::$closureLines[$line] ?? null;
 
-                    if (isset(static::$closureLines[$line]) && static::$closureLines[$line] !== [$id, $eventClass]) {
-                        [$otherId, $otherEvent] = static::$closureLines[$line];
+                    if ($existing !== null && $existing !== [$id, $eventClass] && static::has(...$existing)) {
+                        [$otherId, $otherEvent] = $existing;
                         Cache::forget(static::key($otherId, $otherEvent));
-                        NativeRouter::debugLog("NativeCallbacks: two closures share {$line} — durable copies dropped for both (split the chain across lines to restore durability)");
+                        NativeRouter::debugLog("NativeCallbacks: two pending closures share {$line} — durable copies dropped for both (split the chain across lines to restore durability)");
 
                         return;
                     }
@@ -258,6 +277,15 @@ class NativeCallbacks
             Cache::put(static::key($id, $toEvent), $durable, now()->addMinutes(static::$ttlMinutes));
             Cache::put(static::latestKey($toEvent), $id, now()->addMinutes(static::$ttlMinutes));
         }
+
+        // Keep the same-line bookkeeping pointing at the LIVE key, or the
+        // collision handler would forget a dead key and leave the real
+        // conflation-suspect durable copy intact.
+        foreach (static::$closureLines as $line => $entry) {
+            if ($entry === [$id, $fromEvent]) {
+                static::$closureLines[$line] = [$id, $toEvent];
+            }
+        }
     }
 
     /**
@@ -277,6 +305,14 @@ class NativeCallbacks
         }
 
         unset(static::$memory[$id]);
+
+        // Prune same-line bookkeeping: a completed capture's mapping must
+        // not poison durability for the next capture from that line.
+        foreach (static::$closureLines as $line => $entry) {
+            if ($entry[0] === $id) {
+                unset(static::$closureLines[$line]);
+            }
+        }
     }
 
     public static function has(string $id, string $eventClass): bool
@@ -329,15 +365,36 @@ class NativeCallbacks
         }
     }
 
-    /** Whether a closure's captured use-variables contain a raw resource. */
+    /**
+     * Whether a closure's captured use-variables contain a raw resource
+     * (serialize() silently corrupts those into ints — no exception, just
+     * a TypeError detonating after the process kill). Scans arrays AND
+     * object properties ((array)-cast exposes private/protected too),
+     * with a depth limit and a cycle guard.
+     */
     protected static function capturesResources(\ReflectionFunction $reflection): bool
     {
-        $scan = function ($value, int $depth) use (&$scan): bool {
+        $seen = new \SplObjectStorage;
+
+        $scan = function ($value, int $depth) use (&$scan, $seen): bool {
             if (is_resource($value)) {
                 return true;
             }
 
-            if (is_array($value) && $depth < 3) {
+            if ($depth >= 4) {
+                return false;
+            }
+
+            if (is_object($value)) {
+                if ($seen->contains($value) || $value instanceof Closure) {
+                    return false;
+                }
+                $seen->attach($value);
+
+                $value = (array) $value;
+            }
+
+            if (is_array($value)) {
                 foreach ($value as $item) {
                     if ($scan($item, $depth + 1)) {
                         return true;
@@ -355,5 +412,21 @@ class NativeCallbacks
         }
 
         return false;
+    }
+
+    /**
+     * The component class on the registering call stack, if any — the
+     * owner signal for method-name and [$component, 'method'] callbacks,
+     * whose shapes carry no binding of their own.
+     */
+    protected static function callingComponentClass(): ?string
+    {
+        foreach (debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT | DEBUG_BACKTRACE_IGNORE_ARGS, 25) as $frame) {
+            if (($frame['object'] ?? null) instanceof NativeComponent) {
+                return get_class($frame['object']);
+            }
+        }
+
+        return null;
     }
 }

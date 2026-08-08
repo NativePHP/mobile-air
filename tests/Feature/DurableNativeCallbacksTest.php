@@ -9,6 +9,7 @@ use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\CounterScreen;
 use Tests\Fixtures\Edge\CustomPickEvent;
 use Tests\Fixtures\Edge\PickerScreen;
+use Tests\Fixtures\Edge\WrongPickScreen;
 
 /**
  * Fluent native callbacks across a process boundary. The in-memory tier
@@ -247,4 +248,66 @@ it('scopes durable keys by session off-device', function () {
     } finally {
         session()->setId($original);
     }
+});
+
+// ── Review round three: fixes-of-fixes ──────────────
+
+it('keeps durability alive for repeat captures from the same source line', function () {
+    // Builders default to fresh UUID ids: the same code line registering
+    // again after the previous capture COMPLETED is normal reuse, not a
+    // conflation — a stale same-line mapping must not kill durability
+    // for every capture after the first.
+    $screen = Native::test(PickerScreen::class)->call('startUuidPicker');
+
+    // First capture completes (id-less delivery consumes + forgets).
+    $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1])
+        ->assertSet('status', 'uuid-picked');
+
+    // Second capture from the SAME line, then the process dies.
+    $screen->call('startUuidPicker');
+    NativeCallbacks::flush();
+
+    $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1])
+        ->assertSet('status', 'uuid-picked'); // durable copy fired
+});
+
+it('controller bails on method names that shadow loadable classes', function () {
+    // 'error' passes class_exists() — the previous !class_exists guard
+    // consumed it, crashed, and destroyed the registration.
+    Native::test(PickerScreen::class)->call('startClassNamedMethod');
+
+    $controller = new DispatchEventFromAppController;
+    $fire = new ReflectionMethod($controller, 'fireCallback');
+    $fire->setAccessible(true);
+
+    $handled = $fire->invoke($controller, MediaSelected::class, ['id' => 'named-pick'], new MediaSelected(true));
+
+    expect($handled)->toBeFalse()
+        ->and(NativeCallbacks::has('named-pick', MediaSelected::class))->toBeTrue();
+});
+
+it('skips a durable method-name callback owned by a different screen', function () {
+    // The string carries no binding; the owner comes from the registering
+    // call stack. Post-kill, a screen with a same-named method must NOT
+    // fire it.
+    Native::test(PickerScreen::class)->call('startMethodName');
+
+    NativeCallbacks::flush();
+
+    Native::test(WrongPickScreen::class)
+        ->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1, 'id' => 'method-pick'])
+        ->assertSet('status', 'idle'); // NOT 'WRONGLY-FIRED'
+
+    expect(NativeCallbacks::has('method-pick', MediaSelected::class))->toBeFalse();
+});
+
+it('skips durability when a captured object holds a resource', function () {
+    $screen = Native::test(PickerScreen::class)->call('startDtoResource');
+
+    expect(NativeCallbacks::has('dto-pick', MediaSelected::class))->toBeTrue(); // warm fine
+
+    NativeCallbacks::flush();
+
+    $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1, 'id' => 'dto-pick'])
+        ->assertSet('status', 'idle'); // no poisoned durable copy fired
 });
