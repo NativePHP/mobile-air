@@ -433,13 +433,24 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Blade::directive('nativeError', function ($expression) {
+            // $errors is a ViewErrorBag since ValidatesProps (every view-
+            // data merge injects it); the is_array branch keeps the older
+            // hand-rolled ['field' => 'message'] arrays working.
             return "<?php
                 \$__nativeErrorArgs = [{$expression}];
                 \$__nativeErrorField = \$__nativeErrorArgs[0];
                 \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? '#FF0000';
-                if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
+                \$__nativeErrorMessage = null;
+                if (isset(\$errors)) {
+                    if (\$errors instanceof \\Illuminate\\Support\\ViewErrorBag) {
+                        \$__nativeErrorMessage = \$errors->first(\$__nativeErrorField) ?: null;
+                    } elseif (is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
+                        \$__nativeErrorMessage = \$errors[\$__nativeErrorField];
+                    }
+                }
+                if (\$__nativeErrorMessage !== null) {
                     \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
-                        'text' => \$errors[\$__nativeErrorField],
+                        'text' => \$__nativeErrorMessage,
                         'color' => \$__nativeErrorColor,
                         'fontSize' => 12,
                     ]);
