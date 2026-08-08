@@ -354,7 +354,7 @@ BLADE);
 it('uses the destructive theme color for errors by default', function () {
     config([
         'native-ui.theme.light.destructive' => '#B42318',
-        'native-ui.theme.dark.destructive' => '#B42318',
+        'native-ui.theme.dark.destructive' => '#F87171',
     ]);
 
     $viewPath = __DIR__.'/views/test-error-themed.blade.php';
@@ -368,7 +368,9 @@ BLADE);
     view('test-error-themed', ['errors' => ['email' => 'Invalid email']])->render();
     $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
 
-    expect($tree['children'][0]['props']['color'])->toBe('#B42318');
+    expect($tree['children'][0]['props'])
+        ->color->toBe('#B42318')
+        ->dark_color->toBe('#F87171');
 });
 
 it('renders error text with custom color', function () {
@@ -391,5 +393,6 @@ BLADE);
     expect($errorNode['type'])->toBe('text');
     expect($errorNode['props']['text'])->toBe('Invalid email');
     expect($errorNode['props']['color'])->toBe('#E91E63');
+    expect($errorNode['props'])->not->toHaveKey('dark_color');
     expect($errorNode['props']['font_size'])->toBe(12.0);
 });
