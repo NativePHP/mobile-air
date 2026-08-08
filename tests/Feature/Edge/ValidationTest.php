@@ -12,8 +12,9 @@ use Tests\Fixtures\Edge\ValidationScreen;
  * Component validation end to end through the real dispatch cycle:
  * validate()/validateOnly() abort handlers via the runGuarded seam,
  * $errors reaches Blade (@error and @nativeError), eager #[Validate]
- * rules fire on native:model sync, and the collector injects
- * is_error/supporting onto model-bound elements.
+ * rules fire on native:model sync — and error DISPLAY stays fully
+ * explicit (Livewire semantics): a failed validation never touches a
+ * bound element's props.
  */
 beforeEach(function () {
     NativeRouter::clearRoutes();
@@ -119,22 +120,25 @@ it('renders @nativeError from the injected ViewErrorBag', function () {
             && str_contains($node['props']['text'] ?? '', 'The bio field is required.'));
 });
 
-// ── is_error / supporting injection ─────────────────
+// ── No automatic error display (Livewire semantics) ─
 
-it('injects is_error and the first message into model-bound elements', function () {
+it('never injects error props into model-bound elements', function () {
+    // Error DISPLAY is the author's explicit call (@error/@nativeError
+    // or error/supporting attributes) — a failed validation must leave
+    // the bound element's props untouched.
     Native::test(ValidationScreen::class)
         ->tap('save-btn')
+        ->assertSee('TITLE-ERR') // the error exists…
         ->assertElement('text_input', fn (array $node) => ($node['ref'] ?? null) === 'title-input'
-            && ($node['props']['is_error'] ?? false) === true
-            && ($node['props']['supporting'] ?? null) === 'The title field is required.');
+            && ! isset($node['props']['is_error'])
+            && ! isset($node['props']['supporting'])); // …but the element is untouched
 });
 
-it('stops injecting once the error clears', function () {
+it('strips the model-prop metadata attribute before elements see it', function () {
     Native::test(ValidationScreen::class)
-        ->tap('save-btn')
-        ->input('title-input', 'A proper title')
         ->assertElement('text_input', fn (array $node) => ($node['ref'] ?? null) === 'title-input'
-            && ! isset($node['props']['is_error']));
+            && ! isset($node['props']['model-prop'])
+            && ! isset($node['props']['model_prop']));
 });
 
 // ── Child-component scoping ─────────────────────────
@@ -149,10 +153,7 @@ it('scopes validation errors to the child component that failed', function () {
         Native::test(\Tests\Fixtures\Edge\ValidationHostScreen::class)
             ->tap('child-save-btn')
             ->assertSee('CHILD-ERR The nickname field is required.')
-            ->assertDontSee('HOST-LEAKED') // parent bag untouched
-            ->assertElement('text_input', fn (array $node) => ($node['ref'] ?? null) === 'nickname-input'
-                && ($node['props']['is_error'] ?? false) === true
-                && ($node['props']['supporting'] ?? null) === 'The nickname field is required.');
+            ->assertDontSee('HOST-LEAKED'); // parent bag untouched
     } finally {
         \Native\Mobile\Edge\ComponentRegistry::reset();
     }
@@ -174,10 +175,10 @@ it('validates a child prop eagerly on the child input sync', function () {
     }
 });
 
-it('lets element-resolved props win over injected ones (merge order)', function () {
-    // The injection rides extraProps, which toArray() ranks BELOW the
-    // subclass's resolveProps — an element that resolves its own
-    // `supporting` (mobile-ui inputs with an explicit attr) always wins.
+it('lets element-resolved props win over setProp extras (merge order)', function () {
+    // Generic Element contract: extraProps rank BELOW the subclass's
+    // resolveProps in toArray(), so anything an element resolves from
+    // its own attributes beats a generic setProp() of the same key.
     $element = new class extends Element
     {
         protected string $type = 'probe';

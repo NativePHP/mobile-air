@@ -387,9 +387,11 @@ class NativeTagPrecompiler
         }
 
         // `model-prop` carries the bound property name into the collector
-        // so validation errors auto-wire onto the element (is_error +
-        // supporting injection in createElement) — and it's generally
-        // useful metadata (devtools, future targets).
+        // as metadata (stripped there before the element sees attrs) —
+        // useful for devtools/future targets. It deliberately does NOT
+        // drive any automatic error display; errors render only where
+        // the author writes @error/@nativeError or sets error/supporting
+        // attributes, matching Livewire.
         $out = ':value="$'.$prop.'" _change="__syncProperty(\''.$prop.'\')" model-prop="'.$prop.'" sync-mode="'.$syncMode.'"';
         if ($debounceMs > 0) {
             $out .= ' debounce-ms="'.$debounceMs.'"';
