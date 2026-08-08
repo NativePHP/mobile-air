@@ -26,6 +26,14 @@ use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
 use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
 use Native\Mobile\Edge\Layouts\NativeLayout;
+use Native\Mobile\Edge\Runtime\ComponentContext;
+use Native\Mobile\Edge\Runtime\ComponentPublished;
+use Native\Mobile\Edge\Runtime\Dispatch as RuntimeDispatch;
+use Native\Mobile\Edge\Runtime\DispatchFinished;
+use Native\Mobile\Edge\Runtime\DispatchKind;
+use Native\Mobile\Edge\Runtime\DispatchStarting;
+use Native\Mobile\Edge\Runtime\RenderTimings;
+use Native\Mobile\Edge\Runtime\RuntimeFailed;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\Platform;
@@ -125,6 +133,10 @@ abstract class NativeComponent
 
     /** Publish counter for the forceFullFrame heartbeat. */
     private int $publishCount = 0;
+
+    private int $runtimeDispatchSequence = 0;
+
+    private ?\Throwable $lastNotifiedRuntimeFailure = null;
 
     /**
      * Opt out of subtree memoization for this component — every publish emits
@@ -1430,6 +1442,23 @@ abstract class NativeComponent
         return $props;
     }
 
+    private function runtimeComponentContext(): ComponentContext
+    {
+        return new ComponentContext(
+            component: $this,
+            uri: $this->nativeRouter?->currentUri() ?? '',
+            renderCount: $this->publishCount,
+        );
+    }
+
+    private function notifyComponentPublished(?RenderTimings $timings = null): void
+    {
+        RuntimeObservers::componentPublished(new ComponentPublished(
+            context: $this->runtimeComponentContext(),
+            timings: $timings,
+        ));
+    }
+
     // ── Computed properties (#[Computed]) ────────────
 
     /**
@@ -1740,6 +1769,47 @@ abstract class NativeComponent
         $eventName = $event['event'] ?? '';
         $payload = $event['payload'] ?? [];
 
+        if (! RuntimeObservers::any()) {
+            $this->dispatchNativeEventNow($eventName, $payload);
+
+            return;
+        }
+
+        $method = $eventName === '__deeplink'
+            ? '__navigate'
+            : ($this->nativeEventListeners[$eventName]
+                ?? $this->nativeEventListeners['native:'.$eventName]
+                ?? null);
+        $startedAt = hrtime(true);
+        $error = null;
+        $dispatch = new RuntimeDispatch(
+            id: ++$this->runtimeDispatchSequence,
+            context: $this->runtimeComponentContext(),
+            kind: DispatchKind::Native,
+            method: $method,
+            event: $eventName,
+            payload: is_array($payload) ? $payload : ['value' => $payload],
+        );
+
+        RuntimeObservers::dispatchStarting(new DispatchStarting($dispatch));
+
+        try {
+            $this->dispatchNativeEventNow($eventName, $payload);
+        } catch (\Throwable $exception) {
+            $error = $exception;
+
+            throw $exception;
+        } finally {
+            RuntimeObservers::dispatchFinished(new DispatchFinished(
+                dispatch: $dispatch,
+                durationMs: round((hrtime(true) - $startedAt) / 1_000_000, 3),
+                exception: $error,
+            ));
+        }
+    }
+
+    private function dispatchNativeEventNow(string $eventName, mixed $payload): void
+    {
         // Deep link / universal link arriving while the app is already running.
         // The native shell (DeepLinkRouter) posts this to wake the blocked event
         // loop — a warm php:// load can't route because this loop owns the PHP
@@ -2105,6 +2175,10 @@ abstract class NativeComponent
                             $tree, $this->nativeRouter?->currentUri() ?? '/'
                         );
                     }
+
+                    if (RuntimeObservers::any()) {
+                        $this->notifyComponentPublished();
+                    }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -2279,6 +2353,13 @@ abstract class NativeComponent
                         // Explicit streaming path
                         $this->nativeRouter?->flushDeferredTransition();
                         $t3 = microtime(true);
+                        if (RuntimeObservers::any()) {
+                            $this->notifyComponentPublished(new RenderTimings(
+                                renderMs: round(($t3 - $t0) * 1000, 3),
+                                serializeMs: 0.0,
+                                publishMs: 0.0,
+                            ));
+                        }
                         NativeRouter::debugLog(sprintf(
                             'PERF [%s] streaming total=%.1fms',
                             static::class, ($t3 - $t0) * 1000
@@ -2298,6 +2379,13 @@ abstract class NativeComponent
                         );
 
                         $t3 = microtime(true);
+                        if (RuntimeObservers::any()) {
+                            $this->notifyComponentPublished(new RenderTimings(
+                                renderMs: round(($t1 - $t0) * 1000, 3),
+                                serializeMs: round(($t2 - $t1) * 1000, 3),
+                                publishMs: round(($t3 - $t2) * 1000, 3),
+                            ));
+                        }
                         NativeRouter::debugLog(sprintf(
                             'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
                             static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
@@ -2682,6 +2770,14 @@ abstract class NativeComponent
         $this->nativeHasError = true;
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;
+
+        if (RuntimeObservers::any() && $this->lastNotifiedRuntimeFailure !== $e) {
+            $this->lastNotifiedRuntimeFailure = $e;
+            RuntimeObservers::failed(new RuntimeFailed(
+                context: $this->runtimeComponentContext(),
+                exception: $e,
+            ));
+        }
 
         try {
             $screen = Column::make()->fill()->bg('#FEF2F2')->safeArea();
@@ -3385,6 +3481,8 @@ abstract class NativeComponent
             default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
         };
 
+        $observing = RuntimeObservers::any();
+
         // Dispatch path forks based on callback kind. Default kind
         // (null) is fire-and-forget — return value is discarded.
         // `search_query` kind captures the `array` return into
@@ -3393,7 +3491,10 @@ abstract class NativeComponent
         $kind = $this->nativeCallbacks->kind($event['callback_id'] ?? 0);
 
         if ($kind === 'search_query') {
-            $result = $this->$method(...[...$args, ...$eventArgs]);
+            $invokeArgs = [...$args, ...$eventArgs];
+            $result = $observing
+                ? $this->invokeObservedCallback($event, (int) $type, $callbackId, $method, $invokeArgs)
+                : $this->$method(...$invokeArgs);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
@@ -3410,7 +3511,10 @@ abstract class NativeComponent
             $parts = explode(',', $payload, 2);
             $from = (int) ($parts[0] ?? 0);
             $to = (int) ($parts[1] ?? 0);
-            $this->$method(...[...$args, $from, $to]);
+            $invokeArgs = [...$args, $from, $to];
+            $observing
+                ? $this->invokeObservedCallback($event, (int) $type, $callbackId, $method, $invokeArgs)
+                : $this->$method(...$invokeArgs);
 
             return;
         }
@@ -3442,11 +3546,54 @@ abstract class NativeComponent
                 $start = $end = mb_strlen($text, 'UTF-8');
             }
 
-            $this->$method(...[...$args, $text, $start, $end]);
+            $invokeArgs = [...$args, $text, $start, $end];
+            $observing
+                ? $this->invokeObservedCallback($event, (int) $type, $callbackId, $method, $invokeArgs)
+                : $this->$method(...$invokeArgs);
 
             return;
         }
 
-        $this->$method(...[...$args, ...$eventArgs]);
+        $invokeArgs = [...$args, ...$eventArgs];
+        $observing
+            ? $this->invokeObservedCallback($event, (int) $type, $callbackId, $method, $invokeArgs)
+            : $this->$method(...$invokeArgs);
+    }
+
+    private function invokeObservedCallback(
+        array $event,
+        int $type,
+        int $callbackId,
+        string $method,
+        array $arguments,
+    ): mixed {
+        $startedAt = hrtime(true);
+        $error = null;
+        $dispatch = new RuntimeDispatch(
+            id: ++$this->runtimeDispatchSequence,
+            context: $this->runtimeComponentContext(),
+            kind: DispatchKind::Interaction,
+            method: $method,
+            arguments: $arguments,
+            eventType: $type,
+            callbackId: $callbackId,
+            nodeId: isset($event['node_id']) ? (int) $event['node_id'] : null,
+        );
+
+        RuntimeObservers::dispatchStarting(new DispatchStarting($dispatch));
+
+        try {
+            return $this->$method(...$arguments);
+        } catch (\Throwable $exception) {
+            $error = $exception;
+
+            throw $exception;
+        } finally {
+            RuntimeObservers::dispatchFinished(new DispatchFinished(
+                dispatch: $dispatch,
+                durationMs: round((hrtime(true) - $startedAt) / 1_000_000, 3),
+                exception: $error,
+            ));
+        }
     }
 }
