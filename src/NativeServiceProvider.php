@@ -20,6 +20,7 @@ use Native\Mobile\Commands\LaunchEmulatorCommand;
 use Native\Mobile\Commands\MakeNativeComponentCommand;
 use Native\Mobile\Commands\MakeNativeTestCommand;
 use Native\Mobile\Commands\OpenProjectCommand;
+use Native\Mobile\Commands\OpenUrlCommand;
 use Native\Mobile\Commands\PackageCommand;
 use Native\Mobile\Commands\PluginBoostCommand;
 use Native\Mobile\Commands\PluginCreateCommand;
@@ -81,6 +82,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 WatchCommand::class,
                 TailCommand::class,
                 DevicesCommand::class,
+                OpenUrlCommand::class,
                 ScreenshotCommand::class,
                 StatusCommand::class,
                 VersionCommand::class,

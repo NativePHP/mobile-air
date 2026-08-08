@@ -7,6 +7,7 @@ use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\ManagesViteDevServer;
 use Native\Mobile\Concerns\ManagesWatchman;
 use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Concerns\ResolvesDeviceTargets;
 use Native\Mobile\Concerns\RunsAndroid;
 use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -20,7 +21,7 @@ use function Laravel\Prompts\warning;
 
 class RunCommand extends Command
 {
-    use DisplaysMarketingBanners, ManagesViteDevServer, ManagesWatchman, PlatformFileOperations, RunsAndroid, RunsIos;
+    use DisplaysMarketingBanners, ManagesViteDevServer, ManagesWatchman, PlatformFileOperations, ResolvesDeviceTargets, RunsAndroid, RunsIos;
 
     protected $signature = 'native:run
         {os? : Platform to run (android/a or ios/i)}
@@ -30,7 +31,8 @@ class RunCommand extends Command
         {--vite : Start the Vite dev server (opt-in; off by default)}
         {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
-        {--no-tty : Disable TTY mode for non-interactive environments}';
+        {--no-tty : Disable TTY mode for non-interactive environments}
+        {--json : Machine-readable result on the last line of stdout; never prompts (implies --no-tty)}';
 
     protected $description = 'Build, package, and run the NativePHP app';
 
@@ -38,9 +40,35 @@ class RunCommand extends Command
 
     public function handle(): int
     {
-        $this->ensureValidAppId();
+        $json = (bool) $this->option('json');
+
+        if ($json) {
+            $this->input->setOption('no-tty', true);
+
+            if ($this->option('watch')) {
+                return $this->emitRunResult([
+                    'ok' => false,
+                    'stage' => 'validate',
+                    'error' => 'watch_not_supported',
+                    'hint' => '--json runs are discrete; use native:watch separately.',
+                ]);
+            }
+        }
+
+        if (! $this->ensureValidAppId()) {
+            return $json
+                ? $this->emitRunResult(['ok' => false, 'stage' => 'validate', 'error' => 'missing_app_id'])
+                : self::FAILURE;
+        }
 
         if (! $this->ensureHostPhpMatchesLock()) {
+            if ($json) {
+                return $this->emitRunResult(array_merge(
+                    ['ok' => false, 'stage' => 'validate', 'error' => 'environment_check_failed'],
+                    $this->runFailure ?? [],
+                ));
+            }
+
             return self::FAILURE;
         }
 
@@ -99,6 +127,13 @@ class RunCommand extends Command
                     $os = 'android';
                 } elseif ($hasIos && ! $hasAndroid) {
                     $os = 'ios';
+                } elseif ($json) {
+                    return $this->emitRunResult([
+                        'ok' => false,
+                        'stage' => 'validate',
+                        'error' => 'ambiguous_platform',
+                        'hint' => 'Both platforms exist; pass the os argument (ios or android).',
+                    ]);
                 } else {
                     $os = select(
                         label: 'Which platform would you like to run?',
@@ -111,6 +146,19 @@ class RunCommand extends Command
             } else {
                 $os = 'android';
             }
+        }
+
+        // In --json mode a device must be deterministic: resolve it up front
+        // (claimed device, last-used, or single booted target) and inject it
+        // as the udid argument so the concerns never reach their prompts.
+        if ($json && ! $this->argument('udid')) {
+            $target = $this->resolveDeviceTarget($os, null);
+
+            if (! $target['ok']) {
+                return $this->emitRunResult(array_merge(['stage' => 'devices'], $target));
+            }
+
+            $this->input->setArgument('udid', $target['udid']);
         }
 
         $buildTypes = [
@@ -139,14 +187,81 @@ class RunCommand extends Command
 
         $this->checkForUnregisteredPlugins();
 
+        $startedAt = microtime(true);
+
         match ($os) {
             'android' => $this->runAndroid(),
             'ios' => $this->runIos(),
         };
 
+        if ($json) {
+            return $this->emitRunResult($this->buildRunResult($os, $startedAt));
+        }
+
         $this->showBifrostBanner();
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Structured outcome for --json mode. A recorded failure wins; otherwise
+     * the run is verified empirically — the app must actually be installed
+     * and running on the target, which also catches unchecked simctl
+     * install/launch failures.
+     */
+    protected function buildRunResult(string $os, float $startedAt): array
+    {
+        $base = [
+            'platform' => $os,
+            'device' => $this->argument('udid'),
+            'appId' => config('nativephp.app_id'),
+            'buildType' => $this->buildType,
+            'buildLog' => base_path($os === 'ios' ? 'nativephp/ios-build.log' : 'nativephp/android-build.log'),
+            'durationMs' => (int) round((microtime(true) - $startedAt) * 1000),
+        ];
+
+        if ($this->runFailure !== null) {
+            $failure = $this->runFailure;
+
+            if (in_array($failure['stage'], ['build', 'install'], true)) {
+                $failure['logTail'] = $this->tailFile($failure['buildLog'] ?? $base['buildLog']);
+            }
+
+            return array_merge(['ok' => false], $base, $failure);
+        }
+
+        // Give the app a moment to spawn before probing.
+        sleep(2);
+
+        $probe = $this->probeAppProcess($os, (string) $this->argument('udid'), (string) config('nativephp.app_id'));
+
+        if (! $probe['installed'] || ! $probe['running']) {
+            return array_merge(['ok' => false], $base, [
+                'stage' => 'verify',
+                'error' => $probe['installed'] ? 'app_not_running' : 'app_not_installed',
+                'hint' => 'The build reported no error but the app is not running — check for a boot fatal via native:tail or the devtools event log.',
+            ]);
+        }
+
+        return array_merge(['ok' => true], $base, ['pid' => $probe['pid']]);
+    }
+
+    protected function emitRunResult(array $result): int
+    {
+        $this->output->writeln(json_encode($result, JSON_UNESCAPED_SLASHES));
+
+        return ($result['ok'] ?? false) ? self::SUCCESS : self::FAILURE;
+    }
+
+    protected function tailFile(string $path, int $lines = 40): ?string
+    {
+        if (! is_file($path)) {
+            return null;
+        }
+
+        $all = file($path, FILE_IGNORE_NEW_LINES) ?: [];
+
+        return implode("\n", array_slice($all, -$lines));
     }
 
     protected function checkForUnregisteredPlugins(): void
@@ -193,6 +308,15 @@ class RunCommand extends Command
         error("Host PHP {$hostMinor} does not match nativephp.lock ({$lockedVersion}).");
         note('Composer resolves your app dependencies against the host PHP, but the bundled runtime is pinned to PHP '.$lockedMinor.'. Building now will likely fail or produce a bundle that crashes on device.');
 
+        // Never auto-reinstall in machine mode; surface the mismatch instead.
+        if ($this->option('json')) {
+            $this->failRun('validate', "Host PHP {$hostMinor} does not match nativephp.lock ({$lockedVersion}).", [
+                'hint' => 'Run `php artisan native:install --force` (after switching PHP if needed), then retry.',
+            ]);
+
+            return false;
+        }
+
         $supported = ['8.5', '8.4', '8.3'];
 
         if (! in_array($hostMinor, $supported, true)) {
@@ -221,19 +345,22 @@ class RunCommand extends Command
         return true;
     }
 
-    protected function ensureValidAppId(): void
+    protected function ensureValidAppId(): bool
     {
         $appId = config('nativephp.app_id');
 
         if (str($appId)->isEmpty()) {
             error('NATIVEPHP_APP_ID is not set.');
             note('Please add a NATIVEPHP_APP_ID to your .env file (e.g. com.example.myapp).');
-            exit(1);
+
+            return false;
         }
 
         if (str($appId)->startsWith('com.nativephp.')) {
             warning('Please change your NATIVEPHP_APP_ID from the default value.');
         }
+
+        return true;
     }
 
     protected function updateStartUrl(string $startUrl): void

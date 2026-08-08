@@ -305,6 +305,53 @@ trait ResolvesDeviceTargets
     }
 
     /**
+     * Probe whether the app is installed and currently running on the target.
+     * Returns ['installed' => bool, 'running' => bool, 'pid' => ?int].
+     */
+    protected function probeAppProcess(string $platform, string $udid, string $appId): array
+    {
+        if ($platform === 'ios') {
+            $installed = $this->iosAppDataContainer($udid, $appId) !== null;
+            $pid = null;
+
+            if ($installed) {
+                $launchctl = Process::run(['xcrun', 'simctl', 'spawn', $udid, 'launchctl', 'list']);
+
+                if ($launchctl->successful()) {
+                    foreach (explode("\n", $launchctl->output()) as $line) {
+                        if (str_contains($line, $appId)) {
+                            $columns = preg_split('/\s+/', trim($line));
+
+                            if (isset($columns[0]) && ctype_digit($columns[0])) {
+                                $pid = (int) $columns[0];
+                            }
+
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return ['installed' => $installed, 'running' => $pid !== null, 'pid' => $pid];
+        }
+
+        $pmPath = Process::run(['adb', '-s', $udid, 'shell', 'pm', 'path', $appId]);
+        $installed = $pmPath->successful() && str_contains($pmPath->output(), 'package:');
+        $pid = null;
+
+        if ($installed) {
+            $pidof = Process::run(['adb', '-s', $udid, 'shell', 'pidof', $appId]);
+            $raw = trim($pidof->output());
+
+            if ($raw !== '' && ctype_digit(explode(' ', $raw)[0])) {
+                $pid = (int) explode(' ', $raw)[0];
+            }
+        }
+
+        return ['installed' => $installed, 'running' => $pid !== null, 'pid' => $pid];
+    }
+
+    /**
      * Emit a structured result in --json mode (single object, last line of
      * stdout) or a human-readable rendering otherwise. Returns the exit code.
      */

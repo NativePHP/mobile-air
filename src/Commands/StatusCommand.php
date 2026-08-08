@@ -3,7 +3,6 @@
 namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Process;
 use Native\Mobile\Concerns\ResolvesDeviceTargets;
 
 class StatusCommand extends Command
@@ -72,63 +71,25 @@ class StatusCommand extends Command
 
     private function iosStatus(string $udid, string $appId): array
     {
-        $container = $this->iosAppDataContainer($udid, $appId);
-        $installed = $container !== null;
+        $probe = $this->probeAppProcess('ios', $udid, $appId);
 
-        $pid = null;
-        if ($installed) {
-            // Simulator app processes run as host processes named after the bundle.
-            $launchctl = Process::run(['xcrun', 'simctl', 'spawn', $udid, 'launchctl', 'list']);
-
-            if ($launchctl->successful()) {
-                foreach (explode("\n", $launchctl->output()) as $line) {
-                    if (str_contains($line, $appId)) {
-                        $columns = preg_split('/\s+/', trim($line));
-
-                        if (isset($columns[0]) && ctype_digit($columns[0])) {
-                            $pid = (int) $columns[0];
-                        }
-
-                        break;
-                    }
-                }
-            }
-        }
-
-        return [
-            'installed' => $installed,
-            'running' => $pid !== null,
-            'pid' => $pid,
-            'logs' => [
-                'build' => base_path('nativephp/ios-build.log'),
-                'laravel' => $installed ? $this->iosStorageFile($udid, $appId, 'logs/laravel.log') : null,
-            ],
+        $probe['logs'] = [
+            'build' => base_path('nativephp/ios-build.log'),
+            'laravel' => $probe['installed'] ? $this->iosStorageFile($udid, $appId, 'logs/laravel.log') : null,
         ];
+
+        return $probe;
     }
 
     private function androidStatus(string $serial, string $appId): array
     {
-        $pmPath = Process::run(['adb', '-s', $serial, 'shell', 'pm', 'path', $appId]);
-        $installed = $pmPath->successful() && str_contains($pmPath->output(), 'package:');
+        $probe = $this->probeAppProcess('android', $serial, $appId);
 
-        $pid = null;
-        if ($installed) {
-            $pidof = Process::run(['adb', '-s', $serial, 'shell', 'pidof', $appId]);
-            $raw = trim($pidof->output());
-
-            if ($raw !== '' && ctype_digit(explode(' ', $raw)[0])) {
-                $pid = (int) explode(' ', $raw)[0];
-            }
-        }
-
-        return [
-            'installed' => $installed,
-            'running' => $pid !== null,
-            'pid' => $pid,
-            'logs' => [
-                'build' => base_path('nativephp/android-build.log'),
-                'laravel' => 'device:app_storage/persisted_data/storage/logs/laravel.log',
-            ],
+        $probe['logs'] = [
+            'build' => base_path('nativephp/android-build.log'),
+            'laravel' => 'device:app_storage/persisted_data/storage/logs/laravel.log',
         ];
+
+        return $probe;
     }
 }
