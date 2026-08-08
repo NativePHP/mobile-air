@@ -166,9 +166,13 @@ it('records a manual throw after a caught validate() in the same dispatch', func
 
 it('keeps the legacy public-array $errors pattern working', function () {
     // The injected ViewErrorBag is a FALLBACK — a v3-style hand-rolled
-    // errors prop still reaches @nativeError untouched (finding 3).
+    // errors prop still reaches @nativeError untouched (finding 3),
+    // including a falsy '0' message (the legacy branch of the falsy
+    // fix, pinned separately from the bag branch).
     Native::test(LegacyErrorsScreen::class)
-        ->assertSee('Legacy message');
+        ->assertSee('Legacy message')
+        ->assertElement('text', fn (array $node) => ($node['props']['text'] ?? null) === '0'
+            && ($node['props']['color'] ?? null) !== null);
 });
 
 it('bubbles a mount()-time validation failure like the device error screen', function () {
@@ -192,24 +196,27 @@ it('leaves untouched wildcard siblings alone in validateOnly', function () {
 // ── Inline-review regressions (second pass) ─────────
 
 it('merges stacked #[Validate] attributes instead of fataling', function () {
-    // #[Validate('string')] + #[Validate('min:4')] on $handle: without
-    // IS_REPEATABLE this crashes on first render; without merging, one
-    // rule silently wins.
+    // min:4 + starts_with:@ both fail on 'abc' — BOTH messages must
+    // appear, so a last-wins (or first-wins) merge regression can't
+    // hide behind a rule that never fails.
     Native::test(ValidationScreen::class)
         ->set('handle', 'abc')
         ->assertSee('HANDLE-ERR The handle field must be at least 4 characters.')
-        ->set('handle', 'abcd')
+        ->assertSee('HANDLE-ERR The handle field must start with')
+        ->set('handle', '@abcd')
         ->assertDontSee('HANDLE-ERR');
 });
 
 it('delivers remaining native-event tiers after one listener fails validation', function () {
-    // The ->on() closure for 'probe' always fails validation; the #[On]
-    // method tier must still hear the event, and the closure's errors
-    // must still reach the bag.
+    // The ->on() closure for 'probe' fails on bio; the #[On] method
+    // tier still hears the event AND fails on title. Both tiers'
+    // errors must coexist after one delivery — a failing validate()
+    // refreshes only its own keys, never the whole bag.
     Native::test(ValidationScreen::class)
         ->emitNative('probe')
         ->assertSet('probed', true)
-        ->assertSee('BIO-ERR The bio field is required.');
+        ->assertSee('BIO-ERR The bio field is required.')
+        ->assertSee('TITLE-ERR The title field is required.');
 });
 
 it('returns the target data when only wildcard siblings fail', function () {

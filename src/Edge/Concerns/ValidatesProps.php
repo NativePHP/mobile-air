@@ -109,12 +109,26 @@ trait ValidatesProps
         $validator = $this->makePropValidator($rules, $messages, $attributes);
 
         if ($validator->fails()) {
-            $this->nativeErrorBag = new MessageBag($validator->errors()->messages());
+            // Failure refreshes exactly the keys THIS validation ran
+            // (wildcard-aware) and leaves the rest of the bag alone —
+            // never a whole-bag replace. With per-tier event guards,
+            // multiple listeners in one delivery can each fail; a
+            // replace here would erase an earlier tier's recorded
+            // errors (the second failing ->on() sibling wiping the
+            // first). Scoped-refresh also means validate(['bio' => …])
+            // failing doesn't clear an unrelated on-screen title error
+            // it never re-checked.
+            $this->forgetErrors(array_keys($rules));
+            foreach ($validator->errors()->messages() as $key => $keyMessages) {
+                foreach ($keyMessages as $message) {
+                    $this->getErrorBag()->add($key, $message);
+                }
+            }
 
             throw new RecordedValidationException($validator);
         }
 
-        // A full pass supersedes everything previously recorded,
+        // A full PASS still supersedes everything previously recorded,
         // including addError() entries — same as Livewire.
         $this->nativeErrorBag = new MessageBag;
 

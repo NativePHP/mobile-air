@@ -12,7 +12,7 @@ use Native\Mobile\Edge\NativeComponent;
  */
 class LegacyErrorsScreen extends NativeComponent
 {
-    public array $errors = ['title' => 'Legacy message'];
+    public array $errors = ['title' => 'Legacy message', 'zero' => '0'];
 
     public function render(): View
     {

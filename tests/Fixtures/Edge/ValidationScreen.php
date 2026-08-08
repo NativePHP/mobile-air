@@ -23,8 +23,11 @@ class ValidationScreen extends NativeComponent
 
     public bool $saved = false;
 
-    #[Validate('string')]
+    // Two INDEPENDENTLY falsifiable rules ('abc' fails both), so a
+    // last-wins regression in stacked-attribute merging can't hide
+    // behind a rule that never fails on a typed string prop.
     #[Validate('min:4')]
+    #[Validate('starts_with:@')]
     public string $handle = '';
 
     public bool $boom = false;
@@ -46,6 +49,11 @@ class ValidationScreen extends NativeComponent
     public function probeHeard(): void
     {
         $this->probed = true;
+
+        // This tier fails on a DIFFERENT key than the ->on() closure's
+        // bio failure — both errors must survive one event delivery
+        // (a whole-bag replace here would erase the closure's).
+        $this->validate(['title' => 'required']);
     }
 
     public function checkTagReturn(): void

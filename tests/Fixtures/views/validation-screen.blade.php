@@ -13,4 +13,4 @@
     @nativeError('bio', '#AB12CD')
 </native:column>
 @error('tags.0')<native:text>TAG0-ERR {{ $message }}</native:text>@enderror
-@error('handle')<native:text>HANDLE-ERR {{ $message }}</native:text>@enderror
+@foreach($errors->get('handle') as $handleMessage)<native:text>HANDLE-ERR {{ $handleMessage }}</native:text>@endforeach
