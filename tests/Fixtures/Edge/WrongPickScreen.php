@@ -22,6 +22,12 @@ class WrongPickScreen extends NativeComponent
         $this->status = 'WRONGLY-FIRED';
     }
 
+    /** Same name as PickerScreen's class-shadowing 'error' callback target. */
+    public function error(MediaSelected $media): void
+    {
+        $this->status = 'WRONGLY-FIRED-ERROR';
+    }
+
     public function render(): Element
     {
         return Column::make(Text::make('Status: '.$this->status));

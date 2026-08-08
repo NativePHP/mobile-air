@@ -77,6 +77,13 @@ class DispatchEventFromAppController
             return false;
         }
 
+        // A string that DOES name an invokable class is still ambiguous —
+        // a component method can share the name. The durable owner tag
+        // settles it: recorded owner means component-owned, Edge-only.
+        if (is_string($peek) && NativeCallbacks::ownerOf($id, $eventClass) !== null) {
+            return false;
+        }
+
         $callback = NativeCallbacks::resolve($id, $eventClass);
 
         // Normalise an invokable class-string into a resolved instance so it can

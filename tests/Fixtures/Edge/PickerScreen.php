@@ -118,6 +118,39 @@ class PickerScreen extends NativeComponent
             ->event(CustomPickEvent::class);
     }
 
+    public function startNestedResource(): void
+    {
+        $handle = fopen('php://memory', 'r');
+        $inner = function () use ($handle) {
+            return $handle;
+        };
+
+        (new PendingMediaPicker)->id('nested-pick')->onSuccess(function () use ($inner) {
+            $this->status = 'nested:'.get_debug_type($inner());
+        });
+    }
+
+    public function startClosedResource(): void
+    {
+        $handle = fopen('php://memory', 'r');
+        fclose($handle);
+
+        (new PendingMediaPicker)->id('closed-pick')->onSuccess(function () use ($handle) {
+            $this->status = 'closed:'.get_debug_type($handle);
+        });
+    }
+
+    public function startDeepResource(): void
+    {
+        $deep = ['a' => ['b' => ['c' => ['d' => ['e' => ['f' => fopen('php://memory', 'r')]]]]]];
+
+        // The body must USE the capture, or Pint's lambda_not_used_import
+        // fixer strips `use ($deep)` and silently defuses the fixture.
+        (new PendingMediaPicker)->id('deep-pick')->onSuccess(function () use ($deep) {
+            $this->status = 'deep:'.count($deep);
+        });
+    }
+
     public function render(): Element
     {
         return Column::make(

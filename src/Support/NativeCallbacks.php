@@ -90,7 +90,13 @@ class NativeCallbacks
             // the registering call stack.
             $ownerClass = null;
 
-            if (is_string($callback) && ! class_exists($callback)) {
+            if (is_string($callback)) {
+                // ALL strings, including ones that shadow (or genuinely
+                // name) loadable classes: 'error' must carry its owner so
+                // a post-kill wrong-screen resolve skips it, and a real
+                // invokable registered inside a component is still fired
+                // by the Edge loop — the owner tag just routes it away
+                // from the WebView controller.
                 $ownerClass = static::callingComponentClass();
             } elseif (is_array($callback) && ($callback[0] ?? null) instanceof NativeComponent) {
                 $ownerClass = get_class($callback[0]);
@@ -126,7 +132,13 @@ class NativeCallbacks
                     $line = $reflection->getFileName().':'.$reflection->getStartLine();
                     $existing = static::$closureLines[$line] ?? null;
 
-                    if ($existing !== null && $existing !== [$id, $eventClass] && static::has(...$existing)) {
+                    // Pendingness is judged by the DURABLE tier only: the
+                    // conflation hazard is about durable code extraction,
+                    // and memory entries never expire — an abandoned
+                    // capture (picker dismissed by the OS, no result)
+                    // would otherwise re-latch the permanent kill. The
+                    // cache's 5-minute TTL bounds the block.
+                    if ($existing !== null && $existing !== [$id, $eventClass] && Cache::has(static::key(...$existing))) {
                         [$otherId, $otherEvent] = $existing;
                         Cache::forget(static::key($otherId, $otherEvent));
                         NativeRouter::debugLog("NativeCallbacks: two pending closures share {$line} — durable copies dropped for both (split the chain across lines to restore durability)");
@@ -256,6 +268,27 @@ class NativeCallbacks
     }
 
     /**
+     * The owner component class recorded on a durable entry, without
+     * consuming it — the WebView controller's signal that a string
+     * callback is component-owned (Edge-loop-only) even when its name
+     * collides with an invokable class.
+     */
+    public static function ownerOf(string $id, string $eventClass): ?string
+    {
+        $serialized = Cache::get(static::key($id, $eventClass));
+
+        if ($serialized === null) {
+            return null;
+        }
+
+        $restored = unserialize($serialized);
+
+        return is_array($restored) && array_key_exists('c', $restored)
+            ? ($restored['o'] ?? null)
+            : null;
+    }
+
+    /**
      * Re-key a pending registration to a different event class — the
      * ->event(Custom::class) override arriving AFTER onSuccess() already
      * registered under the builder's default event.
@@ -366,27 +399,45 @@ class NativeCallbacks
     }
 
     /**
-     * Whether a closure's captured use-variables contain a raw resource
+     * Whether a closure's captured use-variables contain a resource
      * (serialize() silently corrupts those into ints — no exception, just
-     * a TypeError detonating after the process kill). Scans arrays AND
+     * a TypeError detonating after the process kill). Scans arrays,
      * object properties ((array)-cast exposes private/protected too),
-     * with a depth limit and a cycle guard.
+     * nested closures' own captures, and closed resources (which evade
+     * is_resource() but serialize just as corruptly).
+     *
+     * FAILS CLOSED at the depth cap: a walk too deep to finish reports
+     * "may contain a resource", costing durability instead of risking a
+     * poisoned copy — which also makes the cycle guard order-safe (a
+     * truncated visit bubbles true rather than memoizing an unscanned
+     * subtree).
      */
     protected static function capturesResources(\ReflectionFunction $reflection): bool
     {
         $seen = new \SplObjectStorage;
 
         $scan = function ($value, int $depth) use (&$scan, $seen): bool {
-            if (is_resource($value)) {
+            if (is_resource($value) || gettype($value) === 'resource (closed)') {
                 return true;
             }
 
-            if ($depth >= 4) {
+            if (! is_array($value) && ! is_object($value)) {
                 return false;
             }
 
-            if (is_object($value)) {
-                if ($seen->contains($value) || $value instanceof Closure) {
+            if ($depth >= 5) {
+                return true; // fail closed — see docblock
+            }
+
+            if ($value instanceof Closure) {
+                if ($seen->contains($value)) {
+                    return false;
+                }
+                $seen->attach($value);
+
+                $value = (new \ReflectionFunction($value))->getStaticVariables();
+            } elseif (is_object($value)) {
+                if ($seen->contains($value)) {
                     return false;
                 }
                 $seen->attach($value);
@@ -394,11 +445,9 @@ class NativeCallbacks
                 $value = (array) $value;
             }
 
-            if (is_array($value)) {
-                foreach ($value as $item) {
-                    if ($scan($item, $depth + 1)) {
-                        return true;
-                    }
+            foreach ($value as $item) {
+                if ($scan($item, $depth + 1)) {
+                    return true;
                 }
             }
 
@@ -421,12 +470,8 @@ class NativeCallbacks
      */
     protected static function callingComponentClass(): ?string
     {
-        foreach (debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT | DEBUG_BACKTRACE_IGNORE_ARGS, 25) as $frame) {
-            if (($frame['object'] ?? null) instanceof NativeComponent) {
-                return get_class($frame['object']);
-            }
-        }
+        $component = CallStack::component();
 
-        return null;
+        return $component === null ? null : get_class($component);
     }
 }

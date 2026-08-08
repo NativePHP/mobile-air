@@ -263,6 +263,10 @@ it('keeps durability alive for repeat captures from the same source line', funct
     $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1])
         ->assertSet('status', 'uuid-picked');
 
+    // Reset so the final assertion can't be satisfied by stale state —
+    // with the guard bug reintroduced, this test MUST fail.
+    $screen->set('status', 'idle');
+
     // Second capture from the SAME line, then the process dies.
     $screen->call('startUuidPicker');
     NativeCallbacks::flush();
@@ -310,4 +314,63 @@ it('skips durability when a captured object holds a resource', function () {
 
     $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1, 'id' => 'dto-pick'])
         ->assertSet('status', 'idle'); // no poisoned durable copy fired
+});
+
+// ── Review round four ───────────────────────────────
+
+it('records the owner for class-shadowing method names too', function () {
+    // 'error' passes class_exists — pre-fix the owner tag was skipped
+    // for it, so a wrong screen with an error() method fired it.
+    Native::test(PickerScreen::class)->call('startClassNamedMethod');
+
+    NativeCallbacks::flush();
+
+    Native::test(WrongPickScreen::class)
+        ->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1, 'id' => 'named-pick'])
+        ->assertSet('status', 'idle'); // NOT 'WRONGLY-FIRED-ERROR'
+
+    expect(NativeCallbacks::has('named-pick', MediaSelected::class))->toBeFalse();
+});
+
+it('does not let an abandoned capture re-latch the same-line kill', function () {
+    $screen = Native::test(PickerScreen::class)->call('startUuidPicker');
+
+    // Abandon it: no result ever arrives, durable copy expires (simulated
+    // by clearing the cache) while the memory entry lives forever.
+    cache()->flush();
+
+    // A later capture from the same line must regain durability.
+    $screen->set('status', 'idle');
+    $screen->call('startUuidPicker');
+    NativeCallbacks::flush();
+
+    $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1])
+        ->assertSet('status', 'uuid-picked');
+});
+
+it('catches a resource captured by a NESTED closure', function () {
+    $screen = Native::test(PickerScreen::class)->call('startNestedResource');
+
+    NativeCallbacks::flush();
+
+    $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1, 'id' => 'nested-pick'])
+        ->assertSet('status', 'idle'); // durability was skipped, not poisoned
+});
+
+it('catches a CLOSED resource capture', function () {
+    $screen = Native::test(PickerScreen::class)->call('startClosedResource');
+
+    NativeCallbacks::flush();
+
+    $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1, 'id' => 'closed-pick'])
+        ->assertSet('status', 'idle');
+});
+
+it('fails closed when the resource scan hits its depth cap', function () {
+    Native::test(PickerScreen::class)->call('startDeepResource');
+
+    NativeCallbacks::flush();
+
+    // Truncated walk costs durability, never risks a poisoned copy.
+    expect(NativeCallbacks::has('deep-pick', MediaSelected::class))->toBeFalse();
 });

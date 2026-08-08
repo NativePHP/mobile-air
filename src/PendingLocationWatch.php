@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use LogicException;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Geolocation\LocationUpdated;
+use Native\Mobile\Support\CallStack;
 use ReflectionFunction;
 
 /**
@@ -105,8 +106,9 @@ class PendingLocationWatch
             throw new InvalidArgumentException("Event class {$eventClass} does not exist");
         }
 
-        $this->retargetPendingCallbacks($this->eventClass, $eventClass);
-
+        // No retargetPendingCallbacks() here, unlike the other builders:
+        // this class doesn't use HandlesNativeCallbacks — its handlers are
+        // persistent component listeners, not one-shot registry entries.
         $this->eventClass = $eventClass;
 
         return $this;
@@ -230,17 +232,7 @@ class PendingLocationWatch
      */
     private function detectComponent(): ?NativeComponent
     {
-        if (! class_exists(NativeComponent::class)) {
-            return null;
-        }
-
-        foreach (debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT | DEBUG_BACKTRACE_IGNORE_ARGS, 20) as $frame) {
-            if (($frame['object'] ?? null) instanceof NativeComponent) {
-                return $frame['object'];
-            }
-        }
-
-        return null;
+        return CallStack::component(20);
     }
 
     /**
