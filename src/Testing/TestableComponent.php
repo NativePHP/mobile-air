@@ -1364,7 +1364,16 @@ class TestableComponent
     protected function guard(\Closure $fn): mixed
     {
         try {
-            return $fn();
+            // Route through the component's validation guard so direct
+            // set()/call() interactions behave exactly like runtime
+            // dispatch: a ValidationException records errors on the bag
+            // and aborts the interaction (the next render shows $errors)
+            // instead of exploding the test. Device and web enter through
+            // dispatch(), which wraps the same guard.
+            return $this->scoped(function () use ($fn) {
+                /** @var \Native\Mobile\Edge\NativeComponent $this */
+                return $this->runGuarded($fn);
+            });
         } catch (NativeDumpException $e) {
             Assert::fail(
                 'Component called dd() at '.$e->getSourceFile().':'.$e->getSourceLine()."\n".$e->getFormattedDumps()
