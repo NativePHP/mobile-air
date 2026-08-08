@@ -77,3 +77,36 @@ jobs:
 
       - name: Run Pint
         run: vendor/bin/pint --test
+
+  # The one test in the suite that talks to the network, so it gets its own
+  # job: a CDN blip should read as "couldn't check the binaries manifest",
+  # not take the whole test run down with it.
+  format-version-sync:
+    runs-on: ubuntu-latest
+
+    name: Binary Format Sync
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          extensions: dom, simplexml, mbstring
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      # Asserts the Swift and Kotlin readers agree with each other and with
+      # the format version published by the binaries release PhpBinaries pins.
+      # Mismatched halves render nothing at runtime and say so only in a log
+      # nobody reads, so this is the last place it can be caught cheaply.
+      - name: Check readers against the pinned binaries release
+        env:
+          # Locally the test skips when the manifest is unreachable, so being
+          # offline doesn't fail the suite. Here it has to actually run.
+          NATIVEPHP_ENFORCE_BINARY_MANIFEST: 1
+        run: vendor/bin/pest --filter=FormatVersionSyncTest
