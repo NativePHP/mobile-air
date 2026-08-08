@@ -137,6 +137,43 @@ it('stops injecting once the error clears', function () {
             && ! isset($node['props']['is_error']));
 });
 
+// ── Child-component scoping ─────────────────────────
+
+it('scopes validation errors to the child component that failed', function () {
+    \Native\Mobile\Edge\ComponentRegistry::reset();
+    \Native\Mobile\Edge\ComponentRegistry::components([
+        'validation-child' => \Tests\Fixtures\Edge\ValidationChild::class,
+    ]);
+
+    try {
+        Native::test(\Tests\Fixtures\Edge\ValidationHostScreen::class)
+            ->tap('child-save-btn')
+            ->assertSee('CHILD-ERR The nickname field is required.')
+            ->assertDontSee('HOST-LEAKED') // parent bag untouched
+            ->assertElement('text_input', fn (array $node) => ($node['ref'] ?? null) === 'nickname-input'
+                && ($node['props']['is_error'] ?? false) === true
+                && ($node['props']['supporting'] ?? null) === 'The nickname field is required.');
+    } finally {
+        \Native\Mobile\Edge\ComponentRegistry::reset();
+    }
+});
+
+it('validates a child prop eagerly on the child input sync', function () {
+    \Native\Mobile\Edge\ComponentRegistry::reset();
+    \Native\Mobile\Edge\ComponentRegistry::components([
+        'validation-child' => \Tests\Fixtures\Edge\ValidationChild::class,
+    ]);
+
+    try {
+        Native::test(\Tests\Fixtures\Edge\ValidationHostScreen::class)
+            ->input('nickname-input', 'x') // min:2
+            ->assertSee('CHILD-ERR The nickname field must be at least 2 characters.')
+            ->assertDontSee('HOST-LEAKED');
+    } finally {
+        \Native\Mobile\Edge\ComponentRegistry::reset();
+    }
+});
+
 it('lets element-resolved props win over injected ones (merge order)', function () {
     // The injection rides extraProps, which toArray() ranks BELOW the
     // subclass's resolveProps — an element that resolves its own
