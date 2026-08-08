@@ -1236,6 +1236,23 @@ class NativeElementCollector
             unset($attrs[$attribute]);
         }
 
+        // Validation auto-wiring: a `native:model`-bound element whose
+        // property has errors gets `is_error` + the first message as
+        // `supporting` — injected via extraProps, which the toArray()
+        // merge ranks BELOW subclass-resolved props, so an author's
+        // explicit error/supporting attributes always win. Elements
+        // without those slots carry the props inert on the wire.
+        $modelProp = $attrs['model-prop'] ?? null;
+        if ($modelProp !== null) {
+            unset($attrs['model-prop']);
+
+            $bag = static::$owner?->getErrorBag();
+            if ($bag !== null && $bag->has($modelProp)) {
+                $element->setProp('is_error', true);
+                $element->setProp('supporting', (string) $bag->first($modelProp));
+            }
+        }
+
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
 

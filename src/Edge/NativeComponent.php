@@ -36,6 +36,8 @@ use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
 {
+    use Concerns\ValidatesProps;
+
     const EVENT_HOT_RELOAD = 15;
 
     /**
@@ -292,7 +294,7 @@ abstract class NativeComponent
 
     protected function view(string $name, array $data = []): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $data);
+        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $data);
 
         // Rendering as a nested child component: the parent's tree is live
         // in the collector, so emit in place — no reset, no chrome, and no
@@ -334,7 +336,7 @@ abstract class NativeComponent
      */
     protected function partial(string $name, array $data = []): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $data);
+        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $data);
 
         // Inside a child component's render the hard reset below would wipe
         // the parent's live tree — capture() collects the detached subtree
@@ -371,7 +373,7 @@ abstract class NativeComponent
      */
     protected function fromView(View $view): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $view->getData());
+        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $view->getData());
 
         // Nested child render — same in-place emission as view() above.
         if (NativeElementCollector::inComponentScope()) {
@@ -408,7 +410,7 @@ abstract class NativeComponent
      */
     protected function fromViewPartial(View $view): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $view->getData());
+        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $view->getData());
 
         // Same child-scope safety as partial() — never hard-reset the
         // parent's live tree from inside a nested component render.
@@ -1388,7 +1390,7 @@ abstract class NativeComponent
      */
     protected function streamView(string $name, array $data = []): void
     {
-        $viewData = array_merge($this->getPublicProperties(), $data);
+        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $data);
 
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
         NativeElementCollector::setOwner($this);
@@ -1734,8 +1736,15 @@ abstract class NativeComponent
 
     /**
      * Handle a native event (type 20) by looking up #[OnNative] listeners.
+     * Guarded like dispatch(): a ValidationException in a listener
+     * records errors and aborts that listener instead of crashing.
      */
     protected function dispatchNativeEvent(array $event): void
+    {
+        $this->runGuarded(fn () => $this->dispatchNativeEventUnguarded($event));
+    }
+
+    protected function dispatchNativeEventUnguarded(array $event): void
     {
         $eventName = $event['event'] ?? '';
         $payload = $event['payload'] ?? [];
@@ -3030,6 +3039,17 @@ abstract class NativeComponent
         if (method_exists($this, $hook)) {
             $this->{$hook}($value);
         }
+
+        // #[Validate] rules are eager: re-validate this property on every
+        // sync (after the updated hook, so a hook that normalizes the
+        // value validates the normalized form). Runs inside the dispatch
+        // guard, so a failure records errors and aborts cleanly. The
+        // author's native:model modifier (.live/.blur/.debounce) is the
+        // cadence control. rules()-method rules deliberately do NOT run
+        // here — that's the on-demand tier.
+        if ($this->hasEagerValidationRule($property)) {
+            $this->validateOnly($property);
+        }
     }
 
     // ── Child components (nested <native:*> component tags) ──
@@ -3340,7 +3360,19 @@ abstract class NativeComponent
 
     // ── Event dispatch ──────────────────────────────
 
+    /**
+     * Guarded entry: a ValidationException thrown anywhere in a handler
+     * (a validate() call, sync auto-validation, an author-thrown
+     * withMessages) aborts the handler, records the errors on the bag,
+     * and lets the frame render — identical on device and web, because
+     * both route event dispatch through this method.
+     */
     protected function dispatch(array $event): void
+    {
+        $this->runGuarded(fn () => $this->dispatchUnguarded($event));
+    }
+
+    protected function dispatchUnguarded(array $event): void
     {
         $callbackId = (int) ($event['callback_id'] ?? 0);
 
