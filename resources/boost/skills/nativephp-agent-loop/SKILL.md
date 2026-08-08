@@ -79,26 +79,25 @@ error screen.
 
 ## Reading exceptions
 
-Runtime exceptions on device stream to **`nativephp/devtools/events.jsonl`** (one JSON event per line) whenever
-`native:watch` is running (it starts the listener automatically). Each event has
-`exception.class`, `exception.message`, `exception.app_frame` (the `file:line` in the user's own code), and a
-capped `trace`. This is the source of truth — read past your last-seen line count; don't consume-once.
+Exception reporting comes from the **`nativephp/devtools` plugin**, which ships its own
+`nativephp-devtools` skill — follow that for the detail (cursor discipline, wakeup modes, diagnosing by
+failure class). The short version the loop depends on:
 
-- Human view while developing: exceptions also print as red lines in the `native:watch` console.
-- On demand: `native:tail <os> --lines=100 --json` for the raw `laravel.log`; `native:devtools:pull <os> --json`
-  to merge any events the device spooled while the listener was down. Pull is session-scoped by default (stale
-  events from previous sessions are filtered, reported as `filtered_stale`) — trust `pulled > 0` as "new failure
-  happened", no timestamp triage needed. Use `--purge` to clear the device spool after a pull, `--all` to see
-  everything.
-- If the `nativephp-devtools` MCP server is registered, prefer its tools (`get_exceptions`,
-  `await_next_event`, `get_screenshot`, `tail_app_logs`, `device_info`) over shelling out.
+- Runtime exceptions, boot fatals, and PHP fatals stream to **`nativephp/devtools/events.jsonl`** (one JSON
+  event per line, monotonic `seq`) while `native:watch` runs; read past your own cursor, never consume-once.
+  `exception.app_frame` is the `file:line` in the user's own code — read that first.
+- In discrete build-loop mode (repeated `native:run`, no `--watch`) the listener isn't running: run
+  `php artisan native:devtools:pull <os> --json` after launch. It's session-scoped, so `pulled > 0` means a
+  genuinely new failure.
+- Exceptions also print as red lines in the `native:watch` console.
 
-Note: in discrete build-loop mode (repeated `native:run`, no `--watch`) the listener isn't running, so use
-`native:devtools:pull` after launch to collect device-side events, or run `native:watch` in the background.
+**Without the plugin**, none of that exists — fall back to `native:tail <os> --lines=100 --json` for the raw
+`laravel.log`, plus screenshots to catch the red error screen.
 
 ## Exercising the app
 
-For EDGE (native UI) screens, use `native:ui` — no coordinates, no drivers, both platforms:
+For EDGE (native UI) screens, use `native:ui` (also from `nativephp/devtools`) — no coordinates, no drivers,
+both platforms:
 
 ```bash
 php artisan native:ui dump <os> --json          # what's on screen + what each handler fires
@@ -106,15 +105,13 @@ php artisan native:ui tap "Following" <os> --json      # press by visible text (
 php artisan native:ui invoke "toggleLike(1)" <os> --json  # fire a handler expression directly
 ```
 
-Dump lists every node with text/ref/handlers; tap matches a pressable by ref or subtree text and dispatches
-through the same guarded path as a real finger tap; after any interaction, re-dump (state is visible as new
-text) and screenshot to judge visuals. Requires the app running a debug build with nativephp/devtools on a
-core with the EdgeTicker seam — `no_snapshot`/`timeout` errors mean it isn't.
+Dump → pick a target → tap/invoke → re-dump to confirm the state changed → screenshot to judge visuals. See
+the `nativephp-devtools` skill for matching caveats and scope limits.
 
-Fallbacks: `native:open-url "<scheme>://<route>"` for navigation (note iOS sims show a one-time "Open in
-<App>?" confirmation for custom schemes; prefer `native:ui tap` on nav pressables instead); raw adb input
+Fallbacks (and what to use when the plugin isn't installed): `native:open-url "<scheme>://<route>"` for
+navigation (iOS sims show a one-time "Open in <App>?" confirmation for custom schemes); raw adb input
 (`input tap/text/keyevent`, `uiautomator dump`) for Android system UI or webview-mode screens, which
-`native:ui` does not cover yet.
+`native:ui` does not cover.
 
 ## Hygiene
 
