@@ -35,6 +35,10 @@ trait HandlesNativeCallbacks
     /**
      * Register a callback for a specific event class. Public escape hatch for
      * custom events; also the primitive every named method funnels through.
+     *
+     * Ordering: call ->id() BEFORE registering callbacks — registration
+     * keys on the id at call time, and only ->event() re-keys existing
+     * registrations (a later ->id() does not).
      */
     public function on(string $eventClass, Closure|array|string $callback): static
     {

@@ -4,6 +4,7 @@ namespace Native\Mobile\Http\Controllers;
 
 use Closure;
 use Illuminate\Http\Request;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Support\NativeCallbacks;
 use ReflectionFunction;
 
@@ -81,6 +82,12 @@ class DispatchEventFromAppController
         // a component method can share the name. The durable owner tag
         // settles it: recorded owner means component-owned, Edge-only.
         if (is_string($peek) && NativeCallbacks::ownerOf($id, $eventClass) !== null) {
+            return false;
+        }
+
+        // [$component, 'method'] arrays are component-owned like
+        // $this-closures — firing here would run against a dead instance.
+        if (is_array($peek) && ($peek[0] ?? null) instanceof NativeComponent) {
             return false;
         }
 

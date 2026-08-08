@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Events\Camera\PermissionDenied;
 use Native\Mobile\Events\Camera\PhotoCancelled;
 use Native\Mobile\Events\Camera\PhotoTaken;
 use Native\Mobile\Events\Gallery\MediaSelected;
@@ -335,9 +336,11 @@ it('records the owner for class-shadowing method names too', function () {
 it('does not let an abandoned capture re-latch the same-line kill', function () {
     $screen = Native::test(PickerScreen::class)->call('startUuidPicker');
 
-    // Abandon it: no result ever arrives, durable copy expires (simulated
-    // by clearing the cache) while the memory entry lives forever.
+    // Abandon it: no result ever arrives. The durable copy expires
+    // (simulated by clearing the cache) and the TTL window passes —
+    // within the window the line stays conservatively blocked.
     cache()->flush();
+    $this->travelTo(now()->addMinutes(6));
 
     // A later capture from the same line must regain durability.
     $screen->set('status', 'idle');
@@ -373,4 +376,53 @@ it('fails closed when the resource scan hits its depth cap', function () {
 
     // Truncated walk costs durability, never risks a poisoned copy.
     expect(NativeCallbacks::has('deep-pick', MediaSelected::class))->toBeFalse();
+});
+
+// ── Review round five ───────────────────────────────
+
+it('catches the THIRD closure of a one-line chain', function () {
+    // reg2's collision forgets reg1's durable copy; reg3 must still be
+    // detected via the line timestamp, not slip through because the
+    // cache entry is gone.
+    Native::test(PickerScreen::class)->call('startTripleLine');
+
+    NativeCallbacks::flush();
+
+    expect(NativeCallbacks::has('triple-pick', PhotoTaken::class))->toBeFalse()
+        ->and(NativeCallbacks::has('triple-pick', PhotoCancelled::class))->toBeFalse()
+        ->and(NativeCallbacks::has('triple-pick', PermissionDenied::class))->toBeFalse();
+});
+
+it('catches a line-mate whose durable copy was size-capped away', function () {
+    // reg1 never wrote a cache entry (size cap) — reg2 on the same line
+    // must still be treated as a conflation suspect.
+    Native::test(PickerScreen::class)->call('startHugeThenSmallLine');
+
+    NativeCallbacks::flush();
+
+    expect(NativeCallbacks::has('hts-pick', PhotoCancelled::class))->toBeFalse();
+});
+
+it('keeps ordinary deep captures durable under the raised cap', function () {
+    // Six levels of plain arrays — the shape of a model with a loaded
+    // relation — must NOT lose the durable tier.
+    $screen = Native::test(PickerScreen::class)->call('startDeepClean');
+
+    NativeCallbacks::flush();
+
+    $screen->emitNative(MediaSelected::class, ['success' => true, 'files' => [], 'count' => 1, 'id' => 'deepclean-pick'])
+        ->assertSet('status', 'deepclean:1');
+});
+
+it('controller bails on component-bound array callables', function () {
+    Native::test(PickerScreen::class)->call('startArrayCallback');
+
+    $controller = new DispatchEventFromAppController;
+    $fire = new ReflectionMethod($controller, 'fireCallback');
+    $fire->setAccessible(true);
+
+    $handled = $fire->invoke($controller, MediaSelected::class, ['id' => 'array-pick'], new MediaSelected(true));
+
+    expect($handled)->toBeFalse()
+        ->and(NativeCallbacks::has('array-pick', MediaSelected::class))->toBeTrue();
 });

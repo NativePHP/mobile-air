@@ -17,7 +17,9 @@ class CallStack
             return null;
         }
 
-        foreach (debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT | DEBUG_BACKTRACE_IGNORE_ARGS, $limit) as $frame) {
+        // +1: this helper adds a frame of its own — callers' limits mean
+        // "frames of YOUR stack", not "minus one for the messenger".
+        foreach (debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT | DEBUG_BACKTRACE_IGNORE_ARGS, $limit + 1) as $frame) {
             if (($frame['object'] ?? null) instanceof NativeComponent) {
                 return $frame['object'];
             }

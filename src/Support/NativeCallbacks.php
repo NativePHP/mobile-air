@@ -58,12 +58,17 @@ class NativeCallbacks
     protected static array $memory = [];
 
     /**
-     * file:line => [id, eventClass] for durably-stored closures, used to
-     * detect same-line registrations (see class docblock). Per-process,
-     * which is sufficient: the colliding registrations of a one-line
-     * chain always happen in one request.
+     * file:line => [id, eventClass, registeredAt] for closures that went
+     * through the same-line check, used to detect same-line registrations
+     * (see class docblock). Per-process, which is sufficient: the
+     * colliding registrations of a one-line chain always happen in one
+     * request. The timestamp bounds detection: an entry is a conflation
+     * suspect while its durable copy exists OR while it is younger than
+     * the TTL — so a line-mate whose durable copy is ABSENT (size-capped,
+     * or forgotten by an earlier collision) is still detected, while an
+     * abandoned capture stops blocking the line once the TTL passes.
      *
-     * @var array<string, array{0: string, 1: string}>
+     * @var array<string, array{0: string, 1: string, 2: int}>
      */
     protected static array $closureLines = [];
 
@@ -112,9 +117,11 @@ class NativeCallbacks
 
                 // Captured resources don't make serialize() throw — they
                 // silently become ints, poisoning the durable copy with a
-                // TypeError that only detonates after a process kill.
-                if (static::capturesResources($reflection)) {
-                    NativeRouter::debugLog("NativeCallbacks: '{$eventClass}' closure captures a resource — durable copy skipped");
+                // TypeError that only detonates after a process kill. A
+                // capture graph too big to verify also skips durability
+                // (fail closed), with an honest log for each case.
+                if (($blocker = static::durabilityBlocker($reflection)) !== null) {
+                    NativeRouter::debugLog("NativeCallbacks: '{$eventClass}' {$blocker} — durable copy skipped");
 
                     return;
                 }
@@ -132,21 +139,25 @@ class NativeCallbacks
                     $line = $reflection->getFileName().':'.$reflection->getStartLine();
                     $existing = static::$closureLines[$line] ?? null;
 
-                    // Pendingness is judged by the DURABLE tier only: the
-                    // conflation hazard is about durable code extraction,
-                    // and memory entries never expire — an abandoned
-                    // capture (picker dismissed by the OS, no result)
-                    // would otherwise re-latch the permanent kill. The
-                    // cache's 5-minute TTL bounds the block.
-                    if ($existing !== null && $existing !== [$id, $eventClass] && Cache::has(static::key(...$existing))) {
-                        [$otherId, $otherEvent] = $existing;
-                        Cache::forget(static::key($otherId, $otherEvent));
-                        NativeRouter::debugLog("NativeCallbacks: two pending closures share {$line} — durable copies dropped for both (split the chain across lines to restore durability)");
+                    // A line-mate is a conflation suspect while its durable
+                    // copy exists OR while its registration is younger than
+                    // the TTL — the timestamp half catches mates whose
+                    // durable copy is absent (size-capped, or forgotten by
+                    // an earlier collision on the same line). Completed
+                    // captures are pruned by forget(); abandoned ones age
+                    // out with the TTL instead of blocking forever.
+                    if ($existing !== null && [$existing[0], $existing[1]] !== [$id, $eventClass]) {
+                        [$otherId, $otherEvent, $registeredAt] = $existing;
 
-                        return;
+                        if (Cache::has(static::key($otherId, $otherEvent)) || (now()->getTimestamp() - $registeredAt) < static::$ttlMinutes * 60) {
+                            Cache::forget(static::key($otherId, $otherEvent));
+                            NativeRouter::debugLog("NativeCallbacks: two pending closures share {$line} — durable copies dropped for both (split the chain across lines to restore durability)");
+
+                            return;
+                        }
                     }
 
-                    static::$closureLines[$line] = [$id, $eventClass];
+                    static::$closureLines[$line] = [$id, $eventClass, now()->getTimestamp()];
 
                     if ($boundThis !== null) {
                         // The binding never needs to survive — fire-time
@@ -211,13 +222,7 @@ class NativeCallbacks
             return null;
         }
 
-        $restored = unserialize($serialized);
-
-        $ownerClass = null;
-        if (is_array($restored) && array_key_exists('c', $restored)) {
-            $ownerClass = $restored['o'] ?? null;
-            $restored = $restored['c'];
-        }
+        [$ownerClass, $restored] = static::readEntry($serialized);
 
         if ($ownerClass !== null && $for !== null && ! $for instanceof $ownerClass) {
             NativeRouter::debugLog("NativeCallbacks: durable callback for '{$eventClass}' belongs to {$ownerClass}, live screen is ".get_class($for).' — skipped');
@@ -229,6 +234,23 @@ class NativeCallbacks
         return $restored instanceof SerializableClosure
             ? $restored->getClosure()
             : $restored;
+    }
+
+    /**
+     * THE decoder for durable entries — resolve() and ownerOf() both go
+     * through it, so the envelope shape can't drift between them.
+     *
+     * @return array{0: ?string, 1: mixed} [ownerClass, callback]
+     */
+    protected static function readEntry(string $serialized): array
+    {
+        $restored = unserialize($serialized);
+
+        if (is_array($restored) && array_key_exists('c', $restored)) {
+            return [$restored['o'] ?? null, $restored['c']];
+        }
+
+        return [null, $restored];
     }
 
     /**
@@ -277,15 +299,7 @@ class NativeCallbacks
     {
         $serialized = Cache::get(static::key($id, $eventClass));
 
-        if ($serialized === null) {
-            return null;
-        }
-
-        $restored = unserialize($serialized);
-
-        return is_array($restored) && array_key_exists('c', $restored)
-            ? ($restored['o'] ?? null)
-            : null;
+        return $serialized === null ? null : static::readEntry($serialized)[0];
     }
 
     /**
@@ -315,8 +329,8 @@ class NativeCallbacks
         // collision handler would forget a dead key and leave the real
         // conflation-suspect durable copy intact.
         foreach (static::$closureLines as $line => $entry) {
-            if ($entry === [$id, $fromEvent]) {
-                static::$closureLines[$line] = [$id, $toEvent];
+            if ([$entry[0], $entry[1]] === [$id, $fromEvent]) {
+                static::$closureLines[$line] = [$id, $toEvent, $entry[2]];
             }
         }
     }
@@ -399,24 +413,26 @@ class NativeCallbacks
     }
 
     /**
-     * Whether a closure's captured use-variables contain a resource
-     * (serialize() silently corrupts those into ints — no exception, just
-     * a TypeError detonating after the process kill). Scans arrays,
-     * object properties ((array)-cast exposes private/protected too),
-     * nested closures' own captures, and closed resources (which evade
-     * is_resource() but serialize just as corruptly).
+     * Why a closure's captures can't be trusted in the durable tier, or
+     * null when they can. Resources — open OR closed — serialize silently
+     * into ints (no exception, just a TypeError detonating after the
+     * process kill), so the scan walks arrays, object properties
+     * ((array)-cast exposes private/protected too), and nested closures'
+     * own captures.
      *
-     * FAILS CLOSED at the depth cap: a walk too deep to finish reports
-     * "may contain a resource", costing durability instead of risking a
-     * poisoned copy — which also makes the cycle guard order-safe (a
-     * truncated visit bubbles true rather than memoizing an unscanned
-     * subtree).
+     * FAILS CLOSED when the walk is truncated (depth cap, or the visited-
+     * node budget for wide graphs like loaded Eloquent relations): an
+     * unverifiable graph costs durability instead of risking a poisoned
+     * copy — which also makes the cycle guard order-safe. Each outcome
+     * gets its own honest reason string for the log.
      */
-    protected static function capturesResources(\ReflectionFunction $reflection): bool
+    protected static function durabilityBlocker(\ReflectionFunction $reflection): ?string
     {
         $seen = new \SplObjectStorage;
+        $budget = 500;
+        $truncated = false;
 
-        $scan = function ($value, int $depth) use (&$scan, $seen): bool {
+        $scan = function ($value, int $depth) use (&$scan, &$budget, &$truncated, $seen): bool {
             if (is_resource($value) || gettype($value) === 'resource (closed)') {
                 return true;
             }
@@ -425,8 +441,10 @@ class NativeCallbacks
                 return false;
             }
 
-            if ($depth >= 5) {
-                return true; // fail closed — see docblock
+            if ($depth >= 8 || --$budget <= 0) {
+                $truncated = true;
+
+                return false; // the caller fails closed on $truncated
             }
 
             if ($value instanceof Closure) {
@@ -456,11 +474,13 @@ class NativeCallbacks
 
         foreach ($reflection->getStaticVariables() as $value) {
             if ($scan($value, 0)) {
-                return true;
+                return 'closure captures a resource';
             }
         }
 
-        return false;
+        return $truncated
+            ? 'capture graph too deep/large to verify for resources'
+            : null;
     }
 
     /**

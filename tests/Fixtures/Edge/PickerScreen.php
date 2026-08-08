@@ -140,6 +140,35 @@ class PickerScreen extends NativeComponent
         });
     }
 
+    /** THREE closures on one line — the collision path must catch the third too. */
+    public function startTripleLine(): void
+    {
+        (new PendingPhotoCapture)->id('triple-pick')->photoTaken(fn () => $this->status = 't1')->photoCancelled(fn () => $this->status = 't2')->permissionDenied(fn () => $this->status = 't3');
+    }
+
+    /** Huge capture then small on ONE line: reg1 size-caps (no cache entry), reg2 must still be caught. */
+    public function startHugeThenSmallLine(): void
+    {
+        $blob = str_repeat('x', 200 * 1024);
+
+        (new PendingPhotoCapture)->id('hts-pick')->photoTaken(fn () => $this->status = 'huge:'.strlen($blob))->photoCancelled(fn () => $this->status = 'small');
+    }
+
+    /** Deep but ORDINARY capture (no resource) — must stay durable under the cap. */
+    public function startDeepClean(): void
+    {
+        $deep = ['a' => ['b' => ['c' => ['d' => ['e' => ['f' => 'leaf']]]]]];
+
+        (new PendingMediaPicker)->id('deepclean-pick')->onSuccess(function () use ($deep) {
+            $this->status = 'deepclean:'.count($deep);
+        });
+    }
+
+    public function startArrayCallback(): void
+    {
+        (new PendingMediaPicker)->id('array-pick')->onSuccess([$this, 'onPicked']);
+    }
+
     public function startDeepResource(): void
     {
         $deep = ['a' => ['b' => ['c' => ['d' => ['e' => ['f' => fopen('php://memory', 'r')]]]]]];
