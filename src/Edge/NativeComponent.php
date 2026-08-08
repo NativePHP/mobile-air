@@ -3370,6 +3370,24 @@ abstract class NativeComponent
         return $this->nativeCallbacks ??= new CallbackRegistry;
     }
 
+    /**
+     * Devtools/test surface: render and serialize a guaranteed-FULL frame
+     * for inspection. Published frames may collapse unchanged subtrees to
+     * memo REUSE markers — correct for the wire, useless for a dump — so
+     * this bypasses the memo store entirely (throwaway locals, no hash
+     * recording; the next real publish is unaffected).
+     */
+    public function dumpTree(): array
+    {
+        $element = $this->renderToElement();
+
+        $nextId = 1;
+        $emitted = [];
+        $throwaway = [];
+
+        return $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
+    }
+
     protected function dispatch(array $event): void
     {
         $callbackId = (int) ($event['callback_id'] ?? 0);
