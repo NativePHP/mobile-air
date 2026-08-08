@@ -13,6 +13,7 @@ use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
 use Native\Mobile\Commands\CredentialsCommand;
 use Native\Mobile\Commands\DebugCommand;
+use Native\Mobile\Commands\DevicesCommand;
 use Native\Mobile\Commands\InstallCommand;
 use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\LaunchEmulatorCommand;
@@ -31,7 +32,9 @@ use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunCommand;
+use Native\Mobile\Commands\ScreenshotCommand;
 use Native\Mobile\Commands\SimCommand;
+use Native\Mobile\Commands\StatusCommand;
 use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
@@ -77,6 +80,9 @@ class NativeServiceProvider extends PackageServiceProvider
                 JumpCommand::class,
                 WatchCommand::class,
                 TailCommand::class,
+                DevicesCommand::class,
+                ScreenshotCommand::class,
+                StatusCommand::class,
                 VersionCommand::class,
                 PluginBoostCommand::class,
                 PluginCreateCommand::class,
