@@ -49,13 +49,19 @@ class NativeCallbacks
             $serializable = $callback;
 
             if ($serializable instanceof Closure) {
-                // A closure bound to an instance (e.g. one defined in a component
-                // method that uses $this) can't be serialized: PHP won't let us
-                // unbind $this, and the bound object isn't serializable. Such
-                // callbacks are in-memory only — skip the durable copy quietly.
-                // Use `static fn` for a callback that must survive an app kill.
+                // A closure bound to a component instance (one that uses
+                // $this) can't serialize as-is: the component isn't
+                // serializable. But the binding doesn't need to survive —
+                // fireNativeCallback rebinds every non-static closure to
+                // the LIVE component (full class scope, so private access
+                // is restored) at fire time. Only the code + captured
+                // `use` vars must cross the boundary, so rebind to a
+                // throwaway serializable carrier first. This is what lets
+                // `->onSuccess(function ($e) { $this->… })` fire on the
+                // stateless web target (fresh process per request) and
+                // survive an OS kill on device.
                 if ((new \ReflectionFunction($serializable))->getClosureThis() !== null) {
-                    return;
+                    $serializable = Closure::bind($serializable, new \stdClass);
                 }
 
                 $serializable = new SerializableClosure($serializable);

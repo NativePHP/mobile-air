@@ -1922,8 +1922,24 @@ abstract class NativeComponent
             return;
         }
 
-        if (is_string($callback) && class_exists($callback)) {
-            $callback = app($callback);
+        if (is_string($callback)) {
+            if (class_exists($callback)) {
+                $callback = app($callback);
+            } elseif (method_exists($this, $callback)) {
+                // Method-name form — `->mediaSelected('onMediaSelected')`.
+                // Serializes into the durable tier trivially, so it's the
+                // fluent shape that survives both a process kill on device
+                // AND the stateless web target, where every request is a
+                // fresh process and closures registered last request are
+                // gone unless the durable tier carried them.
+                $method = $callback;
+                $callback = fn ($event) => $this->{$method}($event);
+            } else {
+                NativeRouter::debugLog("Native callback '{$callback}' is neither a class nor a method on ".static::class);
+                NativeCallbacks::forget($id, $eventClass);
+
+                return;
+            }
         }
 
         // Bind the closure to this live component so then()/catch() can use

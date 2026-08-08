@@ -44,6 +44,17 @@ trait HandlesNativeCallbacks
     }
 
     /**
+     * Register a callback for the operation's SUCCESS event without naming
+     * it — `->onSuccess(fn ($event) => …)` reads the same on every builder
+     * (photoTaken, mediaSelected, videoRecorded, …). Honors a custom
+     * ->event(Custom::class) override, since that replaces $eventClass.
+     */
+    public function onSuccess(Closure|array|string $callback): static
+    {
+        return $this->on($this->eventClass, $callback);
+    }
+
+    /**
      * Event classes that get a named handler method. Defaults to the success
      * event plus any failure events; override to expose more.
      *
