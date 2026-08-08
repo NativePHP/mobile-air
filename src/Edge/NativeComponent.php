@@ -292,9 +292,39 @@ abstract class NativeComponent
         return false;
     }
 
+    /**
+     * The data envelope every Blade render path shares: public props +
+     * the validation `$errors` ViewErrorBag + caller data (later wins).
+     * ONE home, so a new render path can't forget the bag and the
+     * legacy-$errors policy lives in code instead of merge precedence.
+     */
+    protected function nativeViewData(array $data = []): array
+    {
+        $props = $this->getPublicProperties();
+
+        if (array_key_exists('errors', $props)) {
+            // v3 escape hatch, explicit: a component-declared $errors
+            // prop wins over the injected bag — which also means it
+            // SHADOWS it, so $this->validate() output can't reach Blade
+            // on such a component. Deprecated for exactly that footgun.
+            static $warned = [];
+            if (! isset($warned[static::class])) {
+                $warned[static::class] = true;
+                trigger_error(
+                    static::class.' declares public $errors, shadowing the validation ViewErrorBag — rename it, or drop it and use $this->validate() with @error/@nativeError.',
+                    E_USER_DEPRECATED,
+                );
+            }
+        } else {
+            $props['errors'] = $this->errorBagForViews();
+        }
+
+        return array_merge($props, $data);
+    }
+
     protected function view(string $name, array $data = []): Element
     {
-        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $data);
+        $viewData = $this->nativeViewData($data);
 
         // Rendering as a nested child component: the parent's tree is live
         // in the collector, so emit in place — no reset, no chrome, and no
@@ -336,7 +366,7 @@ abstract class NativeComponent
      */
     protected function partial(string $name, array $data = []): Element
     {
-        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $data);
+        $viewData = $this->nativeViewData($data);
 
         // Inside a child component's render the hard reset below would wipe
         // the parent's live tree — capture() collects the detached subtree
@@ -373,7 +403,7 @@ abstract class NativeComponent
      */
     protected function fromView(View $view): Element
     {
-        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $view->getData());
+        $viewData = $this->nativeViewData($view->getData());
 
         // Nested child render — same in-place emission as view() above.
         if (NativeElementCollector::inComponentScope()) {
@@ -410,7 +440,7 @@ abstract class NativeComponent
      */
     protected function fromViewPartial(View $view): Element
     {
-        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $view->getData());
+        $viewData = $this->nativeViewData($view->getData());
 
         // Same child-scope safety as partial() — never hard-reset the
         // parent's live tree from inside a nested component render.
@@ -1390,7 +1420,7 @@ abstract class NativeComponent
      */
     protected function streamView(string $name, array $data = []): void
     {
-        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $data);
+        $viewData = $this->nativeViewData($data);
 
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
         NativeElementCollector::setOwner($this);
@@ -1748,15 +1778,16 @@ abstract class NativeComponent
 
     /**
      * Handle a native event (type 20) by looking up #[OnNative] listeners.
-     * Guarded like dispatch(): a ValidationException in a listener
-     * records errors and aborts that listener instead of crashing.
+     *
+     * Delivery has four independent tiers — fluent then()/catch()
+     * callbacks, ->on() closure listeners, the global Laravel event()
+     * broadcast, and the #[On] method — each guarded SEPARATELY: a
+     * ValidationException in one listener records errors and aborts
+     * that listener only, and the remaining tiers still receive the
+     * event. One guard around the whole method would turn a tier-1
+     * validation failure into silent partial delivery.
      */
     protected function dispatchNativeEvent(array $event): void
-    {
-        $this->runGuarded(fn () => $this->dispatchNativeEventUnguarded($event));
-    }
-
-    protected function dispatchNativeEventUnguarded(array $event): void
     {
         $eventName = $event['event'] ?? '';
         $payload = $event['payload'] ?? [];
@@ -1781,7 +1812,7 @@ abstract class NativeComponent
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
-        $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
+        $this->runGuarded(fn () => $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []));
 
         // Fluent closure listeners registered via ->on('Event', fn) — persistent
         // and keyed by event name, so they fire every time the event arrives
@@ -1797,7 +1828,9 @@ abstract class NativeComponent
                 $bound = ($closure instanceof \Closure && ! (new \ReflectionFunction($closure))->isStatic())
                     ? \Closure::bind($closure, $this, static::class)
                     : $closure;
-                $bound($eventObject);
+                // Per-closure guard: one failing listener must not
+                // starve its siblings of the event.
+                $this->runGuarded(fn () => $bound($eventObject));
             }
         }
 
@@ -1806,7 +1839,7 @@ abstract class NativeComponent
         // this component's #[On] handlers. Runs before the (early-returning)
         // #[On] lookup below so it fires even when this component declares no
         // listener for the event.
-        $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
+        $this->runGuarded(fn () => $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []));
 
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
@@ -1841,9 +1874,9 @@ abstract class NativeComponent
                     $args[] = $param->getDefaultValue();
                 }
             }
-            $this->$method(...$args);
+            $this->runGuarded(fn () => $this->$method(...$args));
         } else {
-            $this->$method($payload);
+            $this->runGuarded(fn () => $this->$method($payload));
         }
     }
 

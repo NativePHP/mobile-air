@@ -19,8 +19,18 @@ use Attribute;
  * call. Rules that should only run on demand belong in the component's
  * rules() method instead — that's the opt-out lever, mirroring the
  * attribute-vs-method split Livewire settled on.
+ *
+ * Repeatable — stacked attributes merge their rules:
+ *
+ *     #[Validate('required')]
+ *     #[Validate('min:3')]
+ *     public string $title = '';
+ *
+ * String rules are pipe-exploded when merging, so use the array form
+ * for rules that legitimately contain a pipe (regex:) — same caveat as
+ * Laravel's validator itself.
  */
-#[Attribute(Attribute::TARGET_PROPERTY)]
+#[Attribute(Attribute::TARGET_PROPERTY | Attribute::IS_REPEATABLE)]
 class Validate
 {
     public function __construct(

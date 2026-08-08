@@ -4,11 +4,13 @@ namespace Native\Mobile\Edge\Concerns;
 
 use Illuminate\Contracts\Validation\Validator as ValidatorContract;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\MessageBag;
 use Illuminate\Support\ViewErrorBag;
 use Illuminate\Validation\ValidationException;
 use Native\Mobile\Attributes\Validate;
+use Native\Mobile\Edge\Exceptions\RecordedValidationException;
 
 /**
  * Laravel-style validation for EDGE components, identical on every
@@ -35,24 +37,6 @@ use Native\Mobile\Attributes\Validate;
 trait ValidatesProps
 {
     protected ?MessageBag $nativeErrorBag = null;
-
-    /**
-     * Exceptions whose messages have already been recorded in SOME
-     * component's bag. Keyed on the exception INSTANCE (not an instance
-     * flag) because guards nest across components: a child's guard can
-     * catch an exception a parent's validate() already recorded (emit()
-     * listeners, nested dispatch), and an instance flag on the catcher
-     * would wrongly fold the parent's errors into the child's bag — or,
-     * left stale, wrongly swallow a fresh author-thrown exception.
-     *
-     * @var \WeakMap<ValidationException, true>
-     */
-    private static ?\WeakMap $recordedValidationExceptions = null;
-
-    private static function recordedExceptions(): \WeakMap
-    {
-        return self::$recordedValidationExceptions ??= new \WeakMap;
-    }
 
     // ── Bag access ──────────────────────────────────
 
@@ -127,10 +111,7 @@ trait ValidatesProps
         if ($validator->fails()) {
             $this->nativeErrorBag = new MessageBag($validator->errors()->messages());
 
-            $exception = new ValidationException($validator);
-            self::recordedExceptions()[$exception] = true;
-
-            throw $exception;
+            throw new RecordedValidationException($validator);
         }
 
         // A full pass supersedes everything previously recorded,
@@ -171,35 +152,44 @@ trait ValidatesProps
 
         $validator = $this->makePropValidator($matched, $messages, $attributes);
 
-        if ($validator->fails()) {
-            // A wildcard rule validates sibling entries as a side effect;
-            // only failures on the TARGET prop count here. Sibling-only
-            // failures mean the edited prop is fine: no throw, no bag
-            // changes for entries the author didn't touch.
-            $covered = array_filter(
-                $validator->errors()->messages(),
-                $covers,
-                ARRAY_FILTER_USE_KEY,
-            );
+        // fails() executes the rules — call it ONCE. This is the eager
+        // per-keystroke path, and rules can be expensive (unique:) or
+        // time-dependent; a second run is waste at best, disagreement at
+        // worst.
+        if (! $validator->fails()) {
+            $this->forgetErrors([$prop]);
 
-            if ($covered !== []) {
-                $this->forgetErrors([$prop]);
-                foreach ($covered as $key => $keyMessages) {
-                    foreach ($keyMessages as $message) {
-                        $this->getErrorBag()->add($key, $message);
-                    }
-                }
-
-                $exception = new ValidationException($validator);
-                self::recordedExceptions()[$exception] = true;
-
-                throw $exception;
-            }
+            return $validator->validated();
         }
 
+        // A wildcard rule validates sibling entries as a side effect;
+        // only failures on the TARGET prop count here.
+        $covered = array_filter(
+            $validator->errors()->messages(),
+            $covers,
+            ARRAY_FILTER_USE_KEY,
+        );
+
+        if ($covered !== []) {
+            $this->forgetErrors([$prop]);
+            foreach ($covered as $key => $keyMessages) {
+                foreach ($keyMessages as $message) {
+                    $this->getErrorBag()->add($key, $message);
+                }
+            }
+
+            throw new RecordedValidationException($validator);
+        }
+
+        // Sibling-only failure: the TARGET passed. No throw, no bag
+        // changes for entries the author didn't touch — and the caller
+        // still gets the target's data (validated() would throw here).
         $this->forgetErrors([$prop]);
 
-        return $validator->fails() ? [] : $validator->validated();
+        $out = [];
+        Arr::set($out, $prop, data_get($this->getPublicProperties(), $prop));
+
+        return $out;
     }
 
     // ── Dispatch guard ──────────────────────────────
@@ -215,13 +205,13 @@ trait ValidatesProps
         try {
             return $fn();
         } catch (ValidationException $e) {
-            if (! isset(self::recordedExceptions()[$e])) {
+            if (! $e instanceof RecordedValidationException) {
                 // Author-thrown (ValidationException::withMessages or a
-                // bare Validator) — fold into THIS component's bag, and
-                // mark the exception so an enclosing guard on another
-                // component doesn't fold it into its bag too.
-                self::recordedExceptions()[$e] = true;
-
+                // bare Validator) — fold into THIS component's bag. A
+                // RecordedValidationException already lives on its
+                // thrower's bag; since guards never rethrow, each
+                // exception meets at most one guard, so recordedness on
+                // the instance is all the bookkeeping needed.
                 foreach ($e->errors() as $key => $messages) {
                     $this->forgetErrors([$key]);
                     foreach ($messages as $message) {
@@ -287,7 +277,13 @@ trait ValidatesProps
         return array_merge($this->attributeValidationRules(), $methodRules);
     }
 
-    /** Rules declared via #[Validate] on public props, cached per class. */
+    /**
+     * Rules declared via #[Validate] on public props, cached per class.
+     * The attribute is repeatable; stacked declarations MERGE (string
+     * rules pipe-exploded, array rules taken as-is — the regex: caveat
+     * matches Laravel's own string-rule parsing). A single declaration
+     * keeps its raw shape untouched.
+     */
     protected function attributeValidationRules(): array
     {
         static $cache = [];
@@ -300,9 +296,25 @@ trait ValidatesProps
                     continue;
                 }
 
-                foreach ($prop->getAttributes(Validate::class) as $attribute) {
-                    $rules[$prop->getName()] = $attribute->newInstance()->rule;
+                $declared = $prop->getAttributes(Validate::class);
+
+                if ($declared === []) {
+                    continue;
                 }
+
+                if (count($declared) === 1) {
+                    $rules[$prop->getName()] = $declared[0]->newInstance()->rule;
+
+                    continue;
+                }
+
+                $merged = [];
+                foreach ($declared as $attribute) {
+                    $rule = $attribute->newInstance()->rule;
+                    $merged = array_merge($merged, is_array($rule) ? $rule : explode('|', $rule));
+                }
+
+                $rules[$prop->getName()] = $merged;
             }
 
             return $rules;

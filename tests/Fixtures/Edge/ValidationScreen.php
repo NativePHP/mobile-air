@@ -23,7 +23,40 @@ class ValidationScreen extends NativeComponent
 
     public bool $saved = false;
 
+    #[Validate('string')]
+    #[Validate('min:4')]
+    public string $handle = '';
+
     public bool $boom = false;
+
+    public bool $probed = false;
+
+    public array $tagResult = [];
+
+    public function mount(): void
+    {
+        // Closure listener whose validation ALWAYS fails — the #[On]
+        // method tier below must still hear the same event.
+        $this->registerNativeEventListener('probe', function () {
+            $this->validate(['bio' => 'required']);
+        });
+    }
+
+    #[\Native\Mobile\Attributes\On('probe')]
+    public function probeHeard(): void
+    {
+        $this->probed = true;
+    }
+
+    public function checkTagReturn(): void
+    {
+        $this->tagResult = $this->validateOnly('tags.1');
+    }
+
+    public function zeroError(): void
+    {
+        $this->addError('bio', '0');
+    }
 
     protected function rules(): array
     {

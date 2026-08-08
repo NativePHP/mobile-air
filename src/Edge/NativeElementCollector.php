@@ -1236,14 +1236,6 @@ class NativeElementCollector
             unset($attrs[$attribute]);
         }
 
-        // `model-prop` (emitted by compileNativeModel) is metadata about
-        // the bound property, not an element attribute — strip it before
-        // the element sees the attrs. Deliberately NOT used to auto-wire
-        // validation errors onto the element: error display is the
-        // author's explicit call (@error / @nativeError in Blade, or
-        // error/supporting attributes), matching Livewire's semantics.
-        unset($attrs['model-prop']);
-
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
 

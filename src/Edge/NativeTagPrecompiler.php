@@ -195,7 +195,7 @@ class NativeTagPrecompiler
         // Kept for backwards compatibility; prefer `native:model` going forward.
         $value = preg_replace_callback(
             '/@model=["\']([^"\']+)["\']/',
-            fn ($m) => ':value="$'.$m[1].'" _change="__syncProperty(\''.$m[1].'\')" model-prop="'.$m[1].'" sync-mode="live"',
+            fn ($m) => ':value="$'.$m[1].'" _change="__syncProperty(\''.$m[1].'\')" sync-mode="live"',
             $value
         );
 
@@ -386,13 +386,12 @@ class NativeTagPrecompiler
             // `.live` or anything unknown falls through to syncMode=live.
         }
 
-        // `model-prop` carries the bound property name into the collector
-        // as metadata (stripped there before the element sees attrs) —
-        // useful for devtools/future targets. It deliberately does NOT
-        // drive any automatic error display; errors render only where
-        // the author writes @error/@nativeError or sets error/supporting
-        // attributes, matching Livewire.
-        $out = ':value="$'.$prop.'" _change="__syncProperty(\''.$prop.'\')" model-prop="'.$prop.'" sync-mode="'.$syncMode.'"';
+        // No metadata attribute for the bound prop name: anything that
+        // needs it (the test harness does) derives it from the
+        // `__syncProperty('prop')` change expression, and an extra attr
+        // would have to be stripped at every attr funnel (element,
+        // streaming, child-component props) to avoid leaking.
+        $out = ':value="$'.$prop.'" _change="__syncProperty(\''.$prop.'\')" sync-mode="'.$syncMode.'"';
         if ($debounceMs > 0) {
             $out .= ' debounce-ms="'.$debounceMs.'"';
         }

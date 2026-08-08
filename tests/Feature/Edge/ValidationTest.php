@@ -189,6 +189,44 @@ it('leaves untouched wildcard siblings alone in validateOnly', function () {
         ->assertDontSee('TAG0-ERR');
 });
 
+// ── Inline-review regressions (second pass) ─────────
+
+it('merges stacked #[Validate] attributes instead of fataling', function () {
+    // #[Validate('string')] + #[Validate('min:4')] on $handle: without
+    // IS_REPEATABLE this crashes on first render; without merging, one
+    // rule silently wins.
+    Native::test(ValidationScreen::class)
+        ->set('handle', 'abc')
+        ->assertSee('HANDLE-ERR The handle field must be at least 4 characters.')
+        ->set('handle', 'abcd')
+        ->assertDontSee('HANDLE-ERR');
+});
+
+it('delivers remaining native-event tiers after one listener fails validation', function () {
+    // The ->on() closure for 'probe' always fails validation; the #[On]
+    // method tier must still hear the event, and the closure's errors
+    // must still reach the bag.
+    Native::test(ValidationScreen::class)
+        ->emitNative('probe')
+        ->assertSet('probed', true)
+        ->assertSee('BIO-ERR The bio field is required.');
+});
+
+it('returns the target data when only wildcard siblings fail', function () {
+    Native::test(ValidationScreen::class)
+        ->set('tags', ['', 'ok'])
+        ->call('checkTagReturn') // validateOnly('tags.1') — tags.0 fails, target passes
+        ->assertSet('tagResult', ['tags' => [1 => 'ok']])
+        ->assertDontSee('TAG-ERR'); // and nothing was thrown or recorded
+});
+
+it('renders a falsy "0" message through @nativeError', function () {
+    Native::test(ValidationScreen::class)
+        ->call('zeroError') // addError('bio', '0')
+        ->assertElement('text', fn (array $node) => ($node['props']['text'] ?? null) === '0'
+            && ($node['props']['color'] ?? null) !== null);
+});
+
 // ── No automatic error display (Livewire semantics) ─
 
 it('never injects error props into model-bound elements', function () {

@@ -443,8 +443,13 @@ class NativeServiceProvider extends PackageServiceProvider
                 \$__nativeErrorMessage = null;
                 if (isset(\$errors)) {
                     if (\$errors instanceof \\Illuminate\\Support\\ViewErrorBag) {
-                        \$__nativeErrorMessage = \$errors->first(\$__nativeErrorField) ?: null;
-                    } elseif (is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
+                        // has() not truthiness: a message of '0' is a message.
+                        \$__nativeErrorMessage = \$errors->has(\$__nativeErrorField)
+                            ? \$errors->first(\$__nativeErrorField)
+                            : null;
+                    } elseif (is_array(\$errors)
+                        && isset(\$errors[\$__nativeErrorField])
+                        && \$errors[\$__nativeErrorField] !== '') {
                         \$__nativeErrorMessage = \$errors[\$__nativeErrorField];
                     }
                 }
