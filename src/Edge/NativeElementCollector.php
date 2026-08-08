@@ -121,6 +121,9 @@ class NativeElementCollector
      */
     protected static array $capturedAttributes = [];
 
+    /** @var array<string, callable(string, array, ?NativeComponent): array> */
+    protected static array $attributeTransformers = [];
+
     public static function captureAttribute(string $attribute, string $prop): void
     {
         static::$capturedAttributes[$attribute] = $prop;
@@ -135,6 +138,63 @@ class NativeElementCollector
     public static function stopCapturingAttributes(): void
     {
         static::$capturedAttributes = [];
+    }
+
+    /** Register a named transformer that runs before Tailwind parsing. */
+    public static function transformAttributes(string $name, callable $transformer): void
+    {
+        static::$attributeTransformers[$name] = $transformer;
+    }
+
+    public static function stopTransformingAttributes(?string $name = null): void
+    {
+        if ($name === null) {
+            static::$attributeTransformers = [];
+
+            return;
+        }
+
+        unset(static::$attributeTransformers[$name]);
+    }
+
+    protected static function applyAttributeTransformers(string $type, array $attrs): array
+    {
+        foreach (static::$attributeTransformers as $transformer) {
+            try {
+                $transformed = $transformer($type, $attrs, static::$owner);
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if (is_array($transformed)) {
+                $attrs = $transformed;
+            }
+        }
+
+        return $attrs;
+    }
+
+    protected static function captureAttributes(array &$attrs): array
+    {
+        $props = [];
+
+        if (isset(static::$capturedAttributes['class'], $attrs['class'])) {
+            $props[static::$capturedAttributes['class']] = $attrs['class'];
+        }
+
+        foreach (static::$capturedAttributes as $attribute => $prop) {
+            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
+                continue;
+            }
+
+            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
+                $props[$prop] = $attrs[$attribute];
+            }
+
+            unset($attrs[$attribute]);
+        }
+
+        return $props;
     }
 
     // ── Streaming control ────────────────────────────
@@ -341,6 +401,10 @@ class NativeElementCollector
 
     public static function openStreaming(string $type, array $attrs): void
     {
+        $capturedProps = static::$capturedAttributes === []
+            ? []
+            : static::captureAttributes($attrs);
+
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
             $attrs = array_merge($classAttrs, $attrs);
@@ -355,7 +419,8 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs)
+            $props = $capturedProps
+                + static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
@@ -404,6 +469,7 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            $props = array_merge($capturedProps, $props ?? []);
             $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
@@ -432,6 +498,10 @@ class NativeElementCollector
 
     public static function leafStreaming(string $type, array $attrs): void
     {
+        $capturedProps = static::$capturedAttributes === []
+            ? []
+            : static::captureAttributes($attrs);
+
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
             $attrs = array_merge($classAttrs, $attrs);
@@ -447,7 +517,8 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs)
+            $props = $capturedProps
+                + static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
@@ -491,6 +562,7 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            $props = array_merge($capturedProps, $props ?? []);
             $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
@@ -903,6 +975,9 @@ class NativeElementCollector
 
         static::guardAgainstComponentSlot($type);
         $attrs = static::stripEventBindings($attrs);
+        if (static::$attributeTransformers !== []) {
+            $attrs = static::applyAttributeTransformers($type, $attrs);
+        }
 
         if (static::$streaming) {
             static::openStreaming($type, $attrs);
@@ -998,6 +1073,9 @@ class NativeElementCollector
 
         static::guardAgainstComponentSlot($type);
         $attrs = static::stripEventBindings($attrs);
+        if (static::$attributeTransformers !== []) {
+            $attrs = static::applyAttributeTransformers($type, $attrs);
+        }
 
         if (static::$streaming) {
             static::leafStreaming($type, $attrs);
@@ -1178,8 +1256,9 @@ class NativeElementCollector
 
     protected static function createElement(string $type, array $attrs): Element
     {
-        // Raw-class capture happens BEFORE parsing consumes the attribute.
-        $rawClass = isset(static::$capturedAttributes['class']) ? ($attrs['class'] ?? null) : null;
+        $capturedProps = static::$capturedAttributes === []
+            ? []
+            : static::captureAttributes($attrs);
 
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
@@ -1217,23 +1296,11 @@ class NativeElementCollector
                 ?? throw new \RuntimeException("Unknown native element type: {$type}"),
         };
 
-        if ($rawClass !== null) {
-            $element->setProp(static::$capturedAttributes['class'], $rawClass);
-        }
-
         // Registered capture attributes: lift into props, strip from the
         // attrs the native pipeline sees. Empty strings are stripped but
         // not captured — an attribute left blank means "not set".
-        foreach (static::$capturedAttributes as $attribute => $prop) {
-            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
-                continue;
-            }
-
-            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
-                $element->setProp($prop, $attrs[$attribute]);
-            }
-
-            unset($attrs[$attribute]);
+        foreach ($capturedProps as $prop => $value) {
+            $element->setProp($prop, $value);
         }
 
         // Let plugin elements apply their own attributes

@@ -6,11 +6,13 @@ use Native\Mobile\Edge\NativeElementCollector;
 beforeEach(function () {
     NativeElementCollector::reset();
     NativeElementCollector::stopCapturingAttributes();
+    NativeElementCollector::stopTransformingAttributes();
 });
 
 afterEach(function () {
     NativeElementCollector::reset();
     NativeElementCollector::stopCapturingAttributes();
+    NativeElementCollector::stopTransformingAttributes();
 });
 
 function capturedTree(string $type, array $attrs): array
@@ -52,4 +54,35 @@ it('strips but does not capture empty string values', function () {
 
     expect($tree['props'] ?? [])->not->toHaveKey('analytics_id')
         ->and($tree['props'] ?? [])->not->toHaveKey('track');
+});
+
+it('runs named raw attribute transformers before Tailwind parsing', function () {
+    NativeElementCollector::captureAttribute('debug-source', 'debug_source');
+    NativeElementCollector::captureAttribute('class', 'raw_class');
+    NativeElementCollector::transformAttributes('test.override', function (string $type, array $attrs): array {
+        expect($type)->toBe('text');
+        $attrs['class'] = 'p-8';
+
+        return $attrs;
+    });
+
+    $tree = capturedTree('text', [
+        'text' => 'x',
+        'class' => 'p-2',
+        'debug-source' => 'native/home.blade.php:10',
+    ]);
+
+    expect($tree['props']['raw_class'])->toBe('p-8')
+        ->and($tree['props']['debug_source'])->toBe('native/home.blade.php:10')
+        ->and($tree['layout']['padding'])->toBe(32.0);
+});
+
+it('isolates rendering from attribute transformer failures', function () {
+    NativeElementCollector::transformAttributes('test.failure', function (): never {
+        throw new RuntimeException('tooling failure');
+    });
+
+    $tree = capturedTree('text', ['text' => 'still renders']);
+
+    expect($tree['props']['text'])->toBe('still renders');
 });
