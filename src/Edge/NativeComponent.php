@@ -2679,6 +2679,8 @@ abstract class NativeComponent
 
     public function renderErrorScreen(\Throwable $e): void
     {
+        \Native\Mobile\DevTools\CrashRelay::report($e, ['mode' => 'edge', 'screen' => static::class]);
+
         $this->nativeHasError = true;
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;

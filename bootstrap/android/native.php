@@ -123,6 +123,9 @@ try {
     $response->sendContent();
 
 } catch (Throwable $e) {
+    require_once __DIR__.'/../shared/devtools-boot-report.php';
+    nativephp_devtools_boot_report($e, isset($app) ? $app->storagePath() : null);
+
     echo 'DEBUG: Request handling error: '.$e->getMessage()."\n";
     echo 'DEBUG: Error type: '.get_class($e)."\n";
     echo "DEBUG: Trace:\n".$e->getTraceAsString()."\n";

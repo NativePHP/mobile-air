@@ -73,6 +73,12 @@ class Runtime
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
+            DevTools\CrashRelay::report($e, [
+                'mode' => 'webview',
+                'url' => $request->fullUrl(),
+                'method' => $request->method(),
+            ]);
+
             $response = new Response(
                 'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
                 500,

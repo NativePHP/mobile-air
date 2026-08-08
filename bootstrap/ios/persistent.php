@@ -46,6 +46,10 @@ try {
 } catch (Throwable $e) {
     error_log('PERSISTENT BOOT FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
     error_log('PERSISTENT BOOT TRACE: '.$e->getTraceAsString());
+
+    require_once __DIR__.'/../shared/devtools-boot-report.php';
+    nativephp_devtools_boot_report($e, $app->storagePath());
+
     // Echo so the C layer can capture it in the output buffer
     echo 'BOOT_FATAL: '.$e->getMessage();
 }
