@@ -7,9 +7,10 @@ use Illuminate\Foundation\Http\FormRequest;
 /** FormRequest fixture for validate(ValidationPostRequest::class) harvesting. */
 class ValidationPostRequest extends FormRequest
 {
-    public function rules(): array
+    /** Method injection like a controller-bound request (finding 9). */
+    public function rules(ValidationRuleSource $source): array
     {
-        return ['title' => 'required|min:3'];
+        return ['title' => $source->titleRules()];
     }
 
     public function messages(): array

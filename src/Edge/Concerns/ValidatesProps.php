@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Concerns;
 
 use Illuminate\Contracts\Validation\Validator as ValidatorContract;
+use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\MessageBag;
 use Illuminate\Support\ViewErrorBag;
@@ -36,12 +37,22 @@ trait ValidatesProps
     protected ?MessageBag $nativeErrorBag = null;
 
     /**
-     * True while a ValidationException thrown by validate()/validateOnly()
-     * has already been recorded in the bag — tells runGuarded() not to
-     * fold the exception's messages in a second time (its per-key merge
-     * would otherwise resurrect keys a later validate() had cleared).
+     * Exceptions whose messages have already been recorded in SOME
+     * component's bag. Keyed on the exception INSTANCE (not an instance
+     * flag) because guards nest across components: a child's guard can
+     * catch an exception a parent's validate() already recorded (emit()
+     * listeners, nested dispatch), and an instance flag on the catcher
+     * would wrongly fold the parent's errors into the child's bag — or,
+     * left stale, wrongly swallow a fresh author-thrown exception.
+     *
+     * @var \WeakMap<ValidationException, true>
      */
-    private bool $validationRecorded = false;
+    private static ?\WeakMap $recordedValidationExceptions = null;
+
+    private static function recordedExceptions(): \WeakMap
+    {
+        return self::$recordedValidationExceptions ??= new \WeakMap;
+    }
 
     // ── Bag access ──────────────────────────────────
 
@@ -115,9 +126,11 @@ trait ValidatesProps
 
         if ($validator->fails()) {
             $this->nativeErrorBag = new MessageBag($validator->errors()->messages());
-            $this->validationRecorded = true;
 
-            throw new ValidationException($validator);
+            $exception = new ValidationException($validator);
+            self::recordedExceptions()[$exception] = true;
+
+            throw $exception;
         }
 
         // A full pass supersedes everything previously recorded,
@@ -129,43 +142,64 @@ trait ValidatesProps
 
     /**
      * Validate a single property (wildcard-aware: validateOnly('tags.0')
-     * matches a 'tags.*' rule). Only that property's errors are replaced
-     * or cleared; the rest of the bag is untouched. Throws on failure
-     * like validate().
+     * matches a 'tags.*' rule). Only THAT property's errors are replaced
+     * or cleared — a wildcard rule may validate sibling entries as a
+     * side effect of running, but their bag entries are never touched
+     * (editing tags.1 must not conjure an error onto untouched tags.0).
+     * Throws on failure like validate().
+     *
+     * $rules narrows the rule source (defaults to every declared rule);
+     * the eager sync path passes attributeValidationRules() so
+     * rules()-tier rules never run per keystroke — even when the two
+     * tiers declare the same key.
      */
-    public function validateOnly(string $prop, array $messages = [], array $attributes = []): array
+    public function validateOnly(string $prop, array $messages = [], array $attributes = [], ?array $rules = null): array
     {
-        $rules = [];
+        $matched = [];
 
-        foreach ($this->allValidationRules() as $key => $rule) {
+        foreach ($rules ?? $this->allValidationRules() as $key => $rule) {
             if ($key === $prop || $this->wildcardCovers($key, $prop)) {
-                $rules[$key] = $rule;
+                $matched[$key] = $rule;
             }
         }
 
-        if ($rules === []) {
+        if ($matched === []) {
             return [];
         }
 
-        $validator = $this->makePropValidator($rules, $messages, $attributes);
+        $covers = fn (string $key): bool => $key === $prop || $this->wildcardCovers($prop, $key);
+
+        $validator = $this->makePropValidator($matched, $messages, $attributes);
 
         if ($validator->fails()) {
-            $failed = $validator->errors()->messages();
+            // A wildcard rule validates sibling entries as a side effect;
+            // only failures on the TARGET prop count here. Sibling-only
+            // failures mean the edited prop is fine: no throw, no bag
+            // changes for entries the author didn't touch.
+            $covered = array_filter(
+                $validator->errors()->messages(),
+                $covers,
+                ARRAY_FILTER_USE_KEY,
+            );
 
-            $this->forgetErrors(array_keys($rules));
-            foreach ($failed as $key => $keyMessages) {
-                foreach ($keyMessages as $message) {
-                    $this->getErrorBag()->add($key, $message);
+            if ($covered !== []) {
+                $this->forgetErrors([$prop]);
+                foreach ($covered as $key => $keyMessages) {
+                    foreach ($keyMessages as $message) {
+                        $this->getErrorBag()->add($key, $message);
+                    }
                 }
-            }
-            $this->validationRecorded = true;
 
-            throw new ValidationException($validator);
+                $exception = new ValidationException($validator);
+                self::recordedExceptions()[$exception] = true;
+
+                throw $exception;
+            }
         }
 
-        $this->forgetErrors(array_keys($rules));
+        $this->forgetErrors([$prop]);
 
-        return $validator->validated();
+        return $validator->fails() ? [] : $validator->validated();
     }
 
     // ── Dispatch guard ──────────────────────────────
@@ -178,14 +212,16 @@ trait ValidatesProps
      */
     protected function runGuarded(callable $fn): mixed
     {
-        $this->validationRecorded = false;
-
         try {
             return $fn();
         } catch (ValidationException $e) {
-            if (! $this->validationRecorded) {
+            if (! isset(self::recordedExceptions()[$e])) {
                 // Author-thrown (ValidationException::withMessages or a
-                // bare Validator) — fold in per key.
+                // bare Validator) — fold into THIS component's bag, and
+                // mark the exception so an enclosing guard on another
+                // component doesn't fold it into its bag too.
+                self::recordedExceptions()[$e] = true;
+
                 foreach ($e->errors() as $key => $messages) {
                     $this->forgetErrors([$key]);
                     foreach ($messages as $message) {
@@ -195,8 +231,6 @@ trait ValidatesProps
             }
 
             return null;
-        } finally {
-            $this->validationRecorded = false;
         }
     }
 
@@ -208,16 +242,28 @@ trait ValidatesProps
      * subset — the request is never "handled", just read. Caller-passed
      * messages/attributes win over the request's own.
      *
+     * Scope caveat: the DATA under validation is the component's public
+     * props, not an HTTP payload. Rules for request-only fields behave
+     * as they would for an absent field (implicit rules like `required`
+     * fail; non-implicit ones pass) and never appear in validated() —
+     * share a FormRequest only when its fields map onto props.
+     *
      * @return array{0: array, 1: array, 2: array} [rules, messages, attributes]
      */
     protected function harvestFormRequest(string $class, array $messages, array $attributes): array
     {
-        if (! is_subclass_of($class, \Illuminate\Foundation\Http\FormRequest::class)) {
+        if (! is_subclass_of($class, FormRequest::class)) {
             throw new \InvalidArgumentException(
                 "validate({$class}) expects a FormRequest class-string or an array of rules."
             );
         }
 
+        // Bare instantiation on purpose: resolving a FormRequest THROUGH
+        // the container triggers Laravel's ValidatesWhenResolved hook,
+        // which would attempt full HTTP-style validation with no request.
+        // rules() itself goes through the container so method-injected
+        // dependencies (rules(SomeService $svc)) resolve like they do in
+        // a controller-bound request.
         $request = new $class;
 
         if (! method_exists($request, 'rules')) {
@@ -225,7 +271,7 @@ trait ValidatesProps
         }
 
         return [
-            (array) $request->rules(),
+            (array) app()->call([$request, 'rules']),
             array_merge((array) $request->messages(), $messages),
             array_merge((array) $request->attributes(), $attributes),
         ];

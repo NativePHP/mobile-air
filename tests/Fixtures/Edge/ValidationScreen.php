@@ -23,9 +23,15 @@ class ValidationScreen extends NativeComponent
 
     public bool $saved = false;
 
+    public bool $boom = false;
+
     protected function rules(): array
     {
         return [
+            // Same key as the #[Validate] attribute with a STRICTER rule:
+            // the eager sync tier must keep using the attribute's min:3,
+            // never this on-demand min:10 (regression: finding 1).
+            'title' => 'required|min:10',
             'bio' => 'required|max:5',
             'tags.*' => 'required|string',
         ];
@@ -62,8 +68,32 @@ class ValidationScreen extends NativeComponent
         $this->validateOnly('tags.1');
     }
 
+    public function catchThenRethrow(): void
+    {
+        try {
+            $this->validate(['title' => 'required']);
+        } catch (ValidationException) {
+            // swallowed on purpose — a later manual throw in the SAME
+            // dispatch must still reach the bag (regression: finding 4).
+        }
+
+        throw ValidationException::withMessages(['bio' => 'Manual bio problem']);
+    }
+
+    public function arm(): void
+    {
+        $this->boom = true;
+    }
+
     public function render(): View
     {
+        if ($this->boom) {
+            // Render-phase validation failure — must BUBBLE in tests
+            // (device paints the error screen), never silently keep a
+            // stale frame (regression: finding 6).
+            throw ValidationException::withMessages(['title' => 'Render-phase failure']);
+        }
+
         return view('validation-screen');
     }
 }

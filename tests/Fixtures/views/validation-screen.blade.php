@@ -12,3 +12,4 @@
 
     @nativeError('bio', '#AB12CD')
 </native:column>
+@error('tags.0')<native:text>TAG0-ERR {{ $message }}</native:text>@enderror

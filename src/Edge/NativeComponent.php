@@ -294,7 +294,7 @@ abstract class NativeComponent
 
     protected function view(string $name, array $data = []): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $data);
+        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $data);
 
         // Rendering as a nested child component: the parent's tree is live
         // in the collector, so emit in place — no reset, no chrome, and no
@@ -336,7 +336,7 @@ abstract class NativeComponent
      */
     protected function partial(string $name, array $data = []): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $data);
+        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $data);
 
         // Inside a child component's render the hard reset below would wipe
         // the parent's live tree — capture() collects the detached subtree
@@ -373,7 +373,7 @@ abstract class NativeComponent
      */
     protected function fromView(View $view): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $view->getData());
+        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $view->getData());
 
         // Nested child render — same in-place emission as view() above.
         if (NativeElementCollector::inComponentScope()) {
@@ -410,7 +410,7 @@ abstract class NativeComponent
      */
     protected function fromViewPartial(View $view): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $view->getData());
+        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $view->getData());
 
         // Same child-scope safety as partial() — never hard-reset the
         // parent's live tree from inside a nested component render.
@@ -1390,7 +1390,7 @@ abstract class NativeComponent
      */
     protected function streamView(string $name, array $data = []): void
     {
-        $viewData = array_merge($this->getPublicProperties(), ['errors' => $this->errorBagForViews()], $data);
+        $viewData = array_merge(['errors' => $this->errorBagForViews()], $this->getPublicProperties(), $data);
 
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
         NativeElementCollector::setOwner($this);
@@ -1420,13 +1420,25 @@ abstract class NativeComponent
 
     private function getPublicProperties(): array
     {
-        $reflect = new \ReflectionClass($this);
+        // Names are cached per class: this runs on every render AND every
+        // eager-validation keystroke, and the declared-prop list can't
+        // change at runtime. Values are read fresh each call.
+        static $names = [];
+
+        if (! isset($names[static::class])) {
+            $names[static::class] = [];
+
+            foreach ((new \ReflectionClass($this))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
+                if (! $prop->isStatic()) {
+                    $names[static::class][] = $prop->getName();
+                }
+            }
+        }
+
         $props = [];
 
-        foreach ($reflect->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
-            if (! $prop->isStatic()) {
-                $props[$prop->getName()] = $prop->getValue($this);
-            }
+        foreach ($names[static::class] as $name) {
+            $props[$name] = $this->{$name};
         }
 
         return $props;
@@ -3045,10 +3057,13 @@ abstract class NativeComponent
         // value validates the normalized form). Runs inside the dispatch
         // guard, so a failure records errors and aborts cleanly. The
         // author's native:model modifier (.live/.blur/.debounce) is the
-        // cadence control. rules()-method rules deliberately do NOT run
-        // here — that's the on-demand tier.
+        // cadence control. Passing the ATTRIBUTE rules explicitly is what
+        // keeps the promise that rules()-method rules never run here —
+        // with the default (merged) source, a same-key rules() entry
+        // would replace the attribute entry and its potentially expensive
+        // rules (unique:, exists:) would fire per keystroke.
         if ($this->hasEagerValidationRule($property)) {
-            $this->validateOnly($property);
+            $this->validateOnly($property, rules: $this->attributeValidationRules());
         }
     }
 
@@ -3333,7 +3348,11 @@ abstract class NativeComponent
             $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
 
             if (method_exists($parent, $binding['method'])) {
-                $parent->{$binding['method']}(...[...$binding['args'], ...$args]);
+                // Guarded by the OWNER: a validate() failure in the
+                // parent's handler must record on the PARENT's bag and
+                // stop there — unwinding into the emitting child's guard
+                // would fold the parent's errors into the child's bag.
+                $parent->runGuarded(fn () => $parent->{$binding['method']}(...[...$binding['args'], ...$args]));
             }
         }
 
@@ -3354,7 +3373,10 @@ abstract class NativeComponent
             ?? null;
 
         if ($method !== null && method_exists($this, $method)) {
-            $this->{$method}(...$args);
+            // Own-guarded for the same reason as emit()'s binding call:
+            // this listener belongs to $this, so its validation failures
+            // record here, not in whichever component emitted.
+            $this->runGuarded(fn () => $this->{$method}(...$args));
         }
     }
 

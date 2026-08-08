@@ -1,11 +1,17 @@
 <?php
 
+use Illuminate\Validation\ValidationException;
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\TextInput;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
+use Tests\Fixtures\Edge\LegacyErrorsScreen;
+use Tests\Fixtures\Edge\MountValidationScreen;
+use Tests\Fixtures\Edge\ValidationChild;
+use Tests\Fixtures\Edge\ValidationHostScreen;
 use Tests\Fixtures\Edge\ValidationScreen;
 
 /**
@@ -120,6 +126,69 @@ it('renders @nativeError from the injected ViewErrorBag', function () {
             && str_contains($node['props']['text'] ?? '', 'The bio field is required.'));
 });
 
+// ── Review-driven regressions (PR #301 findings) ────
+
+it('eager sync uses attribute rules, never a same-key rules() entry', function () {
+    // rules() declares title => min:10; the attribute says min:3. A
+    // 5-char sync must PASS (attribute tier only) — the on-demand rule
+    // fires solely through validate() (finding 1).
+    Native::test(ValidationScreen::class)
+        ->input('title-input', 'abcde')
+        ->assertDontSee('TITLE-ERR')
+        ->input('bio-input', 'ok')
+        ->tap('save-btn')
+        ->assertSee('TITLE-ERR The title field must be at least 10 characters.');
+});
+
+it('keeps a parent validation failure out of the emitting child bag', function () {
+    ComponentRegistry::reset();
+    ComponentRegistry::components([
+        'validation-child' => ValidationChild::class,
+    ]);
+
+    try {
+        Native::test(ValidationHostScreen::class)
+            ->tap('ping-btn') // child emit('saved') → parent parentSave() fails
+            ->assertSee('HOST-ERR')      // parent's bag has it (finding 2)
+            ->assertDontSee('CHILD-LEAK'); // child's bag does NOT
+    } finally {
+        ComponentRegistry::reset();
+    }
+});
+
+it('records a manual throw after a caught validate() in the same dispatch', function () {
+    // A stale recorded-state would swallow the second exception (finding 4).
+    Native::test(ValidationScreen::class)
+        ->call('catchThenRethrow')
+        ->assertSee('TITLE-ERR The title field is required.')
+        ->assertSee('BIO-ERR Manual bio problem');
+});
+
+it('keeps the legacy public-array $errors pattern working', function () {
+    // The injected ViewErrorBag is a FALLBACK — a v3-style hand-rolled
+    // errors prop still reaches @nativeError untouched (finding 3).
+    Native::test(LegacyErrorsScreen::class)
+        ->assertSee('Legacy message');
+});
+
+it('bubbles a mount()-time validation failure like the device error screen', function () {
+    Native::test(MountValidationScreen::class);
+})->throws(ValidationException::class);
+
+it('bubbles a render-phase validation failure instead of keeping a stale frame', function () {
+    Native::test(ValidationScreen::class)->call('arm');
+})->throws(ValidationException::class);
+
+it('leaves untouched wildcard siblings alone in validateOnly', function () {
+    // Editing tags.1 must not conjure an error onto tags.0 even though
+    // the tags.* rule sweeps the whole array (finding 8).
+    Native::test(ValidationScreen::class)
+        ->set('tags', ['', ''])
+        ->call('checkTag') // validateOnly('tags.1')
+        ->assertSee('TAG-ERR')
+        ->assertDontSee('TAG0-ERR');
+});
+
 // ── No automatic error display (Livewire semantics) ─
 
 it('never injects error props into model-bound elements', function () {
@@ -144,34 +213,34 @@ it('strips the model-prop metadata attribute before elements see it', function (
 // ── Child-component scoping ─────────────────────────
 
 it('scopes validation errors to the child component that failed', function () {
-    \Native\Mobile\Edge\ComponentRegistry::reset();
-    \Native\Mobile\Edge\ComponentRegistry::components([
-        'validation-child' => \Tests\Fixtures\Edge\ValidationChild::class,
+    ComponentRegistry::reset();
+    ComponentRegistry::components([
+        'validation-child' => ValidationChild::class,
     ]);
 
     try {
-        Native::test(\Tests\Fixtures\Edge\ValidationHostScreen::class)
+        Native::test(ValidationHostScreen::class)
             ->tap('child-save-btn')
             ->assertSee('CHILD-ERR The nickname field is required.')
             ->assertDontSee('HOST-LEAKED'); // parent bag untouched
     } finally {
-        \Native\Mobile\Edge\ComponentRegistry::reset();
+        ComponentRegistry::reset();
     }
 });
 
 it('validates a child prop eagerly on the child input sync', function () {
-    \Native\Mobile\Edge\ComponentRegistry::reset();
-    \Native\Mobile\Edge\ComponentRegistry::components([
-        'validation-child' => \Tests\Fixtures\Edge\ValidationChild::class,
+    ComponentRegistry::reset();
+    ComponentRegistry::components([
+        'validation-child' => ValidationChild::class,
     ]);
 
     try {
-        Native::test(\Tests\Fixtures\Edge\ValidationHostScreen::class)
+        Native::test(ValidationHostScreen::class)
             ->input('nickname-input', 'x') // min:2
             ->assertSee('CHILD-ERR The nickname field must be at least 2 characters.')
             ->assertDontSee('HOST-LEAKED');
     } finally {
-        \Native\Mobile\Edge\ComponentRegistry::reset();
+        ComponentRegistry::reset();
     }
 });
 

@@ -21,6 +21,11 @@ class ValidationChild extends NativeComponent
         $this->childSaved = true;
     }
 
+    public function pingParent(): void
+    {
+        $this->emit('saved');
+    }
+
     public function render(): View
     {
         return view('validation-child');
