@@ -427,11 +427,19 @@ class NativeRouter
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
                     $component->mount();
-                    $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
+                    $this->announce(new ScreenMounted(
+                        get_class($component),
+                        $entry['uri'] ?? null,
+                        spl_object_hash($component),
+                    ));
                 } else {
                     static::debugLog('loop: calling onResume() on '.get_class($component));
                     $component->onResume();
-                    $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
+                    $this->announce(new ScreenResumed(
+                        get_class($component),
+                        $entry['uri'] ?? null,
+                        spl_object_hash($component),
+                    ));
                 }
             } catch (NativeDumpException $e) {
                 $component->renderDumpScreen($e);
@@ -599,7 +607,11 @@ class NativeRouter
     protected function unmountComponent(NativeComponent $component): void
     {
         $component->unmount();
-        $this->announce(new ScreenUnmounted(get_class($component), $this->currentUri()));
+        $this->announce(new ScreenUnmounted(
+            get_class($component),
+            $this->currentUri(),
+            spl_object_hash($component),
+        ));
     }
 
     /**

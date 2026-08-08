@@ -40,7 +40,8 @@ it('announces a screen leaving the stack', function () {
 
     Event::assertDispatched(
         ScreenUnmounted::class,
-        fn (ScreenUnmounted $event): bool => $event->component === LifecycleProbeScreen::class,
+        fn (ScreenUnmounted $event): bool => $event->component === LifecycleProbeScreen::class
+            && $event->componentId === spl_object_hash($component),
     );
 });
 
