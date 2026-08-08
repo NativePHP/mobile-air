@@ -1810,6 +1810,10 @@ abstract class NativeComponent
 
     private function dispatchNativeEventNow(string $eventName, mixed $payload): void
     {
+        if (NativeEventHandlers::dispatch($eventName, $payload, $this)) {
+            return;
+        }
+
         // Deep link / universal link arriving while the app is already running.
         // The native shell (DeepLinkRouter) posts this to wake the blocked event
         // loop — a warm php:// load can't route because this loop owns the PHP

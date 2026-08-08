@@ -4,6 +4,8 @@ use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Contracts\RuntimeObserver;
 use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Edge\NativeEventHandlers;
+use Native\Mobile\Edge\NativeEventHandling;
 use Native\Mobile\Edge\Runtime\ComponentContext;
 use Native\Mobile\Edge\Runtime\ComponentPublished;
 use Native\Mobile\Edge\Runtime\Dispatch as RuntimeDispatch;
@@ -59,6 +61,7 @@ class RuntimeObservedComponent extends NativeComponent
 
 afterEach(function () {
     RuntimeObservers::reset();
+    NativeEventHandlers::reset();
 });
 
 function runtimeObserverSpy(): RuntimeObserver
@@ -177,6 +180,51 @@ it('isolates application behavior from observer failures', function () {
         ->and($observer->failures)->toHaveCount(1);
 });
 
+it('only claims namespaced native events when a handler explicitly handles them', function () {
+    $component = new class extends NativeComponent
+    {
+        public int $value = 0;
+
+        public function render(): Column
+        {
+            return Column::make();
+        }
+    };
+
+    $passId = NativeEventHandlers::register('tool:set', function (): NativeEventHandling {
+        return NativeEventHandling::Pass;
+    });
+    $handledId = NativeEventHandlers::register('tool:set', function (array $payload, NativeComponent $target): NativeEventHandling {
+        $target->value = (int) ($payload['value'] ?? 0);
+
+        return NativeEventHandling::Handled;
+    });
+
+    expect(NativeEventHandlers::dispatch('tool:set', ['value' => 42], $component))->toBeTrue()
+        ->and($component->value)->toBe(42)
+        ->and(NativeEventHandlers::dispatch('tool:missing', [], $component))->toBeFalse();
+
+    NativeEventHandlers::unregister($handledId);
+
+    expect(NativeEventHandlers::dispatch('tool:set', ['value' => 9], $component))->toBeFalse();
+
+    NativeEventHandlers::unregister($passId);
+});
+
+it('does not claim a native event when its package handler fails', function () {
+    $component = new RuntimeObservedComponent;
+
+    NativeEventHandlers::register('tool:set', function (): never {
+        throw new RuntimeException('handler failed');
+    });
+
+    expect(NativeEventHandlers::dispatch('tool:set', [], $component))->toBeFalse();
+});
+
+it('requires package event names to be namespaced', function () {
+    NativeEventHandlers::register('unscoped', static fn () => null);
+})->throws(InvalidArgumentException::class);
+
 it('observes interaction dispatch around the actual component mutation', function () {
     $observer = runtimeObserverSpy();
     RuntimeObservers::register($observer);
@@ -269,4 +317,23 @@ it('reports the same runtime failure only once', function () {
         ->and($observer->failures[0]->exception)->toBe($exception)
         ->and($observer->failures[0]->context->component)->toBe($component)
         ->and($observer->failures[0]->context->id)->toBe(spl_object_hash($component));
+});
+
+it('routes package native events through the component and observes them', function () {
+    $observer = runtimeObserverSpy();
+    RuntimeObservers::register($observer);
+    $component = new RuntimeObservedComponent;
+    $component->initializeCallbacks();
+    NativeEventHandlers::register('tool:set', function (array $payload, NativeComponent $target): NativeEventHandling {
+        $target->count = (int) $payload['value'];
+
+        return NativeEventHandling::Handled;
+    });
+
+    $component->dispatchPluginEvent('tool:set', ['value' => 13]);
+
+    expect($component->count)->toBe(13)
+        ->and($observer->starting[0]->dispatch->kind)->toBe(DispatchKind::Native)
+        ->and($observer->startingStates[0])->toBe(0)
+        ->and($observer->finishedStates[0])->toBe(13);
 });
