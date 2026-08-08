@@ -13,13 +13,20 @@ use Native\Mobile\Edge\Runtime\DispatchStarting;
 use Native\Mobile\Edge\Runtime\RenderTimings;
 use Native\Mobile\Edge\Runtime\RuntimeFailed;
 use Native\Mobile\Edge\RuntimeObservers;
+use Native\Mobile\Testing\FakeBridge;
 
 class RuntimeObservedComponent extends NativeComponent
 {
     public int $count = 0;
 
+    public bool $stopAfterRender = false;
+
     public function render(): Column
     {
+        if ($this->stopAfterRender) {
+            $this->stop();
+        }
+
         return Column::make();
     }
 
@@ -186,4 +193,80 @@ it('observes interaction dispatch around the actual component mutation', functio
         ->and($observer->finishedStates[0])->toBe(1)
         ->and($observer->finished[0]->dispatch->nodeId)->toBe(7)
         ->and($observer->finished[0]->durationMs)->toBeFloat();
+});
+
+it('observes native dispatch around the actual component mutation', function () {
+    $observer = runtimeObserverSpy();
+    RuntimeObservers::register($observer);
+    $component = new RuntimeObservedComponent;
+    $component->registerNativeEventListener('counter.changed', function (object $event): void {
+        $this->count = $event->value;
+    });
+
+    $component->dispatchPluginEvent('counter.changed', ['value' => 5]);
+
+    expect($component->count)->toBe(5)
+        ->and($observer->starting)->toHaveCount(1)
+        ->and($observer->starting[0]->dispatch->kind)->toBe(DispatchKind::Native)
+        ->and($observer->starting[0]->dispatch->event)->toBe('counter.changed')
+        ->and($observer->starting[0]->dispatch->payload)->toBe(['value' => 5])
+        ->and($observer->startingStates[0])->toBe(0)
+        ->and($observer->finished)->toHaveCount(1)
+        ->and($observer->finishedStates[0])->toBe(5)
+        ->and($observer->finished[0]->exception)->toBeNull();
+});
+
+it('reports a native dispatch exception without changing propagation', function () {
+    $observer = runtimeObserverSpy();
+    RuntimeObservers::register($observer);
+    $component = new RuntimeObservedComponent;
+    $exception = new RuntimeException('native listener failed');
+    $component->registerNativeEventListener('counter.failed', function () use ($exception): void {
+        throw $exception;
+    });
+
+    try {
+        $component->dispatchPluginEvent('counter.failed', []);
+    } catch (RuntimeException $thrown) {
+        expect($thrown)->toBe($exception);
+    }
+
+    expect($observer->starting)->toHaveCount(1)
+        ->and($observer->finished)->toHaveCount(1)
+        ->and($observer->finished[0]->exception)->toBe($exception);
+});
+
+it('observes a published component frame from the real run loop', function () {
+    $bridge = FakeBridge::enable();
+    $observer = runtimeObserverSpy();
+    RuntimeObservers::register($observer);
+    $component = new RuntimeObservedComponent;
+    $component->stopAfterRender = true;
+
+    $component->runLoop();
+
+    expect($bridge->publishes)->toHaveCount(1)
+        ->and($observer->published)->toHaveCount(1)
+        ->and($observer->published[0]->context->component)->toBe($component)
+        ->and($observer->published[0]->context->id)->toBe(spl_object_hash($component))
+        ->and($observer->published[0]->timings)->toBeInstanceOf(RenderTimings::class)
+        ->and($observer->published[0]->timings->renderMs)->toBeFloat()
+        ->and($observer->published[0]->timings->serializeMs)->toBeFloat()
+        ->and($observer->published[0]->timings->publishMs)->toBeFloat();
+});
+
+it('reports the same runtime failure only once', function () {
+    FakeBridge::enable();
+    $observer = runtimeObserverSpy();
+    RuntimeObservers::register($observer);
+    $component = new RuntimeObservedComponent;
+    $exception = new RuntimeException('broken render');
+
+    $component->renderErrorScreen($exception);
+    $component->renderErrorScreen($exception);
+
+    expect($observer->failures)->toHaveCount(1)
+        ->and($observer->failures[0]->exception)->toBe($exception)
+        ->and($observer->failures[0]->context->component)->toBe($component)
+        ->and($observer->failures[0]->context->id)->toBe(spl_object_hash($component));
 });
