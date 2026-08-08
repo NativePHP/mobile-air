@@ -8,6 +8,7 @@ use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Gallery\MediaSelected;
 use Native\Mobile\PendingMediaPicker;
+use Native\Mobile\PendingPhotoCapture;
 
 /**
  * Fixture for the durable-callbacks suite: every fluent callback shape
@@ -44,6 +45,61 @@ class PickerScreen extends NativeComponent
     public function onPicked(MediaSelected $media): void
     {
         $this->status = 'picked:'.$media->count;
+    }
+
+    /**
+     * Both callbacks DELIBERATELY on one line — the same-line durability
+     * hazard (serializable-closure extracts code by start line). Arrow
+     * functions on purpose: Pint keeps them inline, where it would
+     * expand `function () {}` bodies onto separate lines and silently
+     * defuse this fixture.
+     */
+    public function startOneLineChain(): void
+    {
+        (new PendingPhotoCapture)->id('oneline-pick')->photoTaken(fn () => $this->status = 'taken')->photoCancelled(fn () => $this->status = 'cancelled');
+    }
+
+    public function startFirstClass(): void
+    {
+        (new PendingMediaPicker)->id('fc-pick')->onSuccess($this->onPicked(...));
+    }
+
+    public function startResourceClosure(): void
+    {
+        $handle = fopen('php://memory', 'r');
+
+        (new PendingMediaPicker)->id('resource-pick')->onSuccess(function () use ($handle) {
+            $this->status = 'resource:'.get_debug_type($handle);
+        });
+    }
+
+    public function startHuge(): void
+    {
+        $blob = str_repeat('x', 200 * 1024);
+
+        (new PendingMediaPicker)->id('huge-pick')->onSuccess(function () use ($blob) {
+            $this->status = 'huge:'.strlen($blob);
+        });
+    }
+
+    /** Method named after a loadable class — the class_exists hijack bait. */
+    public function startClassNamedMethod(): void
+    {
+        (new PendingMediaPicker)->id('named-pick')->mediaSelected('error');
+    }
+
+    public function error(MediaSelected $media): void
+    {
+        $this->status = 'component-error-method';
+    }
+
+    public function startCustomEvent(): void
+    {
+        (new PendingMediaPicker)->id('custom-pick')
+            ->onSuccess(function (CustomPickEvent $event) {
+                $this->status = 'custom:'.$event->count;
+            })
+            ->event(CustomPickEvent::class);
     }
 
     public function render(): Element

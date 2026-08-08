@@ -1911,11 +1911,13 @@ abstract class NativeComponent
         // Exact correlation by id (camera). If that misses — either no id came
         // back (some native paths drop it across a lifecycle bounce, e.g. the
         // gallery picker) or it didn't match — fall back to the single in-flight
-        // callback for this event class.
-        $callback = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass) : null;
+        // callback for this event class. `for: $this` lets the registry skip a
+        // durable entry that belongs to a DIFFERENT screen class (post-kill
+        // cold start lands on '/', not the screen that registered).
+        $callback = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass, for: $this) : null;
 
         if ($callback === null) {
-            [$id, $callback] = NativeCallbacks::resolveByEvent($eventClass) ?? [null, null];
+            [$id, $callback] = NativeCallbacks::resolveByEvent($eventClass, for: $this) ?? [null, null];
         }
 
         if ($callback === null) {
@@ -1923,19 +1925,21 @@ abstract class NativeComponent
         }
 
         if (is_string($callback)) {
-            if (class_exists($callback)) {
-                $callback = app($callback);
-            } elseif (method_exists($this, $callback)) {
+            // Own method FIRST: class_exists() is case-insensitive and
+            // autoloading, so a handler named `error`, `log`, `view`, …
+            // would otherwise be hijacked into app() resolution of a PHP
+            // built-in or a facade alias. The component's own method is
+            // the more specific match.
+            if (method_exists($this, $callback)) {
                 // Method-name form — `->mediaSelected('onMediaSelected')`.
                 // Serializes into the durable tier trivially, so it's the
                 // fluent shape that survives both a process kill on device
-                // AND the stateless web target, where every request is a
-                // fresh process and closures registered last request are
-                // gone unless the durable tier carried them.
-                $method = $callback;
-                $callback = fn ($event) => $this->{$method}($event);
+                // AND the stateless web target.
+                $callback = [$this, $callback];
+            } elseif (class_exists($callback)) {
+                $callback = app($callback);
             } else {
-                NativeRouter::debugLog("Native callback '{$callback}' is neither a class nor a method on ".static::class);
+                NativeRouter::debugLog("Native callback '{$callback}' is neither a method on ".static::class.' nor a class');
                 NativeCallbacks::forget($id, $eventClass);
 
                 return;
@@ -1943,10 +1947,16 @@ abstract class NativeComponent
         }
 
         // Bind the closure to this live component so then()/catch() can use
-        // $this (e.g. $this->images[] = ...). Static closures can't be bound, so
-        // they keep running without $this.
-        if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
-            $callback = \Closure::bind($callback, $this, static::class);
+        // $this (e.g. $this->images[] = ...). Static closures can't be bound,
+        // and FAKE closures (first-class callables — $this->onPicked(...))
+        // must not be: bind() on those returns null. Both keep their own
+        // binding; ?? guards any other null from bind().
+        if ($callback instanceof \Closure) {
+            $reflection = new \ReflectionFunction($callback);
+
+            if (! $reflection->isStatic() && $reflection->isAnonymous()) {
+                $callback = \Closure::bind($callback, $this, static::class) ?? $callback;
+            }
         }
 
         try {

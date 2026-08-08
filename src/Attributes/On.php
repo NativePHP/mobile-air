@@ -3,6 +3,7 @@
 namespace Native\Mobile\Attributes;
 
 use Attribute;
+use Illuminate\Support\Str;
 
 /**
  * Marks a NativeComponent method as a listener for a native event.
@@ -33,9 +34,8 @@ class On
     {
         // Idempotent prefixing: the bridge docs' older examples spell the
         // prefix out (#[On('native:Foo')]), and double-prefixing silently
-        // registers a listener no event name can ever match.
-        $this->event = str_starts_with($event, 'native:')
-            ? $event
-            : 'native:'.$event;
+        // registers a listener no event name can ever match. Str::start
+        // also collapses an already-doubled prefix.
+        $this->event = Str::start($event, 'native:');
     }
 }

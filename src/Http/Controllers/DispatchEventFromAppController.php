@@ -66,6 +66,14 @@ class DispatchEventFromAppController
             return false;
         }
 
+        // Method-name strings (->mediaSelected('onPicked')) name a method on
+        // the OWNING COMPONENT — like $this-closures, only the Edge loop can
+        // fire them. Peek-and-bail BEFORE consuming, or the durable copy is
+        // destroyed here and the Edge loop finds nothing.
+        if (is_string($peek) && ! class_exists($peek)) {
+            return false;
+        }
+
         $callback = NativeCallbacks::resolve($id, $eventClass);
 
         // Normalise an invokable class-string into a resolved instance so it can
@@ -75,10 +83,13 @@ class DispatchEventFromAppController
             $callback = app($callback);
         }
 
-        call_user_func($callback, $event);
-
-        // One outcome per capture — drop the success/cancel/denied siblings too.
-        NativeCallbacks::forget($id, $eventClass);
+        // One outcome per capture, even when the callback throws — drop the
+        // success/cancel/denied siblings too.
+        try {
+            call_user_func($callback, $event);
+        } finally {
+            NativeCallbacks::forget($id, $eventClass);
+        }
 
         return true;
     }
