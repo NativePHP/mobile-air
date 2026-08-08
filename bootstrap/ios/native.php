@@ -32,6 +32,10 @@ try {
     $app = require_once __DIR__.'/../../../../../bootstrap/app.php';
     $_timing['bootstrap'] = microtime(true);
 
+    // Catch uncaught throwables and PHP fatals this request can't trap.
+    require_once __DIR__.'/../shared/devtools-boot-report.php';
+    nativephp_devtools_install_handlers($app->storagePath());
+
     $kernel = $app->make(Kernel::class);
     $_timing['kernel'] = microtime(true);
 

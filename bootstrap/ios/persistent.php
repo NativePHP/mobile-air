@@ -40,6 +40,10 @@ $_timing['autoload'] = microtime(true);
 $app = require_once $_SERVER['LARAVEL_BOOTSTRAP_PATH'].'/app.php';
 $_timing['bootstrap'] = microtime(true);
 
+// Catch uncaught throwables and PHP fatals for the whole runtime lifetime.
+require_once __DIR__.'/../shared/devtools-boot-report.php';
+nativephp_devtools_install_handlers($app->storagePath());
+
 // 3. Boot the persistent runtime — stores kernel + app for reuse
 try {
     Runtime::boot($app);

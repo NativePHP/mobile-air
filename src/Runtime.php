@@ -58,6 +58,12 @@ class Runtime
             throw new \RuntimeException('Runtime not booted. Call Runtime::boot() first.');
         }
 
+        // A fatal in a previous dispatch bails out past PHP catch while the
+        // persistent host survives — report it on this next entry.
+        if (function_exists('nativephp_devtools_report_last_fatal')) {
+            nativephp_devtools_report_last_fatal(function_exists('storage_path') ? storage_path() : null);
+        }
+
         // Reset state from previous dispatch
         static::reset();
 

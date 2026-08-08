@@ -375,6 +375,12 @@ class NativeRouter
      */
     public function start(string $class, array $params = [], string $uri = ''): ?string
     {
+        // A fatal in a previous render bails out past PHP catch and the host
+        // survives, so report it now — the earliest re-entry after the fatal.
+        if (function_exists('nativephp_devtools_report_last_fatal')) {
+            nativephp_devtools_report_last_fatal(function_exists('storage_path') ? storage_path() : null);
+        }
+
         NativeComponent::registerDumpHandler();
 
         nativephp_element_init();
