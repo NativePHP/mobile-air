@@ -54,10 +54,10 @@ Before implementing any feature, fetch the relevant docs using `WebFetch`. Find 
 WebFetch("https://nativephp.com/docs/mobile/4/the-basics/routing", "Explain Route::native, navigation methods, and transitions")
 ```
 
-## Build Commands — Tell the User, Don't Run
+## Build Commands — Who Runs Them
 
-Never auto-run these commands. Always tell the user to run them manually, and always ask which platform
-(iOS or Android) first — never assume:
+By default, tell the user to run these manually, and always ask which platform (iOS or Android)
+first — never assume:
 
 ```bash
 php artisan native:run ios          # or android; compile and launch
@@ -66,6 +66,18 @@ php artisan native:watch            # hot reload only
 php artisan native:jump             # device dev loop via the Jump app (QR code)
 ./native run                        # shortcut wrapper installed by native:install
 ```
+
+**Exception — the agent loop.** You MAY run builds yourself when ALL of these hold:
+
+1. the `nativephp-agent-loop` skill is available in this project,
+2. the user asked you to build, run, verify, or iterate on the app (not merely to write code), and
+3. the target is a simulator/emulator with a debug build.
+
+In that case follow `nativephp-agent-loop` and use the headless `--json` command forms
+(`native:run ios <udid> --build=debug --no-tty --json`, `native:screenshot`, `native:status`,
+`native:tail`, `native:open-url`, `native:devices`). Still ask the user before: physical devices,
+release/bundle builds, `native:install`, or anything destructive to device state (uninstalls,
+`simctl shutdown`/`erase`).
 
 The Vite dev server is **opt-in** in v4: add `--vite` to `native:run`/`native:watch` only when the app uses
 JS/CSS HMR (web-view assets). Native UI screens hot-reload without Vite. `npm run build -- --mode=ios|android`
@@ -261,8 +273,9 @@ php artisan native:plugin:register vendor/plugin-name          # adds it to Nati
 php artisan native:plugin:list                                 # verify it shows as registered
 ```
 
-Then tell the user to rebuild with `native:run` (don't run it yourself). If `native:run` warns "The following
-plugins are installed but not registered", the register step was missed.
+Then rebuild with `native:run` (per "Build Commands — Who Runs Them": tell the user, unless the agent-loop
+conditions are met). If `native:run` warns "The following plugins are installed but not registered", the
+register step was missed.
 
 Async calls dispatch events (`Camera::getPhoto()` → `PhotoTaken`); handle with `#[On(PhotoTaken::class)]` in a
 NativeComponent. Sync calls return directly (`SecureStorage::get()`, `Network::status()`).
