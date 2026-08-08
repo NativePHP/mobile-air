@@ -7,7 +7,7 @@ use Symfony\Component\Process\Process;
 
 trait WatchesAndroid
 {
-    use InteractsWithWatchTerminal, ManagesPollingWatcher, ManagesWatchman;
+    use InteractsWithWatchTerminal, ManagesDevtoolsListener, ManagesPollingWatcher, ManagesWatchman;
 
     private array $androidWatchPaths = ['app', 'resources', 'routes', 'config', 'database', 'public'];
 
@@ -53,6 +53,8 @@ trait WatchesAndroid
                 $this->setupViteDevServerForwarding($this->vitePort);
             }
         }
+
+        $this->provisionDevtoolsAndroid((string) config('nativephp.app_id'));
 
         $this->startAndroidWatching();
     }
@@ -212,6 +214,9 @@ trait WatchesAndroid
         // Service the interactive terminal (keypresses, activity line)
         $this->pumpWatchTerminal();
 
+        // Surface device exceptions reported to the devtools listener
+        $this->pumpDevtoolsEvents();
+
         // Check if we should sync public/build
         $this->checkAndSyncPublicBuild();
 
@@ -300,8 +305,8 @@ trait WatchesAndroid
 
     private function checkAdbConnection(): void
     {
-        // Skip health check if no Vite port detected
-        if (! $this->vitePort) {
+        // Skip health check when neither Vite nor devtools needs a reverse
+        if (! $this->vitePort && $this->devtoolsListener === null) {
             return;
         }
 
@@ -317,10 +322,18 @@ trait WatchesAndroid
         // Check if adb reverse is still active
         $process = $this->adb('reverse', '--list');
         $process->run();
+        $reverses = $process->isSuccessful() ? $process->getOutput() : '';
 
-        if (! $process->isSuccessful() || ! str_contains($process->getOutput(), "tcp:{$this->vitePort}")) {
-            $reverseProcess = $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}");
-            $reverseProcess->run();
+        if ($this->vitePort && ! str_contains($reverses, "tcp:{$this->vitePort}")) {
+            $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}")->run();
+        }
+
+        if ($this->devtoolsListener !== null) {
+            $devtoolsPort = (int) ($this->devtoolsListener['port'] ?? 9210);
+
+            if (! str_contains($reverses, "tcp:{$devtoolsPort}")) {
+                $this->reassertDevtoolsReverse();
+            }
         }
     }
 

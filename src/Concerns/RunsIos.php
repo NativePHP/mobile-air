@@ -318,6 +318,7 @@ trait RunsIos
             $this->call('native:watch', [
                 'platform' => 'ios',
                 'target' => $target,
+                '--no-devtools' => $this->hasOption('no-devtools') && $this->option('no-devtools'),
             ]);
         }
     }
@@ -401,6 +402,7 @@ trait RunsIos
             $this->call('native:watch', [
                 'platform' => 'ios',
                 'target' => $target,
+                '--no-devtools' => $this->hasOption('no-devtools') && $this->option('no-devtools'),
             ]);
         }
     }

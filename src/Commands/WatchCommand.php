@@ -21,6 +21,7 @@ class WatchCommand extends Command
         {--android : Target Android platform (shorthand for platform=android)}
         {--vite : Start the Vite dev server (opt-in; off by default)}
         {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
+        {--no-devtools : Skip starting the devtools exception listener}
         {target? : The device/simulator UDID to watch}';
 
     protected $description = 'Watch for file changes and sync to running mobile app';

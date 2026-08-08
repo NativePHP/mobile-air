@@ -31,6 +31,7 @@ class RunCommand extends Command
         {--vite : Start the Vite dev server (opt-in; off by default)}
         {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
+        {--no-devtools : Skip starting the devtools exception listener in watch mode}
         {--no-tty : Disable TTY mode for non-interactive environments}
         {--json : Machine-readable result on the last line of stdout; never prompts (implies --no-tty)}';
 
