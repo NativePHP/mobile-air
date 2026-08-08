@@ -11,7 +11,6 @@
  * only `native:watch` ever provisions — without it the POST is skipped, and
  * the native drainer only runs in debug builds, so release builds are inert.
  */
-
 if (! function_exists('nativephp_devtools_storage_path')) {
     function nativephp_devtools_storage_path(?string $storagePath): ?string
     {

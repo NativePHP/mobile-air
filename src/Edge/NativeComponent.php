@@ -13,6 +13,8 @@ use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
+use Native\Mobile\DevTools\CrashRelay;
+use Native\Mobile\DevTools\LoopTick;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -1581,7 +1583,7 @@ abstract class NativeComponent
 
         // A bound devtools ticker needs regular idle turns even with no
         // polls; without one the loop keeps its block-forever behavior.
-        $cap = \Native\Mobile\DevTools\LoopTick::active() ? 250 : null;
+        $cap = LoopTick::active() ? 250 : null;
 
         if (empty($deadlines)) {
             return $cap ?? -1;
@@ -2125,7 +2127,7 @@ abstract class NativeComponent
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
                 $this->runDuePolls();
-                \Native\Mobile\DevTools\LoopTick::run($this);
+                LoopTick::run($this);
 
                 continue;
             }
@@ -2325,7 +2327,7 @@ abstract class NativeComponent
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
                 $this->runDuePolls();
-                \Native\Mobile\DevTools\LoopTick::run($this);
+                LoopTick::run($this);
 
                 continue;
             }
@@ -2687,7 +2689,7 @@ abstract class NativeComponent
 
     public function renderErrorScreen(\Throwable $e): void
     {
-        \Native\Mobile\DevTools\CrashRelay::report($e, ['mode' => 'edge', 'screen' => static::class]);
+        CrashRelay::report($e, ['mode' => 'edge', 'screen' => static::class]);
 
         $this->nativeHasError = true;
         $this->errorException = $e;
