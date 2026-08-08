@@ -131,8 +131,9 @@ struct NodeView: View, Equatable {
         lhs.node === rhs.node
     }
 
+    @ViewBuilder
     var body: some View {
-        content
+        let rendered = content
             .modifier(NodeLayoutModifier(
                 layout: node.layout,
                 availableWidth: availableWidth,
@@ -162,6 +163,12 @@ struct NodeView: View, Equatable {
             // the tap and runs alongside it for press-in/press-out
             // tracking. No-op when no `press-*` prop is set.
             .modifier(NodePressFeedbackModifier(props: node.props))
+
+        if let decorate = NativeNodeDecoratorRegistry.shared.currentPipeline {
+            decorate(node, AnyView(rendered))
+        } else {
+            rendered
+        }
     }
 
     // MARK: - Content Dispatch (via plugin registry)

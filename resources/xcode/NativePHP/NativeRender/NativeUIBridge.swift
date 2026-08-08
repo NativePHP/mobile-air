@@ -10,6 +10,9 @@ final class NativeUIBridge: ObservableObject {
     /// Current parsed tree — observed by the SwiftUI renderer
     @Published var currentTree: NativeUITree?
 
+    /// Monotonic identity for every accepted tree publication, including equal trees.
+    @Published private(set) var treePublicationId: UInt64 = 0
+
     /// Whether the native UI system is active
     @Published var isActive: Bool = false {
         didSet {
@@ -59,6 +62,14 @@ final class NativeUIBridge: ObservableObject {
     var navigationPending = false
 
     private init() {}
+
+    func publishTree(_ tree: NativeUITree) {
+        currentTree = tree
+        treePublicationId &+= 1
+        NativeTreeObserverRegistry.shared.publish(
+            NativeTreeObserverRegistry.Publication(id: treePublicationId, tree: tree)
+        )
+    }
 
     // MARK: - Navigation
 

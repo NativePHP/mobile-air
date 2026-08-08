@@ -15,20 +15,7 @@ import org.junit.Test
 class NativeUIBridgeTest {
     @Test
     fun identicalTreePublicationsAdvanceTheObservableRevisionIndependently() = runBlocking {
-        val tree = NativeUITree(
-            version = 0,
-            callbackCount = 0,
-            root = NativeUINode(
-                id = 1,
-                type = "column",
-                layout = null,
-                style = null,
-                props = GenericProps(),
-                onPress = 0,
-                onLongPress = 0,
-                children = emptyList(),
-            ),
-        )
+        val tree = tree()
         val initialPublicationId = NativeUIBridge.treePublicationId.longValue
         val observedPublicationIds = mutableListOf<Long>()
         val observation = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -50,4 +37,40 @@ class NativeUIBridgeTest {
             observedPublicationIds,
         )
     }
+
+    @Test
+    fun treeObserversReceiveAcceptedPublicationsWithReplayAndFailureIsolation() {
+        val firstTree = tree(version = 1)
+        val secondTree = tree(version = 2)
+        NativeUIBridge.publishTree(firstTree)
+
+        val observed = mutableListOf<NativeTreeObserverRegistry.Publication>()
+        val failing = NativeTreeObserverRegistry.observe { error("observer failure") }
+        val subscription = NativeTreeObserverRegistry.observe(observed::add)
+
+        NativeUIBridge.publishTree(secondTree)
+        NativeTreeObserverRegistry.unsubscribe(failing)
+        NativeTreeObserverRegistry.unsubscribe(subscription)
+        NativeUIBridge.publishTree(tree(version = 3))
+
+        assertEquals(2, observed.size)
+        assertSame(firstTree, observed[0].tree)
+        assertSame(secondTree, observed[1].tree)
+        assertEquals(observed[0].id + 1L, observed[1].id)
+    }
+
+    private fun tree(version: Int = 0): NativeUITree = NativeUITree(
+        version = version,
+        callbackCount = 0,
+        root = NativeUINode(
+            id = 1,
+            type = "column",
+            layout = null,
+            style = null,
+            props = GenericProps(),
+            onPress = 0,
+            onLongPress = 0,
+            children = emptyList(),
+        ),
+    )
 }

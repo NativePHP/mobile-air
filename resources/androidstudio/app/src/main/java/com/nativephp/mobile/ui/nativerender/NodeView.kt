@@ -283,6 +283,10 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             .nodeGestures(node, interactionSource)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
+        if (!NativeNodeDecoratorRegistry.isEmpty()) {
+            modifier = NativeNodeDecoratorRegistry.apply(node, modifier)
+        }
+
         // In-place text change animation (`content_transition` — numeric
         // roll / crossfade). Wraps the content in AnimatedContent keyed on
         // the text prop; absent prop → straight render, hot path unchanged.
