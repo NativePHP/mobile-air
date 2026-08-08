@@ -64,8 +64,11 @@ Runtime exceptions on device stream to **`nativephp/devtools/events.jsonl`** (on
 capped `trace`. This is the source of truth — read past your last-seen line count; don't consume-once.
 
 - Human view while developing: exceptions also print as red lines in the `native:watch` console.
-- On demand: `native:tail <os> --lines=100 --json` for the raw `laravel.log`; `native:devtools:pull <os>` to
-  merge any events the device spooled while the listener was down.
+- On demand: `native:tail <os> --lines=100 --json` for the raw `laravel.log`; `native:devtools:pull <os> --json`
+  to merge any events the device spooled while the listener was down. Pull is session-scoped by default (stale
+  events from previous sessions are filtered, reported as `filtered_stale`) — trust `pulled > 0` as "new failure
+  happened", no timestamp triage needed. Use `--purge` to clear the device spool after a pull, `--all` to see
+  everything.
 - If the `nativephp-devtools` MCP server is registered, prefer its tools (`get_exceptions`,
   `await_next_event`, `get_screenshot`, `tail_app_logs`, `device_info`) over shelling out.
 
