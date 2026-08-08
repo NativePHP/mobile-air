@@ -45,12 +45,12 @@ class NativeUIBridgeTest {
         NativeUIBridge.publishTree(firstTree)
 
         val observed = mutableListOf<NativeTreeObserverRegistry.Publication>()
-        val failing = NativeTreeObserverRegistry.observe { error("observer failure") }
-        val subscription = NativeTreeObserverRegistry.observe(observed::add)
+        val failing = NativeTreeObserverRegistry.register { error("observer failure") }
+        val subscription = NativeTreeObserverRegistry.register(observed::add)
 
         NativeUIBridge.publishTree(secondTree)
-        NativeTreeObserverRegistry.unsubscribe(failing)
-        NativeTreeObserverRegistry.unsubscribe(subscription)
+        NativeTreeObserverRegistry.unregister(failing)
+        NativeTreeObserverRegistry.unregister(subscription)
         NativeUIBridge.publishTree(tree(version = 3))
 
         assertEquals(2, observed.size)

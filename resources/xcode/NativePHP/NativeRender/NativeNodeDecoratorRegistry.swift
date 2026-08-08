@@ -7,32 +7,38 @@ final class NativeNodeDecoratorRegistry {
 
     private var decorators: [String: Decorator] = [:]
     private var order: [String] = []
-    private(set) var currentPipeline: Decorator?
+    private var pipeline: Decorator?
+    private let lock = NSLock()
+
+    var currentPipeline: Decorator? {
+        lock.lock(); defer { lock.unlock() }
+        return pipeline
+    }
 
     private init() {}
 
     func register(_ name: String, decorator: @escaping Decorator) {
-        precondition(Thread.isMainThread, "Native node decorators must be registered on the main thread")
+        lock.lock(); defer { lock.unlock() }
         if decorators[name] == nil { order.append(name) }
         decorators[name] = decorator
-        rebuildPipeline()
+        rebuildPipelineLocked()
     }
 
     func unregister(_ name: String) {
-        precondition(Thread.isMainThread, "Native node decorators must be unregistered on the main thread")
+        lock.lock(); defer { lock.unlock() }
         decorators.removeValue(forKey: name)
         order.removeAll { $0 == name }
-        rebuildPipeline()
+        rebuildPipelineLocked()
     }
 
-    private func rebuildPipeline() {
+    private func rebuildPipelineLocked() {
         let snapshot = order.compactMap { decorators[$0] }
         guard !snapshot.isEmpty else {
-            currentPipeline = nil
+            pipeline = nil
             return
         }
 
-        currentPipeline = { node, content in
+        pipeline = { node, content in
             snapshot.reduce(content) { view, decorator in decorator(node, view) }
         }
     }

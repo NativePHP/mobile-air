@@ -1,6 +1,6 @@
 import Foundation
 
-/// Opt-in observation seam for the decoded native tree.
+/// Opt-in registry for accepted native tree publications.
 final class NativeTreeObserverRegistry {
     static let shared = NativeTreeObserverRegistry()
 
@@ -18,7 +18,7 @@ final class NativeTreeObserverRegistry {
 
     private init() {}
 
-    func observe(_ observer: @escaping (Publication) -> Void) -> Subscription {
+    func register(_ observer: @escaping (Publication) -> Void) -> Subscription {
         lock.lock()
         sequence &+= 1
         let subscription = Subscription(id: sequence)
@@ -29,7 +29,7 @@ final class NativeTreeObserverRegistry {
         return subscription
     }
 
-    func unsubscribe(_ subscription: Subscription) {
+    func unregister(_ subscription: Subscription) {
         lock.lock(); defer { lock.unlock() }
         observers.removeValue(forKey: subscription.id)
     }

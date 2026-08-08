@@ -2,7 +2,7 @@ package com.nativephp.mobile.ui.nativerender
 
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Opt-in observation seam for the decoded native tree. */
+/** Opt-in registry for accepted native tree publications. */
 object NativeTreeObserverRegistry {
     data class Publication(
         val id: Long,
@@ -17,7 +17,7 @@ object NativeTreeObserverRegistry {
     @Volatile private var latestPublication: Publication? = null
     @Volatile private var hasObservers = false
 
-    fun observe(observer: (Publication) -> Unit): Subscription {
+    fun register(observer: (Publication) -> Unit): Subscription {
         val id = sequence.incrementAndGet()
         val replay = synchronized(lock) {
             observers[id] = observer
@@ -28,7 +28,7 @@ object NativeTreeObserverRegistry {
         return Subscription(id)
     }
 
-    fun unsubscribe(subscription: Subscription) {
+    fun unregister(subscription: Subscription) {
         synchronized(lock) {
             observers.remove(subscription.id)
             hasObservers = observers.isNotEmpty()
