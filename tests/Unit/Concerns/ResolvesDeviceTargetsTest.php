@@ -40,7 +40,46 @@ beforeEach(function () {
 
 afterEach(function () {
     @unlink($this->claimPath);
+    @unlink(base_path('nativephp/ios-last-device-id'));
 });
+
+it('ignores a remembered ios device that is no longer booted', function () {
+    // The file records whatever was picked last, with no expiry. Trusting it
+    // meant screenshot/status/tail silently targeting a dead simulator and
+    // reporting "not installed" about a machine the app was never on.
+    file_put_contents(base_path('nativephp/ios-last-device-id'), 'GHOST-UDID-NOT-BOOTED');
+
+    Process::fake([
+        '*simctl*' => Process::result(json_encode([
+            'devices' => ['iOS-18' => [
+                ['name' => 'iPhone 17 Pro', 'udid' => 'LIVE-UDID', 'state' => 'Booted'],
+            ]],
+        ])),
+        'xcrun xctrace list devices' => Process::result(''),
+    ]);
+
+    $result = deviceResolver()->resolve('ios', null);
+
+    expect($result['ok'])->toBeTrue()
+        ->and($result['udid'])->toBe('LIVE-UDID');
+})->skip(PHP_OS_FAMILY !== 'Darwin', 'iOS resolution is macOS-only');
+
+it('honours a remembered ios device that is still booted', function () {
+    file_put_contents(base_path('nativephp/ios-last-device-id'), 'LIVE-UDID');
+
+    Process::fake([
+        '*simctl*' => Process::result(json_encode([
+            'devices' => ['iOS-18' => [
+                ['name' => 'A', 'udid' => 'LIVE-UDID', 'state' => 'Booted'],
+                ['name' => 'B', 'udid' => 'OTHER-UDID', 'state' => 'Booted'],
+            ]],
+        ])),
+        'xcrun xctrace list devices' => Process::result(''),
+    ]);
+
+    // Two booted sims would otherwise be ambiguous — the remembered one breaks the tie.
+    expect(deviceResolver()->resolve('ios', null)['udid'])->toBe('LIVE-UDID');
+})->skip(PHP_OS_FAMILY !== 'Darwin', 'iOS resolution is macOS-only');
 
 it('uses an explicit device without touching device tooling', function () {
     $result = deviceResolver()->resolve('ios', 'SOME-UDID');

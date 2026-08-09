@@ -94,13 +94,22 @@ trait ResolvesDeviceTargets
 
     protected function resolveIosTarget(): array
     {
+        $booted = $this->listBootedIosSimulators();
+        $bootedUdids = array_column($booted, 'udid');
+
         $lastUsed = base_path('nativephp/ios-last-device-id');
 
         if (is_file($lastUsed) && ($udid = trim((string) file_get_contents($lastUsed))) !== '') {
-            return ['ok' => true, 'platform' => 'ios', 'udid' => $udid];
+            // Only honour the remembered device if it is actually usable now.
+            // The file records whatever was picked last — possibly weeks ago,
+            // possibly a simulator that has since been shut down or deleted.
+            // Trusting it blindly meant screenshot/status/tail/run silently
+            // targeting a dead device and reporting "not installed" about a
+            // machine the app was never on.
+            if (in_array($udid, $bootedUdids, true) || $this->isConnectedIosDevice($udid)) {
+                return ['ok' => true, 'platform' => 'ios', 'udid' => $udid];
+            }
         }
-
-        $booted = $this->listBootedIosSimulators();
 
         if (count($booted) === 1) {
             return ['ok' => true, 'platform' => 'ios', 'udid' => $booted[0]['udid'], 'kind' => 'simulator'];
@@ -134,6 +143,22 @@ trait ResolvesDeviceTargets
                 ? 'Start an emulator (php artisan native:emulator android) or connect a device.'
                 : 'Multiple Android devices connected; pass --device.',
         ];
+    }
+
+    /**
+     * Whether this udid is a physical iOS device currently attached. Keeps a
+     * remembered real device usable — it will never appear in the booted
+     * simulator list.
+     */
+    protected function isConnectedIosDevice(string $udid): bool
+    {
+        foreach ($this->listIosDevices() as $device) {
+            if (($device['udid'] ?? null) === $udid && ($device['kind'] ?? null) === 'device') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

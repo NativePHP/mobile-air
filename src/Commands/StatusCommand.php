@@ -38,16 +38,6 @@ class StatusCommand extends Command
             ? $this->iosStatus($target['udid'], $appId)
             : $this->androidStatus($target['udid'], $appId);
 
-        $eventsPath = base_path('nativephp/devtools/events.jsonl');
-        $events = ['path' => $eventsPath, 'exists' => is_file($eventsPath)];
-
-        if ($events['exists']) {
-            $events['mtime'] = date('c', filemtime($eventsPath));
-            $events['lines'] = count(file($eventsPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []);
-        }
-
-        $status['logs']['exceptions'] = $events;
-
         $result = array_merge([
             'ok' => true,
             'platform' => $target['platform'],
