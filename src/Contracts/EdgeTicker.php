@@ -12,5 +12,11 @@ use Native\Mobile\Edge\NativeComponent;
  */
 interface EdgeTicker
 {
-    public function tick(NativeComponent $component): void;
+    /**
+     * @return bool True when the tick mutated component state and the
+     *              screen must repaint. False for read-only work — the
+     *              loop then goes back to waiting without re-rendering,
+     *              which is what keeps an idle screen at zero renders.
+     */
+    public function tick(NativeComponent $component): bool;
 }

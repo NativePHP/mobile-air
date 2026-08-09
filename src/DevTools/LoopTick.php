@@ -26,18 +26,25 @@ class LoopTick
         }
     }
 
-    public static function run(NativeComponent $component): void
+    /**
+     * @return bool True when the ticker mutated state and the loop should
+     *              re-render. A missing, re-entrant or throwing ticker
+     *              reports false — an idle screen must never be forced to
+     *              repaint by devtools.
+     */
+    public static function run(NativeComponent $component): bool
     {
         if (static::$ticking || ! static::active()) {
-            return;
+            return false;
         }
 
         try {
             static::$ticking = true;
 
-            Container::getInstance()->make(EdgeTicker::class)->tick($component);
+            return Container::getInstance()->make(EdgeTicker::class)->tick($component);
         } catch (\Throwable) {
             // A broken ticker must never break the render loop.
+            return false;
         } finally {
             static::$ticking = false;
         }

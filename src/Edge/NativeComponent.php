@@ -1596,14 +1596,20 @@ abstract class NativeComponent
 
     /**
      * Fire any polls whose interval has elapsed, then reschedule them.
-     * Called on an idle tick (wait_event returned null) before the loop
-     * re-renders. Blade native:poll timers carry no callback — they just
-     * trigger the re-render. Rescheduling off `$now` (not the prior
-     * deadline) avoids catch-up storms after a long-blocked frame.
+     * Called on an idle tick (wait_event returned null). Blade native:poll
+     * timers carry no callback — they just trigger the re-render, so a
+     * bare deadline elapsing still counts as fired. Rescheduling off `$now`
+     * (not the prior deadline) avoids catch-up storms after a long-blocked
+     * frame.
+     *
+     * @return bool True when at least one poll fired, i.e. the loop must
+     *              re-render. False means nothing was due and the loop can
+     *              go straight back to waiting.
      */
-    private function runDuePolls(): void
+    private function runDuePolls(): bool
     {
         $now = microtime(true) * 1000;
+        $fired = false;
 
         if (! empty($this->pollDefinitions)) {
             foreach ($this->pollDefinitions as $i => $def) {
@@ -1616,14 +1622,18 @@ abstract class NativeComponent
                 }
 
                 $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
+                $fired = true;
             }
         }
 
         foreach ($this->bladePollDeadlines as $ms => $next) {
             if ($now >= $next) {
                 $this->bladePollDeadlines[$ms] = $now + $ms;
+                $fired = true;
             }
         }
+
+        return $fired;
     }
 
     // ── Lazy placeholder (#[Lazy]) ───────────────────
@@ -2123,13 +2133,21 @@ abstract class NativeComponent
 
             $event = nativephp_element_wait_event($this->nextEventTimeout());
 
-            if ($event === null) {
-                // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
-                LoopTick::run($this);
+            // Idle ticks (poll interval elapsed, or the devtools ticker's
+            // 250ms cap) service their work and then go straight back to
+            // waiting. Only a poll that actually fired, or a ticker that
+            // mutated state, breaks back to the top — where the loop
+            // re-renders. Without this an idle screen with a ticker bound
+            // would re-render and republish 4x/second forever.
+            while ($event === null) {
+                $polled = $this->runDuePolls();
+                $ticked = LoopTick::run($this);
 
-                continue;
+                if ($polled || $ticked || ! $this->nativeRunning) {
+                    continue 2;
+                }
+
+                $event = nativephp_element_wait_event($this->nextEventTimeout());
             }
 
             // Broadcast user-facing frames to observers; system frames like
@@ -2323,13 +2341,21 @@ abstract class NativeComponent
 
             $event = nativephp_element_wait_event($this->nextEventTimeout());
 
-            if ($event === null) {
-                // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
-                LoopTick::run($this);
+            // Idle ticks (poll interval elapsed, or the devtools ticker's
+            // 250ms cap) service their work and then go straight back to
+            // waiting. Only a poll that actually fired, or a ticker that
+            // mutated state, breaks back to the top — where the loop
+            // re-renders. Without this an idle screen with a ticker bound
+            // would re-render and republish 4x/second forever.
+            while ($event === null) {
+                $polled = $this->runDuePolls();
+                $ticked = LoopTick::run($this);
 
-                continue;
+                if ($polled || $ticked || ! $this->nativeRunning) {
+                    continue 2;
+                }
+
+                $event = nativephp_element_wait_event($this->nextEventTimeout());
             }
 
             // Broadcast user-facing frames to observers; system frames like
