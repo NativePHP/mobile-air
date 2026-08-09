@@ -22,6 +22,36 @@ if (! function_exists('nativephp_devtools_storage_path')) {
     }
 }
 
+if (! function_exists('nativephp_devtools_rotate_spool')) {
+    /**
+     * Keep the spool bounded by rotating it aside, not by refusing to write.
+     *
+     * An earlier version simply stopped appending past the cap, which meant
+     * one crash loop disabled device-side crash reporting permanently and
+     * silently — nothing ever truncates this file, so it could never
+     * recover. Rotating is safe now that the listener dedups on event id:
+     * dropping spool.cursor makes the drainer restart from zero, and any
+     * event it re-sends is discarded on arrival rather than shown twice.
+     *
+     * Only the previous generation is kept, so the ceiling is 2x the cap.
+     */
+    function nativephp_devtools_rotate_spool(string $spoolPath, int $maxBytes = 5 * 1024 * 1024): void
+    {
+        clearstatcache(false, $spoolPath);
+
+        if (! is_file($spoolPath) || (int) @filesize($spoolPath) <= $maxBytes) {
+            return;
+        }
+
+        @unlink($spoolPath.'.1');
+
+        if (@rename($spoolPath, $spoolPath.'.1')) {
+            // The cursor indexes bytes in the file we just moved aside.
+            @unlink(dirname($spoolPath).'/spool.cursor');
+        }
+    }
+}
+
 if (! function_exists('nativephp_devtools_write_event')) {
     /**
      * Spool one event and best-effort POST it. The spool is the source of
@@ -60,13 +90,9 @@ if (! function_exists('nativephp_devtools_write_event')) {
 
             // These handlers are installed in every build, not just debug, so
             // a release app stuck in a crash loop would otherwise grow the
-            // spool without bound. Stop appending rather than rotate: the
-            // drainer owns this file, and truncating it under a reader would
-            // strand its offset.
+            // spool without bound.
             $spoolPath = $spoolDir.'/spool.jsonl';
-            if (@filesize($spoolPath) > 5 * 1024 * 1024) {
-                return;
-            }
+            nativephp_devtools_rotate_spool($spoolPath);
 
             @file_put_contents($spoolPath, $line."\n", FILE_APPEND | LOCK_EX);
 

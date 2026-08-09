@@ -91,50 +91,76 @@ it('writes nothing when the storage dir does not exist', function () {
     expect(is_file($this->spool))->toBeFalse();
 });
 
-it('stops appending once the spool passes its cap', function () {
+it('rotates the spool past its cap instead of going silent', function () {
     mkdir(dirname($this->spool), 0755, true);
     file_put_contents($this->spool, str_repeat('x', 5 * 1024 * 1024 + 1));
-
-    $before = filesize($this->spool);
+    file_put_contents(dirname($this->spool).'/spool.cursor', '1234');
 
     // These handlers run in release builds too, so a crash-looping app must
-    // not be able to fill the device's disk.
+    // not fill the disk — but it must also not disable reporting forever,
+    // which is what refusing to append did (nothing ever truncates this).
     nativephp_devtools_write_event('fatal', 'shutdown', [
-        'class' => 'X', 'message' => 'over cap', 'file' => 'f', 'line' => 1,
+        'class' => 'X', 'message' => 'after rotation', 'file' => 'f', 'line' => 1,
     ], $this->storage);
 
     clearstatcache(true, $this->spool);
 
-    expect(filesize($this->spool))->toBe($before);
+    $lines = array_values(array_filter(explode("\n", (string) file_get_contents($this->spool))));
+
+    expect($lines)->toHaveCount(1)
+        ->and(json_decode($lines[0], true)['exception']['message'])->toBe('after rotation')
+        ->and(is_file($this->spool.'.1'))->toBeTrue()
+        // The cursor indexed the rotated-away file; leaving it would make the
+        // drainer resume at a byte offset into unrelated content.
+        ->and(is_file(dirname($this->spool).'/spool.cursor'))->toBeFalse();
 });
 
-it('picks the first non-vendor frame as the app frame', function () {
-    // The throwable itself originates in vendor; the app frame must come
-    // from the trace, which is what makes the event readable to a developer.
-    $e = new RuntimeException('from vendor');
+it('leaves the spool alone below the cap', function () {
+    nativephp_devtools_write_event('fatal', 'shutdown', [
+        'class' => 'X', 'message' => 'first', 'file' => 'f', 'line' => 1,
+    ], $this->storage);
+    nativephp_devtools_write_event('fatal', 'shutdown', [
+        'class' => 'X', 'message' => 'second', 'file' => 'f', 'line' => 1,
+    ], $this->storage);
 
-    $frame = nativephp_devtools_app_frame($e);
+    $lines = array_values(array_filter(explode("\n", (string) file_get_contents($this->spool))));
 
-    // This test file is the app-side caller, and it is not under vendor/.
-    expect($frame)->toContain('DevtoolsHandlersTest.php');
+    expect($lines)->toHaveCount(2)
+        ->and(is_file($this->spool.'.1'))->toBeFalse();
 });
 
-it('skips vendor frames and points at the caller in app code', function () {
-    // A throwable raised inside vendor/ must not report the vendor file —
-    // that's the framework's problem, not the line the developer can fix.
+it('uses the throwable own file when that is already app code', function () {
+    // Constructed here, and this file is not under vendor/ — so the first
+    // branch answers and the trace is never consulted.
+    $frame = nativephp_devtools_app_frame(new RuntimeException('from app'));
+
+    expect($frame)->toBeString()
+        ->and($frame)->toContain('DevtoolsHandlersTest.php');
+});
+
+it('walks past vendor frames to the caller in app code', function () {
+    // The throwable ORIGINATES under vendor/, so getFile() is a vendor path
+    // and only the trace walk can produce a useful frame. Deleting that walk
+    // must fail this test — the earlier version of it passed either way,
+    // because the exception was constructed in this file.
     $vendorFile = $this->storage.'/vendor/acme/thrower.php';
     mkdir(dirname($vendorFile), 0755, true);
     file_put_contents($vendorFile, '<?php function acme_throw() { throw new RuntimeException("deep"); }');
 
     require $vendorFile;
 
+    $frame = null;
+
     try {
         acme_throw();
     } catch (RuntimeException $e) {
+        expect($e->getFile())->toContain(DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR);
+
         $frame = nativephp_devtools_app_frame($e);
     }
 
-    expect($frame)->not->toContain(DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR)
+    expect($frame)->toBeString()
+        ->and($frame)->not->toContain(DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR)
         ->and($frame)->toContain('DevtoolsHandlersTest.php');
 });
 

@@ -66,7 +66,8 @@ it('does not re-render on idle ticks when the ticker reports no change', functio
     expect($ticker->ticks)->toBe(5);
 
     // One frame: the initial render before the first wait. Five idle ticks
-    // afterwards produced nothing. Pre-fix this was 6.
+    // afterwards produced nothing. Pre-fix this was 5 — one render per tick,
+    // measured by reverting the inner loop and re-running this test.
     expect(publishCountFor($screen))->toBe(1);
 });
 

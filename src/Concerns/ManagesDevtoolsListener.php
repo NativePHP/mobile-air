@@ -66,16 +66,18 @@ trait ManagesDevtoolsListener
                 return $this->devtoolsListener = $existing;
             }
 
-            if ($alive) {
+            // Only replace a listener we can confirm is actually holding the
+            // port. A live pid alone is not proof — pids are recycled, and
+            // signalling an unrelated process because a stale handshake file
+            // named its number would be our bug, not the user's.
+            if ($alive && $this->devtoolsPortInUse((int) ($existing['port'] ?? $port))) {
                 $this->watchNote(sprintf(
                     '<fg=yellow>devtools: replacing the listener on %s — this device needs %s</>',
                     $existing['host'] ?? 'an unknown host',
                     $host,
                 ));
 
-                // It still holds the port; a second bind would just fail.
-                @posix_kill((int) $existing['pid'], SIGTERM);
-                usleep(200_000);
+                $this->stopDevtoolsListenerProcess((int) $existing['pid']);
             }
 
             @unlink($handshakePath);
@@ -114,6 +116,54 @@ trait ManagesDevtoolsListener
         $this->watchNote('<fg=yellow>devtools listener failed to start — exception streaming disabled</>');
 
         return null;
+    }
+
+    /**
+     * Whether anything is accepting on the port. Used to confirm a recorded
+     * pid really is the listener before signalling it.
+     */
+    protected function devtoolsPortInUse(int $port): bool
+    {
+        $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 0.5);
+
+        if ($socket === false) {
+            return false;
+        }
+
+        fclose($socket);
+
+        return true;
+    }
+
+    /**
+     * Stop the incumbent listener and wait for the port to actually come
+     * free. A fixed sleep is not enough: the listener can be inside a
+     * request read, which its own deadline allows to run for several
+     * seconds past the signal, and binding before it exits fails outright
+     * with no retry.
+     */
+    protected function stopDevtoolsListenerProcess(int $pid): void
+    {
+        // SIGTERM is a pcntl constant; posix_kill can exist without pcntl.
+        @posix_kill($pid, defined('SIGTERM') ? SIGTERM : 15);
+
+        $deadline = microtime(true) + 8.0;
+        $escalated = false;
+
+        while (microtime(true) < $deadline) {
+            if (! @posix_kill($pid, 0)) {
+                return;
+            }
+
+            // Past the listener's own read deadline it is not shutting down
+            // gracefully; stop waiting politely.
+            if (! $escalated && microtime(true) > $deadline - 2.0) {
+                @posix_kill($pid, defined('SIGKILL') ? SIGKILL : 9);
+                $escalated = true;
+            }
+
+            usleep(100_000);
+        }
     }
 
     /**

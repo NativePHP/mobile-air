@@ -18,6 +18,18 @@ class OpenUrlCommand extends Command
 
     protected $description = 'Navigate the running app to a URL via its deep link scheme';
 
+    /**
+     * Quote for the DEVICE's `sh`, which is always POSIX regardless of the
+     * host. escapeshellarg() is wrong here: on Windows it substitutes `%`,
+     * `!` and `"` with spaces, so a percent-encoded deeplink like
+     * ?q=hello%20world would silently reach the app as "hello 20world" —
+     * and `am start` would still succeed, so the failure is invisible.
+     */
+    protected function quoteForDeviceShell(string $value): string
+    {
+        return "'".str_replace("'", "'\\''", $value)."'";
+    }
+
     public function handle(): int
     {
         $target = $this->resolveDeviceTarget($this->argument('os'), $this->option('device'));
@@ -50,7 +62,7 @@ class OpenUrlCommand extends Command
         $result = $target['platform'] === 'ios'
             ? Process::run(['xcrun', 'simctl', 'openurl', $target['udid'], $url])
             : Process::run(['adb', '-s', $target['udid'], 'shell', 'am', 'start',
-                '-a', 'android.intent.action.VIEW', '-d', escapeshellarg($url)]);
+                '-a', 'android.intent.action.VIEW', '-d', $this->quoteForDeviceShell($url)]);
 
         // `am start` exits 0 while printing "Error: Activity not started" when
         // nothing can resolve the intent — usually the deeplink scheme isn't
