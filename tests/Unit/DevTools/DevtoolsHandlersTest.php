@@ -90,3 +90,88 @@ it('writes nothing when the storage dir does not exist', function () {
 
     expect(is_file($this->spool))->toBeFalse();
 });
+
+it('stops appending once the spool passes its cap', function () {
+    mkdir(dirname($this->spool), 0755, true);
+    file_put_contents($this->spool, str_repeat('x', 5 * 1024 * 1024 + 1));
+
+    $before = filesize($this->spool);
+
+    // These handlers run in release builds too, so a crash-looping app must
+    // not be able to fill the device's disk.
+    nativephp_devtools_write_event('fatal', 'shutdown', [
+        'class' => 'X', 'message' => 'over cap', 'file' => 'f', 'line' => 1,
+    ], $this->storage);
+
+    clearstatcache(true, $this->spool);
+
+    expect(filesize($this->spool))->toBe($before);
+});
+
+it('picks the first non-vendor frame as the app frame', function () {
+    // The throwable itself originates in vendor; the app frame must come
+    // from the trace, which is what makes the event readable to a developer.
+    $e = new RuntimeException('from vendor');
+
+    $frame = nativephp_devtools_app_frame($e);
+
+    // This test file is the app-side caller, and it is not under vendor/.
+    expect($frame)->toContain('DevtoolsHandlersTest.php');
+});
+
+it('skips vendor frames and points at the caller in app code', function () {
+    // A throwable raised inside vendor/ must not report the vendor file —
+    // that's the framework's problem, not the line the developer can fix.
+    $vendorFile = $this->storage.'/vendor/acme/thrower.php';
+    mkdir(dirname($vendorFile), 0755, true);
+    file_put_contents($vendorFile, '<?php function acme_throw() { throw new RuntimeException("deep"); }');
+
+    require $vendorFile;
+
+    try {
+        acme_throw();
+    } catch (RuntimeException $e) {
+        $frame = nativephp_devtools_app_frame($e);
+    }
+
+    expect($frame)->not->toContain(DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR)
+        ->and($frame)->toContain('DevtoolsHandlersTest.php');
+});
+
+it('carries the app frame into the spooled event', function () {
+    nativephp_devtools_report_throwable(new RuntimeException('boom'), 'exception', 'edge', $this->storage);
+
+    $line = json_decode(trim(file_get_contents($this->spool)), true);
+
+    expect($line['exception']['app_frame'])->toContain('DevtoolsHandlersTest.php');
+});
+
+it('re-installs the exception handler without double-reporting', function () {
+    // Laravel's HandleExceptions replaces our handler during bootstrap, so
+    // the provider re-installs afterwards. Re-installing when ours is already
+    // outermost must not stack a second reporter.
+    runDevtoolsChild($this->storage, <<<PHP
+        nativephp_devtools_install_exception_handler('{$this->storage}');
+        nativephp_devtools_install_exception_handler('{$this->storage}');
+        throw new LogicException('once only');
+    PHP);
+
+    $lines = array_values(array_filter(explode("\n", (string) file_get_contents($this->spool))));
+
+    expect($lines)->toHaveCount(1)
+        ->and(json_decode($lines[0], true)['exception']['message'])->toBe('once only');
+});
+
+it('reports again after a replacing handler is installed over ours', function () {
+    // The real sequence: we install, Laravel replaces us, we re-install.
+    runDevtoolsChild($this->storage, <<<PHP
+        set_exception_handler(function (\$e) { /* stand-in for Laravel */ });
+        nativephp_devtools_install_exception_handler('{$this->storage}');
+        throw new LogicException('after reinstall');
+    PHP);
+
+    $lines = array_values(array_filter(explode("\n", (string) file_get_contents($this->spool))));
+
+    expect($lines)->toHaveCount(1)
+        ->and(json_decode($lines[0], true)['exception']['message'])->toBe('after reinstall');
+});

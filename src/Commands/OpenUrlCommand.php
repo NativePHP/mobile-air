@@ -44,11 +44,22 @@ class OpenUrlCommand extends Command
             $url = $scheme.'://'.ltrim($url, '/');
         }
 
+        // `adb shell` re-joins argv and hands it to the DEVICE's shell, so
+        // escaping for the host shell is not enough — a url containing ; or &
+        // would run as a separate on-device command.
         $result = $target['platform'] === 'ios'
             ? Process::run(['xcrun', 'simctl', 'openurl', $target['udid'], $url])
-            : Process::run(['adb', '-s', $target['udid'], 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', $url]);
+            : Process::run(['adb', '-s', $target['udid'], 'shell', 'am', 'start',
+                '-a', 'android.intent.action.VIEW', '-d', escapeshellarg($url)]);
 
-        if (! $result->successful()) {
+        // `am start` exits 0 while printing "Error: Activity not started" when
+        // nothing can resolve the intent — usually the deeplink scheme isn't
+        // baked into the build. Reporting ok:true there would tell an agent a
+        // navigation happened when the screen never changed.
+        $amFailed = $target['platform'] === 'android'
+            && str_contains($result->output().$result->errorOutput(), 'Error:');
+
+        if (! $result->successful() || $amFailed) {
             return $this->outputResult([
                 'ok' => false,
                 'error' => 'open_url_failed',

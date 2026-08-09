@@ -57,7 +57,18 @@ if (! function_exists('nativephp_devtools_write_event')) {
             if (! is_dir($spoolDir)) {
                 @mkdir($spoolDir, 0755, true);
             }
-            @file_put_contents($spoolDir.'/spool.jsonl', $line."\n", FILE_APPEND | LOCK_EX);
+
+            // These handlers are installed in every build, not just debug, so
+            // a release app stuck in a crash loop would otherwise grow the
+            // spool without bound. Stop appending rather than rotate: the
+            // drainer owns this file, and truncating it under a reader would
+            // strand its offset.
+            $spoolPath = $spoolDir.'/spool.jsonl';
+            if (@filesize($spoolPath) > 5 * 1024 * 1024) {
+                return;
+            }
+
+            @file_put_contents($spoolPath, $line."\n", FILE_APPEND | LOCK_EX);
 
             $configPath = $storagePath.'/framework/devtools.json';
             if (! is_file($configPath)) {
@@ -87,15 +98,45 @@ if (! function_exists('nativephp_devtools_write_event')) {
     }
 }
 
+if (! function_exists('nativephp_devtools_app_frame')) {
+    /**
+     * The first frame in the app's own code — "app/Screens/Home.php:44" —
+     * which is the only line a developer actually wants to read. Everything
+     * under vendor/ is framework noise. Returns null when the throwable
+     * originates entirely inside vendor code.
+     */
+    function nativephp_devtools_app_frame(Throwable $e): ?string
+    {
+        $isApp = static fn (?string $file): bool => is_string($file)
+            && $file !== ''
+            && ! str_contains($file, DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR);
+
+        if ($isApp($e->getFile())) {
+            return $e->getFile().':'.$e->getLine();
+        }
+
+        foreach ($e->getTrace() as $frame) {
+            if ($isApp($frame['file'] ?? null)) {
+                return $frame['file'].':'.($frame['line'] ?? '?');
+            }
+        }
+
+        return null;
+    }
+}
+
 if (! function_exists('nativephp_devtools_report_throwable')) {
     function nativephp_devtools_report_throwable(Throwable $e, string $kind, string $mode, ?string $storagePath = null): void
     {
+        $trace = array_slice(explode("\n", $e->getTraceAsString()), 0, 50);
+
         nativephp_devtools_write_event($kind, $mode, [
             'class' => get_class($e),
             'message' => $e->getMessage(),
             'file' => $e->getFile(),
             'line' => $e->getLine(),
-            'trace' => array_slice(explode("\n", $e->getTraceAsString()), 0, 50),
+            'app_frame' => nativephp_devtools_app_frame($e),
+            'trace' => $trace,
         ], $storagePath);
 
         $GLOBALS['__nativephp_devtools_reported'] = true;
@@ -119,6 +160,12 @@ if (! function_exists('nativephp_devtools_report_last_fatal')) {
      */
     function nativephp_devtools_report_last_fatal(?string $storagePath = null): void
     {
+        // Entering a dispatch/render is the start of a new cycle. In the
+        // persistent runtime the process outlives every request, so without
+        // this the "already reported" latch would stay set for the rest of
+        // the app's life and silence every later shutdown fatal.
+        $GLOBALS['__nativephp_devtools_reported'] = false;
+
         $error = error_get_last();
         $fatal = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
 
@@ -143,6 +190,45 @@ if (! function_exists('nativephp_devtools_report_last_fatal')) {
     }
 }
 
+if (! function_exists('nativephp_devtools_install_exception_handler')) {
+    /**
+     * Chain an uncaught-throwable reporter on top of whatever handler is
+     * currently installed.
+     *
+     * This has to be callable more than once. The bootstraps install it
+     * before Laravel boots, but Laravel's HandleExceptions bootstrapper
+     * calls set_exception_handler() itself — which REPLACES rather than
+     * chains — so the early install is silently discarded and nothing
+     * would ever report. NativeServiceProvider calls this again once the
+     * framework is up, which puts the reporter back on top of Laravel's.
+     *
+     * Re-entry is safe: if our own handler is already outermost the extra
+     * wrapper is unwound immediately, so reports never double up.
+     */
+    function nativephp_devtools_install_exception_handler(?string $storagePath = null): void
+    {
+        $resolved = nativephp_devtools_storage_path($storagePath);
+
+        $handler = function (Throwable $e) use ($resolved, &$previous) {
+            nativephp_devtools_report_throwable($e, 'exception', 'uncaught', $resolved);
+
+            if ($previous !== null) {
+                ($previous)($e);
+            }
+        };
+
+        $previous = set_exception_handler($handler);
+
+        if ($previous !== null && $previous === ($GLOBALS['__nativephp_devtools_exception_handler'] ?? null)) {
+            restore_exception_handler();
+
+            return;
+        }
+
+        $GLOBALS['__nativephp_devtools_exception_handler'] = $handler;
+    }
+}
+
 if (! function_exists('nativephp_devtools_install_handlers')) {
     /**
      * Catch what the targeted try/catch sites can't: any uncaught throwable
@@ -163,15 +249,7 @@ if (! function_exists('nativephp_devtools_install_handlers')) {
 
         $resolved = nativephp_devtools_storage_path($storagePath);
 
-        // Uncaught throwables that reached the top of the stack (i.e. did NOT
-        // hit one of the framework's catch sites, which handle and swallow).
-        $previous = set_exception_handler(function (Throwable $e) use ($resolved, &$previous) {
-            nativephp_devtools_report_throwable($e, 'exception', 'uncaught', $resolved);
-
-            if ($previous !== null) {
-                $previous($e);
-            }
-        });
+        nativephp_devtools_install_exception_handler($storagePath);
 
         // Genuine fatals — the only place they surface is at shutdown. Skip if
         // we already reported this cycle (an uncaught throwable also lands here

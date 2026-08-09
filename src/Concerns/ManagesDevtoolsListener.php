@@ -43,22 +43,43 @@ trait ManagesDevtoolsListener
             return $this->devtoolsListener;
         }
 
+        $port = (int) config('nativephp.devtools.port', 9210);
+        $host = $bindAllInterfaces ? '0.0.0.0' : '127.0.0.1';
+
         $handshakePath = base_path('nativephp/devtools/listener.json');
 
-        // A listener from a previous session may still be running.
+        // A listener from a previous session may still be running. Nothing
+        // stops it on Ctrl-C, so this is the common path from the second
+        // watch onward — it must adopt cleanly rather than half-adopt.
         if (is_file($handshakePath)) {
             $existing = json_decode((string) file_get_contents($handshakePath), true);
+            $alive = is_array($existing) && ! empty($existing['pid'])
+                && function_exists('posix_kill') && posix_kill((int) $existing['pid'], 0);
 
-            if (is_array($existing) && ! empty($existing['pid'])
-                && function_exists('posix_kill') && posix_kill((int) $existing['pid'], 0)) {
+            // A loopback listener cannot serve a physical device provisioned
+            // with the Mac's LAN address — every POST would fail silently.
+            // 0.0.0.0 covers both, so only the loopback -> LAN upgrade has to
+            // replace the incumbent, and the common simulator path never does.
+            if ($alive && $this->devtoolsHostCovers($existing['host'] ?? null, $host)) {
+                $this->seedDevtoolsEventsOffset();
+
                 return $this->devtoolsListener = $existing;
+            }
+
+            if ($alive) {
+                $this->watchNote(sprintf(
+                    '<fg=yellow>devtools: replacing the listener on %s — this device needs %s</>',
+                    $existing['host'] ?? 'an unknown host',
+                    $host,
+                ));
+
+                // It still holds the port; a second bind would just fail.
+                @posix_kill((int) $existing['pid'], SIGTERM);
+                usleep(200_000);
             }
 
             @unlink($handshakePath);
         }
-
-        $port = (int) config('nativephp.devtools.port', 9210);
-        $host = $bindAllInterfaces ? '0.0.0.0' : '127.0.0.1';
 
         $process = new SymfonyProcess(
             [PHP_BINARY, 'artisan', 'native:devtools:listen', "--host={$host}", "--port={$port}"],
@@ -93,6 +114,20 @@ trait ManagesDevtoolsListener
         $this->watchNote('<fg=yellow>devtools listener failed to start — exception streaming disabled</>');
 
         return null;
+    }
+
+    /**
+     * Whether a listener already bound to $bound can serve traffic that
+     * needs $required. 0.0.0.0 accepts on every interface, so it covers
+     * anything; a loopback bind only covers loopback.
+     */
+    protected function devtoolsHostCovers(?string $bound, string $required): bool
+    {
+        if ($bound === null) {
+            return false;
+        }
+
+        return $bound === '0.0.0.0' || $bound === $required;
     }
 
     protected function devtoolsDeviceConfig(string $endpoint, array $handshake): string
@@ -187,6 +222,10 @@ trait ManagesDevtoolsListener
             $this->adb('shell', 'run-as', $appId, 'mkdir', '-p', $storage)->run();
             $this->adb('shell', 'run-as', $appId, 'cp', $remoteTmp, $storage.'/devtools.json')->run();
         }
+
+        // The staged copy carries the bearer token and /data/local/tmp is
+        // world-readable, so it must not outlive the copy into the sandbox.
+        $this->adb('shell', 'rm', '-f', $remoteTmp)->run();
 
         @unlink($tmp);
     }

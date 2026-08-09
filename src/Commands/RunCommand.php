@@ -172,11 +172,28 @@ class RunCommand extends Command
             $buildTypes['profileable'] = 'Profileable (release-optimized, benchmarkable)';
         }
 
-        $this->buildType = $this->option('build') ?? select(
-            label: 'Choose a build type',
-            options: $buildTypes,
-            default: 'debug'
-        );
+        // --json must never reach a prompt: an unattended caller has nobody
+        // to answer it, so it either hangs or silently takes the default
+        // depending on whether stdin happens to be a TTY. Default explicitly.
+        if ($json) {
+            $this->buildType = $this->option('build') ?? 'debug';
+
+            if (! array_key_exists($this->buildType, $buildTypes)) {
+                return $this->emitRunResult([
+                    'ok' => false,
+                    'stage' => 'validate',
+                    'error' => 'invalid_build_type',
+                    'detail' => $this->buildType,
+                    'hint' => 'Valid values for '.$os.': '.implode(', ', array_keys($buildTypes)).'.',
+                ]);
+            }
+        } else {
+            $this->buildType = $this->option('build') ?? select(
+                label: 'Choose a build type',
+                options: $buildTypes,
+                default: 'debug'
+            );
+        }
 
         $osName = match ($os) {
             'android' => 'Android',

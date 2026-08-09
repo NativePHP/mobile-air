@@ -249,6 +249,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
     public function packageBooted()
     {
+        $this->reinstallDevtoolsExceptionHandler();
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->registerNativeComponents();
@@ -583,6 +584,22 @@ class NativeServiceProvider extends PackageServiceProvider
         // and getting it wrong would silently disable the middleware. Pushing
         // it in a console context is harmless — nothing dispatches a request.
         $this->app->make(HttpKernel::class)->pushMiddleware(HonorsRequestedNativeScreen::class);
+    }
+
+    /**
+     * The device bootstraps install a devtools exception handler before the
+     * framework boots, but Laravel's HandleExceptions bootstrapper calls
+     * set_exception_handler() — which replaces rather than chains — so that
+     * early install is discarded and uncaught throwables would never be
+     * reported. Put it back now that Laravel's handler is the one to chain.
+     *
+     * No-op off-device: the helper only exists when a bootstrap loaded it.
+     */
+    private function reinstallDevtoolsExceptionHandler(): void
+    {
+        if (function_exists('nativephp_devtools_install_exception_handler')) {
+            nativephp_devtools_install_exception_handler(storage_path());
+        }
     }
 
     private function setupComposerPostUpdateScript()
