@@ -46,7 +46,8 @@ edit code
 └─ php artisan native:run <ios|android> <udid> --build=debug --no-tty --json   (allow 10 min for first build)
    ├─ ok:false, stage:build|install   → read .logTail (or native:tail); fix; rebuild
    ├─ ok:false, stage:verify          → app built but isn't running: boot fatal.
-   │                                     check native:tail <os> --lines=100; fix; rebuild
+   │                                     laravel.log is usually EMPTY here (Laravel never got up).
+   │                                     read the trace from your own change; fix; rebuild
    └─ ok:true
       └─ php artisan native:screenshot <os> --json → Read the PNG → judge against the goal
          └─ exercise: php artisan native:open-url "<scheme>://<route>" <os> --json → screenshot each screen
@@ -66,17 +67,28 @@ error screen.
 
 ## Reading exceptions
 
-Exceptions surface through Laravel's normal reporting, so `laravel.log` on the device is the first stop:
+Exceptions that reach Laravel go through its normal reporting, so `laravel.log` on the device is the
+first stop:
 
 ```bash
 php artisan native:tail <os> --lines=100 --json    # the app's laravel.log, off the device
 ```
 
-Boot fatals and PHP fatals — the ones that kill the app before Laravel can log anything — are spooled
-on-device by the runtime and surface in the same log path once the app next starts.
+That covers anything thrown while the app is running — including native (EDGE) screens, which report
+through Laravel like the rest of the app.
 
-Anything richer (timelines, component state, screen trees, interactive inspection) comes from a devtools
-package rather than core; follow that package's own skill if the project has one installed.
+**It does not cover boot fatals.** An app that dies before Laravel is up writes nothing to `laravel.log`.
+The runtime spools those on-device, but **core cannot read the spool back** — draining it needs a devtools
+package. So with core alone, the only signals for a boot fatal are:
+
+- `native:run --json` returning `ok:false, stage:verify` (built and installed, but not running), and
+- a screenshot showing the app absent or on the red error screen.
+
+Do not read a clean `laravel.log` as evidence the app booted — for this failure class the log is expected
+to be empty. Trust `stage:verify` and the screenshot instead.
+
+Anything richer (timelines, component state, screen trees, spooled boot fatals, interactive inspection)
+comes from a devtools package rather than core; follow that package's own skill if the project has one.
 
 ## Exercising the app
 

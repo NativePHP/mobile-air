@@ -79,7 +79,10 @@ class Runtime
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
-            // Escaped the kernel, so nothing has reported it yet.
+            // Laravel's HTTP kernel reports what it catches, so an ordinary
+            // request exception never reaches here. What does is a throwable
+            // that unwound the EDGE runtime past its own catch sites — those
+            // have been reported by nobody.
             try {
                 report($e);
             } catch (\Throwable) {

@@ -5,11 +5,18 @@
  *
  * These helpers run in places where Laravel may be half-booted or already
  * dead (boot fatals, PHP fatal errors, uncaught throwables), so they lean on
- * nothing but raw PHP: append the event to a durable on-device spool and
- * attempt one short best-effort POST to the devtools listener on the dev
- * machine. The endpoint comes from storage/framework/devtools.json, which
- * only `native:watch` ever provisions — without it the POST is skipped, and
- * the native drainer only runs in debug builds, so release builds are inert.
+ * nothing but raw PHP. This is the one failure class no observer or reporter
+ * can cover: there is no framework left to report through.
+ *
+ * The durable on-device spool is the product. Core writes it and never reads
+ * it back — draining it is a devtools package's job.
+ *
+ * The POST below is an optional seam, not a core feature. Nothing in core
+ * provisions storage/framework/devtools.json, so by default the endpoint is
+ * absent and the POST is skipped entirely. A devtools package that wants
+ * boot fatals live on the dev machine can write that file to switch it on —
+ * which is worth having, because a boot fatal happens before any package's
+ * own transport could have started.
  */
 if (! function_exists('nativephp_devtools_storage_path')) {
     function nativephp_devtools_storage_path(?string $storagePath): ?string
