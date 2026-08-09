@@ -7,7 +7,7 @@ use Symfony\Component\Process\Process;
 
 trait WatchesAndroid
 {
-    use InteractsWithWatchTerminal, ManagesDevtoolsListener, ManagesPollingWatcher, ManagesWatchman;
+    use InteractsWithWatchTerminal, ManagesPollingWatcher, ManagesWatchman;
 
     private array $androidWatchPaths = ['app', 'resources', 'routes', 'config', 'database', 'public'];
 
@@ -53,9 +53,6 @@ trait WatchesAndroid
                 $this->setupViteDevServerForwarding($this->vitePort);
             }
         }
-
-        $this->provisionDevtoolsAndroid((string) config('nativephp.app_id'));
-
         $this->startAndroidWatching();
     }
 
@@ -213,10 +210,6 @@ trait WatchesAndroid
     {
         // Service the interactive terminal (keypresses, activity line)
         $this->pumpWatchTerminal();
-
-        // Surface device exceptions reported to the devtools listener
-        $this->pumpDevtoolsEvents();
-
         // Check if we should sync public/build
         $this->checkAndSyncPublicBuild();
 
@@ -305,8 +298,8 @@ trait WatchesAndroid
 
     private function checkAdbConnection(): void
     {
-        // Skip health check when neither Vite nor devtools needs a reverse
-        if (! $this->vitePort && $this->devtoolsListener === null) {
+        // Skip health check if no Vite port detected
+        if (! $this->vitePort) {
             return;
         }
 
@@ -324,16 +317,8 @@ trait WatchesAndroid
         $process->run();
         $reverses = $process->isSuccessful() ? $process->getOutput() : '';
 
-        if ($this->vitePort && ! str_contains($reverses, "tcp:{$this->vitePort}")) {
+        if (! str_contains($reverses, "tcp:{$this->vitePort}")) {
             $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}")->run();
-        }
-
-        if ($this->devtoolsListener !== null) {
-            $devtoolsPort = (int) ($this->devtoolsListener['port'] ?? 9210);
-
-            if (! str_contains($reverses, "tcp:{$devtoolsPort}")) {
-                $this->reassertDevtoolsReverse();
-            }
         }
     }
 

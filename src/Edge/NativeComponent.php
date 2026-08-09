@@ -13,8 +13,6 @@ use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
-use Native\Mobile\DevTools\CrashRelay;
-use Native\Mobile\DevTools\LoopTick;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -1581,35 +1579,23 @@ abstract class NativeComponent
             $deadlines[] = $next;
         }
 
-        // A bound devtools ticker needs regular idle turns even with no
-        // polls; without one the loop keeps its block-forever behavior.
-        $cap = LoopTick::active() ? 250 : null;
-
         if (empty($deadlines)) {
-            return $cap ?? -1;
+            return -1;
         }
 
-        $timeout = max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
-
-        return $cap !== null ? min($timeout, $cap) : $timeout;
+        return max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
     }
 
     /**
      * Fire any polls whose interval has elapsed, then reschedule them.
-     * Called on an idle tick (wait_event returned null). Blade native:poll
-     * timers carry no callback — they just trigger the re-render, so a
-     * bare deadline elapsing still counts as fired. Rescheduling off `$now`
-     * (not the prior deadline) avoids catch-up storms after a long-blocked
-     * frame.
-     *
-     * @return bool True when at least one poll fired, i.e. the loop must
-     *              re-render. False means nothing was due and the loop can
-     *              go straight back to waiting.
+     * Called on an idle tick (wait_event returned null) before the loop
+     * re-renders. Blade native:poll timers carry no callback — they just
+     * trigger the re-render. Rescheduling off `$now` (not the prior
+     * deadline) avoids catch-up storms after a long-blocked frame.
      */
-    private function runDuePolls(): bool
+    private function runDuePolls(): void
     {
         $now = microtime(true) * 1000;
-        $fired = false;
 
         if (! empty($this->pollDefinitions)) {
             foreach ($this->pollDefinitions as $i => $def) {
@@ -1622,18 +1608,14 @@ abstract class NativeComponent
                 }
 
                 $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
-                $fired = true;
             }
         }
 
         foreach ($this->bladePollDeadlines as $ms => $next) {
             if ($now >= $next) {
                 $this->bladePollDeadlines[$ms] = $now + $ms;
-                $fired = true;
             }
         }
-
-        return $fired;
     }
 
     // ── Lazy placeholder (#[Lazy]) ───────────────────
@@ -2133,21 +2115,12 @@ abstract class NativeComponent
 
             $event = nativephp_element_wait_event($this->nextEventTimeout());
 
-            // Idle ticks (poll interval elapsed, or the devtools ticker's
-            // 250ms cap) service their work and then go straight back to
-            // waiting. Only a poll that actually fired, or a ticker that
-            // mutated state, breaks back to the top — where the loop
-            // re-renders. Without this an idle screen with a ticker bound
-            // would re-render and republish 4x/second forever.
-            while ($event === null) {
-                $polled = $this->runDuePolls();
-                $ticked = LoopTick::run($this);
+            if ($event === null) {
+                // Idle tick (poll interval elapsed, or no event yet) —
+                // fire any due polls, then loop back to re-render.
+                $this->runDuePolls();
 
-                if ($polled || $ticked || ! $this->nativeRunning) {
-                    continue 2;
-                }
-
-                $event = nativephp_element_wait_event($this->nextEventTimeout());
+                continue;
             }
 
             // Broadcast user-facing frames to observers; system frames like
@@ -2341,21 +2314,12 @@ abstract class NativeComponent
 
             $event = nativephp_element_wait_event($this->nextEventTimeout());
 
-            // Idle ticks (poll interval elapsed, or the devtools ticker's
-            // 250ms cap) service their work and then go straight back to
-            // waiting. Only a poll that actually fired, or a ticker that
-            // mutated state, breaks back to the top — where the loop
-            // re-renders. Without this an idle screen with a ticker bound
-            // would re-render and republish 4x/second forever.
-            while ($event === null) {
-                $polled = $this->runDuePolls();
-                $ticked = LoopTick::run($this);
+            if ($event === null) {
+                // Idle tick (poll interval elapsed, or no event yet) —
+                // fire any due polls, then loop back to re-render.
+                $this->runDuePolls();
 
-                if ($polled || $ticked || ! $this->nativeRunning) {
-                    continue 2;
-                }
-
-                $event = nativephp_element_wait_event($this->nextEventTimeout());
+                continue;
             }
 
             // Broadcast user-facing frames to observers; system frames like
@@ -2713,9 +2677,31 @@ abstract class NativeComponent
 
     // ── Error screen ────────────────────────────────
 
+    /**
+     * Hand a throwable the EDGE loop caught to Laravel's exception handler.
+     *
+     * The loop catches around render and dispatch and draws its own error
+     * screen, so these never reached `report()` — which meant an EDGE screen
+     * could throw and Sentry, Flare, Telescope, Bugsnag and laravel.log all
+     * saw nothing. Reporting here puts native screens on the same footing as
+     * every other part of a Laravel app, and costs nothing when no reporter
+     * is installed.
+     *
+     * Never allowed to throw: this runs on the error path, and a failure
+     * here would replace a useful exception with a useless one.
+     */
+    protected function reportToLaravel(\Throwable $e): void
+    {
+        try {
+            report($e);
+        } catch (\Throwable) {
+            // Reporting a failure must not create a second one.
+        }
+    }
+
     public function renderErrorScreen(\Throwable $e): void
     {
-        CrashRelay::report($e, ['mode' => 'edge', 'screen' => static::class]);
+        $this->reportToLaravel($e);
 
         $this->nativeHasError = true;
         $this->errorException = $e;
@@ -3377,44 +3363,6 @@ abstract class NativeComponent
     }
 
     // ── Event dispatch ──────────────────────────────
-
-    /**
-     * Devtools/test surface: inject an event exactly as if the native side
-     * delivered it (same path as a real tap). Callers build the event from
-     * the callback registry — see callbackRegistry().
-     */
-    public function dispatchSyntheticEvent(array $event): void
-    {
-        $this->dispatch($event);
-    }
-
-    /**
-     * Devtools/test surface: the live callback registry, for resolving an
-     * expression like "toggleLike(1)" to the callback id a synthetic event
-     * needs, or for labeling a dumped tree's handler ids.
-     */
-    public function callbackRegistry(): CallbackRegistry
-    {
-        return $this->nativeCallbacks ??= new CallbackRegistry;
-    }
-
-    /**
-     * Devtools/test surface: render and serialize a guaranteed-FULL frame
-     * for inspection. Published frames may collapse unchanged subtrees to
-     * memo REUSE markers — correct for the wire, useless for a dump — so
-     * this bypasses the memo store entirely (throwaway locals, no hash
-     * recording; the next real publish is unaffected).
-     */
-    public function dumpTree(): array
-    {
-        $element = $this->renderToElement();
-
-        $nextId = 1;
-        $emitted = [];
-        $throwaway = [];
-
-        return $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
-    }
 
     protected function dispatch(array $event): void
     {

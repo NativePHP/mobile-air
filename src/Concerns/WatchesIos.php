@@ -9,7 +9,7 @@ use function Laravel\Prompts\select;
 
 trait WatchesIos
 {
-    use InteractsWithWatchTerminal, ManagesDevtoolsListener, ManagesWatchman;
+    use InteractsWithWatchTerminal, ManagesWatchman;
 
     /**
      * UDID of the simulator or device being watched.
@@ -101,9 +101,6 @@ trait WatchesIos
             }
 
             $this->iosAppContainer = $derivedDataPath;
-
-            $this->provisionDevtoolsIosSimulator($derivedDataPath);
-
             $this->startIosWatching($derivedDataPath, $viteHotFile);
         } else {
             $this->startIosWatchingDevice($target, $appId);
@@ -124,7 +121,7 @@ trait WatchesIos
                 function (string $changedFile) use ($basePath, $destinationPath, $viteHotFile) {
                     $this->syncIosFile($changedFile, $basePath, $destinationPath, $viteHotFile);
                 },
-                fn () => $this->pumpWatchTerminalAndDevtools(),
+                fn () => $this->pumpWatchTerminal(),
                 function (array $changedFiles) use ($basePath, $viteHotFile) {
                     $this->triggerIosReloadForBatch($changedFiles, $basePath, $viteHotFile);
                 },
@@ -146,9 +143,6 @@ trait WatchesIos
             $this->warn('iproxy not found - files will sync but automatic reload is unavailable.');
             $this->line('Install it for automatic reload: <fg=cyan>brew install libimobiledevice</fg=cyan>');
         }
-
-        $this->provisionDevtoolsIosDevice($target, $appId);
-
         $basePath = base_path();
 
         $this->startWatchConsole('ios', $this->iosDeviceLabel());
@@ -160,7 +154,7 @@ trait WatchesIos
                 function (string $changedFile) use ($basePath, $target, $appId) {
                     $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId);
                 },
-                fn () => $this->pumpWatchTerminalAndDevtools(),
+                fn () => $this->pumpWatchTerminal(),
                 fn () => $this->triggerIosReload(),
             );
         } finally {

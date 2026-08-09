@@ -79,11 +79,12 @@ class Runtime
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
-            DevTools\CrashRelay::report($e, [
-                'mode' => 'webview',
-                'url' => $request->fullUrl(),
-                'method' => $request->method(),
-            ]);
+            // Escaped the kernel, so nothing has reported it yet.
+            try {
+                report($e);
+            } catch (\Throwable) {
+                // Never turn one failure into two on the error path.
+            }
 
             $response = new Response(
                 'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
