@@ -42,7 +42,10 @@ static void element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
 extern "C" uint32_t nphp_get_format_version(void);
 extern "C" uint32_t nphp_get_runtime_flags(void);
 extern "C" void     nphp_set_runtime_flags(uint32_t flags);
-extern "C" void     nphp_element_post_event(int type, int callback_id, int node_id,
+// Returns 1 if the event was queued, 0 if dropped (no region, or the queue is
+// over its backlog cap because PHP stopped draining). Was void before format
+// v4 — the declaration has to match the definition in nphp_element.c.
+extern "C" int      nphp_element_post_event(int type, int callback_id, int node_id,
                                             const uint8_t *data, uint32_t data_len);
 
 // Phase 3 — active-buffer accessors. These do the acquire-load on the
@@ -319,6 +322,13 @@ void NativeUI_UnregisterRegion(void) {
 /*
  * Element region struct — must match nphp_element_region_t in nphp_element.h EXACTLY.
  * Uses void* for zval* since we don't have php.h here.
+ *
+ * Only a prefix of the real struct: everything the extension has appended
+ * since (format_version, runtime_flags, the A/B buffer pair, the event queue)
+ * sits after `current_tree` and is reached through exported accessor functions
+ * instead. That's why appending to nphp_element_region_t doesn't break this
+ * mirror — but inserting a field ANYWHERE above does. If you add one, add it
+ * to both, in the same place, and bump NPHP_FORMAT_VERSION (§5.4).
  */
 struct NphpElementRegion {
     uint32_t magic;
@@ -336,7 +346,11 @@ struct NphpElementRegion {
     pthread_mutex_t event_mutex;
     pthread_cond_t  event_cond;
 
-    /* Events */
+    /* Events — DEAD, do not use. Present only to keep the offsets below
+     * correct. Post events with nphp_element_post_event(). As of format v4
+     * the channel is a queue of separately allocated frames: event_buffer is
+     * never written, event_size is the head frame's size rather than "the"
+     * event's, and event_count is a depth rather than a 0/1 flag. */
     std::atomic<uint32_t> event_size;
     std::atomic<uint32_t> event_count;
     uint8_t event_buffer[4096];

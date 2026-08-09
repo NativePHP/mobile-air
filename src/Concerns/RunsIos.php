@@ -266,6 +266,8 @@ trait RunsIos
         Process::path($basePath)
             ->run('lsof -ti tcp:9999 | xargs kill -9 2>/dev/null');
 
+        $this->fixProductBundleName($basePath, 'build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app');
+
         $this->components->task('Installing app on simulator', function () use ($basePath, $target, $verbose) {
             Process::path($basePath)
                 ->forever()
@@ -311,6 +313,8 @@ trait RunsIos
         $installFailed = false;
         $isRelease = $this->option('build') === 'release';
         $configuration = $isRelease ? 'Release' : 'Debug';
+
+        $this->fixProductBundleName($basePath, "build/Build/Products/{$configuration}-iphoneos/NativePHP.app", resign: true);
 
         $this->components->task('Deploying app to device', function () use ($basePath, $target, $verbose, &$installFailed, $configuration) {
             $installResult = Process::path($basePath)
@@ -429,5 +433,48 @@ trait RunsIos
             label: 'Select a target device/simulator',
             options: $options
         );
+    }
+
+    /**
+     * Xcode's generated Info.plist pins CFBundleName to PRODUCT_NAME
+     * ("NativePHP") and, with GENERATE_INFOPLIST_FILE=YES, that generated
+     * value overrides a CFBundleName entry in the source Info.plist. System
+     * surfaces that read CFBundleName — most visibly the
+     * ASWebAuthenticationSession consent alert ("X" Wants to Use "site" to
+     * Sign In) — therefore introduce every app as "NativePHP". Patch the
+     * BUILT product's plist and re-sign it with the identity that already
+     * signed it, so the installed app carries the real app name.
+     */
+    private function fixProductBundleName(string $basePath, string $appRelativePath, bool $resign = false): void
+    {
+        $app = rtrim($basePath, '/').'/'.$appRelativePath;
+        $name = (string) config('app.name');
+
+        if ($name === '' || ! is_dir($app)) {
+            return;
+        }
+
+        $plist = $app.'/Info.plist';
+
+        $set = Process::run(['/usr/libexec/PlistBuddy', '-c', "Set :CFBundleName {$name}", $plist]);
+
+        if (! $set->successful()) {
+            Process::run(['/usr/libexec/PlistBuddy', '-c', "Add :CFBundleName string {$name}", $plist]);
+        }
+
+        if (! $resign) {
+            return;
+        }
+
+        // Editing the bundle invalidated its signature; re-sign with the
+        // same identity (first Authority of the existing signature).
+        $info = Process::run(['codesign', '-dvv', $app]);
+        preg_match('/Authority=([^\n]+)/', $info->errorOutput().$info->output(), $m);
+        $identity = trim($m[1] ?? 'Apple Development');
+
+        Process::run([
+            'codesign', '--force', '--sign', $identity,
+            '--preserve-metadata=identifier,entitlements,flags', $app,
+        ]);
     }
 }

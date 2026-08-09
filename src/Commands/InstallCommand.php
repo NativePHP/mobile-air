@@ -9,6 +9,7 @@ use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAndroid;
 use Native\Mobile\Concerns\InstallsIos;
 use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Support\PhpBinaries;
 
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
@@ -265,7 +266,7 @@ class InstallCommand extends Command
     protected function fetchVersionsManifest(): void
     {
         $branch = $this->getBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
+        $versionsUrl = PhpBinaries::manifestUrl($branch);
 
         try {
             $this->versionsManifest = json_decode(
@@ -273,7 +274,22 @@ class InstallCommand extends Command
                 true
             );
         } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
+            // A 404 here is specific: the manifest is named for the binary
+            // release this package pins, so a missing one means that release
+            // was withdrawn — not that the CDN is down. Say which, because the
+            // fixes are completely different.
+            if ($e->getResponse()?->getStatusCode() === 404) {
+                error(sprintf(
+                    'PHP binaries release %s is no longer published.'
+                    ."\n".'Update nativephp/mobile to a version that pins a current release:'
+                    ."\n".'    composer update nativephp/mobile',
+                    PhpBinaries::VERSION
+                ));
+
+                return;
+            }
+
+            error("Failed to fetch the PHP binaries manifest from: {$versionsUrl}");
         }
     }
 

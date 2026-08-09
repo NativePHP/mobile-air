@@ -258,7 +258,16 @@ struct NativeRootStackRenderer: View {
             // a container, the per-glass-effect animation isn't scoped
             // and the press transition renders as a visible flicker
             // behind the touched element. iOS 26+ only.
-            NodeView(node: node).withGlassContainer()
+            NodeView(node: node)
+                .withGlassContainer()
+                // NavigationStack hosts screens on its own container
+                // background (systemBackground — white in light mode) and
+                // SwiftUI exposes no override hook for it, so a dark app
+                // gets a white band in the bottom safe-area inset. When
+                // PHP set a window background (`UI.SetBackground`), paint
+                // it behind the screen extended through the safe areas.
+                // No-op when unset, preserving the stock appearance.
+                .modifier(StackScreenBackgroundModifier())
         } else {
             Color.clear
         }
@@ -399,9 +408,20 @@ private struct StackBarBackgroundModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if argb != 0 {
-            if #available(iOS 26.0, *) {
+            if #available(iOS 18.0, *) {
+                // `containerBackground(for: .navigation)` themes the WHOLE
+                // navigation surface — the scroll edge, the expanded
+                // large-title region, and the status-bar area — while bar
+                // visibility stays automatic. Without it the bar color only
+                // renders after scrolling (toolbarBackground alone does not
+                // paint at the scroll edge, exactly where a large title
+                // lives), and forcing `.visible` paints the band but
+                // suppresses the large title at the scroll edge under
+                // Liquid Glass. toolbarBackground still tints the collapsed
+                // bar after scrolling.
                 content
                     .toolbarBackground(Color(argb: argb), for: .navigationBar)
+                    .containerBackground(Color(argb: argb), for: .navigation)
             } else {
                 content
                     .toolbarBackground(Color(argb: argb), for: .navigationBar)
@@ -438,3 +458,21 @@ private struct NavigationSubtitleModifier: ViewModifier {
     }
 }
 
+
+/// Backgrounds a stack-hosted screen with the PHP-set window background
+/// (`UI.SetBackground`), extended through the safe areas. NavigationStack
+/// draws its own `systemBackground` container behind screen content with
+/// no SwiftUI override hook — without this, a dark app shows a white band
+/// in the bottom safe-area inset on every stack screen. No-op when no
+/// override is set, preserving the stock appearance.
+private struct StackScreenBackgroundModifier: ViewModifier {
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
+
+    func body(content: Content) -> some View {
+        if let color = windowBackground.color {
+            content.background(color.ignoresSafeArea())
+        } else {
+            content
+        }
+    }
+}
