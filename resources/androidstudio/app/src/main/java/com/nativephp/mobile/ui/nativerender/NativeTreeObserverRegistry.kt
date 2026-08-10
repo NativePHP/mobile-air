@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Opt-in registry for accepted native tree publications. */
 object NativeTreeObserverRegistry {
     data class Publication(
+        /** Process-local ID used to deduplicate replay and live delivery. */
         val id: Long,
         val tree: NativeUITree,
     )
@@ -14,6 +15,7 @@ object NativeTreeObserverRegistry {
     private val sequence = AtomicInteger(0)
     private val lock = Any()
     private val observers = linkedMapOf<Int, (Publication) -> Unit>()
+    // Retained for late-subscriber replay until replaced or process exit.
     @Volatile private var latestPublication: Publication? = null
     @Volatile private var hasObservers = false
 

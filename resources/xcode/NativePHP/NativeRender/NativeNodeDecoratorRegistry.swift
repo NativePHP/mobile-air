@@ -1,4 +1,16 @@
 import SwiftUI
+import os
+
+private struct NativeNodeDecoratorPipelineKey: EnvironmentKey {
+    static let defaultValue: NativeNodeDecoratorRegistry.Decorator? = nil
+}
+
+extension EnvironmentValues {
+    var nativeNodeDecoratorPipeline: NativeNodeDecoratorRegistry.Decorator? {
+        get { self[NativeNodeDecoratorPipelineKey.self] }
+        set { self[NativeNodeDecoratorPipelineKey.self] = newValue }
+    }
+}
 
 /// Ordered, opt-in view decorators supplied by native plugins.
 final class NativeNodeDecoratorRegistry {
@@ -8,7 +20,7 @@ final class NativeNodeDecoratorRegistry {
     private var decorators: [String: Decorator] = [:]
     private var order: [String] = []
     private var pipeline: Decorator?
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
 
     var currentPipeline: Decorator? {
         lock.lock(); defer { lock.unlock() }
