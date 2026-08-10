@@ -2171,7 +2171,9 @@ abstract class NativeComponent
 
             if (! $this->nativeHasError) {
                 try {
-                    if (! $this->renderStreaming()) {
+                    if ($this->renderStreaming()) {
+                        $this->publishCount++;
+                    } else {
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element);
                         nativephp_element_publish($tree);
@@ -2354,6 +2356,7 @@ abstract class NativeComponent
                     $t0 = microtime(true);
 
                     if ($this->renderStreaming()) {
+                        $this->publishCount++;
                         // Explicit streaming path
                         $this->nativeRouter?->flushDeferredTransition();
                         $t3 = microtime(true);

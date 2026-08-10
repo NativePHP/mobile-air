@@ -7,6 +7,7 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeEventHandlers;
 use Native\Mobile\Edge\NativeEventHandling;
 use Native\Mobile\Edge\Runtime\ComponentContext;
+use Native\Mobile\Edge\Runtime\ComponentIds;
 use Native\Mobile\Edge\Runtime\ComponentPublished;
 use Native\Mobile\Edge\Runtime\Dispatch as RuntimeDispatch;
 use Native\Mobile\Edge\Runtime\DispatchFinished;
@@ -56,6 +57,17 @@ class RuntimeObservedComponent extends NativeComponent
     public function increment(): void
     {
         $this->count++;
+    }
+}
+
+class RuntimeObservedStreamingComponent extends NativeComponent
+{
+    protected function renderStreaming(): bool
+    {
+        nativephp_element_publish([]);
+        $this->stop();
+
+        return true;
     }
 }
 
@@ -303,11 +315,23 @@ it('observes a published component frame from the real run loop', function () {
     expect($bridge->publishes)->toHaveCount(1)
         ->and($observer->published)->toHaveCount(1)
         ->and($observer->published[0]->context->component)->toBe($component)
-        ->and($observer->published[0]->context->id)->toBe(spl_object_hash($component))
+        ->and($observer->published[0]->context->id)->toBe(ComponentIds::id($component))
         ->and($observer->published[0]->timings)->toBeInstanceOf(RenderTimings::class)
         ->and($observer->published[0]->timings->renderMs)->toBeFloat()
         ->and($observer->published[0]->timings->serializeMs)->toBeFloat()
         ->and($observer->published[0]->timings->publishMs)->toBeFloat();
+});
+
+it('advances component render counts for streaming publications', function () {
+    $bridge = FakeBridge::enable();
+    $observer = runtimeObserverSpy();
+    RuntimeObservers::register($observer);
+
+    (new RuntimeObservedStreamingComponent)->runLoop();
+
+    expect($bridge->publishes)->toHaveCount(1)
+        ->and($observer->published)->toHaveCount(1)
+        ->and($observer->published[0]->context->renderCount)->toBe(1);
 });
 
 it('reports the same runtime failure only once', function () {
@@ -323,7 +347,18 @@ it('reports the same runtime failure only once', function () {
     expect($observer->failures)->toHaveCount(1)
         ->and($observer->failures[0]->exception)->toBe($exception)
         ->and($observer->failures[0]->context->component)->toBe($component)
-        ->and($observer->failures[0]->context->id)->toBe(spl_object_hash($component));
+        ->and($observer->failures[0]->context->id)->toBe(ComponentIds::id($component));
+});
+
+it('does not reuse component identities after an instance is destroyed', function () {
+    $first = new RuntimeObservedComponent;
+    $firstId = ComponentIds::id($first);
+
+    unset($first);
+
+    $second = new RuntimeObservedComponent;
+
+    expect(ComponentIds::id($second))->not->toBe($firstId);
 });
 
 it('routes package native events through the component and observes them', function () {

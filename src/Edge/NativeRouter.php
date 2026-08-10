@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Edge\Runtime\ComponentIds;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -595,7 +596,7 @@ class NativeRouter
         $this->announce(new ScreenMounted(
             get_class($component),
             $uri,
-            spl_object_hash($component),
+            ComponentIds::id($component),
         ));
     }
 
@@ -606,7 +607,7 @@ class NativeRouter
         $this->announce(new ScreenResumed(
             get_class($component),
             $uri,
-            spl_object_hash($component),
+            ComponentIds::id($component),
         ));
     }
 
@@ -617,7 +618,7 @@ class NativeRouter
         $this->announce(new ScreenUnmounted(
             get_class($component),
             $this->currentUri(),
-            spl_object_hash($component),
+            ComponentIds::id($component),
         ));
     }
 

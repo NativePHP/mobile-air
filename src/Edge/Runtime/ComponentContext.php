@@ -13,6 +13,6 @@ final readonly class ComponentContext
         public string $uri,
         public int $renderCount,
     ) {
-        $this->id = spl_object_hash($component);
+        $this->id = ComponentIds::id($component);
     }
 }

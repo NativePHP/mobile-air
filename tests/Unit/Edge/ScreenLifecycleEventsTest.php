@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\Runtime\ComponentIds;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -72,13 +73,13 @@ it('announces the exact screen mounted and resumed by the navigation loop', func
         ScreenMounted::class,
         fn (ScreenMounted $event): bool => $event->component === LifecycleProbeScreen::class
             && $event->uri === '/counter'
-            && $event->componentId === spl_object_hash($component),
+            && $event->componentId === ComponentIds::id($component),
     );
     Event::assertDispatched(
         ScreenResumed::class,
         fn (ScreenResumed $event): bool => $event->component === LifecycleProbeScreen::class
             && $event->uri === '/counter'
-            && $event->componentId === spl_object_hash($component),
+            && $event->componentId === ComponentIds::id($component),
     );
 });
 
@@ -92,7 +93,7 @@ it('announces a screen leaving the stack', function () {
     Event::assertDispatched(
         ScreenUnmounted::class,
         fn (ScreenUnmounted $event): bool => $event->component === LifecycleProbeScreen::class
-            && $event->componentId === spl_object_hash($component),
+            && $event->componentId === ComponentIds::id($component),
     );
 });
 
