@@ -185,9 +185,10 @@ final class NavigationCoordinator: ObservableObject {
     /// was a different root sentinel) — the singleton survives renderer
     /// teardown, so without this the next stack session would treat its
     /// first URI as a push on top of the previous session's stale root.
+    /// Replace the storage directly to avoid notifying a stack during teardown.
     func reset() {
         rootUri = nil
-        path = []
+        _path = Published(initialValue: [])
         phpSnapshot = []
         rootNodeCache = [:]
         lastProcessedNode = nil

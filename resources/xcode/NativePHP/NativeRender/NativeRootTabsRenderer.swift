@@ -89,14 +89,10 @@ struct NativeRootTabsRenderer: View {
             ? tabs[owningIdx].props.getString("id", default: "")
             : ""
 
-        // Sync the owning tab's coordinator with this publish — cache
-        // synchronously so the destination resolver always sees the
-        // freshest tree, then defer the path mutation (push / pop) via
-        // async since `path` is @Published.
+        // Defer @Published reconciliation until body evaluation completes.
         if !currentUri.isEmpty, owningIdx < tabs.count {
             let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
             let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
-            coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
                 coord.receive(uri: currentUri, rootNode: node)
             }
