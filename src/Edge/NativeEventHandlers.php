@@ -24,8 +24,11 @@ class NativeEventHandlers
 
     public static function register(string $event, callable $handler): int
     {
-        if ($event === '' || ! str_contains($event, ':')) {
-            throw new InvalidArgumentException('Plugin native event names must be non-empty and namespaced with a colon.');
+        if (
+            preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+\z/i', $event) !== 1
+            || str_starts_with(strtolower($event), 'native:')
+        ) {
+            throw new InvalidArgumentException('Plugin native event names must use a non-core namespace such as vendor:command.');
         }
 
         $id = ++static::$sequence;

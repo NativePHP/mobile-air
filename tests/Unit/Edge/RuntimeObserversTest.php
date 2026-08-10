@@ -221,9 +221,16 @@ it('does not claim a native event when its package handler fails', function () {
     expect(NativeEventHandlers::dispatch('tool:set', [], $component))->toBeFalse();
 });
 
-it('requires package event names to be namespaced', function () {
-    NativeEventHandlers::register('unscoped', static fn () => null);
-})->throws(InvalidArgumentException::class);
+it('rejects invalid or core-reserved package event names', function (string $event) {
+    NativeEventHandlers::register($event, static fn () => null);
+})->throws(InvalidArgumentException::class)->with([
+    'unscoped' => 'unscoped',
+    'empty segments' => ':',
+    'core native namespace' => 'native:deeplink',
+    'core native namespace, uppercased' => 'NATIVE:deeplink',
+    'core internal namespace' => '__deeplink:x',
+    'trailing newline' => "vendor:cmd\n",
+]);
 
 it('observes interaction dispatch around the actual component mutation', function () {
     $observer = runtimeObserverSpy();
