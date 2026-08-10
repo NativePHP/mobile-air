@@ -3,6 +3,7 @@
 namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
+use InvalidArgumentException;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
@@ -14,6 +15,7 @@ use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
 
 /**
  * Livewire-style test harness for NativeComponent screens.
@@ -155,6 +157,28 @@ class TestableComponent
      */
     public static function useHarness(?string $harnessClass): void
     {
+        if ($harnessClass !== null) {
+            if (! is_a($harnessClass, static::class, true)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Native test harness [%s] must extend %s.',
+                    $harnessClass,
+                    static::class,
+                ));
+            }
+
+            $reflection = new ReflectionClass($harnessClass);
+            $constructor = $reflection->getConstructor();
+
+            if ($reflection->isAbstract()
+                || $constructor?->isPrivate()
+                || ($constructor !== null && $constructor->getNumberOfRequiredParameters() > 5)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Native test harness [%s] must be concrete and expose a compatible constructor.',
+                    $harnessClass,
+                ));
+            }
+        }
+
         static::$harness = $harnessClass;
     }
 
