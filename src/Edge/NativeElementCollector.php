@@ -357,6 +357,7 @@ class NativeElementCollector
             $style = static::buildStyleArray($attrs);
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs)
                 + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -404,7 +405,9 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
+            $darkProps = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -449,6 +452,7 @@ class NativeElementCollector
             $style = static::buildStyleArray($attrs);
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs)
                 + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -491,7 +495,9 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
+            $darkProps = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -795,6 +801,52 @@ class NativeElementCollector
             // native side splits it. Two or three `#AARRGGBB` entries.
             'gradient_stops' => implode(',', $stops),
         ];
+    }
+
+    /**
+     * Per-corner border radius (`rounded-br-none`, `rounded-t-2xl`, …).
+     *
+     * The packed node carries a single `border_radius` float at offset 134
+     * with no room for four, so the corners ride the generic prop bag
+     * instead — no wire format bump, and old renderers simply ignore props
+     * they don't know.
+     *
+     * All four corners are emitted whenever ANY is authored, each resolving
+     * to the per-corner value if given and the uniform `rounded-*` otherwise.
+     * That means the native side needs no per-corner presence checks — the
+     * existence of `radius_tl` alone says "use the corner props" — and it is
+     * what makes `rounded-2xl rounded-br-none` square off exactly one corner
+     * while the other three keep 16.
+     *
+     * Returns [] when no per-corner class was used, leaving the plain
+     * `border_radius` style field to do its job unchanged.
+     */
+    public static function buildCornerRadiusProps(array $attrs): array
+    {
+        $corners = [
+            'radius_tl' => 'borderRadiusTopLeft',
+            'radius_tr' => 'borderRadiusTopRight',
+            'radius_br' => 'borderRadiusBottomRight',
+            'radius_bl' => 'borderRadiusBottomLeft',
+        ];
+
+        $authored = array_filter(
+            $corners,
+            fn (string $attr): bool => isset($attrs[$attr])
+        );
+
+        if ($authored === []) {
+            return [];
+        }
+
+        $uniform = isset($attrs['borderRadius']) ? (float) $attrs['borderRadius'] : 0.0;
+
+        $props = [];
+        foreach ($corners as $prop => $attr) {
+            $props[$prop] = isset($attrs[$attr]) ? (float) $attrs[$attr] : $uniform;
+        }
+
+        return $props;
     }
 
     /**
@@ -1289,6 +1341,12 @@ class NativeElementCollector
         // (column/row/stack/etc.) pick up `animate-duration`,
         // `animate-easing`, etc. without needing per-element wiring.
         foreach (static::buildAnimationProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+
+        // Per-corner radius rides the prop bag for the same reason — the
+        // packed node has only one `border_radius` float.
+        foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
             $element->setProp($key, $value);
         }
 

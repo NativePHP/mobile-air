@@ -207,6 +207,29 @@ class TailwindParser
         'xl' => 12, '2xl' => 16, '3xl' => 24, 'full' => 9999,
     ];
 
+    /**
+     * Which corners each `rounded-<side>-*` suffix touches. Sides expand to
+     * their two corners, exactly as Tailwind's longhand does.
+     *
+     * Only the PHYSICAL spellings are here. Tailwind's logical variants
+     * (`rounded-s-*`, `rounded-ee-*`, …) resolve against the writing
+     * direction, and neither renderer flips corners for RTL yet — accepting
+     * them would silently render LTR geometry in an RTL layout, so they stay
+     * unparsed and land in the dropped-class diagnostics instead.
+     *
+     * @var array<string, list<string>>
+     */
+    private const BORDER_RADIUS_CORNERS = [
+        'tl' => ['borderRadiusTopLeft'],
+        'tr' => ['borderRadiusTopRight'],
+        'br' => ['borderRadiusBottomRight'],
+        'bl' => ['borderRadiusBottomLeft'],
+        't' => ['borderRadiusTopLeft', 'borderRadiusTopRight'],
+        'r' => ['borderRadiusTopRight', 'borderRadiusBottomRight'],
+        'b' => ['borderRadiusBottomRight', 'borderRadiusBottomLeft'],
+        'l' => ['borderRadiusTopLeft', 'borderRadiusBottomLeft'],
+    ];
+
     private const SHADOW = [
         'sm' => 1, 'md' => 6, 'lg' => 8, 'xl' => 12, '2xl' => 16, 'none' => 0,
     ];
@@ -1182,13 +1205,54 @@ class TailwindParser
         return self::resolveColor($value, 'borderColor');
     }
 
+    /**
+     * `rounded-*` — uniform, per-side and per-corner.
+     *
+     * The scale keys carry no dashes, so a dash unambiguously separates a
+     * side from its size: `2xl` is uniform, `br-none` is one corner.
+     * A bare side (`rounded-t`) takes Tailwind's default 4pt radius, the
+     * same as a bare `rounded`.
+     *
+     * Per-corner keys are emitted ALONGSIDE any uniform `borderRadius` rather
+     * than merged into it, so `rounded-2xl rounded-br-none` keeps both and the
+     * collector resolves the precedence. That makes the result independent of
+     * the order the classes appear in — which matches Tailwind, where the
+     * longhand always follows the shorthand in the generated stylesheet
+     * regardless of how the author ordered the attribute.
+     */
     private static function parseRounded(string $value): ?array
     {
         if (isset(self::BORDER_RADIUS[$value])) {
             return ['borderRadius' => self::BORDER_RADIUS[$value]];
         }
 
-        return null;
+        [$side, $size] = array_pad(explode('-', $value, 2), 2, null);
+
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+        if ($corners === null) {
+            return null;
+        }
+
+        // Bare side (`rounded-b`) → the same default `rounded` uses.
+        $radius = $size === null ? 4 : (self::BORDER_RADIUS[$size] ?? null);
+        if ($radius === null) {
+            return null;
+        }
+
+        return array_fill_keys($corners, $radius);
+    }
+
+    /**
+     * Arbitrary per-corner radius — `rounded-br-[4px]`, `rounded-t-[12]`.
+     * The uniform `rounded-[N]` form is handled inline in parseArbitrary.
+     *
+     * @return array<string, float>|null
+     */
+    private static function parseArbitraryRounded(string $side, string $value): ?array
+    {
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+
+        return $corners === null ? null : array_fill_keys($corners, (float) $value);
     }
 
     private static function parseShadow(string $value): ?array
@@ -1259,6 +1323,10 @@ class TailwindParser
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
+            // `rounded-br-[4px]` etc. The arbitrary regex is non-greedy up to
+            // the final `-[`, so the whole `rounded-<side>` arrives as prefix.
+            'rounded-tl', 'rounded-tr', 'rounded-br', 'rounded-bl',
+            'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
