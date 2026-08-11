@@ -9,7 +9,6 @@ use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
 
-use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\warning;
 
@@ -119,7 +118,7 @@ trait InstallsAndroid
         // downloaded archive, but ext-zip is not guaranteed on stock Linux or
         // Windows PHP installs — better to error now than after a multi-MB download.
         if (! class_exists(ZipArchive::class)) {
-            error('The PHP zip extension (ext-zip) is required to install Android PHP binaries.');
+            $this->failInstall('The PHP zip extension (ext-zip) is required to install Android PHP binaries.');
             note(PHP_OS_FAMILY === 'Windows'
                 ? 'Enable extension=zip in your php.ini and retry.'
                 : 'Install it (e.g. sudo apt install php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'-zip) and retry.');
@@ -139,7 +138,7 @@ trait InstallsAndroid
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
 
             return;
         }
@@ -160,7 +159,7 @@ trait InstallsAndroid
 
         if (! $url) {
             $variant = $includeIcu ? 'ICU' : 'non-ICU';
-            error("No {$variant} Android binary found for PHP {$phpVersion}");
+            $this->failInstall("No {$variant} Android binary found for PHP {$phpVersion}");
 
             return;
         }
@@ -220,7 +219,7 @@ trait InstallsAndroid
             }
 
             if ($downloadFailed !== null) {
-                error("Failed to download PHP binaries from: $url"."\n".$downloadFailed);
+                $this->failInstall("Failed to download PHP binaries from: $url"."\n".$downloadFailed);
 
                 return;
             }
@@ -228,7 +227,7 @@ trait InstallsAndroid
             // Verify the downloaded file is actually a ZIP
             $zip = new ZipArchive;
             if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
-                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                $this->failInstall('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
                 unlink($zipFile);
 
                 return;
@@ -245,7 +244,7 @@ trait InstallsAndroid
             $sevenZip = config('nativephp.android.7zip-location');
 
             if (! file_exists($sevenZip)) {
-                error("7-Zip not found at: $sevenZip");
+                $this->failInstall("7-Zip not found at: $sevenZip");
                 note('Install 7-Zip or set NATIVEPHP_7ZIP_LOCATION environment variable.');
 
                 return;
@@ -273,7 +272,7 @@ trait InstallsAndroid
             }
 
             if ($extractFailed) {
-                error('7-Zip extraction failed.');
+                $this->failInstall('7-Zip extraction failed.');
 
                 return;
             }
@@ -281,7 +280,7 @@ trait InstallsAndroid
             $zip = new ZipArchive;
 
             if ($zip->open($zipFile) !== true) {
-                error('Failed to open downloaded ZIP file.');
+                $this->failInstall('Failed to open downloaded ZIP file.');
 
                 return;
             }

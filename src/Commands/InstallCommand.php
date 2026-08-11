@@ -10,6 +10,7 @@ use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAndroid;
 use Native\Mobile\Concerns\InstallsIos;
 use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Concerns\TracksInstallFailures;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
 
@@ -21,7 +22,7 @@ use function Laravel\Prompts\text;
 
 class InstallCommand extends Command
 {
-    use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations;
+    use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations, TracksInstallFailures;
 
     protected bool $forcing = true;
 
@@ -38,7 +39,7 @@ class InstallCommand extends Command
 
     protected $description = 'Install all of the NativePHP resources';
 
-    public function handle(): void
+    public function handle(): int
     {
         intro('Installing NativePHP for Mobile');
 
@@ -73,7 +74,7 @@ class InstallCommand extends Command
         if ($platform && ! in_array($platform, ['android', 'ios', 'both'])) {
             error('Invalid platform. Please specify "android" (a), "ios" (i), or "both".');
 
-            return;
+            return self::FAILURE;
         }
 
         // Check for WSL environment - Android is not supported in WSL
@@ -85,7 +86,7 @@ class InstallCommand extends Command
                 Please run this command from Windows CMD instead of WSL.
                 NOTE);
 
-            return;
+            return self::FAILURE;
         }
 
         // Determine which platforms to install
@@ -101,7 +102,7 @@ class InstallCommand extends Command
             if ($platform === 'ios') {
                 error('iOS installation is only available on macOS.');
 
-                return;
+                return self::FAILURE;
             }
             $installAndroid = true;
         }
@@ -186,9 +187,26 @@ class InstallCommand extends Command
             });
         }
 
+        if ($this->installFailed()) {
+            // No success banner and no marketing over a broken install, and a
+            // non-zero exit so a caller can tell. The messages were printed
+            // where they happened, so this counts rather than repeats them.
+            $this->newLine();
+
+            $count = count($this->installFailures);
+            error($count === 1
+                ? '1 error was reported above — the app is not ready to build.'
+                : "{$count} errors were reported above — the app is not ready to build.");
+            note('Fix the cause and re-run `php artisan native:install --force`.');
+
+            return self::FAILURE;
+        }
+
         outro('NativePHP for Mobile installed successfully!');
 
         $this->showSuperNativeBanner();
+
+        return self::SUCCESS;
     }
 
     protected function ensureAppIdIsSet(): void
@@ -303,7 +321,7 @@ class InstallCommand extends Command
             // because the fixes are completely different. Only a RequestException
             // carries a response to ask about.
             if ($e instanceof RequestException && $e->getResponse()?->getStatusCode() === 404) {
-                error(sprintf(
+                $this->failInstall(sprintf(
                     'PHP binaries release %s is no longer published.'
                     ."\n".'Update nativephp/mobile to a version that pins a current release:'
                     ."\n".'    composer update nativephp/mobile',
@@ -313,7 +331,7 @@ class InstallCommand extends Command
                 return;
             }
 
-            error("Failed to fetch the PHP binaries manifest from: {$versionsUrl}"
+            $this->failInstall("Failed to fetch the PHP binaries manifest from: {$versionsUrl}"
                 ."\n".TransferFailure::describe($e));
         }
     }

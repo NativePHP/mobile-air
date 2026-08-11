@@ -10,7 +10,6 @@ use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
 
-use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\warning;
 
@@ -70,7 +69,7 @@ trait InstallsIos
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
 
             return;
         }
@@ -91,7 +90,7 @@ trait InstallsIos
 
         if (! $url) {
             $variant = $includeIcu ? 'ICU' : 'non-ICU';
-            error("No {$variant} iOS binary found for PHP {$phpVersion}");
+            $this->failInstall("No {$variant} iOS binary found for PHP {$phpVersion}");
 
             return;
         }
@@ -151,7 +150,7 @@ trait InstallsIos
             }
 
             if ($downloadFailed !== null) {
-                error("Failed to download PHP binaries from: $url"."\n".$downloadFailed);
+                $this->failInstall("Failed to download PHP binaries from: $url"."\n".$downloadFailed);
 
                 return;
             }
@@ -159,7 +158,7 @@ trait InstallsIos
             // Verify the downloaded file is actually a ZIP
             $zip = new ZipArchive;
             if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
-                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                $this->failInstall('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
                 unlink($zipFile);
 
                 return;
@@ -175,7 +174,7 @@ trait InstallsIos
         $zip = new ZipArchive;
 
         if ($zip->open($zipFile) !== true) {
-            error('Failed to open downloaded ZIP file.');
+            $this->failInstall('Failed to open downloaded ZIP file.');
 
             return;
         }
@@ -288,7 +287,7 @@ trait InstallsIos
         $projectPath = $this->iosPath.'/NativePHP.xcodeproj/project.pbxproj';
 
         if (! file_exists($projectPath)) {
-            error("Xcode project file not found at: $projectPath");
+            $this->failInstall("Xcode project file not found at: $projectPath");
 
             return;
         }
