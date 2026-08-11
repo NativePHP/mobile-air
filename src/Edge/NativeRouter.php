@@ -6,10 +6,19 @@ use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
 use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\Contracts\NavigationHost;
 use SupaNative\Core\Edge\NativeDumpException;
 use SupaNative\Core\Edge\Transition;
 
-class NativeRouter
+/**
+ * Implements [NavigationHost] because that is the whole of what core's half of
+ * NativeComponent needs from the thing driving it: `currentUri()` and
+ * `isRootScreen()`. Everything else below — deferred transitions, stack
+ * serialization for a hot restart, screen intents from `native:watch` — is
+ * mobile navigation policy, reached for by the mobile traits on
+ * NativeComponent and deliberately not named in the contract.
+ */
+class NativeRouter implements NavigationHost
 {
     /**
      * Where `native:watch` leaves a screen-change intent for the app to pick
