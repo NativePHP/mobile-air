@@ -116,10 +116,24 @@ class InstallCommand extends Command
 
         $path = base_path('nativephp');
 
-        if ($this->forcing && is_dir($path)) {
-            $this->components->task('Removing existing native app directories', function () use ($path) {
-                $this->removeDirectory($path.DIRECTORY_SEPARATOR.'ios');
-                $this->removeDirectory($path.DIRECTORY_SEPARATOR.'android');
+        // Only the platforms actually being installed. Removing the other one's
+        // directory deletes a project this command was never asked to touch, and
+        // then reports success — so `native:install ios` followed by
+        // `native:install android` leaves you with no iOS project at all, with
+        // nothing in either run's output to say so.
+        $removing = array_values(array_filter([
+            $installAndroid ? 'android' : null,
+            $installIos ? 'ios' : null,
+        ]));
+
+        if ($this->forcing && is_dir($path) && $removing !== []) {
+            $label = 'Removing existing '.implode(' and ', $removing).' '
+                .(count($removing) === 1 ? 'directory' : 'directories');
+
+            $this->components->task($label, function () use ($path, $removing) {
+                foreach ($removing as $platform) {
+                    $this->removeDirectory($path.DIRECTORY_SEPARATOR.$platform);
+                }
             });
         }
 
