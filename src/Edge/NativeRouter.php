@@ -7,6 +7,7 @@ use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
 use SupaNative\Core\Edge\CallbackRegistry;
 use SupaNative\Core\Edge\NativeDumpException;
+use SupaNative\Core\Edge\Transition;
 
 class NativeRouter
 {
