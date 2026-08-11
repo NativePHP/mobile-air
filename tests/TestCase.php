@@ -4,12 +4,18 @@ namespace Tests;
 
 use Native\Mobile\NativeServiceProvider;
 use Orchestra\Testbench\TestCase as BaseTestCase;
+use SupaNative\Core\CoreServiceProvider;
 
 abstract class TestCase extends BaseTestCase
 {
     protected function getPackageProviders($app)
     {
         return [
+            // In an app, composer's package discovery boots this. Testbench
+            // only loads what it is told, and the element layer needs it:
+            // core owns the Blade view that every `<native:*>` component
+            // with children renders through.
+            CoreServiceProvider::class,
             NativeServiceProvider::class,
         ];
     }

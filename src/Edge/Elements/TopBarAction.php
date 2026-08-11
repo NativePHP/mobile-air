@@ -2,11 +2,11 @@
 
 namespace Native\Mobile\Edge\Elements;
 
-use Native\Mobile\Edge\CallbackRegistry;
-use Native\Mobile\Edge\Element;
 use Native\Mobile\Icon\AndroidSymbol;
 use Native\Mobile\Icon\IconResolver;
 use Native\Mobile\Icon\IosSymbol;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\Element;
 
 class TopBarAction extends Element
 {

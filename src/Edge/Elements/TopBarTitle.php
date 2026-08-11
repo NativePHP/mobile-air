@@ -2,8 +2,8 @@
 
 namespace Native\Mobile\Edge\Elements;
 
-use Native\Mobile\Edge\CallbackRegistry;
-use Native\Mobile\Edge\Element;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\Element;
 
 /**
  * Marker element wrapping a `NavBar::titleView()` / `NavBar::logo()` result so

@@ -2,14 +2,16 @@
 
 namespace Native\Mobile\Edge;
 
-use Native\Mobile\Edge\Elements\Column;
-use Native\Mobile\Edge\Elements\Divider;
-use Native\Mobile\Edge\Elements\Pressable;
-use Native\Mobile\Edge\Elements\Row;
-use Native\Mobile\Edge\Elements\ScrollView;
-use Native\Mobile\Edge\Elements\Spacer;
-use Native\Mobile\Edge\Elements\Text;
-use Native\Mobile\Edge\Elements\TextInput;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\Element;
+use SupaNative\Core\Edge\Elements\Column;
+use SupaNative\Core\Edge\Elements\Divider;
+use SupaNative\Core\Edge\Elements\Pressable;
+use SupaNative\Core\Edge\Elements\Row;
+use SupaNative\Core\Edge\Elements\ScrollView;
+use SupaNative\Core\Edge\Elements\Spacer;
+use SupaNative\Core\Edge\Elements\Text;
+use SupaNative\Core\Edge\Elements\TextInput;
 
 class BenchmarkComponent extends NativeComponent
 {

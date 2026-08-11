@@ -13,14 +13,11 @@ use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
-use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
-use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
-use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
@@ -30,11 +27,36 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\ComponentRegistry;
+use SupaNative\Core\Edge\Contracts\MountsChildComponents;
+use SupaNative\Core\Edge\Element;
+use SupaNative\Core\Edge\ElementRegistry;
+use SupaNative\Core\Edge\Elements\ActivityIndicator;
+use SupaNative\Core\Edge\Elements\Column;
+use SupaNative\Core\Edge\Exceptions\LockedPropertyException;
+use SupaNative\Core\Edge\NativeDumpException;
+use SupaNative\Core\Edge\NativeElementCollector;
+use SupaNative\Core\Edge\NativeTagPrecompiler;
+use SupaNative\Core\Edge\TailwindParser;
+use SupaNative\Core\Edge\TreeObservers;
 use Symfony\Component\VarDumper\Cloner\VarCloner;
 use Symfony\Component\VarDumper\Dumper\CliDumper;
 use Symfony\Component\VarDumper\VarDumper;
 
-abstract class NativeComponent
+/**
+ * The mobile screen/component base.
+ *
+ * Implements [MountsChildComponents] because that is the only thing core's
+ * NativeElementCollector needs from whatever owns the render it is
+ * collecting. Before the element layer moved to supanative/core, the
+ * collector type-hinted this class outright — which meant the platform-
+ * neutral element layer depended on 3,000 lines of mobile screen
+ * lifecycle, chrome, routing and bridge calls for the sake of one method
+ * call. The interface is that method, named. Everything else here stays
+ * mobile-only on purpose.
+ */
+abstract class NativeComponent implements MountsChildComponents
 {
     const EVENT_HOT_RELOAD = 15;
 
@@ -2094,6 +2116,7 @@ abstract class NativeComponent
         while ($this->nativeRunning) {
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
+            $this->syncTailwindPlatform();
 
             if (! $this->nativeHasError) {
                 try {
@@ -2191,6 +2214,37 @@ abstract class NativeComponent
     }
 
     /**
+     * Keep core's Tailwind parser in step with the detected platform.
+     *
+     * The parser used to call [Platform::current()] itself on every class
+     * it parsed. It can't any more — it lives in supanative/core now, and
+     * platform detection is a native-bridge round trip that only this
+     * package knows how to make. So the parser holds an injected string and
+     * mobile pushes to it: once at service-provider boot, and again at the
+     * top of every render pass here.
+     *
+     * The re-push is not redundant. Detection can legitimately fail and
+     * later succeed: in Jump dev mode the first probe of a session races
+     * the device's WebSocket attach (see Platform's docblock — failures are
+     * deliberately not cached, and retried on a 2s throttle). A runloop
+     * request stays open for the whole life of a screen, so a one-shot feed
+     * at boot would leave `ios:` / `android:` variant classes silently dead
+     * for that entire screen. Re-pushing per render restores the old
+     * self-healing behaviour.
+     *
+     * Guarded on the value actually changing, because setPlatform() clears
+     * the parsed-class cache — and this sits on the hot render path.
+     */
+    private function syncTailwindPlatform(): void
+    {
+        $platform = Platform::current();
+
+        if ($platform !== TailwindParser::platform()) {
+            TailwindParser::setPlatform($platform);
+        }
+    }
+
+    /**
      * Just the render/event loop — no init/shutdown.
      * Used by NativeRouter for hot-swap navigation.
      */
@@ -2270,6 +2324,7 @@ abstract class NativeComponent
 
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
+            $this->syncTailwindPlatform();
 
             if (! $this->nativeHasError) {
                 try {

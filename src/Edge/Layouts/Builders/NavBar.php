@@ -3,11 +3,11 @@
 namespace Native\Mobile\Edge\Layouts\Builders;
 
 use Illuminate\View\View;
-use Native\Mobile\Edge\Element;
-use Native\Mobile\Edge\Elements\Image;
 use Native\Mobile\Edge\Elements\TopBar;
 use Native\Mobile\Edge\Elements\TopBarAction;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use SupaNative\Core\Edge\Element;
+use SupaNative\Core\Edge\Elements\Image;
 
 /**
  * Fluent builder for the top navigation bar.

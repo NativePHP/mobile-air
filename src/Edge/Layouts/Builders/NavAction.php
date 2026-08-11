@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge\Layouts\Builders;
 
 use Native\Mobile\Concerns\HasPlatformIcon;
 use Native\Mobile\Edge\Elements\TopBarAction;
+use SupaNative\Core\Edge\Contracts\ConvertsToElement;
 
 /**
  * Fluent builder for a top-bar action (right-side icon buttons).
@@ -14,8 +15,11 @@ use Native\Mobile\Edge\Elements\TopBarAction;
  *   NavAction::make('mute')
  *       ->icon(ios: Ios::BellSlash, android: Android::NotificationsOff)
  *       ->press('mute');
+ *
+ * Declares [ConvertsToElement] so core's Pressable can resolve a `:menu`
+ * entry to an element without knowing this mobile chrome builder exists.
  */
-class NavAction
+class NavAction implements ConvertsToElement
 {
     use HasPlatformIcon;
 

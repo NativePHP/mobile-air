@@ -2,10 +2,10 @@
 
 namespace Native\Mobile\Edge\Layouts;
 
-use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
 use Native\Mobile\Edge\NativeComponent;
+use SupaNative\Core\Edge\Element;
 
 /**
  * Base class for navigation layouts. Subclasses declare what chrome

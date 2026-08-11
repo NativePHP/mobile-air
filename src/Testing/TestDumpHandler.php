@@ -2,7 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
-use Native\Mobile\Edge\NativeDumpException;
+use SupaNative\Core\Edge\NativeDumpException;
 use Symfony\Component\VarDumper\Cloner\VarCloner;
 use Symfony\Component\VarDumper\Dumper\CliDumper;
 use Symfony\Component\VarDumper\VarDumper;

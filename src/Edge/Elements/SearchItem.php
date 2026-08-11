@@ -2,8 +2,8 @@
 
 namespace Native\Mobile\Edge\Elements;
 
-use Native\Mobile\Edge\CallbackRegistry;
-use Native\Mobile\Edge\Element;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\Element;
 
 /**
  * Wire-side `search_item` node, emitted as a child of `native_root_tabs`

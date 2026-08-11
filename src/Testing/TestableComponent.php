@@ -3,17 +3,17 @@
 namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
-use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeComponent;
-use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
-use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
 use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\NativeDumpException;
+use SupaNative\Core\Edge\TailwindParser;
 
 /**
  * Livewire-style test harness for NativeComponent screens.

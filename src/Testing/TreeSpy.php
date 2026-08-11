@@ -2,8 +2,8 @@
 
 namespace Native\Mobile\Testing;
 
-use Native\Mobile\Edge\Contracts\TreeObserver;
-use Native\Mobile\Edge\TreeObservers;
+use SupaNative\Core\Edge\Contracts\TreeObserver;
+use SupaNative\Core\Edge\TreeObservers;
 
 /**
  * Test double for the TreeObservers broadcast: captures every published

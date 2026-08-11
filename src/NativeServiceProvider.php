@@ -36,13 +36,10 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
-use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
-use Native\Mobile\Edge\ElementRegistry;
-use Native\Mobile\Edge\Elements;
+use Native\Mobile\Edge\Elements as ChromeElements;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
-use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
@@ -52,6 +49,12 @@ use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
+use SupaNative\Core\Edge\ComponentRegistry;
+use SupaNative\Core\Edge\Components\Native\NativeBladeComponent;
+use SupaNative\Core\Edge\ElementRegistry;
+use SupaNative\Core\Edge\Elements as CoreElements;
+use SupaNative\Core\Edge\NativeTagPrecompiler;
+use SupaNative\Core\Edge\TailwindParser;
 
 class NativeServiceProvider extends PackageServiceProvider
 {
@@ -243,6 +246,7 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
+        $this->feedPlatformToTailwindParser();
         $this->registerNativeComponents();
         $this->registerChildComponents();
         $this->registerCoreElements();
@@ -699,50 +703,87 @@ class NativeServiceProvider extends PackageServiceProvider
         }
     }
 
+    /**
+     * Tell core's Tailwind parser which platform it is parsing for.
+     *
+     * `ios:` / `android:` variant classes need to know, but *detecting* the
+     * platform is a native-bridge round trip (Device.GetInfo) and belongs
+     * to this package, not to a platform-neutral parser. So the parser
+     * holds injectable state and mobile feeds it here. Its variant-name
+     * list already defaults to ios/android, so nothing else is needed.
+     *
+     * Boot-time detection is best-effort by design: outside the mobile
+     * runtime (tests, web preview) there is no bridge and Platform::current()
+     * returns null, which is exactly the "platform unknown → drop variant
+     * classes" behaviour the parser had before. In Jump dev mode the first
+     * probe can lose a race with the device's WebSocket attach, so this feed
+     * is not the only one — NativeComponent::syncTailwindPlatform() re-pushes
+     * at the top of every render pass, which is what preserves the parser's
+     * old self-healing behaviour now that it can no longer probe for itself.
+     */
+    protected function feedPlatformToTailwindParser(): void
+    {
+        TailwindParser::setPlatform(Platform::current());
+    }
+
+    /**
+     * The element layer is split across two packages, and the registry is
+     * where the seam shows:
+     *
+     *   CoreElements  → SupaNative\Core\Edge\Elements — the platform-neutral
+     *                   primitives (layout, text, image, pressable, canvas,
+     *                   shapes, the side-nav family)
+     *   ChromeElements → Native\Mobile\Edge\Elements — the mobile chrome
+     *                   that reaches for Platform / Icon / NativeRouter
+     *                   (bars, tabs, fab, icon, refreshable)
+     *
+     * Wire types stay identical either way — the split is a code-ownership
+     * boundary, not a protocol change.
+     */
     protected function registerCoreElements(): void
     {
         $elements = [
             // Layout
-            'column' => Elements\Column::class,
-            'row' => Elements\Row::class,
-            'stack' => Elements\Stack::class,
-            'scroll_view' => Elements\ScrollView::class,
-            'spacer' => Elements\Spacer::class,
+            'column' => CoreElements\Column::class,
+            'row' => CoreElements\Row::class,
+            'stack' => CoreElements\Stack::class,
+            'scroll_view' => CoreElements\ScrollView::class,
+            'spacer' => CoreElements\Spacer::class,
 
             // Content
-            'text' => Elements\Text::class,
-            'image' => Elements\Image::class,
-            'icon' => Elements\Icon::class,
+            'text' => CoreElements\Text::class,
+            'image' => CoreElements\Image::class,
+            'icon' => ChromeElements\Icon::class,
 
             // Input (core primitive only)
-            'pressable' => Elements\Pressable::class,
+            'pressable' => CoreElements\Pressable::class,
             // `button`, `text_input`, `toggle`, `activity_indicator`, `bottom_sheet`
             // are registered by UI plugins (see nativephp/native-ui). Plugin
             // discovery can't override an existing registration, so these must
             // NOT be registered here.
 
             // Navigation chrome
-            'top_bar' => Elements\TopBar::class,
-            'top_bar_action' => Elements\TopBarAction::class,
-            'top_bar_title' => Elements\TopBarTitle::class,
-            'bottom_nav' => Elements\BottomNav::class,
-            'bottom_nav_item' => Elements\BottomNavItem::class,
-            'side_nav' => Elements\SideNav::class,
-            'side_nav_item' => Elements\SideNavItem::class,
-            'side_nav_group' => Elements\SideNavGroup::class,
-            'side_nav_header' => Elements\SideNavHeader::class,
-            'fab' => Elements\Fab::class,
+            'top_bar' => ChromeElements\TopBar::class,
+            'top_bar_action' => ChromeElements\TopBarAction::class,
+            'top_bar_title' => ChromeElements\TopBarTitle::class,
+            'bottom_nav' => ChromeElements\BottomNav::class,
+            'bottom_nav_item' => ChromeElements\BottomNavItem::class,
+            'side_nav' => CoreElements\SideNav::class,
+            'side_nav_item' => CoreElements\SideNavItem::class,
+            'side_nav_group' => CoreElements\SideNavGroup::class,
+            'side_nav_header' => CoreElements\SideNavHeader::class,
+            'fab' => ChromeElements\Fab::class,
 
             // Gesture / interaction
-            'gesture_area' => Elements\GestureArea::class,
-            'refreshable' => Elements\Refreshable::class,
+            'gesture_area' => CoreElements\GestureArea::class,
+            'refreshable' => ChromeElements\Refreshable::class,
 
             // Canvas/shapes
-            'canvas' => Elements\Canvas::class,
-            'rect' => Elements\Rect::class,
-            'circle' => Elements\Circle::class,
-            'line' => Elements\Line::class,
-            'divider' => Elements\Divider::class,
+            'canvas' => CoreElements\Canvas::class,
+            'rect' => CoreElements\Rect::class,
+            'circle' => CoreElements\Circle::class,
+            'line' => CoreElements\Line::class,
+            'divider' => CoreElements\Divider::class,
         ];
 
         foreach ($elements as $type => $class) {
@@ -814,9 +855,19 @@ class NativeServiceProvider extends PackageServiceProvider
         }
     }
 
+    /**
+     * Register the `<native:*>` Blade components for the element layer.
+     *
+     * The components now live in supanative/core, so the directory is
+     * resolved from the abstract base class rather than from __DIR__ —
+     * that keeps working whatever path composer installs core at (vendor,
+     * a path repo symlink, a merged monorepo).
+     */
     protected function registerNativeComponents(): void
     {
-        $componentPath = __DIR__.'/Edge/Components';
+        $componentPath = dirname(dirname(
+            (new \ReflectionClass(NativeBladeComponent::class))->getFileName()
+        ));
 
         if (! is_dir($componentPath)) {
             return;
@@ -849,8 +900,8 @@ class NativeServiceProvider extends PackageServiceProvider
             // Convert BottomNav -> bottom-nav
             $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', $className)), '-');
 
-            // Build the full namespaced class name (e.g., Native\Mobile\Edge\Components\Native\Column)
-            $componentClass = 'Native\\Mobile\\Edge\\Components\\'.str_replace('/', '\\', $classPath);
+            // Build the full namespaced class name (e.g., SupaNative\Core\Edge\Components\Native\Column)
+            $componentClass = 'SupaNative\\Core\\Edge\\Components\\'.str_replace('/', '\\', $classPath);
 
             if (class_exists($componentClass)) {
                 Blade::component("native-{$kebabName}", $componentClass);

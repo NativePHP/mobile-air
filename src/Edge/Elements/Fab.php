@@ -2,7 +2,9 @@
 
 namespace Native\Mobile\Edge\Elements;
 
-use Native\Mobile\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\Elements\Pressable;
+use SupaNative\Core\Edge\Elements\Text;
 
 /**
  * Floating action button — `<native:fab icon="add" @tap="create" />`.

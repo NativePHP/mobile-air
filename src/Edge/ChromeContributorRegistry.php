@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge;
 
 use Native\Mobile\Edge\Layouts\NativeLayout;
+use SupaNative\Core\Edge\Element;
 
 /**
  * Registry for plugin-provided **chrome contributors** — the PHP half of the

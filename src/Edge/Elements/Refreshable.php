@@ -2,8 +2,9 @@
 
 namespace Native\Mobile\Edge\Elements;
 
-use Native\Mobile\Edge\CallbackRegistry;
-use Native\Mobile\Edge\Element;
+use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\Contracts\ShowsScrollIndicators;
+use SupaNative\Core\Edge\Element;
 
 /**
  * Wraps content in a scrolling container with native pull-to-refresh.
@@ -23,8 +24,11 @@ use Native\Mobile\Edge\Element;
  *
  * Children are the scrollable content — don't nest another scroll-view
  * inside or you'll get nested scrolling.
+ *
+ * Declares [ShowsScrollIndicators] so core's collector applies the shared
+ * `shows-indicators` attribute to it without naming this chrome class.
  */
-class Refreshable extends Element
+class Refreshable extends Element implements ShowsScrollIndicators
 {
     protected string $type = 'refreshable';
 
