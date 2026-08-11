@@ -11,6 +11,7 @@ use Native\Mobile\Concerns\InstallsAndroid;
 use Native\Mobile\Concerns\InstallsIos;
 use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\TransferFailure;
 
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
@@ -291,15 +292,16 @@ class InstallCommand extends Command
                 true
             );
         } catch (GuzzleException $e) {
-            // GuzzleException for the same reason as the download sites: a
-            // ConnectException is not a RequestException, so an unresolvable
-            // host used to surface here as a stack trace.
+            // GuzzleException rather than RequestException, because
+            // ConnectException extends TransferException directly: an
+            // unresolvable host, a refused connection or a TLS error is not a
+            // RequestException, and used to escape here as a stack trace.
             //
             // A 404 is still worth separating out. The manifest is named for the
             // binary release this package pins, so a missing one means that
             // release was withdrawn — not that the CDN is down. Say which,
             // because the fixes are completely different. Only a RequestException
-            // has a response to ask about.
+            // carries a response to ask about.
             if ($e instanceof RequestException && $e->getResponse()?->getStatusCode() === 404) {
                 error(sprintf(
                     'PHP binaries release %s is no longer published.'
@@ -311,7 +313,8 @@ class InstallCommand extends Command
                 return;
             }
 
-            error("Failed to fetch the PHP binaries manifest from: {$versionsUrl}");
+            error("Failed to fetch the PHP binaries manifest from: {$versionsUrl}"
+                ."\n".TransferFailure::describe($e));
         }
     }
 
