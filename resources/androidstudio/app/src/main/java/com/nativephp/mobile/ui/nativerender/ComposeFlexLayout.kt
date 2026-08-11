@@ -335,6 +335,40 @@ private fun buildChildModifier(
     // mode for min/max), which is why each bound is gated on `> 0f`.
     mod = mod.applySizeConstraints(layout)
 
+    // Cross axis: per-child `self-*` PLACEMENT.
+    //
+    // The container's Column/Row alignment parameter applies to every child
+    // uniformly, so an individual child can only move via `Modifier.align()`
+    // inside the layout scope. Without this, `self-center` / `self-end` only
+    // affected whether the child FILLED (via the width branch below) and never
+    // where it sat — a `self-end` child hugged its content but stayed on the
+    // leading edge. iOS honours align_self in FlexContainer's placement switch,
+    // so this was a platform divergence.
+    //
+    // 0 = unset (inherit the container's align-items) and STRETCH needs no
+    // placement — it's expressed as fillMaxWidth/Height below — so both fall
+    // through untouched.
+    val alignSelf = layout?.alignSelf ?: 0
+    if (alignSelf > 0 && alignSelf != AlignItems.STRETCH) {
+        mod = if (isRow && scope is RowScope) {
+            with(scope) {
+                when (alignSelf) {
+                    AlignItems.CENTER -> mod.align(Alignment.CenterVertically)
+                    AlignItems.END -> mod.align(Alignment.Bottom)
+                    else -> mod.align(Alignment.Top)
+                }
+            }
+        } else if (!isRow && scope is ColumnScope) {
+            with(scope) {
+                when (alignSelf) {
+                    AlignItems.CENTER -> mod.align(Alignment.CenterHorizontally)
+                    AlignItems.END -> mod.align(Alignment.End)
+                    else -> mod.align(Alignment.Start)
+                }
+            }
+        } else mod
+    }
+
     // Main axis: flex_grow or fill → weight
     val flexGrow = layout?.flexGrow ?: 0f
     val mainFill = if (isRow) {
