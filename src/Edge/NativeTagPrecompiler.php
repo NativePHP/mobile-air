@@ -386,6 +386,11 @@ class NativeTagPrecompiler
             // `.live` or anything unknown falls through to syncMode=live.
         }
 
+        // No metadata attribute for the bound prop name: anything that
+        // needs it (the test harness does) derives it from the
+        // `__syncProperty('prop')` change expression, and an extra attr
+        // would have to be stripped at every attr funnel (element,
+        // streaming, child-component props) to avoid leaking.
         $out = ':value="$'.$prop.'" _change="__syncProperty(\''.$prop.'\')" sync-mode="'.$syncMode.'"';
         if ($debounceMs > 0) {
             $out .= ' debounce-ms="'.$debounceMs.'"';

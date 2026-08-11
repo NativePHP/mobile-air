@@ -243,7 +243,7 @@ class TestableComponent
             'Public property [$'.$property.'] does not exist on '.get_class($this->component).'.'
         );
 
-        $this->guard(fn () => $this->component->__syncProperty($property, $value));
+        $this->guardDispatch(fn () => $this->component->__syncProperty($property, $value));
 
         return $this->afterInteraction();
     }
@@ -258,7 +258,7 @@ class TestableComponent
             'Method ['.$method.'] does not exist on '.get_class($this->component).'.'
         );
 
-        $this->guard(fn () => $this->component->{$method}(...$args));
+        $this->guardDispatch(fn () => $this->component->{$method}(...$args));
 
         return $this->afterInteraction();
     }
@@ -1361,6 +1361,15 @@ class TestableComponent
      * Convert a component dd() into a readable test failure instead of a
      * raw exception (or a dead PHPUnit process).
      */
+    /**
+     * Dump-to-failure conversion ONLY. Deliberately does NOT swallow
+     * ValidationException: outside a dispatch, the device paints the
+     * error screen for one (mount(), a render frame), so in a test it
+     * must fail loudly — a guard here would quietly certify behavior
+     * the device doesn't have. Dispatch-path swallowing lives in core's
+     * dispatch()/dispatchNativeEvent() (which tap()/emitNative() go
+     * through) and in guardDispatch() for the direct set()/call() APIs.
+     */
     protected function guard(\Closure $fn): mixed
     {
         try {
@@ -1370,6 +1379,19 @@ class TestableComponent
                 'Component called dd() at '.$e->getSourceFile().':'.$e->getSourceLine()."\n".$e->getFormattedDumps()
             );
         }
+    }
+
+    /**
+     * guard() + the component's validation guard — for set()/call(),
+     * which emulate handler dispatch: a ValidationException records
+     * errors and aborts the interaction, exactly like a real event.
+     */
+    protected function guardDispatch(\Closure $fn): mixed
+    {
+        return $this->guard(fn () => $this->scoped(function () use ($fn) {
+            /** @var NativeComponent $this */
+            return $this->runGuarded($fn);
+        }));
     }
 
     protected function callbacks(): CallbackRegistry

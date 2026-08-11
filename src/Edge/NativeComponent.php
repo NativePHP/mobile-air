@@ -36,6 +36,8 @@ use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
 {
+    use Concerns\ValidatesProps;
+
     const EVENT_HOT_RELOAD = 15;
 
     /**
@@ -290,9 +292,39 @@ abstract class NativeComponent
         return false;
     }
 
+    /**
+     * The data envelope every Blade render path shares: public props +
+     * the validation `$errors` ViewErrorBag + caller data (later wins).
+     * ONE home, so a new render path can't forget the bag and the
+     * legacy-$errors policy lives in code instead of merge precedence.
+     */
+    protected function nativeViewData(array $data = []): array
+    {
+        $props = $this->getPublicProperties();
+
+        if (array_key_exists('errors', $props)) {
+            // v3 escape hatch, explicit: a component-declared $errors
+            // prop wins over the injected bag — which also means it
+            // SHADOWS it, so $this->validate() output can't reach Blade
+            // on such a component. Deprecated for exactly that footgun.
+            static $warned = [];
+            if (! isset($warned[static::class])) {
+                $warned[static::class] = true;
+                trigger_error(
+                    static::class.' declares public $errors, shadowing the validation ViewErrorBag — rename it, or drop it and use $this->validate() with @error/@nativeError.',
+                    E_USER_DEPRECATED,
+                );
+            }
+        } else {
+            $props['errors'] = $this->errorBagForViews();
+        }
+
+        return array_merge($props, $data);
+    }
+
     protected function view(string $name, array $data = []): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $data);
+        $viewData = $this->nativeViewData($data);
 
         // Rendering as a nested child component: the parent's tree is live
         // in the collector, so emit in place — no reset, no chrome, and no
@@ -334,7 +366,7 @@ abstract class NativeComponent
      */
     protected function partial(string $name, array $data = []): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $data);
+        $viewData = $this->nativeViewData($data);
 
         // Inside a child component's render the hard reset below would wipe
         // the parent's live tree — capture() collects the detached subtree
@@ -371,7 +403,7 @@ abstract class NativeComponent
      */
     protected function fromView(View $view): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $view->getData());
+        $viewData = $this->nativeViewData($view->getData());
 
         // Nested child render — same in-place emission as view() above.
         if (NativeElementCollector::inComponentScope()) {
@@ -408,7 +440,7 @@ abstract class NativeComponent
      */
     protected function fromViewPartial(View $view): Element
     {
-        $viewData = array_merge($this->getPublicProperties(), $view->getData());
+        $viewData = $this->nativeViewData($view->getData());
 
         // Same child-scope safety as partial() — never hard-reset the
         // parent's live tree from inside a nested component render.
@@ -1388,7 +1420,7 @@ abstract class NativeComponent
      */
     protected function streamView(string $name, array $data = []): void
     {
-        $viewData = array_merge($this->getPublicProperties(), $data);
+        $viewData = $this->nativeViewData($data);
 
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
         NativeElementCollector::setOwner($this);
@@ -1418,13 +1450,25 @@ abstract class NativeComponent
 
     private function getPublicProperties(): array
     {
-        $reflect = new \ReflectionClass($this);
+        // Names are cached per class: this runs on every render AND every
+        // eager-validation keystroke, and the declared-prop list can't
+        // change at runtime. Values are read fresh each call.
+        static $names = [];
+
+        if (! isset($names[static::class])) {
+            $names[static::class] = [];
+
+            foreach ((new \ReflectionClass($this))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
+                if (! $prop->isStatic()) {
+                    $names[static::class][] = $prop->getName();
+                }
+            }
+        }
+
         $props = [];
 
-        foreach ($reflect->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
-            if (! $prop->isStatic()) {
-                $props[$prop->getName()] = $prop->getValue($this);
-            }
+        foreach ($names[static::class] as $name) {
+            $props[$name] = $this->{$name};
         }
 
         return $props;
@@ -1734,6 +1778,14 @@ abstract class NativeComponent
 
     /**
      * Handle a native event (type 20) by looking up #[OnNative] listeners.
+     *
+     * Delivery has four independent tiers — fluent then()/catch()
+     * callbacks, ->on() closure listeners, the global Laravel event()
+     * broadcast, and the #[On] method — each guarded SEPARATELY: a
+     * ValidationException in one listener records errors and aborts
+     * that listener only, and the remaining tiers still receive the
+     * event. One guard around the whole method would turn a tier-1
+     * validation failure into silent partial delivery.
      */
     protected function dispatchNativeEvent(array $event): void
     {
@@ -1760,7 +1812,7 @@ abstract class NativeComponent
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
-        $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
+        $this->runGuarded(fn () => $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []));
 
         // Fluent closure listeners registered via ->on('Event', fn) — persistent
         // and keyed by event name, so they fire every time the event arrives
@@ -1776,7 +1828,9 @@ abstract class NativeComponent
                 $bound = ($closure instanceof \Closure && ! (new \ReflectionFunction($closure))->isStatic())
                     ? \Closure::bind($closure, $this, static::class)
                     : $closure;
-                $bound($eventObject);
+                // Per-closure guard: one failing listener must not
+                // starve its siblings of the event.
+                $this->runGuarded(fn () => $bound($eventObject));
             }
         }
 
@@ -1785,7 +1839,7 @@ abstract class NativeComponent
         // this component's #[On] handlers. Runs before the (early-returning)
         // #[On] lookup below so it fires even when this component declares no
         // listener for the event.
-        $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
+        $this->runGuarded(fn () => $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []));
 
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
@@ -1820,9 +1874,9 @@ abstract class NativeComponent
                     $args[] = $param->getDefaultValue();
                 }
             }
-            $this->$method(...$args);
+            $this->runGuarded(fn () => $this->$method(...$args));
         } else {
-            $this->$method($payload);
+            $this->runGuarded(fn () => $this->$method($payload));
         }
     }
 
@@ -3030,6 +3084,20 @@ abstract class NativeComponent
         if (method_exists($this, $hook)) {
             $this->{$hook}($value);
         }
+
+        // #[Validate] rules are eager: re-validate this property on every
+        // sync (after the updated hook, so a hook that normalizes the
+        // value validates the normalized form). Runs inside the dispatch
+        // guard, so a failure records errors and aborts cleanly. The
+        // author's native:model modifier (.live/.blur/.debounce) is the
+        // cadence control. Passing the ATTRIBUTE rules explicitly is what
+        // keeps the promise that rules()-method rules never run here —
+        // with the default (merged) source, a same-key rules() entry
+        // would replace the attribute entry and its potentially expensive
+        // rules (unique:, exists:) would fire per keystroke.
+        if ($this->hasEagerValidationRule($property)) {
+            $this->validateOnly($property, rules: $this->attributeValidationRules());
+        }
     }
 
     // ── Child components (nested <native:*> component tags) ──
@@ -3313,7 +3381,11 @@ abstract class NativeComponent
             $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
 
             if (method_exists($parent, $binding['method'])) {
-                $parent->{$binding['method']}(...[...$binding['args'], ...$args]);
+                // Guarded by the OWNER: a validate() failure in the
+                // parent's handler must record on the PARENT's bag and
+                // stop there — unwinding into the emitting child's guard
+                // would fold the parent's errors into the child's bag.
+                $parent->runGuarded(fn () => $parent->{$binding['method']}(...[...$binding['args'], ...$args]));
             }
         }
 
@@ -3334,13 +3406,28 @@ abstract class NativeComponent
             ?? null;
 
         if ($method !== null && method_exists($this, $method)) {
-            $this->{$method}(...$args);
+            // Own-guarded for the same reason as emit()'s binding call:
+            // this listener belongs to $this, so its validation failures
+            // record here, not in whichever component emitted.
+            $this->runGuarded(fn () => $this->{$method}(...$args));
         }
     }
 
     // ── Event dispatch ──────────────────────────────
 
+    /**
+     * Guarded entry: a ValidationException thrown anywhere in a handler
+     * (a validate() call, sync auto-validation, an author-thrown
+     * withMessages) aborts the handler, records the errors on the bag,
+     * and lets the frame render — identical on device and web, because
+     * both route event dispatch through this method.
+     */
     protected function dispatch(array $event): void
+    {
+        $this->runGuarded(fn () => $this->dispatchUnguarded($event));
+    }
+
+    protected function dispatchUnguarded(array $event): void
     {
         $callbackId = (int) ($event['callback_id'] ?? 0);
 
