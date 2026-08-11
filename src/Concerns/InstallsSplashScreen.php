@@ -54,8 +54,17 @@ trait InstallsSplashScreen
             return;
         }
 
-        // Ensure the LaunchImage asset catalog exists
+        // The image set is emitted whole, so it is cleared first. Anything an
+        // earlier build left behind — a variant the app has since dropped, or a
+        // file a plugin wrote — would otherwise survive into a set whose
+        // Contents.json no longer lists it: dead weight at best, and at worst
+        // the mixed bitmap/"Any" scale failure described above.
+        //
+        // Nothing is cleared unless there is artwork to replace it with. The
+        // installed project ships a default set, and an app with no splash of
+        // its own keeps it.
         $launchImageDir = base_path('nativephp/ios/NativePHP/Assets.xcassets/LaunchImage.imageset');
+        File::deleteDirectory($launchImageDir);
         File::ensureDirectoryExists($launchImageDir);
 
         // Create Contents.json for LaunchImage with all variants
