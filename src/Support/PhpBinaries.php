@@ -42,4 +42,39 @@ class PhpBinaries
     {
         return self::HOST.'/'.$branch.'/'.self::VERSION.'.json';
     }
+
+    /** Which branch's artifacts to install. */
+    public static function branch(): string
+    {
+        return env('NATIVEPHP_BIN_BRANCH', 'main');
+    }
+
+    /**
+     * Where downloaded archives are cached, scoped to the branch they came from.
+     *
+     * The archive filename carries the release and the PHP version but not the
+     * branch: `ios-4.0.0-php8.4.24.zip` is what main and a feature branch both
+     * publish. A flat cache treats those as the same file, so setting
+     * NATIVEPHP_BIN_BRANCH after installing from main finds the old archive,
+     * reports a cache hit, and installs main's binaries under the impression it
+     * installed the branch's. Nothing in the output says otherwise, which makes
+     * it the kind of bug that invalidates a test run rather than failing it.
+     */
+    public static function cacheDirectory(): string
+    {
+        return base_path('nativephp/binaries').DIRECTORY_SEPARATOR.self::branchSegment();
+    }
+
+    /**
+     * The branch as one safe path segment.
+     *
+     * Branch names contain slashes — `feat/surfaces-phase1` — which would nest
+     * directories and let a branch named `feat` collide with the parent of
+     * `feat/anything`. Encoding the separator keeps it to one directory per
+     * branch.
+     */
+    public static function branchSegment(): string
+    {
+        return preg_replace('/[^A-Za-z0-9._-]+/', '-', self::branch()) ?: 'main';
+    }
 }

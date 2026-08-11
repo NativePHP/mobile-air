@@ -45,7 +45,9 @@ class InstallCommand extends Command
         $this->forcing = ! $this->option('no-force');
 
         if ($this->option('force')) {
-            $cacheDir = base_path('nativephp/binaries');
+            // Scoped to the current branch: forcing a re-download of one
+            // branch's binaries is no reason to evict another's.
+            $cacheDir = PhpBinaries::cacheDirectory();
             if (is_dir($cacheDir)) {
                 $this->components->task('Clearing cached PHP binaries', function () use ($cacheDir) {
                     $files = glob($cacheDir.'/*.zip');
@@ -274,7 +276,7 @@ class InstallCommand extends Command
 
     protected function getBinaryBranch(): string
     {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
+        return PhpBinaries::branch();
     }
 
     protected function fetchVersionsManifest(): void
