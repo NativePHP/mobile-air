@@ -3,6 +3,7 @@
 namespace Native\Mobile\Commands;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Console\Command;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
@@ -289,12 +290,17 @@ class InstallCommand extends Command
                 (new Client)->get($versionsUrl)->getBody()->getContents(),
                 true
             );
-        } catch (RequestException $e) {
-            // A 404 here is specific: the manifest is named for the binary
-            // release this package pins, so a missing one means that release
-            // was withdrawn — not that the CDN is down. Say which, because the
-            // fixes are completely different.
-            if ($e->getResponse()?->getStatusCode() === 404) {
+        } catch (GuzzleException $e) {
+            // GuzzleException for the same reason as the download sites: a
+            // ConnectException is not a RequestException, so an unresolvable
+            // host used to surface here as a stack trace.
+            //
+            // A 404 is still worth separating out. The manifest is named for the
+            // binary release this package pins, so a missing one means that
+            // release was withdrawn — not that the CDN is down. Say which,
+            // because the fixes are completely different. Only a RequestException
+            // has a response to ask about.
+            if ($e instanceof RequestException && $e->getResponse()?->getStatusCode() === 404) {
                 error(sprintf(
                     'PHP binaries release %s is no longer published.'
                     ."\n".'Update nativephp/mobile to a version that pins a current release:'

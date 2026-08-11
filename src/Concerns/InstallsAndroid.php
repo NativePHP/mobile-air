@@ -3,7 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Support\PhpBinaries;
 use ZipArchive;
@@ -191,7 +191,11 @@ trait InstallsAndroid
                     ]);
 
                     return true;
-                } catch (RequestException) {
+                } catch (GuzzleException) {
+                    // GuzzleException, not RequestException: ConnectException
+                    // extends TransferException directly, so an unresolvable
+                    // host, a refused connection or a TLS error is not a
+                    // RequestException and escaped this catch entirely.
                     // Remove any partial/error response written to disk
                     if (file_exists($zipFile)) {
                         unlink($zipFile);
