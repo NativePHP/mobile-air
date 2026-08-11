@@ -181,6 +181,17 @@ class Plugin
         return $this->manifest->android['features'] ?? [];
     }
 
+    /**
+     * Attributes this plugin sets on nodes core's own manifest declares,
+     * from `android.manifest_attributes` in nativephp.json.
+     *
+     * @return array<string, array<string, string|bool|int>> Keyed by target
+     */
+    public function getAndroidManifestAttributes(): array
+    {
+        return $this->manifest->android['manifest_attributes'] ?? [];
+    }
+
     public function getIosRepositories(): array
     {
         return $this->manifest->ios['repositories'] ?? [];
