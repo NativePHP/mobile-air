@@ -51,6 +51,7 @@ use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use SupaNative\Core\Edge\ComponentRegistry;
 use SupaNative\Core\Edge\Components\Native\NativeBladeComponent;
+use SupaNative\Core\Edge\EdgeLog;
 use SupaNative\Core\Edge\ElementRegistry;
 use SupaNative\Core\Edge\Elements as CoreElements;
 use SupaNative\Core\Edge\NativeTagPrecompiler;
@@ -108,6 +109,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
+        $this->pointEdgeLogAtDebugLog();
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
@@ -724,6 +726,28 @@ class NativeServiceProvider extends PackageServiceProvider
     protected function feedPlatformToTailwindParser(): void
     {
         TailwindParser::setPlatform(Platform::current());
+    }
+
+    /**
+     * Send core's Edge debug trace to the file NativeRouter has always written.
+     *
+     * Same shape of seam as the Tailwind platform above: the neutral half of
+     * the Edge layer narrates what the render loop, event dispatch and both
+     * failure overlays are doing, but *where* that goes is a host decision.
+     * `error_log()` doesn't reach Android logcat and there is no console on a
+     * device, so mobile's answer is a file it can pull off afterwards —
+     * `storage/logs/edge-nav.log`, via NativeRouter::debugLog. A desktop host
+     * with a terminal will answer differently, and core defaults to silence
+     * rather than guessing.
+     *
+     * Registered here rather than in packageBooted() so the trace is live for
+     * anything that happens during boot, and wrapped in a closure so that
+     * merely installing the handler doesn't load NativeRouter on every plain
+     * web request that will never render a native screen.
+     */
+    protected function pointEdgeLogAtDebugLog(): void
+    {
+        EdgeLog::setHandler(static fn (string $message) => NativeRouter::debugLog($message));
     }
 
     /**
