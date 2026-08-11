@@ -61,6 +61,10 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             var mod: Modifier = Modifier
             val layout = node.layout
             if (layout != null) {
+                // Constraint bounds first, so a `w-full max-w-*` node fills
+                // within its bound rather than being clamped afterwards —
+                // same ordering rule as `buildChildModifier`.
+                mod = mod.applySizeConstraints(layout)
                 when (layout.widthMode) {
                     SizeMode.FILL -> mod = mod.fillMaxWidth()
                     SizeMode.FIXED -> if (layout.width > 0f) mod = mod.width(layout.width.dp)

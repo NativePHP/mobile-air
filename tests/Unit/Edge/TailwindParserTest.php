@@ -78,6 +78,50 @@ it('parses height from spacing scale', function () {
     expect(TailwindParser::parse('h-32'))->toBe(['height' => 128]);
 });
 
+// ── Min/max size constraints (#310) ─────────────────
+
+it('parses min/max size constraints from the spacing scale', function () {
+    expect(TailwindParser::parse('max-w-64'))->toBe(['maxWidth' => 256]);
+    expect(TailwindParser::parse('min-w-4'))->toBe(['minWidth' => 16]);
+    expect(TailwindParser::parse('max-h-96'))->toBe(['maxHeight' => 384]);
+    expect(TailwindParser::parse('min-h-8'))->toBe(['minHeight' => 32]);
+});
+
+it('parses max-w from the container scale', function () {
+    expect(TailwindParser::parse('max-w-xs'))->toBe(['maxWidth' => 320]);
+    expect(TailwindParser::parse('max-w-sm'))->toBe(['maxWidth' => 384]);
+    expect(TailwindParser::parse('max-w-2xl'))->toBe(['maxWidth' => 672]);
+});
+
+it('parses arbitrary min/max size constraints', function () {
+    expect(TailwindParser::parse('max-w-[280px]'))->toBe(['maxWidth' => 280.0]);
+    expect(TailwindParser::parse('min-h-[100px]'))->toBe(['minHeight' => 100.0]);
+});
+
+it('treats max-w-none as an explicit no-constraint', function () {
+    // 0 is what "unset" already means on the wire, so `none` round-trips to it.
+    expect(TailwindParser::parse('max-w-none'))->toBe(['maxWidth' => 0]);
+});
+
+it('combines a width mode with a max-width constraint', function () {
+    expect(TailwindParser::parse('w-full max-w-[280px]'))
+        ->toBe(['fillWidth' => true, 'maxWidth' => 280.0]);
+});
+
+it('drops max-w keywords the wire cannot express', function () {
+    // min/max ride the packed node as bare floats with no companion size
+    // mode, so there is nowhere to put "100% of the parent". Dropping them
+    // surfaces the class in the unsupported-class diagnostics instead of
+    // silently rendering nothing.
+    expect(TailwindParser::parse('max-w-full'))->toBe([]);
+    expect(TailwindParser::parse('max-w-screen'))->toBe([]);
+});
+
+it('does not let the margin branch swallow min/max classes', function () {
+    expect(TailwindParser::parse('m-4'))->toBe(['margin' => 16]);
+    expect(TailwindParser::parse('mx-2'))->toBe(['marginLeft' => 8, 'marginRight' => 8]);
+});
+
 // ── Flex & Alignment ────────────────────────────────
 
 it('parses flex direction', function () {
@@ -104,10 +148,26 @@ it('parses the current Tailwind grow and shrink aliases', function () {
 });
 
 it('parses items alignment', function () {
-    expect(TailwindParser::parse('items-start'))->toBe(['alignItems' => 0]);
+    // start is 4, not 0 — 0 is the "no items-* class" slot. See AlignItems.
+    expect(TailwindParser::parse('items-start'))->toBe(['alignItems' => 4]);
     expect(TailwindParser::parse('items-center'))->toBe(['alignItems' => 1]);
     expect(TailwindParser::parse('items-end'))->toBe(['alignItems' => 2]);
     expect(TailwindParser::parse('items-stretch'))->toBe(['alignItems' => 3]);
+});
+
+it('distinguishes an authored items-start from no alignment at all', function () {
+    // The whole point of moving Start off 0 (#309): these two must not
+    // produce the same wire value, or the renderers cannot tell them apart.
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'items-start']);
+    $explicit = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'p-4']);
+    $unset = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($explicit['layout']['align_items'])->toBe(4)
+        ->and($unset['layout'])->not->toHaveKey('align_items');
 });
 
 it('parses justify content', function () {
@@ -120,7 +180,9 @@ it('parses justify content', function () {
 });
 
 it('parses self alignment', function () {
-    expect(TailwindParser::parse('self-start'))->toBe(['alignSelf' => 0]);
+    // Both renderers resolve `alignSelf > 0 ? alignSelf : align`, so while
+    // Start was 0 an authored `self-start` was a silent no-op. 4 fixes it.
+    expect(TailwindParser::parse('self-start'))->toBe(['alignSelf' => 4]);
     expect(TailwindParser::parse('self-center'))->toBe(['alignSelf' => 1]);
     expect(TailwindParser::parse('self-end'))->toBe(['alignSelf' => 2]);
     expect(TailwindParser::parse('self-stretch'))->toBe(['alignSelf' => 3]);
@@ -642,6 +704,20 @@ it('combines uniform and directional padding through collector', function () {
 
     // p-4 = 16 uniform, pt-8 = 32 top override
     expect($tree['layout']['padding'])->toBe([32.0, 16.0, 16.0, 16.0]);
+});
+
+it('carries min/max size constraints through the collector to the wire', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', [
+        'class' => 'w-full max-w-[280px] min-h-16',
+    ]);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['layout']['max_width'])->toBe(280.0)
+        ->and($tree['layout']['min_height'])->toBe(64.0)
+        // `w-full` still sets the width mode — max-w clamps it, it doesn't replace it.
+        ->and($tree['layout']['width'])->toBe('fill');
 });
 
 it('explicit attrs override class attrs', function () {

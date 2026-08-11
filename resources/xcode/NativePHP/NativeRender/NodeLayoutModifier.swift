@@ -63,27 +63,40 @@ struct NodeLayoutModifier: ViewModifier {
     /// SwiftUI's ideal-size discovery sensible at the root, but nested w-full
     /// elements no longer overflow when their parent is narrower than the screen.
     private var resolvedMaxWidth: CGFloat {
-        if let l = layout {
-            if l.widthMode == SizeMode.fill { return .infinity }
-            if l.widthMode == SizeMode.percent, l.width > 0 {
-                return availableWidth * CGFloat(l.width) / 100
-            }
-            if l.widthMode == SizeMode.fixed, l.width > 0 { return CGFloat(l.width) }
-            if l.maxWidth > 0 { return CGFloat(l.maxWidth) }
+        guard let l = layout else { return .infinity }
+
+        let base: CGFloat
+        if l.widthMode == SizeMode.fill {
+            base = .infinity
+        } else if l.widthMode == SizeMode.percent, l.width > 0 {
+            base = availableWidth * CGFloat(l.width) / 100
+        } else if l.widthMode == SizeMode.fixed, l.width > 0 {
+            base = CGFloat(l.width)
+        } else {
+            base = .infinity
         }
-        return .infinity
+
+        // `max-w-*` clamps whatever the width mode resolved to rather than
+        // being an alternative to it — `w-full max-w-[280px]` has to fill up
+        // to 280, not fill unbounded. 0 means unset on the wire.
+        return l.maxWidth > 0 ? min(base, CGFloat(l.maxWidth)) : base
     }
 
     private var resolvedMaxHeight: CGFloat {
-        if let l = layout {
-            if l.heightMode == SizeMode.fill { return .infinity }
-            if l.heightMode == SizeMode.percent, l.height > 0 {
-                return availableHeight * CGFloat(l.height) / 100
-            }
-            if l.heightMode == SizeMode.fixed, l.height > 0 { return CGFloat(l.height) }
-            if l.maxHeight > 0 { return CGFloat(l.maxHeight) }
+        guard let l = layout else { return .infinity }
+
+        let base: CGFloat
+        if l.heightMode == SizeMode.fill {
+            base = .infinity
+        } else if l.heightMode == SizeMode.percent, l.height > 0 {
+            base = availableHeight * CGFloat(l.height) / 100
+        } else if l.heightMode == SizeMode.fixed, l.height > 0 {
+            base = CGFloat(l.height)
+        } else {
+            base = .infinity
         }
-        return .infinity
+
+        return l.maxHeight > 0 ? min(base, CGFloat(l.maxHeight)) : base
     }
 
     // MARK: - Size Resolution

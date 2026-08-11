@@ -532,6 +532,18 @@ class NativeElementCollector
         if (isset($attrs['height'])) {
             $layout['height'] = $attrs['height'];
         }
+        if (isset($attrs['minWidth'])) {
+            $layout['min_width'] = (float) $attrs['minWidth'];
+        }
+        if (isset($attrs['maxWidth'])) {
+            $layout['max_width'] = (float) $attrs['maxWidth'];
+        }
+        if (isset($attrs['minHeight'])) {
+            $layout['min_height'] = (float) $attrs['minHeight'];
+        }
+        if (isset($attrs['maxHeight'])) {
+            $layout['max_height'] = (float) $attrs['maxHeight'];
+        }
 
         // Padding
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;
@@ -1310,6 +1322,18 @@ class NativeElementCollector
         }
         if (isset($attrs['height'])) {
             $element->height($attrs['height']);
+        }
+        if (isset($attrs['minWidth'])) {
+            $element->minWidth((float) $attrs['minWidth']);
+        }
+        if (isset($attrs['maxWidth'])) {
+            $element->maxWidth((float) $attrs['maxWidth']);
+        }
+        if (isset($attrs['minHeight'])) {
+            $element->minHeight((float) $attrs['minHeight']);
+        }
+        if (isset($attrs['maxHeight'])) {
+            $element->maxHeight((float) $attrs['maxHeight']);
         }
         // Padding (uniform + directional from Tailwind classes)
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;

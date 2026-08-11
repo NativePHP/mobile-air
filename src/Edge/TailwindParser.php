@@ -211,6 +211,18 @@ class TailwindParser
         'sm' => 1, 'md' => 6, 'lg' => 8, 'xl' => 12, '2xl' => 16, 'none' => 0,
     ];
 
+    /**
+     * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
+     * Values are the rem sizes converted at the 16px root Tailwind assumes.
+     * Most are far wider than a phone, but they're what authors type and a
+     * constraint that never binds is still better than a dropped class.
+     */
+    private const CONTAINER_SIZES = [
+        '3xs' => 256, '2xs' => 288, 'xs' => 320, 'sm' => 384, 'md' => 448,
+        'lg' => 512, 'xl' => 576, '2xl' => 672, '3xl' => 768, '4xl' => 896,
+        '5xl' => 1024, '6xl' => 1152, '7xl' => 1280,
+    ];
+
     private const WIDTH_FRACTIONS = [
         '1/2' => '50%', '1/3' => '33%', '2/3' => '67%',
         '1/4' => '25%', '2/4' => '50%', '3/4' => '75%',
@@ -538,8 +550,17 @@ class TailwindParser
             str_starts_with($class, 'ml-') => self::parseSpacingSide('marginLeft', substr($class, 3)),
             str_starts_with($class, 'm-') => self::parseSpacingUniform('margin', substr($class, 2)),
 
-            // Gap, dimensions
+            // Gap, dimensions.
+            //
+            // The min-/max- constraints MUST precede the bare `w-`/`h-`
+            // branches only for readability — they don't actually collide
+            // (`max-w-4` doesn't start with `w-`) — but grouping them keeps
+            // the sizing rules together.
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
+            str_starts_with($class, 'min-w-') => self::parseSizeConstraint('minWidth', substr($class, 6)),
+            str_starts_with($class, 'max-w-') => self::parseSizeConstraint('maxWidth', substr($class, 6)),
+            str_starts_with($class, 'min-h-') => self::parseSizeConstraint('minHeight', substr($class, 6)),
+            str_starts_with($class, 'max-h-') => self::parseSizeConstraint('maxHeight', substr($class, 6)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
             // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
@@ -867,6 +888,36 @@ class TailwindParser
     {
         if (isset(self::SPACING[$value])) {
             return ['height' => self::SPACING[$value]];
+        }
+
+        return null;
+    }
+
+    /**
+     * `max-w-*` / `min-w-*` / `max-h-*` / `min-h-*`.
+     *
+     * Accepts the spacing scale (`max-w-64`), the container scale that only
+     * max-width has in Tailwind (`max-w-sm`), and `none` (an explicit "no
+     * constraint", which is what the wire's 0 already means).
+     *
+     * The `full` / `screen*` / `min` / `max` / `fit` keywords are deliberately
+     * NOT accepted: the packed node carries min/max as bare floats with no
+     * companion size mode, so there is nowhere to put "100% of the parent".
+     * Leaving them unparsed lands them in the dropped-class diagnostics
+     * instead of silently doing nothing.
+     */
+    private static function parseSizeConstraint(string $key, string $value): ?array
+    {
+        if ($value === 'none') {
+            return [$key => 0];
+        }
+
+        if (isset(self::SPACING[$value])) {
+            return [$key => self::SPACING[$value]];
+        }
+
+        if (($key === 'maxWidth' || $key === 'minWidth') && isset(self::CONTAINER_SIZES[$value])) {
+            return [$key => self::CONTAINER_SIZES[$value]];
         }
 
         return null;
@@ -1201,6 +1252,10 @@ class TailwindParser
             'gap' => ['gap' => (float) $value],
             'w' => ['width' => (float) $value],
             'h' => ['height' => (float) $value],
+            'min-w' => ['minWidth' => (float) $value],
+            'max-w' => ['maxWidth' => (float) $value],
+            'min-h' => ['minHeight' => (float) $value],
+            'max-h' => ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
