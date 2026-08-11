@@ -95,6 +95,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     // Last appearance pushed to PHP, so onConfigurationChanged (which also fires
     // on rotation) only emits AppearanceChanged when the theme actually flips.
     private var lastAppearance: String? = null
+    // Splash-screen plugins replace core's splash with their own by patching
+    // this file, which they can only do by matching its source exactly. The
+    // four `nativephp:splash-*` markers below name the sites they patch, and
+    // are a stable contract for this major version: each marker, the statement
+    // beneath it, and that statement's indentation.
     private var showSplash by mutableStateOf(true)
     // Gates composition of the heavy MainScreen tree (Scaffold + WebView)
     // until the runtime is booted and the WebView is ready. Until then the first
@@ -121,6 +126,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // nativephp:splash-install — installSplashScreen() goes here, above super
         super.onCreate(savedInstanceState)
         instance = this
 
@@ -181,6 +187,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                     // Lives here — NOT inside the showContent gate — so it paints on the
                     // first frame and covers the boot; MainScreen composes beneath it.
                     AnimatedVisibility(
+                        // nativephp:splash-visibility
                         visible = showSplash,
                         exit = fadeOut(animationSpec = tween(300))
                     ) {
@@ -402,9 +409,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         firstContentReported = true
         Log.d("MainActivity", "🎨 First content ($source)")
 
-                // The two lines below keep their original 12-space indent: splash-screen
-                // plugins (s2br/nativephp-mobile-splashscreen) patch them via exact-string
-                // match including that indentation. Do not re-indent.
+            // nativephp:splash-release
             // Hide splash screen after URL is loaded
             showSplash = false
 
@@ -1418,6 +1423,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // nativephp:splash-backdrop
                 .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
