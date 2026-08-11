@@ -61,7 +61,8 @@
             "Native\\Mobile\\": "src/"
         },
         "files": [
-            "src/helpers.php"
+            "src/helpers.php",
+            "src/edge_aliases.php"
         ]
     },
     "autoload-dev": {
