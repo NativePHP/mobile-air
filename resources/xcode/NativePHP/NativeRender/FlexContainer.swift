@@ -35,10 +35,17 @@ enum JustifyContent {
 }
 
 enum AlignItems {
-    static let start = 0
+    /// No `items-*` / `self-*` class was authored. PHP omits `align_items`
+    /// entirely in that case, so it arrives as 0 and we apply the container
+    /// default (stretch — the CSS default, and what this renderer has always
+    /// done). Distinct from `start`, which the author asked for explicitly.
+    static let unset = 0
     static let center = 1
     static let end = 2
     static let stretch = 3
+    /// Explicitly authored `items-start` / `self-start`. Deliberately NOT 0 —
+    /// see the note on the PHP `AlignItems` enum (mobile-air #309).
+    static let start = 4
 }
 
 enum PositionType {
@@ -644,8 +651,12 @@ struct FlexContainer: Layout {
                     : ProposedViewSize(width: nil, height: childMain)
 
                 switch effectiveAlign {
-                case AlignItems.stretch:
-                    // No FILL: use natural size, align to start (like Android).
+                case AlignItems.start:
+                    // Explicitly authored `items-start` / `self-start`: the
+                    // child hugs its own content and sits at the leading edge,
+                    // matching ComposeFlexLayout (which simply omits
+                    // `fillMaxWidth()`).
+                    //
                     // We can't reuse childCrosses[i] from Phase 3 here — Phase 3
                     // proposes crossAvail, which makes container children (e.g.
                     // a flex column) fill the cross axis and report container
@@ -666,8 +677,19 @@ struct FlexContainer: Layout {
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
 
-                default: // start
-                    // Start: use measured cross size (from Phase 3), align to start
+                default: // unset (0) and stretch (3)
+                    // Both take the container's cross extent. Phase 3 already
+                    // measured every child against `crossAvail`, so
+                    // `childCrosses[i]` IS the stretched size: a container child
+                    // reports the full cross axis, while a child with its own
+                    // explicit cross size reports that instead — which is what
+                    // CSS stretch does too.
+                    //
+                    // Unset lands here because stretch is the CSS default for
+                    // `align-items`, and it is what this renderer has always
+                    // done for an unclassed container. Keeping the two together
+                    // is what lets `items-start` be fixed without moving every
+                    // existing layout (mobile-air #309).
                     finalCross = childCrosses[i]
                     crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
                 }

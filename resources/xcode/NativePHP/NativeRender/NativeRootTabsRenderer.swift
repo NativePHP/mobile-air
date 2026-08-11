@@ -559,6 +559,12 @@ private struct PerTabContent: View {
         }
         if let content {
             NodeView(node: content)
+                // Tapping outside a focused field dismisses the keyboard, the
+                // same as on a chrome-less screen. Attached to the screen
+                // content, not the TabView — a tap on the tab bar is the bar's
+                // business, and wrapping the TabView risks iOS 26's search
+                // capsule (mobile-air #308).
+                .dismissesKeyboardOnTap()
         } else {
             Color.clear
         }

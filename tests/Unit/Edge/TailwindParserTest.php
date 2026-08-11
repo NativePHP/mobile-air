@@ -78,6 +78,50 @@ it('parses height from spacing scale', function () {
     expect(TailwindParser::parse('h-32'))->toBe(['height' => 128]);
 });
 
+// ── Min/max size constraints (#310) ─────────────────
+
+it('parses min/max size constraints from the spacing scale', function () {
+    expect(TailwindParser::parse('max-w-64'))->toBe(['maxWidth' => 256]);
+    expect(TailwindParser::parse('min-w-4'))->toBe(['minWidth' => 16]);
+    expect(TailwindParser::parse('max-h-96'))->toBe(['maxHeight' => 384]);
+    expect(TailwindParser::parse('min-h-8'))->toBe(['minHeight' => 32]);
+});
+
+it('parses max-w from the container scale', function () {
+    expect(TailwindParser::parse('max-w-xs'))->toBe(['maxWidth' => 320]);
+    expect(TailwindParser::parse('max-w-sm'))->toBe(['maxWidth' => 384]);
+    expect(TailwindParser::parse('max-w-2xl'))->toBe(['maxWidth' => 672]);
+});
+
+it('parses arbitrary min/max size constraints', function () {
+    expect(TailwindParser::parse('max-w-[280px]'))->toBe(['maxWidth' => 280.0]);
+    expect(TailwindParser::parse('min-h-[100px]'))->toBe(['minHeight' => 100.0]);
+});
+
+it('treats max-w-none as an explicit no-constraint', function () {
+    // 0 is what "unset" already means on the wire, so `none` round-trips to it.
+    expect(TailwindParser::parse('max-w-none'))->toBe(['maxWidth' => 0]);
+});
+
+it('combines a width mode with a max-width constraint', function () {
+    expect(TailwindParser::parse('w-full max-w-[280px]'))
+        ->toBe(['fillWidth' => true, 'maxWidth' => 280.0]);
+});
+
+it('drops max-w keywords the wire cannot express', function () {
+    // min/max ride the packed node as bare floats with no companion size
+    // mode, so there is nowhere to put "100% of the parent". Dropping them
+    // surfaces the class in the unsupported-class diagnostics instead of
+    // silently rendering nothing.
+    expect(TailwindParser::parse('max-w-full'))->toBe([]);
+    expect(TailwindParser::parse('max-w-screen'))->toBe([]);
+});
+
+it('does not let the margin branch swallow min/max classes', function () {
+    expect(TailwindParser::parse('m-4'))->toBe(['margin' => 16]);
+    expect(TailwindParser::parse('mx-2'))->toBe(['marginLeft' => 8, 'marginRight' => 8]);
+});
+
 // ── Flex & Alignment ────────────────────────────────
 
 it('parses flex direction', function () {
@@ -104,10 +148,26 @@ it('parses the current Tailwind grow and shrink aliases', function () {
 });
 
 it('parses items alignment', function () {
-    expect(TailwindParser::parse('items-start'))->toBe(['alignItems' => 0]);
+    // start is 4, not 0 — 0 is the "no items-* class" slot. See AlignItems.
+    expect(TailwindParser::parse('items-start'))->toBe(['alignItems' => 4]);
     expect(TailwindParser::parse('items-center'))->toBe(['alignItems' => 1]);
     expect(TailwindParser::parse('items-end'))->toBe(['alignItems' => 2]);
     expect(TailwindParser::parse('items-stretch'))->toBe(['alignItems' => 3]);
+});
+
+it('distinguishes an authored items-start from no alignment at all', function () {
+    // The whole point of moving Start off 0 (#309): these two must not
+    // produce the same wire value, or the renderers cannot tell them apart.
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'items-start']);
+    $explicit = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'p-4']);
+    $unset = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($explicit['layout']['align_items'])->toBe(4)
+        ->and($unset['layout'])->not->toHaveKey('align_items');
 });
 
 it('parses justify content', function () {
@@ -120,7 +180,9 @@ it('parses justify content', function () {
 });
 
 it('parses self alignment', function () {
-    expect(TailwindParser::parse('self-start'))->toBe(['alignSelf' => 0]);
+    // Both renderers resolve `alignSelf > 0 ? alignSelf : align`, so while
+    // Start was 0 an authored `self-start` was a silent no-op. 4 fixes it.
+    expect(TailwindParser::parse('self-start'))->toBe(['alignSelf' => 4]);
     expect(TailwindParser::parse('self-center'))->toBe(['alignSelf' => 1]);
     expect(TailwindParser::parse('self-end'))->toBe(['alignSelf' => 2]);
     expect(TailwindParser::parse('self-stretch'))->toBe(['alignSelf' => 3]);
@@ -243,6 +305,100 @@ it('parses border radius', function () {
     expect(TailwindParser::parse('rounded-2xl'))->toBe(['borderRadius' => 16]);
     expect(TailwindParser::parse('rounded-3xl'))->toBe(['borderRadius' => 24]);
     expect(TailwindParser::parse('rounded-full'))->toBe(['borderRadius' => 9999]);
+});
+
+// ── Per-corner / per-side border radius (#311) ──────
+
+it('parses per-corner border radius', function () {
+    expect(TailwindParser::parse('rounded-tl-2xl'))->toBe(['borderRadiusTopLeft' => 16]);
+    expect(TailwindParser::parse('rounded-tr-lg'))->toBe(['borderRadiusTopRight' => 8]);
+    expect(TailwindParser::parse('rounded-br-none'))->toBe(['borderRadiusBottomRight' => 0]);
+    expect(TailwindParser::parse('rounded-bl-full'))->toBe(['borderRadiusBottomLeft' => 9999]);
+});
+
+it('expands per-side border radius to its two corners', function () {
+    expect(TailwindParser::parse('rounded-t-2xl'))
+        ->toBe(['borderRadiusTopLeft' => 16, 'borderRadiusTopRight' => 16]);
+    expect(TailwindParser::parse('rounded-b-lg'))
+        ->toBe(['borderRadiusBottomRight' => 8, 'borderRadiusBottomLeft' => 8]);
+    expect(TailwindParser::parse('rounded-l-md'))
+        ->toBe(['borderRadiusTopLeft' => 6, 'borderRadiusBottomLeft' => 6]);
+    expect(TailwindParser::parse('rounded-r-xl'))
+        ->toBe(['borderRadiusTopRight' => 12, 'borderRadiusBottomRight' => 12]);
+});
+
+it('gives a bare side the same default radius as a bare rounded', function () {
+    expect(TailwindParser::parse('rounded-b'))
+        ->toBe(['borderRadiusBottomRight' => 4, 'borderRadiusBottomLeft' => 4]);
+});
+
+it('parses arbitrary per-corner radius', function () {
+    expect(TailwindParser::parse('rounded-br-[4px]'))->toBe(['borderRadiusBottomRight' => 4.0]);
+    expect(TailwindParser::parse('rounded-t-[12]'))
+        ->toBe(['borderRadiusTopLeft' => 12.0, 'borderRadiusTopRight' => 12.0]);
+    // The uniform arbitrary form must keep working alongside them.
+    expect(TailwindParser::parse('rounded-[10]'))->toBe(['borderRadius' => 10.0]);
+});
+
+it('keeps uniform and per-corner radius as separate keys, order-independently', function () {
+    // Tailwind emits the shorthand before the longhand in its stylesheet, so
+    // the per-corner value wins no matter how the author orders the classes.
+    // Merging them here would make the result depend on class order.
+    $expected = ['borderRadius' => 16, 'borderRadiusBottomRight' => 0];
+
+    expect(TailwindParser::parse('rounded-2xl rounded-br-none'))->toBe($expected);
+    expect(TailwindParser::parse('rounded-br-none rounded-2xl'))
+        ->toBe(['borderRadiusBottomRight' => 0, 'borderRadius' => 16]);
+});
+
+it('rejects logical and malformed radius spellings', function () {
+    // Logical (writing-direction) corners aren't supported — neither renderer
+    // flips corners for RTL, so accepting these would render LTR geometry in
+    // an RTL layout. Dropping them surfaces the class in the diagnostics.
+    expect(TailwindParser::parse('rounded-s-lg'))->toBe([]);
+    expect(TailwindParser::parse('rounded-ee-lg'))->toBe([]);
+    expect(TailwindParser::parse('rounded-zz-lg'))->toBe([]);
+    expect(TailwindParser::parse('rounded-t-bogus'))->toBe([]);
+});
+
+it('resolves per-corner radius against the uniform radius on the wire', function () {
+    // All four corners are emitted whenever any is authored, each already
+    // resolved — so the native side needs no per-corner presence checks.
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'rounded-2xl rounded-br-none']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'])->toMatchArray([
+        'radius_tl' => 16.0,
+        'radius_tr' => 16.0,
+        'radius_br' => 0.0,
+        'radius_bl' => 16.0,
+    ])
+        // The uniform field stays populated so renderers that ignore the
+        // corner props still draw something sane.
+        ->and($tree['style']['border_radius'])->toBe(16.0);
+});
+
+it('emits no corner props when only a uniform radius is used', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'rounded-2xl']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'] ?? [])->not->toHaveKey('radius_tl')
+        ->and($tree['style']['border_radius'])->toBe(16.0);
+});
+
+it('defaults unauthored corners to zero when there is no uniform radius', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'rounded-tl-2xl']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'])->toMatchArray([
+        'radius_tl' => 16.0,
+        'radius_tr' => 0.0,
+        'radius_br' => 0.0,
+        'radius_bl' => 0.0,
+    ]);
 });
 
 // ── Visual ──────────────────────────────────────────
@@ -642,6 +798,20 @@ it('combines uniform and directional padding through collector', function () {
 
     // p-4 = 16 uniform, pt-8 = 32 top override
     expect($tree['layout']['padding'])->toBe([32.0, 16.0, 16.0, 16.0]);
+});
+
+it('carries min/max size constraints through the collector to the wire', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', [
+        'class' => 'w-full max-w-[280px] min-h-16',
+    ]);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['layout']['max_width'])->toBe(280.0)
+        ->and($tree['layout']['min_height'])->toBe(64.0)
+        // `w-full` still sets the width mode — max-w clamps it, it doesn't replace it.
+        ->and($tree['layout']['width'])->toBe('fill');
 });
 
 it('explicit attrs override class attrs', function () {

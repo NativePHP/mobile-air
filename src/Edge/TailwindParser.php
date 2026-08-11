@@ -207,8 +207,43 @@ class TailwindParser
         'xl' => 12, '2xl' => 16, '3xl' => 24, 'full' => 9999,
     ];
 
+    /**
+     * Which corners each `rounded-<side>-*` suffix touches. Sides expand to
+     * their two corners, exactly as Tailwind's longhand does.
+     *
+     * Only the PHYSICAL spellings are here. Tailwind's logical variants
+     * (`rounded-s-*`, `rounded-ee-*`, …) resolve against the writing
+     * direction, and neither renderer flips corners for RTL yet — accepting
+     * them would silently render LTR geometry in an RTL layout, so they stay
+     * unparsed and land in the dropped-class diagnostics instead.
+     *
+     * @var array<string, list<string>>
+     */
+    private const BORDER_RADIUS_CORNERS = [
+        'tl' => ['borderRadiusTopLeft'],
+        'tr' => ['borderRadiusTopRight'],
+        'br' => ['borderRadiusBottomRight'],
+        'bl' => ['borderRadiusBottomLeft'],
+        't' => ['borderRadiusTopLeft', 'borderRadiusTopRight'],
+        'r' => ['borderRadiusTopRight', 'borderRadiusBottomRight'],
+        'b' => ['borderRadiusBottomRight', 'borderRadiusBottomLeft'],
+        'l' => ['borderRadiusTopLeft', 'borderRadiusBottomLeft'],
+    ];
+
     private const SHADOW = [
         'sm' => 1, 'md' => 6, 'lg' => 8, 'xl' => 12, '2xl' => 16, 'none' => 0,
+    ];
+
+    /**
+     * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
+     * Values are the rem sizes converted at the 16px root Tailwind assumes.
+     * Most are far wider than a phone, but they're what authors type and a
+     * constraint that never binds is still better than a dropped class.
+     */
+    private const CONTAINER_SIZES = [
+        '3xs' => 256, '2xs' => 288, 'xs' => 320, 'sm' => 384, 'md' => 448,
+        'lg' => 512, 'xl' => 576, '2xl' => 672, '3xl' => 768, '4xl' => 896,
+        '5xl' => 1024, '6xl' => 1152, '7xl' => 1280,
     ];
 
     private const WIDTH_FRACTIONS = [
@@ -538,8 +573,17 @@ class TailwindParser
             str_starts_with($class, 'ml-') => self::parseSpacingSide('marginLeft', substr($class, 3)),
             str_starts_with($class, 'm-') => self::parseSpacingUniform('margin', substr($class, 2)),
 
-            // Gap, dimensions
+            // Gap, dimensions.
+            //
+            // The min-/max- constraints MUST precede the bare `w-`/`h-`
+            // branches only for readability — they don't actually collide
+            // (`max-w-4` doesn't start with `w-`) — but grouping them keeps
+            // the sizing rules together.
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
+            str_starts_with($class, 'min-w-') => self::parseSizeConstraint('minWidth', substr($class, 6)),
+            str_starts_with($class, 'max-w-') => self::parseSizeConstraint('maxWidth', substr($class, 6)),
+            str_starts_with($class, 'min-h-') => self::parseSizeConstraint('minHeight', substr($class, 6)),
+            str_starts_with($class, 'max-h-') => self::parseSizeConstraint('maxHeight', substr($class, 6)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
             // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
@@ -873,6 +917,36 @@ class TailwindParser
     }
 
     /**
+     * `max-w-*` / `min-w-*` / `max-h-*` / `min-h-*`.
+     *
+     * Accepts the spacing scale (`max-w-64`), the container scale that only
+     * max-width has in Tailwind (`max-w-sm`), and `none` (an explicit "no
+     * constraint", which is what the wire's 0 already means).
+     *
+     * The `full` / `screen*` / `min` / `max` / `fit` keywords are deliberately
+     * NOT accepted: the packed node carries min/max as bare floats with no
+     * companion size mode, so there is nowhere to put "100% of the parent".
+     * Leaving them unparsed lands them in the dropped-class diagnostics
+     * instead of silently doing nothing.
+     */
+    private static function parseSizeConstraint(string $key, string $value): ?array
+    {
+        if ($value === 'none') {
+            return [$key => 0];
+        }
+
+        if (isset(self::SPACING[$value])) {
+            return [$key => self::SPACING[$value]];
+        }
+
+        if (($key === 'maxWidth' || $key === 'minWidth') && isset(self::CONTAINER_SIZES[$value])) {
+            return [$key => self::CONTAINER_SIZES[$value]];
+        }
+
+        return null;
+    }
+
+    /**
      * Parse an aspect-ratio token — either `W/H` (e.g. `16/9`) or a plain
      * decimal (e.g. `1.5`). A plain `(float)` cast can't be used for the
      * `W/H` form because PHP would stop at the slash (`"16/9"` casts to
@@ -1131,13 +1205,54 @@ class TailwindParser
         return self::resolveColor($value, 'borderColor');
     }
 
+    /**
+     * `rounded-*` — uniform, per-side and per-corner.
+     *
+     * The scale keys carry no dashes, so a dash unambiguously separates a
+     * side from its size: `2xl` is uniform, `br-none` is one corner.
+     * A bare side (`rounded-t`) takes Tailwind's default 4pt radius, the
+     * same as a bare `rounded`.
+     *
+     * Per-corner keys are emitted ALONGSIDE any uniform `borderRadius` rather
+     * than merged into it, so `rounded-2xl rounded-br-none` keeps both and the
+     * collector resolves the precedence. That makes the result independent of
+     * the order the classes appear in — which matches Tailwind, where the
+     * longhand always follows the shorthand in the generated stylesheet
+     * regardless of how the author ordered the attribute.
+     */
     private static function parseRounded(string $value): ?array
     {
         if (isset(self::BORDER_RADIUS[$value])) {
             return ['borderRadius' => self::BORDER_RADIUS[$value]];
         }
 
-        return null;
+        [$side, $size] = array_pad(explode('-', $value, 2), 2, null);
+
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+        if ($corners === null) {
+            return null;
+        }
+
+        // Bare side (`rounded-b`) → the same default `rounded` uses.
+        $radius = $size === null ? 4 : (self::BORDER_RADIUS[$size] ?? null);
+        if ($radius === null) {
+            return null;
+        }
+
+        return array_fill_keys($corners, $radius);
+    }
+
+    /**
+     * Arbitrary per-corner radius — `rounded-br-[4px]`, `rounded-t-[12]`.
+     * The uniform `rounded-[N]` form is handled inline in parseArbitrary.
+     *
+     * @return array<string, float>|null
+     */
+    private static function parseArbitraryRounded(string $side, string $value): ?array
+    {
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+
+        return $corners === null ? null : array_fill_keys($corners, (float) $value);
     }
 
     private static function parseShadow(string $value): ?array
@@ -1201,9 +1316,17 @@ class TailwindParser
             'gap' => ['gap' => (float) $value],
             'w' => ['width' => (float) $value],
             'h' => ['height' => (float) $value],
+            'min-w' => ['minWidth' => (float) $value],
+            'max-w' => ['maxWidth' => (float) $value],
+            'min-h' => ['minHeight' => (float) $value],
+            'max-h' => ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
+            // `rounded-br-[4px]` etc. The arbitrary regex is non-greedy up to
+            // the final `-[`, so the whole `rounded-<side>` arrives as prefix.
+            'rounded-tl', 'rounded-tr', 'rounded-br', 'rounded-bl',
+            'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],

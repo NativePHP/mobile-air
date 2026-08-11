@@ -25,6 +25,7 @@ struct NodeStyleModifier: ViewModifier {
     func body(content: Content) -> some View {
         let dark = colorScheme == .dark
         let radius = cornerRadius
+        let radii = cornerRadii
         let glassFlags = props.getInt("glass", default: 0)
 
         // Defer opacity to `NodeAnimationModifier` when:
@@ -52,9 +53,10 @@ struct NodeStyleModifier: ViewModifier {
             // RoundedRectangle, no rounded → Rectangle).
             .modifier(GlassModifier(
                 flags: Self.glassHandledByRenderer.contains(nodeType) ? 0 : glassFlags,
-                cornerRadius: radius
+                cornerRadius: radius,
+                cornerRadii: radii
             ))
-            .modifier(ClipRadiusModifier(radius: radius))
+            .modifier(ClipRadiusModifier(radius: radius, radii: radii))
             .overlay(borderOverlay(dark: dark, radius: radius))
             .shadow(
                 color: shadowColor,
@@ -124,17 +126,54 @@ struct NodeStyleModifier: ViewModifier {
         return CGFloat(s.borderRadius)
     }
 
+    /// Per-corner radii (`rounded-br-none`, `rounded-t-2xl`, …), or nil when
+    /// the node uses only the uniform `rounded-*`.
+    ///
+    /// These ride the props bag rather than NodeStyle: the packed binary node
+    /// carries a single `border_radius` float with no room for four. PHP emits
+    /// all four whenever ANY corner is authored — each already resolved
+    /// against the uniform radius — so the presence of `radius_tl` alone is
+    /// the switch, and no per-corner defaulting is needed here.
+    ///
+    /// SwiftUI's `UnevenRoundedRectangle` names its corners leading/trailing,
+    /// which flip under RTL. The Tailwind spellings we accept are physical
+    /// (`tl` = top-LEFT), so leading is mapped to left. That matches the rest
+    /// of this renderer — FlexContainer places everything off `bounds.minX`
+    /// and has no RTL handling either — and is why the parser rejects
+    /// Tailwind's logical `rounded-s-*` / `rounded-ee-*` spellings outright
+    /// rather than pretending to honour them.
+    private var cornerRadii: RectangleCornerRadii? {
+        guard props.has("radius_tl") else { return nil }
+
+        return RectangleCornerRadii(
+            topLeading: CGFloat(props.getFloat("radius_tl", default: 0)),
+            bottomLeading: CGFloat(props.getFloat("radius_bl", default: 0)),
+            bottomTrailing: CGFloat(props.getFloat("radius_br", default: 0)),
+            topTrailing: CGFloat(props.getFloat("radius_tr", default: 0))
+        )
+    }
+
     // MARK: - Border
 
+    @ViewBuilder
     private func borderOverlay(dark: Bool, radius: CGFloat) -> some View {
         let width = CGFloat(style?.borderWidth ?? 0)
         let darkBorder = dark ? props.getColor("dark_border_color", default: 0) : 0
         let argb = darkBorder != 0 ? darkBorder : (style?.borderColor ?? 0)
         let color = colorFromARGB(argb)
 
-        return RoundedRectangle(cornerRadius: radius)
-            .strokeBorder(color, lineWidth: width)
-            .opacity(width > 0 ? 1 : 0)
+        // Both shapes are Insettable, so the border keeps drawing INSIDE the
+        // bounds via strokeBorder — plain `stroke` would straddle the edge and
+        // shift every existing border by half its width.
+        if let radii = cornerRadii {
+            UnevenRoundedRectangle(cornerRadii: radii)
+                .strokeBorder(color, lineWidth: width)
+                .opacity(width > 0 ? 1 : 0)
+        } else {
+            RoundedRectangle(cornerRadius: radius)
+                .strokeBorder(color, lineWidth: width)
+                .opacity(width > 0 ? 1 : 0)
+        }
     }
 
     // MARK: - Shadow
@@ -181,8 +220,15 @@ func colorFromARGB(_ argb: Int) -> Color {
 /// rectangle which cuts off content that slightly overflows (e.g. Toggle switches).
 private struct ClipRadiusModifier: ViewModifier {
     let radius: CGFloat
+    /// Per-corner radii, when the node used `rounded-<side>-*`. Wins over
+    /// `radius`, which PHP has already folded into each corner.
+    let radii: RectangleCornerRadii?
+
+    @ViewBuilder
     func body(content: Content) -> some View {
-        if radius > 0 {
+        if let radii {
+            content.clipShape(UnevenRoundedRectangle(cornerRadii: radii))
+        } else if radius > 0 {
             content.clipShape(RoundedRectangle(cornerRadius: radius))
         } else {
             content
@@ -211,6 +257,9 @@ private struct ClipRadiusModifier: ViewModifier {
 private struct GlassModifier: ViewModifier {
     let flags: Int
     let cornerRadius: CGFloat
+    /// Per-corner radii when `rounded-<side>-*` was used, so a glass surface
+    /// takes the same asymmetric outline as its clip and border.
+    let cornerRadii: RectangleCornerRadii?
 
     private var enabled: Bool      { (flags & 1) != 0 }
     private var interactive: Bool  { (flags & 4) != 0 }
@@ -240,7 +289,9 @@ private struct GlassModifier: ViewModifier {
     /// Tailwind parser maps `rounded-full` → 9999, `rounded-{xs..3xl}`
     /// → fixed pt values, no `rounded-*` → 0.
     private var glassShape: AnyShape {
-        if cornerRadius >= 9999 {
+        if let cornerRadii {
+            return AnyShape(UnevenRoundedRectangle(cornerRadii: cornerRadii))
+        } else if cornerRadius >= 9999 {
             return AnyShape(Capsule())
         } else if cornerRadius > 0 {
             return AnyShape(RoundedRectangle(cornerRadius: cornerRadius))

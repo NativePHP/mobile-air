@@ -90,11 +90,7 @@ struct NativeTreeRenderer: View {
                     .environment(\.availableHeight, geo.size.height)
             }
             .ignoresSafeArea(.container, edges: .all)
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                }
-            )
+            .dismissesKeyboardOnTap()
         }
     }
 
@@ -105,6 +101,42 @@ struct NativeTreeRenderer: View {
             return (0, 0)
         }
         return (insets.top, insets.bottom)
+    }
+}
+
+// MARK: - Tap-to-dismiss Keyboard
+
+extension View {
+    /// Dismiss the keyboard when the user taps anywhere in this subtree.
+    ///
+    /// Applied to the screen CONTENT on every kind of screen — chrome-less
+    /// roots here, plus the stack and tabs renderers, which host their screens
+    /// separately and so never inherited the gesture. Before that, tapping
+    /// outside a field dismissed the keyboard on a plain screen but did
+    /// nothing on any screen inside a tab or stack layout (mobile-air #308).
+    ///
+    /// Deliberately attached to the screen content rather than to the
+    /// TabView / NavigationStack root: `rootContent` bypasses NodeView's
+    /// wrappers for those sentinels because cumulative wrapping breaks iOS 26's
+    /// `Tab(role: .search)` capsule activation, and adding a gesture recognizer
+    /// spanning the tab bar risks the same class of problem. Screen content is
+    /// also the correct scope — a tap on the tab bar or a toolbar button is
+    /// that control's business, not a dismiss.
+    ///
+    /// `simultaneousGesture` rather than `onTapGesture` so it runs ALONGSIDE
+    /// whatever it lands on: buttons, pressables and list rows underneath keep
+    /// receiving their own taps instead of having them swallowed.
+    func dismissesKeyboardOnTap() -> some View {
+        simultaneousGesture(
+            TapGesture().onEnded {
+                UIApplication.shared.sendAction(
+                    #selector(UIResponder.resignFirstResponder),
+                    to: nil,
+                    from: nil,
+                    for: nil
+                )
+            }
+        )
     }
 }
 
