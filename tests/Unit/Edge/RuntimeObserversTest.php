@@ -242,6 +242,7 @@ it('rejects invalid or core-reserved package event names', function (string $eve
     'core native namespace, uppercased' => 'NATIVE:deeplink',
     'core internal namespace' => '__deeplink:x',
     'trailing newline' => "vendor:cmd\n",
+    'mixed case never matches dispatch' => 'Vendor:Cmd',
 ]);
 
 it('observes interaction dispatch around the actual component mutation', function () {

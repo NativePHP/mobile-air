@@ -24,11 +24,13 @@ class NativeEventHandlers
 
     public static function register(string $event, callable $handler): int
     {
+        // Lowercase-only, because dispatch() matches the raw wire name with a
+        // single isset() — a mixed-case registration would never fire.
         if (
-            preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+\z/i', $event) !== 1
-            || str_starts_with(strtolower($event), 'native:')
+            preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+\z/', $event) !== 1
+            || str_starts_with($event, 'native:')
         ) {
-            throw new InvalidArgumentException('Plugin native event names must use a non-core namespace such as vendor:command.');
+            throw new InvalidArgumentException('Plugin native event names must be lowercase and use a non-core namespace such as vendor:command.');
         }
 
         $id = ++static::$sequence;
