@@ -6,13 +6,13 @@ use Native\Mobile\Edge\NativeElementCollector;
 beforeEach(function () {
     NativeElementCollector::reset();
     NativeElementCollector::stopCapturingAttributes();
-    NativeElementCollector::stopTransformingAttributes();
+    NativeElementCollector::stopAllAttributeTransformers();
 });
 
 afterEach(function () {
     NativeElementCollector::reset();
     NativeElementCollector::stopCapturingAttributes();
-    NativeElementCollector::stopTransformingAttributes();
+    NativeElementCollector::stopAllAttributeTransformers();
 });
 
 function capturedTree(string $type, array $attrs): array
@@ -85,6 +85,27 @@ it('isolates rendering from attribute transformer failures', function () {
     $tree = capturedTree('text', ['text' => 'still renders']);
 
     expect($tree['props']['text'])->toBe('still renders');
+});
+
+it('stops a single named transformer without disturbing other packages', function () {
+    NativeElementCollector::captureAttribute('marker', 'marker');
+    NativeElementCollector::transformAttributes('pkg.a', function (string $type, array $attrs): array {
+        $attrs['text'] = 'rewritten-by-a';
+
+        return $attrs;
+    });
+    NativeElementCollector::transformAttributes('pkg.b', function (string $type, array $attrs): array {
+        $attrs['marker'] = 'still-running';
+
+        return $attrs;
+    });
+
+    NativeElementCollector::stopTransformingAttributes('pkg.a');
+
+    $tree = capturedTree('text', ['text' => 'original']);
+
+    expect($tree['props']['text'])->toBe('original')
+        ->and($tree['props']['marker'])->toBe('still-running');
 });
 
 it('never lets captured metadata override an element-resolved prop', function () {

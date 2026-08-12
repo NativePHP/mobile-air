@@ -154,15 +154,20 @@ class NativeElementCollector
         static::$attributeTransformers[$name] = $transformer;
     }
 
-    public static function stopTransformingAttributes(?string $name = null): void
+    /** Remove one package's named transformer; other registrations keep running. */
+    public static function stopTransformingAttributes(string $name): void
     {
-        if ($name === null) {
-            static::$attributeTransformers = [];
-
-            return;
-        }
-
         unset(static::$attributeTransformers[$name]);
+    }
+
+    /**
+     * Drop EVERY package's transformer — reach for this only from test
+     * harnesses. A package tearing down its own hook wants the named
+     * stopTransformingAttributes() above.
+     */
+    public static function stopAllAttributeTransformers(): void
+    {
+        static::$attributeTransformers = [];
     }
 
     protected static function applyAttributeTransformers(string $type, array $attrs): array
