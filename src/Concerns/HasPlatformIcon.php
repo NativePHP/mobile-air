@@ -98,6 +98,9 @@ trait HasPlatformIcon
      *
      * Resolution rules:
      *   - iOS:     `iosOverride ?? sharedName`
+     *   - macOS:   `iosOverride ?? sharedName` — one SF Symbols catalogue
+     *     covers every Apple platform, so the iOS name is the Mac name too
+     *     (see [IconResolver])
      *   - Android: `androidOverride ?? sharedName`
      *   - Unknown platform (tests / web preview): falls back to
      *     `sharedName` so non-mobile call sites still get a sensible
