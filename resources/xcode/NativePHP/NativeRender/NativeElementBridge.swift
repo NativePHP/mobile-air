@@ -1055,7 +1055,7 @@ final class NativeElementBridge {
         if !preserveTree {
             DispatchQueue.main.async {
                 NativeUIBridge.shared.isActive = false
-                NativeUIBridge.shared.currentTree = nil
+                NativeUIBridge.shared.clearTree()
             }
         }
     }
