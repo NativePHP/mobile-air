@@ -351,15 +351,24 @@ it('reports the same runtime failure only once', function () {
         ->and($observer->failures[0]->context->id)->toBe(ComponentIds::id($component));
 });
 
-it('does not reuse component identities after an instance is destroyed', function () {
-    $first = new RuntimeObservedComponent;
-    $firstId = ComponentIds::id($first);
+it('releases and never reuses component identities after an instance is destroyed', function () {
+    $ids = new ReflectionProperty(ComponentIds::class, 'ids');
 
-    unset($first);
+    $component = new RuntimeObservedComponent;
+    $componentId = ComponentIds::id($component);
 
-    $second = new RuntimeObservedComponent;
+    // Identity is stable while the instance lives.
+    expect(ComponentIds::id($component))->toBe($componentId);
 
-    expect(ComponentIds::id($second))->not->toBe($firstId);
+    $entriesWhileAlive = $ids->getValue()->count();
+
+    unset($component);
+    gc_collect_cycles();
+
+    // The WeakMap actually released the entry — the map shrank, so the
+    // registry cannot pin destroyed components in memory.
+    expect($ids->getValue()->count())->toBeLessThan($entriesWhileAlive)
+        ->and(ComponentIds::id(new RuntimeObservedComponent))->not->toBe($componentId);
 });
 
 it('routes package native events through the component and observes them', function () {
