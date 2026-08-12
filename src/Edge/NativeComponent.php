@@ -143,7 +143,14 @@ abstract class NativeComponent
 
     private int $runtimeDispatchSequence = 0;
 
-    private ?\Throwable $lastNotifiedRuntimeFailure = null;
+    /**
+     * Dedup guard for RuntimeObservers::failed() — weak so remembering the
+     * last-notified throwable never pins it (and every object bound in its
+     * stack frames) for the component's lifetime.
+     *
+     * @var \WeakReference<\Throwable>|null
+     */
+    private ?\WeakReference $lastNotifiedRuntimeFailure = null;
 
     /**
      * Opt out of subtree memoization for this component — every publish emits
@@ -2788,8 +2795,8 @@ abstract class NativeComponent
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;
 
-        if (RuntimeObservers::any() && $this->lastNotifiedRuntimeFailure !== $e) {
-            $this->lastNotifiedRuntimeFailure = $e;
+        if (RuntimeObservers::any() && $this->lastNotifiedRuntimeFailure?->get() !== $e) {
+            $this->lastNotifiedRuntimeFailure = \WeakReference::create($e);
             RuntimeObservers::failed(new RuntimeFailed(
                 context: $this->runtimeComponentContext(),
                 exception: $e,
