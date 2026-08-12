@@ -131,8 +131,15 @@ abstract class NativeComponent
      */
     private array $lastNodeHashes = [];
 
-    /** Publish counter for the forceFullFrame heartbeat. */
+    /** Publish counter for the forceFullFrame heartbeat — memoized path only. */
     private int $publishCount = 0;
+
+    /**
+     * Frames published on any path (memoized or streaming) — feeds
+     * ComponentContext::$renderCount for observers. Kept separate from
+     * $publishCount so observability can never shift the heartbeat phase.
+     */
+    private int $renderCount = 0;
 
     private int $runtimeDispatchSequence = 0;
 
@@ -223,6 +230,7 @@ abstract class NativeComponent
     private function memoizedToArray(Element $element): array
     {
         $this->publishCount++;
+        $this->renderCount++;
 
         $memoEnabled = $this->subtreeMemoEnabled();
         $nextId = 1;
@@ -1447,7 +1455,7 @@ abstract class NativeComponent
         return new ComponentContext(
             component: $this,
             uri: $this->nativeRouter?->currentUri() ?? '',
-            renderCount: $this->publishCount,
+            renderCount: $this->renderCount,
         );
     }
 
@@ -2149,6 +2157,7 @@ abstract class NativeComponent
         // reader's perspective; discard any prior memo hashes.
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
+        $this->renderCount = 0;
 
         nativephp_element_init();
 
@@ -2172,7 +2181,7 @@ abstract class NativeComponent
             if (! $this->nativeHasError) {
                 try {
                     if ($this->renderStreaming()) {
-                        $this->publishCount++;
+                        $this->renderCount++;
                     } else {
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element);
@@ -2328,6 +2337,7 @@ abstract class NativeComponent
         // of this session can't emit REUSE.
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
+        $this->renderCount = 0;
 
         if (empty($this->nativeEventListeners)) {
             $this->registerNativeEventListeners();
@@ -2356,7 +2366,7 @@ abstract class NativeComponent
                     $t0 = microtime(true);
 
                     if ($this->renderStreaming()) {
-                        $this->publishCount++;
+                        $this->renderCount++;
                         // Explicit streaming path
                         $this->nativeRouter?->flushDeferredTransition();
                         $t3 = microtime(true);
