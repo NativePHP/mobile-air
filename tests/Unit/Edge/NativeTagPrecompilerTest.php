@@ -3,6 +3,8 @@
 use Native\Mobile\Edge\Components\EdgeComponent;
 use Native\Mobile\Edge\Components\Navigation\TopBar;
 use Native\Mobile\Edge\Edge;
+use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 
@@ -25,7 +27,11 @@ it('is a no-op unless native compilation is active', function () {
     expect(($this->precompiler)($input))->toBe($input);
 });
 
-$collector = '\\Native\\Mobile\\Edge\\NativeElementCollector';
+// Compiled output names core's collector directly. It used to name this
+// package's alias of it, which is the same class here but not in an app
+// holding a released (pre-extraction) mobile, nor in a desktop-only app
+// where the alias doesn't exist at all.
+$collector = '\\SupaNative\\Core\\Edge\\NativeElementCollector';
 
 // Every native compile is prefixed with the compiled-view marker, so the
 // render path can detect (and recompile) views cached by a web compile.
@@ -317,4 +323,62 @@ it('has fully removed the Gen-B Edge bridge classes', function () {
         ->and(class_exists(EdgeComponent::class))->toBeFalse()
         ->and(class_exists(TopBar::class))->toBeFalse()
         ->and(class_exists(RenderEdgeComponents::class))->toBeFalse();
+});
+
+/*
+ * Bare (short-form) chrome tags — the sequencing regression.
+ * ---------------------------------------------------------
+ * `<top-bar>` compiles like `<native:top-bar>` only because `top_bar` is in
+ * ElementRegistry when the precompiler builds its allowlist. The precompiler
+ * is now constructed by supanative/core's provider, which — being this
+ * package's dependency — boots BEFORE the chrome types below are registered.
+ * So the allowlist is read at first compile, not at construction.
+ *
+ * These tests are the guard on that. If someone moves the registry read back
+ * into __construct() to "simplify" it, the prefixed forms keep working and
+ * only these fail — which is the whole point of writing them down.
+ */
+it('compiles a bare chrome tag exactly like its native:-prefixed form', function () {
+    $precompiler = new NativeTagPrecompiler;
+
+    foreach (['top-bar', 'bottom-nav', 'refreshable'] as $tag) {
+        expect($precompiler("<{$tag} title=\"Home\">body</{$tag}>"))
+            ->toBe($precompiler("<native:{$tag} title=\"Home\">body</native:{$tag}>"));
+    }
+
+    foreach (['fab', 'icon', 'top-bar-action', 'bottom-nav-item'] as $tag) {
+        expect($precompiler("<{$tag} icon=\"add\" />"))
+            ->toBe($precompiler("<native:{$tag} icon=\"add\" />"));
+    }
+});
+
+it('still matches the longest bare tag first', function () use ($collector) {
+    // `top-bar` and `top-bar-action` are both registered; a shortest-first
+    // alternation would tokenize this as <top-bar> with `-action` left over
+    // as attributes. Ordering is applied when the registry is read.
+    $result = (new NativeTagPrecompiler)('<top-bar-action id="x" />');
+
+    expect($result)->toContain("{$collector}::leaf('top_bar_action',");
+});
+
+it('reads the element registry at first compile, not at construction', function () {
+    $precompiler = new NativeTagPrecompiler;
+
+    // Registered after construction, exactly as this package's chrome is
+    // registered after core's provider has built the precompiler.
+    ElementRegistry::register('late_arrival', Column::class);
+
+    expect($precompiler('<late-arrival class="p-2">x</late-arrival>'))
+        ->toContain("::open('late_arrival', ['class' => 'p-2'])");
+});
+
+it('honours an explicitly supplied allowlist, including an empty one', function () {
+    // Explicit lists are how the unit tests and any host with its own idea
+    // of the allowlist opt out of the registry.
+    expect((new NativeTagPrecompiler(['column']))('<column>x</column>'))
+        ->toContain("::open('column',")
+        ->and((new NativeTagPrecompiler(['column']))('<top-bar>x</top-bar>'))
+        ->toContain('<top-bar>')
+        ->and((new NativeTagPrecompiler([]))('<column>x</column>'))
+        ->toContain('<column>');
 });
