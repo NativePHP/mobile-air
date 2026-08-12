@@ -42,7 +42,15 @@ final class PerTabNavigationCoordinator: ObservableObject {
         self.rootUri = rootUri
     }
 
-    /// Reconcile this tab after body evaluation because it mutates published state.
+    /// Synchronously update the cache for this URI. Safe to call during
+    /// a SwiftUI `body` evaluation since the cache isn't @Published.
+    func cache(uri: String, node: NativeUINode) {
+        guard !uri.isEmpty else { return }
+        rootNodeCache[uri] = node
+    }
+
+    /// Reconcile this tab's path with a PHP publish whose `currentUri`
+    /// has been determined to belong to this tab.
     func receive(uri: String, rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
