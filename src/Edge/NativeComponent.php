@@ -1790,11 +1790,12 @@ abstract class NativeComponent
             return;
         }
 
-        $method = $eventName === '__deeplink'
-            ? '__navigate'
-            : ($this->nativeEventListeners[$eventName]
-                ?? $this->nativeEventListeners['native:'.$eventName]
-                ?? null);
+        // Best-effort label only (see Dispatch::$method) — a __deeplink turns
+        // into a navigation intent and a package handler may claim the event,
+        // so no method resolved here is guaranteed to run.
+        $method = $this->nativeEventListeners[$eventName]
+            ?? $this->nativeEventListeners['native:'.$eventName]
+            ?? null;
         $startedAt = hrtime(true);
         $error = null;
         $dispatch = new RuntimeDispatch(

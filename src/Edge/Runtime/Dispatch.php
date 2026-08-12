@@ -5,6 +5,14 @@ namespace Native\Mobile\Edge\Runtime;
 final readonly class Dispatch
 {
     /**
+     * @param  string|null  $method  Best-effort label: the component method the
+     *                               dispatch resolves to at lookup time. Null
+     *                               when nothing matches — or when the event is
+     *                               consumed elsewhere (a package handler
+     *                               returning Handled, fluent ->on() closures,
+     *                               one-shot bridge callbacks, the __deeplink
+     *                               navigation branch). Tooling should treat it
+     *                               as a hint, never as a trace of what ran.
      * @param  list<mixed>  $arguments
      * @param  array<string, mixed>  $payload
      */
