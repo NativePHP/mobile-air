@@ -38,7 +38,6 @@ use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\Elements as ChromeElements;
-use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
@@ -49,12 +48,8 @@ use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
-use SupaNative\Core\Edge\ComponentRegistry;
-use SupaNative\Core\Edge\Components\Native\NativeBladeComponent;
 use SupaNative\Core\Edge\EdgeLog;
 use SupaNative\Core\Edge\ElementRegistry;
-use SupaNative\Core\Edge\Elements as CoreElements;
-use SupaNative\Core\Edge\NativeTagPrecompiler;
 use SupaNative\Core\Edge\TailwindParser;
 
 class NativeServiceProvider extends PackageServiceProvider
@@ -249,9 +244,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->feedPlatformToTailwindParser();
-        $this->registerNativeComponents();
-        $this->registerChildComponents();
-        $this->registerCoreElements();
+        $this->registerChromeElements();
         $this->registerUiPluginComponents();
         $this->registerFilesystems();
         $this->registerBladeDirectives();
@@ -263,50 +256,14 @@ class NativeServiceProvider extends PackageServiceProvider
             $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         }
 
-        $blade = app('blade.compiler');
-
-        // Build the bare-tag allowlist from registered element types so
-        // `<column>` / `<row>` / `<button>` etc. compile the same way as
-        // `<native:column>` / `<native:row>` / `<native:button>`. Types
-        // are snake_case (`scroll_view`) and tags are kebab-case
-        // (`scroll-view`) — convert here and the precompiler matches on
-        // the kebab form like it already does for the prefixed syntax.
-        $shortFormTags = array_map(
-            fn (string $type) => str_replace('_', '-', $type),
-            array_keys(ElementRegistry::all()),
-        );
-
-        $blade->precompiler(new NativeTagPrecompiler($shortFormTags));
-
-        // During a native render, force-recompile any view whose cached
-        // compiled file wasn't produced with the native precompiler active
-        // (no marker — e.g. a web render or `view:cache` compiled it
-        // first). Covers nested @includes; the root view gets the same
-        // check in renderBladeBoundToSelf().
-        //
-        // Registered as a view creator rather than a replacement 'blade'
-        // engine: the engine resolver is a single slot, and Livewire parks
-        // its ExtendedCompilerEngine there to bind `$this` inside component
-        // views — replacing it breaks every `$this->...` in Livewire blades.
-        // Creators are multi-listener and fire before each view (including
-        // nested @includes) evaluates, which is all this guard needs.
-        $this->app['view']->creator('*', function ($view) {
-            if (! NativeTagPrecompiler::active()) {
-                return;
-            }
-
-            $path = $view->getPath();
-
-            if (! str_ends_with($path, '.blade.php')) {
-                return;
-            }
-
-            $compiler = $this->app['blade.compiler'];
-
-            if (! NativeTagPrecompiler::compiledFileIsNative($compiler->getCompiledPath($path))) {
-                $compiler->compile($path);
-            }
-        });
+        // The `<native:*>` Blade layer — precompiler, the element Blade
+        // components, the app/NativeComponents sweep and the stale-compiled-
+        // view guard — is registered by supanative/core's provider. It is
+        // the element layer's own, not mobile's: one process gets one
+        // precompiler, and a desktop-only app needs it as much as this one
+        // does. Chrome element types are contributed above, and the
+        // precompiler picks them up because it reads the registry at first
+        // compile rather than at boot.
 
         Route::macro('native', function (string $uri, string $componentClass) {
             NativeRouter::register($uri, $componentClass);
@@ -754,37 +711,31 @@ class NativeServiceProvider extends PackageServiceProvider
      * The element layer is split across two packages, and the registry is
      * where the seam shows:
      *
-     *   CoreElements  → SupaNative\Core\Edge\Elements — the platform-neutral
-     *                   primitives (layout, text, image, pressable, canvas,
-     *                   shapes, the side-nav family)
-     *   ChromeElements → Native\Mobile\Edge\Elements — the mobile chrome
-     *                   that reaches for Platform / Icon / NativeRouter
-     *                   (bars, tabs, fab, icon, refreshable)
+     *   supanative/core → the platform-neutral primitives (layout, text,
+     *                     image, pressable, canvas, shapes, the side-nav
+     *                     family), registered by CoreServiceProvider
+     *   this package    → the mobile chrome that reaches for Platform /
+     *                     Icon / NativeRouter (bars, tabs, fab, icon,
+     *                     refreshable)
      *
      * Wire types stay identical either way — the split is a code-ownership
      * boundary, not a protocol change.
+     *
+     * These land in the registry AFTER core's, because core is this
+     * package's dependency and so boots first. Nothing may read the
+     * registry's contents at boot time and expect chrome to be in it — the
+     * bare-tag allowlist used to, which is why NativeTagPrecompiler now
+     * resolves it at first compile instead.
+     *
+     * `button`, `text_input`, `toggle`, `activity_indicator` and
+     * `bottom_sheet` belong to UI plugins (see nativephp/native-ui), not
+     * here: plugin discovery can't override an existing registration.
      */
-    protected function registerCoreElements(): void
+    protected function registerChromeElements(): void
     {
         $elements = [
-            // Layout
-            'column' => CoreElements\Column::class,
-            'row' => CoreElements\Row::class,
-            'stack' => CoreElements\Stack::class,
-            'scroll_view' => CoreElements\ScrollView::class,
-            'spacer' => CoreElements\Spacer::class,
-
             // Content
-            'text' => CoreElements\Text::class,
-            'image' => CoreElements\Image::class,
             'icon' => ChromeElements\Icon::class,
-
-            // Input (core primitive only)
-            'pressable' => CoreElements\Pressable::class,
-            // `button`, `text_input`, `toggle`, `activity_indicator`, `bottom_sheet`
-            // are registered by UI plugins (see nativephp/native-ui). Plugin
-            // discovery can't override an existing registration, so these must
-            // NOT be registered here.
 
             // Navigation chrome
             'top_bar' => ChromeElements\TopBar::class,
@@ -792,22 +743,10 @@ class NativeServiceProvider extends PackageServiceProvider
             'top_bar_title' => ChromeElements\TopBarTitle::class,
             'bottom_nav' => ChromeElements\BottomNav::class,
             'bottom_nav_item' => ChromeElements\BottomNavItem::class,
-            'side_nav' => CoreElements\SideNav::class,
-            'side_nav_item' => CoreElements\SideNavItem::class,
-            'side_nav_group' => CoreElements\SideNavGroup::class,
-            'side_nav_header' => CoreElements\SideNavHeader::class,
             'fab' => ChromeElements\Fab::class,
 
             // Gesture / interaction
-            'gesture_area' => CoreElements\GestureArea::class,
             'refreshable' => ChromeElements\Refreshable::class,
-
-            // Canvas/shapes
-            'canvas' => CoreElements\Canvas::class,
-            'rect' => CoreElements\Rect::class,
-            'circle' => CoreElements\Circle::class,
-            'line' => CoreElements\Line::class,
-            'divider' => CoreElements\Divider::class,
         ];
 
         foreach ($elements as $type => $class) {
@@ -832,104 +771,5 @@ class NativeServiceProvider extends PackageServiceProvider
 
         // Define the global nativephp_call function
         require_once __DIR__.'/jump_bridge_functions.php';
-    }
-
-    /**
-     * Auto-discover app **child components** — NativeComponent subclasses
-     * under app/NativeComponents (the `native:make` convention) — and
-     * register them with the ComponentRegistry so `<native:user-card>`
-     * mounts App\NativeComponents\UserCard as a nested component.
-     *
-     * Explicit ComponentRegistry::components() registrations made before
-     * boot are never overridden, and registered element types always win
-     * over component tags at resolution time (see NativeElementCollector).
-     */
-    protected function registerChildComponents(): void
-    {
-        $componentPath = app_path('NativeComponents');
-
-        if (! is_dir($componentPath)) {
-            return;
-        }
-
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($componentPath, \RecursiveDirectoryIterator::SKIP_DOTS)
-        );
-
-        foreach ($iterator as $file) {
-            if ($file->getExtension() !== 'php') {
-                continue;
-            }
-
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
-            $classPath = substr($relativePath, 0, -4);
-
-            // Tag name from the class basename: UserCard → user-card.
-            $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', basename($classPath))), '-');
-
-            if (ComponentRegistry::has($kebabName)) {
-                continue;
-            }
-
-            $componentClass = 'App\\NativeComponents\\'.str_replace('/', '\\', $classPath);
-
-            if (class_exists($componentClass) && is_subclass_of($componentClass, NativeComponent::class)) {
-                ComponentRegistry::register($kebabName, $componentClass);
-            }
-        }
-    }
-
-    /**
-     * Register the `<native:*>` Blade components for the element layer.
-     *
-     * The components now live in supanative/core, so the directory is
-     * resolved from the abstract base class rather than from __DIR__ —
-     * that keeps working whatever path composer installs core at (vendor,
-     * a path repo symlink, a merged monorepo).
-     */
-    protected function registerNativeComponents(): void
-    {
-        $componentPath = dirname(dirname(
-            (new \ReflectionClass(NativeBladeComponent::class))->getFileName()
-        ));
-
-        if (! is_dir($componentPath)) {
-            return;
-        }
-
-        // Recursively find all PHP files in the Components directory
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($componentPath, \RecursiveDirectoryIterator::SKIP_DOTS)
-        );
-
-        foreach ($iterator as $file) {
-            if ($file->getExtension() !== 'php') {
-                continue;
-            }
-
-            // Get relative path from Components directory
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
-
-            // Remove .php extension
-            $classPath = substr($relativePath, 0, -4);
-
-            // Get just the class name for the component tag
-            $className = basename($classPath);
-
-            // Skip the abstract base class
-            if ($className === 'NativeBladeComponent') {
-                continue;
-            }
-
-            // Convert BottomNav -> bottom-nav
-            $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', $className)), '-');
-
-            // Build the full namespaced class name (e.g., SupaNative\Core\Edge\Components\Native\Column)
-            $componentClass = 'SupaNative\\Core\\Edge\\Components\\'.str_replace('/', '\\', $classPath);
-
-            if (class_exists($componentClass)) {
-                Blade::component("native-{$kebabName}", $componentClass);
-            }
-        }
     }
 }
