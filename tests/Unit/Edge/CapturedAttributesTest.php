@@ -86,3 +86,14 @@ it('isolates rendering from attribute transformer failures', function () {
 
     expect($tree['props']['text'])->toBe('still renders');
 });
+
+it('never lets captured metadata override an element-resolved prop', function () {
+    NativeElementCollector::captureAttribute('debug-text', 'text');
+
+    $tree = capturedTree('text', ['text' => 'element value', 'debug-text' => 'captured value']);
+
+    // Collision contract (see captureAttribute): rendering wins, uniformly
+    // across the builtin, plugin-element, and streaming paths — capturing a
+    // colliding name can never corrupt what the user sees.
+    expect($tree['props']['text'])->toBe('element value');
+});

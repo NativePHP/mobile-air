@@ -124,6 +124,14 @@ class NativeElementCollector
     /** @var array<string, callable(string, array, ?NativeComponent): array> */
     protected static array $attributeTransformers = [];
 
+    /**
+     * Lift a raw Blade attribute into the serialized node's props map under
+     * the given prop name, stripping it from the attrs the native pipeline
+     * sees. Precedence contract, uniform across builtin, plugin-element, and
+     * streaming paths: on a prop-name collision the pipeline/element-resolved
+     * value wins — captured metadata can never override rendering. Pick a
+     * prop name the element doesn't already emit.
+     */
     public static function captureAttribute(string $attribute, string $prop): void
     {
         static::$capturedAttributes[$attribute] = $prop;
@@ -419,11 +427,13 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = $capturedProps
-                + static::buildDarkProps($attrs)
+            // Pipeline-derived props win over captured metadata on collision —
+            // the same rule as every other element path (see captureAttribute).
+            $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + $capturedProps;
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -470,6 +480,8 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            // Element-resolved props win over captured metadata on collision —
+            // the same rule as every other element path (see captureAttribute).
             $props = array_merge($capturedProps, $props ?? []);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
@@ -520,11 +532,13 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = $capturedProps
-                + static::buildDarkProps($attrs)
+            // Pipeline-derived props win over captured metadata on collision —
+            // the same rule as every other element path (see captureAttribute).
+            $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + $capturedProps;
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -566,6 +580,8 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
+            // Element-resolved props win over captured metadata on collision —
+            // the same rule as every other element path (see captureAttribute).
             $props = array_merge($capturedProps, $props ?? []);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
@@ -1362,7 +1378,10 @@ class NativeElementCollector
 
         // Registered capture attributes: lift into props, strip from the
         // attrs the native pipeline sees. Empty strings are stripped but
-        // not captured — an attribute left blank means "not set".
+        // not captured — an attribute left blank means "not set". setProp
+        // routes through extraProps, which getResolvedProps merges UNDER
+        // element-resolved props — the shared captured-metadata-never-
+        // overrides-rendering rule (see captureAttribute).
         foreach ($capturedProps as $prop => $value) {
             $element->setProp($prop, $value);
         }
