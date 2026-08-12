@@ -50,6 +50,7 @@ use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use SupaNative\Core\Edge\EdgeLog;
 use SupaNative\Core\Edge\ElementRegistry;
+use SupaNative\Core\Edge\ScreenRoutes;
 use SupaNative\Core\Edge\TailwindParser;
 
 class NativeServiceProvider extends PackageServiceProvider
@@ -265,7 +266,20 @@ class NativeServiceProvider extends PackageServiceProvider
         // precompiler picks them up because it reads the registry at first
         // compile rather than at boot.
 
-        Route::macro('native', function (string $uri, string $componentClass) {
+        // `Route::native()` itself belongs to supanative/core now — the macro is
+        // registered there and records the path → component mapping in the
+        // shared ScreenRegistry, so a screen declared in routes/web.php is
+        // reachable from a desktop window as well as from this runloop.
+        //
+        // What is left here is the part that is genuinely mobile's: on a device
+        // a screen is entered by the WebView issuing a real GET for its path, so
+        // something has to answer that request and enter the runloop. Contributed
+        // through core's seam rather than by redefining the macro, because two
+        // macros of one name are resolved by boot order and say nothing about it.
+        //
+        // The Route this returns is the same object the macro used to return, so
+        // ->name() and ->layout() chain exactly as before.
+        ScreenRoutes::servedBy(function (string $uri, string $componentClass) {
             NativeRouter::register($uri, $componentClass);
 
             return Route::get($uri, function () use ($componentClass) {

@@ -8,6 +8,7 @@ use Native\Mobile\Events\Screen\ScreenUnmounted;
 use SupaNative\Core\Edge\CallbackRegistry;
 use SupaNative\Core\Edge\Contracts\NavigationHost;
 use SupaNative\Core\Edge\NativeDumpException;
+use SupaNative\Core\Edge\ScreenRegistry;
 use SupaNative\Core\Edge\Transition;
 
 /**
@@ -93,12 +94,20 @@ class NativeRouter implements NavigationHost
     }
 
     /**
-     * URI → component class registry.
-     * Populated by Route::native() calls.
+     * The layout each native route renders inside — mobile's half of the
+     * path → screen mapping. Populated by Route::native() calls.
      *
-     * Each entry: ['class' => string, 'layout' => ?string]
+     * The component class is deliberately *not* here. It lives in
+     * [\SupaNative\Core\Edge\ScreenRegistry], which desktop reads too, and this
+     * table asks for it by pattern rather than keeping a second copy that could
+     * drift. Layouts stay behind because they are mobile's own concept: a stack
+     * with a back chevron, a tab bar — nothing a desktop window has.
      *
-     * @var array<string, array{class: string, layout: ?string}>
+     * Keyed by pattern so it still answers "which routes did *mobile* declare",
+     * which the route manifest and the app-wide test sweeps depend on; the
+     * shared registry also holds screens declared by other surfaces.
+     *
+     * @var array<string, array{layout: ?string}>
      */
     protected static array $routes = [];
 
@@ -144,11 +153,21 @@ class NativeRouter implements NavigationHost
 
     // ── Static registry ─────────────────────────────
 
+    /**
+     * Record a native route: the component in the shared registry, the layout
+     * here.
+     *
+     * Safe to call directly, and safe to call twice — `Route::native()` reaches
+     * this through core's macro, and registering the same pattern again replaces
+     * it, as it always has.
+     */
     public static function register(string $uri, string $class, ?string $layout = null): void
     {
         $pattern = '/'.ltrim($uri, '/');
+
+        ScreenRegistry::register($pattern, $class);
+
         static::$routes[$pattern] = [
-            'class' => $class,
             'layout' => $layout ?? static::$currentGroupLayout,
         ];
     }
@@ -158,10 +177,22 @@ class NativeRouter implements NavigationHost
      * ['class' => ..., 'layout' => ...] pair. Powers app-wide test sweeps
      * (smoke tests, accessibility audits) that should cover new screens
      * automatically as they are registered.
+     *
+     * The class half comes back out of the shared registry, so this reads the
+     * same as it did when both halves were stored here.
      */
     public static function registeredRoutes(): array
     {
-        return static::$routes;
+        $routes = [];
+
+        foreach (static::$routes as $pattern => $entry) {
+            $routes[$pattern] = [
+                'class' => ScreenRegistry::classFor($pattern),
+                'layout' => $entry['layout'] ?? null,
+            ];
+        }
+
+        return $routes;
     }
 
     /**
@@ -186,17 +217,24 @@ class NativeRouter implements NavigationHost
         static::$currentGroupLayout = null;
     }
 
+    /**
+     * Which screen a URI shows, with its layout and any captured parameters.
+     *
+     * Matching stays here, against mobile's own patterns, rather than delegating
+     * to the shared registry's `resolve()`: this must answer for the routes
+     * mobile declared and nothing else, so a screen another surface registered
+     * at a colliding path can't quietly become the answer to a mobile request.
+     * Only the class is fetched from the registry, and by exact pattern.
+     */
     public static function resolve(string $uri): ?array
     {
         $uri = '/'.ltrim($uri, '/');
 
         // Exact match first
         if (isset(static::$routes[$uri])) {
-            $entry = static::$routes[$uri];
-
             return [
-                'class' => $entry['class'],
-                'layout' => $entry['layout'] ?? null,
+                'class' => ScreenRegistry::classFor($uri),
+                'layout' => static::$routes[$uri]['layout'] ?? null,
                 'params' => [],
             ];
         }
@@ -210,7 +248,7 @@ class NativeRouter implements NavigationHost
                 $params = array_filter($matches, fn ($key) => is_string($key), ARRAY_FILTER_USE_KEY);
 
                 return [
-                    'class' => $entry['class'],
+                    'class' => ScreenRegistry::classFor($pattern),
                     'layout' => $entry['layout'] ?? null,
                     'params' => $params,
                 ];
