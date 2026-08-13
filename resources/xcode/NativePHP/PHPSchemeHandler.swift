@@ -311,11 +311,35 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         // Extract Headers
         let headers = request.allHTTPHeaderFields ?? [:]
 
-        // Extract POST data if method is POST/PUT/PATCH
+        // A request body arrives either whole or as a stream. WKWebView streams it
+        // whenever the sender watches upload progress, as every axios call does.
+        // Reading the stream back is the only way those bodies reach PHP.
         var data: String?
-        if ["POST", "PUT", "PATCH"].contains(method.uppercased()), let httpBody = request.httpBody {
-            if let body = String(data: httpBody, encoding: .utf8) {
-                data = body
+        if ["POST", "PUT", "PATCH"].contains(method.uppercased()) {
+            if let httpBody = request.httpBody {
+                data = String(data: httpBody, encoding: .utf8)
+            } else if let stream = request.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+
+                var bodyData = Data()
+                bodyData.reserveCapacity(Int(headers["Content-Length"] ?? "") ?? 0)
+
+                let bufferSize = 65536
+                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+                defer { buffer.deallocate() }
+
+                while stream.hasBytesAvailable {
+                    let bytesRead = stream.read(buffer, maxLength: bufferSize)
+                    if bytesRead <= 0 {
+                        break
+                    }
+                    bodyData.append(buffer, count: bytesRead)
+                }
+
+                if !bodyData.isEmpty {
+                    data = String(data: bodyData, encoding: .utf8)
+                }
             }
         }
 
