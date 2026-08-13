@@ -992,14 +992,24 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             setupDirectories()
             // Run extraction too. If MainActivity already extracted, the isUpToDate
             // check returns false (no work). If MainActivity is mid-extract, the
-            // lock inside extractLaravelBundle() blocks us here until it finishes.
-            // If we arrived first (WorkManager cold start after an app update), we
-            // do the extraction ourselves before the ephemeral runtime touches vendor/.
-            val didExtract = extractLaravelBundle()
-            setupEnvironment(didExtract)
-            if (didExtract) {
-                Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
-                runBaseArtisanCommands()
+            // lock blocks us here until it finishes. If we arrived first
+            // (WorkManager cold start after an app update), we do the extraction
+            // ourselves before the ephemeral runtime touches vendor/.
+            //
+            // The lock spans the artisan commands as well, exactly as initialize()
+            // holds it: bootPersistentRuntime() takes the same lock, and a classic
+            // embed cycle running beside a persistent boot is what the extractionLock
+            // comment above describes. Releasing after extraction alone would let
+            // MainActivity boot straight into that overlap.
+            extractionLock.withLock {
+                val didExtract = extractLaravelBundleUnlocked()
+
+                setupEnvironment(didExtract)
+
+                if (didExtract) {
+                    Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
+                    runBaseArtisanCommands()
+                }
             }
             Log.d(TAG, "Background environment initialized")
         } catch (e: Exception) {
