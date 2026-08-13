@@ -121,7 +121,7 @@ class PHPWebViewClient(
                     method = "GET",
                     body = "",
                     headers = mapOf("Accept" to "*/*"),
-                    getParameters = emptyMap()
+                    queryString = Uri.parse(url).encodedQuery ?: ""
                 )
 
                 val response = phpBridge.handleLaravelRequest(phpRequest)
@@ -183,9 +183,7 @@ class PHPWebViewClient(
             method = request.method,
             body = if (method in listOf("POST", "PUT", "PATCH")) postData ?: "" else "",
             headers = headers,
-            getParameters = request.url.queryParameterNames?.associateWith {
-                request.url.getQueryParameter(it) ?: ""
-            } ?: emptyMap()
+            queryString = request.url.encodedQuery ?: ""
         )
 
         val prepTime = System.currentTimeMillis() - requestStart
@@ -216,9 +214,17 @@ class PHPWebViewClient(
         if (statusCode in 300..399) {
             val location = responseHeaders["Location"] ?: responseHeaders["location"]
             if (!location.isNullOrEmpty()) {
+                // An absolute Location carries its query too, and Laravel writes
+                // absolute URLs by default. Taking the path alone drops every
+                // parameter the redirect was meant to hand on.
                 val redirectUrl = when {
                     location.startsWith("/") -> location
-                    location.startsWith("http") -> Uri.parse(location).encodedPath ?: "/"
+                    location.startsWith("http") -> {
+                        val parsedUri = Uri.parse(location)
+                        val path = parsedUri.encodedPath ?: "/"
+                        val query = parsedUri.encodedQuery
+                        if (!query.isNullOrEmpty()) "$path?$query" else path
+                    }
                     else -> "/$location"
                 }
 
