@@ -55,6 +55,17 @@ final class DeepLinkRouter {
         DebugLogger.shared.log("🔗 DeepLinkRouter.handle() called with: \(url)")
         DebugLogger.shared.log("🔗 Current state - WebView ready: \(isWebViewReady), PHP ready: \(isPhpReady)")
 
+        // Guard: DeepLinkRouter only handles deep links (custom URL schemes and universal links).
+        // File URLs are delivered to the app when CFBundleDocumentTypes / LSSupportsOpeningDocumentsInPlace
+        // are declared (e.g. when the user picks the app from another app's share sheet or "Open In…").
+        // Without this guard, the file path is treated as a Laravel route and the WebView displays
+        // a 404 like "route /private/var/mobile/.../filename.pdf could not be found". Plugins that
+        // declare document types are responsible for handling file URLs before they reach this router.
+        guard !url.isFileURL else {
+            DebugLogger.shared.log("🔗 Ignoring file URL — DeepLinkRouter only handles deep links: \(url)")
+            return
+        }
+
         // PROTOTYPE: jump://native — leave WebView mode and return to native-ui.
         // The local native runloop kept running underneath (WebView sessions
         // don't touch it), so re-showing its tree is immediately interactive.
