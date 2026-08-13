@@ -478,6 +478,22 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         return NSError(domain: "PHPAppSchemeHandler", code: code, userInfo: [NSLocalizedDescriptionKey: description])
     }
 
+    // Laravel writes absolute redirect URLs, so a hop back into the app arrives
+    // as php://127.0.0.1/path?query. PHP needs those split apart, with
+    // percent-encoding intact, the way extractRequestData does.
+    private func internalRedirectTarget(for location: String) -> (uri: String, query: String?)? {
+        guard let components = URLComponents(string: location),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "php" || scheme == "http",
+              components.host == domain else {
+            return nil
+        }
+
+        let path = components.percentEncodedPath
+
+        return (path.isEmpty ? "/" : path, components.percentEncodedQuery)
+    }
+
     private func forwardToPHP(requestData: RequestData, schemeTask: WKURLSchemeTask, redirectCount: Int = 0) {
         getResponse(request: requestData) { result in
             guard self.isTaskActive(schemeTask) else {
@@ -568,30 +584,23 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
                 var request = requestData
                 if let location = headers["location"] {
-                    request.uri = location.trimmingCharacters(in: .whitespaces)
+                    let trimmedLocation = location.trimmingCharacters(in: .whitespaces)
                     request.method = "GET"
 
-                    // Fix root URL redirects: ensure php://127.0.0.1 has trailing slash
-                    if request.uri == "php://127.0.0.1" {
-                        request.uri = "php://127.0.0.1/"
-                    }
-
-                    // Perform an external redirect to the webview, not trying to pass the location to PHP again
-                    if !request.uri.hasPrefix("http://") && !request.uri.hasPrefix("php://") {
-                        let trimmedLocation = location.trimmingCharacters(in: .whitespaces)
-                        let absoluteURL: String
-
-                        if trimmedLocation.hasPrefix("/") {
-                            // Convert relative path to absolute URL
-                            absoluteURL = "php://127.0.0.1\(trimmedLocation)"
-                        } else {
-                            // Already absolute or relative without leading slash
-                            absoluteURL = trimmedLocation
-                        }
+                    // Anything not aimed back at our own host is a navigation the
+                    // webview owns, so hand it over rather than asking PHP to
+                    // route a URL that was never one of its paths.
+                    guard let target = self.internalRedirectTarget(for: trimmedLocation) else {
+                        let absoluteURL = trimmedLocation.hasPrefix("/")
+                            ? "php://\(self.domain)\(trimmedLocation)"
+                            : trimmedLocation
 
                         NotificationCenter.default.post(name: .redirectToURLNotification, object: nil, userInfo: ["url": absoluteURL])
                         return
                     }
+
+                    request.uri = target.uri
+                    request.query = target.query
 
                     WebView.dataStore.httpCookieStore.getAllCookies { cookies in
                         guard self.isTaskActive(schemeTask) else { return }
