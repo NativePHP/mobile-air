@@ -88,16 +88,46 @@ class InstallsSplashScreenTest extends TestCase
     }
 
     /**
-     * The installed project ships a default set. An app with no splash artwork
-     * of its own has nothing to replace it with, so it keeps it.
+     * An app that drops its splash artwork falls back to the set a fresh
+     * install ships, not to whatever the last build with artwork left behind.
      */
-    public function test_it_keeps_the_installed_default_when_the_app_has_no_splash(): void
+    public function test_it_restores_the_shipped_default_when_the_app_has_no_splash(): void
     {
-        File::put($this->imageSet.'/splash.png', 'installed default');
-        File::put($this->imageSet.'/Contents.json', '{}');
+        $this->writeSplash('splash.png');
+        $this->installIosSplashScreen();
+
+        File::delete($this->projectPath.'/public/splash.png');
 
         $this->installIosSplashScreen();
 
-        $this->assertSame('installed default', File::get($this->imageSet.'/splash.png'));
+        $default = dirname(__DIR__, 3).'/resources/xcode/NativePHP/Assets.xcassets/LaunchImage.imageset';
+
+        $this->assertFileEquals($default.'/splash.png', $this->imageSet.'/splash.png');
+        $this->assertFileEquals($default.'/splash-dark.png', $this->imageSet.'/splash-dark.png');
+        $this->assertFileEquals($default.'/Contents.json', $this->imageSet.'/Contents.json');
+    }
+
+    /**
+     * The set may be a symlink into artwork the app maintains elsewhere.
+     * Clearing it takes out the link, never the directory it points at.
+     */
+    public function test_it_unlinks_a_symlinked_set_without_touching_the_target(): void
+    {
+        $target = $this->projectPath.'/shared-launch-image';
+        File::makeDirectory($target, 0755, true);
+        File::put($target.'/keep-me.png', 'artwork the app owns');
+
+        File::deleteDirectory($this->imageSet);
+        symlink($target, $this->imageSet);
+
+        $this->writeSplash('splash.png');
+
+        $this->installIosSplashScreen();
+
+        $this->assertSame('artwork the app owns', File::get($target.'/keep-me.png'));
+
+        $this->assertFalse(is_link($this->imageSet));
+        $this->assertFileExists($this->imageSet.'/splash.png');
+        $this->assertFileDoesNotExist($this->imageSet.'/keep-me.png');
     }
 }
