@@ -120,9 +120,12 @@ trait WatchesIos
                 $this->getIosWatchPaths(),
                 $this->getIosExcludePatterns(),
                 function (string $changedFile) use ($basePath, $destinationPath, $viteHotFile) {
-                    $this->handleIosFileChange($changedFile, $basePath, $destinationPath, $viteHotFile);
+                    $this->syncIosFile($changedFile, $basePath, $destinationPath, $viteHotFile);
                 },
                 fn () => $this->pumpWatchTerminal(),
+                function (array $changedFiles) use ($basePath, $viteHotFile) {
+                    $this->triggerIosReloadForBatch($changedFiles, $basePath, $viteHotFile);
+                },
             );
         } finally {
             // Reached when the watcher stops on its own (watchman died); the
@@ -154,6 +157,7 @@ trait WatchesIos
                     $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId);
                 },
                 fn () => $this->pumpWatchTerminal(),
+                fn () => $this->triggerIosReload(),
             );
         } finally {
             // Reached when the watcher stops on its own (watchman died); the
@@ -174,12 +178,15 @@ trait WatchesIos
             $this->watchSynced($relativePath);
         }
 
-        // Physical devices can't reach the Vite dev server on localhost,
-        // so always trigger a full reload regardless of Vite status
-        $this->triggerIosReload();
+        // Physical devices can't reach the Vite dev server on localhost, so a
+        // full reload always applies — fired once per batch by the caller.
     }
 
-    private function handleIosFileChange(string $changedFile, string $basePath, string $destinationPath, string $viteHotFile): void
+    /**
+     * Copy one changed file into the simulator's app container. Reloading is
+     * deliberately not done here — see [triggerIosReloadForBatch].
+     */
+    private function syncIosFile(string $changedFile, string $basePath, string $destinationPath, string $viteHotFile): void
     {
         // Get relative path from source
         $relativePath = str_replace($basePath.'/', '', $changedFile);
@@ -196,13 +203,33 @@ trait WatchesIos
             copy($changedFile, $destinationFile);
             $this->watchSynced($relativePath);
         }
+    }
 
-        // Skip reload for files that Vite handles via HMR
-        if (file_exists($viteHotFile) && $this->isViteHandledIosFile($relativePath)) {
+    /**
+     * Trigger at most one reload for a whole batch of changed files, and only
+     * once every file in it has been synced.
+     *
+     * A single save usually produces several watchman events — the file plus
+     * its containing directory. Triggering per file raced the copies against
+     * the reload: the app coalesces triggers that arrive mid-reload, so the
+     * later files could be synced but never picked up.
+     */
+    private function triggerIosReloadForBatch(array $changedFiles, string $basePath, string $viteHotFile): void
+    {
+        $viteIsRunning = file_exists($viteHotFile);
+
+        foreach ($changedFiles as $changedFile) {
+            $relativePath = str_replace($basePath.'/', '', $changedFile);
+
+            // Vite owns its own HMR; a native reload would fight it.
+            if ($viteIsRunning && $this->isViteHandledIosFile($relativePath)) {
+                continue;
+            }
+
+            $this->triggerIosReload();
+
             return;
         }
-
-        $this->triggerIosReload();
     }
 
     /**

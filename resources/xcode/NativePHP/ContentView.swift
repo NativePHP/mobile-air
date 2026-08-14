@@ -11,7 +11,16 @@ struct ContentView: View {
     @State private var phpOutput = ""
     @ObservedObject private var nativeUIBridge = NativeUIBridge.shared
     @ObservedObject private var bootState = BootState.shared
+    // PHP-set window background (`UI.SetBackground`); nil keeps the
+    // platform default. Shows behind screens and during transitions.
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
     @Environment(\.colorScheme) private var colorScheme
+
+    /// The base color native screens render over — the PHP override when
+    /// set, otherwise the system default.
+    private var screenBackground: Color {
+        windowBackground.color ?? Color(.systemBackground)
+    }
 
     var body: some View {
         // When native UI is active, render JUST the native tree —
@@ -39,7 +48,7 @@ struct ContentView: View {
                     ForEach(activeScreens(currentTree: tree)) { screen in
                         NativeTreeRenderer(tree: screen.tree)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color(.systemBackground))
+                            .background(screenBackground)
                             .modifier(ScreenExitModifier(
                                 isExiting: screen.isOutgoing,
                                 transition: nativeUIBridge.outgoingScreen?.transition
@@ -69,7 +78,7 @@ struct ContentView: View {
                 // plain background under the splash. Mounting the WebView
                 // container here would create the WKWebView and spawn its
                 // WebKit processes for nothing.
-                Color(.systemBackground).ignoresSafeArea()
+                screenBackground.ignoresSafeArea()
             }
         }
         .overlay(alignment: .top) {

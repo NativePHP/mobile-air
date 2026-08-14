@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge;
 
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Refreshable;
 use Native\Mobile\Edge\Elements\Row;
 use Native\Mobile\Edge\Elements\ScrollView;
 use Native\Mobile\Edge\Elements\Stack;
@@ -100,6 +101,41 @@ class NativeElementCollector
      * (children === null means a leaf run).
      */
     protected static array $textFrames = [];
+
+    /**
+     * Plugin-registered attribute capture.
+     *
+     * Lets a package ship a custom Blade attribute that works on ANY
+     * element — e.g. an analytics plugin capturing `track="signup-cta"`
+     * into a prop its device SDK reads — without every Element subclass
+     * having to know about it. Registered attributes are lifted into
+     * props in createElement() and stripped before native attribute
+     * handling, so they never leak onto the wire as junk.
+     *
+     * The reserved name 'class' captures the author's RAW class string
+     * as written (Tailwind parsing still runs and is unaffected) — for
+     * tooling that wants the classes themselves rather than the parsed
+     * layout they produce.
+     *
+     * @var array<string, string> attribute name => prop name
+     */
+    protected static array $capturedAttributes = [];
+
+    public static function captureAttribute(string $attribute, string $prop): void
+    {
+        static::$capturedAttributes[$attribute] = $prop;
+    }
+
+    /** @return array<string, string> */
+    public static function capturedAttributes(): array
+    {
+        return static::$capturedAttributes;
+    }
+
+    public static function stopCapturingAttributes(): void
+    {
+        static::$capturedAttributes = [];
+    }
 
     // ── Streaming control ────────────────────────────
 
@@ -321,6 +357,7 @@ class NativeElementCollector
             $style = static::buildStyleArray($attrs);
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs)
                 + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -368,7 +405,9 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
+            $darkProps = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -413,6 +452,7 @@ class NativeElementCollector
             $style = static::buildStyleArray($attrs);
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs)
                 + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -455,7 +495,9 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
+            $darkProps = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildCornerRadiusProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -495,6 +537,18 @@ class NativeElementCollector
         }
         if (isset($attrs['height'])) {
             $layout['height'] = $attrs['height'];
+        }
+        if (isset($attrs['minWidth'])) {
+            $layout['min_width'] = (float) $attrs['minWidth'];
+        }
+        if (isset($attrs['maxWidth'])) {
+            $layout['max_width'] = (float) $attrs['maxWidth'];
+        }
+        if (isset($attrs['minHeight'])) {
+            $layout['min_height'] = (float) $attrs['minHeight'];
+        }
+        if (isset($attrs['maxHeight'])) {
+            $layout['max_height'] = (float) $attrs['maxHeight'];
         }
 
         // Padding
@@ -750,6 +804,52 @@ class NativeElementCollector
             // native side splits it. Two or three `#AARRGGBB` entries.
             'gradient_stops' => implode(',', $stops),
         ];
+    }
+
+    /**
+     * Per-corner border radius (`rounded-br-none`, `rounded-t-2xl`, …).
+     *
+     * The packed node carries a single `border_radius` float at offset 134
+     * with no room for four, so the corners ride the generic prop bag
+     * instead — no wire format bump, and old renderers simply ignore props
+     * they don't know.
+     *
+     * All four corners are emitted whenever ANY is authored, each resolving
+     * to the per-corner value if given and the uniform `rounded-*` otherwise.
+     * That means the native side needs no per-corner presence checks — the
+     * existence of `radius_tl` alone says "use the corner props" — and it is
+     * what makes `rounded-2xl rounded-br-none` square off exactly one corner
+     * while the other three keep 16.
+     *
+     * Returns [] when no per-corner class was used, leaving the plain
+     * `border_radius` style field to do its job unchanged.
+     */
+    public static function buildCornerRadiusProps(array $attrs): array
+    {
+        $corners = [
+            'radius_tl' => 'borderRadiusTopLeft',
+            'radius_tr' => 'borderRadiusTopRight',
+            'radius_br' => 'borderRadiusBottomRight',
+            'radius_bl' => 'borderRadiusBottomLeft',
+        ];
+
+        $authored = array_filter(
+            $corners,
+            fn (string $attr): bool => isset($attrs[$attr])
+        );
+
+        if ($authored === []) {
+            return [];
+        }
+
+        $uniform = isset($attrs['borderRadius']) ? (float) $attrs['borderRadius'] : 0.0;
+
+        $props = [];
+        foreach ($corners as $prop => $attr) {
+            $props[$prop] = isset($attrs[$attr]) ? (float) $attrs[$attr] : $uniform;
+        }
+
+        return $props;
     }
 
     /**
@@ -1145,6 +1245,9 @@ class NativeElementCollector
 
     protected static function createElement(string $type, array $attrs): Element
     {
+        // Raw-class capture happens BEFORE parsing consumes the attribute.
+        $rawClass = isset(static::$capturedAttributes['class']) ? ($attrs['class'] ?? null) : null;
+
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
@@ -1180,6 +1283,25 @@ class NativeElementCollector
             default => ElementRegistry::resolve($type)
                 ?? throw new \RuntimeException("Unknown native element type: {$type}"),
         };
+
+        if ($rawClass !== null) {
+            $element->setProp(static::$capturedAttributes['class'], $rawClass);
+        }
+
+        // Registered capture attributes: lift into props, strip from the
+        // attrs the native pipeline sees. Empty strings are stripped but
+        // not captured — an attribute left blank means "not set".
+        foreach (static::$capturedAttributes as $attribute => $prop) {
+            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
+                continue;
+            }
+
+            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
+                $element->setProp($prop, $attrs[$attribute]);
+            }
+
+            unset($attrs[$attribute]);
+        }
 
         // Let plugin elements apply their own attributes
         $element->applyAttributes($attrs);
@@ -1225,6 +1347,12 @@ class NativeElementCollector
             $element->setProp($key, $value);
         }
 
+        // Per-corner radius rides the prop bag for the same reason — the
+        // packed node has only one `border_radius` float.
+        foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+
         // Accessibility props — same central path, so every element honors
         // `a11y-label` / `a11y-hint` even without per-element wiring (the
         // HasA11y trait covers the fluent API; setProp is idempotent when
@@ -1255,6 +1383,18 @@ class NativeElementCollector
         }
         if (isset($attrs['height'])) {
             $element->height($attrs['height']);
+        }
+        if (isset($attrs['minWidth'])) {
+            $element->minWidth((float) $attrs['minWidth']);
+        }
+        if (isset($attrs['maxWidth'])) {
+            $element->maxWidth((float) $attrs['maxWidth']);
+        }
+        if (isset($attrs['minHeight'])) {
+            $element->minHeight((float) $attrs['minHeight']);
+        }
+        if (isset($attrs['maxHeight'])) {
+            $element->maxHeight((float) $attrs['maxHeight']);
         }
         if (isset($attrs['flexDirection'])) {
             $element->flexDirection((int) $attrs['flexDirection']);
@@ -1469,6 +1609,15 @@ class NativeElementCollector
             // Accept both kebab (`shows-indicators`) and camel
             // (`showsIndicators`) — the precompiler keeps attribute names
             // verbatim, and the rest of the API takes either form.
+            if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
+                $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
+            }
+        }
+
+        if ($element instanceof Refreshable) {
+            // Refreshable IS the scrolling container, so it honours the same
+            // indicator prop as scroll-view (iOS-only in effect — Compose's
+            // LazyColumn draws no indicators to begin with).
             if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
                 $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
             }

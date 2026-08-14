@@ -1296,11 +1296,16 @@ abstract class NativeComponent
         // returns a View. We need the View to access its engine + path.
         $view = view($name, $data);
         $engine = $view->getEngine();
+        TailwindParser::beginViewDiagnostics($view->getName());
 
         if (! $engine instanceof CompilerEngine) {
             // Non-blade engine — fall back to the standard render path.
             // $this won't be bound, but at least the view still runs.
-            $view->render();
+            try {
+                $view->render();
+            } finally {
+                TailwindParser::endViewDiagnostics();
+            }
 
             return;
         }
@@ -1373,6 +1378,7 @@ abstract class NativeComponent
             $factory->flushStateIfDoneRendering();
         } finally {
             NativeTagPrecompiler::setActive($wasActive);
+            TailwindParser::endViewDiagnostics();
         }
     }
 

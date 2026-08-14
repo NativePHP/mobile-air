@@ -40,7 +40,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.ime
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -1308,8 +1307,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             Scaffold(
                 contentWindowInsets = WindowInsets(0, 0, 0, 0)
             ) { paddingValues ->
-                        // Main content: WebView only
-                        // IMPORTANT: Add IME (keyboard) inset padding so content isn't hidden behind keyboard
+                        // Main content: WebView only.
+                        // No IME padding here — resizing the WebView mid-animation
+                        // reflows 100vh/fixed layouts. adjustResize + Chromium handle
+                        // the visual viewport and focused-field scrolling.
 
                         Box(modifier = Modifier.fillMaxSize()) {
                             // Real either/or: the native tree and the WebView are
@@ -1327,8 +1328,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .padding(paddingValues)
-                                        .consumeWindowInsets(paddingValues)
-                                        .windowInsetsPadding(WindowInsets.ime),
+                                        .consumeWindowInsets(paddingValues),
                                     update = { view ->
                                         // Force layout recalculation when Compose size changes
                                         // This ensures viewport units (100vh, 100vw) work correctly

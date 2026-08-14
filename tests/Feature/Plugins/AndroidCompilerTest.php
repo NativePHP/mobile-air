@@ -119,7 +119,7 @@ dependencies {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
 
         $this->assertFileExists($generatedPath);
 
@@ -152,7 +152,7 @@ dependencies {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
 
         $content = $this->files->get($generatedPath);
 
@@ -188,7 +188,7 @@ dependencies {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
 
         $content = $this->files->get($generatedPath);
 
@@ -226,7 +226,7 @@ dependencies {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
 
         $content = $this->files->get($generatedPath);
 
@@ -265,7 +265,7 @@ object TestFunctions {
         $this->compiler->compile();
 
         // Check that source was copied (based on package declaration)
-        $copiedPath = $this->testBasePath.'/android/app/src/main/java/com/test/plugin/TestFunctions.kt';
+        $copiedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin/TestFunctions.kt';
 
         $this->assertFileExists($copiedPath);
     }
@@ -273,13 +273,13 @@ object TestFunctions {
     /**
      * @test
      *
-     * Fallback copies under bridge/plugins from a plugin that is no longer
+     * Copies in the generated source root from a plugin that is no longer
      * installed must be removed — a stale copy re-declares its classes and
      * breaks the Gradle build.
      */
     public function it_prunes_stale_generated_plugin_copies(): void
     {
-        $staleDir = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/removed_plugin';
+        $staleDir = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/removed_plugin';
         $this->files->ensureDirectoryExists($staleDir);
         $this->files->put($staleDir.'/Zombie.kt', 'class Zombie {}');
 
@@ -291,7 +291,155 @@ object TestFunctions {
 
         $this->assertDirectoryDoesNotExist($staleDir);
         $this->assertFileExists(
-            $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt'
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt'
+        );
+    }
+
+    /**
+     * @test
+     *
+     * A copy left in the generated root from a source file the plugin has
+     * since renamed or removed must not survive the next compile — this is
+     * the rename scenario that produced ambiguous-declaration build errors.
+     */
+    public function it_prunes_stale_copies_when_plugin_source_is_renamed(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/NewName.kt', "package com.test.plugin\n\nclass Renderer {}");
+
+        // Copy from a previous compile, before the file was renamed
+        $rootPackageDir = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin';
+        $this->files->ensureDirectoryExists($rootPackageDir);
+        $this->files->put($rootPackageDir.'/OldName.kt', "package com.test.plugin\n\nclass Renderer {}");
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($rootPackageDir.'/OldName.kt');
+        $this->assertFileExists($rootPackageDir.'/NewName.kt');
+    }
+
+    /**
+     * @test
+     *
+     * The pre-source-root generated dir under src/main/java (registrations
+     * and no-package fallback copies) must be removed on compile.
+     */
+    public function it_removes_the_legacy_generated_dir_under_the_main_source_set(): void
+    {
+        $legacyDir = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins';
+        $this->files->ensureDirectoryExists($legacyDir.'/old_plugin');
+        $this->files->put($legacyDir.'/PluginBridgeFunctionRegistration.kt', 'fun registerPluginBridgeFunctions() {}');
+        $this->files->put($legacyDir.'/old_plugin/Zombie.kt', 'class Zombie {}');
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect());
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryDoesNotExist($legacyDir);
+    }
+
+    /**
+     * @test
+     *
+     * Copies that older compiler versions placed at package-derived paths
+     * under src/main/java must be deleted (and their emptied package dirs
+     * pruned) so they don't re-declare classes now copied into the
+     * generated root.
+     */
+    public function it_removes_legacy_package_derived_copies(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/TestFunctions.kt', "package com.test.plugin\n\nobject TestFunctions {}");
+
+        // Copy placed by a pre-source-root compiler version
+        $legacyPackageDir = $this->testBasePath.'/android/app/src/main/java/com/test/plugin';
+        $this->files->ensureDirectoryExists($legacyPackageDir);
+        $this->files->put($legacyPackageDir.'/TestFunctions.kt', "package com.test.plugin\n\nobject TestFunctions {}");
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($legacyPackageDir.'/TestFunctions.kt');
+        // Emptied package dirs are pruned up to the source root
+        $this->assertDirectoryDoesNotExist($this->testBasePath.'/android/app/src/main/java/com/test');
+        // The copy now lives in the generated root
+        $this->assertFileExists(
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin/TestFunctions.kt'
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Hand-written app code sharing a package dir with a legacy plugin copy
+     * must survive the legacy cleanup — only the plugin's own files go.
+     */
+    public function it_preserves_user_code_next_to_legacy_copies(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/TestFunctions.kt', "package com.test.plugin\n\nobject TestFunctions {}");
+
+        $legacyPackageDir = $this->testBasePath.'/android/app/src/main/java/com/test/plugin';
+        $this->files->ensureDirectoryExists($legacyPackageDir);
+        $this->files->put($legacyPackageDir.'/TestFunctions.kt', "package com.test.plugin\n\nobject TestFunctions {}");
+        $this->files->put($legacyPackageDir.'/UserCode.kt', "package com.test.plugin\n\nclass UserCode {}");
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($legacyPackageDir.'/TestFunctions.kt');
+        $this->assertFileExists($legacyPackageDir.'/UserCode.kt');
+    }
+
+    /**
+     * @test
+     *
+     * The generated source root must be declared in app/build.gradle.kts —
+     * scaffolds installed before the root existed don't declare it, and
+     * without it nothing in the root would compile. Recompiling must not
+     * duplicate the declaration.
+     */
+    public function it_registers_the_generated_source_root_in_build_gradle(): void
+    {
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect());
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/app/build.gradle.kts');
+
+        $this->assertEquals(1, substr_count($content, 'java.srcDir("src/nativephp/kotlin")'));
+
+        // Declaration must land inside the android {} block
+        $this->assertMatchesRegularExpression(
+            '/android\s*\{.*java\.srcDir\("src\/nativephp\/kotlin"\)/s',
+            $content
         );
     }
 
@@ -316,7 +464,7 @@ object TestFunctions {
         $this->compiler->compile();
 
         // File placed based on package declaration
-        $copiedPath = $this->testBasePath.'/android/app/src/main/java/com/test/plugin/subfolder/NestedClass.kt';
+        $copiedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin/subfolder/NestedClass.kt';
 
         $this->assertFileExists($copiedPath);
     }
@@ -502,6 +650,182 @@ object TestFunctions {
     /**
      * @test
      *
+     * The dependency block is marker-delimited and rewritten in full, so a
+     * project that is built repeatedly does not grow a header per build.
+     *
+     * The individual dependency lines were already guarded against
+     * duplication; the header comment above them was not, so it was appended
+     * on every single compile.
+     */
+    public function it_does_not_accumulate_a_dependency_header_per_build(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        for ($i = 0; $i < 5; $i++) {
+            $this->compiler->compile();
+        }
+
+        $content = $this->files->get($gradlePath);
+
+        $this->assertEquals(1, substr_count($content, 'BEGIN nativephp-plugin-dependencies'));
+        $this->assertEquals(1, substr_count($content, 'END nativephp-plugin-dependencies'));
+        $this->assertStringNotContainsString('// NativePHP Plugin Dependencies', $content);
+    }
+
+    /**
+     * @test
+     *
+     * Two consecutive compiles with nothing changed in between leave
+     * build.gradle.kts byte-identical. Without that, no build downstream of
+     * it can be reproducible.
+     */
+    public function it_leaves_the_build_file_byte_identical_across_compiles(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                    'api' => ['com.example:api-lib:2.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        $this->compiler->compile();
+        $after = $this->files->get($gradlePath);
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $this->assertSame($after, $this->files->get($gradlePath));
+    }
+
+    /**
+     * @test
+     *
+     * Headers left behind by a version that did not delimit the block are
+     * removed, so upgrading cleans a project up rather than freezing its
+     * existing pile in place.
+     */
+    public function it_removes_headers_left_by_an_earlier_version(): void
+    {
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        $this->files->put($gradlePath, str_replace(
+            "dependencies {\n",
+            "dependencies {\n".str_repeat("\n    // NativePHP Plugin Dependencies\n", 12),
+            $this->files->get($gradlePath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($gradlePath);
+
+        $this->assertStringNotContainsString('// NativePHP Plugin Dependencies', $content);
+        $this->assertStringContainsString('implementation("com.example:library:1.0.0")', $content);
+    }
+
+    /**
+     * @test
+     *
+     * A platform() BOM is declared once. The presence check compared the raw
+     * `platform(group:artifact:version)` form against a file that holds
+     * `platform("group:artifact:version")`, so it never matched and every
+     * build declared the BOM again.
+     */
+    public function it_declares_a_platform_bom_once(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['platform(com.google.firebase:firebase-bom:33.1.0)'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/app/build.gradle.kts');
+
+        $this->assertEquals(
+            1,
+            substr_count($content, 'platform("com.google.firebase:firebase-bom:33.1.0")')
+        );
+    }
+
+    /**
+     * @test
+     *
+     * A dependency the app already declares by hand is not declared a second
+     * time inside the generated block.
+     */
+    public function it_does_not_redeclare_a_dependency_the_app_already_has(): void
+    {
+        $gradlePath = $this->testBasePath.'/android/app/build.gradle.kts';
+
+        $this->files->put($gradlePath, str_replace(
+            "dependencies {\n",
+            "dependencies {\n    implementation(\"com.example:library:1.0.0\")\n",
+            $this->files->get($gradlePath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'dependencies' => [
+                    'implementation' => ['com.example:library:1.0.0'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($gradlePath);
+
+        $this->assertEquals(1, substr_count($content, 'com.example:library:1.0.0'));
+    }
+
+    /**
+     * @test
+     *
      * Should clean generated plugin files.
      */
     public function it_cleans_generated_files(): void
@@ -514,7 +838,7 @@ object TestFunctions {
 
         $this->compiler->compile();
 
-        $pluginsDir = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins';
+        $pluginsDir = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins';
         $this->assertDirectoryExists($pluginsDir);
 
         $this->compiler->clean();
@@ -547,7 +871,7 @@ object TestFunctions {
         $this->assertNotEmpty($files);
 
         // Should include the registration file
-        $registrationFile = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $registrationFile = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
         $this->assertContains($registrationFile, $files);
     }
 
@@ -570,7 +894,7 @@ object TestFunctions {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
         $content = $this->files->get($generatedPath);
 
         $this->assertStringContainsString('AUTO-GENERATED', $content);
@@ -596,7 +920,7 @@ object TestFunctions {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
         $content = $this->files->get($generatedPath);
 
         // Should have FragmentActivity and Context parameters as per CLAUDE.md
@@ -629,7 +953,7 @@ object TestFunctions {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
         $content = $this->files->get($generatedPath);
 
         // Should pass activity to the constructor
@@ -660,7 +984,7 @@ object TestFunctions {
 
         $this->compiler->compile();
 
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
         $content = $this->files->get($generatedPath);
 
         // Should pass context to the constructor
@@ -685,7 +1009,7 @@ object TestFunctions {
         $this->compiler->compile();
 
         // Should still generate the file (even if mostly empty)
-        $generatedPath = $this->testBasePath.'/android/app/src/main/java/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
+        $generatedPath = $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt';
         $this->assertFileExists($generatedPath);
     }
 

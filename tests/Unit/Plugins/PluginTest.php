@@ -532,4 +532,130 @@ class PluginTest extends TestCase
         $this->assertIsArray($files);
         $this->assertEmpty($files);
     }
+
+    /**
+     * @test
+     *
+     * A manifest that says nothing about platforms supports both, so plugins
+     * written before the key was read keep working.
+     */
+    public function it_defaults_to_both_platforms(): void
+    {
+        $this->assertEquals(['android', 'ios'], $this->plugin->getPlatforms());
+        $this->assertTrue($this->plugin->supportsPlatform('android'));
+        $this->assertTrue($this->plugin->supportsPlatform('ios'));
+    }
+
+    /**
+     * @test
+     */
+    public function it_reports_the_declared_platforms(): void
+    {
+        $plugin = $this->pluginForPlatforms(['android']);
+
+        $this->assertEquals(['android'], $plugin->getPlatforms());
+        $this->assertTrue($plugin->supportsPlatform('android'));
+        $this->assertFalse($plugin->supportsPlatform('ios'));
+    }
+
+    /**
+     * @test
+     *
+     * Swift under resources/ios/ does not make a plugin an iOS plugin. The
+     * manifest decides.
+     */
+    public function it_has_no_ios_code_when_ios_is_not_a_declared_platform(): void
+    {
+        $plugin = $this->pluginForPlatforms(['android'], $this->nativeCodePluginPath);
+
+        $this->assertTrue($plugin->hasAndroidCode());
+        $this->assertFalse($plugin->hasIosCode());
+        $this->assertEmpty($plugin->getIosSourceFiles());
+    }
+
+    /**
+     * @test
+     */
+    public function it_has_no_android_code_when_android_is_not_a_declared_platform(): void
+    {
+        $plugin = $this->pluginForPlatforms(['ios'], $this->nativeCodePluginPath);
+
+        $this->assertFalse($plugin->hasAndroidCode());
+        $this->assertTrue($plugin->hasIosCode());
+        $this->assertEmpty($plugin->getAndroidSourceFiles());
+    }
+
+    /**
+     * @test
+     *
+     * A typo is rejected rather than ignored: silently dropping "IOS" would
+     * turn a spelling mistake into "this plugin has no iOS code".
+     */
+    public function it_rejects_an_unknown_platform(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('unknown platform: windows');
+
+        new PluginManifest([
+            'namespace' => 'Test',
+            'platforms' => ['windows'],
+        ]);
+    }
+
+    /**
+     * @test
+     */
+    public function it_normalizes_platform_casing_and_duplicates(): void
+    {
+        $manifest = new PluginManifest([
+            'namespace' => 'Test',
+            'platforms' => ['iOS', ' ios ', 'Android'],
+        ]);
+
+        $this->assertEquals(['ios', 'android'], $manifest->platforms);
+    }
+
+    /**
+     * @test
+     */
+    public function it_returns_an_empty_ios_sources_list_by_default(): void
+    {
+        $this->assertEquals([], $this->plugin->getIosSources());
+    }
+
+    /**
+     * @test
+     */
+    public function it_returns_the_declared_ios_sources(): void
+    {
+        $manifest = new PluginManifest([
+            'namespace' => 'Test',
+            'ios' => ['sources' => ['TestFunctions.swift', 'Renderers', '', 5]],
+        ]);
+
+        $plugin = new Plugin(
+            name: 'test/plugin',
+            version: '1.0.0',
+            path: $this->nativeCodePluginPath,
+            manifest: $manifest
+        );
+
+        $this->assertEquals(['TestFunctions.swift', 'Renderers'], $plugin->getIosSources());
+    }
+
+    /**
+     * @param  list<string>  $platforms
+     */
+    private function pluginForPlatforms(array $platforms, ?string $path = null): Plugin
+    {
+        return new Plugin(
+            name: 'test/plugin',
+            version: '1.0.0',
+            path: $path ?? $this->validPluginPath,
+            manifest: new PluginManifest([
+                'namespace' => 'Test',
+                'platforms' => $platforms,
+            ])
+        );
+    }
 }

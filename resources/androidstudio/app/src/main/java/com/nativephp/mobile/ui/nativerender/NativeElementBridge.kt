@@ -84,8 +84,16 @@ class NativeElementBridge private constructor() {
          * v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
          * v3 — event-channel framing widened uint16 → uint32 (header data_size
          *      + body string length prefixes); lifts the 64KB native→PHP cap.
+         * v4 — native→PHP event channel is a FIFO queue instead of a single
+         *      slot, so concurrent posts (async-task pool + watchdog) queue
+         *      instead of overwriting each other. Nothing changes for this
+         *      reader: the per-frame wire format is identical, the flat/prop
+         *      buffers are untouched, and events are still posted through
+         *      nativeElementWriteEvent → nphp_element_post_event. The version
+         *      moved because the region's event fields changed meaning, and a
+         *      stale libphp.a should fail loud rather than be quietly wrong.
          */
-        private const val EXPECTED_FORMAT_VERSION = 3
+        private const val EXPECTED_FORMAT_VERSION = 4
 
         /** Latched at startWatching(). 0 until then. Readable for telemetry. */
         @JvmStatic
@@ -374,7 +382,7 @@ class NativeElementBridge private constructor() {
                             // animation with a slide overlay.
                             if (isFreshStackMount) NavigationCoordinator.reset()
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
-                            NativeUIBridge.currentTree.value = diffedTree
+                            NativeUIBridge.publishTree(diffedTree)
                             // First publish after a hot-reload dismisses
                             // the "Reloading…" pill and clears the
                             // tree-preservation flag. Both are set by
