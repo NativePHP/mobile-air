@@ -350,7 +350,7 @@ class NativeRouter
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
                 }
-                $component->mount();
+                $component->mountComponent();
             } catch (\Throwable $e) {
                 static::debugLog("preloadStack: skipped $uri — ".$e->getMessage());
 
@@ -426,7 +426,7 @@ class NativeRouter
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
-                    $component->mount();
+                    $component->mountComponent();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
                 } else {
                     static::debugLog('loop: calling onResume() on '.get_class($component));

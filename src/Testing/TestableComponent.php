@@ -215,7 +215,7 @@ class TestableComponent
             // device; keep that behavior so the publish is observable.
             $component->publishPlaceholder();
 
-            $component->mount();
+            $component->mountComponent();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
             // render, exactly like runLoop() honoring a pre-set intent.

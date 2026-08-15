@@ -2,6 +2,9 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Contracts\Routing\UrlRoutable;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\View\Engines\CompilerEngine;
@@ -1969,9 +1972,138 @@ abstract class NativeComponent
         return new $eventClass(...$args);
     }
 
-    public function mount(): void
+    /**
+     * Hydrate route-bound public properties and invoke the component's
+     * optional mount() method through Laravel's container.
+     *
+     * NativeComponent deliberately does not declare mount() itself. That lets
+     * application components use any signature, including route-bound models
+     * and container dependencies, without violating PHP's inheritance rules.
+     *
+     * @internal Called by the router, runloop, and test harness.
+     */
+    final public function mountComponent(): void
     {
-        //
+        $this->hydrateRouteBoundProperties();
+
+        if (! method_exists($this, 'mount')) {
+            return;
+        }
+
+        $parameters = [];
+
+        foreach ((new \ReflectionMethod($this, 'mount'))->getParameters() as $parameter) {
+            $routeParameter = $this->routeParameterFor($parameter->getName());
+
+            if ($routeParameter === null) {
+                continue;
+            }
+
+            [$routeParameterName, $value] = $routeParameter;
+            $value = $this->resolveRouteValue($parameter->getType(), $value);
+
+            $parameters[$parameter->getName()] = $value;
+            $this->nativeParams[$routeParameterName] = $value;
+        }
+
+        ImplicitlyBoundMethod::call(app(), [$this, 'mount'], $parameters);
+    }
+
+    /** Hydrate Livewire-style public properties from matching route params. */
+    private function hydrateRouteBoundProperties(): void
+    {
+        $reflection = new \ReflectionClass($this);
+
+        foreach ($reflection->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
+            if ($property->isStatic()) {
+                continue;
+            }
+
+            $routeParameter = $this->routeParameterFor($property->getName());
+
+            if ($routeParameter === null) {
+                continue;
+            }
+
+            [$routeParameterName, $value] = $routeParameter;
+            $value = $this->resolveRouteValue($property->getType(), $value);
+
+            $property->setValue($this, $value);
+            $this->nativeParams[$routeParameterName] = $value;
+        }
+    }
+
+    /** @return array{string, mixed}|null */
+    private function routeParameterFor(string $name): ?array
+    {
+        foreach ([$name, Str::snake($name)] as $candidate) {
+            if (array_key_exists($candidate, $this->nativeParams)) {
+                return [$candidate, $this->nativeParams[$candidate]];
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveRouteValue(?\ReflectionType $type, mixed $value): mixed
+    {
+        if (! $type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return $value;
+        }
+
+        $class = $type->getName();
+
+        if (enum_exists($class) && is_subclass_of($class, \BackedEnum::class)) {
+            return $this->resolveRouteEnum($class, $value);
+        }
+
+        if (is_a($class, UrlRoutable::class, true)) {
+            return $this->resolveRouteBinding($class, $value);
+        }
+
+        return $value;
+    }
+
+    /** @param class-string<\BackedEnum> $class */
+    private function resolveRouteEnum(string $class, mixed $value): ?\BackedEnum
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof $class) {
+            return $value;
+        }
+
+        $resolved = $class::tryFrom($value);
+
+        if ($resolved === null) {
+            throw new BackedEnumCaseNotFoundException($class, $value);
+        }
+
+        return $resolved;
+    }
+
+    /** @param class-string<UrlRoutable> $class */
+    private function resolveRouteBinding(string $class, mixed $value): ?UrlRoutable
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof $class) {
+            return $value;
+        }
+
+        /** @var UrlRoutable $instance */
+        $instance = app()->make($class);
+        $resolved = $instance->resolveRouteBinding($value);
+
+        if (! $resolved instanceof $class) {
+            throw (new ModelNotFoundException)->setModel($class, [$value]);
+        }
+
+        return $resolved;
     }
 
     public function unmount(): void
@@ -2083,7 +2215,7 @@ abstract class NativeComponent
         $this->publishPlaceholder();
 
         try {
-            $this->mount();
+            $this->mountComponent();
         } catch (NativeDumpException $e) {
             $this->renderDumpScreen($e);
         } catch (\Throwable $e) {
@@ -3163,7 +3295,7 @@ abstract class NativeComponent
         $this->nativeChildComponentsSeen[$identity] = true;
 
         if ($isNew) {
-            $child->mount();
+            $child->mountComponent();
         }
 
         $child->renderAsChild();
