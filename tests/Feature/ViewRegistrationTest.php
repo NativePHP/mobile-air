@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Str;
+use League\Flysystem\WhitespacePathNormalizer;
 use Native\Mobile\Support\BundleExclusions;
 
 // The device's view:cache walks every path registered on the view finder
@@ -12,42 +13,13 @@ it('registers only package view paths that ship in the app bundle', function () 
     // Resolve ".." segments lexically so a path like src/../resources/views
     // is caught even when the directory no longer exists and realpath
     // falls back to the raw string, as Spatie's hasViews() does.
-    $normalize = function (string $path): string {
-        $segments = [];
-        foreach (explode('/', str_replace('\\', '/', $path)) as $segment) {
-            if ($segment === '' || $segment === '.') {
-                continue;
-            }
-            if ($segment === '..') {
-                array_pop($segments);
-            } else {
-                $segments[] = $segment;
-            }
-        }
+    $normalize = fn (string $path): string => '/'.(new WhitespacePathNormalizer)->normalizePath($path);
 
-        return '/'.implode('/', $segments);
-    };
-
-    $strippedFromBundle = function (string $bundleRelative): bool {
-        $parts = explode('/', $bundleRelative);
-
-        $ancestors = collect(range(1, count($parts)))
-            ->map(fn ($i) => implode('/', array_slice($parts, 0, $i)));
-
-        foreach (BundleExclusions::VENDOR_PATHS as $pattern) {
-            if ($ancestors->contains(fn ($ancestor) => fnmatch($pattern, $ancestor, FNM_PATHNAME))) {
-                return true;
-            }
-        }
-
-        foreach (BundleExclusions::ANY_DEPTH as $name) {
-            if (collect(array_slice($parts, 3))->contains(fn ($part) => fnmatch($name, $part))) {
-                return true;
-            }
-        }
-
-        return false;
-    };
+    // A registered dir is stripped when it is an excluded path itself or
+    // sits anywhere below one, hence the slash-crossing second match.
+    $strippedFromBundle = fn (string $path): bool => collect(BundleExclusions::VENDOR_PATHS)
+        ->contains(fn ($pattern) => fnmatch($pattern, $path, FNM_PATHNAME)
+            || fnmatch($pattern.'/*', $path));
 
     $packageRoot = $normalize(dirname(__DIR__, 2));
 
