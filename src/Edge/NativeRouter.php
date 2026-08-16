@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Routing\Route as LaravelRoute;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -164,6 +165,23 @@ class NativeRouter
         }
     }
 
+    /**
+     * Attach the Laravel route object backing a native route, so navigation
+     * can run its middleware ([ScreenGuard]).
+     *
+     * The INSTANCE is stored, not a snapshot of its middleware: `->middleware()`
+     * chains onto the route after `Route::native()` has already returned, and
+     * group middleware is merged at registration. Holding the object means the
+     * guard reads the final list whenever it runs, however it was assembled.
+     */
+    public static function bindRoute(string $uri, LaravelRoute $route): void
+    {
+        $pattern = '/'.ltrim($uri, '/');
+        if (isset(static::$routes[$pattern])) {
+            static::$routes[$pattern]['route'] = $route;
+        }
+    }
+
     public static function beginGroup(string $layout): void
     {
         static::$currentGroupLayout = $layout;
@@ -186,6 +204,7 @@ class NativeRouter
                 'class' => $entry['class'],
                 'layout' => $entry['layout'] ?? null,
                 'params' => [],
+                'route' => $entry['route'] ?? null,
             ];
         }
 
@@ -201,6 +220,7 @@ class NativeRouter
                     'class' => $entry['class'],
                     'layout' => $entry['layout'] ?? null,
                     'params' => $params,
+                    'route' => $entry['route'] ?? null,
                 ];
             }
         }
@@ -394,6 +414,11 @@ class NativeRouter
                 'component' => $component,
                 'uri' => $uri,
                 'params' => $params,
+                // The launch screen arrived as a real HTTP request, so the
+                // kernel already ran this route's middleware against the real
+                // request. Running it again here would double-count anything
+                // stateful (rate limiters, "last seen" writes).
+                'guarded' => true,
             ];
 
             return $this->loop();
@@ -420,15 +445,30 @@ class NativeRouter
 
             static::debugLog('loop: top, component='.get_class($component).' freshPush='.($freshPush ? 'Y' : 'N').' stack='.count($this->stack));
 
+            // Run the route's middleware before the screen is allowed to
+            // mount. Denial is expressed as a navigation intent on the
+            // component, which runLoop() honors by returning immediately —
+            // so mount() never runs and the guarded screen performs none of
+            // its data loading before being turned away.
+            if ($freshPush && ! ($entry['guarded'] ?? false)) {
+                $entry['guarded'] = true;
+                $denial = $this->guard($component, $entry['uri'] ?? '');
+
+                if ($denial !== null) {
+                    static::debugLog('loop: guard DENIED '.get_class($component)." type={$denial->type} uri={$denial->uri}");
+                    $component->setNavigationIntent($denial);
+                }
+            }
+
             try {
-                if ($freshPush) {
+                if ($freshPush && ! $component->hasNavigationIntent()) {
                     // For #[Lazy] screens, paint the placeholder before the
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
                     $component->mount();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
-                } else {
+                } elseif (! $freshPush) {
                     static::debugLog('loop: calling onResume() on '.get_class($component));
                     $component->onResume();
                     $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
@@ -600,6 +640,35 @@ class NativeRouter
     {
         $component->unmount();
         $this->announce(new ScreenUnmounted(get_class($component), $this->currentUri()));
+    }
+
+    /**
+     * Run the target route's middleware for a screen about to mount.
+     * Null means the navigation is allowed.
+     *
+     * A guard that throws is treated as a denial rather than taking the
+     * runloop down: failing open would silently grant access, which is the
+     * bug this whole mechanism exists to fix.
+     */
+    protected function guard(NativeComponent $component, string $uri): ?NavigationIntent
+    {
+        if ($uri === '') {
+            return null;
+        }
+
+        $resolved = static::resolve($uri);
+
+        if ($resolved === null || ($resolved['route'] ?? null) === null) {
+            return null;
+        }
+
+        try {
+            return ScreenGuard::check($resolved['route'], $uri);
+        } catch (\Throwable $e) {
+            static::debugLog('guard FAILED for '.$uri.': '.$e->getMessage());
+
+            return new NavigationIntent(NavigationIntent::BACK);
+        }
     }
 
     /**
