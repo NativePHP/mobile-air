@@ -5,6 +5,7 @@ namespace Tests\Fixtures\Edge;
 use Illuminate\View\View;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Events\System\AppearanceChanged;
 
 /**
  * Screen fixture hosting nested child components: one unkeyed static
@@ -27,6 +28,8 @@ class NestedHostScreen extends NativeComponent
     /** @var list<string> grandchild emits received via #[On] */
     public array $pokes = [];
 
+    public string $appearance = 'light';
+
     public function markSaved(string $bound, string $name, int $clicks): void
     {
         $this->savedEvents[] = "{$bound}:{$name}:{$clicks}";
@@ -36,6 +39,12 @@ class NestedHostScreen extends NativeComponent
     public function onBadgePoked(string $from): void
     {
         $this->pokes[] = $from;
+    }
+
+    #[On(AppearanceChanged::class)]
+    public function onAppearanceChanged(string $mode): void
+    {
+        $this->appearance = $mode;
     }
 
     public function render(): View
