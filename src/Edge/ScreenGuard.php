@@ -110,7 +110,18 @@ class ScreenGuard
             return null;
         }
 
+        // Bind the route to the synthesized request. SubstituteBindings — and
+        // anything else reaching for $route->parameters() — throws "Route is
+        // not bound" otherwise, and since routes registered through
+        // `withRouting(web: ...)` all carry the `web` group, that is the
+        // common case rather than an exotic one.
+        //
+        // A CLONE is bound, never the instance held in Laravel's
+        // RouteCollection: real HTTP requests still match against that one,
+        // and binding mutates it.
+        $route = clone $route;
         $request = static::request($uri, $route);
+        $route->bind($request);
 
         // The pipeline's destination must return a real Response, not null:
         // middleware routinely type-hints `$next($request)` as

@@ -1,7 +1,11 @@
 <?php
 
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Testing\Native;
@@ -80,6 +84,42 @@ it('picks up middleware from a surrounding route group', function () {
     expect(GuardedScreen::$mounts)->toBe(0);
 });
 
+it('survives the web group that withRouting() puts every native route in', function () {
+    // `withRouting(web: routes/mobile.php)` is the normal way to register
+    // native routes, and it wraps every one of them in the `web` group. Most
+    // of that group is skipped, but SubstituteBindings runs — and it calls
+    // $route->parameters(), which throws "Route is not bound" unless the
+    // route has been bound to the request. Failing closed then refuses every
+    // navigation in the entire app.
+    registerWebGroup();
+
+    Route::middleware('web')->group(function () {
+        Route::native('/plain', GuardedScreen::class);
+        Route::native('/bound/{id}', GuardedScreen::class);
+    });
+
+    Native::visit('/plain')->assertSee('Guarded screen content');
+    Native::visit('/bound/42')->assertSee('Guarded screen content');
+
+    expect(GuardedScreen::$mounts)->toBe(2);
+});
+
+it('does not mutate the route instance the HTTP router matches against', function () {
+    // The guard binds a clone; binding the registry's own instance would
+    // leave stale parameters on the route real requests still match.
+    registerWebGroup();
+
+    Route::middleware('web')->group(function () {
+        Route::native('/bound/{id}', GuardedScreen::class);
+    });
+
+    Native::visit('/bound/42');
+
+    $route = NativeRouter::resolve('/bound/42')['route'];
+
+    expect(fn () => $route->parameters())->toThrow(LogicException::class);
+});
+
 it('leaves routes without middleware untouched', function () {
     Route::native('/guarded', GuardedScreen::class);
 
@@ -147,3 +187,19 @@ it('refuses the navigation when the middleware itself blows up', function () {
 
     expect(GuardedScreen::$mounts)->toBe(0);
 });
+
+/**
+ * The `web` group as a real app has it. Testbench doesn't register one, but
+ * `withRouting(web: routes/mobile.php)` puts every native route inside it —
+ * so this is the shape the guard actually meets in production.
+ */
+function registerWebGroup(): void
+{
+    app('router')->middlewareGroup('web', [
+        EncryptCookies::class,
+        AddQueuedCookiesToResponse::class,
+        StartSession::class,
+        ShareErrorsFromSession::class,
+        SubstituteBindings::class,
+    ]);
+}
