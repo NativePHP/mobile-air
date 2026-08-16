@@ -9,6 +9,7 @@ use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\ComponentFeaturesScreen;
+use Tests\Fixtures\Edge\CounterScreen;
 use Tests\Fixtures\Edge\ParityRecord;
 
 beforeEach(fn () => NativeRouter::clearRoutes());
@@ -116,4 +117,56 @@ it('implicitly binds typed public properties using custom route keys', function 
 
     Native::visit('/parity-property/native-php')
         ->assertSet('record.id', 'native-php@slug');
+});
+
+it('binds snake-cased route parameters to camel-cased typed properties', function () {
+    Route::native('/parity-property-snake/{parity_record:slug}', ComponentFeaturesScreen::class);
+
+    Native::visit('/parity-property-snake/native-php')
+        ->assertSet('parityRecord.id', 'native-php@slug');
+});
+
+it('prefers literal routes and reuses compiled route patterns', function () {
+    Route::native('/items/{record}', ComponentFeaturesScreen::class);
+    Route::native('/items/create', CounterScreen::class);
+
+    $registered = NativeRouter::registeredRoutes();
+
+    expect($registered['/items/{record}']['route']->getCompiled())->toBeNull()
+        ->and($registered['/items/create']['route']->getCompiled())->toBeNull();
+
+    $literal = NativeRouter::resolve('/items/create');
+
+    expect($literal['class'])->toBe(CounterScreen::class)
+        ->and($literal['params'])->toBe([])
+        ->and($registered['/items/create']['route']->getCompiled())->not->toBeNull()
+        ->and($registered['/items/{record}']['route']->getCompiled())->toBeNull();
+
+    $parameterized = NativeRouter::resolve('/items/native-php');
+
+    expect($parameterized['class'])->toBe(ComponentFeaturesScreen::class)
+        ->and($parameterized['params']['record'])->toBeInstanceOf(ParityRecord::class)
+        ->and($registered['/items/{record}']['route']->getCompiled())->not->toBeNull();
+});
+
+it('uses normal binding for non-soft records on routes that allow trashed models', function () {
+    Route::native('/records/{record}', ComponentFeaturesScreen::class)->withTrashed();
+
+    $resolved = NativeRouter::resolve('/records/42');
+
+    expect($resolved['params']['record'])
+        ->toBeInstanceOf(ParityRecord::class)
+        ->id->toBe('42');
+});
+
+it('uses soft-deletable child binding for scoped routes that allow trashed models', function () {
+    Route::native(
+        '/parents/{parent_record}/children/{child_record}',
+        ComponentFeaturesScreen::class,
+    )->scopeBindings()->withTrashed();
+
+    $resolved = NativeRouter::resolve('/parents/1/children/2');
+
+    expect($resolved['params']['parent_record']->id)->toBe('parent:1')
+        ->and($resolved['params']['child_record']->id)->toBe('trashed-child:2');
 });

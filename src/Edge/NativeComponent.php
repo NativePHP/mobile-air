@@ -3435,14 +3435,9 @@ abstract class NativeComponent
     }
 
     /** Skip exactly the next render that would follow a component interaction. */
-    public function skipRender(mixed $html = null): void
+    public function skipRender(): void
     {
         $this->rootScreen()->nativeShouldSkipRender = true;
-    }
-
-    public function shouldSkipRender(): bool
-    {
-        return $this->rootScreen()->nativeShouldSkipRender;
     }
 
     /** @internal Consumes the one-shot renderless state. */
@@ -3735,7 +3730,17 @@ abstract class NativeComponent
             '__syncProperty',
         ];
 
-        if (in_array($method, $internalCallbacks, true)) {
+        // Direct template navigation remains supported for compatibility.
+        // New templates should prefer @navigate; component PHP can continue
+        // calling these methods normally.
+        $navigationCallbacks = [
+            'navigate',
+            'back',
+            'replace',
+            'exitToWeb',
+        ];
+
+        if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {
             return $this->{$method}(...$parameters);
         }
 

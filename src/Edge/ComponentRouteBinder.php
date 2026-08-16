@@ -5,8 +5,10 @@ namespace Native\Mobile\Edge;
 use BackedEnum;
 use Illuminate\Contracts\Routing\UrlRoutable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Routing\Route;
+use Illuminate\Support\Str;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionNamedType;
@@ -25,7 +27,7 @@ class ComponentRouteBinder
         // URI order matters for scoped bindings: a child model must resolve
         // after its parent parameter has become an UrlRoutable instance.
         foreach ($route->parametersWithoutNulls() as $name => $value) {
-            $class = $types[$name] ?? null;
+            $class = $types[$name] ?? $types[Str::camel($name)] ?? null;
 
             if ($class === null || ! static::isBindable($class)) {
                 continue;
@@ -107,23 +109,27 @@ class ComponentRouteBinder
         /** @var UrlRoutable $instance */
         $instance = app()->make($class);
         $parent = $route->parentOfParameter($name);
+        $usesSoftDeletes = in_array(SoftDeletes::class, class_uses_recursive($instance), true);
         $shouldScope = $parent instanceof UrlRoutable
             && ! $route->preventsScopedBindings()
             && ($route->enforcesScopedBindings() || array_key_exists($name, $route->bindingFields()));
 
         if ($shouldScope) {
-            $resolved = $parent->resolveChildRouteBinding(
+            $method = $route->allowsTrashedBindings() && $usesSoftDeletes
+                ? 'resolveSoftDeletableChildRouteBinding'
+                : 'resolveChildRouteBinding';
+
+            $resolved = $parent->{$method}(
                 $name,
                 $value,
                 $route->bindingFieldFor($name),
             );
-        } elseif ($route->allowsTrashedBindings()) {
-            $resolved = $instance->resolveSoftDeletableRouteBinding(
-                $value,
-                $route->bindingFieldFor($name),
-            );
         } else {
-            $resolved = $instance->resolveRouteBinding(
+            $method = $route->allowsTrashedBindings() && $usesSoftDeletes
+                ? 'resolveSoftDeletableRouteBinding'
+                : 'resolveRouteBinding';
+
+            $resolved = $instance->{$method}(
                 $value,
                 $route->bindingFieldFor($name),
             );

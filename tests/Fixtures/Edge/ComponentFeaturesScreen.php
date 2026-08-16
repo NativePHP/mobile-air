@@ -3,6 +3,7 @@
 namespace Tests\Fixtures\Edge;
 
 use Illuminate\Contracts\Routing\UrlRoutable;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\View\View;
 use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
@@ -30,6 +31,12 @@ class ComponentFeaturesScreen extends NativeComponent
     public array $events = [];
 
     public ParityRecord $record;
+
+    public ParityRecord $parityRecord;
+
+    public ParityParentRecord $parentRecord;
+
+    public ParitySoftRecord $childRecord;
 
     public function resolveAction(
         ParityRecord $record,
@@ -147,6 +154,68 @@ class ParityRecord implements UrlRoutable
         $suffix = $field === null ? '' : '@'.$field;
 
         return $value === 'missing' ? null : new static((string) $value.$suffix);
+    }
+
+    public function resolveChildRouteBinding($childType, $value, $field): mixed
+    {
+        return null;
+    }
+}
+
+class ParityParentRecord implements UrlRoutable
+{
+    public function __construct(public string $id = '') {}
+
+    public function getRouteKey(): string
+    {
+        return $this->id;
+    }
+
+    public function getRouteKeyName(): string
+    {
+        return 'id';
+    }
+
+    public function resolveRouteBinding($value, $field = null): ?static
+    {
+        return new static('parent:'.$value);
+    }
+
+    public function resolveChildRouteBinding($childType, $value, $field): mixed
+    {
+        return new ParitySoftRecord('regular-child:'.$value);
+    }
+
+    public function resolveSoftDeletableChildRouteBinding($childType, $value, $field): mixed
+    {
+        return new ParitySoftRecord('trashed-child:'.$value);
+    }
+}
+
+class ParitySoftRecord implements UrlRoutable
+{
+    use SoftDeletes;
+
+    public function __construct(public string $id = '') {}
+
+    public function getRouteKey(): string
+    {
+        return $this->id;
+    }
+
+    public function getRouteKeyName(): string
+    {
+        return 'id';
+    }
+
+    public function resolveRouteBinding($value, $field = null): ?static
+    {
+        return new static('regular:'.$value);
+    }
+
+    public function resolveSoftDeletableRouteBinding($value, $field = null): ?static
+    {
+        return new static('trashed:'.$value);
     }
 
     public function resolveChildRouteBinding($childType, $value, $field): mixed

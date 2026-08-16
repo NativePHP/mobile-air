@@ -6,6 +6,6 @@
     <native:pressable ref="save-{{ $name }}" @tap="save">
         <native:text>Save</native:text>
     </native:pressable>
-    <native:text-input ref="note-{{ $name }}" label="Note" native:model="note" />
+    @include('user-card-note')
     <native:badge-child :owner="$name" />
 </native:column>

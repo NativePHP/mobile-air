@@ -112,6 +112,24 @@ it('asserts exit-to-web navigation', function () {
         ->assertExitedToWeb('/settings');
 });
 
+it('keeps direct navigation callbacks working for compatibility', function () {
+    Native::test(NavScreen::class)
+        ->tap('Direct push')
+        ->assertNavigatedTo('/detail/9');
+
+    Native::test(NavScreen::class)
+        ->tap('Direct replace')
+        ->assertReplacedWith('/login');
+
+    Native::test(NavScreen::class)
+        ->tap('Direct exit')
+        ->assertExitedToWeb('/settings');
+
+    Native::test(NavScreen::class)
+        ->tap('Direct back')
+        ->assertWentBack();
+});
+
 it('follows navigation onto the next screen with params and data', function () {
     NativeRouter::register('/detail/{id}', DetailScreen::class);
 

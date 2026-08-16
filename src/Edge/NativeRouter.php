@@ -194,21 +194,33 @@ class NativeRouter
     {
         $request = Request::create('/'.ltrim($uri, '/'), 'GET');
 
+        $literalRoutes = [];
+        $parameterizedRoutes = [];
+
         foreach (static::$routes as $entry) {
-            // Bind a clone: Illuminate routes keep their last parameters on
-            // the instance, while Native's long-lived process resolves the
-            // same route repeatedly across navigation and hot reloads.
-            $route = clone $entry['route'];
+            if ($entry['route']->parameterNames() === []) {
+                $literalRoutes[] = $entry;
+            } else {
+                $parameterizedRoutes[] = $entry;
+            }
+        }
+
+        foreach ([...$literalRoutes, ...$parameterizedRoutes] as $entry) {
+            $registeredRoute = $entry['route'];
 
             if (function_exists('app') && app()->bound('router')) {
-                $route->setRouter(app('router'));
-                $route->setContainer(app());
+                $registeredRoute->setRouter(app('router'));
+                $registeredRoute->setContainer(app());
             }
 
-            if (! $route->matches($request)) {
+            // Match the registered route so its compiled pattern is retained
+            // across this long-lived process. Bind only a clone because route
+            // instances retain the parameters from their most recent request.
+            if (! $registeredRoute->matches($request)) {
                 continue;
             }
 
+            $route = clone $registeredRoute;
             $route->bind($request);
 
             if (function_exists('app') && app()->bound('router')) {
