@@ -526,6 +526,17 @@ abstract class NativeComponent
             }
         } elseif (! $hasCustomBottomNav && $layout !== null) {
             $tabBar = $layout->tabBar($this);
+            // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
+            // builder), mirroring the NavBar handling above. On the
+            // custom-Column path hiding is identical to the layout
+            // returning null — dropping the bar also hands the bottom
+            // safe-area edge back to the wrapper in buildChromeColumn().
+            // The native-chrome path instead keeps the config and folds a
+            // `hide_tab_bar` prop onto the sentinel, so the TabView
+            // survives for tab switching.
+            if ($tabBar !== null && ! $usesNativeChrome && $this->shouldHideTabBar()) {
+                $tabBar = null;
+            }
             if ($tabBar !== null) {
                 $currentUri = $this->nativeRouter?->currentUri();
                 if ($currentUri !== null) {
