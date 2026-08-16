@@ -8,6 +8,7 @@ use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Pipeline\Pipeline;
 use Illuminate\Routing\Route as LaravelRoute;
 use Illuminate\Session\Middleware\AuthenticateSession;
@@ -111,11 +112,19 @@ class ScreenGuard
 
         $request = static::request($uri, $route);
 
+        // The pipeline's destination must return a real Response, not null:
+        // middleware routinely type-hints `$next($request)` as
+        // `Symfony\...\Response` (Laravel's own `make:middleware` stub does),
+        // and handing it null throws a TypeError. This sentinel is compared
+        // by identity below — getting it back means every middleware called
+        // $next() and nobody short-circuited.
+        $passed = new Response('', SymfonyResponse::HTTP_NO_CONTENT);
+
         try {
             $response = (new Pipeline(app()))
                 ->send($request)
                 ->through($middleware)
-                ->then(fn () => null);
+                ->then(fn () => $passed);
         } catch (AuthenticationException $e) {
             return static::redirect($e->redirectTo() ?? static::loginUri(), $uri);
         } catch (HttpException) {
@@ -124,7 +133,7 @@ class ScreenGuard
             $response = $e->getResponse();
         }
 
-        if ($response === null) {
+        if ($response === $passed || $response === null) {
             return null;
         }
 
