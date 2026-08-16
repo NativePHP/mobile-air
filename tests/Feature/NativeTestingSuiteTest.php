@@ -80,6 +80,22 @@ it('delivers native events to #[On] listeners', function () {
         ->assertSet('pings', ['yo', 'again']);
 });
 
+it('preserves explicit scalar coercion for native event payloads', function () {
+    Native::test(CounterScreen::class)
+        ->emitNative('ScalarPayloadReceived', [
+            'count' => 'not-a-number',
+            'ratio' => 'not-a-number',
+            'label' => 123,
+            'enabled' => '0',
+        ])
+        ->assertSet('scalarPayload', [
+            'count' => 0,
+            'ratio' => 0.0,
+            'label' => '123',
+            'enabled' => false,
+        ]);
+});
+
 it('records native bridge calls and plays back scripted responses', function () {
     Native::fakeBridge()->respondTo('Geolocation.GetCurrentPosition', [
         'latitude' => 40.7,

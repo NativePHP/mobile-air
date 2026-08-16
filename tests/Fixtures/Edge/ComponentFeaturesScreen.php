@@ -9,6 +9,7 @@ use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\Renderless;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\Elements\Button;
 use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeComponent;
@@ -29,6 +30,12 @@ class ComponentFeaturesScreen extends NativeComponent
     public ?string $injected = null;
 
     public array $events = [];
+
+    public int $renderlessListenerCalls = 0;
+
+    public ?string $pureEnum = null;
+
+    public int $page = 0;
 
     public ParityRecord $record;
 
@@ -78,10 +85,34 @@ class ComponentFeaturesScreen extends NativeComponent
         $this->dispatch('parity-saved', id: 12)->to(self::class);
     }
 
+    public function dispatchThenNavigate(): void
+    {
+        $this->dispatch('parity-saved', id: 13);
+        $this->navigate('/next');
+    }
+
+    public function incrementAndDispatchRenderless(): void
+    {
+        $this->count++;
+        $this->dispatch('renderless-listener');
+    }
+
     #[On('parity-saved')]
     public function recordEvent(int $id, ParityActionService $service): void
     {
         $this->events[] = "{$id}:{$service->label}";
+    }
+
+    #[On('renderless-listener')]
+    #[Renderless]
+    public function recordRenderlessEvent(): void
+    {
+        $this->renderlessListenerCalls++;
+    }
+
+    public function resolvePureEnum(ParityPureStatus $status): void
+    {
+        $this->pureEnum = $status->name;
     }
 
     public function updating(string $path, mixed $value): void
@@ -126,6 +157,7 @@ class ComponentFeaturesScreen extends NativeComponent
         return Column::make(
             Text::make("Count: {$this->count}"),
             Text::make("Renders: {$this->renders}"),
+            Button::make('Dispatch then navigate')->onPress('dispatchThenNavigate'),
         );
     }
 }
@@ -228,4 +260,9 @@ enum ParityStatus: string
 {
     case Active = 'active';
     case Archived = 'archived';
+}
+
+enum ParityPureStatus
+{
+    case Active;
 }

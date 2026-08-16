@@ -192,6 +192,37 @@ class NativeRouter
 
     public static function resolve(string $uri): ?array
     {
+        $match = static::matchRoute($uri);
+
+        if ($match === null) {
+            return null;
+        }
+
+        $entry = $match['entry'];
+        $route = clone $match['route'];
+        $route->bind($match['request']);
+
+        if (function_exists('app') && app()->bound('router')) {
+            $router = app('router');
+            $router->substituteBindings($route);
+            ComponentRouteBinder::resolve($route, $entry['class']);
+        }
+
+        return [
+            'class' => $entry['class'],
+            'layout' => $entry['layout'] ?? null,
+            'params' => $route->parametersWithoutNulls(),
+            'route' => $route,
+        ];
+    }
+
+    /**
+     * Match a registered route without binding its parameters.
+     *
+     * @return array{entry: array, route: IlluminateRoute, request: Request}|null
+     */
+    private static function matchRoute(string $uri): ?array
+    {
         $request = Request::create('/'.ltrim($uri, '/'), 'GET');
 
         $literalRoutes = [];
@@ -214,26 +245,17 @@ class NativeRouter
             }
 
             // Match the registered route so its compiled pattern is retained
-            // across this long-lived process. Bind only a clone because route
-            // instances retain the parameters from their most recent request.
+            // across this long-lived process. Binding happens only in
+            // resolve(); predicates such as isNativeRoute() stay side-effect
+            // free and cannot trigger model lookups.
             if (! $registeredRoute->matches($request)) {
                 continue;
             }
 
-            $route = clone $registeredRoute;
-            $route->bind($request);
-
-            if (function_exists('app') && app()->bound('router')) {
-                $router = app('router');
-                $router->substituteBindings($route);
-                ComponentRouteBinder::resolve($route, $entry['class']);
-            }
-
             return [
-                'class' => $entry['class'],
-                'layout' => $entry['layout'] ?? null,
-                'params' => $route->parametersWithoutNulls(),
-                'route' => $route,
+                'entry' => $entry,
+                'route' => $registeredRoute,
+                'request' => $request,
             ];
         }
 
@@ -242,7 +264,11 @@ class NativeRouter
 
     public static function isNativeRoute(string $uri): bool
     {
-        return static::resolve($uri) !== null;
+        try {
+            return static::matchRoute($uri) !== null;
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -445,6 +471,7 @@ class NativeRouter
     protected function loop(): ?string
     {
         $freshPush = true;
+        $reenterCurrentScreen = false;
 
         while (! empty($this->stack)) {
             $entry = &$this->stack[count($this->stack) - 1];
@@ -460,7 +487,7 @@ class NativeRouter
                     static::debugLog('loop: calling mount() on '.get_class($component));
                     $component->mountComponent();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
-                } else {
+                } elseif (! $reenterCurrentScreen) {
                     static::debugLog('loop: calling onResume() on '.get_class($component));
                     $component->onResume();
                     $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
@@ -471,6 +498,8 @@ class NativeRouter
                 static::debugLog('mount/onResume FAILED in '.get_class($component).': '.$e->getMessage());
                 $component->renderErrorScreen($e);
             }
+
+            $reenterCurrentScreen = false;
 
             static::debugLog('loop: entering runLoop() on '.get_class($component));
             $component->runLoop();
@@ -502,7 +531,16 @@ class NativeRouter
             switch ($intent->type) {
                 case NavigationIntent::NAVIGATE:
                     static::debugLog("NAVIGATE: resolving uri={$intent->uri}");
-                    $resolved = static::resolve($intent->uri);
+                    try {
+                        $resolved = static::resolve($intent->uri);
+                    } catch (\Throwable $e) {
+                        static::debugLog('NAVIGATE binding FAILED: '.$e->getMessage()."\n".$e->getTraceAsString());
+                        $component->renderErrorScreen($e);
+                        $freshPush = false;
+                        $reenterCurrentScreen = true;
+
+                        break;
+                    }
 
                     if ($resolved === null) {
                         static::debugLog('NAVIGATE: unresolved, exiting to web');
@@ -553,7 +591,16 @@ class NativeRouter
 
                 case NavigationIntent::REPLACE:
                     static::debugLog("REPLACE: resolving uri={$intent->uri}");
-                    $resolved = static::resolve($intent->uri);
+                    try {
+                        $resolved = static::resolve($intent->uri);
+                    } catch (\Throwable $e) {
+                        static::debugLog('REPLACE binding FAILED: '.$e->getMessage()."\n".$e->getTraceAsString());
+                        $component->renderErrorScreen($e);
+                        $freshPush = false;
+                        $reenterCurrentScreen = true;
+
+                        break;
+                    }
 
                     if ($resolved === null) {
                         static::debugLog('REPLACE: unresolved, exiting to web');

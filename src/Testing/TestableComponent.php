@@ -516,7 +516,7 @@ class TestableComponent
             /** @var NativeComponent $this */
             foreach ($this->pollDefinitions() as $def) {
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    $this->{$def['method']}();
+                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
                 }
             }
         }));
@@ -540,7 +540,7 @@ class TestableComponent
             "No #[Poll] method [{$method}] on ".get_class($this->component).'. Declared: '.(implode(', ', $defined) ?: '(none)')
         );
 
-        $this->guard(fn () => ComponentMethodInvoker::invoke($this->component, $method));
+        $this->guard(fn () => ComponentMethodInvoker::invokeLifecycle($this->component, $method));
 
         return $this->afterInteraction();
     }

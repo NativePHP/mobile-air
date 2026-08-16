@@ -45,7 +45,14 @@ class ComponentMethodInvoker extends BoundMethod
         string $method,
         array $parameters = [],
     ): mixed {
-        return static::call(app(), [$component, $method], $parameters);
+        $dependencies = static::resolveMethodDependencies(
+            app(),
+            [$component, $method],
+            $parameters,
+        )['positional'];
+
+        return (new ReflectionMethod($component, $method))
+            ->invokeArgs($component, $dependencies);
     }
 
     protected static function ensureCallable(NativeComponent $component, string $method): void
@@ -171,7 +178,7 @@ class ComponentMethodInvoker extends BoundMethod
     {
         $class = static::getParameterClassName($parameter);
 
-        if ($class === null || static::isEnum($parameter) || static::implementsImplicitlyBindable($parameter)) {
+        if ($class === null || enum_exists($class) || static::implementsImplicitlyBindable($parameter)) {
             return null;
         }
 
@@ -197,7 +204,7 @@ class ComponentMethodInvoker extends BoundMethod
             return null;
         }
 
-        if ((new ReflectionClass($class))->isEnum()) {
+        if (is_a($class, \BackedEnum::class, true)) {
             return $class::tryFrom($value);
         }
 
@@ -233,6 +240,6 @@ class ComponentMethodInvoker extends BoundMethod
     {
         $class = static::getParameterClassName($parameter);
 
-        return $class !== null && (new ReflectionClass($class))->isEnum();
+        return $class !== null && is_a($class, \BackedEnum::class, true);
     }
 }

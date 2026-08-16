@@ -329,7 +329,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 $router = new NativeRouter;
                 $path = '/'.ltrim(request()->path(), '/');
-                $resolved = NativeRouter::resolve(request()->getRequestUri());
+                $resolved = NativeRouter::resolve($path);
                 $params = $resolved ? $resolved['params'] : [];
 
                 // Hot-reload stack restoration. PHP wrote the full

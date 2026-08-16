@@ -15,6 +15,8 @@ class PollScreen extends NativeComponent
 
     public int $slowTicks = 0;
 
+    public int $injectedTicks = 0;
+
     #[Poll(1000)]
     public function tick(): void
     {
@@ -27,6 +29,12 @@ class PollScreen extends NativeComponent
         $this->slowTicks++;
     }
 
+    #[Poll(30000)]
+    protected function injectedTick(PollDependency $dependency): void
+    {
+        $this->injectedTicks += $dependency->amount;
+    }
+
     public function render(): Element|View
     {
         return Column::make(
@@ -34,4 +42,9 @@ class PollScreen extends NativeComponent
             Text::make("Slow: {$this->slowTicks}"),
         );
     }
+}
+
+class PollDependency
+{
+    public int $amount = 3;
 }

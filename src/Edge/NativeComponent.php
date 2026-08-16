@@ -1618,7 +1618,7 @@ abstract class NativeComponent
                 }
 
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    ComponentMethodInvoker::invoke($this, $def['method']);
+                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
                 }
 
                 $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
@@ -1630,6 +1630,8 @@ abstract class NativeComponent
                 $this->bladePollDeadlines[$ms] = $now + $ms;
             }
         }
+
+        $this->flushDispatchedEvents();
     }
 
     // ── Lazy placeholder (#[Lazy]) ───────────────────
@@ -1813,7 +1815,10 @@ abstract class NativeComponent
             $parameters = [];
             foreach ((new \ReflectionMethod($this, $method))->getParameters() as $parameter) {
                 if (array_key_exists($parameter->getName(), $payload)) {
-                    $parameters[$parameter->getName()] = $payload[$parameter->getName()];
+                    $parameters[$parameter->getName()] = $this->coerceNativePayloadValue(
+                        $parameter,
+                        $payload[$parameter->getName()],
+                    );
                 }
             }
 
@@ -1823,6 +1828,23 @@ abstract class NativeComponent
         }
 
         ComponentMethodInvoker::invoke($this, $method, [$payload]);
+    }
+
+    private function coerceNativePayloadValue(\ReflectionParameter $parameter, mixed $value): mixed
+    {
+        $type = $parameter->getType();
+
+        if (! $type instanceof \ReflectionNamedType || ! $type->isBuiltin()) {
+            return $value;
+        }
+
+        return match ($type->getName()) {
+            'int' => (int) $value,
+            'float' => (float) $value,
+            'string' => (string) $value,
+            'bool' => (bool) $value,
+            default => $value,
+        };
     }
 
     /**
@@ -2294,6 +2316,7 @@ abstract class NativeComponent
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
                     $this->dispatchNativeEvent($event);
+                    $this->flushDispatchedEvents();
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -2508,6 +2531,7 @@ abstract class NativeComponent
                     continue;
                 }
                 $this->onBackPressed();
+                $this->flushDispatchedEvents();
 
                 continue;
             }
@@ -2516,6 +2540,7 @@ abstract class NativeComponent
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
                     $this->dispatchNativeEvent($event);
+                    $this->flushDispatchedEvents();
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -3483,6 +3508,7 @@ abstract class NativeComponent
         }
 
         $this->nativeFlushingComponentEvents = true;
+        $skipRender = $this->nativeShouldSkipRender;
 
         try {
             while ($queued = array_shift($this->nativePendingComponentEvents)) {
@@ -3493,6 +3519,10 @@ abstract class NativeComponent
                 $this->deliverComponentEvent($source, $event);
             }
         } finally {
+            // A nested listener's #[Renderless] marker applies to that
+            // listener, not to the interaction that dispatched it. Preserve
+            // only the source interaction's render decision.
+            $this->nativeShouldSkipRender = $skipRender;
             $this->nativeFlushingComponentEvents = false;
         }
     }
@@ -3663,7 +3693,7 @@ abstract class NativeComponent
         $kind = $this->nativeCallbacks->kind($event['callback_id'] ?? 0);
 
         if ($kind === 'search_query') {
-            $result = $this->invokeUiCallback($method, [...$args, ...$eventArgs]);
+            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
@@ -3680,7 +3710,7 @@ abstract class NativeComponent
             $parts = explode(',', $payload, 2);
             $from = (int) ($parts[0] ?? 0);
             $to = (int) ($parts[1] ?? 0);
-            $this->invokeUiCallback($method, [...$args, $from, $to]);
+            $this->invokeUiInteraction($method, [...$args, $from, $to]);
 
             return;
         }
@@ -3712,12 +3742,20 @@ abstract class NativeComponent
                 $start = $end = mb_strlen($text, 'UTF-8');
             }
 
-            $this->invokeUiCallback($method, [...$args, $text, $start, $end]);
+            $this->invokeUiInteraction($method, [...$args, $text, $start, $end]);
 
             return;
         }
 
-        $this->invokeUiCallback($method, [...$args, ...$eventArgs]);
+        $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+    }
+
+    private function invokeUiInteraction(string $method, array $parameters): mixed
+    {
+        $result = $this->invokeUiCallback($method, $parameters);
+        $this->flushDispatchedEvents();
+
+        return $result;
     }
 
     private function invokeUiCallback(string $method, array $parameters): mixed
@@ -3738,6 +3776,7 @@ abstract class NativeComponent
             'back',
             'replace',
             'exitToWeb',
+            'emit',
         ];
 
         if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {

@@ -26,6 +26,8 @@ class CounterScreen extends NativeComponent
 
     public array $pings = [];
 
+    public array $scalarPayload = [];
+
     public ?float $lat = null;
 
     public int $resumes = 0;
@@ -65,6 +67,12 @@ class CounterScreen extends NativeComponent
     public function onPing(string $message): void
     {
         $this->pings[] = $message;
+    }
+
+    #[On('ScalarPayloadReceived')]
+    public function onScalarPayload(int $count, float $ratio, string $label, bool $enabled): void
+    {
+        $this->scalarPayload = compact('count', 'ratio', 'label', 'enabled');
     }
 
     public function locate(): void

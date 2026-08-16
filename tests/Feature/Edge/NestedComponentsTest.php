@@ -202,6 +202,13 @@ it('delivers emit() to the parent through the @event tag binding', function () {
     expect($screen->instance()->savedEvents)->toBe(['tag:solo:1']);
 });
 
+it('keeps direct emit callbacks working for child templates', function () {
+    $screen = Native::test(NestedHostScreen::class)
+        ->tap('emit-solo');
+
+    expect($screen->instance()->savedEvents)->toBe(['tag:direct:9']);
+});
+
 it('bubbles a grandchild emit() past its parent to the screen #[On] listener', function () {
     $screen = Native::test(NestedHostScreen::class)
         ->tap('poke-a');

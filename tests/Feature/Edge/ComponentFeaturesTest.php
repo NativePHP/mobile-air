@@ -10,7 +10,9 @@ use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\ComponentFeaturesScreen;
 use Tests\Fixtures\Edge\CounterScreen;
+use Tests\Fixtures\Edge\ParityPureStatus;
 use Tests\Fixtures\Edge\ParityRecord;
+use Tests\Fixtures\Edge\RouterBindingFailureScreen;
 
 beforeEach(fn () => NativeRouter::clearRoutes());
 afterEach(fn () => NativeRouter::clearRoutes());
@@ -78,6 +80,38 @@ it('dispatches bubbling, self-only, and targeted component events', function () 
         ->assertNotDispatched('never-happened');
 });
 
+it('flushes component events before a navigation intent leaves the device interaction', function () {
+    $screen = Native::test(ComponentFeaturesScreen::class);
+    $callbackId = (new ReflectionMethod($screen, 'callbackIdFor'))
+        ->invoke($screen, 'dispatchThenNavigate');
+
+    (new ReflectionMethod($screen->instance(), 'dispatchUiEvent'))
+        ->invoke($screen->instance(), ['type' => 0, 'callback_id' => $callbackId]);
+
+    expect($screen->instance()->dispatchedEvents())
+        ->toContain(['name' => 'parity-saved', 'params' => ['id' => 13]])
+        ->and($screen->instance()->events)->toBe(['13:container']);
+});
+
+it('does not let a renderless component-event listener suppress its triggering action frame', function () {
+    Native::test(ComponentFeaturesScreen::class)
+        ->assertRenderCount(1)
+        ->call('incrementAndDispatchRenderless')
+        ->assertSet('count', 1)
+        ->assertSet('renderlessListenerCalls', 1)
+        ->assertRenderCount(2)
+        ->assertSee('Count: 1');
+});
+
+it('does not attempt implicit binding for pure enums', function () {
+    Native::test(ComponentFeaturesScreen::class)
+        ->call('resolvePureEnum', ParityPureStatus::Active)
+        ->assertSet('pureEnum', 'Active');
+
+    expect(fn () => Native::test(ComponentFeaturesScreen::class)->call('resolvePureEnum', 'active'))
+        ->toThrow(TypeError::class);
+});
+
 it('uses Illuminate route matching, constraints, optional parameters, and explicit binders', function () {
     Route::bind('parity_record', function (string $value, IlluminateRoute $route) {
         return new ParityRecord($value.'@'.$route->bindingFieldFor('parity_record'));
@@ -125,6 +159,35 @@ it('binds snake-cased route parameters to camel-cased typed properties', functio
     Native::visit('/parity-property-snake/native-php')
         ->assertSet('parityRecord.id', 'native-php@slug');
 });
+
+it('coerces compatible scalar route properties and rejects incompatible values', function () {
+    Route::native('/pages/{page}', ComponentFeaturesScreen::class);
+
+    Native::visit('/pages/42')->assertSet('page', 42);
+
+    expect(fn () => Native::visit('/pages/not-a-number'))->toThrow(TypeError::class);
+});
+
+it('checks whether a route matches without running its model binders', function () {
+    Route::native('/binding-check/{record}', ComponentFeaturesScreen::class);
+
+    expect(NativeRouter::isNativeRoute('/binding-check/missing'))->toBeTrue();
+});
+
+it('keeps navigation binding failures inside the current screen lifecycle', function (string $intent) {
+    Route::native('/binding-failure/{record}', ComponentFeaturesScreen::class);
+    NativeRouter::register('/binding-source', RouterBindingFailureScreen::class);
+    Native::fakeBridge();
+
+    RouterBindingFailureScreen::$runCount = 0;
+    RouterBindingFailureScreen::$intent = $intent;
+
+    expect((new NativeRouter)->start(
+        RouterBindingFailureScreen::class,
+        uri: '/binding-source',
+    ))->toBe('/recovered')
+        ->and(RouterBindingFailureScreen::$runCount)->toBe(2);
+})->with(['navigate', 'replace']);
 
 it('prefers literal routes and reuses compiled route patterns', function () {
     Route::native('/items/{record}', ComponentFeaturesScreen::class);
