@@ -33,6 +33,8 @@ class ComponentFeaturesScreen extends NativeComponent
 
     public int $renderlessListenerCalls = 0;
 
+    public int $imperativeSkipListenerCalls = 0;
+
     public ?string $pureEnum = null;
 
     public int $page = 0;
@@ -97,6 +99,12 @@ class ComponentFeaturesScreen extends NativeComponent
         $this->dispatch('renderless-listener');
     }
 
+    public function incrementAndDispatchImperativeSkip(): void
+    {
+        $this->count++;
+        $this->dispatch('imperative-skip-listener');
+    }
+
     #[On('parity-saved')]
     public function recordEvent(int $id, ParityActionService $service): void
     {
@@ -108,6 +116,13 @@ class ComponentFeaturesScreen extends NativeComponent
     public function recordRenderlessEvent(): void
     {
         $this->renderlessListenerCalls++;
+    }
+
+    #[On('imperative-skip-listener')]
+    public function recordImperativeSkipEvent(): void
+    {
+        $this->imperativeSkipListenerCalls++;
+        $this->skipRender();
     }
 
     public function resolvePureEnum(ParityPureStatus $status): void
@@ -157,6 +172,7 @@ class ComponentFeaturesScreen extends NativeComponent
         return Column::make(
             Text::make("Count: {$this->count}"),
             Text::make("Renders: {$this->renders}"),
+            Text::make('Events: '.implode(',', $this->events)),
             Button::make('Dispatch then navigate')->onPress('dispatchThenNavigate'),
         );
     }

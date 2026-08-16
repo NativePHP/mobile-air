@@ -210,10 +210,11 @@ it('keeps direct emit callbacks working for child templates', function () {
 });
 
 it('bubbles a grandchild emit() past its parent to the screen #[On] listener', function () {
-    $screen = Native::test(NestedHostScreen::class)
-        ->tap('poke-a');
-
-    expect($screen->instance()->pokes)->toBe(['badge-of-a']);
+    Native::test(NestedHostScreen::class)
+        ->tap('poke-a')
+        ->assertSet('pokes', ['badge-of-a'])
+        ->assertSee('Pokes: badge-of-a')
+        ->assertRerendered();
 });
 
 it('re-renders after an emit so handler state changes paint', function () {

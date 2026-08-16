@@ -4,6 +4,7 @@ namespace Tests\Fixtures\Edge;
 
 use Illuminate\View\View;
 use Native\Mobile\Attributes\On;
+use Native\Mobile\Attributes\Renderless;
 use Native\Mobile\Edge\NativeComponent;
 
 /**
@@ -33,6 +34,7 @@ class NestedHostScreen extends NativeComponent
     }
 
     #[On('badge-poked')]
+    #[Renderless]
     public function onBadgePoked(string $from): void
     {
         $this->pokes[] = $from;

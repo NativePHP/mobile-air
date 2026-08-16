@@ -1,18 +1,22 @@
 <?php
 
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Routing\Route as IlluminateRoute;
 use Illuminate\Support\Facades\Route;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\ComponentFeaturesScreen;
 use Tests\Fixtures\Edge\CounterScreen;
+use Tests\Fixtures\Edge\InteractionFailureScreen;
 use Tests\Fixtures\Edge\ParityPureStatus;
 use Tests\Fixtures\Edge\ParityRecord;
 use Tests\Fixtures\Edge\RouterBindingFailureScreen;
+use Tests\Fixtures\Edge\ScriptedEventBridge;
 
 beforeEach(fn () => NativeRouter::clearRoutes());
 afterEach(fn () => NativeRouter::clearRoutes());
@@ -26,6 +30,10 @@ it('injects services and implicitly binds models and enums into component action
 it('throws a model not found exception when an action binding is missing', function () {
     Native::test(ComponentFeaturesScreen::class)->call('resolveAction', 'missing', 'active');
 })->throws(ModelNotFoundException::class);
+
+it('throws the route-compatible exception when an action enum case is invalid', function () {
+    Native::test(ComponentFeaturesScreen::class)->call('resolveAction', '42', 'invalid');
+})->throws(BackedEnumCaseNotFoundException::class);
 
 it('only invokes public userland actions and protects lifecycle hooks', function () {
     expect(fn () => Native::test(ComponentFeaturesScreen::class)->call('secret'))
@@ -81,16 +89,14 @@ it('dispatches bubbling, self-only, and targeted component events', function () 
 });
 
 it('flushes component events before a navigation intent leaves the device interaction', function () {
-    $screen = Native::test(ComponentFeaturesScreen::class);
-    $callbackId = (new ReflectionMethod($screen, 'callbackIdFor'))
-        ->invoke($screen, 'dispatchThenNavigate');
-
-    (new ReflectionMethod($screen->instance(), 'dispatchUiEvent'))
-        ->invoke($screen->instance(), ['type' => 0, 'callback_id' => $callbackId]);
+    $screen = Native::test(ComponentFeaturesScreen::class)
+        ->tap('Dispatch then navigate')
+        ->assertNavigatedTo('/next');
 
     expect($screen->instance()->dispatchedEvents())
         ->toContain(['name' => 'parity-saved', 'params' => ['id' => 13]])
-        ->and($screen->instance()->events)->toBe(['13:container']);
+        ->and($screen->instance()->events)->toBe(['13:container'])
+        ->and(json_encode($screen->bridge()->lastPublish()))->toContain('Events: 13:container');
 });
 
 it('does not let a renderless component-event listener suppress its triggering action frame', function () {
@@ -101,6 +107,43 @@ it('does not let a renderless component-event listener suppress its triggering a
         ->assertSet('renderlessListenerCalls', 1)
         ->assertRenderCount(2)
         ->assertSee('Count: 1');
+});
+
+it('preserves an imperative render skip requested inside a component-event listener', function () {
+    Native::test(ComponentFeaturesScreen::class)
+        ->assertRenderCount(1)
+        ->call('incrementAndDispatchImperativeSkip')
+        ->assertSet('count', 1)
+        ->assertSet('imperativeSkipListenerCalls', 1)
+        ->assertRenderCount(1)
+        ->assertNotRerendered()
+        ->assertSee('Count: 0');
+});
+
+it('contains component-event failures raised while handling system back', function () {
+    $bridge = new ScriptedEventBridge([
+        ['type' => 8],
+        ['type' => ComponentFeaturesScreen::EVENT_SHUTDOWN],
+    ]);
+    app()->instance(FakeBridge::class, $bridge);
+
+    $screen = new InteractionFailureScreen;
+    $screen->runLoop();
+
+    expect($screen->hasErrorState())->toBeTrue();
+});
+
+it('contains component-event failures raised while flushing due polls', function () {
+    $bridge = new ScriptedEventBridge([
+        null,
+        ['type' => ComponentFeaturesScreen::EVENT_SHUTDOWN],
+    ]);
+    app()->instance(FakeBridge::class, $bridge);
+
+    $screen = new InteractionFailureScreen;
+    $screen->runLoop();
+
+    expect($screen->hasErrorState())->toBeTrue();
 });
 
 it('does not attempt implicit binding for pure enums', function () {

@@ -5,6 +5,7 @@ namespace Native\Mobile\Edge;
 use Illuminate\Container\BoundMethod;
 use Illuminate\Contracts\Routing\UrlRoutable as ImplicitlyBindable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Str;
 use Native\Mobile\Attributes\Renderless;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
@@ -30,11 +31,7 @@ class ComponentMethodInvoker extends BoundMethod
         static::ensureCallable($component, $method);
 
         $result = static::call(app(), [$component, $method], $parameters);
-
-        $reflection = new ReflectionMethod($component, $method);
-        if ($reflection->getAttributes(Renderless::class) !== []) {
-            $component->skipRender();
-        }
+        static::applyRenderlessAttribute($component, $method);
 
         return $result;
     }
@@ -51,8 +48,21 @@ class ComponentMethodInvoker extends BoundMethod
             $parameters,
         )['positional'];
 
-        return (new ReflectionMethod($component, $method))
+        $result = (new ReflectionMethod($component, $method))
             ->invokeArgs($component, $dependencies);
+
+        static::applyRenderlessAttribute($component, $method);
+
+        return $result;
+    }
+
+    private static function applyRenderlessAttribute(NativeComponent $component, string $method): void
+    {
+        $reflection = new ReflectionMethod($component, $method);
+
+        if ($reflection->getAttributes(Renderless::class) !== []) {
+            $component->__applyRenderlessAttribute();
+        }
     }
 
     protected static function ensureCallable(NativeComponent $component, string $method): void
@@ -205,7 +215,13 @@ class ComponentMethodInvoker extends BoundMethod
         }
 
         if (is_a($class, \BackedEnum::class, true)) {
-            return $class::tryFrom($value);
+            $resolved = $class::tryFrom($value);
+
+            if ($resolved === null) {
+                throw new BackedEnumCaseNotFoundException($class, $value);
+            }
+
+            return $resolved;
         }
 
         $model = $container->make($class)->resolveRouteBinding($value);

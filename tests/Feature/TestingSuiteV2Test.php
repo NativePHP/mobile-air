@@ -16,6 +16,7 @@ use Tests\Fixtures\Edge\HiddenTabScreen;
 use Tests\Fixtures\Edge\PingReceived;
 use Tests\Fixtures\Edge\PlatformScreen;
 use Tests\Fixtures\Edge\PollScreen;
+use Tests\Fixtures\Edge\RenderlessPollScreen;
 use Tests\Fixtures\Edge\SearchableScreen;
 
 beforeEach(function () {
@@ -127,6 +128,15 @@ it('injects dependencies into protected poll methods through the internal invoca
     Native::test(PollScreen::class)
         ->firePoll('injectedTick')
         ->assertSet('injectedTicks', 3);
+});
+
+it('honors renderless attributes on protected poll methods', function () {
+    Native::test(RenderlessPollScreen::class)
+        ->assertRenderCount(1)
+        ->firePoll('tickWithoutRendering')
+        ->assertSet('ticks', 3)
+        ->assertRenderCount(1)
+        ->assertNotRerendered();
 });
 
 it('rejects unknown poll methods', function () {

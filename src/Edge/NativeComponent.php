@@ -111,6 +111,9 @@ abstract class NativeComponent
 
     private bool $nativeFlushingComponentEvents = false;
 
+    /** Depth of synchronous component-event listener delivery. */
+    private int $nativeComponentEventListenerDepth = 0;
+
     /** Layout class for this screen (set by router from route metadata). */
     protected ?string $nativeLayout = null;
 
@@ -1617,11 +1620,13 @@ abstract class NativeComponent
                     continue;
                 }
 
+                // Reschedule before user code runs so a failing callback is
+                // contained by the error screen without becoming a hot-loop.
+                $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
+
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
                     ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
                 }
-
-                $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
             }
         }
 
@@ -1632,6 +1637,19 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
+    }
+
+    /** Keep callback failures inside the component's error-screen lifecycle. */
+    private function runGuardedInteraction(string $operation, callable $interaction): void
+    {
+        try {
+            $interaction();
+        } catch (NativeDumpException $e) {
+            $this->renderDumpScreen($e);
+        } catch (\Throwable $e) {
+            NativeRouter::debugLog($operation.' FAILED in '.static::class.': '.$e->getMessage());
+            $this->renderErrorScreen($e);
+        }
     }
 
     // ── Lazy placeholder (#[Lazy]) ───────────────────
@@ -2242,7 +2260,10 @@ abstract class NativeComponent
         }
 
         while ($this->nativeRunning) {
-            $this->flushDispatchedEvents();
+            $this->runGuardedInteraction(
+                'flushDispatchedEvents()',
+                fn () => $this->flushDispatchedEvents(),
+            );
             $skipRender = $this->consumeRenderSkip();
 
             // A skipped render leaves the previous native tree on screen, so
@@ -2275,7 +2296,10 @@ abstract class NativeComponent
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                $this->runGuardedInteraction(
+                    'runDuePolls()',
+                    fn () => $this->runDuePolls(),
+                );
 
                 continue;
             }
@@ -2426,7 +2450,10 @@ abstract class NativeComponent
                 break;
             }
 
-            $this->flushDispatchedEvents();
+            $this->runGuardedInteraction(
+                'flushDispatchedEvents()',
+                fn () => $this->flushDispatchedEvents(),
+            );
             $skipRender = $this->consumeRenderSkip();
 
             // A skipped render leaves the previous native tree on screen, so
@@ -2482,7 +2509,10 @@ abstract class NativeComponent
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                $this->runGuardedInteraction(
+                    'runDuePolls()',
+                    fn () => $this->runDuePolls(),
+                );
 
                 continue;
             }
@@ -2530,8 +2560,10 @@ abstract class NativeComponent
 
                     continue;
                 }
-                $this->onBackPressed();
-                $this->flushDispatchedEvents();
+                $this->runGuardedInteraction('onBackPressed()', function () {
+                    $this->onBackPressed();
+                    $this->flushDispatchedEvents();
+                });
 
                 continue;
             }
@@ -2663,6 +2695,7 @@ abstract class NativeComponent
             return $this;
         }
 
+        $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -2694,6 +2727,7 @@ abstract class NativeComponent
             return $this;
         }
 
+        $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
         $this->publishFinalState();
         $this->stop();
@@ -2710,6 +2744,7 @@ abstract class NativeComponent
             return $this;
         }
 
+        $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -3465,6 +3500,20 @@ abstract class NativeComponent
         $this->rootScreen()->nativeShouldSkipRender = true;
     }
 
+    /** @internal Apply a method-level #[Renderless] marker in the current invocation scope. */
+    final public function __applyRenderlessAttribute(): void
+    {
+        $root = $this->rootScreen();
+
+        // A component-event listener is nested inside the interaction that
+        // emitted or dispatched it. Its attribute describes the listener,
+        // not the source interaction's required frame. An explicit
+        // skipRender() inside the listener remains authoritative.
+        if ($root->nativeComponentEventListenerDepth === 0) {
+            $root->nativeShouldSkipRender = true;
+        }
+    }
+
     /** @internal Consumes the one-shot renderless state. */
     public function consumeRenderSkip(): bool
     {
@@ -3508,7 +3557,6 @@ abstract class NativeComponent
         }
 
         $this->nativeFlushingComponentEvents = true;
-        $skipRender = $this->nativeShouldSkipRender;
 
         try {
             while ($queued = array_shift($this->nativePendingComponentEvents)) {
@@ -3519,10 +3567,6 @@ abstract class NativeComponent
                 $this->deliverComponentEvent($source, $event);
             }
         } finally {
-            // A nested listener's #[Renderless] marker applies to that
-            // listener, not to the interaction that dispatched it. Preserve
-            // only the source interaction's render decision.
-            $this->nativeShouldSkipRender = $skipRender;
             $this->nativeFlushingComponentEvents = false;
         }
     }
@@ -3563,7 +3607,7 @@ abstract class NativeComponent
         if ($parent !== null && isset($source->nativeChildEventBindings[$event->name()])) {
             $binding = CallbackRegistry::parse($source->nativeChildEventBindings[$event->name()]);
 
-            ComponentMethodInvoker::invoke(
+            $this->invokeComponentEventAction(
                 $parent,
                 $binding['method'],
                 [...$binding['args'], ...$event->params()],
@@ -3609,7 +3653,7 @@ abstract class NativeComponent
             $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
 
             if (method_exists($parent, $binding['method'])) {
-                ComponentMethodInvoker::invoke(
+                $this->invokeComponentEventAction(
                     $parent,
                     $binding['method'],
                     [...$binding['args'], ...$args],
@@ -3634,7 +3678,22 @@ abstract class NativeComponent
             ?? null;
 
         if ($method !== null && method_exists($this, $method)) {
-            ComponentMethodInvoker::invoke($this, $method, $args);
+            $this->invokeComponentEventAction($this, $method, $args);
+        }
+    }
+
+    private function invokeComponentEventAction(
+        NativeComponent $component,
+        string $method,
+        array $parameters,
+    ): mixed {
+        $root = $this->rootScreen();
+        $root->nativeComponentEventListenerDepth++;
+
+        try {
+            return ComponentMethodInvoker::invoke($component, $method, $parameters);
+        } finally {
+            $root->nativeComponentEventListenerDepth--;
         }
     }
 
