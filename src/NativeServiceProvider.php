@@ -303,9 +303,7 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Route::macro('native', function (string $uri, string $componentClass) {
-            NativeRouter::register($uri, $componentClass);
-
-            return Route::get($uri, function () use ($componentClass) {
+            $route = Route::get($uri, function () use ($componentClass) {
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these
@@ -331,7 +329,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 $router = new NativeRouter;
                 $path = '/'.ltrim(request()->path(), '/');
-                $resolved = NativeRouter::resolve($path);
+                $resolved = NativeRouter::resolve(request()->getRequestUri());
                 $params = $resolved ? $resolved['params'] : [];
 
                 // Hot-reload stack restoration. PHP wrote the full
@@ -389,6 +387,10 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+
+            NativeRouter::register($route, $componentClass);
+
+            return $route;
         });
 
         // Route::nativeGroup(layout: TabsLayout::class, function () { ... })

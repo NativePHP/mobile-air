@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Http\Request;
+use Illuminate\Routing\Route as IlluminateRoute;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -84,9 +86,10 @@ class NativeRouter
      * URI → component class registry.
      * Populated by Route::native() calls.
      *
-     * Each entry: ['class' => string, 'layout' => ?string]
+     * Each entry retains the actual Illuminate route so native navigation and
+     * HTTP routing share matching, constraints, decoding, and route binders.
      *
-     * @var array<string, array{class: string, layout: ?string}>
+     * @var array<string, array{class: string, layout: ?string, route: IlluminateRoute}>
      */
     protected static array $routes = [];
 
@@ -132,12 +135,25 @@ class NativeRouter
 
     // ── Static registry ─────────────────────────────
 
-    public static function register(string $uri, string $class, ?string $layout = null): void
+    public static function register(string|IlluminateRoute $uri, string $class, ?string $layout = null): void
     {
-        $pattern = '/'.ltrim($uri, '/');
+        if ($uri instanceof IlluminateRoute) {
+            $route = $uri;
+            $pattern = '/'.ltrim($route->uri(), '/');
+        } else {
+            $pattern = '/'.ltrim($uri, '/');
+            $route = new IlluminateRoute(['GET'], ltrim($pattern, '/'), fn () => null);
+
+            if (function_exists('app') && app()->bound('router')) {
+                $route->setRouter(app('router'));
+                $route->setContainer(app());
+            }
+        }
+
         static::$routes[$pattern] = [
             'class' => $class,
             'layout' => $layout ?? static::$currentGroupLayout,
+            'route' => $route,
         ];
     }
 
@@ -176,33 +192,37 @@ class NativeRouter
 
     public static function resolve(string $uri): ?array
     {
-        $uri = '/'.ltrim($uri, '/');
+        $request = Request::create('/'.ltrim($uri, '/'), 'GET');
 
-        // Exact match first
-        if (isset(static::$routes[$uri])) {
-            $entry = static::$routes[$uri];
+        foreach (static::$routes as $entry) {
+            // Bind a clone: Illuminate routes keep their last parameters on
+            // the instance, while Native's long-lived process resolves the
+            // same route repeatedly across navigation and hot reloads.
+            $route = clone $entry['route'];
+
+            if (function_exists('app') && app()->bound('router')) {
+                $route->setRouter(app('router'));
+                $route->setContainer(app());
+            }
+
+            if (! $route->matches($request)) {
+                continue;
+            }
+
+            $route->bind($request);
+
+            if (function_exists('app') && app()->bound('router')) {
+                $router = app('router');
+                $router->substituteBindings($route);
+                ComponentRouteBinder::resolve($route, $entry['class']);
+            }
 
             return [
                 'class' => $entry['class'],
                 'layout' => $entry['layout'] ?? null,
-                'params' => [],
+                'params' => $route->parametersWithoutNulls(),
+                'route' => $route,
             ];
-        }
-
-        // Pattern match with route parameters
-        foreach (static::$routes as $pattern => $entry) {
-            $regex = preg_replace('/\{(\w+)\}/', '(?P<$1>[^/]+)', $pattern);
-            $regex = '#^'.$regex.'$#';
-
-            if (preg_match($regex, $uri, $matches)) {
-                $params = array_filter($matches, fn ($key) => is_string($key), ARRAY_FILTER_USE_KEY);
-
-                return [
-                    'class' => $entry['class'],
-                    'layout' => $entry['layout'] ?? null,
-                    'params' => $params,
-                ];
-            }
         }
 
         return null;
@@ -350,7 +370,7 @@ class NativeRouter
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
                 }
-                $component->mount();
+                $component->mountComponent();
             } catch (\Throwable $e) {
                 static::debugLog("preloadStack: skipped $uri — ".$e->getMessage());
 
@@ -426,7 +446,7 @@ class NativeRouter
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
-                    $component->mount();
+                    $component->mountComponent();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
                 } else {
                     static::debugLog('loop: calling onResume() on '.get_class($component));

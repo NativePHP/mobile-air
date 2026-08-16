@@ -195,7 +195,7 @@ class NativeTagPrecompiler
         // Kept for backwards compatibility; prefer `native:model` going forward.
         $value = preg_replace_callback(
             '/@model=["\']([^"\']+)["\']/',
-            fn ($m) => ':value="$'.$m[1].'" _change="__syncProperty(\''.$m[1].'\')" sync-mode="live"',
+            fn ($m) => ':value="data_get($this, \''.$m[1].'\')" _change="__syncProperty(\''.$m[1].'\')" sync-mode="live"',
             $value
         );
 
@@ -386,7 +386,7 @@ class NativeTagPrecompiler
             // `.live` or anything unknown falls through to syncMode=live.
         }
 
-        $out = ':value="$'.$prop.'" _change="__syncProperty(\''.$prop.'\')" sync-mode="'.$syncMode.'"';
+        $out = ':value="data_get($this, \''.$prop.'\')" _change="__syncProperty(\''.$prop.'\')" sync-mode="'.$syncMode.'"';
         if ($debounceMs > 0) {
             $out .= ' debounce-ms="'.$debounceMs.'"';
         }
