@@ -4,6 +4,7 @@ namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\ComponentMethodInvoker;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
@@ -34,7 +35,7 @@ use PHPUnit\Framework\TestCase;
  *
  * Interactions dispatch through the same code paths the on-device runloop
  * uses: taps resolve a callback id from the published tree and go through
- * NativeComponent::dispatch(); native events go through
+ * NativeComponent::dispatchUiEvent(); native events go through
  * dispatchNativeEvent(); after every interaction the component re-renders,
  * mirroring the render → wait → dispatch loop. Exceptions thrown by the
  * component bubble to the test instead of painting the error screen; a
@@ -215,7 +216,8 @@ class TestableComponent
             // device; keep that behavior so the publish is observable.
             $component->publishPlaceholder();
 
-            $component->mount();
+            $component->mountComponent();
+            $component->flushDispatchedEvents();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
             // render, exactly like runLoop() honoring a pre-set intent.
@@ -238,9 +240,11 @@ class TestableComponent
     {
         $this->startInteraction();
 
+        $rootProperty = explode('.', $property, 2)[0];
+
         Assert::assertTrue(
-            property_exists($this->component, $property),
-            'Public property [$'.$property.'] does not exist on '.get_class($this->component).'.'
+            property_exists($this->component, $rootProperty),
+            'Public property [$'.$rootProperty.'] does not exist on '.get_class($this->component).'.'
         );
 
         $this->guard(fn () => $this->component->__syncProperty($property, $value));
@@ -253,12 +257,7 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        Assert::assertTrue(
-            method_exists($this->component, $method),
-            'Method ['.$method.'] does not exist on '.get_class($this->component).'.'
-        );
-
-        $this->guard(fn () => $this->component->{$method}(...$args));
+        $this->guard(fn () => ComponentMethodInvoker::invoke($this->component, $method, $args));
 
         return $this->afterInteraction();
     }
@@ -516,7 +515,7 @@ class TestableComponent
             /** @var NativeComponent $this */
             foreach ($this->pollDefinitions() as $def) {
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    $this->{$def['method']}();
+                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
                 }
             }
         }));
@@ -540,7 +539,7 @@ class TestableComponent
             "No #[Poll] method [{$method}] on ".get_class($this->component).'. Declared: '.(implode(', ', $defined) ?: '(none)')
         );
 
-        $this->guard(fn () => $this->component->{$method}());
+        $this->guard(fn () => ComponentMethodInvoker::invokeLifecycle($this->component, $method));
 
         return $this->afterInteraction();
     }
@@ -697,6 +696,7 @@ class TestableComponent
 
         $this->guard(function () {
             $this->component->onResume();
+            $this->component->flushDispatchedEvents();
             $this->renderFrame();
         });
     }
@@ -922,6 +922,67 @@ class TestableComponent
         );
 
         return $this;
+    }
+
+    // ── Component event assertions ──────────────────
+
+    public function assertDispatched(string $event, mixed ...$params): static
+    {
+        Assert::assertTrue(
+            $this->testDispatched($event, $params),
+            "Failed asserting that an event [{$event}] was dispatched."
+        );
+
+        return $this;
+    }
+
+    public function assertNotDispatched(string $event, mixed ...$params): static
+    {
+        Assert::assertFalse(
+            $this->testDispatched($event, $params),
+            "Failed asserting that an event [{$event}] was not dispatched."
+        );
+
+        return $this;
+    }
+
+    public function assertDispatchedTo(string $target, string $event, mixed ...$params): static
+    {
+        $this->assertDispatched($event, ...$params);
+
+        Assert::assertTrue(
+            collect($this->component->dispatchedEvents())->contains(
+                fn (array $item) => $item['name'] === $event
+                    && ($item['component'] ?? null) === $target
+            ),
+            "Failed asserting that event [{$event}] was dispatched to [{$target}]."
+        );
+
+        return $this;
+    }
+
+    private function testDispatched(string $event, array $params): bool
+    {
+        $events = collect($this->component->dispatchedEvents())
+            ->where('name', $event);
+
+        if ($params === []) {
+            return $events->isNotEmpty();
+        }
+
+        if (isset($params[0]) && is_callable($params[0]) && ! is_string($params[0])) {
+            $dispatch = $events->first();
+
+            return $dispatch !== null && (bool) $params[0]($event, $dispatch['params']);
+        }
+
+        return $events->contains(function (array $dispatch) use ($params) {
+            $common = array_intersect_key($dispatch['params'], $params);
+            ksort($common);
+            ksort($params);
+
+            return $common === $params;
+        });
     }
 
     // ── Chrome assertions ───────────────────────────
@@ -1283,7 +1344,7 @@ class TestableComponent
     /** Read a public or #[Computed] property. */
     public function get(string $property): mixed
     {
-        return $this->component->{$property};
+        return data_get($this->component, $property);
     }
 
     /** The most recently published wire tree. */
@@ -1403,12 +1464,12 @@ class TestableComponent
         $this->frameCount++;
     }
 
-    /** Dispatch a UI event through NativeComponent::dispatch(). */
+    /** Dispatch a UI event through NativeComponent::dispatchUiEvent(). */
     protected function dispatchUiEvent(array $event): static
     {
         $this->guard(fn () => $this->scoped(function () use ($event) {
             /** @var NativeComponent $this */
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }));
 
         return $this->afterInteraction();
@@ -1428,9 +1489,11 @@ class TestableComponent
      */
     protected function afterInteraction(): static
     {
+        $this->guard(fn () => $this->component->flushDispatchedEvents());
+
         if ($this->component->getNavigationIntent() === null && $this->isRunning()) {
             $this->guard(fn () => $this->renderFrame());
-        } else {
+        } elseif ($this->component->getNavigationIntent() !== null) {
             $this->lastTree = $this->bridge->lastPublish() ?? $this->lastTree;
         }
 

@@ -123,6 +123,12 @@ it('fires a single poll method by name', function () {
         ->assertSet('slowTicks', 0);
 });
 
+it('injects dependencies into protected poll methods through the internal invocation path', function () {
+    Native::test(PollScreen::class)
+        ->firePoll('injectedTick')
+        ->assertSet('injectedTicks', 3);
+});
+
 it('rejects unknown poll methods', function () {
     Native::test(PollScreen::class)->firePoll('nonexistent');
 })->throws(AssertionFailedError::class);
