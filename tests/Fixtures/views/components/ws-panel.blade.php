@@ -1,0 +1,1 @@
+<native:column class="p-4">{{ $slot }}</native:column>

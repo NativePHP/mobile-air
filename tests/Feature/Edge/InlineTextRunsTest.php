@@ -32,7 +32,6 @@ afterEach(function () {
     }
 });
 
-/** Render a Blade string through the native pipeline and return the tree array. */
 it('emits three ordered run-nodes with whitespace intact', function () {
     // Single line, no inter-tag whitespace — the canonical verify case.
     $tree = renderEdgeTree(
