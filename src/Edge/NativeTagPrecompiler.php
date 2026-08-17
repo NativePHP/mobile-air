@@ -399,6 +399,13 @@ class NativeTagPrecompiler
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
 
+        // A self-closing <text /> carries attribute text only. Route it
+        // through textLeaf so a whitespace-* class governs `:text`
+        // exactly as the paired form does at textClose.
+        if ($tag === 'text') {
+            return '<?php '.self::C."::textLeaf({$attrs}); ?>";
+        }
+
         // <native:virtual-list /> is special: open the element, loop the
         // window, render the `item` Blade view once per index (each render
         // streams its own native tags into the same collector), then close.

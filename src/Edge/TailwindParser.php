@@ -650,6 +650,14 @@ class TailwindParser
             $class === 'select-text' => ['selectable' => 1],
             $class === 'select-none' => ['selectable' => 0],
 
+            // Whitespace (CSS white-space) for text content. Consumed by the
+            // PHP capture layer before the text prop is serialized, so it
+            // never rides the wire. `nowrap` and `pre-wrap` need native
+            // line-wrap props and stay unparsed for now.
+            $class === 'whitespace-normal' => ['whitespace' => 'normal'],
+            $class === 'whitespace-pre-line' => ['whitespace' => 'pre-line'],
+            $class === 'whitespace-pre' => ['whitespace' => 'pre'],
+
             // Letter spacing (tracking), in em (relative to font size).
             $class === 'tracking-tighter' => ['letterSpacing' => -0.05],
             $class === 'tracking-tight' => ['letterSpacing' => -0.025],
