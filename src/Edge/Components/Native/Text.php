@@ -16,19 +16,15 @@ class Text extends NativeBladeComponent
     public function render(): \Closure
     {
         return function (array $data) {
-            // Merge slot and attribute text through the collector's shared
-            // whitespace policy so this component and the precompiled
-            // <text> tag resolve their text prop identically.
-            $attrs = NativeElementCollector::mergeSlotText(
-                $data['attributes']->getAttributes(),
-                $data['slot']->toHtml()
-            );
+            // Run the same frame cycle as a precompiled <text> tag, so a
+            // nested component becomes a run of its parent, inheriting
+            // its whitespace mode, while a top-level one merges slot
+            // and attribute text through the identical policy. The
+            // close also emits streaming-aware, like any <text>.
+            NativeElementCollector::textOpen($data['attributes']->getAttributes());
+            echo $data['slot']->toHtml();
 
-            if (NativeElementCollector::isStreaming()) {
-                NativeElementCollector::leafStreaming($this->elementType(), $attrs);
-            } else {
-                NativeElementCollector::leaf($this->elementType(), $attrs);
-            }
+            NativeElementCollector::textClose();
 
             return '';
         };
