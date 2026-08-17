@@ -7,9 +7,9 @@ use Native\Mobile\Edge\NativeTagPrecompiler;
 /**
  * The whitespace-* class family governs how text whitespace is resolved
  * before the text prop is serialized, identically for slot-sourced and
- * attribute-sourced text. Without a class the per-source defaults hold:
- * slot text gets the historical trim-and-collapse, attribute text
- * passes through byte-for-byte untouched.
+ * attribute-sourced text. Without a class both sources collapse like
+ * the browser does at paint time, so slot and attribute text can
+ * never disagree; a class opts any element out of that default.
  */
 beforeEach(function () {
     NativeElementCollector::reset();
@@ -34,14 +34,21 @@ afterEach(function () {
     }
 });
 
-/** Render a Blade string through the native pipeline and return the tree array. */
+/**
+ * Render a Blade string through the native pipeline and return the tree
+ * array. The view name is unique per render because the compiler engine
+ * caches per path within one app lifecycle, so reusing a name would
+ * silently re-render the previous template instead of this one.
+ */
 function renderWhitespaceTree(string $blade, array $data = []): array
 {
-    $viewPath = __DIR__.'/views/whitespace-classes.blade.php';
-    file_put_contents($viewPath, $blade);
+    static $sequence = 0;
+    $name = 'whitespace-classes-'.(++$sequence);
+
+    file_put_contents(__DIR__.'/views/'.$name.'.blade.php', $blade);
 
     NativeElementCollector::reset();
-    view('whitespace-classes', $data)->render();
+    view($name, $data)->render();
 
     return NativeElementCollector::collect()->toArray(new CallbackRegistry);
 }
@@ -242,4 +249,46 @@ it('applies whitespace-normal to x-native-text attribute text', function () {
     );
 
     expect($tree['children'][0]['props']['text'])->toBe('Line one Line two');
+});
+
+it('treats a nested self-closing text as a run in document order', function () {
+    // Used to escape the frame system and emit as a sibling BEFORE its
+    // parent with leaf-trimmed text. It is a run like the paired form
+    // now, so the separator keeps its explicit edge spaces too.
+    $sep = ' / ';
+
+    $tree = renderWhitespaceTree(
+        '<native:column><native:text>Docs<native:text :text="$sep" />Guides</native:text></native:column>',
+        ['sep' => $sep]
+    );
+
+    expect($tree['children'])->toHaveCount(1);
+
+    $runs = $tree['children'][0]['children'];
+    expect($runs[0]['props']['text'])->toBe('Docs');
+    expect($runs[1]['props']['text'])->toBe(' / ');
+    expect($runs[2]['props']['text'])->toBe('Guides');
+});
+
+it('lets a run class override the parent whitespace class', function () {
+    $msg = "keep\nme";
+
+    $tree = renderWhitespaceTree(
+        '<native:column><native:text class="whitespace-pre-line">head<native:text class="whitespace-normal" :text="$msg"></native:text></native:text></native:column>',
+        ['msg' => $msg]
+    );
+
+    $runs = $tree['children'][0]['children'];
+    expect($runs[1]['props']['text'])->toBe('keep me');
+});
+
+it('never collapses non-breaking spaces, matching the browser', function () {
+    $msg = "a\u{00A0}\u{00A0}b   c";
+
+    $tree = renderWhitespaceTree(
+        '<native:column><native:text :text="$msg" /></native:column>',
+        ['msg' => $msg]
+    );
+
+    expect($tree['children'][0]['props']['text'])->toBe("a\u{00A0}\u{00A0}b c");
 });
