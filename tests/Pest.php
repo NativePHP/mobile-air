@@ -54,7 +54,13 @@ expect()->extend('toBeOne', function () {
 function renderEdgeTree(string $blade, array $data = []): array
 {
     static $sequence = 0;
-    $name = 'edge-tree-'.(++$sequence);
+    static $run = null;
+    $run ??= substr(md5(uniqid('', true)), 0, 8);
+
+    // The run token keeps names unique ACROSS pest processes too: a
+    // reused name from an earlier run can hit Blade's compiled cache
+    // within the same mtime second and silently serve stale output.
+    $name = 'edge-tree-'.$run.'-'.(++$sequence);
 
     file_put_contents(__DIR__.'/Feature/Edge/views/'.$name.'.blade.php', $blade);
 
