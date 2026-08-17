@@ -16,11 +16,13 @@ class Text extends NativeBladeComponent
     public function render(): \Closure
     {
         return function (array $data) {
-            $attrs = $data['attributes']->getAttributes();
-            $text = preg_replace('/\s+/', ' ', trim(html_entity_decode(strip_tags($data['slot']->toHtml()), ENT_QUOTES, 'UTF-8')));
-            if ($text !== '') {
-                $attrs['text'] = $text;
-            }
+            // Merge slot and attribute text through the collector's shared
+            // whitespace policy so this component and the precompiled
+            // <text> tag resolve their text prop identically.
+            $attrs = NativeElementCollector::mergeSlotText(
+                $data['attributes']->getAttributes(),
+                $data['slot']->toHtml()
+            );
 
             if (NativeElementCollector::isStreaming()) {
                 NativeElementCollector::leafStreaming($this->elementType(), $attrs);
