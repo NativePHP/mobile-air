@@ -1174,9 +1174,30 @@ class NativeElementCollector
      * A self-closing `<text />` carries attribute text only. Routing it
      * through the same merge the paired form applies at textClose lets
      * a whitespace-* class govern `:text` however the tag is written.
+     *
+     * Inside an open text frame it becomes a RUN of that parent, in
+     * document order and with the run-shaped whitespace transform,
+     * exactly as if it had been written as a paired tag. It used
+     * to escape the frame and emit as a misplaced sibling.
      */
     public static function textLeaf(array $attrs): void
     {
+        if (! empty(static::$textFrames)) {
+            static::captureRawRunIntoTopFrame();
+
+            $top = count(static::$textFrames) - 1;
+            $mode = static::whitespaceMode($attrs) ?? static::$textFrames[$top]['whitespace'];
+
+            static::$textFrames[$top]['children'][] = [
+                'attrs' => static::applyRunAttributeWhitespace($attrs, $mode),
+                'children' => null,
+            ];
+
+            ob_start();
+
+            return;
+        }
+
         static::leaf('text', static::mergeSlotText($attrs, ''));
     }
 
