@@ -1084,15 +1084,14 @@ class NativeElementCollector
     // ── Inline text runs (<text> with nested <text>) ─────
 
     /**
-     * Default whitespace mode for each text source when no whitespace-*
-     * class is present: slot text keeps its historical full collapse
-     * while attribute text passes through verbatim. Flipping the
-     * attribute default to 'normal' is the planned follow-up
-     * that aligns both sources with the web's behavior.
+     * Default whitespace mode for text when no whitespace-* class is
+     * present. Both sources collapse like the browser does at paint
+     * time, so slot and attribute text can never disagree; adding
+     * whitespace-pre or pre-line opts any element back out.
      */
     protected const SLOT_WHITESPACE = 'normal';
 
-    protected const ATTRIBUTE_WHITESPACE = 'pre';
+    protected const ATTRIBUTE_WHITESPACE = 'normal';
 
     /**
      * Begin capturing a `<text>` element's slot as ordered inline runs.
@@ -1144,8 +1143,11 @@ class NativeElementCollector
             ];
         } elseif ($isNested) {
             // Childless nested <text>: a RUN, normalized without trimming so
-            // meaningful edge spaces survive, under the inherited mode.
-            $attrs = static::applyAttributeWhitespace($frame['attrs'], $mode);
+            // meaningful edge spaces survive, under the inherited mode. Its
+            // attribute text gets the run-shaped transform for the same
+            // reason: the browser trims at block boundaries only, so a
+            // separator run like `:text="' / '"` keeps its spacing.
+            $attrs = static::applyRunAttributeWhitespace($frame['attrs'], $mode);
             $text = static::normalizeRunText($buffer, $mode);
             if ($text !== '') {
                 $attrs['text'] = $text;
@@ -1213,13 +1215,32 @@ class NativeElementCollector
 
     /**
      * Apply the whitespace policy to attribute-sourced text. With no
-     * class present the attribute default ('pre') leaves the string
-     * byte-for-byte untouched, exactly as it always has been.
+     * class present the attribute default collapses like the slot
+     * does, so both sources of text behave identically.
      */
     protected static function applyAttributeWhitespace(array $attrs, ?string $mode): array
     {
         if (isset($attrs['text']) && is_string($attrs['text'])) {
             $attrs['text'] = static::applyWhitespace($attrs['text'], $mode ?? static::ATTRIBUTE_WHITESPACE);
+        }
+
+        return $attrs;
+    }
+
+    /**
+     * Run-shaped counterpart for attribute text on nested runs: collapse
+     * without trimming so explicit edge spaces survive, and never drop
+     * the string, since `:text` content is intentional rather than
+     * template formatting like raw inter-tag whitespace is.
+     */
+    protected static function applyRunAttributeWhitespace(array $attrs, ?string $mode): array
+    {
+        if (isset($attrs['text']) && is_string($attrs['text'])) {
+            $attrs['text'] = match ($mode ?? static::ATTRIBUTE_WHITESPACE) {
+                'pre' => $attrs['text'],
+                'pre-line' => preg_replace('/[^\S\n]+/', ' ', preg_replace('/[^\S\n]*\n[^\S\n]*/', "\n", $attrs['text'])),
+                default => preg_replace('/\s+/', ' ', $attrs['text']),
+            };
         }
 
         return $attrs;

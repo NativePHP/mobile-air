@@ -127,7 +127,7 @@ it('keeps attribute text verbatim under whitespace-pre', function () {
     expect($tree['children'][0]['props']['text'])->toBe($msg);
 });
 
-it('keeps attribute text byte-for-byte untouched without a class', function () {
+it('collapses attribute text by default, matching slot text and the browser', function () {
     $msg = "  Line one \n   Line two  ";
 
     $selfClosing = renderWhitespaceTree(
@@ -139,8 +139,25 @@ it('keeps attribute text byte-for-byte untouched without a class', function () {
         ['msg' => $msg]
     );
 
-    expect($selfClosing['children'][0]['props']['text'])->toBe($msg);
-    expect($paired['children'][0]['props']['text'])->toBe($msg);
+    expect($selfClosing['children'][0]['props']['text'])->toBe('Line one Line two');
+    expect($paired['children'][0]['props']['text'])->toBe('Line one Line two');
+});
+
+it('keeps explicit edge spaces on nested separator runs by default', function () {
+    // The browser trims at block boundaries only, so an inline separator
+    // like `:text="' / '"` must keep its spacing when the default
+    // collapse applies. The raw runs around it stay intact too.
+    $sep = ' / ';
+
+    $tree = renderWhitespaceTree(
+        '<native:column><native:text>Docs<native:text :text="$sep"></native:text>Guides</native:text></native:column>',
+        ['sep' => $sep]
+    );
+
+    $runs = $tree['children'][0]['children'];
+    expect($runs[0]['props']['text'])->toBe('Docs');
+    expect($runs[1]['props']['text'])->toBe(' / ');
+    expect($runs[2]['props']['text'])->toBe('Guides');
 });
 
 // ── Hand-wrapped template literals ───────────────────
