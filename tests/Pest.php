@@ -47,26 +47,36 @@ expect()->extend('toBeOne', function () {
 
 /**
  * Render a Blade string through the native EDGE pipeline and return the
- * element tree as an array. The view name is unique per render because
- * the compiler engine caches per path within one app lifecycle, so a
- * reused name would silently re-render the previous template.
+ * element tree as an array. The helper owns its whole file lifecycle:
+ * it provisions the scratch view, registers the location once, and
+ * removes both the source and the compiled artifact afterwards.
+ * Callers only toggle the precompiler, the thing under test.
+ *
+ * View names are random per call so a name can never collide with an
+ * earlier run's different content inside Blade's compiled cache,
+ * which compares mtimes at one second granularity.
  */
 function renderEdgeTree(string $blade, array $data = []): array
 {
-    static $sequence = 0;
-    static $run = null;
-    $run ??= substr(md5(uniqid('', true)), 0, 8);
+    $viewPath = __DIR__.'/Feature/Edge/views';
+    @mkdir($viewPath, 0755, true);
 
-    // The run token keeps names unique ACROSS pest processes too: a
-    // reused name from an earlier run can hit Blade's compiled cache
-    // within the same mtime second and silently serve stale output.
-    $name = 'edge-tree-'.$run.'-'.(++$sequence);
+    if (! in_array($viewPath, app('view')->getFinder()->getPaths())) {
+        app('view')->addLocation($viewPath);
+    }
 
-    file_put_contents(__DIR__.'/Feature/Edge/views/'.$name.'.blade.php', $blade);
+    $name = 'edge-tree-'.bin2hex(random_bytes(8));
+    $source = $viewPath.'/'.$name.'.blade.php';
+    file_put_contents($source, $blade);
 
-    NativeElementCollector::reset();
-    view($name, $data)->render();
+    try {
+        NativeElementCollector::reset();
+        view($name, $data)->render();
 
-    return NativeElementCollector::collect()
-        ->toArray(new CallbackRegistry);
+        return NativeElementCollector::collect()
+            ->toArray(new CallbackRegistry);
+    } finally {
+        @unlink(app('blade.compiler')->getCompiledPath($source));
+        @unlink($source);
+    }
 }
