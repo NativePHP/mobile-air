@@ -167,6 +167,10 @@ abstract class Element
      * `NativeElementCollector` uses for blade-driven elements, so the
      * resolved keys map to the same node fields with no behavioural
      * drift between blade and programmatic construction.
+     *
+     * One exception: `whitespace-*` is a capture-time policy that only
+     * Blade-authored text passes through. Programmatic text strings
+     * ship verbatim, the way code-built values are literal.
      */
     public function class(string $classes): static
     {

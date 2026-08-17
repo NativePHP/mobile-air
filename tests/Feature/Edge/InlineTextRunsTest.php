@@ -1,6 +1,5 @@
 <?php
 
-use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 
@@ -34,20 +33,9 @@ afterEach(function () {
 });
 
 /** Render a Blade string through the native pipeline and return the tree array. */
-function renderInlineTree(string $blade): array
-{
-    $viewPath = __DIR__.'/views/inline-text.blade.php';
-    file_put_contents($viewPath, $blade);
-
-    NativeElementCollector::reset();
-    view('inline-text')->render();
-
-    return NativeElementCollector::collect()->toArray(new CallbackRegistry);
-}
-
 it('emits three ordered run-nodes with whitespace intact', function () {
     // Single line, no inter-tag whitespace — the canonical verify case.
-    $tree = renderInlineTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text><native:text>A </native:text><native:text class="font-mono">B</native:text><native:text> C</native:text></native:text></native:column>'
     );
 
@@ -69,7 +57,7 @@ it('emits three ordered run-nodes with whitespace intact', function () {
 });
 
 it('captures leading, interspersed, and trailing raw text as ordered runs', function () {
-    $tree = renderInlineTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text>Use <native:text class="font-mono">code</native:text> here</native:text></native:column>'
     );
 
@@ -82,7 +70,7 @@ it('captures leading, interspersed, and trailing raw text as ordered runs', func
 
 it('drops inter-tag indentation whitespace in multiline markup', function () {
     // Newlines + indentation between run tags are formatting, not content.
-    $tree = renderInlineTree(<<<'BLADE'
+    $tree = renderEdgeTree(<<<'BLADE'
 <native:column>
     <native:text>
         <native:text>A </native:text>
@@ -100,7 +88,7 @@ BLADE);
 });
 
 it('keeps leaf text on the trimmed-string path (no regression)', function () {
-    $tree = renderInlineTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text :fontSize="24">  Hello   World  </native:text></native:column>'
     );
 

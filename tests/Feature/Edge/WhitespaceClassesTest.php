@@ -1,6 +1,5 @@
 <?php
 
-use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 
@@ -34,29 +33,10 @@ afterEach(function () {
     }
 });
 
-/**
- * Render a Blade string through the native pipeline and return the tree
- * array. The view name is unique per render because the compiler engine
- * caches per path within one app lifecycle, so reusing a name would
- * silently re-render the previous template instead of this one.
- */
-function renderWhitespaceTree(string $blade, array $data = []): array
-{
-    static $sequence = 0;
-    $name = 'whitespace-classes-'.(++$sequence);
-
-    file_put_contents(__DIR__.'/views/'.$name.'.blade.php', $blade);
-
-    NativeElementCollector::reset();
-    view($name, $data)->render();
-
-    return NativeElementCollector::collect()->toArray(new CallbackRegistry);
-}
-
 // ── Slot-sourced text ────────────────────────────────
 
 it('collapses slot text fully under whitespace-normal', function () {
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-normal">{{ $msg }}</native:text></native:column>',
         ['msg' => "  Line one \n   Line two  "]
     );
@@ -65,7 +45,7 @@ it('collapses slot text fully under whitespace-normal', function () {
 });
 
 it('preserves newlines in slot text under whitespace-pre-line', function () {
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-pre-line">{{ $msg }}</native:text></native:column>',
         ['msg' => "  Line one   \n   Line  two  "]
     );
@@ -77,7 +57,7 @@ it('preserves newlines in slot text under whitespace-pre-line', function () {
 it('keeps slot text verbatim under whitespace-pre', function () {
     $msg = "Line one\n    Line two\n";
 
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-pre">{{ $msg }}</native:text></native:column>',
         ['msg' => $msg]
     );
@@ -86,7 +66,7 @@ it('keeps slot text verbatim under whitespace-pre', function () {
 });
 
 it('keeps the exact trim-and-collapse default for slot text without a class', function () {
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text>{{ $msg }}</native:text></native:column>',
         ['msg' => "  Hello \n  World  "]
     );
@@ -97,7 +77,7 @@ it('keeps the exact trim-and-collapse default for slot text without a class', fu
 // ── Attribute-sourced text ───────────────────────────
 
 it('collapses attribute text under whitespace-normal on a self-closing tag', function () {
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-normal" :text="$msg" /></native:column>',
         ['msg' => "  Line one \n   Line two  "]
     );
@@ -106,7 +86,7 @@ it('collapses attribute text under whitespace-normal on a self-closing tag', fun
 });
 
 it('collapses attribute text under whitespace-normal on a paired tag', function () {
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-normal" :text="$msg"></native:text></native:column>',
         ['msg' => "  Line one \n   Line two  "]
     );
@@ -115,7 +95,7 @@ it('collapses attribute text under whitespace-normal on a paired tag', function 
 });
 
 it('preserves newlines in attribute text under whitespace-pre-line', function () {
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-pre-line" :text="$msg" /></native:column>',
         ['msg' => "  Line one   \n   Line  two  "]
     );
@@ -126,7 +106,7 @@ it('preserves newlines in attribute text under whitespace-pre-line', function ()
 it('keeps attribute text verbatim under whitespace-pre', function () {
     $msg = "  Line one \n   Line two  ";
 
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-pre" :text="$msg" /></native:column>',
         ['msg' => $msg]
     );
@@ -137,11 +117,11 @@ it('keeps attribute text verbatim under whitespace-pre', function () {
 it('collapses attribute text by default, matching slot text and the browser', function () {
     $msg = "  Line one \n   Line two  ";
 
-    $selfClosing = renderWhitespaceTree(
+    $selfClosing = renderEdgeTree(
         '<native:column><native:text :text="$msg" /></native:column>',
         ['msg' => $msg]
     );
-    $paired = renderWhitespaceTree(
+    $paired = renderEdgeTree(
         '<native:column><native:text :text="$msg"></native:text></native:column>',
         ['msg' => $msg]
     );
@@ -156,7 +136,7 @@ it('keeps explicit edge spaces on nested separator runs by default', function ()
     // collapse applies. The raw runs around it stay intact too.
     $sep = ' / ';
 
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text>Docs<native:text :text="$sep"></native:text>Guides</native:text></native:column>',
         ['sep' => $sep]
     );
@@ -170,7 +150,7 @@ it('keeps explicit edge spaces on nested separator runs by default', function ()
 // ── Hand-wrapped template literals ───────────────────
 
 it('unwraps indented multi-line template prose under whitespace-pre-line', function () {
-    $tree = renderWhitespaceTree(<<<'BLADE'
+    $tree = renderEdgeTree(<<<'BLADE'
 <native:column>
     <native:text class="whitespace-pre-line">
         Hand wrapped prose line one
@@ -188,7 +168,7 @@ BLADE);
 // ── Nested runs under a classed parent ───────────────
 
 it('applies the parent whitespace class to nested runs', function () {
-    $tree = renderWhitespaceTree(<<<'BLADE'
+    $tree = renderEdgeTree(<<<'BLADE'
 <native:column><native:text class="whitespace-pre-line">First line
 <native:text class="font-mono">chip</native:text> second line</native:text></native:column>
 BLADE);
@@ -205,7 +185,7 @@ BLADE);
 });
 
 it('keeps default run boundaries and spacing unchanged without a class', function () {
-    $tree = renderWhitespaceTree(<<<'BLADE'
+    $tree = renderEdgeTree(<<<'BLADE'
 <native:column>
     <native:text>
         <native:text>A </native:text>
@@ -225,13 +205,13 @@ BLADE);
 // ── <x-native-text> component parity ─────────────────
 
 it('resolves x-native-text slot text identically to plain text', function () {
-    $component = renderWhitespaceTree(<<<'BLADE'
+    $component = renderEdgeTree(<<<'BLADE'
 <native:column><x-native-text class="whitespace-pre-line">
     Terms apply
     to everyone.
 </x-native-text></native:column>
 BLADE);
-    $plain = renderWhitespaceTree(<<<'BLADE'
+    $plain = renderEdgeTree(<<<'BLADE'
 <native:column><native:text class="whitespace-pre-line">
     Terms apply
     to everyone.
@@ -243,7 +223,7 @@ BLADE);
 });
 
 it('applies whitespace-normal to x-native-text attribute text', function () {
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><x-native-text class="whitespace-normal" :text="$msg" /></native:column>',
         ['msg' => "  Line one \n   Line two  "]
     );
@@ -257,7 +237,7 @@ it('treats a nested self-closing text as a run in document order', function () {
     // now, so the separator keeps its explicit edge spaces too.
     $sep = ' / ';
 
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text>Docs<native:text :text="$sep" />Guides</native:text></native:column>',
         ['sep' => $sep]
     );
@@ -273,7 +253,7 @@ it('treats a nested self-closing text as a run in document order', function () {
 it('lets a run class override the parent whitespace class', function () {
     $msg = "keep\nme";
 
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text class="whitespace-pre-line">head<native:text class="whitespace-normal" :text="$msg"></native:text></native:text></native:column>',
         ['msg' => $msg]
     );
@@ -285,7 +265,7 @@ it('lets a run class override the parent whitespace class', function () {
 it('never collapses non-breaking spaces, matching the browser', function () {
     $msg = "a\u{00A0}\u{00A0}b   c";
 
-    $tree = renderWhitespaceTree(
+    $tree = renderEdgeTree(
         '<native:column><native:text :text="$msg" /></native:column>',
         ['msg' => $msg]
     );

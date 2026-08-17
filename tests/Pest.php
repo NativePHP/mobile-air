@@ -1,5 +1,7 @@
 <?php
 
+use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\NativeElementCollector;
 use Tests\TestCase;
 
 /*
@@ -43,7 +45,22 @@ expect()->extend('toBeOne', function () {
 |
 */
 
-function something()
+/**
+ * Render a Blade string through the native EDGE pipeline and return the
+ * element tree as an array. The view name is unique per render because
+ * the compiler engine caches per path within one app lifecycle, so a
+ * reused name would silently re-render the previous template.
+ */
+function renderEdgeTree(string $blade, array $data = []): array
 {
-    // ..
+    static $sequence = 0;
+    $name = 'edge-tree-'.(++$sequence);
+
+    file_put_contents(__DIR__.'/Feature/Edge/views/'.$name.'.blade.php', $blade);
+
+    NativeElementCollector::reset();
+    view($name, $data)->render();
+
+    return NativeElementCollector::collect()
+        ->toArray(new CallbackRegistry);
 }

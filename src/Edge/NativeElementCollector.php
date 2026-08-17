@@ -1089,9 +1089,7 @@ class NativeElementCollector
      * time, so slot and attribute text can never disagree; adding
      * whitespace-pre or pre-line opts any element back out.
      */
-    protected const SLOT_WHITESPACE = 'normal';
-
-    protected const ATTRIBUTE_WHITESPACE = 'normal';
+    protected const DEFAULT_WHITESPACE = 'normal';
 
     /**
      * Begin capturing a `<text>` element's slot as ordered inline runs.
@@ -1156,7 +1154,7 @@ class NativeElementCollector
         } else {
             // Top-level leaf: merge slot and attribute text through the
             // shared whitespace policy (per-source defaults intact).
-            $descriptor = ['attrs' => static::mergeSlotText($frame['attrs'], $buffer), 'children' => null];
+            $descriptor = ['attrs' => static::mergeSlotText($frame['attrs'], $buffer, $mode), 'children' => null];
         }
 
         if ($isNested) {
@@ -1171,34 +1169,15 @@ class NativeElementCollector
     }
 
     /**
-     * A self-closing `<text />` carries attribute text only. Routing it
-     * through the same merge the paired form applies at textClose lets
-     * a whitespace-* class govern `:text` however the tag is written.
-     *
-     * Inside an open text frame it becomes a RUN of that parent, in
-     * document order and with the run-shaped whitespace transform,
-     * exactly as if it had been written as a paired tag. It used
-     * to escape the frame and emit as a misplaced sibling.
+     * A self-closing `<text />` is a paired tag with an empty slot, so it
+     * runs the exact open/close cycle the paired form does. That makes
+     * a nested one a RUN of its parent in document order, where it
+     * used to escape the frame as a misplaced sibling.
      */
     public static function textLeaf(array $attrs): void
     {
-        if (! empty(static::$textFrames)) {
-            static::captureRawRunIntoTopFrame();
-
-            $top = count(static::$textFrames) - 1;
-            $mode = static::whitespaceMode($attrs) ?? static::$textFrames[$top]['whitespace'];
-
-            static::$textFrames[$top]['children'][] = [
-                'attrs' => static::applyRunAttributeWhitespace($attrs, $mode),
-                'children' => null,
-            ];
-
-            ob_start();
-
-            return;
-        }
-
-        static::leaf('text', static::mergeSlotText($attrs, ''));
+        static::textOpen($attrs);
+        static::textClose();
     }
 
     /**
@@ -1207,9 +1186,9 @@ class NativeElementCollector
      * is present. Used by textClose, textLeaf and `<x-native-text>`
      * so every authoring form resolves text identically.
      */
-    public static function mergeSlotText(array $attrs, string $rawSlot): array
+    public static function mergeSlotText(array $attrs, string $rawSlot, ?string $mode = null): array
     {
-        $mode = static::whitespaceMode($attrs);
+        $mode ??= static::whitespaceMode($attrs);
         $attrs = static::applyAttributeWhitespace($attrs, $mode);
 
         $text = static::normalizeLeafText($rawSlot, $mode);
@@ -1225,7 +1204,7 @@ class NativeElementCollector
      * its raw class attribute, or null when the class carries none.
      * TailwindParser caches per class string, so this is cheap.
      */
-    public static function whitespaceMode(array $attrs): ?string
+    protected static function whitespaceMode(array $attrs): ?string
     {
         if (! isset($attrs['class']) || ! is_string($attrs['class'])) {
             return null;
@@ -1242,7 +1221,7 @@ class NativeElementCollector
     protected static function applyAttributeWhitespace(array $attrs, ?string $mode): array
     {
         if (isset($attrs['text']) && is_string($attrs['text'])) {
-            $attrs['text'] = static::applyWhitespace($attrs['text'], $mode ?? static::ATTRIBUTE_WHITESPACE);
+            $attrs['text'] = static::applyWhitespace($attrs['text'], $mode ?? static::DEFAULT_WHITESPACE);
         }
 
         return $attrs;
@@ -1257,14 +1236,34 @@ class NativeElementCollector
     protected static function applyRunAttributeWhitespace(array $attrs, ?string $mode): array
     {
         if (isset($attrs['text']) && is_string($attrs['text'])) {
-            $attrs['text'] = match ($mode ?? static::ATTRIBUTE_WHITESPACE) {
-                'pre' => $attrs['text'],
-                'pre-line' => preg_replace('/[^\S\n]+/', ' ', preg_replace('/[^\S\n]*\n[^\S\n]*/', "\n", $attrs['text'])),
-                default => preg_replace('/\s+/', ' ', $attrs['text']),
-            };
+            $attrs['text'] = static::applyRunWhitespace($attrs['text'], $mode);
         }
 
         return $attrs;
+    }
+
+    /**
+     * Run-shaped whitespace transform: collapse without trimming, so a
+     * run keeps whatever edge spacing its author gave it. The browser
+     * behaves the same way, trimming at block boundaries only.
+     */
+    protected static function applyRunWhitespace(string $text, ?string $mode): string
+    {
+        return match ($mode ?? static::DEFAULT_WHITESPACE) {
+            'pre' => $text,
+            'pre-line' => static::collapsePreLine($text),
+            default => preg_replace('/\s+/', ' ', $text),
+        };
+    }
+
+    /**
+     * The pre-line collapse: newline runs become one newline first, then
+     * the remaining horizontal runs collapse to single spaces. The two
+     * passes only make sense together and in this order.
+     */
+    protected static function collapsePreLine(string $text): string
+    {
+        return preg_replace('/[^\S\n]+/', ' ', preg_replace('/[^\S\n]*\n[^\S\n]*/', "\n", $text));
     }
 
     /**
@@ -1276,7 +1275,7 @@ class NativeElementCollector
     {
         return match ($mode) {
             'pre' => $text,
-            'pre-line' => trim(preg_replace('/[^\S\n]+/', ' ', preg_replace('/[^\S\n]*\n[^\S\n]*/', "\n", $text))),
+            'pre-line' => trim(static::collapsePreLine($text)),
             default => preg_replace('/\s+/', ' ', trim($text)),
         };
     }
@@ -1304,11 +1303,14 @@ class NativeElementCollector
     {
         $s = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
 
-        return match ($mode) {
-            'pre' => $s,
-            'pre-line' => preg_replace('/[^\S\n]+/', ' ', preg_replace('/[^\S\n]*\n[^\S\n]*/', "\n", $s)),
-            default => trim($s) === '' ? '' : preg_replace('/\s+/', ' ', $s),
-        };
+        // Under the default collapse a purely-whitespace raw segment is
+        // template formatting rather than content, so it drops before
+        // the shared run transform handles everything that remains.
+        if (($mode ?? static::DEFAULT_WHITESPACE) === 'normal' && trim($s) === '') {
+            return '';
+        }
+
+        return static::applyRunWhitespace($s, $mode);
     }
 
     /**
@@ -1325,7 +1327,7 @@ class NativeElementCollector
             return '';
         }
 
-        return static::applyWhitespace($s, $mode ?? static::SLOT_WHITESPACE);
+        return static::applyWhitespace($s, $mode ?? static::DEFAULT_WHITESPACE);
     }
 
     /**
