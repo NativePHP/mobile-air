@@ -272,3 +272,36 @@ it('never collapses non-breaking spaces, matching the browser', function () {
 
     expect($tree['children'][0]['props']['text'])->toBe("a\u{00A0}\u{00A0}b c");
 });
+
+// Blade captures slot content before the component template renders, so
+// EDGE elements inside a component slot emit ahead of the component's
+// own wrapper (a pre-existing placement quirk, identical on main).
+// The whitespace policy is what these pin: it resolves the same
+// through a slot as anywhere else, class and default alike.
+it('applies whitespace classes to text rendered through a blade component slot', function () {
+    Illuminate\Support\Facades\Blade::anonymousComponentPath(__DIR__.'/views/components');
+
+    $msg = "Line one\n   Line two";
+
+    $tree = renderEdgeTree(
+        '<native:column><x-ws-panel><native:text class="whitespace-pre-line">{{ $msg }}</native:text></x-ws-panel></native:column>',
+        ['msg' => $msg]
+    );
+
+    $text = collect($tree['children'])->firstWhere('type', 'text');
+    expect($text['props']['text'])->toBe("Line one\nLine two");
+});
+
+it('collapses slot-delivered text by default inside a blade component slot', function () {
+    Illuminate\Support\Facades\Blade::anonymousComponentPath(__DIR__.'/views/components');
+
+    $msg = "Line one\n   Line two";
+
+    $tree = renderEdgeTree(
+        '<native:column><x-ws-panel><native:text>{{ $msg }}</native:text></x-ws-panel></native:column>',
+        ['msg' => $msg]
+    );
+
+    $text = collect($tree['children'])->firstWhere('type', 'text');
+    expect($text['props']['text'])->toBe('Line one Line two');
+});
