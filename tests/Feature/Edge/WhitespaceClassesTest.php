@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\Blade;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 
@@ -279,7 +280,12 @@ it('never collapses non-breaking spaces, matching the browser', function () {
 // The whitespace policy is what these pin: it resolves the same
 // through a slot as anywhere else, class and default alike.
 it('applies whitespace classes to text rendered through a blade component slot', function () {
-    Illuminate\Support\Facades\Blade::anonymousComponentPath(__DIR__.'/views/components');
+    Blade::anonymousComponentPath(__DIR__.'/views/components');
+    @mkdir(__DIR__.'/views/components', 0755, true);
+    file_put_contents(
+        __DIR__.'/views/components/ws-panel.blade.php',
+        '<native:column class="p-4">{{ $slot }}</native:column>'
+    );
 
     $msg = "Line one\n   Line two";
 
@@ -293,7 +299,12 @@ it('applies whitespace classes to text rendered through a blade component slot',
 });
 
 it('collapses slot-delivered text by default inside a blade component slot', function () {
-    Illuminate\Support\Facades\Blade::anonymousComponentPath(__DIR__.'/views/components');
+    Blade::anonymousComponentPath(__DIR__.'/views/components');
+    @mkdir(__DIR__.'/views/components', 0755, true);
+    file_put_contents(
+        __DIR__.'/views/components/ws-panel.blade.php',
+        '<native:column class="p-4">{{ $slot }}</native:column>'
+    );
 
     $msg = "Line one\n   Line two";
 
