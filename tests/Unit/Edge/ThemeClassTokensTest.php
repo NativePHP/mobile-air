@@ -46,6 +46,27 @@ it('applies the opacity modifier to the dark companion too', function () {
         ->and($parsed['dark']['bg'])->toBe('#80FFA85C');
 });
 
+it('resolves a theme token under dark: to that token\'s dark value', function () {
+    // A theme token already carries its own dark companion, so wrapping the result in
+    // another `dark` layer buried the companion where parse()'s merge never lifts it —
+    // and left the LIGHT hex sitting in the dark slot, i.e. white in dark mode.
+    expect(TailwindParser::parse('dark:bg-theme-primary'))->toBe(['dark' => ['bg' => '#FFA85C']]);
+});
+
+it('keeps a dark: theme token that has no dark companion on its light value', function () {
+    // `success` resolves light-only. Asking for it under dark: can then only mean the
+    // one colour it has, rather than nothing at all.
+    expect(TailwindParser::parse('dark:bg-theme-success'))->toBe(['dark' => ['bg' => '#00E475']]);
+});
+
+it('pairs a bare theme token with its companion as before', function () {
+    // The unprefixed form is unchanged: light at the top, dark alongside it.
+    // toEqual, not toBe: the parser emits the companion before the light value and the
+    // order of the keys is not part of the contract the renderers read.
+    expect(TailwindParser::parse('bg-theme-primary'))
+        ->toEqual(['bg' => '#FF6B00', 'dark' => ['bg' => '#FFA85C']]);
+});
+
 it('leaves unknown theme tokens unresolved rather than guessing', function () {
     expect(TailwindParser::parse('bg-theme-nonexistent'))->toBe([]);
 });
