@@ -306,13 +306,14 @@ it('resolves text identically across every form, source and class at top level',
     ];
 
     foreach (['', ' class="whitespace-pre-line"', ' class="whitespace-pre"'] as $cls) {
-        $texts = collect($forms)->map(function ($tpl) use ($cls, $msg) {
+        $baseline = null;
+        foreach ($forms as $tpl) {
             $tree = renderEdgeTree('<native:column>'.sprintf($tpl, $cls).'</native:column>', ['msg' => $msg]);
+            $text = collect($tree['children'])->firstWhere('type', 'text')['props']['text'];
 
-            return collect($tree['children'])->firstWhere('type', 'text')['props']['text'];
-        });
-
-        expect($texts->unique()->count())->toBe(1, "forms diverge under class [{$cls}]: ".$texts->join(' | '));
+            $baseline ??= $text;
+            expect($text)->toBe($baseline, "{$tpl} diverges under class [{$cls}]");
+        }
     }
 });
 
@@ -328,17 +329,18 @@ it('resolves nested runs identically across every nested form', function () {
         '<x-native-text :text="$msg" />',
     ];
 
-    foreach (['', ' class="whitespace-pre-line"'] as $cls) {
-        $runShapes = collect($nested)->map(function ($inner) use ($cls, $msg) {
+    foreach (['', ' class="whitespace-pre-line"', ' class="whitespace-pre"'] as $cls) {
+        $baseline = null;
+        foreach ($nested as $inner) {
             $tree = renderEdgeTree(
                 '<native:column><text'.$cls.'>head '.$inner.' tail</text></native:column>',
                 ['msg' => $msg]
             );
             $text = collect($tree['children'])->firstWhere('type', 'text');
+            $shape = json_encode(collect($text['children'])->map(fn ($r) => $r['props']['text'] ?? '')->all());
 
-            return json_encode(collect($text['children'])->map(fn ($r) => $r['props']['text'] ?? '')->all());
-        });
-
-        expect($runShapes->unique()->count())->toBe(1, "nested forms diverge under class [{$cls}]: ".$runShapes->join(' | '));
+            $baseline ??= $shape;
+            expect($shape)->toBe($baseline, "{$inner} diverges under class [{$cls}]");
+        }
     }
 });
