@@ -1182,13 +1182,12 @@ class NativeElementCollector
 
     /**
      * Merge a captured slot into a text element's attrs under the shared
-     * whitespace policy, applying each source's default when no class
-     * is present. Used by textClose, textLeaf and `<x-native-text>`
-     * so every authoring form resolves text identically.
+     * whitespace policy, applying the default when no class is present.
+     * Only textClose calls this, with the mode its frame resolved at
+     * open time, so every authoring form funnels through one merge.
      */
-    public static function mergeSlotText(array $attrs, string $rawSlot, ?string $mode = null): array
+    protected static function mergeSlotText(array $attrs, string $rawSlot, ?string $mode): array
     {
-        $mode ??= static::whitespaceMode($attrs);
         $attrs = static::applyAttributeWhitespace($attrs, $mode);
 
         $text = static::normalizeLeafText($rawSlot, $mode);
