@@ -569,6 +569,16 @@ private struct PerTabContent: View {
                 // business, and wrapping the TabView risks iOS 26's search
                 // capsule (mobile-air #308).
                 .dismissesKeyboardOnTap()
+                // TabView hosts its screens on its own container background
+                // (systemBackground — white in light mode) with no SwiftUI
+                // override hook, so a themed app shows a system-background
+                // band wherever the safe-area-inset screen content cannot
+                // reach: behind the nav bar and behind the tab bar. Paint
+                // the PHP-set window background (`UI.SetBackground`) there,
+                // extended through the safe areas — the same treatment the
+                // stack renderer already gives its screens. No-op when
+                // unset, preserving the stock appearance.
+                .modifier(WindowBackgroundModifier())
         } else {
             Color.clear
         }

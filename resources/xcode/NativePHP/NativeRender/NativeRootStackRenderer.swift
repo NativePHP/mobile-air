@@ -272,7 +272,8 @@ struct NativeRootStackRenderer: View {
                 // PHP set a window background (`UI.SetBackground`), paint
                 // it behind the screen extended through the safe areas.
                 // No-op when unset, preserving the stock appearance.
-                .modifier(StackScreenBackgroundModifier())
+                // The tabs renderer applies the same modifier.
+                .modifier(WindowBackgroundModifier())
         } else {
             Color.clear
         }
@@ -464,13 +465,14 @@ private struct NavigationSubtitleModifier: ViewModifier {
 }
 
 
-/// Backgrounds a stack-hosted screen with the PHP-set window background
+/// Backgrounds a chrome-hosted screen with the PHP-set window background
 /// (`UI.SetBackground`), extended through the safe areas. NavigationStack
-/// draws its own `systemBackground` container behind screen content with
-/// no SwiftUI override hook — without this, a dark app shows a white band
-/// in the bottom safe-area inset on every stack screen. No-op when no
-/// override is set, preserving the stock appearance.
-private struct StackScreenBackgroundModifier: ViewModifier {
+/// and TabView both draw their own `systemBackground` container behind
+/// screen content with no SwiftUI override hook — without this, a themed
+/// app shows a system-background band in every safe-area inset the screen
+/// content cannot reach. No-op when no override is set, preserving the
+/// stock appearance. Shared by both chrome renderers.
+struct WindowBackgroundModifier: ViewModifier {
     @ObservedObject private var windowBackground = WindowBackgroundState.shared
 
     func body(content: Content) -> some View {
