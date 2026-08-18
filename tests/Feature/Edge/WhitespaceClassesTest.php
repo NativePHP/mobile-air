@@ -55,11 +55,11 @@ it('preserves newlines in slot text under whitespace-pre-line', function () {
     expect($tree['children'][0]['props']['text'])->toBe("Line one\nLine two");
 });
 
-it('keeps slot text verbatim under whitespace-pre', function () {
+it('keeps slot text verbatim under whitespace-pre-wrap', function () {
     $msg = "Line one\n    Line two\n";
 
     $tree = renderEdgeTree(
-        '<native:column><native:text class="whitespace-pre">{{ $msg }}</native:text></native:column>',
+        '<native:column><native:text class="whitespace-pre-wrap">{{ $msg }}</native:text></native:column>',
         ['msg' => $msg]
     );
 
@@ -104,11 +104,11 @@ it('preserves newlines in attribute text under whitespace-pre-line', function ()
     expect($tree['children'][0]['props']['text'])->toBe("Line one\nLine two");
 });
 
-it('keeps attribute text verbatim under whitespace-pre', function () {
+it('keeps attribute text verbatim under whitespace-pre-wrap', function () {
     $msg = "  Line one \n   Line two  ";
 
     $tree = renderEdgeTree(
-        '<native:column><native:text class="whitespace-pre" :text="$msg" /></native:column>',
+        '<native:column><native:text class="whitespace-pre-wrap" :text="$msg" /></native:column>',
         ['msg' => $msg]
     );
 
@@ -305,7 +305,7 @@ it('resolves text identically across every form, source and class at top level',
         '<x-native-text%s :text="$msg" />',
     ];
 
-    foreach (['', ' class="whitespace-pre-line"', ' class="whitespace-pre"'] as $cls) {
+    foreach (['', ' class="whitespace-pre-line"', ' class="whitespace-pre-wrap"'] as $cls) {
         $baseline = null;
         foreach ($forms as $tpl) {
             $tree = renderEdgeTree('<native:column>'.sprintf($tpl, $cls).'</native:column>', ['msg' => $msg]);
@@ -329,7 +329,7 @@ it('resolves nested runs identically across every nested form', function () {
         '<x-native-text :text="$msg" />',
     ];
 
-    foreach (['', ' class="whitespace-pre-line"', ' class="whitespace-pre"'] as $cls) {
+    foreach (['', ' class="whitespace-pre-line"', ' class="whitespace-pre-wrap"'] as $cls) {
         $baseline = null;
         foreach ($nested as $inner) {
             $tree = renderEdgeTree(

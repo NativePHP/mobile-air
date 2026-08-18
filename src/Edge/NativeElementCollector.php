@@ -1087,7 +1087,7 @@ class NativeElementCollector
      * Default whitespace mode for text when no whitespace-* class is
      * present. Both sources collapse like the browser does at paint
      * time, so slot and attribute text can never disagree; adding
-     * whitespace-pre or pre-line opts any element back out.
+     * whitespace-pre-wrap or pre-line opts any element back out.
      */
     protected const DEFAULT_WHITESPACE = 'normal';
 
@@ -1251,7 +1251,7 @@ class NativeElementCollector
     protected static function applyRunWhitespace(string $text, ?string $mode): string
     {
         return match ($mode ?? static::DEFAULT_WHITESPACE) {
-            'pre' => $text,
+            'pre-wrap' => $text,
             'pre-line' => static::collapsePreLine($text),
             default => preg_replace('/\s+/', ' ', $text),
         };
@@ -1270,12 +1270,12 @@ class NativeElementCollector
     /**
      * Leaf-shaped whitespace transform: 'normal' trims and collapses every
      * whitespace run, 'pre-line' keeps newlines while collapsing the
-     * horizontal runs around them and trimming, 'pre' touches nothing.
+     * horizontal runs around them and trimming, 'pre-wrap' touches nothing.
      */
     protected static function applyWhitespace(string $text, ?string $mode): string
     {
         return match ($mode ?? static::DEFAULT_WHITESPACE) {
-            'pre' => $text,
+            'pre-wrap' => $text,
             'pre-line' => trim(static::collapsePreLine($text)),
             default => preg_replace('/\s+/', ' ', trim($text)),
         };
@@ -1298,7 +1298,7 @@ class NativeElementCollector
      * single space while PRESERVING meaningful leading/trailing spaces (a
      * run may be `" / "`, or prose like `"Use "` before an inline chip).
      * 'pre-line' keeps newlines and never trims, so run boundaries
-     * still carry their spacing; 'pre' keeps the run verbatim.
+     * still carry their spacing; 'pre-wrap' keeps the run verbatim.
      */
     protected static function normalizeRunText(string $raw, ?string $mode = null): string
     {
