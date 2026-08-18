@@ -169,7 +169,7 @@ abstract class Element
      * drift between blade and programmatic construction.
      *
      * One exception: `whitespace-*` is a capture-time policy that only
-     * Blade-authored text passes through. Programmatic text strings
+     * blade-authored text passes through. Programmatic text strings
      * ship verbatim, the way code-built values are literal.
      */
     public function class(string $classes): static
