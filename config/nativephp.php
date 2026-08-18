@@ -386,6 +386,20 @@ return [
     |--------------------------------------------------------------------------
     */
     'hot_reload' => [
+        /*
+         * TCP port the in-app hot-reload server listens on.
+         *
+         * The port is host-wide — a simulator shares the host's localhost, and
+         * physical devices are tunnelled to the same host port by iproxy — so
+         * give each app its own port if you want two of them hot-reloading at
+         * the same time. Baked into Info.plist at build time; changing it
+         * needs a rebuild.
+         *
+         * iOS only. Android signals a reload by pushing a file into the app's
+         * storage over adb, so it never binds a port and ignores this value.
+         */
+        'port' => 9999,
+
         'watch_paths' => [
             'app',
             'resources',

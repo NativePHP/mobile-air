@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Process;
 use Native\Mobile\Concerns\ChecksLatestBuildNumber;
 use Native\Mobile\Concerns\CleansEnvFile;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
+use Native\Mobile\Concerns\HasHotReloadPort;
 use Native\Mobile\Concerns\InstallsAppIcon;
 use Native\Mobile\Concerns\InstallsSplashScreen;
 use Native\Mobile\Concerns\ValidatesAppConfig;
@@ -22,7 +23,7 @@ use function Laravel\Prompts\error;
 
 class BuildIosAppCommand extends Command
 {
-    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
+    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, HasHotReloadPort, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
 
     private bool $verbose;
 
@@ -514,6 +515,16 @@ class BuildIosAppCommand extends Command
 
             // Handle UIUserInterfaceStyle
             $this->updateInterfaceStyle($dom, $rootDict, $plistData);
+
+            // Handle NATIVEPHP_HOT_RELOAD_PORT — the in-app hot-reload server
+            // reads its listen port from here, so it has to be baked in at
+            // build time rather than read from the synced Laravel config.
+            $hotReloadPort = (string) $this->hotReloadPort();
+            if (isset($plistData['NATIVEPHP_HOT_RELOAD_PORT'])) {
+                $plistData['NATIVEPHP_HOT_RELOAD_PORT']['valueNode']->nodeValue = $hotReloadPort;
+            } else {
+                $this->addPlistKeyValue($dom, $rootDict, 'NATIVEPHP_HOT_RELOAD_PORT', 'string', $hotReloadPort);
+            }
 
             // Handle BIFROST_APP_ID
             $bifrostAppId = env('BIFROST_APP_ID');

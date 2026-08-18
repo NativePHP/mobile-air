@@ -13,7 +13,7 @@ use function Laravel\Prompts\warning;
 
 trait RunsIos
 {
-    use ValidatesAppConfig;
+    use HasHotReloadPort, ValidatesAppConfig;
 
     protected string $iosLogPath = 'nativephp/ios-build.log';
 
@@ -255,7 +255,7 @@ trait RunsIos
         shell_exec('open -a Simulator');
 
         // Free the hot-reload port before (re)launching. Two stale holders can
-        // block the fresh app from binding 9999, which silently breaks hot
+        // block the fresh app from binding it, which silently breaks hot
         // reload (triggers land on the wrong listener):
         //   1. A previous app instance still running in the simulator.
         //   2. A leftover host `iproxy` from an earlier device run — the
@@ -264,7 +264,7 @@ trait RunsIos
         Process::path($basePath)
             ->run('xcrun simctl terminate '.$target.' '.config('nativephp.app_id'));
         Process::path($basePath)
-            ->run('lsof -ti tcp:9999 | xargs kill -9 2>/dev/null');
+            ->run('lsof -ti tcp:'.$this->hotReloadPort().' | xargs kill -9 2>/dev/null');
 
         $this->fixProductBundleName($basePath, 'build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app');
 

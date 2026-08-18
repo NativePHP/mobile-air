@@ -247,7 +247,18 @@ class HotReloadCoordinator {
 
 class HotReloadServer {
     private var listener: NWListener?
-    private let port: NWEndpoint.Port = 9999
+    /// Port the reload listener binds, injected into Info.plist at build time
+    /// from `nativephp.hot_reload.port`. Falls back to the historic default so
+    /// apps built before the key existed keep working.
+    private let port: NWEndpoint.Port = {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "NATIVEPHP_HOT_RELOAD_PORT"),
+              let value = UInt16("\(raw)"),
+              let port = NWEndpoint.Port(rawValue: value) else {
+            return 9999
+        }
+
+        return port
+    }()
     private let queue = DispatchQueue(label: "HotReloadServer")
     private var retryCount = 0
     private let maxRetries = 15
@@ -262,7 +273,7 @@ class HotReloadServer {
         do {
             let params = NWParameters.tcp
             // SO_REUSEADDR: lets us rebind immediately if a just-terminated
-            // previous instance left port 9999 in TIME_WAIT.
+            // previous instance left the port in TIME_WAIT.
             params.allowLocalEndpointReuse = true
 
             let listener = try NWListener(using: params, on: port)
