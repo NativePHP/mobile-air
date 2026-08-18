@@ -1098,14 +1098,16 @@ class NativeElementCollector
      */
     public static function textOpen(array $attrs): void
     {
+        $inherited = null;
+
         if (! empty(static::$textFrames)) {
             static::captureRawRunIntoTopFrame();
-        }
 
-        // Resolve the whitespace mode as the frame opens so nested runs
-        // inherit the closest classed ancestor, mirroring the way the
-        // CSS white-space property cascades down in the browser.
-        $inherited = empty(static::$textFrames) ? null : end(static::$textFrames)['whitespace'];
+            // Resolve the parent's mode as this frame opens, so a nested
+            // run inherits the closest classed ancestor, mirroring
+            // how the CSS white-space property cascades down.
+            $inherited = end(static::$textFrames)['whitespace'];
+        }
 
         static::$textFrames[] = [
             'attrs' => $attrs,
@@ -1205,7 +1207,7 @@ class NativeElementCollector
      */
     protected static function whitespaceMode(array $attrs): ?string
     {
-        if (! isset($attrs['class']) || ! is_string($attrs['class'])) {
+        if (! is_string($attrs['class'] ?? null)) {
             return null;
         }
 
@@ -1220,7 +1222,7 @@ class NativeElementCollector
     protected static function applyAttributeWhitespace(array $attrs, ?string $mode): array
     {
         if (isset($attrs['text']) && is_string($attrs['text'])) {
-            $attrs['text'] = static::applyWhitespace($attrs['text'], $mode ?? static::DEFAULT_WHITESPACE);
+            $attrs['text'] = static::applyWhitespace($attrs['text'], $mode);
         }
 
         return $attrs;
@@ -1270,9 +1272,9 @@ class NativeElementCollector
      * whitespace run, 'pre-line' keeps newlines while collapsing the
      * horizontal runs around them and trimming, 'pre' touches nothing.
      */
-    protected static function applyWhitespace(string $text, string $mode): string
+    protected static function applyWhitespace(string $text, ?string $mode): string
     {
-        return match ($mode) {
+        return match ($mode ?? static::DEFAULT_WHITESPACE) {
             'pre' => $text,
             'pre-line' => trim(static::collapsePreLine($text)),
             default => preg_replace('/\s+/', ' ', trim($text)),
@@ -1300,16 +1302,16 @@ class NativeElementCollector
      */
     protected static function normalizeRunText(string $raw, ?string $mode = null): string
     {
-        $s = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
 
         // Under the default collapse a purely-whitespace raw segment is
         // template formatting rather than content, so it drops before
         // the shared run transform handles everything that remains.
-        if (($mode ?? static::DEFAULT_WHITESPACE) === 'normal' && trim($s) === '') {
+        if (($mode ?? static::DEFAULT_WHITESPACE) === 'normal' && trim($text) === '') {
             return '';
         }
 
-        return static::applyRunWhitespace($s, $mode);
+        return static::applyRunWhitespace($text, $mode);
     }
 
     /**
@@ -1320,13 +1322,13 @@ class NativeElementCollector
      */
     protected static function normalizeLeafText(string $raw, ?string $mode = null): string
     {
-        $s = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
 
-        if (trim($s) === '') {
+        if (trim($text) === '') {
             return '';
         }
 
-        return static::applyWhitespace($s, $mode ?? static::DEFAULT_WHITESPACE);
+        return static::applyWhitespace($text, $mode);
     }
 
     /**
