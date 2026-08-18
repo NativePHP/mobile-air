@@ -656,7 +656,7 @@ class TailwindParser
             // line-wrap props and stay unparsed for now.
             $class === 'whitespace-normal' => ['whitespace' => 'normal'],
             $class === 'whitespace-pre-line' => ['whitespace' => 'pre-line'],
-            $class === 'whitespace-pre' => ['whitespace' => 'pre'],
+            $class === 'whitespace-pre-wrap' => ['whitespace' => 'pre-wrap'],
 
             // Letter spacing (tracking), in em (relative to font size).
             $class === 'tracking-tighter' => ['letterSpacing' => -0.05],
