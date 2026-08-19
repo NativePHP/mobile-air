@@ -129,6 +129,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         lastAppearance = if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
 
+        // Watch OS thermal status (Android 10+). Seed-callback on register is
+        // skipped inside the monitor so launch doesn't look like a change.
+        ThermalStateMonitor.start(this)
+
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
@@ -583,6 +587,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         super.onResume()
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_RESUME)
         registerShakeDetector()
+        // Appearance gets a config-change nudge when the theme flipped while
+        // we were away; thermal has no equivalent, so re-read and emit only
+        // if the OS value drifted.
+        ThermalStateMonitor.syncIfChanged(this)
     }
 
     override fun onPause() {
@@ -783,6 +791,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         // Stop background queue worker
         queueWorker?.stop()
+
+        ThermalStateMonitor.stop(this)
     }
 
     override fun getWebView(): WebView {
