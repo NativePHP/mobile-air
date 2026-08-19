@@ -315,7 +315,11 @@ object DeviceFunctions {
 
     /**
      * Map a [PowerManager] thermal status int onto the shared NativePHP
-     * vocabulary. API 26–28 never call this — they short-circuit to `normal`.
+     * vocabulary by user-visible impact (not constant name). API 26–28
+     * never call this — they short-circuit to `normal`.
+     *
+     * SHUTDOWN folds into `critical`: iOS has no equivalent, and AOSP
+     * notes apps often never receive that callback.
      */
     fun normalizeThermalStatus(status: Int): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -323,8 +327,8 @@ object DeviceFunctions {
         }
         return when (status) {
             PowerManager.THERMAL_STATUS_NONE -> "normal"
-            PowerManager.THERMAL_STATUS_LIGHT -> "warm"
-            PowerManager.THERMAL_STATUS_MODERATE,
+            PowerManager.THERMAL_STATUS_LIGHT,
+            PowerManager.THERMAL_STATUS_MODERATE -> "warm"
             PowerManager.THERMAL_STATUS_SEVERE -> "hot"
             PowerManager.THERMAL_STATUS_CRITICAL,
             PowerManager.THERMAL_STATUS_EMERGENCY,
