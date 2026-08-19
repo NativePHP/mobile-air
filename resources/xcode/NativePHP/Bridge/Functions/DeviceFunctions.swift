@@ -99,7 +99,8 @@ enum DeviceFunctions {
     /// Get detailed device information
     /// Parameters: none
     /// Returns:
-    ///   - info: JSON string with device details (name, model, platform, osVersion, etc.)
+    ///   - info: JSON string with device details (name, model, platform, osVersion,
+    ///     memUsed, memTotal, processorCount, activeProcessorCount, systemUptime, etc.)
     class GetInfo: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
             print("Device.GetInfo called")
@@ -114,6 +115,7 @@ enum DeviceFunctions {
 
             // Get memory usage
             let memUsed = getMemoryUsage()
+            let processInfo = ProcessInfo.processInfo
 
             // Get WebView version
             let webViewVersion = getWebViewVersion()
@@ -131,7 +133,11 @@ enum DeviceFunctions {
                 "manufacturer": "Apple",
                 "language": language,
                 "isVirtual": isVirtual,
-                "memUsed": memUsed,
+                "memUsed": NSNumber(value: memUsed),
+                "memTotal": NSNumber(value: processInfo.physicalMemory),
+                "processorCount": processInfo.processorCount,
+                "activeProcessorCount": processInfo.activeProcessorCount,
+                "systemUptime": processInfo.systemUptime,
                 "webViewVersion": webViewVersion
             ]
 
@@ -239,6 +245,34 @@ enum DeviceFunctions {
                 device.isBatteryMonitoringEnabled = false
                 return ["info": "{\"error\": \"\(error.localizedDescription)\"}"]
             }
+        }
+    }
+
+    // MARK: - Device.GetThermalState
+
+    /// Current device thermal state, normalized to NativePHP's four-case
+    /// vocabulary (`normal` / `warm` / `hot` / `critical`).
+    /// Parameters: none
+    /// Returns:
+    ///   - state: string - "normal" | "warm" | "hot" | "critical"
+    class GetThermalState: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            print("Device.GetThermalState called")
+            let state = DeviceFunctions.normalizedThermalState()
+            print("Thermal state: \(state)")
+            return ["state": state]
+        }
+    }
+
+    /// Map `ProcessInfo.ThermalState` onto the shared NativePHP vocabulary.
+    /// iOS has exactly four cases, 1:1 with Normal / Warm / Hot / Critical.
+    static func normalizedThermalState() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return "normal"
+        case .fair: return "warm"
+        case .serious: return "hot"
+        case .critical: return "critical"
+        @unknown default: return "normal"
         }
     }
 }

@@ -44,6 +44,7 @@ use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Events\Device\ThermalStateChanged;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
@@ -149,7 +150,9 @@ class NativeServiceProvider extends PackageServiceProvider
      * Keep query-side caches in sync with their push events. When the OS flips
      * the theme, AppearanceChanged fires (and auto-dispatches globally); this
      * listener updates System's cached appearance so `System::appearance()` /
-     * `isDark()` stay fresh without re-probing the bridge.
+     * `isDark()` stay fresh without re-probing the bridge. OrientationChanged
+     * does the same for System::orientation(), and ThermalStateChanged does
+     * the same for Device::thermalState().
      */
     protected function registerSystemEventListeners(): void
     {
@@ -161,6 +164,10 @@ class NativeServiceProvider extends PackageServiceProvider
         Event::listen(
             OrientationChanged::class,
             fn (OrientationChanged $e) => System::rememberOrientation($e->orientation),
+        );
+        Event::listen(
+            ThermalStateChanged::class,
+            fn (ThermalStateChanged $e) => Device::rememberThermalState($e->state),
         );
     }
 

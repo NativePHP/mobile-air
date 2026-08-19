@@ -1989,17 +1989,7 @@ abstract class NativeComponent
             foreach ($ctor->getParameters() as $param) {
                 $name = $param->getName();
                 if (array_key_exists($name, $payload)) {
-                    $value = $payload[$name];
-                    $type = $param->getType();
-                    if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
-                        $value = match ($type->getName()) {
-                            'int' => (int) $value,
-                            'float' => (float) $value,
-                            'string' => (string) $value,
-                            'bool' => (bool) $value,
-                            default => $value,
-                        };
-                    }
+                    $value = $this->coercePayloadValue($payload[$name], $param->getType());
                     $args[$name] = $value;
                 } elseif ($param->isDefaultValueAvailable()) {
                     $args[$name] = $param->getDefaultValue();
@@ -2012,6 +2002,35 @@ abstract class NativeComponent
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * Coerce a native payload value to a constructor / #[On] parameter type.
+     * Scalars match the builtin hint; backed enums are hydrated via tryFrom
+     * so handlers can type-hint ThermalState (etc.) instead of raw strings.
+     */
+    private function coercePayloadValue(mixed $value, ?\ReflectionType $type): mixed
+    {
+        if (! $type instanceof \ReflectionNamedType) {
+            return $value;
+        }
+
+        if ($type->isBuiltin()) {
+            return match ($type->getName()) {
+                'int' => (int) $value,
+                'float' => (float) $value,
+                'string' => (string) $value,
+                'bool' => (bool) $value,
+                default => $value,
+            };
+        }
+
+        $typeName = $type->getName();
+        if ((is_string($value) || is_int($value)) && is_subclass_of($typeName, \BackedEnum::class)) {
+            return $typeName::tryFrom($value) ?? $value;
+        }
+
+        return $value;
     }
 
     /**

@@ -299,6 +299,63 @@ class DoSomething : BridgeFunction {
 ```
 ```
 
+## Device facade (thermal)
+
+When documenting [`the-basics/device`](https://nativephp.com/docs/mobile/4/the-basics/device), include both query APIs and the event. Use `#[On]` from `Native\Mobile\Attributes\On` (not `#[OnNative]`).
+
+### `Device::thermalState()`
+
+Returns a `Native\Mobile\ThermalState` backed enum. Never `null`. Cached after the first `Device.GetThermalState` probe; refreshed by `ThermalStateChanged`. Off-device (and Android 8–9) returns `ThermalState::Normal`.
+
+Cases: `Normal` (`normal`), `Warm` (`warm`), `Hot` (`hot`), `Critical` (`critical`).
+
+Helpers: `severity()`, `isWarm()`, `isHot()`, `isCritical()`, `isWarmerThan($other)`, `isCoolerThan($other)`.
+
+Native payload key is `state` (not `thermalState`).
+
+### Extra `Device::getInfo()` keys
+
+Same JSON-string shape as before (`json_decode(Device::getInfo())`, or `null` off-device). New keys sit next to existing `memUsed`. Do **not** put `thermalState` on `getInfo()` — that is `Device::thermalState()`.
+
+```php
+$info = json_decode(Device::getInfo());
+$info->processorCount;
+$info->activeProcessorCount;
+$info->systemUptime;
+$info->memTotal;
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `processorCount` | int | Configured CPU cores |
+| `activeProcessorCount` | int | Currently online cores |
+| `systemUptime` | float | Seconds awake since boot, excluding sleep |
+| `memTotal` | int | Device RAM in bytes (`ProcessInfo.physicalMemory` / `MemoryInfo.totalMem`). `-1` on failure |
+
+iOS: `ProcessInfo`. Android: `Os.sysconf(_SC_NPROCESSORS_CONF/_ONLN)`, `SystemClock.uptimeMillis() / 1000.0`, `ActivityManager.MemoryInfo.totalMem`.
+
+JS: `device.thermalState()` → `{ state }`. New keys appear inside the existing `device.getInfo()` `info` string. There is no `getSystemInfo()`.
+
+### `ThermalStateChanged`
+
+`Native\Mobile\Events\Device\ThermalStateChanged` implements `BroadcastsGlobally`. Payload: `state` + `previous` (enum strings). PHP properties: `ThermalState $state`, `ThermalState $previous`. Helpers: `isWarming()`, `isCooling()`.
+
+No events for processor counts or uptime. Cold start does not fire the event.
+
+```php
+use Native\Mobile\Attributes\On;
+use Native\Mobile\Events\Device\ThermalStateChanged;
+use Native\Mobile\ThermalState;
+
+#[On(ThermalStateChanged::class)]
+public function onThermal(ThermalState $state, ThermalState $previous): void
+{
+    //
+}
+```
+
+Platform mapping and Android 8–9 / simulator gotchas belong in Notes, matching the existing Device page style. No new permissions.
+
 ## Quality Standards
 
 1. Every code example must be syntactically correct
