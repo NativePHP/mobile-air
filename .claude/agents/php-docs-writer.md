@@ -354,7 +354,16 @@ public function onThermal(ThermalState $state, ThermalState $previous): void
 }
 ```
 
-Platform mapping and Android 8–9 / simulator gotchas belong in Notes, matching the existing Device page style. No new permissions.
+Platform mapping belongs in Notes (user-visible impact, not Android constant names):
+
+| NativePHP | iOS | Android |
+|---|---|---|
+| `normal` | `.nominal` | `NONE` |
+| `warm` | `.fair` | `LIGHT`, `MODERATE` |
+| `hot` | `.serious` | `SEVERE` |
+| `critical` | `.critical` | `CRITICAL`, `EMERGENCY`, `SHUTDOWN` |
+
+Unknown values and Android 8–9 are `normal`. iOS Simulator stays `normal`. No new permissions.
 
 ## Quality Standards
 

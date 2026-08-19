@@ -246,7 +246,9 @@ them (reserve those for fully chrome-less screens).
 **Core built-ins** (`Native\Mobile\Facades`): `Device`, `Dialog`, `File`, `System` — these ship inside
 `nativephp/mobile` in v4. Also `System::isIos()` / `isAndroid()` and Blade directives `@ios` / `@android`.
 `Device::thermalState()` returns a `ThermalState` enum (`Normal`/`Warm`/`Hot`/`Critical`); listen for
-`ThermalStateChanged` to throttle work when the phone heats up. `Device::getInfo()` JSON (decode it) also
+`ThermalStateChanged` to throttle work when the phone heats up. Android maps by impact, not constant name:
+`NONE`→normal, `LIGHT`/`MODERATE`→warm, `SEVERE`→hot, `CRITICAL`/`EMERGENCY`/`SHUTDOWN`→critical (8–9 always
+Normal). iOS is 1:1 (`nominal`/`fair`/`serious`/`critical`). `Device::getInfo()` JSON (decode it) also
 includes `processorCount`, `activeProcessorCount`, `systemUptime`, and `memTotal` (device RAM in bytes,
 alongside existing `memUsed`).
 
