@@ -7,8 +7,10 @@ namespace Native\Mobile;
  *
  * iOS maps 1:1 from `ProcessInfo.ThermalState` (`nominal` / `fair` /
  * `serious` / `critical`). Android's seven `PowerManager` statuses collapse
- * onto the closest name: `NONE` → Normal, `LIGHT` → Warm, `MODERATE` and
+ * by user-visible impact: `NONE` → Normal, `LIGHT` / `MODERATE` → Warm,
  * `SEVERE` → Hot, `CRITICAL` / `EMERGENCY` / `SHUTDOWN` → Critical.
+ * `SHUTDOWN` has no iOS equivalent and apps often never receive that
+ * callback, so it shares Critical's "stop work" response.
  *
  * Android 8–9 (API 26–28) has no thermal API and always reports Normal.
  */
