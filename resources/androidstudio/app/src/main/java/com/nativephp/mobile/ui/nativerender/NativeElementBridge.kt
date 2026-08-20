@@ -41,10 +41,8 @@ import java.util.concurrent.locks.LockSupport
 class NativeElementBridge private constructor() {
 
     /**
-     * Delivery arm for the web surface. MainActivity implements this and
-     * installs itself; it injects the event into the current WebView
-     * page (CustomEvent + Livewire + POST /_native/api/events) whenever
-     * a webview screen — not an EDGE runloop — is the active surface.
+     * Delivery arm for the web surface, implemented by MainActivity.
+     * See sendNativeEvent for why it exists.
      */
     fun interface WebEventSink {
         fun onNativeEvent(eventName: String, payloadJson: String)

@@ -62,29 +62,22 @@ class NativeActionCoordinator : Fragment() {
     }
 
     /**
-     * Route the event through NativeElementBridge.sendNativeEvent — the
-     * single dispatch channel. It feeds the EDGE element queue and hands
-     * the event to the web sink MainActivity installs, so each screen
-     * mode hears it exactly once through its own delivery arm.
+     * Hand the event to the one dispatch channel, which reaches both
+     * surfaces. See NativeElementBridge.sendNativeEvent.
      */
     private fun dispatch(event: String, payloadJson: String) {
         Log.d("NativeActionCoordinator", "📢 Dispatching event: $event")
 
-        try {
-            NativeElementBridge.sendNativeEvent(event, payloadJson)
-        } catch (e: Exception) {
-            Log.d("NativeActionCoordinator", "Event dispatch failed: ${e.message}")
-        }
+        NativeElementBridge.sendNativeEvent(event, payloadJson)
     }
 
 
     companion object {
 
         /**
-         * Deliver a native event to the current web page: a `native-event`
-         * CustomEvent, a Livewire dispatch, and a POST to /_native/api/events
-         * so PHP-side listeners fire. Called by MainActivity's web event
-         * sink; must run on the main thread.
+         * Deliver an event to the current page: a `native-event` CustomEvent,
+         * a Livewire dispatch, and a POST to /_native/api/events so PHP-side
+         * listeners fire. Must run on the main thread.
          */
         fun dispatchToWebView(webView: WebView, event: String, payloadJson: String) {
             val eventForJs = event.replace("\\", "\\\\")

@@ -124,10 +124,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         super.onCreate(savedInstanceState)
         instance = this
 
-        // Web delivery arm for device events (appearance, shake, thermal…):
-        // sendNativeEvent only feeds the EDGE element queue, which nothing
-        // drains on a webview screen, so it also hands each event here to
-        // be injected into the page (see onNativeEvent below).
+        // Claim the web delivery arm for device events (see onNativeEvent).
         NativeElementBridge.installWebEventSink(this)
 
         // Seed the appearance tracker so a later config change (e.g. rotation)
@@ -801,11 +798,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
     /**
      * Web delivery arm for device events (NativeElementBridge.WebEventSink).
-     * While an EDGE screen owns the UI its runloop already drains the element
-     * queue, so injecting into the hidden page would deliver the same event
-     * twice — once live and once as a deferred POST replay when the web page
-     * returns. On a webview screen the injection is the only delivery path.
-     * Skips silently when no WebView exists yet (native-first boot).
+     * While an EDGE screen owns the UI its runloop already drains the queue,
+     * and injecting into the page behind it would deliver the same event a
+     * second time when that page returns. Skips when no WebView exists yet.
      */
     override fun onNativeEvent(eventName: String, payloadJson: String) {
         runOnUiThread {
