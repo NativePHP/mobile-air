@@ -15,6 +15,13 @@ it('marks AppearanceChanged for global dispatch', function () {
     expect(is_subclass_of(AppearanceChanged::class, BroadcastsGlobally::class))->toBeTrue();
 });
 
+it('marks ShakeDetected for global dispatch', function () {
+    // A shake has no owning component, and webview screens already reach
+    // app-wide listeners through POST /_native/api/events — the marker
+    // gives Event::listen the same reach on EDGE screens.
+    expect(is_subclass_of(\Native\Mobile\Events\Motion\ShakeDetected::class, BroadcastsGlobally::class))->toBeTrue();
+});
+
 it('caches appearance and answers isDark/isLight off it', function () {
     System::rememberAppearance('dark');
     $sys = new System;
