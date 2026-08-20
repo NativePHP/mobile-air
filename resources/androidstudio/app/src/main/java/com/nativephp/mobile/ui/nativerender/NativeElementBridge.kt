@@ -876,7 +876,9 @@ class NativeElementBridge private constructor() {
 
         /** Held weakly so a destroyed activity is never kept alive. The
          *  implementor must therefore be an object with its own lifecycle
-         *  (the activity), not a lambda owned only by this reference. */
+         *  (the activity), not a lambda owned only by this reference.
+         *  Volatile because plugin threads emit events off the main thread. */
+        @Volatile
         private var webEventSink: java.lang.ref.WeakReference<WebEventSink>? = null
 
         fun installWebEventSink(sink: WebEventSink) {
