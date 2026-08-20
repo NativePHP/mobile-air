@@ -61,9 +61,32 @@ class NativeActionCoordinator : Fragment() {
         }
     }
 
+    /**
+     * Route the event through NativeElementBridge.sendNativeEvent — the
+     * single dispatch channel. It feeds the EDGE element queue and hands
+     * the event to the web sink MainActivity installs, so each screen
+     * mode hears it exactly once through its own delivery arm.
+     */
     private fun dispatch(event: String, payloadJson: String) {
-            Log.d("JSFUNC", "native:$event");
-            Log.d("JSFUNC", "$payloadJson");
+        Log.d("NativeActionCoordinator", "📢 Dispatching event: $event")
+
+        try {
+            NativeElementBridge.sendNativeEvent(event, payloadJson)
+        } catch (e: Exception) {
+            Log.d("NativeActionCoordinator", "Event dispatch failed: ${e.message}")
+        }
+    }
+
+
+    companion object {
+
+        /**
+         * Deliver a native event to the current web page: a `native-event`
+         * CustomEvent, a Livewire dispatch, and a POST to /_native/api/events
+         * so PHP-side listeners fire. Called by MainActivity's web event
+         * sink; must run on the main thread.
+         */
+        fun dispatchToWebView(webView: WebView, event: String, payloadJson: String) {
             val eventForJs = event.replace("\\", "\\\\")
             val js = """
                 (function () {
@@ -99,20 +122,10 @@ class NativeActionCoordinator : Fragment() {
                 })();
             """.trimIndent()
 
-            Log.d("NativeActionCoordinator", "📢 Dispatching JS event: $event")
+            Log.d("NativeActionCoordinator", "📢 Injecting JS event: $event")
 
-            (activity as? WebViewProvider)?.getWebViewOrNull()?.evaluateJavascript(js, null)
-
-            // Also inject into the element event queue for #[OnNative] listeners
-            try {
-                NativeElementBridge.sendNativeEvent(event, payloadJson)
-            } catch (e: Exception) {
-                Log.d("NativeActionCoordinator", "Element event injection skipped (no active region)")
-            }
+            webView.evaluateJavascript(js, null)
         }
-
-
-    companion object {
         fun install(activity: FragmentActivity): NativeActionCoordinator =
             activity.supportFragmentManager.findFragmentByTag("NativeActionCoordinator") as? NativeActionCoordinator
                 ?: NativeActionCoordinator().also {

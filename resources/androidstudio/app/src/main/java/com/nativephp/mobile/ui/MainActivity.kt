@@ -62,7 +62,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : FragmentActivity(), WebViewProvider {
+class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.WebEventSink {
     // Native-first boot: no WebView exists until a web response actually
     // needs painting. Compose state so MainScreen recomposes and attaches
     // the WebView the moment a renderer is lazily created.
@@ -123,6 +123,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+
+        // Web delivery arm for device events (appearance, shake, thermal…):
+        // sendNativeEvent only feeds the EDGE element queue, which nothing
+        // drains on a webview screen, so it also hands each event here to
+        // be injected into the page (see onNativeEvent below).
+        NativeElementBridge.installWebEventSink(this)
 
         // Seed the appearance tracker so a later config change (e.g. rotation)
         // only emits AppearanceChanged when the theme genuinely differs.
@@ -792,6 +798,24 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     override fun getWebViewOrNull(): WebView? = webRenderer?.webView
+
+    /**
+     * Web delivery arm for device events (NativeElementBridge.WebEventSink).
+     * While an EDGE screen owns the UI its runloop already drains the element
+     * queue, so injecting into the hidden page would deliver the same event
+     * twice — once live and once as a deferred POST replay when the web page
+     * returns. On a webview screen the injection is the only delivery path.
+     * Skips silently when no WebView exists yet (native-first boot).
+     */
+    override fun onNativeEvent(eventName: String, payloadJson: String) {
+        runOnUiThread {
+            if (NativeUIBridge.isActive.value) return@runOnUiThread
+
+            webRenderer?.webView?.let {
+                NativeActionCoordinator.dispatchToWebView(it, eventName, payloadJson)
+            }
+        }
+    }
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
