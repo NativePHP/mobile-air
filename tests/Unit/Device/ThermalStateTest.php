@@ -85,6 +85,14 @@ describe('ThermalStateChanged', function () {
         expect(is_subclass_of(ThermalStateChanged::class, BroadcastsGlobally::class))->toBeTrue();
     });
 
+    it('accepts string values like the webview POST sends', function () {
+        $event = new ThermalStateChanged('hot', 'warm');
+
+        expect($event->state)->toBe(ThermalState::Hot)
+            ->and($event->previous)->toBe(ThermalState::Warm)
+            ->and($event->isWarming())->toBeTrue();
+    });
+
     it('rebuilds from its native payload and reports warming vs cooling', function () {
         $comp = new class extends NativeComponent {};
         $build = new ReflectionMethod(NativeComponent::class, 'buildEventInstance');
