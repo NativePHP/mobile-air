@@ -483,6 +483,11 @@ private struct NavigationSubtitleModifier: ViewModifier {
 /// content cannot reach. No-op when no override is set, preserving the
 /// stock appearance.
 ///
+/// The paint goes in a background BUILDER, not a background value: the
+/// builder form keeps the expanded color out of the parent's layout, so
+/// ignoring the keyboard region paints under the keyboard without the
+/// chrome measuring against a screen the keyboard never shrank.
+///
 /// Shared by both chrome renderers, and applied to their placeholder
 /// branches as well as their rendered ones: a level renders `Color.clear`
 /// until its tree publishes, and an unbackgrounded placeholder flashes the
@@ -492,7 +497,9 @@ struct WindowBackgroundModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if let color = windowBackground.color {
-            content.background(color.ignoresSafeArea())
+            content.background {
+                color.ignoresSafeArea()
+            }
         } else {
             content
         }
