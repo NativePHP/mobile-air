@@ -37,10 +37,21 @@ class ThermalStateChanged implements BroadcastsGlobally
 {
     use Dispatchable, SerializesModels;
 
+    public ThermalState $state;
+
+    public ThermalState $previous;
+
+    /**
+     * Native JSON and the webview POST send strings; Edge may already pass
+     * enums. Either way `$this->state` / `$this->previous` are ThermalState.
+     */
     public function __construct(
-        public ThermalState $state,
-        public ThermalState $previous,
-    ) {}
+        ThermalState|string $state,
+        ThermalState|string $previous,
+    ) {
+        $this->state = $state instanceof ThermalState ? $state : ThermalState::from($state);
+        $this->previous = $previous instanceof ThermalState ? $previous : ThermalState::from($previous);
+    }
 
     public function isWarming(): bool
     {
