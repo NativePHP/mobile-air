@@ -438,6 +438,10 @@ private struct PerTabContent: View {
         if let cached = coordinator.rootNodeCache[uri] {
             renderLevel(cached, isRoot: isRoot)
         } else {
+            // Nothing cached for this level yet. `levelContent` backgrounds
+            // the rendered path; this branch never reaches it, so it takes
+            // the window background itself rather than flashing the
+            // TabView's container on the first tap of a fresh tab.
             Color.clear
                 .navigationTitle(fallbackTitle)
                 .navigationBarTitleDisplayMode(.inline)
@@ -449,6 +453,7 @@ private struct PerTabContent: View {
                     textArgb: fallbackTextArgb,
                     bgArgb: fallbackBgArgb
                 ))
+                .modifier(WindowBackgroundModifier())
         }
     }
 
@@ -561,27 +566,31 @@ private struct PerTabContent: View {
                 && $0.type != "top_bar_title"
                 && !NativeRootHostRegistry.shared.consumes($0.type)
         }
-        if let content {
-            NodeView(node: content)
-                // Tapping outside a focused field dismisses the keyboard, the
-                // same as on a chrome-less screen. Attached to the screen
-                // content, not the TabView — a tap on the tab bar is the bar's
-                // business, and wrapping the TabView risks iOS 26's search
-                // capsule (mobile-air #308).
-                .dismissesKeyboardOnTap()
-                // TabView hosts its screens on its own container background
-                // (systemBackground — white in light mode) with no SwiftUI
-                // override hook, so a themed app shows a system-background
-                // band wherever the safe-area-inset screen content cannot
-                // reach: behind the nav bar and behind the tab bar. Paint
-                // the PHP-set window background (`UI.SetBackground`) there,
-                // extended through the safe areas — the same treatment the
-                // stack renderer already gives its screens. No-op when
-                // unset, preserving the stock appearance.
-                .modifier(WindowBackgroundModifier())
-        } else {
-            Color.clear
+        Group {
+            if let content {
+                NodeView(node: content)
+                    // Tapping outside a focused field dismisses the keyboard, the
+                    // same as on a chrome-less screen. Attached to the screen
+                    // content, not the TabView — a tap on the tab bar is the bar's
+                    // business, and wrapping the TabView risks iOS 26's search
+                    // capsule (mobile-air #308).
+                    .dismissesKeyboardOnTap()
+            } else {
+                // Placeholder until this level's tree publishes.
+                Color.clear
+            }
         }
+        // TabView hosts its screens on its own container background
+        // (systemBackground — white in light mode) with no SwiftUI
+        // override hook, so a themed app shows a system-background band
+        // wherever the safe-area-inset screen content cannot reach:
+        // behind the nav bar and behind the tab bar. Paint the PHP-set
+        // window background (`UI.SetBackground`) there, extended through
+        // the safe areas — the same treatment the stack renderer gives
+        // its screens. Wraps both branches so a tab's first frame, before
+        // its tree publishes, doesn't flash the container through. No-op
+        // when unset, preserving the stock appearance.
+        .modifier(WindowBackgroundModifier())
     }
 }
 
@@ -1010,6 +1019,12 @@ private struct SearchTabContainer: View {
     var body: some View {
         NavigationStack {
             NativeSearchTabRoot(query: query, itemNodes: itemNodes, mode: mode)
+                // The search tab is declared as a sibling of the `ForEach`,
+                // so it never passes through `PerTabContent` and needs the
+                // window background applied here. Inside the NavigationStack,
+                // matching the other renderers: outside it, the stack's own
+                // container would cover the paint.
+                .modifier(WindowBackgroundModifier())
         }
         .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
         .onChange(of: query) { _, newValue in
@@ -1052,6 +1067,8 @@ private struct NativeSearchTabRoot: View {
     let itemNodes: [NativeUINode]
     let mode: String
 
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
+
     /// Plain-text representation of an item for client-side filtering.
     /// Element-kind items aren't filtered (no generic text extraction)
     /// — they always pass through.
@@ -1093,6 +1110,11 @@ private struct NativeSearchTabRoot: View {
         List(displayed) { item in
             rowView(for: item)
         }
+        // A List paints its own `systemGroupedBackground`, which would
+        // cover the window background painted behind it and leave the
+        // search tab light in a themed app. Hidden only while an override
+        // is set, so the stock appearance is untouched without one.
+        .scrollContentBackground(windowBackground.color == nil ? .automatic : .hidden)
         .overlay {
             if itemNodes.isEmpty {
                 if mode == "dynamic" {
