@@ -82,6 +82,45 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | RTL Support
+    |--------------------------------------------------------------------------
+    |
+    | Enables opt-in right-to-left (RTL) support for Arabic, Hebrew,
+    | Persian/Farsi, Urdu and other RTL languages.
+    |
+    | Enabling this does NOT force the app into RTL — it only gives
+    | NativePHP permission to mirror the native shell (top bar, side nav,
+    | bottom nav, gestures) and the WebView when the device's active
+    | language is an RTL language. On LTR devices (or when this is false)
+    | the app behaves exactly as before.
+    |
+    | Defaults to false for full backward compatibility.
+    |
+    */
+
+    'rtl_support' => env('NATIVEPHP_RTL_SUPPORT', false),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Localizations
+    |--------------------------------------------------------------------------
+    |
+    | The list of languages your application supports, as BCP 47 language
+    | codes (e.g. 'en', 'ar', 'he', 'fa', 'ur'). For iOS these are written
+    | into the generated Info.plist as CFBundleLocalizations so the system
+    | correctly recognizes the languages the app ships.
+    |
+    | Leave empty to keep the existing build behavior unchanged.
+    |
+    */
+
+    'localizations' => [
+        // 'en',
+        // 'ar',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Appearance
     |--------------------------------------------------------------------------
     |

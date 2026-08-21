@@ -26,6 +26,7 @@ import androidx.activity.addCallback
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
+import com.nativephp.mobile.ui.nativerender.NativeUIState
 import com.nativephp.mobile.ui.nativerender.PerformanceTracker
 import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.nativephp.mobile.utils.WebViewProvider
@@ -50,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -167,30 +169,38 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // uninterruptible I/O sleep on the main thread + Chromium init on the critical path.)
         setContent {
             val isDark = isSystemInDarkTheme()
-            MaterialTheme(
-                colorScheme = nativeUiMaterialColorScheme(isDark),
-                typography = NativeUIThemeProvider.resolveTypography(),
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    // The heavy MainScreen tree (Scaffold + drawer + WebView) is gated on
-                    // showContent; until boot is ready the first frame is just the splash.
-                    if (showContent) {
-                        MainScreen()
+            // RTL support: the Compose hierarchy receives the effective
+            // layout direction (rtlSupport && device locale is RTL). System
+            // components (TopAppBar, ModalDrawer, NavigationBar, …) and all
+            // start/end-aligned content mirror automatically. Explicit
+            // left/right math that LocalLayoutDirection doesn't cover is
+            // mirrored in the renderers themselves.
+            CompositionLocalProvider(LocalLayoutDirection provides NativeUIState.layoutDirection) {
+                MaterialTheme(
+                    colorScheme = nativeUiMaterialColorScheme(isDark),
+                    typography = NativeUIThemeProvider.resolveTypography(),
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        // The heavy MainScreen tree (Scaffold + drawer + WebView) is gated on
+                        // showContent; until boot is ready the first frame is just the splash.
+                        if (showContent) {
+                            MainScreen()
+                        }
+                        // Splash overlay with fade animation (full screen, no insets).
+                        // Lives here — NOT inside the showContent gate — so it paints on the
+                        // first frame and covers the boot; MainScreen composes beneath it.
+                        AnimatedVisibility(
+                            visible = showSplash,
+                            exit = fadeOut(animationSpec = tween(300))
+                        ) {
+                            SplashScreen()
+                        }
+                        // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
+                        // Driven by Choreographer via FrameTracker. Recomposes at
+                        // 4Hz only — no per-frame render cost. Toggle off in
+                        // production via FrameTracker.enabled = false.
+                        com.nativephp.mobile.ui.nativerender.PerfOverlay()
                     }
-                    // Splash overlay with fade animation (full screen, no insets).
-                    // Lives here — NOT inside the showContent gate — so it paints on the
-                    // first frame and covers the boot; MainScreen composes beneath it.
-                    AnimatedVisibility(
-                        visible = showSplash,
-                        exit = fadeOut(animationSpec = tween(300))
-                    ) {
-                        SplashScreen()
-                    }
-                    // Dev-mode perf overlay (top-right pill: fps / p99 / jank).
-                    // Driven by Choreographer via FrameTracker. Recomposes at
-                    // 4Hz only — no per-frame render cost. Toggle off in
-                    // production via FrameTracker.enabled = false.
-                    com.nativephp.mobile.ui.nativerender.PerfOverlay()
                 }
             }
         }

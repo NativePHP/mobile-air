@@ -43,6 +43,7 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
 
     registry.register("UI.SetTransition", UIFunctions.SetTransition())
     registry.register("UI.SetBackground", UIFunctions.SetBackground(activity))
+    registry.register("UI.SetRtlSupport", UIFunctions.SetRtlSupport())
 
     // Performance tracking
     registry.register("Perf.Enable", PerfFunctions.Enable())

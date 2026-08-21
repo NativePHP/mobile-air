@@ -515,6 +515,9 @@ class BuildIosAppCommand extends Command
             // Handle UIUserInterfaceStyle
             $this->updateInterfaceStyle($dom, $rootDict, $plistData);
 
+            // Handle CFBundleLocalizations (nativephp.localizations)
+            $this->updateLocalizations($dom, $rootDict, $plistData);
+
             // Handle BIFROST_APP_ID
             $bifrostAppId = env('BIFROST_APP_ID');
             if ($bifrostAppId) {
@@ -717,6 +720,55 @@ class BuildIosAppCommand extends Command
         }
 
         $this->addPlistKeyValue($dom, $rootDict, 'UIUserInterfaceStyle', 'string', $style);
+    }
+
+    /**
+     * Write `nativephp.localizations` into the Info.plist as
+     * CFBundleLocalizations so iOS recognizes the languages the app
+     * supports. When no localizations are configured, the key is removed
+     * so existing build behavior is unchanged.
+     *
+     * @param  array<string, array{keyNode: \DOMElement, valueNode: \DOMElement}>  $plistData
+     */
+    private function updateLocalizations(\DOMDocument $dom, \DOMElement $rootDict, array &$plistData): void
+    {
+        $localizations = array_values(array_filter(array_map(
+            static fn ($lang) => trim((string) $lang),
+            (array) config('nativephp.localizations', [])
+        )));
+
+        if (empty($localizations)) {
+            if (isset($plistData['CFBundleLocalizations'])) {
+                $this->removePlistKeyValue(
+                    $rootDict,
+                    $plistData['CFBundleLocalizations']['keyNode'],
+                    $plistData['CFBundleLocalizations']['valueNode']
+                );
+                unset($plistData['CFBundleLocalizations']);
+            }
+
+            return;
+        }
+
+        if (isset($plistData['CFBundleLocalizations'])) {
+            $arrayNode = $plistData['CFBundleLocalizations']['valueNode'];
+            while ($arrayNode->firstChild) {
+                $arrayNode->removeChild($arrayNode->firstChild);
+            }
+            foreach ($localizations as $lang) {
+                $arrayNode->appendChild($arrayNode->ownerDocument->createElement('string', $lang));
+            }
+
+            return;
+        }
+
+        $keyNode = $dom->createElement('key', 'CFBundleLocalizations');
+        $arrayNode = $dom->createElement('array');
+        foreach ($localizations as $lang) {
+            $arrayNode->appendChild($dom->createElement('string', $lang));
+        }
+        $rootDict->appendChild($keyNode);
+        $rootDict->appendChild($arrayNode);
     }
 
     /**

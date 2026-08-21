@@ -251,6 +251,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
         $this->applyFpsOverlayConfig();
+        $this->applyRtlSupportConfig();
         $this->registerScreenIntentMiddleware();
 
         if (config('nativephp-internal.running')) {
@@ -448,6 +449,29 @@ class NativeServiceProvider extends PackageServiceProvider
                 }
             ?>";
         });
+
+        // @nativeHead — outputs HTML language metadata for the <html> tag:
+        //   <html @nativeHead>  →  <html lang="ar" dir="rtl">
+        // The language comes from the Laravel locale; the direction is
+        // derived from the shared RTL language list.
+        Blade::directive('nativeHead', function () {
+            return '<?php
+                $__nativeLocale = app()->getLocale();
+                $__nativeDir = \Native\Mobile\Support\Rtl::isRtlLocale($__nativeLocale) ? "rtl" : "ltr";
+                echo "lang=\"".e($__nativeLocale)."\" dir=\"".$__nativeDir."\"";
+            ?>';
+        });
+
+        // @rtl ... @else ... @endrtl — server-rendered conditional based on
+        // the current Laravel locale. `@else` is the standard Blade keyword,
+        // so this composes naturally with a plain conditional block.
+        Blade::directive('rtl', function () {
+            return '<?php if (\Native\Mobile\Support\Rtl::isRtlLocale(app()->getLocale())): ?>';
+        });
+
+        Blade::directive('endrtl', function () {
+            return '<?php endif; ?>';
+        });
     }
 
     protected function registerFilesystems(): void
@@ -555,6 +579,33 @@ class NativeServiceProvider extends PackageServiceProvider
         $enabled = (bool) config('nativephp.fps_overlay', false);
 
         nativephp_call('Perf.SetFpsOverlayEnabled', json_encode(['enabled' => $enabled]));
+    }
+
+    /**
+     * Push the `nativephp.rtl_support` config flag to the native side at
+     * boot so the iOS/Android shell knows whether RTL is permitted. The
+     * `_meta` object is NativePHP framework metadata (not application
+     * state); both platforms read `_meta.rtl_support` and combine it with
+     * the device locale to compute the effective layout direction.
+     */
+    private function applyRtlSupportConfig(): void
+    {
+        if (! function_exists('nativephp_call')) {
+            return;
+        }
+
+        // Never at test boot (same rationale as applyFpsOverlayConfig).
+        if ($this->app->runningUnitTests()) {
+            return;
+        }
+
+        $enabled = (bool) config('nativephp.rtl_support', false);
+
+        nativephp_call('UI.SetRtlSupport', json_encode([
+            '_meta' => [
+                'rtl_support' => $enabled,
+            ],
+        ]));
     }
 
     /**

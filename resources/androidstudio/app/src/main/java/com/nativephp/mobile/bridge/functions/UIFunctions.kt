@@ -7,6 +7,7 @@ import android.os.Looper
 import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
+import com.nativephp.mobile.ui.nativerender.NativeUIState
 
 /**
  * Functions related to native UI control
@@ -73,6 +74,40 @@ object UIFunctions {
             } catch (e: Exception) {
                 mapOf("success" to false, "error" to (e.message ?: "Invalid color"))
             }
+        }
+    }
+
+    /**
+     * Receive the developer's `nativephp.rtl_support` flag from the Laravel
+     * layer at boot. The payload carries framework metadata:
+     *
+     *     { "_meta": { "rtl_support": true } }
+     *
+     * `_meta` is NativePHP framework metadata (not application state). This
+     * updates the shared [NativeUIState], which then recomputes the
+     * effective layout direction from the device locale. iOS twin:
+     * `Bridge/Functions/UIFunctions.swift`.
+     */
+    class SetRtlSupport : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val meta = parameters["_meta"] as? Map<*, *>
+            val enabled = (meta?.get("rtl_support") as? Boolean)
+                ?: (parameters["rtl_support"] as? Boolean)
+                ?: false
+
+            // Compute the effective direction deterministically for the
+            // return value (before the async state update lands on main).
+            val effective = enabled && NativeUIState.deviceLanguageIsRTL()
+
+            Handler(Looper.getMainLooper()).post {
+                NativeUIState.setRtlSupport(enabled)
+            }
+
+            return mapOf(
+                "success" to true,
+                "rtl_support" to enabled,
+                "is_rtl" to effective,
+            )
         }
     }
 }

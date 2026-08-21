@@ -84,6 +84,36 @@ enum UIFunctions {
             return ["success": true]
         }
     }
+
+    // MARK: - UI.SetRtlSupport
+
+    /// Receive the developer's `nativephp.rtl_support` flag from the
+    /// Laravel layer at boot. The payload carries framework metadata:
+    ///
+    ///     { "_meta": { "rtl_support": true } }
+    ///
+    /// `_meta` is NativePHP framework metadata (not application state).
+    /// This updates the shared `NativeUIState`, which then recomputes the
+    /// effective layout direction from the device locale. Android twin:
+    /// `bridge/functions/UIFunctions.kt`.
+    class SetRtlSupport: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            let meta = parameters["_meta"] as? [String: Any]
+            let enabled = (meta?["rtl_support"] as? Bool)
+                ?? (parameters["rtl_support"] as? Bool)
+                ?? false
+
+            // Compute the effective direction deterministically for the
+            // return value (before the async state update lands on main).
+            let effective = enabled && NativeUIState.deviceLanguageIsRTL()
+
+            DispatchQueue.main.async {
+                NativeUIState.shared.setRtlSupport(enabled)
+            }
+
+            return ["success": true, "rtl_support": enabled, "is_rtl": effective]
+        }
+    }
 }
 
 extension UIColor {

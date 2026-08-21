@@ -23,6 +23,7 @@ func registerBridgeFunctions() {
     // (which also registers UI.SetTransition; iOS transitions ride the
     // tree publish path, so only SetBackground is implemented here).
     registry.register("UI.SetBackground", function: UIFunctions.SetBackground())
+    registry.register("UI.SetRtlSupport", function: UIFunctions.SetRtlSupport())
 
     // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog
     // plugin). Android twin: bridge/functions/DialogFunctions.kt.

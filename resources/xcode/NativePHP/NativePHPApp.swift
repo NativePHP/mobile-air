@@ -17,6 +17,7 @@ public func pipe_php_output(_ cString: UnsafePointer<CChar>?) {
 struct NativePHPApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.shared
+    @ObservedObject private var nativeUIState = NativeUIState.shared
 
     static var shared: NativePHPApp?
 
@@ -240,6 +241,26 @@ struct NativePHPApp: App {
                                 performDeferredInitialization()
                             }
                         }
+                }
+            }
+            // The effective layout direction for the WHOLE native shell —
+            // top bar, side nav, bottom nav, gestures, and any UIKit
+            // chrome — follows the device locale when the developer opted
+            // into RTL support. SwiftUI flips logical leading/trailing
+            // placements (and system components) automatically.
+            .environment(\.layoutDirection, nativeUIState.layoutDirection)
+            .onChange(of: nativeUIState.isRTL) { isRTL in
+                // UIKit hosting views read semanticContentAttribute for
+                // chrome SwiftUI doesn't own (window-level gestures, edge
+                // insets). Keep the key windows in sync reactively.
+                for scene in UIApplication.shared.connectedScenes {
+                    guard let windowScene = scene as? UIWindowScene else { continue }
+                    for window in windowScene.windows {
+                        let semantic: UISemanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
+                        if window.semanticContentAttribute != semantic {
+                            window.semanticContentAttribute = semantic
+                        }
+                    }
                 }
             }
             // Dev-mode perf overlay (top-right pill: fps / p99 / jank).

@@ -209,11 +209,16 @@ class SharedWebView: ObservableObject {
 /// (NativeRootStack / NativeRootTabs), so this is just the full-bleed page.
 struct WebViewLayoutContainer: View {
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
+    @ObservedObject private var nativeUIState = NativeUIState.shared
 
     var body: some View {
-        WebView(shared: SharedWebView.shared, horizontalSizeClass: horizontalSizeClass)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea()
+        WebView(
+            shared: SharedWebView.shared,
+            horizontalSizeClass: horizontalSizeClass,
+            isRTL: nativeUIState.isRTL
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
     }
 }
 
@@ -221,6 +226,7 @@ struct WebView: UIViewRepresentable {
     static let dataStore = WKWebsiteDataStore.default()
     let shared: SharedWebView
     let horizontalSizeClass: UserInterfaceSizeClass?
+    let isRTL: Bool
 
     func makeCoordinator() -> Coordinator {
         // Reuse existing coordinator if available to maintain LaravelBridge connection
@@ -307,6 +313,11 @@ struct WebView: UIViewRepresentable {
             // Inject safe area insets IMMEDIATELY when navigation commits (before rendering)
             // This is the iOS equivalent of Android's onPageStarted
             injectSafeAreaInsets(webView)
+
+            // Apply the runtime document direction. This intentionally lets the
+            // native device direction override a server-rendered
+            // <html lang="en" dir="ltr"> when the device is actually RTL.
+            injectDirection(webView)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -327,6 +338,16 @@ struct WebView: UIViewRepresentable {
 
             // Re-inject safe area insets to ensure they're set (like Android does)
             injectSafeAreaInsets(webView)
+
+            // Re-apply the runtime document direction (navigation can reset it).
+            injectDirection(webView)
+        }
+
+        /// Set `dir` on the document element to the native device direction.
+        func injectDirection(_ webView: WKWebView) {
+            let dir = NativeUIState.shared.isRTL ? "rtl" : "ltr"
+            let js = "document.documentElement.setAttribute('dir', '\(dir)');"
+            webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
         private func injectSafeAreaInsets(_ webView: WKWebView) {
@@ -724,6 +745,15 @@ struct WebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {
         // No manual insets needed - safeAreaInset handles topbar automatically
         // Bottom nav uses its own safeAreaInset in WebViewLayoutContainer
+
+        // RTL is applied reactively here (not only at creation): keep the
+        // WebView's semantic direction in sync with the effective runtime
+        // direction and re-assert the document `dir` attribute.
+        let semantic: UISemanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
+        if uiView.semanticContentAttribute != semantic {
+            uiView.semanticContentAttribute = semantic
+        }
+        context.coordinator.injectDirection(uiView)
     }
 }
 

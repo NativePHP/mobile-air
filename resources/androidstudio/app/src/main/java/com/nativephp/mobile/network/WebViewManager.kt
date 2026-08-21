@@ -16,6 +16,7 @@ import android.os.Message
 import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
+import com.nativephp.mobile.ui.nativerender.NativeUIState
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
 
@@ -388,6 +389,11 @@ class WebViewManager(
                     // Inject safe area insets IMMEDIATELY when page starts loading
                     // This ensures CSS variables are available before DOM parsing
                     activity?.injectSafeAreaInsetsToWebView()
+
+                    // Apply the runtime document direction early (the native
+                    // device direction overrides a server-rendered dir="ltr"
+                    // when the device is actually RTL).
+                    injectDirection(view)
                 }
             }
 
@@ -401,6 +407,8 @@ class WebViewManager(
                     activity.pendingWebSwap = false
                     com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
                 }
+                // Re-assert the document direction at first visible commit.
+                injectDirection(view)
                 // Renderer-agnostic first-content signal (web renderer):
                 // the page's first visible commit is honest TTFD.
                 activity?.onFirstContent("web-commit")
@@ -412,6 +420,9 @@ class WebViewManager(
 
                 // Inject safe area insets again to ensure they're set
                 (context as? MainActivity)?.injectSafeAreaInsetsToWebView()
+
+                // Re-apply the document direction (navigation can reset it).
+                injectDirection(view)
 
                 // Inject JavaScript to capture form submissions and AJAX requests
                 injectJavaScript(view)
@@ -570,6 +581,19 @@ class WebViewManager(
         view.evaluateJavascript(jsCode) { result ->
             Log.d(TAG, "JavaScript injection result: $result")
         }
+    }
+
+    /**
+     * Set the document `dir` attribute to the native device direction. This
+     * intentionally lets the native runtime override a server-rendered
+     * `<html lang="en" dir="ltr">` when the device environment is RTL.
+     */
+    private fun injectDirection(view: WebView) {
+        val dir = if (NativeUIState.isRTL.value) "rtl" else "ltr"
+        view.evaluateJavascript(
+            "document.documentElement.setAttribute('dir', '$dir');",
+            null
+        )
     }
 
 
