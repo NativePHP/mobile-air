@@ -4,6 +4,7 @@ namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\Process;
 use Native\Mobile\Edge\NativeRouter;
+use SupaNative\Core\Concerns\ManagesWatchman;
 
 use function Laravel\Prompts\select;
 

@@ -3,6 +3,8 @@
 namespace Native\Mobile\Concerns;
 
 use Native\Mobile\Edge\NativeRouter;
+use SupaNative\Core\Concerns\ManagesPollingWatcher;
+use SupaNative\Core\Concerns\ManagesWatchman;
 use Symfony\Component\Process\Process;
 
 trait WatchesAndroid

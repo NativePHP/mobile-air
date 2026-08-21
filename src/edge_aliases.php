@@ -1,8 +1,8 @@
 <?php
 
 /**
- * Back-compat aliases for the Edge layer's old namespaces.
- * ========================================================
+ * Back-compat aliases for namespaces that moved into `supanative/core`.
+ * ====================================================================
  *
  * WHAT
  * ----
@@ -16,11 +16,25 @@
  *     Native\Mobile\Attributes\Computed      → SupaNative\Core\Attributes\Computed
  *     Native\Mobile\Support\NativeCallbacks  → SupaNative\Core\Support\NativeCallbacks
  *
+ * The platform-neutral half of `native:watch` followed it, for the same reason
+ * and under two more prefixes:
+ *
+ *     Native\Mobile\Concerns\ManagesWatchman        → SupaNative\Core\Concerns\ManagesWatchman
+ *     Native\Mobile\Concerns\ManagesPollingWatcher  → SupaNative\Core\Concerns\ManagesPollingWatcher
+ *     Native\Mobile\Support\Watch\WatchConsole      → SupaNative\Core\Support\Watch\WatchConsole
+ *     Native\Mobile\Exceptions\WatchPromptCancelled → SupaNative\Core\Exceptions\WatchPromptCancelled
+ *
  * Everything that stayed behind (NativeComponent, the chrome elements,
  * Layouts, NativeRouter, `Attributes\OnNative`, the rest of `Support`) keeps
  * its `Native\Mobile\*` name. This file makes the ones that MOVED still answer
  * to their old names, so nothing downstream had to be touched in the same
  * change.
+ *
+ * `Concerns\InteractsWithWatchTerminal` is this move's non-entry, and it is the
+ * NativeComponent story again: it split rather than moved, so this package still
+ * ships a real trait of that name which composes core's and adds the two mobile
+ * actions (reload, navigate) the terminal dispatches to. Composer finds it and
+ * the probe below refuses it.
  *
  * `NativeComponent` is the interesting non-entry. It split rather than moved:
  * the neutral half is core's abstract class and this package's is a real
@@ -170,6 +184,8 @@ spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): 
         'Native\\Mobile\\Edge\\' => 'SupaNative\\Core\\Edge\\',
         'Native\\Mobile\\Attributes\\' => 'SupaNative\\Core\\Attributes\\',
         'Native\\Mobile\\Support\\' => 'SupaNative\\Core\\Support\\',
+        'Native\\Mobile\\Concerns\\' => 'SupaNative\\Core\\Concerns\\',
+        'Native\\Mobile\\Exceptions\\' => 'SupaNative\\Core\\Exceptions\\',
     ];
 
     $oldPrefix = null;

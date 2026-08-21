@@ -5,11 +5,11 @@ namespace Native\Mobile\Commands;
 use Illuminate\Console\Command;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\ManagesViteDevServer;
-use Native\Mobile\Concerns\ManagesWatchman;
 use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Concerns\RunsAndroid;
 use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
+use SupaNative\Core\Concerns\ManagesWatchman;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
