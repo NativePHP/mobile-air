@@ -405,6 +405,7 @@ trait PreparesBuild
                 '-x!storage\\logs\\laravel.log',
                 '-x!vendor\\endroid',
                 '-x!vendor\\nativephp\\mobile\\resources',
+                '-x!vendor\\supanative\\desktop\\resources',
                 '-x!vendor\\nativephp\\mobile\\vendor',
                 // Keep the runtime dirs themselves but drop their cached contents
                 '-x!bootstrap\\cache\\*',
@@ -494,6 +495,7 @@ trait PreparesBuild
             // Always exclude these directories
             if ($shouldExclude ||
                 Str::startsWith($relativePath, 'vendor/nativephp/mobile/resources') ||
+                Str::startsWith($relativePath, 'vendor/supanative/desktop/resources') ||
                 Str::startsWith($relativePath, 'vendor/nativephp/mobile/vendor') ||
                 Str::startsWith($relativePath, 'vendor/endroid') ||
                 Str::startsWith($relativePath, '.idea') ||

@@ -76,9 +76,28 @@ class BundleExclusions
         '*.neon.dist',
     ];
 
-    /** Specific vendor paths to exclude. */
+    /**
+     * Specific vendor paths to exclude.
+     *
+     * The two `resources` entries are the same rule pointing both ways: a
+     * package's native project template is a build input for the platform it
+     * belongs to, and dead weight in a bundle for any other. `nativephp/mobile`
+     * carries an Xcode project and an Android Studio project; `supanative/
+     * desktop` carries the macOS project. An app targeting phones and the
+     * desktop installs both packages, so each build ships one platform's
+     * template and drops the other's — desktop does the mirror of this in
+     * `SupaNative\Desktop\Platforms\DesktopRunner::FOREIGN_PLATFORM_RESOURCES`.
+     *
+     * Two packages naming each other's directories by hand is the unlovely part.
+     * The tidier arrangement is for `supanative/core` to hold one list that both
+     * bundlers read, so neither has to know the other's layout — worth doing,
+     * and a bigger change than adding a line here: this list is the mobile
+     * package's public surface, referenced by name from its own bundler, its
+     * Windows 7-Zip branch and four test files.
+     */
     public const VENDOR_PATHS = [
         'vendor/nativephp/mobile/resources',
+        'vendor/supanative/desktop/resources',
         'vendor/*/*/vendor',
         'vendor/endroid',
         'vendor/laravel/pint/builds',
