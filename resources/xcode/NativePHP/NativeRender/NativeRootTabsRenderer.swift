@@ -899,10 +899,15 @@ private struct TabBarLabelVisibilityModifier: ViewModifier {
     }
 }
 
+/// The `#if` keeps `.tabViewBottomAccessory` out of the compilation entirely
+/// on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+/// `LiquidGlassAvailability.swift`. This is the call site that broke the
+/// build outright on Xcode 16 ("has no member 'tabViewBottomAccessory'").
 private struct TabBarAccessoryModifier: ViewModifier {
     let accessory: NativeUINode?
 
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             if let inner = accessory?.children.first {
                 content
@@ -915,6 +920,9 @@ private struct TabBarAccessoryModifier: ViewModifier {
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 }
 

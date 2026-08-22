@@ -216,24 +216,38 @@ private struct GlassModifier: ViewModifier {
     private var interactive: Bool  { (flags & 4) != 0 }
     private var clear: Bool        { (flags & 8) != 0 }
 
+    /// The `#if` keeps `.glassEffect` out of the compilation entirely on
+    /// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+    /// `LiquidGlassAvailability.swift`.
     func body(content: Content) -> some View {
         if !enabled {
             content
-        } else if #available(iOS 26.0, *) {
-            if clear {
-                content.glassEffect(.clear.interactive(interactive), in: glassShape)
-            } else {
-                content.glassEffect(.regular.interactive(interactive), in: glassShape)
-            }
         } else {
-            // Older-iOS fallback can't simulate touch-highlight — drop the
-            // interactive flag silently. `.ultraThinMaterial` is the closest
-            // analogue for `.clear`; `.regularMaterial` for the default.
-            content.background(
-                clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial),
-                in: glassShape
-            )
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                if clear {
+                    content.glassEffect(.clear.interactive(interactive), in: glassShape)
+                } else {
+                    content.glassEffect(.regular.interactive(interactive), in: glassShape)
+                }
+            } else {
+                fallback(content)
+            }
+            #else
+            fallback(content)
+            #endif
         }
+    }
+
+    /// Older-iOS fallback can't simulate touch-highlight — drop the
+    /// interactive flag silently. `.ultraThinMaterial` is the closest
+    /// analogue for `.clear`; `.regularMaterial` for the default.
+    @ViewBuilder
+    private func fallback(_ content: Content) -> some View {
+        content.background(
+            clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial),
+            in: glassShape
+        )
     }
 
     /// Infer the glass shape from the element's borderRadius. The
@@ -286,13 +300,21 @@ extension UIColor {
 /// Apply this once at the screen root in each root renderer (Stack, Tabs,
 /// etc.) — the container's effects are scoped to the subtree it wraps, so
 /// one container per screen is the right granularity.
+///
+/// The `#if` keeps `GlassEffectContainer` out of the compilation entirely on
+/// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+/// `LiquidGlassAvailability.swift`.
 struct WithGlassContainer: ViewModifier {
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             GlassEffectContainer { content }
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 }
 
