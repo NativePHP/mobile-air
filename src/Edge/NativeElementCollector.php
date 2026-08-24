@@ -358,7 +358,8 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -453,7 +454,8 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -757,6 +759,33 @@ class NativeElementCollector
         }
         if (isset($attrs['press-translate-y'])) {
             $props['press-translate-y'] = (float) $attrs['press-translate-y'];
+        }
+
+        return $props;
+    }
+
+    /**
+     * Shared-element identity + motion props for the builtin streaming path.
+     *
+     * `ref` is the public identity (test handle AND morph id). Morph shape/timing
+     * ride alongside it. The Element-tree path already applies these via
+     * applyCallbacks/applyStyle; streaming builtins used to drop them.
+     */
+    public static function buildHeroProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['ref']) && $attrs['ref'] !== '') {
+            $props['ref'] = (string) $attrs['ref'];
+        }
+        if (isset($attrs['morph'])) {
+            $props['morph'] = (string) $attrs['morph'];
+        }
+        if (isset($attrs['morph-duration'])) {
+            $props['morph_duration'] = (float) $attrs['morph-duration'];
+        }
+        if (isset($attrs['morph-easing'])) {
+            $props['morph_easing'] = (string) $attrs['morph-easing'];
         }
 
         return $props;
