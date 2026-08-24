@@ -34,11 +34,15 @@ abstract class Element
     protected ?string $key = null;
 
     /**
-     * Test-targeting handle, set via `->ref('save-btn')` or a Blade
-     * `ref="save-btn"` attribute. Emitted on the wire node so the
-     * testing harness can locate elements without depending on visible
-     * text or method names (the `data-testid` equivalent). Renderers
-     * ignore it.
+     * The element's name, set via `->ref('save-btn')` or a Blade
+     * `ref="save-btn"` attribute. Emitted on the wire node so the testing
+     * harness can locate elements without depending on visible text or method
+     * names (the `data-testid` equivalent).
+     *
+     * It is ALSO the shared-element identity: two elements on different
+     * screens sharing a ref morph into each other during a `view_transition`
+     * navigation (see NodeHeroModifier on iOS). A ref that exists purely as a
+     * test handle and must never travel can opt out with `morph="none"`.
      */
     protected ?string $elementRef = null;
 
@@ -729,11 +733,17 @@ abstract class Element
      * the docblock on `$key` and Phase 1 in the perf refactor doc.
      */
     /**
-     * Set the test-targeting ref for this node (see $elementRef).
+     * Name this node (see $elementRef).
      */
     public function ref(string $ref): static
     {
         $this->elementRef = $ref;
+
+        // Also carried as a generic prop. The node-level `ref` field is NOT
+        // serialized — no native node model parses it — so the prop bag is
+        // what actually reaches the renderer, and the shared-element morph
+        // reads it from there. Same value, two carriers, one authored name.
+        $this->setProp('ref', $ref);
 
         return $this;
     }

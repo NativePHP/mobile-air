@@ -1,5 +1,6 @@
 
 import Foundation
+import SwiftUI // withAnimation, for the view_transition hero source flip
 import UIKit // needed for UIScreen.main, UIApplication
 import os
 import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags (Phase 0 format check)
@@ -515,6 +516,30 @@ final class NativeElementBridge {
                                 bridge.outgoingScreen = nil
                             }
                         }
+                    }
+                    // Shared-element morph (`view_transition`): hand the
+                    // geometry to the OUTGOING hero for one tick so the
+                    // incoming one mounts at the old screen's frame, then
+                    // flip the source back inside an animation. That flip is
+                    // the whole mechanism — see `NodeHeroModifier`.
+                    //
+                    // asyncAfter(0) rather than a plain async: the flip has
+                    // to land in a LATER transaction than the insertion, or
+                    // SwiftUI coalesces the two and the hero appears already
+                    // at its destination with no motion.
+                    if bridge.pendingTransition == "view_transition" {
+                        bridge.heroSourceIsIncoming = false
+                        DispatchQueue.main.asyncAfter(deadline: .now()) {
+                            withAnimation(nativeViewTransitionAnimation) {
+                                bridge.heroSourceIsIncoming = true
+                            }
+                        }
+                    } else if !bridge.heroSourceIsIncoming {
+                        // A non-hero navigation interrupting a view
+                        // transition must not leave the flag parked false,
+                        // or the next screen's heroes would mount slaved to
+                        // a screen that is long gone.
+                        bridge.heroSourceIsIncoming = true
                     }
                     bridge.screenKey += 1
                 }

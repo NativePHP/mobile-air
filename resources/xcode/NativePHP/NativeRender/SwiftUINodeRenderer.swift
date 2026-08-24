@@ -15,6 +15,19 @@ private struct AvailableWidthKey: EnvironmentKey {
 private struct AvailableHeightKey: EnvironmentKey {
     static let defaultValue: CGFloat = 844
 }
+/// Namespace that shared-element (`ref`) morphs are matched in.
+/// Owned by `ContentView`, which declares the `@Namespace` and injects it
+/// around the screen stack; nil wherever no host provides one, which makes
+/// `NodeHeroModifier` an inert pass-through rather than a crash.
+private struct HeroNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+/// True for the screen being covered during a router-level swap. Decides
+/// which side of a `matchedGeometryEffect` pair is the geometry source —
+/// see `NodeHeroModifier`.
+private struct HeroIsOutgoingKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
 
 extension EnvironmentValues {
     var nativeSafeAreaTop: CGFloat {
@@ -32,6 +45,14 @@ extension EnvironmentValues {
     var availableHeight: CGFloat {
         get { self[AvailableHeightKey.self] }
         set { self[AvailableHeightKey.self] = newValue }
+    }
+    var heroNamespace: Namespace.ID? {
+        get { self[HeroNamespaceKey.self] }
+        set { self[HeroNamespaceKey.self] = newValue }
+    }
+    var heroIsOutgoing: Bool {
+        get { self[HeroIsOutgoingKey.self] }
+        set { self[HeroIsOutgoingKey.self] = newValue }
     }
 }
 
@@ -186,6 +207,12 @@ struct NodeView: View, Equatable {
             // opacity. No-op when `animate-duration` is not set, so the
             // hot path is unchanged for non-animated nodes.
             .modifier(NodeAnimationModifier(style: node.style, props: node.props))
+            // Shared-element morph (`ref`). Sits AFTER style and
+            // layout so the geometry it hands to `matchedGeometryEffect` is
+            // the node's final frame — padding and background included —
+            // rather than its bare content box, which would make the element
+            // visibly jump as it lands. No-op when the prop is absent.
+            .modifier(NodeHeroModifier(props: node.props))
             // Gesture FIRST (inner) — onTapGesture must be attached
             // before any simultaneousGesture wrapper or the tap is
             // starved by SwiftUI's gesture composition.

@@ -15,6 +15,11 @@ struct ContentView: View {
     // platform default. Shows behind screens and during transitions.
     @ObservedObject private var windowBackground = WindowBackgroundState.shared
     @Environment(\.colorScheme) private var colorScheme
+    /// Namespace shared-element (`ref`) morphs are matched in.
+    /// Declared here because ContentView owns the screen stack — both the
+    /// outgoing and incoming screen must sit inside ONE namespace for
+    /// `matchedGeometryEffect` to pair their heroes at all.
+    @Namespace private var heroNamespace
 
     /// The base color native screens render over — the PHP override when
     /// set, otherwise the system default.
@@ -64,6 +69,12 @@ struct ContentView: View {
                                 x: -10
                             )
                             .transition(nativeScreenTransition(for: nativeUIBridge.pendingTransition))
+                            // Shared-element plumbing. `isOutgoing` tells
+                            // NodeHeroModifier which side of a matched pair
+                            // this screen is, which is what decides the
+                            // geometry source during the morph.
+                            .environment(\.heroNamespace, heroNamespace)
+                            .environment(\.heroIsOutgoing, screen.isOutgoing)
                             // Each new screen sits above the previous one
                             // (keys increment), so slides cover in push
                             // order and a fade has a defined front/back.
