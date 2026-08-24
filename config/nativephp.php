@@ -156,6 +156,20 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Default Locale
+    |--------------------------------------------------------------------------
+    |
+    | The language your unlocalized strings (Info.plist values, UI copy) are
+    | written in. It leads the Android locales_config.xml generated when you
+    | declare `permission_localizations`, so users can always switch back to
+    | it explicitly in the per-app language picker.
+    |
+    */
+
+    'default_locale' => 'en',
+
     'permission_localizations' => [
         // 'nl' => [
         //     'NSCameraUsageDescription' => 'Gebruikt om een profielfoto te maken.',

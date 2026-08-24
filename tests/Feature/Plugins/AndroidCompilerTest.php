@@ -1700,6 +1700,87 @@ object TestFunctions {
         $this->assertStringContainsString('id("com.example.valid") version "2.0.0" apply true', $content);
     }
 
+    /**
+     * @test
+     *
+     * Declaring permission_localizations should produce a locales_config.xml
+     * (default locale first) and point the manifest's <application> at it,
+     * so Android 13+ lists the app in the per-app language picker.
+     */
+    public function it_writes_locales_config_when_the_app_declares_localizations(): void
+    {
+        config(['nativephp.permission_localizations' => [
+            'fr' => ['NSCameraUsageDescription' => 'Photo de profil.'],
+        ]]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $xmlPath = $this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml';
+        $this->assertFileExists($xmlPath);
+
+        $xml = $this->files->get($xmlPath);
+        $this->assertStringContainsString('<locale android:name="en" />', $xml);
+        $this->assertStringContainsString('<locale android:name="fr" />', $xml);
+        $this->assertLessThan(strpos($xml, '"fr"'), strpos($xml, '"en"'));
+
+        $manifest = $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml');
+        $this->assertStringContainsString('android:localeConfig="@xml/locales_config"', $manifest);
+    }
+
+    /**
+     * @test
+     *
+     * Apps that declare no localizations anywhere must be left untouched —
+     * no locales_config.xml, no manifest attribute.
+     */
+    public function it_leaves_apps_without_localizations_untouched(): void
+    {
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml');
+        $this->assertStringNotContainsString(
+            'android:localeConfig',
+            $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml')
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Plugin-declared localizations contribute their locales too, and a
+     * second compile must not duplicate the manifest attribute.
+     */
+    public function it_merges_plugin_locales_and_stays_idempotent(): void
+    {
+        config(['nativephp.permission_localizations' => [
+            'fr' => ['NSCameraUsageDescription' => 'Photo de profil.'],
+        ]]);
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [],
+                'dependencies' => [],
+                'info_plist_localizations' => ['nl' => ['NSCameraUsageDescription' => 'Profielfoto.']],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $xml = $this->files->get($this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml');
+        $this->assertStringContainsString('<locale android:name="fr" />', $xml);
+        $this->assertStringContainsString('<locale android:name="nl" />', $xml);
+
+        $manifest = $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml');
+        $this->assertSame(1, substr_count($manifest, 'android:localeConfig'));
+    }
+
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin
     {
         $defaultData = [
