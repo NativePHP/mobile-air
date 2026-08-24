@@ -55,17 +55,7 @@ final class NativeUIBridge: ObservableObject {
 
     @Published var outgoingScreen: OutgoingScreen?
 
-    /// Which side of a shared-element (`ref`) pair currently owns
-    /// the geometry, for `view_transition` navigations.
-    ///
-    /// Normally true: the screen on top is the source, which is the only
-    /// sensible answer when there is no navigation in flight. It is driven
-    /// false for exactly one runloop tick at the start of a view transition
-    /// so the incoming hero mounts at the OUTGOING screen's frame, then
-    /// flipped back inside `withAnimation` — and that flip is what makes
-    /// `matchedGeometryEffect` interpolate. See `NodeHeroModifier` for the
-    /// full rationale.
-    @Published var heroSourceIsIncoming: Bool = true
+
 
     /// Flag set by UI.SetTransition bridge function
     var navigationPending = false

@@ -517,29 +517,20 @@ final class NativeElementBridge {
                             }
                         }
                     }
-                    // Shared-element morph (`view_transition`): hand the
-                    // geometry to the OUTGOING hero for one tick so the
-                    // incoming one mounts at the old screen's frame, then
-                    // flip the source back inside an animation. That flip is
-                    // the whole mechanism — see `NodeHeroModifier`.
-                    //
-                    // asyncAfter(0) rather than a plain async: the flip has
-                    // to land in a LATER transaction than the insertion, or
-                    // SwiftUI coalesces the two and the hero appears already
-                    // at its destination with no motion.
+                    // Shared elements: hand the incoming tree's ref'd nodes to
+                    // the flight store. It already holds the outgoing screen's
+                    // frames (reported while that screen was live), so it can
+                    // pair the two sides and fly a copy of each match in the
+                    // overlay above both screens. Done synchronously here so
+                    // matched elements are hidden before the incoming screen's
+                    // very first layout — otherwise they paint once at their
+                    // destination before taking off.
                     if bridge.pendingTransition == "view_transition" {
-                        bridge.heroSourceIsIncoming = false
-                        DispatchQueue.main.asyncAfter(deadline: .now()) {
-                            withAnimation(nativeViewTransitionAnimation) {
-                                bridge.heroSourceIsIncoming = true
-                            }
-                        }
-                    } else if !bridge.heroSourceIsIncoming {
-                        // A non-hero navigation interrupting a view
-                        // transition must not leave the flag parked false,
-                        // or the next screen's heroes would mount slaved to
-                        // a screen that is long gone.
-                        bridge.heroSourceIsIncoming = true
+                        HeroFlightStore.shared.beginSwap(
+                            incomingNodes: Self.collectRefNodes(finalTree.root)
+                        )
+                    } else {
+                        HeroFlightStore.shared.cancelAll()
                     }
                     bridge.screenKey += 1
                 }
@@ -552,6 +543,29 @@ final class NativeElementBridge {
                 if bridge.isReloading { bridge.isReloading = false }
             }
         }
+    }
+
+    /// Every ref'd node in a tree, keyed by ref. The flight store pairs these
+    /// against the outgoing screen's reported frames and renders a copy of the
+    /// matched ones in flight. Walks the incoming tree once per navigation — the
+    /// trees are already in memory and this runs on the same publish that
+    /// builds them, so it costs a single traversal per swap rather than any
+    /// per-frame work.
+    static func collectRefNodes(_ node: NativeUINode) -> [String: NativeUINode] {
+        var found: [String: NativeUINode] = [:]
+
+        func walk(_ n: NativeUINode) {
+            let ref = n.props.getString("ref", default: "")
+            // First wins. A duplicated ref on one screen is malformed markup —
+            // a name identifies ONE element — and picking deterministically
+            // beats letting the last one silently take over.
+            if !ref.isEmpty, found[ref] == nil { found[ref] = n }
+            for child in n.children { walk(child) }
+        }
+
+        walk(node)
+
+        return found
     }
 
     // MARK: - Event Sending

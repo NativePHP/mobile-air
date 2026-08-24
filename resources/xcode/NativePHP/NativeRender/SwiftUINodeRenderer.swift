@@ -15,17 +15,20 @@ private struct AvailableWidthKey: EnvironmentKey {
 private struct AvailableHeightKey: EnvironmentKey {
     static let defaultValue: CGFloat = 844
 }
-/// Namespace that shared-element (`ref`) morphs are matched in.
-/// Owned by `ContentView`, which declares the `@Namespace` and injects it
-/// around the screen stack; nil wherever no host provides one, which makes
-/// `NodeHeroModifier` an inert pass-through rather than a crash.
-private struct HeroNamespaceKey: EnvironmentKey {
-    static let defaultValue: Namespace.ID? = nil
-}
 /// True for the screen being covered during a router-level swap. Decides
 /// which side of a `matchedGeometryEffect` pair is the geometry source —
 /// see `NodeHeroModifier`.
 private struct HeroIsOutgoingKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+/// True only inside `HeroFlightOverlay`'s copy of a travelling element.
+///
+/// The copy is rendered with the same `NodeView` as the original, so it runs
+/// through `NodeHeroModifier` as well — and would obediently hide itself,
+/// because its ref is exactly the one currently in flight. It must also not
+/// report frames, or it would overwrite the real element's geometry with its
+/// own mid-flight position.
+private struct HeroIsFlyingCopyKey: EnvironmentKey {
     static let defaultValue: Bool = false
 }
 
@@ -46,13 +49,13 @@ extension EnvironmentValues {
         get { self[AvailableHeightKey.self] }
         set { self[AvailableHeightKey.self] = newValue }
     }
-    var heroNamespace: Namespace.ID? {
-        get { self[HeroNamespaceKey.self] }
-        set { self[HeroNamespaceKey.self] = newValue }
-    }
     var heroIsOutgoing: Bool {
         get { self[HeroIsOutgoingKey.self] }
         set { self[HeroIsOutgoingKey.self] = newValue }
+    }
+    var heroIsFlyingCopy: Bool {
+        get { self[HeroIsFlyingCopyKey.self] }
+        set { self[HeroIsFlyingCopyKey.self] = newValue }
     }
 }
 
@@ -213,6 +216,9 @@ struct NodeView: View, Equatable {
             // rather than its bare content box, which would make the element
             // visibly jump as it lands. No-op when the prop is absent.
             .modifier(NodeHeroModifier(props: node.props))
+            // Test-targeting identity. Same `ref` the morph pairs on, so a
+            // Maestro `id:` selector and a shared element name the same thing.
+            .modifier(NodeIdentityModifier(props: node.props))
             // Gesture FIRST (inner) — onTapGesture must be attached
             // before any simultaneousGesture wrapper or the tap is
             // starved by SwiftUI's gesture composition.
