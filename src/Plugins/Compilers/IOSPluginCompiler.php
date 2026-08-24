@@ -652,142 +652,34 @@ class IOSPluginCompiler
     }
 
     /**
-     * Merge two plist files
+     * Merge a plugin's Info.plist file into the app's, value types intact.
      */
     protected function mergePlists(string $main, string $plugin): string
     {
-        // Extract key-value pairs from plugin plist
-        preg_match_all('/<key>([^<]+)<\/key>\s*<string>([^<]+)<\/string>/s', $plugin, $matches, PREG_SET_ORDER);
-
-        $entries = [];
-        foreach ($matches as $match) {
-            $entries[$match[1]] = $match[2];
-        }
-
-        return $this->injectPlistEntries($main, $entries);
+        return $this->injectPlistEntries($main, PlistDocument::fromXml($plugin)->all());
     }
 
     /**
-     * Inject entries into plist
+     * Merge entries into the plist, resolving placeholders on the way in.
      */
     protected function injectPlistEntries(string $plist, array $entries): string
     {
-        foreach ($entries as $key => $value) {
-            // Check if key already exists
-            if (str_contains($plist, "<key>{$key}</key>")) {
-                if (is_array($value)) {
-                    $plist = $this->mergeArrayEntry($plist, $key, $value);
-                } else {
-                    $plist = $this->updateScalarEntry($plist, $key, $value);
-                }
+        $document = PlistDocument::fromXml($plist);
+        $document->merge($this->substitutePlaceholdersDeep($entries));
 
-                continue;
-            }
-
-            // Handle array values
-            if (is_array($value)) {
-                $arrayContent = '';
-                foreach ($value as $item) {
-                    $arrayContent .= "\n\t\t".$this->plistScalar($item);
-                }
-                $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
-            } else {
-                $entry = "\n\t<key>{$key}</key>\n\t".$this->plistScalar($value);
-            }
-
-            // Add before closing </dict>
-            $plist = preg_replace(
-                '/(\s*<\/dict>\s*<\/plist>)/s',
-                $entry.'$1',
-                $plist,
-                1
-            );
-        }
-
-        return $plist;
+        return $document->toXml();
     }
 
     /**
-     * Update an existing string entry's value in the plist
+     * Resolve ${ENV_VAR} placeholders in every string of a nested value.
      */
-    /**
-     * Render a manifest value as a plist element.
-     *
-     * Booleans and numbers have their own plist types. Writing them as
-     * <string> gives "" for false and "1" for true, which readers such as
-     * Firebase cannot interpret as a boolean — the key reads as unset and
-     * the declared setting is silently ignored.
-     */
-    protected function plistScalar(mixed $value): string
+    protected function substitutePlaceholdersDeep(mixed $value): mixed
     {
-        if (is_bool($value)) {
-            return $value ? '<true/>' : '<false/>';
+        if (is_array($value)) {
+            return array_map(fn ($item) => $this->substitutePlaceholdersDeep($item), $value);
         }
 
-        if (is_int($value)) {
-            return "<integer>{$value}</integer>";
-        }
-
-        if (is_float($value)) {
-            return "<real>{$value}</real>";
-        }
-
-        $value = $this->substituteEnvPlaceholders((string) $value);
-
-        return '<string>'.htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8').'</string>';
-    }
-
-    /**
-     * Replace an existing key's value, whatever plist type it currently has.
-     * Declaring `false` for a key that already holds a <string> must be able
-     * to change the element type, not just its contents.
-     */
-    protected function updateScalarEntry(string $plist, string $key, mixed $value): string
-    {
-        // Each type has an empty self-closing form too (<string/>), which is
-        // what a previously-mangled boolean leaves behind.
-        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*)'
-            .'(<string>[^<]*<\/string>|<integer>[^<]*<\/integer>|<real>[^<]*<\/real>'
-            .'|<(?:string|integer|real|true|false)\s*\/>)/';
-
-        return preg_replace_callback(
-            $pattern,
-            fn ($matches) => $matches[1].$this->plistScalar($value),
-            $plist,
-            1
-        ) ?? $plist;
-    }
-
-    protected function updateStringEntry(string $plist, string $key, string $value): string
-    {
-        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<string>)([^<]*)(<\/string>)/';
-
-        return preg_replace_callback($pattern, function ($matches) use ($value) {
-            return $matches[1].htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8').$matches[3];
-        }, $plist, 1);
-    }
-
-    /**
-     * Merge array values into an existing plist array entry
-     */
-    protected function mergeArrayEntry(string $plist, string $key, array $values): string
-    {
-        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<array>)(.*?)(<\/array>)/s';
-
-        return preg_replace_callback($pattern, function ($matches) use ($values) {
-            $existingContent = $matches[2];
-            $newItems = '';
-
-            foreach ($values as $item) {
-                $item = $this->substituteEnvPlaceholders($item);
-                // Only add if not already present
-                if (! str_contains($existingContent, "<string>{$item}</string>")) {
-                    $newItems .= "\n\t\t<string>{$item}</string>";
-                }
-            }
-
-            return $matches[1].$existingContent.$newItems.$matches[3];
-        }, $plist);
+        return is_string($value) ? $this->substituteEnvPlaceholders($value) : $value;
     }
 
     /**
@@ -839,17 +731,9 @@ class IOSPluginCompiler
 
             $plist = $this->files->get($plistPath);
 
-            // Check if UIBackgroundModes already exists
-            if (str_contains($plist, '<key>UIBackgroundModes</key>')) {
-                // Merge with existing array
-                $plist = $this->mergeArrayEntry($plist, 'UIBackgroundModes', array_keys($backgroundModes));
-            } else {
-                // Add new UIBackgroundModes array
-                $plist = $this->injectPlistEntries($plist, [
-                    'UIBackgroundModes' => array_keys($backgroundModes),
-                ]);
-            }
-
+            $plist = $this->injectPlistEntries($plist, [
+                'UIBackgroundModes' => array_keys($backgroundModes),
+            ]);
             $this->files->put($plistPath, $plist);
         }
     }
