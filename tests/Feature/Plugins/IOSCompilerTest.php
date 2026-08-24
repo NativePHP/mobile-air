@@ -5,6 +5,7 @@ namespace Tests\Feature\Plugins;
 use Illuminate\Filesystem\Filesystem;
 use Mockery;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
+use Native\Mobile\Plugins\Compilers\PlistDocument;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginManifest;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -1077,6 +1078,211 @@ class NestedClass {}');
     /**
      * Helper method to create a test Plugin instance.
      */
+    /**
+     * @test
+     *
+     * Apple keys such as SKAdNetworkItems are arrays of dicts. They must
+     * land with their structure intact, and a rebuild must not duplicate.
+     */
+    public function it_merges_arrays_of_dicts_into_info_plist(): void
+    {
+        $items = [
+            ['SKAdNetworkIdentifier' => 'cstr6suwn9.skadnetwork'],
+            ['SKAdNetworkIdentifier' => '4fzdc2evr5.skadnetwork'],
+        ];
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['SKAdNetworkItems' => $items]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+
+        $this->assertSame($items, $plist->get('SKAdNetworkItems'));
+    }
+
+    /**
+     * @test
+     *
+     * Bools and integers keep their plist type, and a value the old text
+     * merge wrote with the wrong type is corrected on the next build.
+     */
+    public function it_writes_typed_plist_values(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, str_replace(
+            '<dict>',
+            "<dict>\n\t<key>FirebaseAppDelegateProxyEnabled</key>\n\t<string></string>",
+            $this->files->get($plistPath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => [
+                'FirebaseAppDelegateProxyEnabled' => false,
+                'UIFileSharingEnabled' => true,
+                'ITSAppUsesNonExemptEncryption' => 0,
+            ]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($plistPath);
+        $plist = PlistDocument::fromXml($content);
+
+        $this->assertFalse($plist->get('FirebaseAppDelegateProxyEnabled'));
+        $this->assertTrue($plist->get('UIFileSharingEnabled'));
+        $this->assertSame(0, $plist->get('ITSAppUsesNonExemptEncryption'));
+        $this->assertStringNotContainsString('<string></string>', $content);
+    }
+
+    /**
+     * @test
+     *
+     * A plugin contributing to a key the base plist already nests, like
+     * CFBundleURLTypes, adds a sibling entry rather than corrupting the
+     * inner array, and dict keys merge instead of being dropped.
+     */
+    public function it_merges_into_nested_plist_structures(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, file_get_contents(__DIR__.'/../../../resources/xcode/NativePHP/Info.plist'));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => [
+                'CFBundleURLTypes' => [['CFBundleURLSchemes' => ['probe']]],
+                'NSAppTransportSecurity' => ['NSAllowsArbitraryLoads' => true],
+            ]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $plist = PlistDocument::fromXml($this->files->get($plistPath));
+
+        $types = $plist->get('CFBundleURLTypes');
+        $this->assertCount(2, $types);
+        $this->assertSame(['nativephp'], $types[0]['CFBundleURLSchemes']);
+        $this->assertSame(['probe'], $types[1]['CFBundleURLSchemes']);
+        $this->assertTrue($plist->get('NSAppTransportSecurity')['NSAllowsArbitraryLoadsInWebContent']);
+        $this->assertTrue($plist->get('NSAppTransportSecurity')['NSAllowsArbitraryLoads']);
+    }
+
+    /**
+     * @test
+     *
+     * A plugin's resources/ios/Info.plist is merged with every value type,
+     * and keys nested inside it never surface at the top level.
+     */
+    public function it_merges_plugin_info_plist_files_structurally(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $this->files->ensureDirectoryExists($pluginPath.'/resources/ios');
+        $this->files->put($pluginPath.'/resources/ios/Info.plist', '<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Any file</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>');
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Camera access']],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+
+        $this->assertTrue($plist->get('UIFileSharingEnabled'));
+        $this->assertSame([[
+            'CFBundleTypeName' => 'Any file',
+            'LSItemContentTypes' => ['public.data'],
+        ]], $plist->get('CFBundleDocumentTypes'));
+        $this->assertNull($plist->get('CFBundleTypeName'));
+    }
+
+    /**
+     * @test
+     *
+     * ${ENV_VAR} placeholders resolve inside nested values too, and markup
+     * characters in any string are escaped so the plist stays well-formed.
+     */
+    public function it_substitutes_placeholders_and_escapes_inside_nested_values(): void
+    {
+        putenv('NATIVEPHP_TEST_SKAN=4fzdc2evr5.skadnetwork');
+        $_ENV['NATIVEPHP_TEST_SKAN'] = '4fzdc2evr5.skadnetwork';
+
+        try {
+            $plugin = $this->createTestPlugin([
+                'ios' => ['info_plist' => [
+                    'SKAdNetworkItems' => [['SKAdNetworkIdentifier' => '${NATIVEPHP_TEST_SKAN}']],
+                    'NSCameraUsageDescription' => 'Photos & <video>',
+                ]],
+            ]);
+
+            $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+            $this->compiler->compile();
+
+            $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+            $plist = PlistDocument::fromXml($content);
+
+            $this->assertSame('4fzdc2evr5.skadnetwork', $plist->get('SKAdNetworkItems')[0]['SKAdNetworkIdentifier']);
+            $this->assertSame('Photos & <video>', $plist->get('NSCameraUsageDescription'));
+            $this->assertStringContainsString('&amp; &lt;video&gt;', $content);
+        } finally {
+            putenv('NATIVEPHP_TEST_SKAN');
+            unset($_ENV['NATIVEPHP_TEST_SKAN']);
+        }
+    }
+
+    /**
+     * @test
+     *
+     * Background modes share the plist merge, so they union with what
+     * the base plist already declares and never duplicate on rebuild.
+     */
+    public function it_unions_background_modes_with_the_base_plist(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, file_get_contents(__DIR__.'/../../../resources/xcode/NativePHP/Info.plist'));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => ['NSLocationWhenInUseUsageDescription' => 'Location access'],
+                'background_modes' => ['remote-notification', 'location'],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $plist = PlistDocument::fromXml($this->files->get($plistPath));
+
+        $this->assertSame(['remote-notification', 'location'], $plist->get('UIBackgroundModes'));
+    }
+
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin
     {
         $defaultData = [
