@@ -55,6 +55,34 @@ class IosHotReloadPortTest extends TestCase
         $this->assertStringContainsString('<string>9999</string>', $this->plist());
     }
 
+    /** Published-but-empty would otherwise cast to port 0. */
+    public function test_an_empty_port_falls_back_to_the_default(): void
+    {
+        config(['nativephp.hot_reload.port' => '']);
+
+        $this->updatePlist($this->writePlist());
+
+        $this->assertStringContainsString('<string>9999</string>', $this->plist());
+    }
+
+    public function test_a_zero_port_falls_back_to_the_default(): void
+    {
+        config(['nativephp.hot_reload.port' => 0]);
+
+        $this->updatePlist($this->writePlist());
+
+        $this->assertStringContainsString('<string>9999</string>', $this->plist());
+    }
+
+    public function test_a_string_port_is_written_as_an_integer(): void
+    {
+        config(['nativephp.hot_reload.port' => '9998']);
+
+        $this->updatePlist($this->writePlist());
+
+        $this->assertStringContainsString('<string>9998</string>', $this->plist());
+    }
+
     /**
      * The plist is updated in place rather than regenerated, so changing the
      * port between builds must overwrite the key — a duplicate would leave the
