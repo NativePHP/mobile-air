@@ -511,7 +511,7 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $this->guard(fn () => $this->component->onBackPressed());
+        $this->guard(fn () => $this->component->handleSystemBack());
 
         return $this->afterInteraction();
     }
@@ -661,7 +661,7 @@ class TestableComponent
     public function goBack(): TestableComponent
     {
         if ($this->component->getNavigationIntent() === null) {
-            $this->guard(fn () => $this->component->onBackPressed());
+            $this->guard(fn () => $this->component->handleSystemBack());
         }
 
         $intent = $this->component->getNavigationIntent();
