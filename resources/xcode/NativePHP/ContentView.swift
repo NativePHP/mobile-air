@@ -15,6 +15,9 @@ struct ContentView: View {
     // platform default. Shows behind screens and during transitions.
     @ObservedObject private var windowBackground = WindowBackgroundState.shared
     @Environment(\.colorScheme) private var colorScheme
+    // Last orientation pushed to PHP (seeded from the first layout), so window
+    // size changes only emit OrientationChanged when the aspect actually flips.
+    @State private var lastOrientation: String?
 
     /// The base color native screens render over — the PHP override when
     /// set, otherwise the system default.
@@ -120,6 +123,26 @@ struct ContentView: View {
             let mode = newScheme == .dark ? "dark" : "light"
             LaravelBridge.shared.send?("Native\\Mobile\\Events\\System\\AppearanceChanged", ["mode": mode])
         }
+        // Push a native OrientationChanged event to PHP when the device
+        // rotates. Orientation is derived from the window's aspect
+        // (width > height) — the signal layout actually cares about. Seeded
+        // on first layout so only a real flip emits. Drives the reactive
+        // `System::orientation()` / `#[On(OrientationChanged)]` path.
+        .background(
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear {
+                        lastOrientation = geometry.size.width > geometry.size.height
+                            ? "landscape" : "portrait"
+                    }
+                    .onChange(of: geometry.size) { size in
+                        let orientation = size.width > size.height ? "landscape" : "portrait"
+                        guard orientation != lastOrientation else { return }
+                        lastOrientation = orientation
+                        LaravelBridge.shared.send?("Native\\Mobile\\Events\\System\\OrientationChanged", ["orientation": orientation])
+                    }
+            }
+        )
     }
 
     /// One layer of the two-layer native screen swap. `id` is the screen's

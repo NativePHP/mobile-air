@@ -50,4 +50,28 @@ enum SystemFunctions {
             return ["appearance": mode]
         }
     }
+
+    // MARK: - System.GetOrientation
+
+    /// Current screen orientation (portrait / landscape), derived from the key
+    /// window's aspect — the same signal the OrientationChanged push uses.
+    /// Backs `System::orientation()` / `isLandscape()` for the cold read before
+    /// the first OrientationChanged push.
+    /// Returns:
+    ///   - orientation: string - "portrait" or "landscape"
+    class GetOrientation: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            func read() -> String {
+                let size = UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .first?.windows.first?.bounds.size
+                    ?? UIScreen.main.bounds.size
+                return size.width > size.height ? "landscape" : "portrait"
+            }
+            // Bridge functions may run off the main thread; UIKit window reads
+            // must be on main.
+            let orientation = Thread.isMainThread ? read() : DispatchQueue.main.sync { read() }
+            return ["orientation": orientation]
+        }
+    }
 }

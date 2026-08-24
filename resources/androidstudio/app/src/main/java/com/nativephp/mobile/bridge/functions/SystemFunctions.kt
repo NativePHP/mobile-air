@@ -78,4 +78,19 @@ object SystemFunctions {
             return mapOf("appearance" to if (night) "dark" else "light")
         }
     }
+
+    /**
+     * Current screen orientation (portrait / landscape). Backs
+     * `System::orientation()` / `isLandscape()` for the cold read before the
+     * first OrientationChanged push.
+     * Returns:
+     *   - orientation: string - "portrait" or "landscape"
+     */
+    class GetOrientation(private val context: Context) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val landscape = context.resources.configuration.orientation ==
+                Configuration.ORIENTATION_LANDSCAPE
+            return mapOf("orientation" to if (landscape) "landscape" else "portrait")
+        }
+    }
 }
