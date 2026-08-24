@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Contracts\Debug\ExceptionHandler;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
@@ -96,4 +97,84 @@ it('offers back on the dd overlay too when the stack is deep', function () {
     );
 
     expect(overlayJson($screen))->toContain('Go back');
+});
+
+it('reports a caught exception once, not again on every overlay repaint', function () {
+    // renderErrorScreen serves two callers: a catch site handing over a new
+    // throwable, and the overlay repainting the one already on screen. Only
+    // the first is a reportable event — otherwise each tap of the font-size
+    // control files another Sentry event for the same exception.
+    $reported = [];
+
+    app()->make(ExceptionHandler::class);
+    app()->bind(ExceptionHandler::class, function () use (&$reported) {
+        return new class($reported) implements ExceptionHandler
+        {
+            public function __construct(private array &$reported) {}
+
+            public function report(Throwable $e): void
+            {
+                $this->reported[] = $e;
+            }
+
+            public function shouldReport(Throwable $e): bool
+            {
+                return true;
+            }
+
+            public function render($request, Throwable $e)
+            {
+                return null;
+            }
+
+            public function renderForConsole($output, Throwable $e): void {}
+        };
+    });
+
+    $screen = Native::test(CounterScreen::class);
+    $boom = new RuntimeException('Reported once');
+
+    $screen->instance()->renderErrorScreen($boom);
+
+    // The overlay font-size control repaints by handing the same throwable back.
+    $screen->instance()->__overlaySetFontSize(20);
+    $screen->instance()->__overlaySetFontSize(24);
+
+    expect($reported)->toHaveCount(1)
+        ->and($reported[0])->toBe($boom);
+});
+
+it('reports a genuinely new exception on the error screen', function () {
+    $reported = [];
+
+    app()->bind(ExceptionHandler::class, function () use (&$reported) {
+        return new class($reported) implements ExceptionHandler
+        {
+            public function __construct(private array &$reported) {}
+
+            public function report(Throwable $e): void
+            {
+                $this->reported[] = $e;
+            }
+
+            public function shouldReport(Throwable $e): bool
+            {
+                return true;
+            }
+
+            public function render($request, Throwable $e)
+            {
+                return null;
+            }
+
+            public function renderForConsole($output, Throwable $e): void {}
+        };
+    });
+
+    $screen = Native::test(CounterScreen::class);
+
+    $screen->instance()->renderErrorScreen(new RuntimeException('first'));
+    $screen->instance()->renderErrorScreen(new RuntimeException('second'));
+
+    expect($reported)->toHaveCount(2);
 });

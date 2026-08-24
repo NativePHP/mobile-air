@@ -53,7 +53,6 @@ trait WatchesAndroid
                 $this->setupViteDevServerForwarding($this->vitePort);
             }
         }
-
         $this->startAndroidWatching();
     }
 
@@ -211,7 +210,6 @@ trait WatchesAndroid
     {
         // Service the interactive terminal (keypresses, activity line)
         $this->pumpWatchTerminal();
-
         // Check if we should sync public/build
         $this->checkAndSyncPublicBuild();
 
@@ -317,10 +315,10 @@ trait WatchesAndroid
         // Check if adb reverse is still active
         $process = $this->adb('reverse', '--list');
         $process->run();
+        $reverses = $process->isSuccessful() ? $process->getOutput() : '';
 
-        if (! $process->isSuccessful() || ! str_contains($process->getOutput(), "tcp:{$this->vitePort}")) {
-            $reverseProcess = $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}");
-            $reverseProcess->run();
+        if (! str_contains($reverses, "tcp:{$this->vitePort}")) {
+            $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}")->run();
         }
     }
 

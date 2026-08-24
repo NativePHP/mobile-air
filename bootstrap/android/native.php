@@ -28,6 +28,10 @@ $_timing['autoload'] = microtime(true);
 $app = require_once $_SERVER['LARAVEL_BOOTSTRAP_PATH'].'/app.php';
 $_timing['bootstrap'] = microtime(true);
 
+// Catch uncaught throwables and PHP fatals this request can't trap.
+require_once __DIR__.'/../shared/devtools-boot-report.php';
+nativephp_devtools_install_handlers($app->storagePath());
+
 /*
 |--------------------------------------------------------------------------
 | Normalize incoming environment
@@ -123,6 +127,9 @@ try {
     $response->sendContent();
 
 } catch (Throwable $e) {
+    require_once __DIR__.'/../shared/devtools-boot-report.php';
+    nativephp_devtools_boot_report($e, isset($app) ? $app->storagePath() : null);
+
     echo 'DEBUG: Request handling error: '.$e->getMessage()."\n";
     echo 'DEBUG: Error type: '.get_class($e)."\n";
     echo "DEBUG: Trace:\n".$e->getTraceAsString()."\n";

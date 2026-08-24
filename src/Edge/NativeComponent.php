@@ -2118,7 +2118,18 @@ abstract class NativeComponent
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                // Guarded like render and dispatch: a throwing #[Poll]
+                // method used to unwind the whole session, losing the
+                // navigation stack and replacing the screen with raw
+                // error text instead of the error overlay.
+                try {
+                    $this->runDuePolls();
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog('poll FAILED in '.static::class.': '.$e->getMessage());
+                    $this->renderErrorScreen($e);
+                }
 
                 continue;
             }
@@ -2317,7 +2328,18 @@ abstract class NativeComponent
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                // Guarded like render and dispatch: a throwing #[Poll]
+                // method used to unwind the whole session, losing the
+                // navigation stack and replacing the screen with raw
+                // error text instead of the error overlay.
+                try {
+                    $this->runDuePolls();
+                } catch (NativeDumpException $e) {
+                    $this->renderDumpScreen($e);
+                } catch (\Throwable $e) {
+                    NativeRouter::debugLog('poll FAILED in '.static::class.': '.$e->getMessage());
+                    $this->renderErrorScreen($e);
+                }
 
                 continue;
             }
@@ -2677,8 +2699,51 @@ abstract class NativeComponent
 
     // ── Error screen ────────────────────────────────
 
+    /**
+     * Hand a throwable the EDGE loop caught to Laravel's exception handler.
+     *
+     * The loop catches around render and dispatch and draws its own error
+     * screen, so these never reached `report()` — which meant an EDGE screen
+     * could throw and Sentry, Flare, Telescope, Bugsnag and laravel.log all
+     * saw nothing. Reporting here puts native screens on the same footing as
+     * every other part of a Laravel app, and costs nothing when no reporter
+     * is installed.
+     *
+     * Never allowed to throw: this runs on the error path, and a failure
+     * here would replace a useful exception with a useless one.
+     *
+     * It can block, though. Reporters that ship over the network send
+     * inline rather than deferring (sentry-php's default transport does;
+     * its shutdown flush never fires in the persistent runtime anyway), so
+     * an unreachable endpoint costs that reporter's connect + request
+     * timeout before the error screen paints. The EDGE loop runs on its
+     * own thread, not the platform UI thread, so this delays the error
+     * screen on an already-broken path — it cannot hang the app or trip
+     * the input watchdog.
+     */
+    protected function reportToLaravel(\Throwable $e): void
+    {
+        try {
+            report($e);
+        } catch (\Throwable) {
+            // Reporting a failure must not create a second one.
+        }
+    }
+
     public function renderErrorScreen(\Throwable $e): void
     {
+        // This method has two callers: a catch site handing over a NEW
+        // throwable, and the overlay repainting the one already on screen
+        // (__overlaySetFontSize passes $this->errorException straight back).
+        // Only the first is a reportable event — without this guard, every
+        // tap of the font-size control on the error screen files another
+        // Sentry event and another log line for the same exception, and
+        // that control is exactly what a developer taps repeatedly while
+        // trying to read a trace.
+        if ($this->errorException !== $e) {
+            $this->reportToLaravel($e);
+        }
+
         $this->nativeHasError = true;
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;

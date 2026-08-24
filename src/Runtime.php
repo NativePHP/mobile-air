@@ -58,6 +58,12 @@ class Runtime
             throw new \RuntimeException('Runtime not booted. Call Runtime::boot() first.');
         }
 
+        // A fatal in a previous dispatch bails out past PHP catch while the
+        // persistent host survives — report it on this next entry.
+        if (function_exists('nativephp_devtools_report_last_fatal')) {
+            nativephp_devtools_report_last_fatal(function_exists('storage_path') ? storage_path() : null);
+        }
+
         // Reset state from previous dispatch
         static::reset();
 
@@ -73,6 +79,16 @@ class Runtime
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
+            // Laravel's HTTP kernel reports what it catches, so an ordinary
+            // request exception never reaches here. What does is a throwable
+            // that unwound the EDGE runtime past its own catch sites — those
+            // have been reported by nobody.
+            try {
+                report($e);
+            } catch (\Throwable) {
+                // Never turn one failure into two on the error path.
+            }
+
             $response = new Response(
                 'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
                 500,

@@ -13,12 +13,14 @@ use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
 use Native\Mobile\Commands\CredentialsCommand;
 use Native\Mobile\Commands\DebugCommand;
+use Native\Mobile\Commands\DevicesCommand;
 use Native\Mobile\Commands\InstallCommand;
 use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\LaunchEmulatorCommand;
 use Native\Mobile\Commands\MakeNativeComponentCommand;
 use Native\Mobile\Commands\MakeNativeTestCommand;
 use Native\Mobile\Commands\OpenProjectCommand;
+use Native\Mobile\Commands\OpenUrlCommand;
 use Native\Mobile\Commands\PackageCommand;
 use Native\Mobile\Commands\PluginBoostCommand;
 use Native\Mobile\Commands\PluginCreateCommand;
@@ -31,7 +33,9 @@ use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunCommand;
+use Native\Mobile\Commands\ScreenshotCommand;
 use Native\Mobile\Commands\SimCommand;
+use Native\Mobile\Commands\StatusCommand;
 use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
@@ -76,6 +80,10 @@ class NativeServiceProvider extends PackageServiceProvider
                 JumpCommand::class,
                 WatchCommand::class,
                 TailCommand::class,
+                DevicesCommand::class,
+                OpenUrlCommand::class,
+                ScreenshotCommand::class,
+                StatusCommand::class,
                 VersionCommand::class,
                 PluginBoostCommand::class,
                 PluginCreateCommand::class,
@@ -242,6 +250,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
     public function packageBooted()
     {
+        $this->reinstallDevtoolsExceptionHandler();
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->registerNativeComponents();
@@ -578,6 +587,22 @@ class NativeServiceProvider extends PackageServiceProvider
         // and getting it wrong would silently disable the middleware. Pushing
         // it in a console context is harmless — nothing dispatches a request.
         $this->app->make(HttpKernel::class)->pushMiddleware(HonorsRequestedNativeScreen::class);
+    }
+
+    /**
+     * The device bootstraps install a devtools exception handler before the
+     * framework boots, but Laravel's HandleExceptions bootstrapper calls
+     * set_exception_handler() — which replaces rather than chains — so that
+     * early install is discarded and uncaught throwables would never be
+     * reported. Put it back now that Laravel's handler is the one to chain.
+     *
+     * No-op off-device: the helper only exists when a bootstrap loaded it.
+     */
+    private function reinstallDevtoolsExceptionHandler(): void
+    {
+        if (function_exists('nativephp_devtools_install_exception_handler')) {
+            nativephp_devtools_install_exception_handler(storage_path());
+        }
     }
 
     private function setupComposerPostUpdateScript()

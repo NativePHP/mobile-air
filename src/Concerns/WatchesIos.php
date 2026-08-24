@@ -101,7 +101,6 @@ trait WatchesIos
             }
 
             $this->iosAppContainer = $derivedDataPath;
-
             $this->startIosWatching($derivedDataPath, $viteHotFile);
         } else {
             $this->startIosWatchingDevice($target, $appId);
@@ -144,7 +143,6 @@ trait WatchesIos
             $this->warn('iproxy not found - files will sync but automatic reload is unavailable.');
             $this->line('Install it for automatic reload: <fg=cyan>brew install libimobiledevice</fg=cyan>');
         }
-
         $basePath = base_path();
 
         $this->startWatchConsole('ios', $this->iosDeviceLabel());
