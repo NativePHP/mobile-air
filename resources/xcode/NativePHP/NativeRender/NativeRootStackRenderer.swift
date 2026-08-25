@@ -229,7 +229,7 @@ struct NativeRootStackRenderer: View {
             }
             .toolbarColorScheme(toolbarScheme, for: .navigationBar)
             .modifier(HideNavBarModifier(hidden: hideNavBar))
-            .modifier(StackBarBackgroundModifier(argb: bgArgb))
+            .modifier(StackBarBackgroundModifier(argb: bgArgb, inline: displayModeStr == "inline"))
             .modifier(StackBottomBarInsetModifier(bottomBar: bottomBar))
             // Inline search field — Apple HIG / Expo pattern. The
             // SearchableNavBarModifier (defined in NativeRootTabsRenderer.swift,
@@ -398,22 +398,35 @@ private struct StackBottomBarInsetModifier: ViewModifier {
 /// explicit color, so iOS 26 keeps its adaptive Liquid Glass material
 /// on the navigation bar instead of having `.clear` forcibly applied.
 ///
-/// The visibility request is dropped on iOS 26. Under Liquid Glass, forcing
-/// the navigation bar background visible doesn't just recolor the bar — it
-/// drops the large-title row entirely, leaving the toolbar items behind on
-/// an empty bar. Verified on a device: both spellings do it, the deprecated
-/// `.toolbarBackground(.visible, for:)` and the renamed
-/// `.toolbarBackgroundVisibility(_:for:)`, so this is the request itself and
-/// not the API name. The style overload alone already makes the bar opaque
-/// there, so the explicit visibility call buys nothing. Pre-26 still needs
-/// the pair — without it the color is applied to a hidden bar and never
-/// shows.
+/// The visibility request is dropped on iOS 26 for large titles. Under
+/// Liquid Glass, forcing the navigation bar background visible doesn't just
+/// recolor a large-title bar — it drops the large-title row entirely,
+/// leaving the toolbar items behind on an empty bar. Verified on a device:
+/// both spellings do it, the deprecated `.toolbarBackground(.visible, for:)`
+/// and the renamed `.toolbarBackgroundVisibility(_:for:)`, so this is the
+/// request itself and not the API name.
+///
+/// INLINE bars are the opposite case: on iOS 26.2 the style overload plus
+/// `containerBackground(for: .navigation)` no longer paint an inline bar at
+/// all — the color only ever shows once content scrolls under the bar, so a
+/// short screen renders the bar transparent forever (verified on the 26.2
+/// simulator: title and actions take their colors, the band stays clear).
+/// Inline bars have no large-title row to lose, so they re-request
+/// `.visible` and get their band back. Pre-18 still needs the pair
+/// unconditionally — without it the color is applied to a hidden bar and
+/// never shows.
 private struct StackBarBackgroundModifier: ViewModifier {
     let argb: Int
+    let inline: Bool
 
     func body(content: Content) -> some View {
         if argb != 0 {
-            if #available(iOS 18.0, *) {
+            if #available(iOS 18.0, *), inline {
+                content
+                    .toolbarBackground(Color(argb: argb), for: .navigationBar)
+                    .toolbarBackground(.visible, for: .navigationBar)
+                    .containerBackground(Color(argb: argb), for: .navigation)
+            } else if #available(iOS 18.0, *) {
                 // `containerBackground(for: .navigation)` themes the WHOLE
                 // navigation surface — the scroll edge, the expanded
                 // large-title region, and the status-bar area — while bar
