@@ -842,8 +842,10 @@ class LaravelEnvironment(private val context: Context) {
 
             setEnvironmentVariables(
                 // Laravel environment settings
-                "APP_URL" to "http://127.0.0.1",
-                "ASSET_URL" to "http://127.0.0.1/_assets",
+                // https: 127.0.0.1 must be a secure context (#148); fully
+                // intercepted below, so generated URLs never hit real TLS.
+                "APP_URL" to "https://127.0.0.1",
+                "ASSET_URL" to "https://127.0.0.1/_assets",
                 "DB_CONNECTION" to "sqlite",
                 "DB_DATABASE" to "${appStorageDir.absolutePath}/persisted_data/database/database.sqlite",
                 "CACHE_DRIVER" to "file",

@@ -22,7 +22,9 @@ object WebCookieMirror {
 
     fun set(cookieHeaderValue: String) {
         if (!available) return
-        CookieManager.getInstance().setCookie("http://127.0.0.1", cookieHeaderValue)
+        // Must match the WebView's real origin (now https, see #148/#381) or
+        // Secure-flagged cookies silently fail to write (see #334).
+        CookieManager.getInstance().setCookie("https://127.0.0.1", cookieHeaderValue)
     }
 
     fun flush() {

@@ -225,7 +225,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         // drive the first request through webView.loadUrl. First
                         // content fires on the page's first commit.
                         val renderer = ensureWebRenderer()
-                        val fullUrl = "http://127.0.0.1$target"
+                        // https, not http: 127.0.0.1 must be a secure context (mobile-air#148) —
+                        // fully intercepted below, so no real TLS handshake is needed.
+                        val fullUrl = "https://127.0.0.1$target"
                         Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
                         renderer.webView.loadUrl(fullUrl)
                     }
@@ -324,7 +326,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
                         // Fall back to the legacy path rather than wedge on splash.
-                        ensureWebRenderer().webView.loadUrl("http://127.0.0.1$uri")
+                        ensureWebRenderer().webView.loadUrl("https://127.0.0.1$uri")
                     }
                 }
             }
@@ -377,7 +379,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         Log.d("NativeBoot", "⇄ EXIT_WEB → $path")
         pendingWebSwap = true
         val renderer = ensureWebRenderer()
-        renderer.webView.loadUrl("http://127.0.0.1$path")
+        renderer.webView.loadUrl("https://127.0.0.1$path")
     }
 
     /**
@@ -429,7 +431,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             if (!firstContentReported && !isFinishing && !isDestroyed) {
                 Log.w("MainActivity", "⏰ No content 10s after native boot — falling back to WebView")
                 val target = LaravelEnvironment.getStartURL(this)
-                ensureWebRenderer().webView.loadUrl("http://127.0.0.1$target")
+                ensureWebRenderer().webView.loadUrl("https://127.0.0.1$target")
                 onFirstContent("watchdog")
             }
         }, 10_000L)
@@ -628,7 +630,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             Log.d("DeepLink", "🚀 native-ui: dispatching __deeplink event: $route")
             NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"}")
         } else {
-            val fullUrl = "http://127.0.0.1$route"
+            val fullUrl = "https://127.0.0.1$route"
             Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
             ensureWebRenderer().webView.loadUrl(fullUrl)
         }
@@ -1026,7 +1028,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 web.clearHistory()
                                 web.clearFormData()
 
-                                val currentUrl = web.url ?: "http://127.0.0.1/"
+                                val currentUrl = web.url ?: "https://127.0.0.1/"
                                 val separator = if (currentUrl.contains("?")) "&" else "?"
                                 val cacheBustUrl = "${currentUrl}${separator}_cb=${System.currentTimeMillis()}"
 

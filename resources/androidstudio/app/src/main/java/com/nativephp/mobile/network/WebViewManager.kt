@@ -248,7 +248,7 @@ class WebViewManager(
                 // Handle relative URLs (convert to php://)
                 if (url.startsWith("/")) {
                     val uri = request.url
-                    val fullUrl = "http://127.0.0.1${uri.encodedPath}" +
+                    val fullUrl = "https://127.0.0.1${uri.encodedPath}" +
                         (uri.encodedQuery?.let { "?$it" } ?: "")
 
                     Log.d(TAG, "🛠️ Rewriting relative URL with query: $fullUrl")
@@ -277,7 +277,7 @@ class WebViewManager(
                 if (url.startsWith("http://") && !url.contains(".") && !url.contains("127.0.0.1") && !url.contains("localhost")) {
                     val host = url.substring("http://".length).substringBefore("/")
                     val path = if (url.contains("/")) "/${url.substringAfter("/")}" else "/"
-                    val correctedUrl = "http://127.0.0.1/$host$path"
+                    val correctedUrl = "https://127.0.0.1/$host$path"
 
                     Log.d(TAG, "🔄 Correcting malformed URL from $url to $correctedUrl")
 
