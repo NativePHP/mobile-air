@@ -672,22 +672,37 @@ private struct TabsActionView: View {
         let disabled = action.props.getBool("disabled")
         let subItems = action.children.filter { $0.type == "top_bar_action" }
 
+        let label = action.props.getString("label", default: "")
+        let showLabel = action.props.getBool("show_label") && !label.isEmpty
+        let hasIcon = !action.props.getString("icon", default: "").isEmpty
+
         if subItems.isEmpty {
             Button {
                 if action.onPress != 0 {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(textColor)
-                    // Explicit dim: the hard-set foregroundColor above keeps
-                    // SwiftUI's automatic disabled greying from showing.
-                    .opacity(disabled ? 0.4 : 1)
-                    // same pill-sized hit region for
-                    // the trailing actions (plain Button and Menu labels alike).
-                    .frame(minWidth: 32, minHeight: 44)
-                    .contentShape(Rectangle().inset(by: -6))
+                Group {
+                    if showLabel && hasIcon {
+                        // .titleAndIcon is required — toolbars collapse a
+                        // Label to icon-only by default.
+                        Label(label, systemImage: getIconForName(icon))
+                            .labelStyle(.titleAndIcon)
+                    } else if showLabel {
+                        Text(label)
+                    } else {
+                        Image(systemName: getIconForName(icon))
+                    }
+                }
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(textColor)
+                // Explicit dim: the hard-set foregroundColor above keeps
+                // SwiftUI's automatic disabled greying from showing.
+                .opacity(disabled ? 0.4 : 1)
+                // same pill-sized hit region for
+                // the trailing actions (plain Button and Menu labels alike).
+                .frame(minWidth: 32, minHeight: 44)
+                .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
         } else {
