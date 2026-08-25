@@ -384,10 +384,13 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 @Composable
 internal fun TopBarActionView(action: NativeUINode) {
     val icon = action.props.getString("icon", "more_vert")
+    val disabled = action.props.getBool("disabled")
     val subItems = action.children.filter { it.type == "top_bar_action" }
 
     if (subItems.isEmpty()) {
-        IconButton(onClick = {
+        // `enabled=false` swallows the tap and swaps LocalContentColor for
+        // the M3 disabled tone, so the icon greys out on its own.
+        IconButton(enabled = !disabled, onClick = {
             if (action.onPress != 0) {
                 NativeElementBridge.sendPressEvent(action.onPress, action.id)
             }
@@ -396,7 +399,7 @@ internal fun TopBarActionView(action: NativeUINode) {
         }
     } else {
         var expanded by remember { mutableStateOf(false) }
-        IconButton(onClick = { expanded = true }) {
+        IconButton(enabled = !disabled, onClick = { expanded = true }) {
             MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -411,6 +414,7 @@ internal fun TopBarActionView(action: NativeUINode) {
                 val isDestructive = item.props.getBool("destructive")
                 val destructiveColor = MaterialTheme.colorScheme.error
                 DropdownMenuItem(
+                    enabled = !item.props.getBool("disabled"),
                     text = {
                         Text(
                             itemLabel,
