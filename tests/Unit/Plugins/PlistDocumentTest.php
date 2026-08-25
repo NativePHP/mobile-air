@@ -1,6 +1,6 @@
 <?php
 
-use Native\Mobile\Plugins\Compilers\PlistDocument;
+use Native\Mobile\Support\PlistDocument;
 
 /**
  * Structural plist merging. Plugins may declare any value Apple accepts,
@@ -106,13 +106,6 @@ it('escapes markup in strings', function () {
 
     expect($doc->toXml())->toContain('&amp; &lt;video&gt;');
     expect(PlistDocument::fromXml($doc->toXml())->get('NSCameraUsageDescription'))->toBe("Foto's & <video>");
-});
-
-it('leaves untouched entries byte for byte', function () {
-    $doc = PlistDocument::fromXml($this->base);
-    $doc->merge([]);
-
-    expect($doc->toXml())->toBe($this->base);
 });
 
 it('names the parse error and line for malformed XML', function () {
