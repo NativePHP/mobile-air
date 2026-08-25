@@ -19,6 +19,11 @@ use ReflectionNamedType;
  * It enforces component action rules: only public userland methods may be
  * called, lifecycle hooks are protected, ordinary classes are injected from
  * Laravel's container, and routable models/backed enums are implicitly bound.
+ *
+ * Derived from Livewire's `Livewire\ImplicitlyBoundMethod`; the lifecycle-hook
+ * guard in ensureCallable() comes from
+ * `Livewire\Features\SupportLifecycleHooks\SupportLifecycleHooks::call()`.
+ * Copyright (c) Caleb Porzio, MIT licensed. See THIRD-PARTY.md.
  */
 class ComponentMethodInvoker extends BoundMethod
 {

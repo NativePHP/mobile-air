@@ -6,7 +6,13 @@ use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use ReflectionProperty;
 
-/** Central state writer for native:model and the component test harness. */
+/**
+ * Central state writer for native:model and the component test harness.
+ *
+ * The updating/updated hook names and their ordering are derived from
+ * Livewire's `Livewire\Features\SupportLifecycleHooks\SupportLifecycleHooks`.
+ * Copyright (c) Caleb Porzio, MIT licensed. See THIRD-PARTY.md.
+ */
 class ComponentState
 {
     public static function set(NativeComponent $component, string $path, mixed $value): void
