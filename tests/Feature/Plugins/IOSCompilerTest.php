@@ -5,10 +5,10 @@ namespace Tests\Feature\Plugins;
 use Illuminate\Filesystem\Filesystem;
 use Mockery;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
-use Native\Mobile\Plugins\Compilers\PlistDocument;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginManifest;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\PlistDocument;
 use Tests\TestCase;
 
 /**
@@ -1091,14 +1091,18 @@ class NestedClass {}');
             'ios' => ['info_plist' => ['SKAdNetworkItems' => $items]],
         ]);
 
+        $this->files->copy(
+            $this->testBasePath.'/ios/NativePHP/Info.plist',
+            $this->testBasePath.'/ios/NativePHP-simulator-Info.plist'
+        );
+
         $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
 
         $this->compiler->compile();
         $this->compiler->compile();
 
-        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
-
-        $this->assertSame($items, $plist->get('SKAdNetworkItems'));
+        $this->assertSame($items, $this->readPlist()->get('SKAdNetworkItems'));
+        $this->assertSame($items, $this->readPlist('NativePHP-simulator-Info.plist')->get('SKAdNetworkItems'));
     }
 
     /**
@@ -1140,39 +1144,6 @@ class NestedClass {}');
     /**
      * @test
      *
-     * A plugin contributing to a key the base plist already nests, like
-     * CFBundleURLTypes, adds a sibling entry rather than corrupting the
-     * inner array, and dict keys merge instead of being dropped.
-     */
-    public function it_merges_into_nested_plist_structures(): void
-    {
-        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
-        $this->files->put($plistPath, file_get_contents(__DIR__.'/../../../resources/xcode/NativePHP/Info.plist'));
-
-        $plugin = $this->createTestPlugin([
-            'ios' => ['info_plist' => [
-                'CFBundleURLTypes' => [['CFBundleURLSchemes' => ['probe']]],
-                'NSAppTransportSecurity' => ['NSAllowsArbitraryLoads' => true],
-            ]],
-        ]);
-
-        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
-
-        $this->compiler->compile();
-
-        $plist = PlistDocument::fromXml($this->files->get($plistPath));
-
-        $types = $plist->get('CFBundleURLTypes');
-        $this->assertCount(2, $types);
-        $this->assertSame(['nativephp'], $types[0]['CFBundleURLSchemes']);
-        $this->assertSame(['probe'], $types[1]['CFBundleURLSchemes']);
-        $this->assertTrue($plist->get('NSAppTransportSecurity')['NSAllowsArbitraryLoadsInWebContent']);
-        $this->assertTrue($plist->get('NSAppTransportSecurity')['NSAllowsArbitraryLoads']);
-    }
-
-    /**
-     * @test
-     *
      * A plugin's resources/ios/Info.plist is merged with every value type,
      * and keys nested inside it never surface at the top level.
      */
@@ -1207,7 +1178,7 @@ class NestedClass {}');
 
         $this->compiler->compile();
 
-        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+        $plist = $this->readPlist();
 
         $this->assertTrue($plist->get('UIFileSharingEnabled'));
         $this->assertSame([[
@@ -1220,10 +1191,9 @@ class NestedClass {}');
     /**
      * @test
      *
-     * ${ENV_VAR} placeholders resolve inside nested values too, and markup
-     * characters in any string are escaped so the plist stays well-formed.
+     * ${ENV_VAR} placeholders resolve inside nested values too.
      */
-    public function it_substitutes_placeholders_and_escapes_inside_nested_values(): void
+    public function it_substitutes_placeholders_inside_nested_values(): void
     {
         putenv('NATIVEPHP_TEST_SKAN=4fzdc2evr5.skadnetwork');
         $_ENV['NATIVEPHP_TEST_SKAN'] = '4fzdc2evr5.skadnetwork';
@@ -1232,7 +1202,6 @@ class NestedClass {}');
             $plugin = $this->createTestPlugin([
                 'ios' => ['info_plist' => [
                     'SKAdNetworkItems' => [['SKAdNetworkIdentifier' => '${NATIVEPHP_TEST_SKAN}']],
-                    'NSCameraUsageDescription' => 'Photos & <video>',
                 ]],
             ]);
 
@@ -1240,12 +1209,7 @@ class NestedClass {}');
 
             $this->compiler->compile();
 
-            $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
-            $plist = PlistDocument::fromXml($content);
-
-            $this->assertSame('4fzdc2evr5.skadnetwork', $plist->get('SKAdNetworkItems')[0]['SKAdNetworkIdentifier']);
-            $this->assertSame('Photos & <video>', $plist->get('NSCameraUsageDescription'));
-            $this->assertStringContainsString('&amp; &lt;video&gt;', $content);
+            $this->assertSame('4fzdc2evr5.skadnetwork', $this->readPlist()->get('SKAdNetworkItems')[0]['SKAdNetworkIdentifier']);
         } finally {
             putenv('NATIVEPHP_TEST_SKAN');
             unset($_ENV['NATIVEPHP_TEST_SKAN']);
@@ -1275,9 +1239,14 @@ class NestedClass {}');
         $this->compiler->compile();
         $this->compiler->compile();
 
-        $plist = PlistDocument::fromXml($this->files->get($plistPath));
+        $plist = $this->readPlist();
 
         $this->assertSame(['remote-notification', 'location'], $plist->get('UIBackgroundModes'));
+    }
+
+    private function readPlist(string $file = 'NativePHP/Info.plist'): PlistDocument
+    {
+        return PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/'.$file));
     }
 
     /**

@@ -1,11 +1,12 @@
 <?php
 
-namespace Native\Mobile\Plugins\Compilers;
+namespace Native\Mobile\Support;
 
 use DOMDocument;
 use DOMElement;
 use DOMNode;
 use DOMText;
+use DOMXPath;
 use InvalidArgumentException;
 
 /**
@@ -17,15 +18,10 @@ use InvalidArgumentException;
  */
 class PlistDocument
 {
-    protected DOMDocument $dom;
-
-    protected DOMElement $root;
-
-    protected function __construct(DOMDocument $dom, DOMElement $root)
-    {
-        $this->dom = $dom;
-        $this->root = $root;
-    }
+    protected function __construct(
+        protected DOMDocument $dom,
+        protected DOMElement $root,
+    ) {}
 
     public static function fromXml(string $xml): static
     {
@@ -42,14 +38,14 @@ class PlistDocument
 
         if (! $loaded) {
             throw new InvalidArgumentException(
-                'Info.plist is not well-formed XML'.($error ? ': '.trim($error->message).' (line '.$error->line.')' : '.')
+                'Plist is not well-formed XML'.($error ? ': '.trim($error->message).' (line '.$error->line.')' : '.')
             );
         }
 
-        $root = $dom->documentElement?->getElementsByTagName('dict')->item(0);
+        $root = (new DOMXPath($dom))->query('/*/dict[1]')->item(0);
 
-        if (! $root instanceof DOMElement || $root->parentNode !== $dom->documentElement) {
-            throw new InvalidArgumentException('Info.plist has no root <dict>.');
+        if (! $root instanceof DOMElement) {
+            throw new InvalidArgumentException('Plist has no root <dict>.');
         }
 
         return new static($dom, $root);
@@ -65,18 +61,12 @@ class PlistDocument
      */
     public function all(): array
     {
-        $entries = [];
-
-        foreach ($this->pairs() as $key => $value) {
-            $entries[$key] = static::fromNode($value);
-        }
-
-        return $entries;
+        return static::fromNode($this->root);
     }
 
     public function get(string $key): mixed
     {
-        $value = $this->pairs()[$key] ?? null;
+        $value = static::pairsOf($this->root)[$key] ?? null;
 
         return $value ? static::fromNode($value) : null;
     }
@@ -94,7 +84,7 @@ class PlistDocument
     public function set(string $key, mixed $value): void
     {
         $node = $this->toNode($value, 1);
-        $existing = $this->pairs()[$key] ?? null;
+        $existing = static::pairsOf($this->root)[$key] ?? null;
 
         if ($existing) {
             $existing->parentNode->replaceChild($node, $existing);
@@ -108,11 +98,8 @@ class PlistDocument
             ? $this->root->lastChild
             : $this->root->appendChild($this->dom->createTextNode("\n"));
 
-        $keyNode = $this->dom->createElement('key');
-        $keyNode->appendChild($this->dom->createTextNode($key));
-
         $this->root->insertBefore($this->dom->createTextNode("\n\t"), $anchor);
-        $this->root->insertBefore($keyNode, $anchor);
+        $this->root->insertBefore($this->textElement('key', $key), $anchor);
         $this->root->insertBefore($this->dom->createTextNode("\n\t"), $anchor);
         $this->root->insertBefore($node, $anchor);
     }
@@ -123,7 +110,7 @@ class PlistDocument
      * key by key, an empty array contributes nothing, and any other
      * pairing is replaced outright by the incoming value.
      */
-    public static function mergeValues(mixed $existing, mixed $incoming): mixed
+    protected static function mergeValues(mixed $existing, mixed $incoming): mixed
     {
         if (! is_array($incoming)) {
             return $incoming;
@@ -160,20 +147,16 @@ class PlistDocument
     }
 
     /**
-     * Top-level <key> text mapped to its value element.
+     * A dict's <key> text mapped to the value element that follows it.
      *
      * @return array<string, DOMElement>
      */
-    protected function pairs(): array
+    protected static function pairsOf(DOMElement $dict): array
     {
         $pairs = [];
         $pendingKey = null;
 
-        foreach ($this->root->childNodes as $child) {
-            if (! $child instanceof DOMElement) {
-                continue;
-            }
-
+        foreach (static::elementChildren($dict) as $child) {
             if ($child->tagName === 'key') {
                 $pendingKey = $child->textContent;
             } elseif ($pendingKey !== null) {
@@ -192,30 +175,10 @@ class PlistDocument
             'false' => false,
             'integer' => (int) $node->textContent,
             'real' => (float) $node->textContent,
-            'array' => array_map(
-                fn (DOMElement $child) => static::fromNode($child),
-                static::elementChildren($node)
-            ),
-            'dict' => static::dictFromNode($node),
+            'array' => array_map([static::class, 'fromNode'], static::elementChildren($node)),
+            'dict' => array_map([static::class, 'fromNode'], static::pairsOf($node)),
             default => $node->textContent,
         };
-    }
-
-    protected static function dictFromNode(DOMElement $node): array
-    {
-        $dict = [];
-        $pendingKey = null;
-
-        foreach (static::elementChildren($node) as $child) {
-            if ($child->tagName === 'key') {
-                $pendingKey = $child->textContent;
-            } elseif ($pendingKey !== null) {
-                $dict[$pendingKey] = static::fromNode($child);
-                $pendingKey = null;
-            }
-        }
-
-        return $dict;
     }
 
     protected function toNode(mixed $value, int $depth): DOMNode
@@ -225,18 +188,15 @@ class PlistDocument
         }
 
         if (is_int($value)) {
-            return $this->dom->createElement('integer', (string) $value);
+            return $this->textElement('integer', (string) $value);
         }
 
         if (is_float($value)) {
-            return $this->dom->createElement('real', (string) $value);
+            return $this->textElement('real', (string) $value);
         }
 
         if (! is_array($value)) {
-            $node = $this->dom->createElement('string');
-            $node->appendChild($this->dom->createTextNode((string) $value));
-
-            return $node;
+            return $this->textElement('string', (string) $value);
         }
 
         $isList = array_is_list($value);
@@ -245,11 +205,8 @@ class PlistDocument
 
         foreach ($value as $key => $item) {
             if (! $isList) {
-                $keyNode = $this->dom->createElement('key');
-                $keyNode->appendChild($this->dom->createTextNode((string) $key));
-
                 $node->appendChild($this->dom->createTextNode($indent));
-                $node->appendChild($keyNode);
+                $node->appendChild($this->textElement('key', (string) $key));
             }
 
             $node->appendChild($this->dom->createTextNode($indent));
@@ -261,6 +218,18 @@ class PlistDocument
         }
 
         return $node;
+    }
+
+    /**
+     * An element whose text is escaped, which createElement's
+     * value argument would not do for characters like "&".
+     */
+    protected function textElement(string $tag, string $text): DOMElement
+    {
+        $element = $this->dom->createElement($tag);
+        $element->appendChild($this->dom->createTextNode($text));
+
+        return $element;
     }
 
     /**
@@ -296,11 +265,11 @@ class PlistDocument
      */
     protected static function canonical(mixed $value): string
     {
-        if (is_array($value) && ! array_is_list($value)) {
-            ksort($value);
-        }
-
         if (is_array($value)) {
+            if (! array_is_list($value)) {
+                ksort($value);
+            }
+
             $value = array_map([static::class, 'canonical'], $value);
         }
 

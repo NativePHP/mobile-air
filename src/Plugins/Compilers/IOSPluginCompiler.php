@@ -9,6 +9,7 @@ use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\SwiftSourceFilter;
+use Native\Mobile\Support\PlistDocument;
 use Native\Mobile\Support\Stub;
 
 class IOSPluginCompiler
@@ -176,9 +177,6 @@ class IOSPluginCompiler
 
         // Write per-locale InfoPlist.strings for any localized permission entries
         $this->writeInfoPlistLocalizations($allPlugins);
-
-        // Merge background modes into Info.plist
-        $this->mergeBackgroundModes($allPlugins);
 
         // Merge entitlements from plugins
         $this->mergeEntitlements($allPlugins);
@@ -413,48 +411,66 @@ class IOSPluginCompiler
     }
 
     /**
-     * Merge plugin Info.plist entries into main plist and simulator plist
+     * Merge every plugin's Info.plist contributions into the device and
+     * simulator plists: a resources/ios/Info.plist file, the manifest's
+     * info_plist entries and its background modes, with app-level
+     * overrides applied last so they always win over plugins.
      */
     protected function mergeInfoPlistEntries(Collection $plugins): void
     {
-        // Both device and simulator Info.plist files need plugin entries
         $plistPaths = [
             $this->iosProjectPath.'/NativePHP/Info.plist',
             $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
         ];
-
-        $appOverrides = $this->getAppInfoPlistOverrides();
 
         foreach ($plistPaths as $plistPath) {
             if (! $this->files->exists($plistPath)) {
                 continue;
             }
 
-            $plist = $this->files->get($plistPath);
+            $plist = $this->openPlist($plistPath);
 
             foreach ($plugins as $plugin) {
-                // First check for Info.plist file
                 $pluginPlistPath = $plugin->path.'/resources/ios/Info.plist';
 
                 if ($this->files->exists($pluginPlistPath)) {
-                    $pluginPlist = $this->files->get($pluginPlistPath);
-                    $plist = $this->mergePlists($plist, $pluginPlist);
+                    $this->mergeIntoPlist($plist, $this->openPlist($pluginPlistPath)->all());
                 }
 
-                // Also merge info_plist entries from nativephp.json
-                $infoPlistEntries = $plugin->getIosInfoPlist();
-                if (! empty($infoPlistEntries)) {
-                    $plist = $this->injectPlistEntries($plist, $infoPlistEntries);
-                }
+                $this->mergeIntoPlist($plist, $plugin->getIosInfoPlist());
+                $this->mergeIntoPlist($plist, ['UIBackgroundModes' => $plugin->getIosBackgroundModes()]);
             }
 
-            // Apply app-level overrides last so they always win over plugins.
-            if (! empty($appOverrides)) {
-                $plist = $this->injectPlistEntries($plist, $appOverrides);
-            }
+            $this->mergeIntoPlist($plist, $this->getAppInfoPlistOverrides());
 
-            $this->files->put($plistPath, $plist);
+            $this->files->put($plistPath, $plist->toXml());
         }
+    }
+
+    /**
+     * Open a plist, naming the file when it does not parse.
+     */
+    protected function openPlist(string $path): PlistDocument
+    {
+        try {
+            return PlistDocument::fromXml($this->files->get($path));
+        } catch (\InvalidArgumentException $e) {
+            throw new \InvalidArgumentException("{$path}: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Merge entries into a plist, resolving ${ENV_VAR} placeholders on the way in.
+     */
+    protected function mergeIntoPlist(PlistDocument $plist, array $entries): void
+    {
+        array_walk_recursive($entries, function (&$value) {
+            if (is_string($value)) {
+                $value = $this->substituteEnvPlaceholders($value);
+            }
+        });
+
+        $plist->merge($entries);
     }
 
     /**
@@ -626,37 +642,6 @@ class IOSPluginCompiler
     }
 
     /**
-     * Merge a plugin's Info.plist file into the app's, value types intact.
-     */
-    protected function mergePlists(string $main, string $plugin): string
-    {
-        return $this->injectPlistEntries($main, PlistDocument::fromXml($plugin)->all());
-    }
-
-    /**
-     * Merge entries into the plist, resolving placeholders on the way in.
-     */
-    protected function injectPlistEntries(string $plist, array $entries): string
-    {
-        $document = PlistDocument::fromXml($plist);
-        $document->merge($this->substitutePlaceholdersDeep($entries));
-
-        return $document->toXml();
-    }
-
-    /**
-     * Resolve ${ENV_VAR} placeholders in every string of a nested value.
-     */
-    protected function substitutePlaceholdersDeep(mixed $value): mixed
-    {
-        if (is_array($value)) {
-            return array_map(fn ($item) => $this->substitutePlaceholdersDeep($item), $value);
-        }
-
-        return is_string($value) ? $this->substituteEnvPlaceholders($value) : $value;
-    }
-
-    /**
      * Substitute ${ENV_VAR} placeholders with actual environment values
      */
     protected function substituteEnvPlaceholders(string $value): string
@@ -672,44 +657,6 @@ class IOSPluginCompiler
 
             return $envValue;
         }, $value);
-    }
-
-    /**
-     * Merge background modes from plugins into Info.plist UIBackgroundModes array
-     */
-    protected function mergeBackgroundModes(Collection $plugins): void
-    {
-        $backgroundModes = [];
-
-        foreach ($plugins as $plugin) {
-            $modes = $plugin->getIosBackgroundModes();
-            foreach ($modes as $mode) {
-                $backgroundModes[$mode] = true;
-            }
-        }
-
-        if (empty($backgroundModes)) {
-            return;
-        }
-
-        // Both device and simulator Info.plist files need background modes
-        $plistPaths = [
-            $this->iosProjectPath.'/NativePHP/Info.plist',
-            $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
-        ];
-
-        foreach ($plistPaths as $plistPath) {
-            if (! $this->files->exists($plistPath)) {
-                continue;
-            }
-
-            $plist = $this->files->get($plistPath);
-
-            $plist = $this->injectPlistEntries($plist, [
-                'UIBackgroundModes' => array_keys($backgroundModes),
-            ]);
-            $this->files->put($plistPath, $plist);
-        }
     }
 
     /**
