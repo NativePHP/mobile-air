@@ -1195,9 +1195,6 @@ class NestedClass {}');
     }
 
     /**
-     * Helper method to create a test Plugin instance.
-     */
-    /**
      * @test
      *
      * Apple keys such as SKAdNetworkItems are arrays of dicts. They must
@@ -1402,6 +1399,9 @@ class NestedClass {}');
         $this->assertSame(['remote-notification', 'location'], $plist->get('UIBackgroundModes'));
     }
 
+    /**
+     * Helper method to create a test Plugin instance.
+     */
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin
     {
         $defaultData = [

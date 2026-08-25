@@ -11,9 +11,9 @@ use InvalidArgumentException;
 /**
  * Structural read-modify-write access to an Info.plist document.
  *
- * Plugin manifests may declare any Info.plist value Apple accepts, so
- * entries are merged by type: scalars replace, lists union on content,
- * dicts merge recursively. Untouched keys keep their original markup.
+ * Plugins may declare any value Apple accepts, so entries merge by
+ * type: scalars replace, lists union on content, dicts merge key
+ * by key. Keys nobody touches keep their original markup.
  */
 class PlistDocument
 {
@@ -30,9 +30,20 @@ class PlistDocument
     public static function fromXml(string $xml): static
     {
         $dom = new DOMDocument;
+        $previous = libxml_use_internal_errors(true);
 
-        if (! @$dom->loadXML($xml, LIBXML_NONET)) {
-            throw new InvalidArgumentException('Info.plist is not well-formed XML.');
+        try {
+            $loaded = $dom->loadXML($xml, LIBXML_NONET);
+            $error = libxml_get_last_error();
+        } finally {
+            libxml_clear_errors();
+            libxml_use_internal_errors($previous);
+        }
+
+        if (! $loaded) {
+            throw new InvalidArgumentException(
+                'Info.plist is not well-formed XML'.($error ? ': '.trim($error->message).' (line '.$error->line.')' : '.')
+            );
         }
 
         $root = $dom->documentElement?->getElementsByTagName('dict')->item(0);
@@ -75,11 +86,7 @@ class PlistDocument
      */
     public function merge(array $entries): void
     {
-        foreach ($entries as $key => $value) {
-            if ($value === null) {
-                continue;
-            }
-
+        foreach (static::withoutNulls($entries) as $key => $value) {
             $this->set($key, static::mergeValues($this->get($key), $value));
         }
     }
@@ -95,8 +102,8 @@ class PlistDocument
             return;
         }
 
-        // Keep the closing </dict> on its own line by inserting
-        // ahead of the trailing whitespace the file already has.
+        // Insert ahead of the trailing whitespace the file already
+        // has, so the closing </dict> stays on a line of its own.
         $anchor = $this->root->lastChild instanceof DOMText && trim($this->root->lastChild->data) === ''
             ? $this->root->lastChild
             : $this->root->appendChild($this->dom->createTextNode("\n"));
@@ -111,28 +118,34 @@ class PlistDocument
     }
 
     /**
-     * Combine an existing value with an incoming one. Lists union on
-     * content so a rebuild or a second plugin never duplicates an
-     * item, dicts merge key by key, and anything else is replaced.
+     * Combine an existing value with an incoming one. Lists union on content
+     * so rebuilds and second plugins never duplicate an item, dicts merge
+     * key by key, an empty array contributes nothing, and any other
+     * pairing is replaced outright by the incoming value.
      */
     public static function mergeValues(mixed $existing, mixed $incoming): mixed
     {
-        if (! is_array($existing) || ! is_array($incoming)) {
+        if (! is_array($incoming)) {
             return $incoming;
         }
 
-        $existingIsList = array_is_list($existing);
-
-        if ($existingIsList !== array_is_list($incoming)) {
-            return $incoming;
+        if ($incoming === []) {
+            return $existing ?? [];
         }
 
-        if ($existingIsList) {
+        if (! is_array($existing) || array_is_list($existing) !== array_is_list($incoming)) {
+            return array_is_list($incoming) ? static::mergeValues([], $incoming) : $incoming;
+        }
+
+        if (array_is_list($existing)) {
             $seen = array_map([static::class, 'canonical'], $existing);
 
             foreach ($incoming as $item) {
-                if (! in_array(static::canonical($item), $seen, true)) {
+                $fingerprint = static::canonical($item);
+
+                if (! in_array($fingerprint, $seen, true)) {
                     $existing[] = $item;
+                    $seen[] = $fingerprint;
                 }
             }
 
@@ -259,6 +272,22 @@ class PlistDocument
             iterator_to_array($node->childNodes),
             fn ($child) => $child instanceof DOMElement
         ));
+    }
+
+    /**
+     * Drop null entries at every depth, since a plist has no
+     * way to express one and JSON manifests may carry them.
+     */
+    protected static function withoutNulls(array $values): array
+    {
+        $wasList = array_is_list($values);
+
+        $values = array_map(
+            fn ($value) => is_array($value) ? static::withoutNulls($value) : $value,
+            array_filter($values, fn ($value) => $value !== null)
+        );
+
+        return $wasList ? array_values($values) : $values;
     }
 
     /**
