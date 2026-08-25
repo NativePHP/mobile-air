@@ -257,7 +257,9 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $this->guard(fn () => ComponentMethodInvoker::invoke($this->component, $method, $args));
+        // Same entry point the device runloop uses, so a template-callable
+        // method such as navigate() is callable from a test too.
+        $this->guard(fn () => $this->component->__invokeInteraction($method, $args));
 
         return $this->afterInteraction();
     }

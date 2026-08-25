@@ -108,9 +108,6 @@ abstract class NativeComponent
 
     private bool $nativeFlushingComponentEvents = false;
 
-    /** Depth of synchronous component-event listener delivery. */
-    private int $nativeComponentEventListenerDepth = 0;
-
     /** Layout class for this screen (set by router from route metadata). */
     protected ?string $nativeLayout = null;
 
@@ -2086,6 +2083,12 @@ abstract class NativeComponent
 
         $class = $type->getName();
 
+        // Match ComponentMethodInvoker: an empty value for a nullable binding
+        // means "absent", not "case not found".
+        if ($value === '' && $type->allowsNull()) {
+            return null;
+        }
+
         if (enum_exists($class) && is_subclass_of($class, \BackedEnum::class)) {
             return $this->resolveRouteEnum($class, $value);
         }
@@ -2286,11 +2289,15 @@ abstract class NativeComponent
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runGuardedInteraction(
-                    'runDuePolls()',
-                    fn () => $this->runDuePolls(),
-                );
+                // fire any due polls, then loop back to re-render. Polls stay
+                // parked while the error screen is up, so a throwing callback
+                // cannot repaint the overlay on every tick.
+                if (! $this->nativeHasError) {
+                    $this->runGuardedInteraction(
+                        'runDuePolls()',
+                        fn () => $this->runDuePolls(),
+                    );
+                }
 
                 continue;
             }
@@ -2493,11 +2500,15 @@ abstract class NativeComponent
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runGuardedInteraction(
-                    'runDuePolls()',
-                    fn () => $this->runDuePolls(),
-                );
+                // fire any due polls, then loop back to re-render. Polls stay
+                // parked while the error screen is up, so a throwing callback
+                // cannot repaint the overlay on every tick.
+                if (! $this->nativeHasError) {
+                    $this->runGuardedInteraction(
+                        'runDuePolls()',
+                        fn () => $this->runDuePolls(),
+                    );
+                }
 
                 continue;
             }
@@ -3526,7 +3537,11 @@ abstract class NativeComponent
         }
     }
 
-    /** @return list<array{name: string, params: array, self?: bool, component?: string}> */
+    /**
+     * @internal Test-harness and runloop introspection of flushed events.
+     *
+     * @return list<array{name: string, params: array, self?: bool, component?: string}>
+     */
     public function dispatchedEvents(): array
     {
         return $this->rootScreen()->nativeDispatchedComponentEvents;
@@ -3633,7 +3648,11 @@ abstract class NativeComponent
             ?? null;
 
         if ($method !== null && method_exists($this, $method)) {
-            $this->invokeComponentEventAction($this, $method, $args);
+            // An #[On] listener names itself through the attribute, so it is
+            // never remote input. Skip the callable guard that protects
+            // template- and device-supplied method names: a listener may be
+            // protected, and may legitimately be named updatedFoo().
+            $this->invokeComponentEventAction($this, $method, $args, guarded: false);
         }
     }
 
@@ -3641,15 +3660,11 @@ abstract class NativeComponent
         NativeComponent $component,
         string $method,
         array $parameters,
+        bool $guarded = true,
     ): mixed {
-        $root = $this->rootScreen();
-        $root->nativeComponentEventListenerDepth++;
-
-        try {
-            return ComponentMethodInvoker::invoke($component, $method, $parameters);
-        } finally {
-            $root->nativeComponentEventListenerDepth--;
-        }
+        return $guarded
+            ? ComponentMethodInvoker::invoke($component, $method, $parameters)
+            : ComponentMethodInvoker::invokeLifecycle($component, $method, $parameters);
     }
 
     // ── Event dispatch ──────────────────────────────
@@ -3766,13 +3781,17 @@ abstract class NativeComponent
 
     private function invokeUiInteraction(string $method, array $parameters): mixed
     {
-        $result = $this->invokeUiCallback($method, $parameters);
+        $result = $this->__invokeInteraction($method, $parameters);
         $this->flushDispatchedEvents();
 
         return $result;
     }
 
-    private function invokeUiCallback(string $method, array $parameters): mixed
+    /**
+     * @internal The single interaction entry point shared by the device
+     *           runloop and the test harness, so both accept the same methods.
+     */
+    public function __invokeInteraction(string $method, array $parameters): mixed
     {
         $internalCallbacks = [
             '__navigate',

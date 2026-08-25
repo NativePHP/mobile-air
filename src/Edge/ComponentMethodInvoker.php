@@ -159,11 +159,12 @@ class ComponentMethodInvoker extends BoundMethod
         }
 
         $name = $parameter->getName();
+        $nullable = $parameter->allowsNull();
 
         if (array_key_exists($name, $parameters) && ! $parameters[$name] instanceof $class) {
-            $parameters[$name] = static::getImplicitBinding($container, $class, $parameters[$name]);
+            $parameters[$name] = static::getImplicitBinding($container, $class, $parameters[$name], $nullable);
         } elseif (array_key_exists($class, $parameters) && ! $parameters[$class] instanceof $class) {
-            $parameters[$class] = static::getImplicitBinding($container, $class, $parameters[$class]);
+            $parameters[$class] = static::getImplicitBinding($container, $class, $parameters[$class], $nullable);
         }
     }
 
@@ -191,9 +192,12 @@ class ComponentMethodInvoker extends BoundMethod
             : null;
     }
 
-    protected static function getImplicitBinding($container, string $class, mixed $value): mixed
+    protected static function getImplicitBinding($container, string $class, mixed $value, bool $nullable = false): mixed
     {
-        if ($value === null) {
+        // A cleared native control (select, text input) sends an empty string
+        // rather than null. For a nullable binding that means "no value", not
+        // "case not found".
+        if ($value === null || ($nullable && $value === '')) {
             return null;
         }
 
