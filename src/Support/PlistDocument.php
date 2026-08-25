@@ -37,9 +37,9 @@ class PlistDocument
         }
 
         if (! $loaded) {
-            throw new InvalidArgumentException(
-                'Plist is not well-formed XML'.($error ? ': '.trim($error->message).' (line '.$error->line.')' : '.')
-            );
+            $reason = $error ? ': '.trim($error->message).' (line '.$error->line.')' : '.';
+
+            throw new InvalidArgumentException('Plist is not well-formed XML'.$reason);
         }
 
         $root = (new DOMXPath($dom))->query('/*/dict[1]')->item(0);
@@ -68,7 +68,7 @@ class PlistDocument
     {
         $value = static::pairsOf($this->root)[$key] ?? null;
 
-        return $value ? static::fromNode($value) : null;
+        return $value === null ? null : static::fromNode($value);
     }
 
     /**
@@ -87,7 +87,7 @@ class PlistDocument
         $existing = static::pairsOf($this->root)[$key] ?? null;
 
         if ($existing) {
-            $existing->parentNode->replaceChild($node, $existing);
+            $this->root->replaceChild($node, $existing);
 
             return;
         }
@@ -121,26 +121,39 @@ class PlistDocument
         }
 
         if (! is_array($existing) || array_is_list($existing) !== array_is_list($incoming)) {
-            return array_is_list($incoming) ? static::mergeValues([], $incoming) : $incoming;
+            // There is nothing of the same shape to merge onto, so the
+            // incoming value stands alone. A list is still unioned
+            // against itself to drop repeats it declared twice.
+            return array_is_list($incoming) ? static::union([], $incoming) : $incoming;
         }
 
         if (array_is_list($existing)) {
-            $seen = array_map([static::class, 'canonical'], $existing);
-
-            foreach ($incoming as $item) {
-                $fingerprint = static::canonical($item);
-
-                if (! in_array($fingerprint, $seen, true)) {
-                    $existing[] = $item;
-                    $seen[] = $fingerprint;
-                }
-            }
-
-            return $existing;
+            return static::union($existing, $incoming);
         }
 
         foreach ($incoming as $key => $value) {
             $existing[$key] = static::mergeValues($existing[$key] ?? null, $value);
+        }
+
+        return $existing;
+    }
+
+    /**
+     * Append the incoming items an existing list does not already
+     * hold. Items compare on content, so a dict counts as
+     * present whatever order its keys arrived in.
+     */
+    protected static function union(array $existing, array $incoming): array
+    {
+        $seen = array_map(static::canonical(...), $existing);
+
+        foreach ($incoming as $item) {
+            $fingerprint = static::canonical($item);
+
+            if (! in_array($fingerprint, $seen, true)) {
+                $existing[] = $item;
+                $seen[] = $fingerprint;
+            }
         }
 
         return $existing;
@@ -175,8 +188,8 @@ class PlistDocument
             'false' => false,
             'integer' => (int) $node->textContent,
             'real' => (float) $node->textContent,
-            'array' => array_map([static::class, 'fromNode'], static::elementChildren($node)),
-            'dict' => array_map([static::class, 'fromNode'], static::pairsOf($node)),
+            'array' => array_map(static::fromNode(...), static::elementChildren($node)),
+            'dict' => array_map(static::fromNode(...), static::pairsOf($node)),
             default => $node->textContent,
         };
     }
@@ -270,7 +283,7 @@ class PlistDocument
                 ksort($value);
             }
 
-            $value = array_map([static::class, 'canonical'], $value);
+            $value = array_map(static::canonical(...), $value);
         }
 
         return json_encode($value);
