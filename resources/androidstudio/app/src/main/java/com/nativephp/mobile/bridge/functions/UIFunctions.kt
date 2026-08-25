@@ -4,6 +4,7 @@ import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.runtime.mutableStateOf
 import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
@@ -44,6 +45,16 @@ object UIFunctions {
             /** The decor background before the first override, for restore. */
             private var originalBackground: Drawable? = null
             private var hasOverride = false
+
+            /**
+             * Compose-observable mirror of the override. The chrome
+             * renderers' Scaffold surface covers the decor edge to edge, so
+             * the decor paint alone never reaches the safe-area insets —
+             * the Scaffold containerColor reads this instead (iOS twin:
+             * NativeRootStackRenderer backgrounds its screens with
+             * WindowBackgroundState).
+             */
+            val composeColor = mutableStateOf<androidx.compose.ui.graphics.Color?>(null)
         }
 
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
@@ -56,6 +67,7 @@ object UIFunctions {
                         originalBackground = null
                         hasOverride = false
                     }
+                    composeColor.value = null
                 }
                 return mapOf("success" to true)
             }
@@ -68,6 +80,7 @@ object UIFunctions {
                         hasOverride = true
                     }
                     activity.window.decorView.setBackgroundColor(color)
+                    composeColor.value = androidx.compose.ui.graphics.Color(color)
                 }
                 mapOf("success" to true)
             } catch (e: Exception) {

@@ -54,6 +54,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.nativephp.mobile.bridge.functions.UIFunctions
 import com.nativephp.mobile.ui.MaterialIcon
 
 /**
@@ -259,6 +260,12 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
 
     Scaffold(
+        // What shows in the safe-area insets (landscape cutout sides, the
+        // nav-bar strip). The Scaffold surface covers the Activity decor,
+        // so honor a UI.SetBackground override here — iOS's stack renderer
+        // backgrounds its screens with the same state.
+        containerColor = UIFunctions.SetBackground.composeColor.value
+            ?: MaterialTheme.colorScheme.background,
         topBar = topBar@{
           if (hideNavBar) return@topBar
           // iOS renders `searchBar()` BELOW the navigation title. Mirror that:

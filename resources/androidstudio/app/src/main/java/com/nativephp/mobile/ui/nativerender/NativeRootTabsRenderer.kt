@@ -62,6 +62,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nativephp.mobile.bridge.functions.UIFunctions
 import com.nativephp.mobile.ui.MaterialIcon
 import kotlinx.coroutines.delay
 
@@ -247,7 +248,8 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         containerColor = if (LocalBackgroundLayerPresent.current) {
             androidx.compose.ui.graphics.Color.Transparent
         } else {
-            MaterialTheme.colorScheme.background
+            UIFunctions.SetBackground.composeColor.value
+                ?: MaterialTheme.colorScheme.background
         },
         topBar = {
             if (hasNavBar && !hideNavBar && !isOnSearchTab) {
