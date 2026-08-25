@@ -1103,6 +1103,7 @@ class NestedClass {}');
 
         $this->assertSame($items, $this->readPlist()->get('SKAdNetworkItems'));
         $this->assertSame($items, $this->readPlist('NativePHP-simulator-Info.plist')->get('SKAdNetworkItems'));
+        $this->assertNull($this->readPlist('NativePHP-simulator-Info.plist')->get('UIBackgroundModes'));
     }
 
     /**
@@ -1132,13 +1133,12 @@ class NestedClass {}');
 
         $this->compiler->compile();
 
-        $content = $this->files->get($plistPath);
-        $plist = PlistDocument::fromXml($content);
+        $plist = $this->readPlist();
 
         $this->assertFalse($plist->get('FirebaseAppDelegateProxyEnabled'));
         $this->assertTrue($plist->get('UIFileSharingEnabled'));
         $this->assertSame(0, $plist->get('ITSAppUsesNonExemptEncryption'));
-        $this->assertStringNotContainsString('<string></string>', $content);
+        $this->assertStringNotContainsString('<string></string>', $this->files->get($plistPath));
     }
 
     /**
@@ -1225,7 +1225,7 @@ class NestedClass {}');
     public function it_unions_background_modes_with_the_base_plist(): void
     {
         $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
-        $this->files->put($plistPath, file_get_contents(__DIR__.'/../../../resources/xcode/NativePHP/Info.plist'));
+        $this->files->put($plistPath, $this->files->get(__DIR__.'/../../../resources/xcode/NativePHP/Info.plist'));
 
         $plugin = $this->createTestPlugin([
             'ios' => [

@@ -4,6 +4,7 @@ namespace Native\Mobile\Plugins\Compilers;
 
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
+use InvalidArgumentException;
 use Native\Mobile\Exceptions\PluginConflictException;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
@@ -438,7 +439,10 @@ class IOSPluginCompiler
                 }
 
                 $this->mergeIntoPlist($plist, $plugin->getIosInfoPlist());
-                $this->mergeIntoPlist($plist, ['UIBackgroundModes' => $plugin->getIosBackgroundModes()]);
+
+                if ($modes = $plugin->getIosBackgroundModes()) {
+                    $this->mergeIntoPlist($plist, ['UIBackgroundModes' => $modes]);
+                }
             }
 
             $this->mergeIntoPlist($plist, $this->getAppInfoPlistOverrides());
@@ -454,8 +458,8 @@ class IOSPluginCompiler
     {
         try {
             return PlistDocument::fromXml($this->files->get($path));
-        } catch (\InvalidArgumentException $e) {
-            throw new \InvalidArgumentException("{$path}: {$e->getMessage()}", 0, $e);
+        } catch (InvalidArgumentException $e) {
+            throw new InvalidArgumentException("{$path}: {$e->getMessage()}", 0, $e);
         }
     }
 
