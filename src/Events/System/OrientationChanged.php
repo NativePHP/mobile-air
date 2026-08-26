@@ -7,10 +7,11 @@ use Illuminate\Queue\SerializesModels;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 
 /**
- * The screen orientation (portrait / landscape) changed while the app was
- * running — the user rotated the device. Only fires when the app allows more
- * than one orientation (`nativephp.orientation` config). Fired from native
- * (iOS window size change / Android `onConfigurationChanged` orientation).
+ * The app window orientation (portrait / landscape) changed while the app was
+ * running. This describes the window's aspect, not the physical device, so it
+ * also covers iPad/Android multi-window resizing. Only fires when the app
+ * allows more than one orientation (`nativephp.orientation` config). Fired
+ * from native window/configuration changes.
  *
  * React in a component:
  *

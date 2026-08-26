@@ -31,6 +31,14 @@ it('ignores a bogus orientation value', function () {
     expect((new System)->orientation())->toBe('landscape');
 });
 
+it('updates the orientation cache through the service provider listener', function () {
+    System::rememberOrientation('portrait');
+
+    OrientationChanged::dispatch('landscape');
+
+    expect((new System)->orientation())->toBe('landscape');
+});
+
 it('rebuilds a marked event from its native payload', function () {
     $comp = new class extends NativeComponent {};
     $build = new ReflectionMethod(NativeComponent::class, 'buildEventInstance');

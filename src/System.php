@@ -17,7 +17,7 @@ class System
     private static ?string $appearance = null;
 
     /**
-     * Process-cached current orientation. Same lifecycle as $appearance:
+     * Process-cached current app-window orientation. Same lifecycle as $appearance:
      * seeded on first read via `System.GetOrientation`, kept fresh by the
      * OrientationChanged event.
      */
@@ -98,8 +98,10 @@ class System
     }
 
     /**
-     * Current screen orientation: 'portrait' or 'landscape'. Off the device
-     * (tests, web preview) the bridge is absent and this returns 'portrait'.
+     * Current app-window orientation: 'portrait' or 'landscape'. This describes
+     * the window aspect rather than the physical device, which matters in
+     * multi-window modes. Off device (tests, web preview), the bridge is absent
+     * and this returns 'portrait'.
      */
     public function orientation(): string
     {

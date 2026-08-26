@@ -95,9 +95,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     // Last appearance pushed to PHP, so onConfigurationChanged (which also fires
     // on rotation) only emits AppearanceChanged when the theme actually flips.
     private var lastAppearance: String? = null
-    // Last orientation pushed to PHP, so onConfigurationChanged (which also fires
-    // on theme flips) only emits OrientationChanged when the device rotates.
-    private var lastOrientation: String? = null
+
     private var showSplash by mutableStateOf(true)
     // Gates composition of the heavy MainScreen tree (Scaffold + WebView)
     // until the runtime is booted and the WebView is ready. Until then the first
@@ -117,6 +115,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         var instance: MainActivity? = null
             private set
 
+        // Survives activity recreation so a multi-window resize that Android
+        // does not route through onConfigurationChanged can still refresh PHP's
+        // process cache from the new activity's window configuration.
+        private var lastOrientation: String? = null
+
         // Delay before the background queue worker boots. The worker spins up a
         // second full Laravel runtime; deferring it keeps that off the cold-start
         // critical path so it doesn't steal CPU from the first paint.
@@ -132,10 +135,16 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         lastAppearance = if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
 
-        // Seed the orientation tracker so a later config change (e.g. theme flip)
-        // only emits OrientationChanged when the device genuinely rotated.
-        lastOrientation = if (resources.configuration.orientation ==
+        // Compare before reseeding: some multi-window changes recreate the
+        // activity rather than calling onConfigurationChanged. The companion
+        // tracker survives that recreation, so PHP still receives the change.
+        val currentOrientation = if (resources.configuration.orientation ==
                 Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
+        val previousOrientation = lastOrientation
+        lastOrientation = currentOrientation
+        if (previousOrientation != null && previousOrientation != currentOrientation) {
+            sendOrientationChanged(currentOrientation)
+        }
 
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -470,18 +479,23 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             )
         }
 
-        // Push a native OrientationChanged event to PHP when the device rotates.
+        // Push when the app window's orientation changes. In multi-window mode
+        // this can differ from the physical device's orientation.
         // Same guard as above: only emit when the orientation actually changed.
         // Drives reactive System::orientation() / #[On(OrientationChanged)].
         val orientation = if (newConfig.orientation ==
                 Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
         if (orientation != lastOrientation) {
             lastOrientation = orientation
-            NativeElementBridge.sendNativeEvent(
-                "Native\\Mobile\\Events\\System\\OrientationChanged",
-                org.json.JSONObject().put("orientation", orientation).toString()
-            )
+            sendOrientationChanged(orientation)
         }
+    }
+
+    private fun sendOrientationChanged(orientation: String) {
+        NativeElementBridge.sendNativeEvent(
+            "Native\\Mobile\\Events\\System\\OrientationChanged",
+            org.json.JSONObject().put("orientation", orientation).toString()
+        )
     }
 
     @Suppress("DEPRECATION")

@@ -80,7 +80,8 @@ object SystemFunctions {
     }
 
     /**
-     * Current screen orientation (portrait / landscape). Backs
+     * Current app-window orientation (portrait / landscape), which may differ
+     * from the physical device orientation in multi-window mode. Backs
      * `System::orientation()` / `isLandscape()` for the cold read before the
      * first OrientationChanged push.
      * Returns:
