@@ -579,6 +579,19 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     }
                 }
 
+                // The native bridge returns the whole HTTP response (headers + body)
+                // as one NUL-terminated C string, since that's what crosses the
+                // C -> Swift boundary (String(cString:) in PersistentPHPRuntime /
+                // WebviewPHPRuntime). A body that isn't valid UTF-8 on its own (an
+                // image, a PDF, any binary content) is base64-encoded on the PHP/
+                // native side and flagged with this internal marker header --
+                // decode it back to real bytes below rather than treating it as
+                // text, or binary responses come out corrupted or truncated at the
+                // first embedded NUL byte. Strip the marker so it never reaches the
+                // WebView/network.
+                let isBase64Body = headers.removeValue(forKey: "x-native-body-encoding")?
+                    .lowercased() == "base64"
+
                 var request = requestData
                 if let location = headers["location"] {
                     request.uri = location.trimmingCharacters(in: .whitespaces)
@@ -653,10 +666,18 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     schemeTask.didReceive(httpResponse)
 
                     // Send the body data
-                    if let bodyData = bodyString.data(using: .utf8) {
+                    let decodedBodyData: Data? = isBase64Body
+                        ? Data(base64Encoded: bodyString.trimmingCharacters(in: .whitespacesAndNewlines),
+                               options: .ignoreUnknownCharacters)
+                        : bodyString.data(using: .utf8)
+
+                    if let bodyData = decodedBodyData {
                         schemeTask.didReceive(bodyData)
                     } else {
-                        let error = self.error(code: 500, description: "Failed to encode body data")
+                        let description = isBase64Body
+                            ? "Failed to base64-decode response body"
+                            : "Failed to encode body data"
+                        let error = self.error(code: 500, description: description)
                         schemeTask.didFailWithError(error)
                         return
                     }
