@@ -91,7 +91,7 @@ abstract class NativeComponent
 
     protected ?NavigationIntent $nativeNavigationIntent = null;
 
-    /** True while dispatching a system back (type 8) — the native pop has already animated. */
+    /** True while dispatching a system back (type 8) from native navigation. */
     protected bool $nativeAnsweringSystemBack = false;
 
     protected ?NativeRouter $nativeRouter = null;
@@ -2025,7 +2025,7 @@ abstract class NativeComponent
     /**
      * Dispatch a system back — the hardware button, the system back
      * chevron, or an edge-swipe pop. While it runs, back() knows the
-     * native pop has ALREADY animated and skips its farewell publish;
+     * event came from native navigation and skips its farewell publish;
      * see back() for why that matters.
      */
     public function handleSystemBack(): void
@@ -2551,13 +2551,11 @@ abstract class NativeComponent
 
         // The farewell frame keeps a PHP-initiated pop looking fresh while
         // the native side animates it. Answering a SYSTEM back is the
-        // opposite situation: the native pop has already animated and the
-        // navigation path has already shrunk, so a farewell frame of this
-        // screen reaches the coordinator as an unknown URI — which its
-        // reconciliation can only read as a brand-new push. The screen
-        // flashes back in, then out again once the router publishes the
-        // level below (visible whenever unmount work spans a few frames).
-        // There is nothing on screen left to keep fresh — skip it.
+        // opposite situation: native navigation may already have removed
+        // this screen and shrunk its path, so a farewell frame reaches the
+        // coordinator as an unknown URI — which its reconciliation can only
+        // read as a brand-new push. Skip it to avoid reintroducing a screen
+        // that native navigation is backing away from.
         if (! $this->nativeAnsweringSystemBack) {
             $this->publishFinalState();
         }
