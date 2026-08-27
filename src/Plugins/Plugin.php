@@ -251,6 +251,59 @@ class Plugin
         return $this->path.'/resources/ios';
     }
 
+    /**
+     * Feature bundles whose env gate is enabled for this build.
+     *
+     * @return list<string>
+     */
+    public function getEnabledFeatures(): array
+    {
+        return $this->manifest->enabledFeatures;
+    }
+
+    /**
+     * Every feature bundle the plugin declares, enabled or not.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public function getFeatures(): array
+    {
+        return $this->manifest->features;
+    }
+
+    /**
+     * Source directories contributed by ENABLED feature bundles, for the
+     * given platform ('ios' or 'android').
+     *
+     * Feature sources deliberately live OUTSIDE `resources/ios` and
+     * `resources/android`: those roots are copied wholesale (recursively,
+     * subdirectories included), so a disabled feature's code would still
+     * compile in — and reference SDK products that were never linked.
+     * They live at `resources/features/<feature>/<platform>/` instead,
+     * overridable per feature with a `source_dir` key, and are copied
+     * only when the gate is on.
+     *
+     * @return list<string>
+     */
+    public function getFeatureSourcePaths(string $platform): array
+    {
+        $paths = [];
+
+        foreach ($this->getEnabledFeatures() as $feature) {
+            $configured = $this->manifest->features[$feature][$platform]['source_dir'] ?? null;
+
+            $path = $configured !== null
+                ? $this->path.'/'.ltrim((string) $configured, '/')
+                : $this->path."/resources/features/{$feature}/{$platform}";
+
+            if (is_dir($path)) {
+                $paths[] = $path;
+            }
+        }
+
+        return $paths;
+    }
+
     public function hasAndroidCode(): bool
     {
         if (! $this->supportsPlatform('android')) {

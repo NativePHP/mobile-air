@@ -483,12 +483,21 @@ class AndroidPluginCompiler
     {
         $sourcePath = $plugin->getAndroidSourcePath();
 
-        if (! $this->files->isDirectory($sourcePath)) {
+        // Sources from enabled feature bundles only — a disabled feature's
+        // Kotlin never reaches the project, so it can't reference SDK
+        // artifacts the build didn't add.
+        $sourcePaths = $this->files->isDirectory($sourcePath) ? [$sourcePath] : [];
+        $sourcePaths = array_merge($sourcePaths, $plugin->getFeatureSourcePaths('android'));
+
+        if ($sourcePaths === []) {
             return;
         }
 
         // Copy all Kotlin files
-        $files = $this->files->allFiles($sourcePath);
+        $files = array_merge(...array_map(
+            fn (string $path): array => $this->files->allFiles($path),
+            $sourcePaths,
+        ));
 
         foreach ($files as $file) {
             if ($file->getExtension() !== 'kt') {
