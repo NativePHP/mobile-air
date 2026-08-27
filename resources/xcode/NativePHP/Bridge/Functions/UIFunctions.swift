@@ -49,14 +49,20 @@ enum UIFunctions {
     /// Returns:
     ///   - success: boolean
     class SetBackground: BridgeFunction {
-        /// The scene's windows MINUS UIKit's keyboard helper windows
-        /// (UITextEffectsWindow / UIRemoteKeyboardWindow). Those overlay
-        /// the app window at a higher level and exist from the first time
-        /// a keyboard is shown until the process dies — painting them
-        /// makes the whole screen an opaque sheet of the background color
-        /// while the app keeps rendering (and receiving taps) underneath.
+        /// The scene's windows MINUS the overlays that are transparent by
+        /// design: UIKit's keyboard helpers (UITextEffectsWindow /
+        /// UIRemoteKeyboardWindow), which exist from the first time a
+        /// keyboard is shown until the process dies, and the toast stack's
+        /// own window, which lives for as long as a toast is on screen.
+        /// Painting any of them makes the whole screen an opaque sheet of
+        /// the background color while the app keeps rendering (and
+        /// receiving taps) underneath.
         private func appWindows(in windowScene: UIWindowScene) -> [UIWindow] {
             windowScene.windows.filter { window in
+                if window is ToastWindow {
+                    return false
+                }
+
                 let className = String(describing: type(of: window))
                 return !className.contains("TextEffects") && !className.contains("RemoteKeyboard")
             }
