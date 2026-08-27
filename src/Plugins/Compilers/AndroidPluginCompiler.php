@@ -12,6 +12,21 @@ use Native\Mobile\Support\Stub;
 
 class AndroidPluginCompiler
 {
+    /**
+     * Records which manifest attributes plugins are currently setting, so the
+     * next build knows what to hand back before applying its own.
+     */
+    protected const ATTRIBUTE_MARKER = 'NativePHP Plugin Attributes';
+
+    /**
+     * The opening tags a plugin may set attributes on, keyed by the target
+     * name it declares in nativephp.json.
+     */
+    protected const ATTRIBUTE_TARGETS = [
+        'application' => '/<application\b[^>]*>/',
+        'main_activity' => '/<activity\b[^>]*android:name="\.ui\.MainActivity"[^>]*>/',
+    ];
+
     protected string $androidProjectPath;
 
     /**
@@ -186,6 +201,10 @@ class AndroidPluginCompiler
         // Declare plugin-required Gradle plugins in the root build file (runs
         // even when the list is empty so a removed plugin's declaration is cleared).
         $this->injectGradlePlugins($allPlugins);
+
+        // Set attributes on the manifest nodes core declares itself (runs even
+        // when the list is empty so a removed plugin's attributes go back).
+        $this->injectManifestAttributes($allPlugins);
 
         if ($allPlugins->isEmpty()) {
             $this->generateEmptyRegistration();
@@ -898,6 +917,205 @@ class AndroidPluginCompiler
         $mainManifest = $this->injectApplicationEntries($mainManifest, $applicationEntries);
 
         $this->files->put($mainManifestPath, $mainManifest);
+    }
+
+    /**
+     * Apply `android.manifest_attributes` to the nodes core's own manifest
+     * declares.
+     *
+     * The manifest is installed once and edited in place from then on, so an
+     * attribute is only safely settable if it is also releasable: whatever the
+     * last build applied is put back first, from core's own template, before
+     * this build's declarations go on. A marker comment records what was
+     * applied, so a plugin that stops declaring an attribute — or is removed
+     * outright — gives it back rather than leaving it behind forever.
+     */
+    protected function injectManifestAttributes(Collection $plugins): void
+    {
+        $manifestPath = $this->androidProjectPath.'/app/src/main/AndroidManifest.xml';
+
+        if (! $this->files->exists($manifestPath)) {
+            return;
+        }
+
+        $this->files->put(
+            $manifestPath,
+            $this->mergeManifestAttributes($plugins, $this->files->get($manifestPath))
+        );
+    }
+
+    protected function mergeManifestAttributes(Collection $plugins, string $manifest): string
+    {
+        $declared = $this->collectManifestAttributes($plugins);
+
+        $manifest = $this->releaseManagedAttributes($manifest);
+
+        if (empty($declared)) {
+            return $manifest;
+        }
+
+        foreach ($declared as $target => $attributes) {
+            foreach ($attributes as $name => $attribute) {
+                $manifest = $this->setManifestAttribute($manifest, $target, $name, $attribute['value']);
+            }
+        }
+
+        return $this->writeManagedMarker($manifest, $declared);
+    }
+
+    /**
+     * Gather every plugin's declared attributes, keyed by target and name.
+     *
+     * Two plugins setting one attribute to different values is a genuine
+     * incompatibility: whichever won would depend on registration order, and
+     * the one that lost would fail somewhere that points nowhere near the
+     * cause. Agreeing on a value is not a conflict.
+     *
+     * @return array<string, array<string, array{value: string, plugin: string}>>
+     */
+    protected function collectManifestAttributes(Collection $plugins): array
+    {
+        $declared = [];
+        $conflicts = [];
+
+        foreach ($plugins as $plugin) {
+            foreach ($plugin->getAndroidManifestAttributes() as $target => $attributes) {
+                foreach ($attributes as $name => $value) {
+                    $value = $this->manifestAttributeValue($value);
+                    $existing = $declared[$target][$name] ?? null;
+
+                    if ($existing !== null && $existing['value'] !== $value) {
+                        $conflicts[] = [
+                            'type' => 'manifest_attribute',
+                            'value' => "{$name} on <{$target}>",
+                            'plugins' => [$existing['plugin'], $plugin->name],
+                            'values' => [$existing['plugin'] => $existing['value'], $plugin->name => $value],
+                        ];
+
+                        continue;
+                    }
+
+                    $declared[$target][$name] = ['value' => $value, 'plugin' => $plugin->name];
+                }
+            }
+        }
+
+        if (! empty($conflicts)) {
+            throw new PluginConflictException($conflicts);
+        }
+
+        return $declared;
+    }
+
+    /**
+     * Put back everything the last build applied: core's own value where the
+     * template has one, and removal where it has none.
+     */
+    protected function releaseManagedAttributes(string $manifest): string
+    {
+        if (! preg_match('/\s*<!-- '.self::ATTRIBUTE_MARKER.': ([^>]*) -->/', $manifest, $match)) {
+            return $manifest;
+        }
+
+        foreach (array_filter(explode(' ', trim($match[1]))) as $managed) {
+            [$target, $name] = array_pad(explode('/', $managed, 2), 2, '');
+
+            if ($name === '') {
+                continue;
+            }
+
+            $manifest = $this->setManifestAttribute(
+                $manifest,
+                $target,
+                $name,
+                $this->templateManifestAttribute($target, $name)
+            );
+        }
+
+        return str_replace($match[0], '', $manifest);
+    }
+
+    /**
+     * @param  array<string, array<string, array{value: string, plugin: string}>>  $declared
+     */
+    protected function writeManagedMarker(string $manifest, array $declared): string
+    {
+        $managed = [];
+
+        foreach ($declared as $target => $attributes) {
+            foreach (array_keys($attributes) as $name) {
+                $managed[] = "{$target}/{$name}";
+            }
+        }
+
+        return preg_replace(
+            '/(\s*<\/application>)/s',
+            "\n        <!-- ".self::ATTRIBUTE_MARKER.': '.implode(' ', $managed).' -->$1',
+            $manifest,
+            1
+        );
+    }
+
+    /**
+     * Set an attribute on a target node's opening tag, or remove it when the
+     * value is null.
+     */
+    protected function setManifestAttribute(string $manifest, string $target, string $name, ?string $value): string
+    {
+        $pattern = self::ATTRIBUTE_TARGETS[$target] ?? null;
+
+        if ($pattern === null) {
+            return $manifest;
+        }
+
+        return preg_replace_callback($pattern, function (array $match) use ($name, $value): string {
+            $tag = preg_replace('/\s+'.preg_quote($name, '/').'="[^"]*"/', '', $match[0]);
+
+            if ($value === null) {
+                return $tag;
+            }
+
+            $attribute = ' '.$name.'="'.htmlspecialchars($value, ENT_QUOTES | ENT_XML1).'"';
+
+            return preg_replace('/(\s*\/?>)$/', $attribute.'$1', $tag, 1);
+        }, $manifest, 1);
+    }
+
+    /**
+     * The value core's own template gives an attribute, or null when it
+     * declares none — which is what makes releasing one unambiguous.
+     */
+    protected function templateManifestAttribute(string $target, string $name): ?string
+    {
+        $template = dirname(__DIR__, 3).'/resources/androidstudio/app/src/main/AndroidManifest.xml';
+        $pattern = self::ATTRIBUTE_TARGETS[$target] ?? null;
+
+        if ($pattern === null || ! $this->files->exists($template)) {
+            return null;
+        }
+
+        if (! preg_match($pattern, $this->files->get($template), $node)) {
+            return null;
+        }
+
+        if (! preg_match('/\s'.preg_quote($name, '/').'="([^"]*)"/', $node[0], $attribute)) {
+            return null;
+        }
+
+        return htmlspecialchars_decode($attribute[1], ENT_QUOTES | ENT_XML1);
+    }
+
+    /**
+     * Manifest attribute values are always strings; a JSON boolean is the one
+     * shape a plain cast would not survive.
+     */
+    protected function manifestAttributeValue(string|bool|int $value): string
+    {
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        return (string) $value;
     }
 
     /**

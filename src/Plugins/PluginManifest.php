@@ -12,6 +12,11 @@ class PluginManifest implements JsonSerializable
      */
     public const PLATFORMS = ['android', 'ios'];
 
+    /**
+     * Nodes of core's own AndroidManifest.xml a plugin may set attributes on.
+     */
+    public const MANIFEST_ATTRIBUTE_TARGETS = ['application', 'main_activity'];
+
     public readonly string $namespace;
 
     /**
@@ -271,6 +276,54 @@ class PluginManifest implements JsonSerializable
                 throw new InvalidArgumentException(
                     "Component '{$component['type']}' missing platform renderer (android_renderer or ios_renderer)"
                 );
+            }
+        }
+
+        $this->validateManifestAttributes($data['android']['manifest_attributes'] ?? []);
+    }
+
+    /**
+     * Validate `android.manifest_attributes`, which sets attributes on the
+     * nodes core's own AndroidManifest.xml declares.
+     *
+     * The targets are a closed set on purpose: this exists so a plugin can
+     * configure the app's application and launcher activity, not so it can
+     * rewrite arbitrary XML.
+     */
+    protected function validateManifestAttributes(mixed $attributes): void
+    {
+        if (! is_array($attributes)) {
+            throw new InvalidArgumentException(
+                'android.manifest_attributes must be an object keyed by target'
+            );
+        }
+
+        foreach ($attributes as $target => $declared) {
+            if (! in_array($target, self::MANIFEST_ATTRIBUTE_TARGETS, true)) {
+                throw new InvalidArgumentException(
+                    "Unknown manifest attribute target '{$target}'. Valid targets: ".
+                    implode(', ', self::MANIFEST_ATTRIBUTE_TARGETS)
+                );
+            }
+
+            if (! is_array($declared) || $declared === []) {
+                throw new InvalidArgumentException(
+                    "Manifest attributes for '{$target}' must be a non-empty object of attribute => value"
+                );
+            }
+
+            foreach ($declared as $name => $value) {
+                if (! is_string($name) || ! preg_match('/^([a-zA-Z][\w.]*:)?[a-zA-Z][\w.]*$/', $name)) {
+                    throw new InvalidArgumentException(
+                        "Invalid manifest attribute name '{$name}' on '{$target}'"
+                    );
+                }
+
+                if (! is_string($value) && ! is_bool($value) && ! is_int($value)) {
+                    throw new InvalidArgumentException(
+                        "Manifest attribute '{$name}' on '{$target}' must be a string, bool or int"
+                    );
+                }
             }
         }
     }
