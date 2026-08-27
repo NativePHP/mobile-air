@@ -215,8 +215,21 @@ class AppUpdateManager {
         print("📦 Installing app update from: \(zipPath)")
 
         let extractPath = updatesPath + "/extracted_" + UUID().uuidString
+        let envStashPath = updatesPath + "/.env.stash"
+        let currentEnvPath = appPath + "/.env"
 
         do {
+            // Stash the running .env so device-local values survive the payload replace.
+            // Restore it verbatim over the extracted .env; no key merge. Skip if none.
+            let hadEnv = FileManager.default.fileExists(atPath: currentEnvPath)
+            if hadEnv {
+                if FileManager.default.fileExists(atPath: envStashPath) {
+                    try FileManager.default.removeItem(atPath: envStashPath)
+                }
+                try FileManager.default.copyItem(atPath: currentEnvPath, toPath: envStashPath)
+                print("📦 Stashed existing .env before pending update")
+            }
+
             // Create extraction directory
             try FileManager.default.createDirectory(atPath: extractPath, withIntermediateDirectories: true)
 
@@ -228,6 +241,7 @@ class AppUpdateManager {
                 try FileManager.default.unzipItem(at: sourceURL, to: destinationURL)
             } catch {
                 print("❌ Failed to extract zip file: \(error)")
+                try? FileManager.default.removeItem(atPath: envStashPath)
                 return false
             }
 
@@ -235,6 +249,7 @@ class AppUpdateManager {
             guard isValidApp(at: extractPath) else {
                 print("❌ Invalid app structure in zip")
                 try? FileManager.default.removeItem(atPath: extractPath)
+                try? FileManager.default.removeItem(atPath: envStashPath)
                 return false
             }
 
@@ -245,6 +260,17 @@ class AppUpdateManager {
             // Move new app into place
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
 
+            // Restore the stashed .env over whatever the zip extracted
+            if hadEnv, FileManager.default.fileExists(atPath: envStashPath) {
+                let newEnvPath = appPath + "/.env"
+                if FileManager.default.fileExists(atPath: newEnvPath) {
+                    try FileManager.default.removeItem(atPath: newEnvPath)
+                }
+                try FileManager.default.copyItem(atPath: envStashPath, toPath: newEnvPath)
+                try? FileManager.default.removeItem(atPath: envStashPath)
+                print("📦 Restored stashed .env over extracted payload")
+            }
+
             // Create installed.version file for the new version
             createInstalledVersionFile()
 
@@ -254,6 +280,7 @@ class AppUpdateManager {
             // Cleanup
             try? FileManager.default.removeItem(atPath: extractPath)
             try? FileManager.default.removeItem(atPath: zipPath)
+            try? FileManager.default.removeItem(atPath: envStashPath)
 
             // Keep only the latest backup
             cleanupOldBackups()
@@ -266,6 +293,7 @@ class AppUpdateManager {
 
             // Cleanup on failure
             try? FileManager.default.removeItem(atPath: extractPath)
+            try? FileManager.default.removeItem(atPath: envStashPath)
             return false
         }
     }
@@ -285,7 +313,13 @@ class AppUpdateManager {
         let updateFiles = (try? FileManager.default.contentsOfDirectory(atPath: updatesPath)) ?? []
         let zipFiles = updateFiles.filter { $0.hasSuffix(".zip") }
 
-        for zipFile in zipFiles {
+        // Prefer a stable pending.zip (plugin download target) so leftover
+        // timestamped zips don't win. Still only apply one zip per boot.
+        let ordered = zipFiles.contains("pending.zip")
+            ? ["pending.zip"] + zipFiles.filter { $0 != "pending.zip" }
+            : zipFiles
+
+        for zipFile in ordered {
             let zipPath = updatesPath + "/" + zipFile
             if installUpdate(from: zipPath) {
                 // Only install one update at a time
