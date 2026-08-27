@@ -465,7 +465,23 @@ class LaravelEnvironment(private val context: Context) {
      * into laravel (same unzip as the bundled payload). One zip per boot.
      * The running .env is stashed and restored verbatim; no key merge.
      */
+    private fun isDebugBundle(): Boolean {
+        val embeddedId = buildVersionId(
+            readBundleMetadata().version,
+            readBundleMetadata().versionCode
+        )
+        return embeddedId?.equals(VERSION_DEBUG, ignoreCase = true) == true
+    }
+
     private fun applyPendingUpdatesUnlocked(): Boolean {
+        // DEBUG is the native:run payload. Always extract it (extractLaravelBundleUnlocked)
+        // and do not apply a leftover pending OTA on top — otherwise developers
+        // never see the PHP they just shipped. Versioned builds still apply pending.
+        if (isDebugBundle()) {
+            Log.d(TAG, "🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
+            return false
+        }
+
         val updatesDir = File(appStorageDir, DIR_UPDATES)
         if (!updatesDir.exists()) return false
 

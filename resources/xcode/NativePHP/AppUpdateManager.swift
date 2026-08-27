@@ -39,8 +39,12 @@ class AppUpdateManager {
             didExtract = true
         }
 
-        // Check for and apply any pending updates
-        if applyPendingUpdates() {
+        // DEBUG is the native:run payload. Always extract it (shouldUpdateFromBundle)
+        // and do not apply a leftover pending OTA on top — otherwise developers
+        // never see the PHP they just shipped. Versioned builds still apply pending.
+        if isDebugBundle() {
+            print("🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
+        } else if applyPendingUpdates() {
             didExtract = true
         }
 
@@ -438,9 +442,22 @@ class AppUpdateManager {
         return shouldUpdateWithVersion(bundledId)
     }
 
+    private func isDebugIdentity(_ id: String?) -> Bool {
+        guard let id else { return false }
+        return id.caseInsensitiveCompare("DEBUG") == .orderedSame
+    }
+
+    private func isDebugBundle() -> Bool {
+        if let fast = getBundledAppVersionFast(), isDebugIdentity(fast) {
+            return true
+        }
+        return isDebugIdentity(getBundledAppVersion())
+    }
+
     private func shouldUpdateWithVersion(_ bundledId: String) -> Bool {
-        // Special case: If bundled version is DEBUG, always update from bundle (for development)
-        if bundledId == "DEBUG" {
+        // DEBUG is what native:run ships. Always re-extract so developers see
+        // PHP changes without bumping a version (same as Android).
+        if isDebugIdentity(bundledId) {
             print("🚧 DEBUG version detected, updating from bundle")
             return true
         }
