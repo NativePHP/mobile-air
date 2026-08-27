@@ -711,14 +711,29 @@ export const share: {
 // ============================================================================
 
 /**
+ * When iOS may decrypt a stored item. All map to `ThisDeviceOnly` Keychain
+ * accessibilities; ignored on Android, where stored values are readable
+ * whenever the app's process can run.
+ */
+export type SecureStorageAccessibility = 'when_unlocked' | 'after_first_unlock' | 'when_passcode_set';
+
+/**
+ * `not_found` and `unavailable` both come back without a value and mean very
+ * different things: nothing is stored, versus the device is locked and the OS
+ * won't decrypt an item that may well be there. Retry an `unavailable` read
+ * after unlock — never treat it as a signed-out user.
+ */
+export type SecureStorageReadStatus = 'found' | 'not_found' | 'unavailable' | 'error';
+
+/**
  * Store a value securely in the device keychain/keystore
  */
-export function secureStorageSet(key: string, value: string | null): Promise<{ success: boolean }>;
+export function secureStorageSet(key: string, value: string | null, accessibility?: SecureStorageAccessibility): Promise<{ success: boolean }>;
 
 /**
  * Retrieve a value from secure storage
  */
-export function secureStorageGet(key: string): Promise<{ value: string | null }>;
+export function secureStorageGet(key: string): Promise<{ status: SecureStorageReadStatus; value: string | null; code?: string; message?: string }>;
 
 /**
  * Delete a value from secure storage

@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Support\Facades\Log;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
@@ -11,6 +12,15 @@ use Native\Mobile\Platform;
 class TailwindParser
 {
     private static array $cache = [];
+
+    /** @var array<string, list<string>> */
+    private static array $unsupportedCache = [];
+
+    /** @var list<array{view: string, enabled: bool, classes: array<string, true>}> */
+    private static array $diagnosticScopes = [];
+
+    /** @var array<string, array<string, true>> */
+    private static array $reportedUnsupportedByView = [];
 
     /**
      * Plugin-provided resolver for `bg-theme-*` / `text-theme-*` classes —
@@ -35,13 +45,13 @@ class TailwindParser
     public static function setThemeResolver(?callable $resolver): void
     {
         static::$themeResolver = $resolver;
-        static::$cache = [];
+        static::clearCache();
     }
 
     public static function setThemeDarkResolver(?callable $resolver): void
     {
         static::$themeDarkResolver = $resolver;
-        static::$cache = [];
+        static::clearCache();
     }
 
     /**
@@ -52,7 +62,7 @@ class TailwindParser
     public static function setPlatform(?string $platform): void
     {
         Platform::set($platform);
-        static::$cache = [];
+        static::clearCache();
     }
 
     private static function currentPlatform(): ?string
@@ -197,8 +207,43 @@ class TailwindParser
         'xl' => 12, '2xl' => 16, '3xl' => 24, 'full' => 9999,
     ];
 
+    /**
+     * Which corners each `rounded-<side>-*` suffix touches. Sides expand to
+     * their two corners, exactly as Tailwind's longhand does.
+     *
+     * Only the PHYSICAL spellings are here. Tailwind's logical variants
+     * (`rounded-s-*`, `rounded-ee-*`, …) resolve against the writing
+     * direction, and neither renderer flips corners for RTL yet — accepting
+     * them would silently render LTR geometry in an RTL layout, so they stay
+     * unparsed and land in the dropped-class diagnostics instead.
+     *
+     * @var array<string, list<string>>
+     */
+    private const BORDER_RADIUS_CORNERS = [
+        'tl' => ['borderRadiusTopLeft'],
+        'tr' => ['borderRadiusTopRight'],
+        'br' => ['borderRadiusBottomRight'],
+        'bl' => ['borderRadiusBottomLeft'],
+        't' => ['borderRadiusTopLeft', 'borderRadiusTopRight'],
+        'r' => ['borderRadiusTopRight', 'borderRadiusBottomRight'],
+        'b' => ['borderRadiusBottomRight', 'borderRadiusBottomLeft'],
+        'l' => ['borderRadiusTopLeft', 'borderRadiusBottomLeft'],
+    ];
+
     private const SHADOW = [
         'sm' => 1, 'md' => 6, 'lg' => 8, 'xl' => 12, '2xl' => 16, 'none' => 0,
+    ];
+
+    /**
+     * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
+     * Values are the rem sizes converted at the 16px root Tailwind assumes.
+     * Most are far wider than a phone, but they're what authors type and a
+     * constraint that never binds is still better than a dropped class.
+     */
+    private const CONTAINER_SIZES = [
+        '3xs' => 256, '2xs' => 288, 'xs' => 320, 'sm' => 384, 'md' => 448,
+        'lg' => 512, 'xl' => 576, '2xl' => 672, '3xl' => 768, '4xl' => 896,
+        '5xl' => 1024, '6xl' => 1152, '7xl' => 1280,
     ];
 
     private const WIDTH_FRACTIONS = [
@@ -211,15 +256,22 @@ class TailwindParser
     public static function parse(string $classString): array
     {
         if (isset(self::$cache[$classString])) {
+            self::recordUnsupported(self::$unsupportedCache[$classString] ?? []);
+
             return self::$cache[$classString];
         }
 
         $result = [];
+        $unsupported = [];
         $classes = preg_split('/\s+/', trim($classString), -1, PREG_SPLIT_NO_EMPTY);
 
         foreach ($classes as $class) {
             $parsed = self::parseClass($class);
             if ($parsed === null) {
+                if (! self::isInactivePlatformVariant($class)) {
+                    $unsupported[$class] = true;
+                }
+
                 continue;
             }
             // Merge dark companion separately so a class that contributes BOTH
@@ -245,6 +297,8 @@ class TailwindParser
         }
 
         self::$cache[$classString] = $result;
+        self::$unsupportedCache[$classString] = array_keys($unsupported);
+        self::recordUnsupported(self::$unsupportedCache[$classString]);
 
         return $result;
     }
@@ -252,6 +306,75 @@ class TailwindParser
     public static function clearCache(): void
     {
         self::$cache = [];
+        self::$unsupportedCache = [];
+    }
+
+    /**
+     * Group unsupported utility diagnostics under the Blade view currently
+     * being rendered. Scopes nest for child components and partials, so each
+     * warning points back to the view that authored the dropped classes.
+     */
+    public static function beginViewDiagnostics(string $view): void
+    {
+        self::$diagnosticScopes[] = [
+            'view' => $view,
+            'enabled' => (bool) config('app.debug', false),
+            'classes' => [],
+        ];
+    }
+
+    public static function endViewDiagnostics(): void
+    {
+        $scope = array_pop(self::$diagnosticScopes);
+
+        if ($scope === null || ! $scope['enabled'] || $scope['classes'] === []) {
+            return;
+        }
+
+        $reported = self::$reportedUnsupportedByView[$scope['view']] ?? [];
+        $classes = array_values(array_filter(
+            array_keys($scope['classes']),
+            fn (string $class): bool => ! isset($reported[$class])
+        ));
+
+        if ($classes === []) {
+            return;
+        }
+
+        foreach ($classes as $class) {
+            self::$reportedUnsupportedByView[$scope['view']][$class] = true;
+        }
+
+        Log::warning('NativePHP EDGE dropped unsupported Tailwind classes.', [
+            'view' => $scope['view'],
+            'classes' => $classes,
+        ]);
+    }
+
+    /** @param  list<string>  $classes */
+    private static function recordUnsupported(array $classes): void
+    {
+        $scopeIndex = array_key_last(self::$diagnosticScopes);
+
+        if ($scopeIndex === null || ! self::$diagnosticScopes[$scopeIndex]['enabled']) {
+            return;
+        }
+
+        foreach ($classes as $class) {
+            self::$diagnosticScopes[$scopeIndex]['classes'][$class] = true;
+        }
+    }
+
+    /**
+     * Platform variants that target another platform are intentional no-ops,
+     * not unsupported utilities. A malformed class containing both platform
+     * targets is still reported when one target matches the current platform.
+     */
+    private static function isInactivePlatformVariant(string $class): bool
+    {
+        $targets = array_values(array_intersect(explode(':', $class), ['ios', 'android']));
+
+        return $targets !== [] && ! in_array(self::currentPlatform(), $targets, true);
     }
 
     /**
@@ -380,11 +503,15 @@ class TailwindParser
 
         // Exact matches
         return match (true) {
+            // Direction — lets any container (notably pressable, which
+            // defaults to column) flip axis via class, matching web flexbox.
+            $class === 'flex-row', $class === 'flex-row-reverse' => ['flexDirection' => 1],
+            $class === 'flex-col', $class === 'flex-col-reverse' => ['flexDirection' => 0],
             $class === 'flex-1' => ['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0],
-            $class === 'flex-grow' => ['flexGrow' => 1],
-            $class === 'flex-grow-0' => ['flexGrow' => 0],
-            $class === 'flex-shrink' => ['flexShrink' => 1],
-            $class === 'flex-shrink-0' => ['flexShrink' => 0],
+            $class === 'flex-grow', $class === 'grow' => ['flexGrow' => 1],
+            $class === 'flex-grow-0', $class === 'grow-0' => ['flexGrow' => 0],
+            $class === 'flex-shrink', $class === 'shrink' => ['flexShrink' => 1],
+            $class === 'flex-shrink-0', $class === 'shrink-0' => ['flexShrink' => 0],
             $class === 'flex-wrap' => ['flexWrap' => 1],
             $class === 'flex-nowrap' => ['flexWrap' => 0],
             $class === 'flex-wrap-reverse' => ['flexWrap' => 2],
@@ -446,21 +573,30 @@ class TailwindParser
             str_starts_with($class, 'ml-') => self::parseSpacingSide('marginLeft', substr($class, 3)),
             str_starts_with($class, 'm-') => self::parseSpacingUniform('margin', substr($class, 2)),
 
-            // Gap, dimensions
+            // Gap, dimensions.
+            //
+            // The min-/max- constraints MUST precede the bare `w-`/`h-`
+            // branches only for readability — they don't actually collide
+            // (`max-w-4` doesn't start with `w-`) — but grouping them keeps
+            // the sizing rules together.
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
+            str_starts_with($class, 'min-w-') => self::parseSizeConstraint('minWidth', substr($class, 6)),
+            str_starts_with($class, 'max-w-') => self::parseSizeConstraint('maxWidth', substr($class, 6)),
+            str_starts_with($class, 'min-h-') => self::parseSizeConstraint('minHeight', substr($class, 6)),
+            str_starts_with($class, 'max-h-') => self::parseSizeConstraint('maxHeight', substr($class, 6)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
             // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
             // `inset-` branch, which would otherwise match them first and try
             // to parse "x-0" as a spacing value.
-            str_starts_with($class, 'inset-x-') => self::parseInset(substr($class, 8), ['positionLeft', 'positionRight']),
-            str_starts_with($class, 'inset-y-') => self::parseInset(substr($class, 8), ['positionTop', 'positionBottom']),
-            str_starts_with($class, 'inset-') => self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft']),
+            str_starts_with($class, 'inset-x-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionLeft', 'positionRight'])),
+            str_starts_with($class, 'inset-y-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionTop', 'positionBottom'])),
+            str_starts_with($class, 'inset-') => self::explicitInsets(self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft'])),
 
-            str_starts_with($class, 'left-') => self::parseSpacingUniform('positionLeft', substr($class, 5)),
-            str_starts_with($class, 'top-') => self::parseSpacingUniform('positionTop', substr($class, 4)),
-            str_starts_with($class, 'right-') => self::parseSpacingUniform('positionRight', substr($class, 6)),
-            str_starts_with($class, 'bottom-') => self::parseSpacingUniform('positionBottom', substr($class, 7)),
+            str_starts_with($class, 'left-') => self::explicitInsets(self::parseSpacingUniform('positionLeft', substr($class, 5))),
+            str_starts_with($class, 'top-') => self::explicitInsets(self::parseSpacingUniform('positionTop', substr($class, 4))),
+            str_starts_with($class, 'right-') => self::explicitInsets(self::parseSpacingUniform('positionRight', substr($class, 6))),
+            str_starts_with($class, 'bottom-') => self::explicitInsets(self::parseSpacingUniform('positionBottom', substr($class, 7))),
 
             // Colors and text
             // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
@@ -781,6 +917,36 @@ class TailwindParser
     }
 
     /**
+     * `max-w-*` / `min-w-*` / `max-h-*` / `min-h-*`.
+     *
+     * Accepts the spacing scale (`max-w-64`), the container scale that only
+     * max-width has in Tailwind (`max-w-sm`), and `none` (an explicit "no
+     * constraint", which is what the wire's 0 already means).
+     *
+     * The `full` / `screen*` / `min` / `max` / `fit` keywords are deliberately
+     * NOT accepted: the packed node carries min/max as bare floats with no
+     * companion size mode, so there is nowhere to put "100% of the parent".
+     * Leaving them unparsed lands them in the dropped-class diagnostics
+     * instead of silently doing nothing.
+     */
+    private static function parseSizeConstraint(string $key, string $value): ?array
+    {
+        if ($value === 'none') {
+            return [$key => 0];
+        }
+
+        if (isset(self::SPACING[$value])) {
+            return [$key => self::SPACING[$value]];
+        }
+
+        if (($key === 'maxWidth' || $key === 'minWidth') && isset(self::CONTAINER_SIZES[$value])) {
+            return [$key => self::CONTAINER_SIZES[$value]];
+        }
+
+        return null;
+    }
+
+    /**
      * Parse an aspect-ratio token — either `W/H` (e.g. `16/9`) or a plain
      * decimal (e.g. `1.5`). A plain `(float)` cast can't be used for the
      * `W/H` form because PHP would stop at the slash (`"16/9"` casts to
@@ -808,6 +974,29 @@ class TailwindParser
      * @param  list<string>  $edges
      * @return array<string, mixed>|null
      */
+    /**
+     * Mark explicitly-authored zero insets as IEEE -0.0. The wire's packed
+     * node has no spare byte to distinguish "unset" from "explicit 0", so
+     * +0.0 means unset and the sign bit carries "the author wrote
+     * `bottom-0`" — which must anchor to the bottom edge, not fall through
+     * to the top default. -0.0 survives the f32 wire bit-exactly; the
+     * native layout treats `!= 0 || signbit` as "edge is set".
+     */
+    private static function explicitInsets(?array $parsed): ?array
+    {
+        if ($parsed === null) {
+            return null;
+        }
+
+        foreach ($parsed as $key => $value) {
+            if ($value === 0 || $value === 0.0) {
+                $parsed[$key] = -0.0;
+            }
+        }
+
+        return $parsed;
+    }
+
     private static function parseInset(string $value, array $edges): ?array
     {
         $result = [];
@@ -1016,13 +1205,54 @@ class TailwindParser
         return self::resolveColor($value, 'borderColor');
     }
 
+    /**
+     * `rounded-*` — uniform, per-side and per-corner.
+     *
+     * The scale keys carry no dashes, so a dash unambiguously separates a
+     * side from its size: `2xl` is uniform, `br-none` is one corner.
+     * A bare side (`rounded-t`) takes Tailwind's default 4pt radius, the
+     * same as a bare `rounded`.
+     *
+     * Per-corner keys are emitted ALONGSIDE any uniform `borderRadius` rather
+     * than merged into it, so `rounded-2xl rounded-br-none` keeps both and the
+     * collector resolves the precedence. That makes the result independent of
+     * the order the classes appear in — which matches Tailwind, where the
+     * longhand always follows the shorthand in the generated stylesheet
+     * regardless of how the author ordered the attribute.
+     */
     private static function parseRounded(string $value): ?array
     {
         if (isset(self::BORDER_RADIUS[$value])) {
             return ['borderRadius' => self::BORDER_RADIUS[$value]];
         }
 
-        return null;
+        [$side, $size] = array_pad(explode('-', $value, 2), 2, null);
+
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+        if ($corners === null) {
+            return null;
+        }
+
+        // Bare side (`rounded-b`) → the same default `rounded` uses.
+        $radius = $size === null ? 4 : (self::BORDER_RADIUS[$size] ?? null);
+        if ($radius === null) {
+            return null;
+        }
+
+        return array_fill_keys($corners, $radius);
+    }
+
+    /**
+     * Arbitrary per-corner radius — `rounded-br-[4px]`, `rounded-t-[12]`.
+     * The uniform `rounded-[N]` form is handled inline in parseArbitrary.
+     *
+     * @return array<string, float>|null
+     */
+    private static function parseArbitraryRounded(string $side, string $value): ?array
+    {
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+
+        return $corners === null ? null : array_fill_keys($corners, (float) $value);
     }
 
     private static function parseShadow(string $value): ?array
@@ -1086,9 +1316,17 @@ class TailwindParser
             'gap' => ['gap' => (float) $value],
             'w' => ['width' => (float) $value],
             'h' => ['height' => (float) $value],
+            'min-w' => ['minWidth' => (float) $value],
+            'max-w' => ['maxWidth' => (float) $value],
+            'min-h' => ['minHeight' => (float) $value],
+            'max-h' => ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
+            // `rounded-br-[4px]` etc. The arbitrary regex is non-greedy up to
+            // the final `-[`, so the whole `rounded-<side>` arrives as prefix.
+            'rounded-tl', 'rounded-tr', 'rounded-br', 'rounded-bl',
+            'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],

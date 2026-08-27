@@ -13,6 +13,12 @@ android {
     namespace = "com.nativephp.mobile"
     compileSdk = REPLACE_COMPILE_SDK
 
+    // Generated NativePHP plugin sources — owned by the plugin compiler,
+    // wiped and rebuilt on every compile. Do not edit.
+    sourceSets.getByName("main") {
+        java.srcDir("src/nativephp/kotlin")
+    }
+
     defaultConfig {
         applicationId = "REPLACE_APP_ID"
         minSdk = REPLACE_MIN_SDK

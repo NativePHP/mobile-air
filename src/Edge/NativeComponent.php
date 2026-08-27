@@ -9,6 +9,7 @@ use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
+use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
@@ -19,6 +20,7 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
@@ -1294,11 +1296,16 @@ abstract class NativeComponent
         // returns a View. We need the View to access its engine + path.
         $view = view($name, $data);
         $engine = $view->getEngine();
+        TailwindParser::beginViewDiagnostics($view->getName());
 
         if (! $engine instanceof CompilerEngine) {
             // Non-blade engine — fall back to the standard render path.
             // $this won't be bound, but at least the view still runs.
-            $view->render();
+            try {
+                $view->render();
+            } finally {
+                TailwindParser::endViewDiagnostics();
+            }
 
             return;
         }
@@ -1371,6 +1378,7 @@ abstract class NativeComponent
             $factory->flushStateIfDoneRendering();
         } finally {
             NativeTagPrecompiler::setActive($wasActive);
+            TailwindParser::endViewDiagnostics();
         }
     }
 
@@ -2093,6 +2101,9 @@ abstract class NativeComponent
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element);
                         nativephp_element_publish($tree);
+                        TreeObservers::tree(
+                            $tree, $this->nativeRouter?->currentUri() ?? '/'
+                        );
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
@@ -2112,21 +2123,20 @@ abstract class NativeComponent
                 continue;
             }
 
+            // Broadcast user-facing frames to observers; system frames like
+            // hot reload / shutdown are dev-loop noise, not user actions.
+            if (TreeObservers::any()
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                TreeObservers::event(
+                    $event,
+                    $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
+                );
+            }
+
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->flushCompiledViews();
-                // Prefer the native router's top-of-stack URI (where the
-                // user actually IS after SPA-style internal navigation)
-                // over `request()->path()` (the original HTTP entry-
-                // point URI, typically `/`). Otherwise hot reload always
-                // lands the user back on the root screen.
-                $uri = $this->nativeRouter?->currentUri()
-                    ?? '/'.ltrim(request()->path(), '/');
-                // Serialize the full stack so back-button history
-                // survives the reboot. `Route::native`'s handler reads
-                // this on the way back in and preloads entries below
-                // the top via `NativeRouter::preloadStack`.
-                $stack = $this->nativeRouter?->getStackEntries() ?? [];
+                ['uri' => $uri, 'stack' => $stack] = $this->hotRestartPayload();
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
@@ -2283,6 +2293,9 @@ abstract class NativeComponent
                         $this->nativeRouter?->flushDeferredTransition();
 
                         nativephp_element_publish($tree);
+                        TreeObservers::tree(
+                            $tree, $this->nativeRouter?->currentUri() ?? '/'
+                        );
 
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
@@ -2309,21 +2322,20 @@ abstract class NativeComponent
                 continue;
             }
 
+            // Broadcast user-facing frames to observers; system frames like
+            // hot reload / shutdown are dev-loop noise, not user actions.
+            if (TreeObservers::any()
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                TreeObservers::event(
+                    $event,
+                    $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
+                );
+            }
+
             // Hot reload: write restart signal and exit so Kotlin re-executes with fresh PHP
             if (($event['type'] ?? -1) === self::EVENT_HOT_RELOAD) {
                 $this->flushCompiledViews();
-                // Prefer the native router's top-of-stack URI (where the
-                // user actually IS after SPA-style internal navigation)
-                // over `request()->path()` (the original HTTP entry-
-                // point URI, typically `/`). Otherwise hot reload always
-                // lands the user back on the root screen.
-                $uri = $this->nativeRouter?->currentUri()
-                    ?? '/'.ltrim(request()->path(), '/');
-                // Serialize the full stack so back-button history
-                // survives the reboot. `Route::native`'s handler reads
-                // this on the way back in and preloads entries below
-                // the top via `NativeRouter::preloadStack`.
-                $stack = $this->nativeRouter?->getStackEntries() ?? [];
+                ['uri' => $uri, 'stack' => $stack] = $this->hotRestartPayload();
                 @file_put_contents(
                     storage_path('framework/.hot_restart'),
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
@@ -2404,6 +2416,38 @@ abstract class NativeComponent
     public function resetNavigationIntent(): void
     {
         $this->nativeNavigationIntent = null;
+    }
+
+    /**
+     * Where the rebooted runtime should land after a hot reload, plus the
+     * history to restore beneath it.
+     *
+     * Normally that's wherever the user actually IS — the native router's
+     * top-of-stack URI, not `request()->path()` (the original HTTP entry
+     * point, typically `/`), otherwise every reload dumps them back at the
+     * root — with the full stack serialized so the back button survives the
+     * reboot. `Route::native`'s handler replays the entries below the top via
+     * NativeRouter::preloadStack().
+     *
+     * A screen change requested from the `native:watch` terminal wins over
+     * the live stack: it is asking to GO somewhere, so the chosen screen
+     * becomes the new root rather than being pushed onto history the user is
+     * no longer in.
+     *
+     * @return array{uri: string, stack: list<array{uri: string, params: array}>}
+     */
+    private function hotRestartPayload(): array
+    {
+        if ($requested = NativeRouter::takeScreenIntent()) {
+            NativeRouter::debugLog("HOT_RELOAD: screen change requested — $requested");
+
+            return ['uri' => $requested, 'stack' => []];
+        }
+
+        return [
+            'uri' => $this->nativeRouter?->currentUri() ?? '/'.ltrim(request()->path(), '/'),
+            'stack' => $this->nativeRouter?->getStackEntries() ?? [],
+        ];
     }
 
     /**
@@ -2971,6 +3015,10 @@ abstract class NativeComponent
             return;
         }
 
+        if ((new \ReflectionProperty($this, $property))->getAttributes(Locked::class) !== []) {
+            throw new LockedPropertyException(static::class, $property);
+        }
+
         $this->{$property} = $value;
 
         // A state change can invalidate any computed value (incl.
@@ -3097,7 +3145,11 @@ abstract class NativeComponent
 
         if ($isNew) {
             $child = new $class;
-            $child->nativeCallbacks = new CallbackRegistry;
+            $child->nativeCallbacks = new CallbackRegistry(
+                ($parentScope = $this->nativeCallbacks->scope()) === ''
+                    ? $identity
+                    : $parentScope.'>'.$identity
+            );
             $child->nativeParentComponent = $this;
             if ($this->nativeRouter !== null) {
                 $child->setRouter($this->nativeRouter);

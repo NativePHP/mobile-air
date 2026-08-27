@@ -95,6 +95,35 @@ fun argbToComposeColor(argb: Int): Color {
  * Handles background color, corner radius, border, shadow, opacity,
  * and dark mode overrides from dark_* props.
  */
+/**
+ * The node's outline: per-corner when `rounded-<side>-*` was authored,
+ * otherwise the uniform `border_radius`.
+ *
+ * Per-corner radii ride the props bag because the packed binary node carries
+ * a single `border_radius` float with no room for four. PHP emits all four
+ * whenever ANY corner is authored, each already resolved against the uniform
+ * radius — so `radius_tl` being present is the whole switch, and there is no
+ * per-corner defaulting to do here.
+ *
+ * Compose names corners start/end, which flip under RTL, while the Tailwind
+ * spellings we accept are physical (`tl` = top-LEFT). Start is mapped to left
+ * to match the rest of this renderer, which has no RTL handling either; the
+ * parser rejects Tailwind's logical `rounded-s-*` spellings for that reason.
+ */
+fun nodeShape(radius: Float, props: GenericProps): RoundedCornerShape =
+    if (props.has("radius_tl")) {
+        RoundedCornerShape(
+            topStart = props.getFloat("radius_tl", 0f).dp,
+            topEnd = props.getFloat("radius_tr", 0f).dp,
+            bottomEnd = props.getFloat("radius_br", 0f).dp,
+            bottomStart = props.getFloat("radius_bl", 0f).dp
+        )
+    } else if (radius > 0f) {
+        RoundedCornerShape(radius.dp)
+    } else {
+        RoundedCornerShape(0.dp)
+    }
+
 fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boolean): Modifier {
     if (style == null) return this
 
@@ -127,7 +156,7 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
     // Background color (with dark mode override)
     val darkBg = if (isDarkMode) props.getColor("dark_bg_color", 0) else 0
     val bgArgb = if (darkBg != 0) darkBg else style.bgColor
-    val shape = if (radius > 0f) RoundedCornerShape(radius.dp) else RoundedCornerShape(0.dp)
+    val shape = nodeShape(radius, props)
 
     // Shadow — must come before background. Compose shadow requires a shape
     // to cast from; the background provides the visual fill.
@@ -163,7 +192,6 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         if (borderArgb != 0) {
             val borderColor = argbToComposeColor(borderArgb)
             if (borderColor != Color.Transparent) {
-                val shape = if (radius > 0f) RoundedCornerShape(radius.dp) else RoundedCornerShape(0.dp)
                 mod = mod.border(style.borderWidth.dp, borderColor, shape)
             }
         }

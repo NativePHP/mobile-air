@@ -50,7 +50,27 @@ class BundleExclusions
         'artisan',
     ];
 
-    /** Non-runtime patterns inside vendor packages. */
+    /**
+     * Working directories recreated after the exclusions above have run.
+     *
+     * Their contents are excluded on purpose, being compiled output and one
+     * machine's sessions, but the directories themselves are not optional:
+     * composer install runs package:discover in the copied tree, and that
+     * boots Laravel.
+     */
+    public const REQUIRED_DIRECTORIES = [
+        'bootstrap/cache',
+        'storage/framework/cache',
+        'storage/framework/sessions',
+        'storage/framework/views',
+        // The provider registers this as a view-finder location for every
+        // app, and the device's view:cache throws when it is missing.
+        // Only native:make-component creates it, so apps without a
+        // scaffolded component must still ship the empty dir.
+        'resources/views/native',
+    ];
+
+    /** Non-runtime patterns matched only inside vendor packages. */
     public const VENDOR_PATTERNS = [
         '*.md',
         'LICENSE*',

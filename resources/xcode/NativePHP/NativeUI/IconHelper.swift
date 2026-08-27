@@ -76,9 +76,11 @@ private func getManualMapping(_ iconName: String) -> String? {
     case "history":
         return "clock.arrow.circlepath"
 
-    // Actions
+    // Actions — "plus" is already a valid bare SF Symbol; only alias the
+    // Material name. (Mapping "plus" to plus.circle.fill hijacked authors
+    // who explicitly asked for the bare glyph, e.g. Ios::Plus.)
     case "add", "plus":
-        return "plus.circle.fill"
+        return "plus"
     case "edit":
         return "pencil"
     case "delete":

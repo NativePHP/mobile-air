@@ -10,12 +10,15 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 // MARK: - Flex Enums (match PHP/binary protocol values)
@@ -35,10 +38,25 @@ object JustifyContent {
 }
 
 object AlignItems {
-    const val START = 0
+    /**
+     * No `items-*` / `self-*` class was authored — PHP omits `align_items`
+     * entirely, so it arrives as 0 and each renderer applies its own default.
+     * On Android that default is content-sizing (this file never adds
+     * `fillMaxWidth()` for it), which is unchanged by #309.
+     */
+    const val UNSET = 0
     const val CENTER = 1
     const val END = 2
     const val STRETCH = 3
+
+    /**
+     * Explicitly authored `items-start` / `self-start`. Deliberately NOT 0:
+     * while Android renders START and UNSET identically, iOS does not, and a
+     * shared wire value meant iOS could not fix `items-start` without also
+     * flipping every unclassed container (mobile-air #309). Android behaviour
+     * is untouched — 4 falls through the same `else` branches 0 always did.
+     */
+    const val START = 4
 }
 
 object PositionType {
@@ -92,9 +110,12 @@ fun FlexContainer(
             }
             // Render absolute children on top — anchor to the appropriate
             // corner based on which edge insets are set, then offset inward.
-            // Same convention as iOS FlexContainer.placeAbsolute: when
-            // `right` is set and `left` is 0, anchor to the right edge;
-            // same for bottom vs top.
+            // Same convention as iOS FlexContainer.placeAbsolute: +0.0 means
+            // unset, any non-zero value anchors (negatives overhang — the
+            // `-right-8` Tailwind bleed), and IEEE -0.0 is an authored
+            // explicit zero (`bottom-0`, `right-0`), which anchors to that
+            // edge too. When both opposing edges are authored, left/top win
+            // (CSS precedence).
             childNodes.forEachIndexed { i, node ->
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
                     val left = node.layout?.positionLeft ?: 0f
@@ -102,20 +123,19 @@ fun FlexContainer(
                     val right = node.layout?.positionRight ?: 0f
                     val bottom = node.layout?.positionBottom ?: 0f
 
-                    // NON-ZERO rather than positive, so NEGATIVE insets work:
-                    // `-right-8` anchors trailing and offsets OUTWARD,
-                    // deliberately overhanging the edge (Tailwind's bleed).
-                    // Zero still reads as "no anchor on that edge" — the
-                    // packed node struct has no spare byte to distinguish an
-                    // unset edge from an explicit `right-0`.
+                    // -0.0f == 0f in Kotlin, so authored zeros need the
+                    // raw sign bit.
+                    fun isSet(v: Float) = v != 0f || v.toRawBits() != 0
+                    val anchorEnd = isSet(right) && !isSet(left)
+                    val anchorBottom = isSet(bottom) && !isSet(top)
                     val anchor = when {
-                        right != 0f && bottom != 0f -> Alignment.BottomEnd
-                        right != 0f                 -> Alignment.TopEnd
-                        bottom != 0f                -> Alignment.BottomStart
-                        else                        -> Alignment.TopStart
+                        anchorEnd && anchorBottom -> Alignment.BottomEnd
+                        anchorEnd                 -> Alignment.TopEnd
+                        anchorBottom              -> Alignment.BottomStart
+                        else                      -> Alignment.TopStart
                     }
-                    val offsetX = if (right != 0f) (-right).dp else left.dp
-                    val offsetY = if (bottom != 0f) (-bottom).dp else top.dp
+                    val offsetX = if (anchorEnd) (-right).dp else left.dp
+                    val offsetY = if (anchorBottom) (-bottom).dp else top.dp
 
                     Box(
                         modifier = Modifier
@@ -157,7 +177,7 @@ private fun FlexColumn(
     val alignment = when (align) {
         AlignItems.CENTER -> Alignment.CenterHorizontally
         AlignItems.END -> Alignment.End
-        else -> Alignment.Start // START and STRETCH both start-align; STRETCH handled per-child
+        else -> Alignment.Start // UNSET, START and STRETCH all start-align; STRETCH fills per-child
     }
 
     Column(
@@ -235,6 +255,38 @@ private fun FlexRow(
 }
 
 /**
+ * Apply `min_width` / `max_width` / `min_height` / `max_height` from the packed
+ * node as Compose constraint bounds.
+ *
+ * A bound of 0 is "unset" on the wire, so it maps to [Dp.Unspecified] rather
+ * than to a literal 0.dp — `widthIn(max = 0.dp)` would collapse the node.
+ *
+ * Shared by [buildChildModifier] and `NodeView`'s no-parent fallback so the
+ * constraints apply whether or not the node sits inside a flex container.
+ */
+fun Modifier.applySizeConstraints(layout: NodeLayout?): Modifier {
+    if (layout == null) return this
+
+    var mod = this
+
+    if (layout.minWidth > 0f || layout.maxWidth > 0f) {
+        mod = mod.widthIn(
+            min = if (layout.minWidth > 0f) layout.minWidth.dp else Dp.Unspecified,
+            max = if (layout.maxWidth > 0f) layout.maxWidth.dp else Dp.Unspecified
+        )
+    }
+
+    if (layout.minHeight > 0f || layout.maxHeight > 0f) {
+        mod = mod.heightIn(
+            min = if (layout.minHeight > 0f) layout.minHeight.dp else Dp.Unspecified,
+            max = if (layout.maxHeight > 0f) layout.maxHeight.dp else Dp.Unspecified
+        )
+    }
+
+    return mod
+}
+
+/**
  * Build per-child modifier for flex properties (weight, fill, fixed size, margin).
  */
 @Composable
@@ -270,6 +322,51 @@ private fun buildChildModifier(
         if (negX != 0f || negY != 0f) {
             mod = mod.offset(x = negX.dp, y = negY.dp)
         }
+    }
+
+    // Min/max size constraints (`max-w-*`, `min-h-*`, …).
+    //
+    // Applied BEFORE the fill/fixed/weight modifiers below so that a combo
+    // like `w-full max-w-[280px]` fills *within* the 280dp bound instead of
+    // filling the parent and being clamped after the fact. Compose narrows
+    // constraints outer→inner, so ordering here is the whole behaviour.
+    //
+    // 0 means "unset" on the wire (the packed node has no companion size
+    // mode for min/max), which is why each bound is gated on `> 0f`.
+    mod = mod.applySizeConstraints(layout)
+
+    // Cross axis: per-child `self-*` PLACEMENT.
+    //
+    // The container's Column/Row alignment parameter applies to every child
+    // uniformly, so an individual child can only move via `Modifier.align()`
+    // inside the layout scope. Without this, `self-center` / `self-end` only
+    // affected whether the child FILLED (via the width branch below) and never
+    // where it sat — a `self-end` child hugged its content but stayed on the
+    // leading edge. iOS honours align_self in FlexContainer's placement switch,
+    // so this was a platform divergence.
+    //
+    // 0 = unset (inherit the container's align-items) and STRETCH needs no
+    // placement — it's expressed as fillMaxWidth/Height below — so both fall
+    // through untouched.
+    val alignSelf = layout?.alignSelf ?: 0
+    if (alignSelf > 0 && alignSelf != AlignItems.STRETCH) {
+        mod = if (isRow && scope is RowScope) {
+            with(scope) {
+                when (alignSelf) {
+                    AlignItems.CENTER -> mod.align(Alignment.CenterVertically)
+                    AlignItems.END -> mod.align(Alignment.Bottom)
+                    else -> mod.align(Alignment.Top)
+                }
+            }
+        } else if (!isRow && scope is ColumnScope) {
+            with(scope) {
+                when (alignSelf) {
+                    AlignItems.CENTER -> mod.align(Alignment.CenterHorizontally)
+                    AlignItems.END -> mod.align(Alignment.End)
+                    else -> mod.align(Alignment.Start)
+                }
+            }
+        } else mod
     }
 
     // Main axis: flex_grow or fill → weight

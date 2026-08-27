@@ -204,6 +204,13 @@ trait ManagesIosSigning
         if (! $result->successful()) {
             \Laravel\Prompts\error('Failed to import certificate');
 
+            $errorOutput = trim($result->errorOutput() ?: $result->output());
+            if ($errorOutput !== '') {
+                $this->line('   '.str_replace("\n", "\n   ", $errorOutput));
+            }
+
+            $this->reportCertificatePasswordProblems($password, $errorOutput);
+
             return null;
         }
 
@@ -280,6 +287,99 @@ trait ManagesIosSigning
         $this->components->twoColumnDetail('Certificate', 'Imported and configured');
 
         return $certificateSha1;
+    }
+
+    /**
+     * Explain a rejected .p12 password.
+     *
+     * The most common cause is an unquoted password in .env: dotenv treats an
+     * unquoted '#' as the start of a comment, so only the part before it ever
+     * reaches `security import`.
+     */
+    protected function reportCertificatePasswordProblems(string $password, string $errorOutput): void
+    {
+        $wrongPassword = $errorOutput === ''
+            || str_contains($errorOutput, 'passphrase you entered is not correct')
+            || str_contains($errorOutput, 'MAC verification failed')
+            || str_contains($errorOutput, 'wrong password')
+            || str_contains($errorOutput, 'Invalid password')
+            || str_contains($errorOutput, 'AuthFailure');
+
+        if (! $wrongPassword) {
+            return;
+        }
+
+        $this->line('');
+        \Laravel\Prompts\warning('The .p12 file was read, but its password was rejected.');
+        $this->components->twoColumnDetail('Password received', strlen($password).' character(s)');
+
+        $truncated = $this->findUnquotedEnvPasswordVars();
+
+        foreach ($truncated as $var) {
+            \Laravel\Prompts\error("{$var} is unquoted in .env and contains a '#'.");
+            $this->line('   Everything from the # onwards is parsed as a comment, so only the');
+            $this->line('   text before it is being used as the password. Quote the value:');
+            $this->line("       {$var}=\"<your full password>\"");
+        }
+
+        if ($truncated === []) {
+            $this->line('   If the password contains special characters, quote it in .env:');
+            $this->line('       IOS_DISTRIBUTION_CERTIFICATE_PASSWORD="<your full password>"');
+            $this->line('   An unquoted # truncates the value and an unquoted space is a parse error.');
+        }
+
+        $this->line('   When using --certificate-password, wrap the value in single quotes so');
+        $this->line('   your shell does not eat # or expand $ and ! before PHP sees it.');
+        $this->line('   Re-exporting the certificate with an alphanumeric password also works.');
+    }
+
+    /**
+     * Find certificate password variables whose raw .env value is unquoted and
+     * contains a '#', meaning dotenv silently truncated it.
+     *
+     * @return array<int, string>
+     */
+    protected function findUnquotedEnvPasswordVars(): array
+    {
+        $envPath = base_path('.env');
+
+        if (! is_readable($envPath)) {
+            return [];
+        }
+
+        $envContent = file_get_contents($envPath);
+        if ($envContent === false) {
+            return [];
+        }
+
+        $vars = [
+            'IOS_DISTRIBUTION_CERTIFICATE_PASSWORD',
+            'IOS_DEVELOPMENT_CERTIFICATE_PASSWORD',
+            'IOS_CERTIFICATE_PASSWORD',
+        ];
+
+        $affected = [];
+
+        foreach ($vars as $var) {
+            if (! preg_match_all("/^{$var}=(.*)$/m", $envContent, $matches)) {
+                continue;
+            }
+
+            // A variable can be declared more than once; dotenv resolves to the
+            // last assignment, so that is the one worth inspecting.
+            $rawValue = trim(end($matches[1]));
+
+            // Already quoted, so dotenv keeps the value intact.
+            if (str_starts_with($rawValue, '"') || str_starts_with($rawValue, "'")) {
+                continue;
+            }
+
+            if (str_contains($rawValue, '#')) {
+                $affected[] = $var;
+            }
+        }
+
+        return $affected;
     }
 
     protected function extractCertificateSha1(): ?string
