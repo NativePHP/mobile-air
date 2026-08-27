@@ -1788,8 +1788,40 @@ abstract class NativeComponent
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
+        //
+        // Screen-level only: NativeCallbacks is a global registry keyed by
+        // id + event class with no record of the component that registered the
+        // callback, so firing it per component would run a one-shot callback
+        // once per component in the tree.
         $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
 
+        // System-level events tagged BroadcastsGlobally are ALSO pushed through
+        // Laravel's dispatcher so listeners anywhere in the app react — not just
+        // component #[On] handlers. Runs once per event, before component
+        // delivery, so it fires even when no component declares a listener.
+        $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
+
+        // Deliver to this screen AND every nested child component, so an #[On]
+        // listener works wherever it's declared — a child that owns a piece of
+        // state (a Logo tracking the system appearance) reacts without the
+        // screen having to relay the event down to it. Every listening
+        // component receives it; there is no stopPropagation, matching how
+        // emit() reaches every listening ancestor.
+        //
+        // Snapshotted because a handler may mount or unmount children mid-walk;
+        // this frame's event still reaches the tree as it stood on arrival.
+        foreach (iterator_to_array($this->componentTree(), false) as $component) {
+            $component->deliverNativeEvent($eventName, $payload);
+        }
+    }
+
+    /**
+     * Run a single component's listeners for a native event: the fluent
+     * closures registered via ->on('Event', fn) first, then its #[On]
+     * attribute listener.
+     */
+    protected function deliverNativeEvent(string $eventName, mixed $payload): void
+    {
         // Fluent closure listeners registered via ->on('Event', fn) — persistent
         // and keyed by event name, so they fire every time the event arrives
         // (unlike the one-shot camera callbacks above). The payload is exposed as
@@ -1807,13 +1839,6 @@ abstract class NativeComponent
                 $bound($eventObject);
             }
         }
-
-        // System-level events tagged BroadcastsGlobally are ALSO pushed through
-        // Laravel's dispatcher so listeners anywhere in the app react — not just
-        // this component's #[On] handlers. Runs before the (early-returning)
-        // #[On] lookup below so it fires even when this component declares no
-        // listener for the event.
-        $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
 
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
