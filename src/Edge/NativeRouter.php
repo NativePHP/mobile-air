@@ -174,18 +174,60 @@ class NativeRouter
         static::$currentGroupLayout = null;
     }
 
-    public static function resolve(string $uri): ?array
+    /**
+     * Split a navigation URI into its path and its decoded query parameters.
+     *
+     * Route patterns are registered as paths, so anything after `?` has to come
+     * off before matching or `/auth/callback?code=x` misses `/auth/callback`.
+     * `parse_str` is what gives array syntax (`tag[]=a&tag[]=b`, the shape a
+     * Livewire array `#[Url]` prop serialises to) the same meaning it has in a
+     * web request.
+     *
+     * @return array{0: string, 1: array<string, mixed>}
+     */
+    protected static function splitQuery(string $uri): array
     {
         $uri = '/'.ltrim($uri, '/');
 
+        // A fragment addresses somewhere within a document. It is never part of
+        // a route or its parameters, and the hosts pass it through untouched.
+        if (($hash = strpos($uri, '#')) !== false) {
+            $uri = substr($uri, 0, $hash);
+        }
+
+        if (($mark = strpos($uri, '?')) === false) {
+            return [$uri, []];
+        }
+
+        parse_str(substr($uri, $mark + 1), $query);
+
+        // `?a=1` on its own leaves an empty path, and no route is registered
+        // under ''. Root is what a bare query string addresses.
+        $path = substr($uri, 0, $mark);
+
+        return [$path === '' ? '/' : $path, $query];
+    }
+
+    /**
+     * Resolve a navigation URI to the screen registered for it.
+     *
+     * `query` is the URI's query string, parsed. Callers merge it into the
+     * component's navigation data, so a deep link's parameters reach the screen
+     * through `$this->data()` the same way an in-app `navigate()` payload does.
+     */
+    public static function resolve(string $uri): ?array
+    {
+        [$path, $query] = static::splitQuery($uri);
+
         // Exact match first
-        if (isset(static::$routes[$uri])) {
-            $entry = static::$routes[$uri];
+        if (isset(static::$routes[$path])) {
+            $entry = static::$routes[$path];
 
             return [
                 'class' => $entry['class'],
                 'layout' => $entry['layout'] ?? null,
                 'params' => [],
+                'query' => $query,
             ];
         }
 
@@ -194,13 +236,14 @@ class NativeRouter
             $regex = preg_replace('/\{(\w+)\}/', '(?P<$1>[^/]+)', $pattern);
             $regex = '#^'.$regex.'$#';
 
-            if (preg_match($regex, $uri, $matches)) {
+            if (preg_match($regex, $path, $matches)) {
                 $params = array_filter($matches, fn ($key) => is_string($key), ARRAY_FILTER_USE_KEY);
 
                 return [
                     'class' => $entry['class'],
                     'layout' => $entry['layout'] ?? null,
                     'params' => $params,
+                    'query' => $query,
                 ];
             }
         }
@@ -346,6 +389,7 @@ class NativeRouter
                 $component = $this->createComponent(
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
+                    $resolved['query'],
                 );
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
@@ -371,9 +415,13 @@ class NativeRouter
      * Entry point. Init shared memory, run the navigation loop,
      * shutdown when done.
      *
+     * `$data` is the launch screen's navigation data — on a cold deep link the
+     * request's query parameters, so `$this->data()` answers the same on the
+     * first screen as it does on every screen navigated to after it.
+     *
      * @return string|null Exit URI for redirect, or null
      */
-    public function start(string $class, array $params = [], string $uri = ''): ?string
+    public function start(string $class, array $params = [], string $uri = '', array $data = []): ?string
     {
         NativeComponent::registerDumpHandler();
 
@@ -381,7 +429,7 @@ class NativeRouter
 
         try {
             static::debugLog("start: class=$class uri=$uri");
-            $component = $this->createComponent($class, $params);
+            $component = $this->createComponent($class, $params, $data);
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
@@ -487,7 +535,9 @@ class NativeRouter
                     $next = $this->createComponent(
                         $resolved['class'],
                         $resolved['params'],
-                        $intent->data
+                        // An explicit navigate() payload is more specific than
+                        // the URI it travelled on, so it wins a key collision.
+                        array_merge($resolved['query'], $intent->data)
                     );
                     if (! empty($resolved['layout'])) {
                         $next->setLayout($resolved['layout']);
@@ -543,7 +593,7 @@ class NativeRouter
                         $next = $this->createComponent(
                             $resolved['class'],
                             $resolved['params'],
-                            $intent->data
+                            array_merge($resolved['query'], $intent->data)
                         );
                         if (! empty($resolved['layout'])) {
                             $next->setLayout($resolved['layout']);
