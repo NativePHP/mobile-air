@@ -267,6 +267,7 @@ trait RunsAndroid
     {
         $scheme = config('nativephp.deeplink_scheme');
         $host = config('nativephp.deeplink_host');
+        $paths = config('nativephp.deeplink_paths', []);
 
         // Both are opt-in: only add filters if configured
         if (! $scheme && ! $host) {
@@ -292,7 +293,7 @@ trait RunsAndroid
         );
 
         // Build the filters based on what's configured
-        $filters = $this->generateDeepLinkFilters($scheme, $host);
+        $filters = $this->generateDeepLinkFilters($scheme, $host, is_array($paths) ? $paths : []);
 
         if ($filters) {
             // Inject filters into MainActivity
@@ -329,19 +330,31 @@ trait RunsAndroid
         }
     }
 
-    private function generateDeepLinkFilters(?string $scheme, ?string $host): string
+    /**
+     * @param  list<string>  $paths  Path prefixes to claim on the host. Empty
+     *                               claims the whole domain (the default).
+     */
+    private function generateDeepLinkFilters(?string $scheme, ?string $host, array $paths = []): string
     {
         $filters = [];
 
         // App Links: HTTPS with configurable host (for universal links / verified links)
         if ($host) {
+            // One <data> per claimed prefix. Android's assetlinks.json grants the
+            // app the whole domain (it has no path component), so unless the app
+            // narrows it here every link to the host is pulled out of the browser
+            // and into an app that has no route for it. iOS scopes this in the
+            // apple-app-site-association file instead, which is why an unscoped
+            // host only misbehaves on Android.
+            $data = $this->deepLinkPathData($host, $paths);
+
             $filters[] = <<<XML
             <!-- App Links (HTTPS) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="{$host}" android:pathPrefix="/" />
+{$data}
             </intent-filter>
 XML;
         }
@@ -365,6 +378,54 @@ XML;
         }
 
         return "            <!-- NATIVEPHP-DEEPLINKS-START -->\n".implode("\n", $filters)."\n            <!-- NATIVEPHP-DEEPLINKS-END -->";
+    }
+
+    /**
+     * Build the <data> path elements for the App Links filter.
+     *
+     * A prefix ending in `/` claims that whole subtree; anything else is
+     * treated as an exact path so `/orders` doesn't also swallow `/orders-faq`.
+     * No prefixes configured means the whole domain, which is what apps got
+     * before this was configurable.
+     *
+     * @param  list<string>  $paths
+     */
+    private function deepLinkPathData(string $host, array $paths): string
+    {
+        $prefixes = [];
+
+        foreach ($paths as $path) {
+            $path = trim((string) $path);
+
+            if ($path === '') {
+                continue;
+            }
+
+            $path = '/'.ltrim($path, '/');
+
+            // Reject anything that can't sit in an XML attribute unescaped, or
+            // that would quietly widen the claim back out to the whole domain.
+            if ($path === '/' || preg_match('/[\s"\'<>&]/', $path)) {
+                continue;
+            }
+
+            $prefixes[$path] = true;
+        }
+
+        $prefix = '                <data android:scheme="https" android:host="'.$host.'" ';
+
+        if ($prefixes === []) {
+            return $prefix.'android:pathPrefix="/" />';
+        }
+
+        $lines = [];
+
+        foreach (array_keys($prefixes) as $path) {
+            $attribute = str_ends_with($path, '/') ? 'pathPrefix' : 'path';
+            $lines[] = $prefix.'android:'.$attribute.'="'.$path.'" />';
+        }
+
+        return implode("\n", $lines);
     }
 
     private function updateFirebaseConfiguration(): void
