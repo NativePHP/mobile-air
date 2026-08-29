@@ -7,12 +7,18 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
@@ -302,7 +308,34 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             // Render the bar's inner content (its first child). Kept in the
             // Scaffold slot so content insets above it and `imePadding` lifts
             // it over the keyboard.
-            bottomBarNode?.children?.firstOrNull()?.let { NodeView(node = it) }
+            //
+            // Unlike M3's NavigationBar, custom slot content handles no
+            // insets of its own — unpadded, the bar draws flush with the
+            // window edge, UNDER the system navigation bar (gesture pill /
+            // 3-button strip). Pad it above the nav-bar inset and bleed the
+            // bar's own background color through the inset so that strip
+            // matches the bar instead of showing the window background —
+            // mirroring iOS's home-indicator bleed
+            // (`StackBottomBarInsetModifier.barContent`). The IME inset is
+            // excluded because the root `imePadding` already lifts the whole
+            // Scaffold above the keyboard — keeping the nav-bar inset while
+            // the keyboard covers that region would float the bar a
+            // nav-bar height too high.
+            bottomBarNode?.children?.firstOrNull()?.let { inner ->
+                val darkBg = if (isSystemInDarkTheme()) inner.props.getColor("dark_bg_color", 0) else 0
+                val barBg = if (darkBg != 0) darkBg else (inner.style?.bgColor ?: 0)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (barBg != 0) Modifier.background(argbToComposeColor(barBg))
+                            else Modifier
+                        )
+                        .windowInsetsPadding(WindowInsets.navigationBars.exclude(WindowInsets.ime))
+                ) {
+                    NodeView(node = inner)
+                }
+            }
         },
         // With the TopAppBar composed, it consumes the status-bar inset
         // itself. With the bar hidden, Scaffold's default contentWindowInsets

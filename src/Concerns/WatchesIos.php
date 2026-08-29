@@ -102,6 +102,18 @@ trait WatchesIos
 
             $this->iosAppContainer = $derivedDataPath;
 
+            // Seed the hot file into the container. The app resolves Vite through
+            // Vite::useHotFile(public_path('ios-hot')), and by the time watching
+            // starts the file already exists, so no change event will ever
+            // carry it across.
+            if ($viteRunning) {
+                $this->info('Vite dev server detected - syncing hot file to simulator');
+                $hotFileDestination = $derivedDataPath.'/Documents/app/public/ios-hot';
+                @mkdir(dirname($hotFileDestination), 0755, true);
+                copy($viteHotFile, $hotFileDestination);
+                $this->triggerIosReload();
+            }
+
             $this->startIosWatching($derivedDataPath, $viteHotFile);
         } else {
             $this->startIosWatchingDevice($target, $appId);

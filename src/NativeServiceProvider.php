@@ -60,7 +60,6 @@ class NativeServiceProvider extends PackageServiceProvider
         $package
             ->name('nativephp-mobile')
             ->hasConfigFile('nativephp')
-            ->hasViews()
             ->hasRoute('api')
             ->hasCommands([
                 PackageCommand::class,
@@ -195,8 +194,10 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         parent::boot();
 
+        // Only src/resources/views is registered. The package root
+        // resources/ dir never ships in the app bundle, and the
+        // device's view:cache throws on any missing path.
         $this->loadViewsFrom(__DIR__.'/resources/views', 'nativephp-mobile');
-        $this->loadViewsFrom(__DIR__.'/../resources/jump/views', 'jump');
 
         // Register `resources/views/native` as a primary view-finder
         // location (mirrors Livewire's `resources/views/livewire`
