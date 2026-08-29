@@ -178,6 +178,13 @@ class NativeRouter
     {
         $uri = '/'.ltrim($uri, '/');
 
+        // Match on the path alone. A query string would otherwise be swallowed
+        // by the last route parameter — "/docs/{page}?utm_source=x" matched with
+        // page = "installation?utm_source=x", so a tagged link resolved to a
+        // screen that then found nothing. Tagged links are the common case for
+        // anything shared publicly.
+        $uri = explode('?', $uri, 2)[0];
+
         // Exact match first
         if (isset(static::$routes[$uri])) {
             $entry = static::$routes[$uri];

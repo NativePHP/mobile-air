@@ -1748,15 +1748,18 @@ abstract class NativeComponent
             return true;
         }
 
-        try {
-            app('router')->getRoutes()->match(Request::create($uri, 'GET'));
+        // Deliberately not RouteCollection::match() — that binds the request to
+        // the matched Route object the collection holds, mutating shared state
+        // from what is only meant to be a question.
+        $request = Request::create($uri, 'GET');
 
-            return true;
-        } catch (\Throwable) {
-            // No matching route (or the router couldn't tell us) — treat the
-            // link as unhandled rather than risk stranding the user on a 404.
-            return false;
+        foreach (app('router')->getRoutes()->getRoutes() as $route) {
+            if (in_array('GET', $route->methods(), true) && $route->matches($request)) {
+                return true;
+            }
         }
+
+        return false;
     }
 
     /**
@@ -1783,11 +1786,17 @@ abstract class NativeComponent
                 // serves a local 404 — a dead end the user can't back out of. The
                 // link belongs to the site we took it from, so give it back to the
                 // browser and leave the current screen alone.
+                // open() is a no-op when the app doesn't ship a browser handler,
+                // so only swallow the link if it was actually handed off —
+                // otherwise fall through and behave exactly as before.
                 if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
                     NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
-                    (new Browser)->open($url);
 
-                    return;
+                    if ((new Browser)->open($url)) {
+                        return;
+                    }
+
+                    NativeRouter::debugLog('DEEPLINK: browser handoff unavailable, navigating anyway');
                 }
 
                 NativeRouter::debugLog("DEEPLINK: navigating to $uri");
