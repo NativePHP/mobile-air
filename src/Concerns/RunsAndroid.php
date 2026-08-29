@@ -293,6 +293,13 @@ trait RunsAndroid
         );
 
         // Build the filters based on what's configured
+        // A published config may hand us a bare string ('/docs/') rather than a
+        // list. Take it as a single path — failing open to the whole domain is
+        // the one outcome a scoping setting must never produce.
+        if (is_string($paths)) {
+            $paths = $paths === '' ? [] : [$paths];
+        }
+
         $filters = $this->generateDeepLinkFilters($scheme, $host, is_array($paths) ? $paths : []);
 
         if ($filters) {
@@ -348,7 +355,13 @@ trait RunsAndroid
             // host only misbehaves on Android.
             $data = $this->deepLinkPathData($host, $paths);
 
-            $filters[] = <<<XML
+            // Every configured path was unusable. Claiming the whole domain here
+            // is the exact failure this setting exists to prevent, so claim
+            // nothing instead and say why.
+            if ($data === null) {
+                $this->warn("Ignoring deeplink_host \"{$host}\": every configured deeplink_paths entry was invalid. Use comma-separated paths, e.g. NATIVEPHP_DEEPLINK_PATHS=\"/docs/,/orders/\".");
+            } else {
+                $filters[] = <<<XML
             <!-- App Links (HTTPS) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -357,6 +370,7 @@ trait RunsAndroid
 {$data}
             </intent-filter>
 XML;
+            }
         }
 
         // Deep Links: Custom scheme (no host restriction to match iOS behavior)
@@ -383,14 +397,19 @@ XML;
     /**
      * Build the <data> path elements for the App Links filter.
      *
-     * A prefix ending in `/` claims that whole subtree; anything else is
-     * treated as an exact path so `/orders` doesn't also swallow `/orders-faq`.
-     * No prefixes configured means the whole domain, which is what apps got
-     * before this was configurable.
+     * A value ending in `/` becomes a `pathPrefix` claiming everything beneath
+     * it — note that `/docs/` claims `/docs/x` but NOT `/docs` itself, since
+     * Android matches the prefix literally. Anything else becomes an exact
+     * `path`, so `/orders` doesn't also swallow `/orders-faq`.
+     *
+     * Returns the whole-domain claim when nothing is configured (what apps got
+     * before this was configurable), or null when paths were configured but
+     * none survived validation — the caller must not fall back to the whole
+     * domain in that case.
      *
      * @param  list<string>  $paths
      */
-    private function deepLinkPathData(string $host, array $paths): string
+    private function deepLinkPathData(string $host, array $paths): ?string
     {
         $prefixes = [];
 
@@ -405,7 +424,9 @@ XML;
 
             // Reject anything that can't sit in an XML attribute unescaped, or
             // that would quietly widen the claim back out to the whole domain.
-            if ($path === '/' || preg_match('/[\s"\'<>&]/', $path)) {
+            // /u so a non-breaking space is caught as whitespace rather than
+            // sailing through into a prefix that can never match.
+            if ($path === '/' || preg_match('/[\s"\'<>&]/u', $path)) {
                 continue;
             }
 
@@ -415,7 +436,10 @@ XML;
         $prefix = '                <data android:scheme="https" android:host="'.$host.'" ';
 
         if ($prefixes === []) {
-            return $prefix.'android:pathPrefix="/" />';
+            // Nothing configured: whole domain, as before. Something configured
+            // but all of it rejected: refuse, so a typo can't hand the app the
+            // whole domain by accident.
+            return $paths === [] ? $prefix.'android:pathPrefix="/" />' : null;
         }
 
         $lines = [];

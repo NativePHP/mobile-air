@@ -41,3 +41,27 @@ it('respects an app-registered fallback route', function () {
 
     expect(routable('/anything-at-all'))->toBeTrue();
 });
+
+it('ignores a query string when deciding routability', function () {
+    Route::native('/docs/{section}/{page}', CounterScreen::class);
+
+    // Shared links carry utm tags. The query used to be swallowed by {page},
+    // so the link "resolved" to a screen that then found nothing.
+    expect(routable('/docs/getting-started/installation?utm_source=twitter'))->toBeTrue();
+});
+
+it('does not leak a query string into route params', function () {
+    Route::native('/docs/{section}/{page}', CounterScreen::class);
+
+    expect(NativeRouter::resolve('/docs/getting-started/installation?utm_source=twitter')['params'])
+        ->toBe(['section' => 'getting-started', 'page' => 'installation']);
+});
+
+it('does not bind the shared route object while probing', function () {
+    Route::get('/docs/{page}', fn () => 'ok')->name('probe.docs');
+
+    routable('/docs/probe');
+
+    // A read-only question must not leave the collection's Route mutated.
+    expect(app('router')->getRoutes()->getByName('probe.docs')->parameters ?? null)->toBeNull();
+});
