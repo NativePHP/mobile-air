@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\View\Engines\CompilerEngine;
@@ -13,6 +14,7 @@ use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
+use Native\Mobile\Browser;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -1733,6 +1735,31 @@ abstract class NativeComponent
     }
 
     /**
+     * Can this app render the target of a deep link?
+     *
+     * True for a Route::native screen, and also for a plain Laravel route —
+     * those legitimately exit to the WebView and render there, which is how
+     * WebView and hybrid apps have always handled deep links. Only a URI that
+     * matches neither is a guaranteed 404.
+     */
+    protected static function routableDeepLink(string $uri): bool
+    {
+        if (NativeRouter::isNativeRoute($uri)) {
+            return true;
+        }
+
+        try {
+            app('router')->getRoutes()->match(Request::create($uri, 'GET'));
+
+            return true;
+        } catch (\Throwable) {
+            // No matching route (or the router couldn't tell us) — treat the
+            // link as unhandled rather than risk stranding the user on a 404.
+            return false;
+        }
+    }
+
+    /**
      * Handle a native event (type 20) by looking up #[OnNative] listeners.
      */
     protected function dispatchNativeEvent(array $event): void
@@ -1748,7 +1775,21 @@ abstract class NativeComponent
         // an in-app @tap navigate.
         if ($eventName === '__deeplink') {
             $uri = is_array($payload) ? ($payload['uri'] ?? null) : null;
+            $url = is_array($payload) ? ($payload['url'] ?? null) : null;
+
             if (is_string($uri) && $uri !== '') {
+                // A verified app link the app has no route for. Navigating would
+                // tear the native UI down and hand the path to the WebView, which
+                // serves a local 404 — a dead end the user can't back out of. The
+                // link belongs to the site we took it from, so give it back to the
+                // browser and leave the current screen alone.
+                if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
+                    NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
+                    (new Browser)->open($url);
+
+                    return;
+                }
+
                 NativeRouter::debugLog("DEEPLINK: navigating to $uri");
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri);
                 $this->stop();
