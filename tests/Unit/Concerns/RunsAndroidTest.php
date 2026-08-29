@@ -261,6 +261,126 @@ class RunsAndroidTest extends TestCase
         $this->assertStringContainsString('android:host="app.example.com"', $manifestContents);
     }
 
+    public function test_deep_link_configuration_claims_whole_host_when_no_paths_configured()
+    {
+        config(['nativephp.deeplink_host' => 'app.example.com']);
+        config(['nativephp.deeplink_paths' => []]);
+
+        $manifestPath = $this->writeBareManifest();
+
+        $this->updateDeepLinkConfiguration();
+
+        $this->assertStringContainsString(
+            '<data android:scheme="https" android:host="app.example.com" android:pathPrefix="/" />',
+            File::get($manifestPath)
+        );
+    }
+
+    public function test_deep_link_configuration_claims_only_configured_paths()
+    {
+        config(['nativephp.deeplink_host' => 'app.example.com']);
+        config(['nativephp.deeplink_paths' => ['/docs/', 'orders/']]);
+
+        $manifestPath = $this->writeBareManifest();
+
+        $this->updateDeepLinkConfiguration();
+
+        $manifestContents = File::get($manifestPath);
+
+        $this->assertStringContainsString(
+            '<data android:scheme="https" android:host="app.example.com" android:pathPrefix="/docs/" />',
+            $manifestContents
+        );
+        // Leading slash is optional in config.
+        $this->assertStringContainsString(
+            '<data android:scheme="https" android:host="app.example.com" android:pathPrefix="/orders/" />',
+            $manifestContents
+        );
+        // The whole-domain claim is what pulled unrouted links out of the browser.
+        $this->assertStringNotContainsString('android:pathPrefix="/" />', $manifestContents);
+    }
+
+    public function test_deep_link_path_without_trailing_slash_is_an_exact_match()
+    {
+        // `/orders` must not also swallow `/orders-faq`.
+        $this->assertSame(
+            '                <data android:scheme="https" android:host="app.example.com" android:path="/orders" />',
+            $this->deepLinkPathData('app.example.com', ['/orders'])
+        );
+    }
+
+    public function test_deep_link_paths_ignore_unusable_values()
+    {
+        // A bare "/" or an unescapable character would silently widen the claim
+        // back out to the whole domain, or break the manifest XML.
+        $this->assertSame(
+            '                <data android:scheme="https" android:host="app.example.com" android:pathPrefix="/docs/" />',
+            $this->deepLinkPathData('app.example.com', ['', '  ', '/', '/bad path/', '/qu"ote/', '/docs/', 'docs/'])
+        );
+    }
+
+    public function test_deep_link_configuration_claims_nothing_when_every_path_is_invalid()
+    {
+        config(['nativephp.deeplink_host' => 'app.example.com']);
+        // Space-separated instead of comma-separated: a plausible typo that used
+        // to hand the app the whole domain — the exact failure scoping prevents.
+        config(['nativephp.deeplink_paths' => ['/docs/ /orders/']]);
+
+        $manifestPath = $this->writeBareManifest();
+
+        $this->updateDeepLinkConfiguration();
+
+        $manifestContents = File::get($manifestPath);
+
+        $this->assertStringNotContainsString('android:pathPrefix="/" />', $manifestContents);
+        $this->assertStringNotContainsString('android:scheme="https"', $manifestContents);
+    }
+
+    public function test_deep_link_paths_accept_a_bare_string()
+    {
+        config(['nativephp.deeplink_host' => 'app.example.com']);
+        config(['nativephp.deeplink_paths' => '/docs/']);
+
+        $manifestPath = $this->writeBareManifest();
+
+        $this->updateDeepLinkConfiguration();
+
+        $manifestContents = File::get($manifestPath);
+
+        $this->assertStringContainsString('android:pathPrefix="/docs/" />', $manifestContents);
+        $this->assertStringNotContainsString('android:pathPrefix="/" />', $manifestContents);
+    }
+
+    public function test_deep_link_path_data_refuses_rather_than_widening()
+    {
+        // Nothing configured — whole domain, exactly as before.
+        $this->assertSame(
+            '                <data android:scheme="https" android:host="app.example.com" android:pathPrefix="/" />',
+            $this->deepLinkPathData('app.example.com', [])
+        );
+
+        // Configured but unusable (a non-breaking space is still whitespace).
+        $this->assertNull($this->deepLinkPathData('app.example.com', ["/docs\u{00a0}x/", '/']));
+    }
+
+    private function writeBareManifest(): string
+    {
+        $manifestPath = $this->testProjectPath.'/nativephp/android/app/src/main/AndroidManifest.xml';
+
+        if (! File::isDirectory(dirname($manifestPath))) {
+            File::makeDirectory(dirname($manifestPath), 0755, true);
+        }
+
+        File::put($manifestPath, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".ui.MainActivity">
+        </activity>
+    </application>
+</manifest>');
+
+        return $manifestPath;
+    }
+
     /**
      * Helper methods
      */

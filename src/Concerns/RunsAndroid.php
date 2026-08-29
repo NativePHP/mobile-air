@@ -267,6 +267,7 @@ trait RunsAndroid
     {
         $scheme = config('nativephp.deeplink_scheme');
         $host = config('nativephp.deeplink_host');
+        $paths = config('nativephp.deeplink_paths', []);
 
         // Both are opt-in: only add filters if configured
         if (! $scheme && ! $host) {
@@ -292,7 +293,14 @@ trait RunsAndroid
         );
 
         // Build the filters based on what's configured
-        $filters = $this->generateDeepLinkFilters($scheme, $host);
+        // A published config may hand us a bare string ('/docs/') rather than a
+        // list. Take it as a single path — failing open to the whole domain is
+        // the one outcome a scoping setting must never produce.
+        if (is_string($paths)) {
+            $paths = $paths === '' ? [] : [$paths];
+        }
+
+        $filters = $this->generateDeepLinkFilters($scheme, $host, is_array($paths) ? $paths : []);
 
         if ($filters) {
             // Inject filters into MainActivity
@@ -329,21 +337,40 @@ trait RunsAndroid
         }
     }
 
-    private function generateDeepLinkFilters(?string $scheme, ?string $host): string
+    /**
+     * @param  list<string>  $paths  Path prefixes to claim on the host. Empty
+     *                               claims the whole domain (the default).
+     */
+    private function generateDeepLinkFilters(?string $scheme, ?string $host, array $paths = []): string
     {
         $filters = [];
 
         // App Links: HTTPS with configurable host (for universal links / verified links)
         if ($host) {
-            $filters[] = <<<XML
+            // One <data> per claimed prefix. Android's assetlinks.json grants the
+            // app the whole domain (it has no path component), so unless the app
+            // narrows it here every link to the host is pulled out of the browser
+            // and into an app that has no route for it. iOS scopes this in the
+            // apple-app-site-association file instead, which is why an unscoped
+            // host only misbehaves on Android.
+            $data = $this->deepLinkPathData($host, $paths);
+
+            // Every configured path was unusable. Claiming the whole domain here
+            // is the exact failure this setting exists to prevent, so claim
+            // nothing instead and say why.
+            if ($data === null) {
+                $this->warn("Ignoring deeplink_host \"{$host}\": every configured deeplink_paths entry was invalid. Use comma-separated paths, e.g. NATIVEPHP_DEEPLINK_PATHS=\"/docs/,/orders/\".");
+            } else {
+                $filters[] = <<<XML
             <!-- App Links (HTTPS) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="{$host}" android:pathPrefix="/" />
+{$data}
             </intent-filter>
 XML;
+            }
         }
 
         // Deep Links: Custom scheme (no host restriction to match iOS behavior)
@@ -365,6 +392,64 @@ XML;
         }
 
         return "            <!-- NATIVEPHP-DEEPLINKS-START -->\n".implode("\n", $filters)."\n            <!-- NATIVEPHP-DEEPLINKS-END -->";
+    }
+
+    /**
+     * Build the <data> path elements for the App Links filter.
+     *
+     * A value ending in `/` becomes a `pathPrefix` claiming everything beneath
+     * it — note that `/docs/` claims `/docs/x` but NOT `/docs` itself, since
+     * Android matches the prefix literally. Anything else becomes an exact
+     * `path`, so `/orders` doesn't also swallow `/orders-faq`.
+     *
+     * Returns the whole-domain claim when nothing is configured (what apps got
+     * before this was configurable), or null when paths were configured but
+     * none survived validation — the caller must not fall back to the whole
+     * domain in that case.
+     *
+     * @param  list<string>  $paths
+     */
+    private function deepLinkPathData(string $host, array $paths): ?string
+    {
+        $prefixes = [];
+
+        foreach ($paths as $path) {
+            $path = trim((string) $path);
+
+            if ($path === '') {
+                continue;
+            }
+
+            $path = '/'.ltrim($path, '/');
+
+            // Reject anything that can't sit in an XML attribute unescaped, or
+            // that would quietly widen the claim back out to the whole domain.
+            // /u so a non-breaking space is caught as whitespace rather than
+            // sailing through into a prefix that can never match.
+            if ($path === '/' || preg_match('/[\s"\'<>&]/u', $path)) {
+                continue;
+            }
+
+            $prefixes[$path] = true;
+        }
+
+        $prefix = '                <data android:scheme="https" android:host="'.$host.'" ';
+
+        if ($prefixes === []) {
+            // Nothing configured: whole domain, as before. Something configured
+            // but all of it rejected: refuse, so a typo can't hand the app the
+            // whole domain by accident.
+            return $paths === [] ? $prefix.'android:pathPrefix="/" />' : null;
+        }
+
+        $lines = [];
+
+        foreach (array_keys($prefixes) as $path) {
+            $attribute = str_ends_with($path, '/') ? 'pathPrefix' : 'path';
+            $lines[] = $prefix.'android:'.$attribute.'="'.$path.'" />';
+        }
+
+        return implode("\n", $lines);
     }
 
     private function updateFirebaseConfiguration(): void
