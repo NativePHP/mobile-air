@@ -2679,6 +2679,13 @@ abstract class NativeComponent
 
     public function renderErrorScreen(\Throwable $e): void
     {
+        // The exception message, its origin and the stack trace are for whoever is BUILDING
+        // the app, never for whoever is using it. With debug off a released app would
+        // otherwise show a customer the sandbox path, compiled view hashes, internal class
+        // names, and whatever the message itself carries - an API error body, a token
+        // fragment, a database detail.
+        $showDetail = (bool) config('app.debug', false);
+
         $this->nativeHasError = true;
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;
@@ -2689,14 +2696,18 @@ abstract class NativeComponent
             // ── Fixed header ──
             $header = Column::make()->fillWidth()->padding(24, 20, 12, 20)->gap(4);
             $this->overlayAddText($header, 'Something went wrong', ['fontSize' => 22, 'fontWeight' => 7, 'color' => '#7F1D1D']);
-            $this->overlayAddText($header, class_basename($e).' · '.class_basename(static::class), ['fontSize' => 13, 'color' => '#B91C1C']);
+            $this->overlayAddText($header, $showDetail
+                ? class_basename($e).' · '.class_basename(static::class)
+                : 'Please try again, or go back.', ['fontSize' => 13, 'color' => '#B91C1C']);
 
-            $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#DC2626', 'trackColor' => '#FECACA']);
-            if ($slider) {
-                if (method_exists($slider, 'onChange')) {
-                    $slider->onChange('__overlaySetFontSize');
+            if ($showDetail) {
+                $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#DC2626', 'trackColor' => '#FECACA']);
+                if ($slider) {
+                    if (method_exists($slider, 'onChange')) {
+                        $slider->onChange('__overlaySetFontSize');
+                    }
+                    $header->addChild($slider->fillWidth());
                 }
-                $header->addChild($slider->fillWidth());
             }
 
             $screen->addChild($header);
@@ -2705,40 +2716,42 @@ abstract class NativeComponent
             $scroll = Elements\ScrollView::make()->fillWidth()->flexGrow(1);
             $body = Column::make()->fillWidth()->padding(4, 20, 12, 20)->gap(12);
 
-            // What happened — the message, then where it points in the
-            // developer's own code (the origin can be deep in vendor).
-            $card = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
-            $message = $e->getMessage() !== '' ? $e->getMessage() : get_class($e);
-            $this->overlayAddText($card, $message, ['fontSize' => max(15, $this->overlayFontSize + 3), 'fontWeight' => 6, 'color' => '#B91C1C']);
+            if ($showDetail) {
+                // What happened — the message, then where it points in the
+                // developer's own code (the origin can be deep in vendor).
+                $card = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
+                $message = $e->getMessage() !== '' ? $e->getMessage() : get_class($e);
+                $this->overlayAddText($card, $message, ['fontSize' => max(15, $this->overlayFontSize + 3), 'fontWeight' => 6, 'color' => '#B91C1C']);
 
-            $origin = str_replace(base_path().'/', '', $e->getFile()).':'.$e->getLine();
-            $appFrame = $this->firstApplicationFrame($e);
+                $origin = str_replace(base_path().'/', '', $e->getFile()).':'.$e->getLine();
+                $appFrame = $this->firstApplicationFrame($e);
 
-            if ($appFrame === $origin) {
-                $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
-                $this->overlayAddText($card, $origin, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
-            } else {
-                $this->overlayAddText($card, 'THROWN AT', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
-                $this->overlayAddText($card, $origin, ['fontSize' => 12, 'color' => '#57534E']);
-                if ($appFrame !== null) {
+                if ($appFrame === $origin) {
                     $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
-                    $this->overlayAddText($card, $appFrame, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+                    $this->overlayAddText($card, $origin, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+                } else {
+                    $this->overlayAddText($card, 'THROWN AT', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                    $this->overlayAddText($card, $origin, ['fontSize' => 12, 'color' => '#57534E']);
+                    if ($appFrame !== null) {
+                        $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                        $this->overlayAddText($card, $appFrame, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+                    }
                 }
-            }
-            $body->addChild($card);
+                $body->addChild($card);
 
-            // Stack trace, condensed and vendor-path-stripped.
-            $traceCard = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
-            $this->overlayAddText($traceCard, 'STACK TRACE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                // Stack trace, condensed and vendor-path-stripped.
+                $traceCard = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
+                $this->overlayAddText($traceCard, 'STACK TRACE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
 
-            $trace = str_replace(base_path().'/', '', $e->getTraceAsString());
-            $traceLines = explode("\n", $trace);
-            $shortTrace = implode("\n", array_slice($traceLines, 0, 15));
-            if (count($traceLines) > 15) {
-                $shortTrace .= "\n… (".count($traceLines).' frames total)';
+                $trace = str_replace(base_path().'/', '', $e->getTraceAsString());
+                $traceLines = explode("\n", $trace);
+                $shortTrace = implode("\n", array_slice($traceLines, 0, 15));
+                if (count($traceLines) > 15) {
+                    $shortTrace .= "\n… (".count($traceLines).' frames total)';
+                }
+                $this->overlayAddText($traceCard, $shortTrace, ['fontSize' => $this->overlayFontSize, 'color' => '#78716C']);
+                $body->addChild($traceCard);
             }
-            $this->overlayAddText($traceCard, $shortTrace, ['fontSize' => $this->overlayFontSize, 'color' => '#78716C']);
-            $body->addChild($traceCard);
 
             $scroll->addChild($body);
             $screen->addChild($scroll);
