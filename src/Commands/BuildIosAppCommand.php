@@ -152,8 +152,6 @@ class BuildIosAppCommand extends Command
         $this->configureProvisioningProfile();
         $this->installIosIcon();
         $this->installIosSplashScreen();
-        $this->installGoogleServicesPlist();
-
         $this->updateIcuConfiguration();
 
         // Compile plugins AFTER core config so plugin entries (like info_plist)
@@ -816,22 +814,6 @@ class BuildIosAppCommand extends Command
 
             file_put_contents($entitlementsFile, $entitlementsContent);
         }
-    }
-
-    private function installGoogleServicesPlist(): void
-    {
-        $path = base_path('nativephp/resources/GoogleService-Info.plist');
-
-        if (! file_exists($path)) {
-            $path = base_path('GoogleService-Info.plist');
-        }
-
-        if (! file_exists($path)) {
-            return;
-        }
-
-        $destinationPath = $this->containerPath.'GoogleService-Info.plist';
-        @copy($path, $destinationPath);
     }
 
     private function determineApsEnvironment(): string

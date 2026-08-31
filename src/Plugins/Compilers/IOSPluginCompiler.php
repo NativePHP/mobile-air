@@ -8,6 +8,7 @@ use Native\Mobile\Exceptions\PluginConflictException;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Plugins\ProjectFileManager;
 use Native\Mobile\Plugins\SwiftSourceFilter;
 use Native\Mobile\Support\Stub;
 
@@ -111,6 +112,9 @@ class IOSPluginCompiler
         // duplicate-symbol build failures in Xcode.
         $this->clean();
         $this->files->ensureDirectoryExists($this->generatedPath);
+
+        // Copy app-owned files declared by plugins into the iOS project.
+        (new ProjectFileManager($this->files, $this->basePath, 'ios'))->sync($allPlugins);
 
         // Get plugins with iOS code (for copying files)
         $pluginsWithCode = $allPlugins->filter(fn (Plugin $p) => $p->hasIosCode());

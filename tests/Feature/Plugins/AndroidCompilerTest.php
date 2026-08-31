@@ -1580,6 +1580,87 @@ object TestFunctions {
         );
     }
 
+    /** @test */
+    public function it_applies_declared_gradle_plugins_to_the_app_module(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    [
+                        'id' => 'com.example.application-plugin',
+                        'version' => '1.2.3',
+                        'apply_to' => 'app',
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $root = $this->files->get($this->testBasePath.'/android/build.gradle.kts');
+        $app = $this->files->get($this->testBasePath.'/android/app/build.gradle.kts');
+
+        $this->assertStringContainsString(
+            'id("com.example.application-plugin") version "1.2.3" apply false',
+            $root
+        );
+        $this->assertStringContainsString('// BEGIN nativephp-plugin-app-gradle-plugins', $app);
+        $this->assertStringContainsString('id("com.example.application-plugin")', $app);
+    }
+
+    /** @test */
+    public function it_clears_app_gradle_plugins_when_the_plugin_is_removed(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.example.application-plugin', 'version' => '1.2.3', 'apply_to' => 'app'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        $emptyRegistry = Mockery::mock(PluginRegistry::class);
+        $emptyRegistry->shouldReceive('detectConflicts')->andReturn([]);
+        $emptyRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        (new AndroidPluginCompiler($this->files, $emptyRegistry, $this->testBasePath))->compile();
+
+        $app = $this->files->get($this->testBasePath.'/android/app/build.gradle.kts');
+
+        $this->assertStringNotContainsString('com.example.application-plugin', $app);
+        $this->assertStringNotContainsString('nativephp-plugin-app-gradle-plugins', $app);
+    }
+
+    /** @test */
+    public function it_does_not_duplicate_a_manually_applied_app_gradle_plugin(): void
+    {
+        $appPath = $this->testBasePath.'/android/app/build.gradle.kts';
+        $this->files->put($appPath, 'plugins {'.PHP_EOL
+            .'    id("com.android.application")'.PHP_EOL
+            .'    id("com.example.application-plugin")'.PHP_EOL
+            .'}'.PHP_EOL);
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.example.application-plugin', 'version' => '1.2.3', 'apply_to' => 'app'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        $app = $this->files->get($appPath);
+
+        $this->assertSame(1, substr_count($app, 'id("com.example.application-plugin")'));
+    }
+
     /**
      * @test
      *

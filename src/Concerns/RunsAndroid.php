@@ -2,7 +2,6 @@
 
 namespace Native\Mobile\Concerns;
 
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
@@ -21,10 +20,6 @@ use function Laravel\Prompts\warning;
 trait RunsAndroid
 {
     use PreparesBuild, WatchesAndroid;
-
-    private const GOOGLE_SERVICES_PLUGIN_ID = 'com.google.gms.google-services';
-
-    private const GOOGLE_SERVICES_ARTIFACT = 'com.google.gms:google-services';
 
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
@@ -96,10 +91,6 @@ trait RunsAndroid
 
                 return;
             }
-        }
-
-        if (! $this->validateGoogleServicesConfiguration($plugins)) {
-            return;
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
@@ -374,95 +365,6 @@ XML;
         }
 
         return "            <!-- NATIVEPHP-DEEPLINKS-START -->\n".implode("\n", $filters)."\n            <!-- NATIVEPHP-DEEPLINKS-END -->";
-    }
-
-    private function updateFirebaseConfiguration(): void
-    {
-        $source = base_path('nativephp/resources/google-services.json');
-
-        if (! file_exists($source)) {
-            $source = base_path('google-services.json');
-        }
-
-        $target = base_path('nativephp/android/app/google-services.json');
-
-        if (File::exists($source)) {
-            File::copy($source, $target);
-        }
-    }
-
-    /**
-     * A google-services.json only becomes meaningful when something owns the
-     * corresponding Gradle plugin. Fail before Gradle's opaque "plugin not
-     * found" error while keeping the build requirement with the plugin that
-     * needs it, rather than declaring a Firebase-specific version in core.
-     */
-    protected function validateGoogleServicesConfiguration(Collection $plugins): bool
-    {
-        if (! $this->hasGoogleServicesConfiguration()
-            || $this->registeredPluginDeclaresGoogleServices($plugins)
-            || $this->projectDeclaresGoogleServices()) {
-            return true;
-        }
-
-        $message = 'A google-services.json file was found, but no registered plugin declares '
-            .self::GOOGLE_SERVICES_PLUGIN_ID.'. Update to nativephp/mobile-firebase 1.1.1 or later and register it, '
-            .'declare the Gradle plugin from another registered plugin, or remove the unused configuration file.';
-
-        $this->logToFile('ERROR: '.$message);
-        $this->components->error($message);
-
-        return false;
-    }
-
-    private function hasGoogleServicesConfiguration(): bool
-    {
-        return collect([
-            base_path('nativephp/resources/google-services.json'),
-            base_path('google-services.json'),
-            base_path('nativephp/android/app/google-services.json'),
-        ])->contains(fn (string $path) => File::exists($path));
-    }
-
-    private function registeredPluginDeclaresGoogleServices(Collection $plugins): bool
-    {
-        return $plugins
-            ->filter(fn ($plugin) => $plugin->supportsPlatform('android'))
-            ->contains(function ($plugin) {
-                return collect($plugin->getAndroidGradlePlugins())
-                    ->contains(fn (array $gradlePlugin) => ($gradlePlugin['id'] ?? null) === self::GOOGLE_SERVICES_PLUGIN_ID);
-            });
-    }
-
-    /**
-     * Preserve projects that deliberately manage the plugin themselves. A
-     * generated plugin block is excluded because the compiler removes that
-     * block when its owning plugin is unregistered later in this same build.
-     */
-    private function projectDeclaresGoogleServices(): bool
-    {
-        $path = base_path('nativephp/android/build.gradle.kts');
-
-        if (! File::exists($path)) {
-            return false;
-        }
-
-        $content = File::get($path);
-        $content = preg_replace(
-            '/\/\/ BEGIN nativephp-plugin-gradle-plugins.*?\/\/ END nativephp-plugin-gradle-plugins/s',
-            '',
-            $content,
-        ) ?? $content;
-        $content = preg_replace([
-            '/\/\*.*?\*\//s',
-            '/^[ \t]*\/\/.*$/m',
-        ], '', $content) ?? $content;
-
-        $pluginId = preg_quote(self::GOOGLE_SERVICES_PLUGIN_ID, '/');
-        $artifact = preg_quote(self::GOOGLE_SERVICES_ARTIFACT, '/');
-
-        return preg_match('/id\s*\(\s*"'.$pluginId.'"\s*\)/', $content) === 1
-            || preg_match('/classpath\s*\(\s*"'.$artifact.':[^"]+"\s*\)/', $content) === 1;
     }
 
     private function updateIcuConfiguration(): void
