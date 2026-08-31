@@ -26,7 +26,7 @@ trait ChecksLatestBuildNumber
     private function getLatestAndroidBuildNumber(): ?int
     {
         try {
-            $googleServiceKey = $this->option('google-service-key') ?? env('GOOGLE_SERVICE_ACCOUNT_KEY');
+            $googleServiceKey = $this->consoleOption('google-service-key') ?? env('GOOGLE_SERVICE_ACCOUNT_KEY');
 
             if (! $googleServiceKey) {
                 note('No Google Service Account Key found, skipping Play Store check');
@@ -105,14 +105,37 @@ trait ChecksLatestBuildNumber
 
     private function getApiKeyPath(): ?string
     {
-        // Check for API key file path - try flags first, then environment variables
-        $apiKeyPath = $this->option('api-key-path') ?? $this->option('api-key') ?? env('APP_STORE_API_KEY_PATH');
+        // Check for API key file path - try flags first, then environment variables.
+        //
+        // Both flags are read defensively: this trait is shared by commands that
+        // declare different subsets of them, and Illuminate's option() throws
+        // InvalidArgumentException for an option the command did not define
+        // rather than returning null. That threw before the ?? chain could fall
+        // through, so native:check-build-number - which declares --api-key but
+        // not --api-key-path - could never reach App Store Connect at all.
+        $apiKeyPath = $this->consoleOption('api-key-path')
+            ?? $this->consoleOption('api-key')
+            ?? env('APP_STORE_API_KEY_PATH');
 
         if ($apiKeyPath && file_exists($apiKeyPath)) {
             return $apiKeyPath;
         }
 
         return null;
+    }
+
+    /**
+     * Read a console option that the calling command may not have declared.
+     */
+    private function consoleOption(string $name): ?string
+    {
+        if (! $this->getDefinition()->hasOption($name)) {
+            return null;
+        }
+
+        $value = $this->option($name);
+
+        return $value === null ? null : (string) $value;
     }
 
     public function updateBuildNumberFromStore(string $platform, int $jumpBy = 0): bool
@@ -153,8 +176,8 @@ trait ChecksLatestBuildNumber
     {
         try {
             $apiKeyPath = $this->getApiKeyPath();
-            $apiKeyId = $this->option('api-key-id') ?? env('APP_STORE_API_KEY_ID');
-            $apiIssuerId = $this->option('api-issuer-id') ?? env('APP_STORE_API_ISSUER_ID');
+            $apiKeyId = $this->consoleOption('api-key-id') ?? env('APP_STORE_API_KEY_ID');
+            $apiIssuerId = $this->consoleOption('api-issuer-id') ?? env('APP_STORE_API_ISSUER_ID');
             $appId = config('nativephp.app_id');
 
             if (! $apiKeyPath || ! $apiKeyId || ! $apiIssuerId || ! $appId) {

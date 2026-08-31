@@ -78,7 +78,9 @@ class CheckBuildNumberCommand extends Command
                 $this->line('🔧 To update: add --update flag');
             }
         } else {
-            $baseSuggested = 1;
+            // Same reasoning as the iOS branch: this is also reached when the
+            // Play Store lookup fails, not only for a genuinely new app.
+            $baseSuggested = $currentLocal ? ((int) $currentLocal + 1) : 1;
             $suggested = $baseSuggested + $jumpBy;
             $this->line('📱 Play Store: No releases found (new app)');
             $this->line('💻 Local current: '.($currentLocal ?: 'not set'));
@@ -113,9 +115,14 @@ class CheckBuildNumberCommand extends Command
                 $this->line('🔧 To update: add --update flag');
             }
         } else {
+            // Suggest one past whatever is configured locally. A flat "1" is
+            // wrong for any app that has already shipped, and this branch is
+            // reached when the lookup FAILS as well as when the app is genuinely
+            // new. App Store Connect rejects a build number it has already seen,
+            // so following that suggestion costs a whole build and upload.
             $this->line('📱 App Store: No releases found or check not implemented');
             $this->line('💻 Local current: '.($currentLocal ?: 'not set'));
-            $this->line('💡 Suggested next: 1');
+            $this->line('💡 Suggested next: '.($currentLocal ? ((int) $currentLocal + 1) : 1));
         }
 
         $this->newLine();
