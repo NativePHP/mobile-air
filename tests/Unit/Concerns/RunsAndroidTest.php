@@ -5,6 +5,8 @@ namespace Tests\Unit\Concerns;
 use Illuminate\Support\Facades\File;
 use Mockery;
 use Native\Mobile\Concerns\RunsAndroid;
+use Native\Mobile\Plugins\Plugin;
+use Native\Mobile\Plugins\PluginManifest;
 use Orchestra\Testbench\TestCase;
 
 class RunsAndroidTest extends TestCase
@@ -26,6 +28,8 @@ class RunsAndroidTest extends TestCase
         // Mock $this->components for task() calls used by PreparesBuild
         $this->components = new class
         {
+            public array $errors = [];
+
             public function task(string $title, callable $callback)
             {
                 $callback();
@@ -34,7 +38,14 @@ class RunsAndroidTest extends TestCase
             public function twoColumnDetail(...$args) {}
 
             public function warn(...$args) {}
+
+            public function error(string $message): void
+            {
+                $this->errors[] = $message;
+            }
         };
+
+        $this->androidLogPath = $this->testProjectPath.'/nativephp/android-build.log';
     }
 
     protected function tearDown(): void
@@ -201,6 +212,117 @@ class RunsAndroidTest extends TestCase
         $targetPath = $targetDir.'/google-services.json';
         $this->assertFileExists($targetPath);
         $this->assertEquals('{"project_id": "test"}', File::get($targetPath));
+    }
+
+    public function test_google_services_configuration_requires_a_declaring_plugin()
+    {
+        File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
+
+        $this->assertFalse($this->validateGoogleServicesConfiguration(collect()));
+        $this->assertCount(1, $this->components->errors);
+        $this->assertStringContainsString('nativephp/mobile-firebase', $this->components->errors[0]);
+    }
+
+    public function test_registered_plugin_can_own_google_services_configuration()
+    {
+        File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
+
+        $plugin = new Plugin(
+            name: 'nativephp/mobile-firebase',
+            version: '1.1.1',
+            path: $this->testProjectPath.'/vendor/nativephp/mobile-firebase',
+            manifest: new PluginManifest([
+                'namespace' => 'Firebase',
+                'android' => [
+                    'gradle_plugins' => [
+                        ['id' => 'com.google.gms.google-services', 'version' => '4.4.3'],
+                    ],
+                ],
+            ]),
+        );
+
+        $this->assertTrue($this->validateGoogleServicesConfiguration(collect([$plugin])));
+        $this->assertSame([], $this->components->errors);
+    }
+
+    public function test_plugin_name_alone_does_not_claim_google_services_configuration()
+    {
+        File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
+
+        $plugin = new Plugin(
+            name: 'nativephp/mobile-firebase',
+            version: '1.1.0',
+            path: $this->testProjectPath.'/vendor/nativephp/mobile-firebase',
+            manifest: new PluginManifest([
+                'namespace' => 'Firebase',
+                'android' => [],
+            ]),
+        );
+
+        $this->assertFalse($this->validateGoogleServicesConfiguration(collect([$plugin])));
+    }
+
+    public function test_manual_gradle_declaration_can_own_google_services_configuration()
+    {
+        File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
+        File::put(
+            $this->testProjectPath.'/nativephp/android/build.gradle.kts',
+            'plugins {'.PHP_EOL
+            .'    id("com.google.gms.google-services") version "4.4.3" apply false'.PHP_EOL
+            .'}'.PHP_EOL,
+        );
+
+        $this->assertTrue($this->validateGoogleServicesConfiguration(collect()));
+        $this->assertSame([], $this->components->errors);
+    }
+
+    public function test_manual_buildscript_classpath_can_own_google_services_configuration()
+    {
+        File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
+        File::put(
+            $this->testProjectPath.'/nativephp/android/build.gradle.kts',
+            'buildscript {'.PHP_EOL
+            .'    dependencies {'.PHP_EOL
+            .'        classpath("com.google.gms:google-services:4.4.2")'.PHP_EOL
+            .'    }'.PHP_EOL
+            .'}'.PHP_EOL,
+        );
+
+        $this->assertTrue($this->validateGoogleServicesConfiguration(collect()));
+        $this->assertSame([], $this->components->errors);
+    }
+
+    public function test_google_services_mentioned_only_in_a_comment_is_not_a_declaration()
+    {
+        File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
+        File::put(
+            $this->testProjectPath.'/nativephp/android/build.gradle.kts',
+            '// id("com.google.gms.google-services") is intentionally not configured'.PHP_EOL,
+        );
+
+        $this->assertFalse($this->validateGoogleServicesConfiguration(collect()));
+    }
+
+    public function test_stale_generated_declaration_does_not_claim_google_services_configuration()
+    {
+        File::makeDirectory($this->testProjectPath.'/nativephp/android/app', 0755, true);
+        File::put($this->testProjectPath.'/nativephp/android/app/google-services.json', '{"project_id": "test"}');
+        File::put(
+            $this->testProjectPath.'/nativephp/android/build.gradle.kts',
+            'plugins {'.PHP_EOL
+            .'    // BEGIN nativephp-plugin-gradle-plugins'.PHP_EOL
+            .'    id("com.google.gms.google-services") version "4.4.3" apply false'.PHP_EOL
+            .'    // END nativephp-plugin-gradle-plugins'.PHP_EOL
+            .'}'.PHP_EOL,
+        );
+
+        $this->assertFalse($this->validateGoogleServicesConfiguration(collect()));
+    }
+
+    public function test_project_without_google_services_configuration_needs_no_plugin()
+    {
+        $this->assertTrue($this->validateGoogleServicesConfiguration(collect()));
+        $this->assertSame([], $this->components->errors);
     }
 
     public function test_update_local_properties_windows_path()

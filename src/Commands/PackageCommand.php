@@ -168,6 +168,10 @@ class PackageCommand extends Command
             return;
         }
 
+        if (! $this->validateGoogleServicesConfiguration($plugins)) {
+            return;
+        }
+
         // Validate signing configuration
         $signingConfig = $this->validateAndPrepareSigningConfig();
         if (! $signingConfig) {
