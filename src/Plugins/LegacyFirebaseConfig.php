@@ -22,9 +22,11 @@ use Illuminate\Support\Collection;
  * declared that it owns this destination?" — so a plugin release that has
  * not shipped yet takes over automatically, with no floor to bump here.
  *
- * @deprecated Delete once the supported floor for Firebase plugins declares
- *             its own project_files, and add the matching `conflict` entry
- *             to composer.json at the same time.
+ * Removing it: once the supported floor for Firebase plugins declares its own
+ * project_files, delete this class along with its two call sites, and add the
+ * matching `conflict` entry to composer.json in the same change. Not tagged
+ * deprecated on purpose — nothing outside core may call it, and the tag makes
+ * static analysis flag the call sites that are supposed to exist.
  */
 class LegacyFirebaseConfig
 {
