@@ -3,12 +3,12 @@
 namespace Native\Mobile\Concerns;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
 
-use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\warning;
 
@@ -118,7 +118,7 @@ trait InstallsAndroid
         // downloaded archive, but ext-zip is not guaranteed on stock Linux or
         // Windows PHP installs — better to error now than after a multi-MB download.
         if (! class_exists(ZipArchive::class)) {
-            error('The PHP zip extension (ext-zip) is required to install Android PHP binaries.');
+            $this->failInstall('The PHP zip extension (ext-zip) is required to install Android PHP binaries.');
             note(PHP_OS_FAMILY === 'Windows'
                 ? 'Enable extension=zip in your php.ini and retry.'
                 : 'Install it (e.g. sudo apt install php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'-zip) and retry.');
@@ -138,7 +138,7 @@ trait InstallsAndroid
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
 
             return;
         }
@@ -159,12 +159,12 @@ trait InstallsAndroid
 
         if (! $url) {
             $variant = $includeIcu ? 'ICU' : 'non-ICU';
-            error("No {$variant} Android binary found for PHP {$phpVersion}");
+            $this->failInstall("No {$variant} Android binary found for PHP {$phpVersion}");
 
             return;
         }
 
-        $cacheDir = base_path('nativephp/binaries');
+        $cacheDir = PhpBinaries::cacheDirectory();
         File::ensureDirectoryExists($cacheDir);
 
         $zipFilename = basename(parse_url($url, PHP_URL_PATH));
@@ -180,30 +180,46 @@ trait InstallsAndroid
             $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
         } else {
             $client = new Client;
-            $downloadFailed = false;
+            $downloadFailed = null;
 
-            $this->components->task('Downloading Android PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
-                try {
-                    $client->request('GET', $url, [
-                        'sink' => $zipFile,
-                        'connect_timeout' => 60,
-                        'timeout' => 600,
-                    ]);
+            try {
+                $this->components->task('Downloading Android PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
+                    try {
+                        $client->request('GET', $url, [
+                            'sink' => $zipFile,
+                            'connect_timeout' => 60,
+                            'timeout' => 600,
+                        ]);
 
-                    return true;
-                } catch (RequestException) {
-                    // Remove any partial/error response written to disk
-                    if (file_exists($zipFile)) {
-                        unlink($zipFile);
+                        return true;
+                    } catch (GuzzleException $e) {
+                        // GuzzleException, not RequestException: ConnectException
+                        // extends TransferException directly, so a DNS failure, a
+                        // refused connection or a TLS error is not a
+                        // RequestException and escaped this catch as an unhandled
+                        // exception with a stack trace.
+                        //
+                        // Remove any partial/error response written to disk
+                        if (file_exists($zipFile)) {
+                            unlink($zipFile);
+                        }
+                        $downloadFailed = TransferFailure::describe($e);
+
+                        // Thrown rather than `return false`: as of Laravel 13 the
+                        // Task component matches the callback's return value
+                        // against the TaskResult enum, so false matches no arm and
+                        // renders DONE. Throwing leaves $result at its Failure
+                        // default, so the task reports FAIL on every supported
+                        // Laravel version.
+                        throw $e;
                     }
-                    $downloadFailed = true;
+                });
+            } catch (GuzzleException) {
+                // Already reported by the task line; the message is below.
+            }
 
-                    return false;
-                }
-            });
-
-            if ($downloadFailed) {
-                error("Failed to download PHP binaries from: $url");
+            if ($downloadFailed !== null) {
+                $this->failInstall("Failed to download PHP binaries from: $url"."\n".$downloadFailed);
 
                 return;
             }
@@ -211,7 +227,7 @@ trait InstallsAndroid
             // Verify the downloaded file is actually a ZIP
             $zip = new ZipArchive;
             if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
-                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                $this->failInstall('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
                 unlink($zipFile);
 
                 return;
@@ -228,7 +244,7 @@ trait InstallsAndroid
             $sevenZip = config('nativephp.android.7zip-location');
 
             if (! file_exists($sevenZip)) {
-                error("7-Zip not found at: $sevenZip");
+                $this->failInstall("7-Zip not found at: $sevenZip");
                 note('Install 7-Zip or set NATIVEPHP_7ZIP_LOCATION environment variable.');
 
                 return;
@@ -236,21 +252,27 @@ trait InstallsAndroid
 
             $extractFailed = false;
 
-            $this->components->task('Extracting PHP binaries', function () use ($sevenZip, $zipFile, $extractPath, &$extractFailed) {
-                $cmd = "\"$sevenZip\" x \"$zipFile\" \"-o$extractPath\" -y";
-                exec($cmd, $output, $code);
+            try {
+                $this->components->task('Extracting PHP binaries', function () use ($sevenZip, $zipFile, $extractPath, &$extractFailed) {
+                    $cmd = "\"$sevenZip\" x \"$zipFile\" \"-o$extractPath\" -y";
+                    exec($cmd, $output, $code);
 
-                if ($code !== 0) {
-                    $extractFailed = true;
+                    if ($code !== 0) {
+                        $extractFailed = true;
 
-                    return false;
-                }
+                        // Thrown for the same reason as the download task: a
+                        // false return renders DONE on Laravel 13.
+                        throw new \RuntimeException("7-Zip exited with code {$code}.");
+                    }
 
-                return true;
-            });
+                    return true;
+                });
+            } catch (\RuntimeException) {
+                // Reported below.
+            }
 
             if ($extractFailed) {
-                error('7-Zip extraction failed.');
+                $this->failInstall('7-Zip extraction failed.');
 
                 return;
             }
@@ -258,7 +280,7 @@ trait InstallsAndroid
             $zip = new ZipArchive;
 
             if ($zip->open($zipFile) !== true) {
-                error('Failed to open downloaded ZIP file.');
+                $this->failInstall('Failed to open downloaded ZIP file.');
 
                 return;
             }

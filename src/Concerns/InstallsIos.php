@@ -3,13 +3,13 @@
 namespace Native\Mobile\Concerns;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
 
-use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\warning;
 
@@ -69,7 +69,7 @@ trait InstallsIos
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
 
             return;
         }
@@ -90,7 +90,7 @@ trait InstallsIos
 
         if (! $url) {
             $variant = $includeIcu ? 'ICU' : 'non-ICU';
-            error("No {$variant} iOS binary found for PHP {$phpVersion}");
+            $this->failInstall("No {$variant} iOS binary found for PHP {$phpVersion}");
 
             return;
         }
@@ -99,7 +99,7 @@ trait InstallsIos
         $this->components->twoColumnDetail('PHP version', $fullVersion);
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
-        $cacheDir = base_path('nativephp/binaries');
+        $cacheDir = PhpBinaries::cacheDirectory();
         File::ensureDirectoryExists($cacheDir);
 
         $zipFilename = basename(parse_url($url, PHP_URL_PATH));
@@ -111,30 +111,46 @@ trait InstallsIos
             $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
         } else {
             $client = new Client;
-            $downloadFailed = false;
+            $downloadFailed = null;
 
-            $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
-                try {
-                    $client->request('GET', $url, [
-                        'sink' => $zipFile,
-                        'connect_timeout' => 60,
-                        'timeout' => 600,
-                    ]);
+            try {
+                $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
+                    try {
+                        $client->request('GET', $url, [
+                            'sink' => $zipFile,
+                            'connect_timeout' => 60,
+                            'timeout' => 600,
+                        ]);
 
-                    return true;
-                } catch (RequestException) {
-                    // Remove any partial/error response written to disk
-                    if (file_exists($zipFile)) {
-                        unlink($zipFile);
+                        return true;
+                    } catch (GuzzleException $e) {
+                        // GuzzleException, not RequestException: ConnectException
+                        // extends TransferException directly, so a DNS failure, a
+                        // refused connection or a TLS error is not a
+                        // RequestException and escaped this catch as an unhandled
+                        // exception with a stack trace.
+                        //
+                        // Remove any partial/error response written to disk
+                        if (file_exists($zipFile)) {
+                            unlink($zipFile);
+                        }
+                        $downloadFailed = TransferFailure::describe($e);
+
+                        // Thrown rather than `return false`: as of Laravel 13 the
+                        // Task component matches the callback's return value
+                        // against the TaskResult enum, so false matches no arm and
+                        // renders DONE. Throwing leaves $result at its Failure
+                        // default, so the task reports FAIL on every supported
+                        // Laravel version.
+                        throw $e;
                     }
-                    $downloadFailed = true;
+                });
+            } catch (GuzzleException) {
+                // Already reported by the task line; the message is below.
+            }
 
-                    return false;
-                }
-            });
-
-            if ($downloadFailed) {
-                error("Failed to download PHP binaries from: $url");
+            if ($downloadFailed !== null) {
+                $this->failInstall("Failed to download PHP binaries from: $url"."\n".$downloadFailed);
 
                 return;
             }
@@ -142,7 +158,7 @@ trait InstallsIos
             // Verify the downloaded file is actually a ZIP
             $zip = new ZipArchive;
             if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
-                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                $this->failInstall('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
                 unlink($zipFile);
 
                 return;
@@ -158,7 +174,7 @@ trait InstallsIos
         $zip = new ZipArchive;
 
         if ($zip->open($zipFile) !== true) {
-            error('Failed to open downloaded ZIP file.');
+            $this->failInstall('Failed to open downloaded ZIP file.');
 
             return;
         }
@@ -271,7 +287,7 @@ trait InstallsIos
         $projectPath = $this->iosPath.'/NativePHP.xcodeproj/project.pbxproj';
 
         if (! file_exists($projectPath)) {
-            error("Xcode project file not found at: $projectPath");
+            $this->failInstall("Xcode project file not found at: $projectPath");
 
             return;
         }
