@@ -344,6 +344,125 @@ class NestedClass {}');
     /**
      * @test
      *
+     * A manifest boolean must land as <true/> / <false/>. Written as a
+     * <string> it renders as "" for false, which Firebase and friends read
+     * as unset — the declared setting is silently ignored.
+     */
+    public function it_writes_manifest_booleans_as_plist_booleans(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [
+                    'FirebaseAppDelegateProxyEnabled' => false,
+                    'UIFileSharingEnabled' => true,
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+
+        $this->assertMatchesRegularExpression(
+            '/<key>FirebaseAppDelegateProxyEnabled<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertMatchesRegularExpression(
+            '/<key>UIFileSharingEnabled<\/key>\s*<true\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString(
+            '<key>FirebaseAppDelegateProxyEnabled</key>',
+            str_replace('<key>FirebaseAppDelegateProxyEnabled</key>', '', $content)
+        );
+    }
+
+    /**
+     * @test
+     *
+     * An earlier build wrote booleans as <string/>. Recompiling has to
+     * replace that self-closing element, not skip it as unmatched.
+     */
+    public function it_repairs_a_boolean_previously_written_as_an_empty_string(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, str_replace(
+            '</dict>',
+            "\t<key>FirebaseAppDelegateProxyEnabled</key>\n\t<string/>\n</dict>",
+            $this->files->get($plistPath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['FirebaseAppDelegateProxyEnabled' => false]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($plistPath);
+
+        $this->assertMatchesRegularExpression(
+            '/<key>FirebaseAppDelegateProxyEnabled<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString('<string/>', $content);
+    }
+
+    /** @test */
+    public function it_writes_manifest_integers_as_plist_integers(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['SomeNumericSetting' => 42]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+
+        $this->assertMatchesRegularExpression(
+            '/<key>SomeNumericSetting<\/key>\s*<integer>42<\/integer>/',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Declaring a boolean for a key that already holds a <string> has to
+     * change the element type, not just its contents.
+     */
+    public function it_replaces_an_existing_string_entry_with_a_boolean(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Camera access']],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->assertStringContainsString('<string>Camera access</string>', $this->files->get($plistPath));
+
+        config()->set('nativephp.permissions', ['NSCameraUsageDescription' => false]);
+        $this->compiler->compile();
+
+        $content = $this->files->get($plistPath);
+
+        $this->assertMatchesRegularExpression(
+            '/<key>NSCameraUsageDescription<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString('<string>Camera access</string>', $content);
+    }
+
+    /**
+     * @test
+     *
      * App-level config('nativephp.permissions.ios') wins over plugin manifests,
      * so an app developer can resolve key collisions between plugins.
      */

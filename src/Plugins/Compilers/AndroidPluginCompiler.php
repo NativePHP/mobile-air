@@ -5,6 +5,7 @@ namespace Native\Mobile\Plugins\Compilers;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\LegacyFirebaseConfig;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -79,8 +80,21 @@ class AndroidPluginCompiler
      */
     protected function warn(string $message): void
     {
-        if ($this->output) {
+        if ($this->output === null) {
+            return;
+        }
+
+        // A Command has warn(); Illuminate\Console\OutputStyle — which is what
+        // the build commands actually pass — does not, so calling it blindly
+        // fataled the build and guarding on it swallowed the message entirely.
+        if (method_exists($this->output, 'warn')) {
             $this->output->warn($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<comment>{$message}</comment>");
         }
     }
 
@@ -187,14 +201,27 @@ class AndroidPluginCompiler
         // Copy app-owned files declared by plugins into the Android project.
         (new ProjectFileManager($this->files, $this->basePath, 'android'))->sync($allPlugins);
 
+        // Back-compat: install Firebase config on behalf of a plugin that
+        // predates project_files, so bumping core alone cannot silently stop
+        // push from working. Does nothing once the plugin owns its config.
+        $legacyFirebase = (new LegacyFirebaseConfig($this->files, $this->basePath))->sync($allPlugins, 'android');
+
+        if ($legacyFirebase !== null) {
+            $this->warn(LegacyFirebaseConfig::deprecationNotice($legacyFirebase, 'android'));
+        }
+
         // Declare plugin-required Gradle plugins in the root build file (runs
         // even when the list is empty so a removed plugin's declaration is cleared).
         $this->injectGradlePlugins($allPlugins);
 
         // Apply plugin-required Gradle plugins to the app module when the
         // manifest explicitly targets it. The marker is also cleared when a
-        // plugin is removed.
-        $this->injectAppGradlePlugins($allPlugins);
+        // plugin is removed. The shim applies Google Services the same way
+        // core's old build.gradle.kts conditional did.
+        $this->injectAppGradlePlugins(
+            $allPlugins,
+            $legacyFirebase !== null ? [LegacyFirebaseConfig::GRADLE_PLUGIN_ID] : []
+        );
 
         if ($allPlugins->isEmpty()) {
             $this->generateEmptyRegistration();
@@ -411,7 +438,7 @@ class AndroidPluginCompiler
     /**
      * Apply manifest-declared Gradle plugins to the app module.
      */
-    protected function injectAppGradlePlugins(Collection $plugins): void
+    protected function injectAppGradlePlugins(Collection $plugins, array $extraIds = []): void
     {
         $appGradlePath = $this->androidProjectPath.'/app/build.gradle.kts';
 
@@ -422,7 +449,7 @@ class AndroidPluginCompiler
         $content = $this->files->get($appGradlePath);
         $begin = '// BEGIN nativephp-plugin-app-gradle-plugins';
         $end = '// END nativephp-plugin-app-gradle-plugins';
-        $block = $this->buildAppGradlePluginsBlock($plugins, $content);
+        $block = $this->buildAppGradlePluginsBlock($plugins, $content, $extraIds);
 
         if (str_contains($content, $begin) && str_contains($content, $end)) {
             $content = preg_replace(
@@ -445,7 +472,7 @@ class AndroidPluginCompiler
         $this->files->put($appGradlePath, $content);
     }
 
-    public function buildAppGradlePluginsBlock(Collection $plugins, string $existingContent = ''): string
+    public function buildAppGradlePluginsBlock(Collection $plugins, string $existingContent = '', array $extraIds = []): string
     {
         $entries = [];
         $withoutBlock = preg_replace(
@@ -474,6 +501,18 @@ class AndroidPluginCompiler
 
                 $entries[$id] = "    id(\"{$id}\")";
             }
+        }
+
+        foreach ($extraIds as $id) {
+            if (! is_string($id) || ! preg_match('/^[A-Za-z0-9._-]+$/', $id)) {
+                continue;
+            }
+
+            if (isset($entries[$id]) || str_contains($withoutBlock, "id(\"{$id}\")")) {
+                continue;
+            }
+
+            $entries[$id] = "    id(\"{$id}\")";
         }
 
         if ($entries === []) {

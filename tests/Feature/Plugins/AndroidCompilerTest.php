@@ -1610,6 +1610,74 @@ object TestFunctions {
         $this->assertStringContainsString('id("com.example.application-plugin")', $app);
     }
 
+    /**
+     * @test
+     *
+     * The back-compat shim applies Google Services to the app module the way
+     * core's old build.gradle.kts conditional did, for a plugin that declares
+     * the Gradle plugin but not `apply_to`.
+     */
+    public function it_applies_extra_gradle_plugin_ids_supplied_by_the_legacy_shim(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3'],
+                ],
+            ],
+        ]);
+
+        $block = $this->compiler->buildAppGradlePluginsBlock(
+            collect([$plugin]),
+            '',
+            ['com.google.gms.google-services']
+        );
+
+        $this->assertStringContainsString('id("com.google.gms.google-services")', $block);
+    }
+
+    /**
+     * @test
+     *
+     * A plugin declaring `apply_to: app` already lands the id, so the shim
+     * passing the same one must not produce a duplicate.
+     */
+    public function it_does_not_duplicate_a_shim_id_the_manifest_already_applies(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3', 'apply_to' => 'app'],
+                ],
+            ],
+        ]);
+
+        $block = $this->compiler->buildAppGradlePluginsBlock(
+            collect([$plugin]),
+            '',
+            ['com.google.gms.google-services']
+        );
+
+        $this->assertSame(1, substr_count($block, 'id("com.google.gms.google-services")'));
+    }
+
+    /** @test */
+    public function it_skips_a_shim_id_already_declared_outside_the_markers(): void
+    {
+        $existing = 'plugins {'.PHP_EOL
+            .'    id("com.android.application")'.PHP_EOL
+            .'    id("com.google.gms.google-services")'.PHP_EOL
+            .'}'.PHP_EOL;
+
+        $block = $this->compiler->buildAppGradlePluginsBlock(
+            collect([]),
+            $existing,
+            ['com.google.gms.google-services']
+        );
+
+        $this->assertSame('', $block);
+    }
+
     /** @test */
     public function it_clears_app_gradle_plugins_when_the_plugin_is_removed(): void
     {

@@ -54,10 +54,25 @@ class ProjectFileManagerTest extends TestCase
     public function it_reports_a_missing_required_file_as_the_plugins_requirement(): void
     {
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage("Plugin 'vendor/files-plugin' requires one of these project files for android: service.json.");
+        $this->expectExceptionMessage("Plugin 'vendor/files-plugin' requires 'service.json' in your project root for android.");
 
         $this->manager()->sync(collect([$this->plugin([
             'sources' => ['service.json'],
+            'destination' => 'app/service.json',
+            'required' => true,
+        ])]));
+    }
+
+    /** @test */
+    public function it_lists_every_candidate_when_a_required_file_has_several_sources(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(
+            "Plugin 'vendor/files-plugin' requires one of these project files for android, relative to your project root: service.json, config/service.json."
+        );
+
+        $this->manager()->sync(collect([$this->plugin([
+            'sources' => ['service.json', 'config/service.json'],
             'destination' => 'app/service.json',
             'required' => true,
         ])]));

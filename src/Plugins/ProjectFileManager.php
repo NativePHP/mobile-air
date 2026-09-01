@@ -93,8 +93,11 @@ class ProjectFileManager
 
                 if ($source === null) {
                     if ($required) {
-                        throw new RuntimeException(
-                            "Plugin '{$plugin->name}' requires one of these project files for {$this->platform}: ".implode(', ', $sources).'.'
+                        $sources = array_values($sources);
+
+                        throw new RuntimeException(count($sources) === 1
+                            ? "Plugin '{$plugin->name}' requires '{$sources[0]}' in your project root for {$this->platform}."
+                            : "Plugin '{$plugin->name}' requires one of these project files for {$this->platform}, relative to your project root: ".implode(', ', $sources).'.'
                         );
                     }
 
