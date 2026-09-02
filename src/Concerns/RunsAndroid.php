@@ -39,7 +39,7 @@ trait RunsAndroid
     /**
      * @throws \Exception
      */
-    public function runAndroid(): void
+    public function runAndroid(): bool
     {
         $this->androidLogPath = base_path($this->androidLogPath);
 
@@ -63,13 +63,13 @@ trait RunsAndroid
             error('No Android project found at [nativephp/android].');
             note('Run `php artisan native:install` or ensure you have the correct folder structure.');
 
-            return;
+            return false;
         }
 
         $this->logToFile('Android project path: '.$androidPath);
 
         if (! $this->validateBuildEnvironment()) {
-            return;
+            return false;
         }
 
         $minSdk = (int) config('nativephp.android.min_sdk', 26);
@@ -78,7 +78,7 @@ trait RunsAndroid
             error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
             note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
 
-            return;
+            return false;
         }
 
         $plugins = app(PluginRegistry::class)->all();
@@ -89,7 +89,7 @@ trait RunsAndroid
                 error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
                 note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
 
-                return;
+                return false;
             }
         }
 
@@ -106,7 +106,7 @@ trait RunsAndroid
                 $this->logToFile('ERROR: ADB is not installed or not in PATH');
                 error('ADB is not installed or not in your PATH.');
 
-                return;
+                return false;
             }
             $this->logToFile('ADB is available');
 
@@ -122,11 +122,11 @@ trait RunsAndroid
         $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies);
 
         if (! $this->compileAndroidPlugins()) {
-            return;
+            return false;
         }
 
         if (! $this->runTheAndroidBuild($target)) {
-            return;
+            return false;
         }
 
         if ($this->option('watch')) {
@@ -135,6 +135,8 @@ trait RunsAndroid
         }
 
         $this->logToFile('=== NativePHP Android Build Completed ===');
+
+        return true;
     }
 
     private function detectCurrentAppId(): ?string
