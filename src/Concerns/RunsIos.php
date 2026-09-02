@@ -90,7 +90,7 @@ trait RunsIos
             ->all();
     }
 
-    public function runIos(): void
+    public function runIos(): bool
     {
         // iOS builds require the Xcode toolchain (xcrun, simctl, devicectl),
         // so bail out early with a clear message on Windows/Linux instead of
@@ -99,7 +99,7 @@ trait RunsIos
             error('iOS apps can only be built and run on macOS.');
             note('Use `php artisan native:run android` on this machine.');
 
-            return;
+            return false;
         }
 
         $this->watching = $this->option('watch');
@@ -112,7 +112,7 @@ trait RunsIos
             error('No iOS project found at [nativephp/ios].');
             note('Run `php artisan native:install` or ensure you have the correct folder structure.');
 
-            return;
+            return false;
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
@@ -134,6 +134,8 @@ trait RunsIos
         }
 
         $this->runTheIosBuild($target);
+
+        return true;
     }
 
     private function getAvailableIosDevices(): array
