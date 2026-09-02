@@ -1599,11 +1599,19 @@ abstract class NativeComponent
             $deadlines[] = $next;
         }
 
+        $now = microtime(true) * 1000;
+        foreach ($this->nativeChildComponents as $child) {
+            $timeout = $child->nextEventTimeout();
+            if ($timeout >= 0) {
+                $deadlines[] = $now + $timeout;
+            }
+        }
+
         if (empty($deadlines)) {
             return -1;
         }
 
-        return max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
+        return max(1, (int) ceil(min($deadlines) - $now));
     }
 
     /**
@@ -1635,6 +1643,10 @@ abstract class NativeComponent
             if ($now >= $next) {
                 $this->bladePollDeadlines[$ms] = $now + $ms;
             }
+        }
+
+        foreach ($this->nativeChildComponents as $child) {
+            $child->runDuePolls();
         }
     }
 
@@ -1816,43 +1828,58 @@ abstract class NativeComponent
         // #[On] lookup below so it fires even when this component declares no
         // listener for the event.
         $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
+        $this->dispatchNativeEventListeners($eventName, $payload);
+    }
+
+    private function dispatchNativeEventListeners(string $eventName, mixed $payload): void
+    {
 
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
             ?? null;
 
-        if ($method === null || ! method_exists($this, $method)) {
-            return;
+        if ($method !== null && method_exists($this, $method) && is_array($payload)) {
+            $reflect = new \ReflectionMethod($this, $method);
+            $parameters = $reflect->getParameters();
+            $type = $parameters[0]->getType() ?? null;
+
+            if (count($parameters) === 1
+                && $type instanceof \ReflectionNamedType
+                && $type->getName() === 'array'
+                && ! array_key_exists($parameters[0]->getName(), $payload)) {
+                $this->$method($payload);
+            } else {
+                $args = [];
+                foreach ($parameters as $param) {
+                    $name = $param->getName();
+                    if (array_key_exists($name, $payload)) {
+                        $value = $payload[$name];
+
+                        // Coerce the value to match the parameter's type hint
+                        $type = $param->getType();
+                        if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
+                            $value = match ($type->getName()) {
+                                'int' => (int) $value,
+                                'float' => (float) $value,
+                                'string' => (string) $value,
+                                'bool' => (bool) $value,
+                                default => $value,
+                            };
+                        }
+
+                        $args[] = $value;
+                    } elseif ($param->isDefaultValueAvailable()) {
+                        $args[] = $param->getDefaultValue();
+                    }
+                }
+                $this->$method(...$args);
+            }
+        } elseif ($method !== null && method_exists($this, $method)) {
+            $this->$method($payload);
         }
 
-        if (is_array($payload)) {
-            $reflect = new \ReflectionMethod($this, $method);
-            $args = [];
-            foreach ($reflect->getParameters() as $param) {
-                $name = $param->getName();
-                if (array_key_exists($name, $payload)) {
-                    $value = $payload[$name];
-
-                    // Coerce the value to match the parameter's type hint
-                    $type = $param->getType();
-                    if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
-                        $value = match ($type->getName()) {
-                            'int' => (int) $value,
-                            'float' => (float) $value,
-                            'string' => (string) $value,
-                            'bool' => (bool) $value,
-                            default => $value,
-                        };
-                    }
-
-                    $args[] = $value;
-                } elseif ($param->isDefaultValueAvailable()) {
-                    $args[] = $param->getDefaultValue();
-                }
-            }
-            $this->$method(...$args);
-        } else {
-            $this->$method($payload);
+        foreach ($this->nativeChildComponents as $child) {
+            $child->dispatchNativeEventListeners($eventName, $payload);
         }
     }
 
