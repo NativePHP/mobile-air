@@ -1009,7 +1009,7 @@ XML;
             $compiler->compile();
 
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("❌ Plugin compilation failed: {$e->getMessage()}");
 
             return false;
