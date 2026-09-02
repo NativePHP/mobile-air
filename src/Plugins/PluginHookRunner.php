@@ -6,6 +6,7 @@ use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
+use Native\Mobile\Plugins\Exceptions\PluginHookFailedException;
 
 class PluginHookRunner
 {
@@ -71,6 +72,9 @@ class PluginHookRunner
         $this->twoColumnDetail("<fg=blue>Running {$hookName} hook</>", $plugin->name);
 
         try {
+            // Without an output to write to, Artisan buffers the hook's own
+            // output and nobody ever reads it back — a hook explaining why it
+            // failed said it into a buffer that was thrown away.
             $exitCode = Artisan::call($command, [
                 '--platform' => $this->platform,
                 '--build-path' => $this->buildPath,
@@ -78,13 +82,15 @@ class PluginHookRunner
                 '--app-id' => $this->appId,
                 '--config' => json_encode($this->config),
                 '--plugins' => json_encode($this->plugins->map->toArray()->toArray()),
-            ]);
+            ], $this->output);
 
             if ($exitCode !== 0) {
-                $this->warn("Hook {$hookName} for {$plugin->name} returned non-zero exit code: {$exitCode}");
+                throw new PluginHookFailedException($plugin->name, $hookName, $exitCode);
             }
-        } catch (\Exception $e) {
-            $this->error("Hook {$hookName} for {$plugin->name} failed: {$e->getMessage()}");
+        } catch (PluginHookFailedException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new PluginHookFailedException($plugin->name, $hookName, 1, $e);
         }
     }
 
