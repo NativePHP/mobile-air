@@ -7,7 +7,6 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -53,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.nativephp.mobile.ui.MaterialIcon
+import com.nativephp.mobile.ui.NativeAppearanceState
 
 /**
  * Compose port of iOS's `NativeRootStackRenderer`. Renders the
@@ -317,7 +317,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             // the keyboard covers that region would float the bar a
             // nav-bar height too high.
             bottomBarNode?.children?.firstOrNull()?.let { inner ->
-                val darkBg = if (isSystemInDarkTheme()) inner.props.getColor("dark_bg_color", 0) else 0
+                val darkBg = if (NativeAppearanceState.isDark()) inner.props.getColor("dark_bg_color", 0) else 0
                 val barBg = if (darkBg != 0) darkBg else (inner.style?.bgColor ?: 0)
                 Box(
                     modifier = Modifier

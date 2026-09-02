@@ -1,5 +1,6 @@
 package com.nativephp.mobile.ui
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -8,6 +9,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+
+/** App-local appearance override shared by Material chrome and native nodes. */
+object NativeAppearanceState {
+    var mode: String? by mutableStateOf(null)
+
+    @Composable
+    fun isDark(): Boolean = resolve(isSystemInDarkTheme())
+
+    fun resolve(systemIsDark: Boolean): Boolean = when (mode) {
+        "light" -> false
+        "dark" -> true
+        else -> systemIsDark
+    }
+}
 
 /**
  * Seam that lets a UI plugin supply the app's Material3 [ColorScheme] without

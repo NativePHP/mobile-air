@@ -29,6 +29,7 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     // plugin). iOS twin: Bridge/Functions/SystemFunctions.swift.
     registry.register("System.OpenAppSettings", SystemFunctions.OpenAppSettings(context))
     registry.register("System.GetAppearance", SystemFunctions.GetAppearance(context))
+    registry.register("System.SetAppearance", SystemFunctions.SetAppearance(activity))
     registry.register("System.MinimizeApp", SystemFunctions.MinimizeApp(activity))
 
     // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog

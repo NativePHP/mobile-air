@@ -38,7 +38,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -166,7 +165,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // first paint. (Measured: starting the boot before first paint cost ~160ms of
         // uninterruptible I/O sleep on the main thread + Chromium init on the critical path.)
         setContent {
-            val isDark = isSystemInDarkTheme()
+            val isDark = NativeAppearanceState.isDark()
             MaterialTheme(
                 colorScheme = nativeUiMaterialColorScheme(isDark),
                 typography = NativeUIThemeProvider.resolveTypography(),
@@ -435,6 +434,27 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         }, 10_000L)
     }
 
+    /** Apply a theme override without recreating the activity or PHP session. */
+    fun setAppearance(appearance: String) {
+        runOnUiThread {
+            NativeAppearanceState.mode = appearance.takeUnless { it == "system" }
+            configureStatusBar()
+
+            val mode = if (NativeAppearanceState.resolve(systemIsDarkMode())) "dark" else "light"
+            if (mode != lastAppearance) {
+                lastAppearance = mode
+                NativeElementBridge.sendNativeEvent(
+                    "Native\\Mobile\\Events\\System\\AppearanceChanged",
+                    org.json.JSONObject().put("mode", mode).toString()
+                )
+            }
+        }
+    }
+
+    private fun systemIsDarkMode(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         Log.d("MainActivity", "🌀 Config changed: orientation = ${newConfig.orientation}")
@@ -452,8 +472,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         // Push a native AppearanceChanged event to PHP when the theme flips.
         // onConfigurationChanged also fires on rotation, so guard on an actual
         // change. Drives reactive System::appearance() / #[On(AppearanceChanged)].
-        val mode = if ((newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-                Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
+        val systemIsDark = (newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        val mode = if (NativeAppearanceState.resolve(systemIsDark)) "dark" else "light"
         if (mode != lastAppearance) {
             lastAppearance = mode
             NativeElementBridge.sendNativeEvent(
@@ -473,8 +494,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         when (statusBarStyle) {
             "auto" -> {
-                val isSystemDarkMode = (resources.configuration.uiMode and
-                    Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+                val isSystemDarkMode = NativeAppearanceState.resolve(systemIsDarkMode())
                 windowInsetsController.isAppearanceLightStatusBars = !isSystemDarkMode
                 windowInsetsController.isAppearanceLightNavigationBars = !isSystemDarkMode
 
@@ -495,8 +515,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
             else -> {
                 Log.w("StatusBar", "⚠️ Unknown status bar style: $statusBarStyle, defaulting to auto")
-                val isSystemDarkMode = (resources.configuration.uiMode and
-                    Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+                val isSystemDarkMode = NativeAppearanceState.resolve(systemIsDarkMode())
                 windowInsetsController.isAppearanceLightStatusBars = !isSystemDarkMode
                 windowInsetsController.isAppearanceLightNavigationBars = !isSystemDarkMode
             }

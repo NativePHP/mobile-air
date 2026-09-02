@@ -29,6 +29,34 @@ enum SystemFunctions {
         }
     }
 
+    // MARK: - System.SetAppearance
+
+    /// Set an app-local light or dark appearance at runtime.
+    class SetAppearance: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            guard let appearance = parameters["appearance"] as? String else {
+                throw BridgeError.invalidParameters("appearance is required")
+            }
+
+            let style: UIUserInterfaceStyle
+            switch appearance {
+            case "light": style = .light
+            case "dark": style = .dark
+            case "system": style = .unspecified
+            default: throw BridgeError.invalidParameters("appearance must be light, dark, or system")
+            }
+
+            DispatchQueue.main.async {
+                UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .flatMap(\.windows)
+                    .forEach { $0.overrideUserInterfaceStyle = style }
+            }
+
+            return ["success": true, "appearance": appearance]
+        }
+    }
+
     // MARK: - System.GetAppearance
 
     /// Current system appearance (light / dark). Backs `System::appearance()` /

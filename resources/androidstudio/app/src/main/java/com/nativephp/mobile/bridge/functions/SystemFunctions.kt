@@ -65,6 +65,23 @@ object SystemFunctions {
         }
     }
 
+    /** Set an app-local light or dark appearance at runtime. */
+    class SetAppearance(private val activity: Activity) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val appearance = parameters["appearance"] as? String
+            when (appearance) {
+                "light", "dark", "system" -> Unit
+                else -> throw BridgeError.InvalidParameters("appearance must be light, dark, or system")
+            }
+
+            val mainActivity = activity as? com.nativephp.mobile.ui.MainActivity
+                ?: throw BridgeError.ExecutionFailed("System.SetAppearance requires MainActivity")
+            mainActivity.setAppearance(appearance)
+
+            return mapOf("success" to true, "appearance" to appearance)
+        }
+    }
+
     /**
      * Current system appearance (light / dark). Backs `System::appearance()` /
      * `isDark()` for the cold read before the first AppearanceChanged push.
@@ -73,8 +90,9 @@ object SystemFunctions {
      */
     class GetAppearance(private val context: Context) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
-            val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            val systemNight = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES
+            val night = com.nativephp.mobile.ui.NativeAppearanceState.resolve(systemNight)
             return mapOf("appearance" to if (night) "dark" else "light")
         }
     }

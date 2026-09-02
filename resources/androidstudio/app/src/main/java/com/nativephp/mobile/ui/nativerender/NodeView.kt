@@ -15,7 +15,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -32,6 +31,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import com.nativephp.mobile.ui.NativeAppearanceState
 
 /**
  * Recursive composable that renders a NativeUINode and its children.
@@ -46,7 +46,7 @@ import androidx.compose.ui.unit.dp
 fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
     key(node.id) {
         val renderer = NativeRendererRegistry.get(node.type)
-        val isDarkMode = isSystemInDarkTheme()
+        val isDarkMode = NativeAppearanceState.isDark()
         val safeAreaTop = LocalSafeAreaTop.current
         val safeAreaBottom = LocalSafeAreaBottom.current
         val availableWidth = LocalAvailableWidth.current

@@ -33,6 +33,19 @@ it('ignores a bogus appearance value', function () {
     expect((new System)->appearance())->toBe('dark');
 });
 
+it('sets an app-local appearance and validates the mode', function () {
+    $sys = new System;
+
+    $sys->setAppearance('dark');
+    expect($sys->appearance())->toBe('dark');
+
+    $sys->setAppearance('light');
+    expect($sys->appearance())->toBe('light');
+
+    expect(fn () => $sys->setAppearance('chartreuse'))
+        ->toThrow(InvalidArgumentException::class);
+});
+
 it('rebuilds a marked event from its native payload', function () {
     $comp = new class extends NativeComponent {};
     $build = new ReflectionMethod(NativeComponent::class, 'buildEventInstance');

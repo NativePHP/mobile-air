@@ -2,6 +2,7 @@
 
 namespace Native\Mobile;
 
+use InvalidArgumentException;
 use Native\Mobile\Facades\Device;
 
 class System
@@ -77,6 +78,22 @@ class System
     public function isLightMode(): bool
     {
         return $this->appearance() === 'light';
+    }
+
+    /**
+     * Override the app appearance without changing the device-wide setting.
+     */
+    public function setAppearance(string $mode): void
+    {
+        if (! in_array($mode, ['light', 'dark', 'system'], true)) {
+            throw new InvalidArgumentException('Appearance must be light, dark, or system.');
+        }
+
+        if (function_exists('nativephp_call')) {
+            nativephp_call('System.SetAppearance', json_encode(['appearance' => $mode], JSON_THROW_ON_ERROR));
+        }
+
+        self::$appearance = $mode === 'system' ? null : $mode;
     }
 
     /**
