@@ -15,6 +15,8 @@ class PluginHookRunner
 
     public const HOOK_POST_BUILD = 'post_build';
 
+    public const HOOK_PREPARE_BUNDLE = 'prepare_bundle';
+
     protected string $platform;
 
     protected string $buildPath;
@@ -116,6 +118,53 @@ class PluginHookRunner
     public function runPostBuildHooks(): void
     {
         $this->runHook(self::HOOK_POST_BUILD);
+    }
+
+    /**
+     * Run prepare-bundle hooks for all plugins.
+     *
+     * Unlike the other lifecycle hooks, a plugin may use this one to modify
+     * the Laravel staging tree in place before it is archived, so a hook
+     * that fails leaves the build in an unknown state. A non-zero exit code
+     * or a thrown exception therefore aborts the build instead of only
+     * warning, which is why this doesn't go through runHook()/runPluginHook().
+     */
+    public function runPrepareBundleHooks(string $bundlePath): void
+    {
+        foreach ($this->plugins as $plugin) {
+            $this->runPluginPrepareBundleHook($plugin, $bundlePath);
+        }
+    }
+
+    /**
+     * Run the prepare-bundle hook for a single plugin, aborting the build on failure.
+     */
+    protected function runPluginPrepareBundleHook(Plugin $plugin, string $bundlePath): void
+    {
+        $hooks = $plugin->getHooks();
+        $hookName = self::HOOK_PREPARE_BUNDLE;
+
+        if (empty($hooks[$hookName])) {
+            return;
+        }
+
+        $command = $hooks[$hookName];
+
+        $this->twoColumnDetail("<fg=blue>Running {$hookName} hook</>", $plugin->name);
+
+        $exitCode = Artisan::call($command, [
+            '--platform' => $this->platform,
+            '--build-path' => $this->buildPath,
+            '--bundle-path' => $bundlePath,
+            '--plugin-path' => $plugin->path,
+            '--app-id' => $this->appId,
+            '--config' => json_encode($this->config),
+            '--plugins' => json_encode($this->plugins->map->toArray()->toArray()),
+        ]);
+
+        if ($exitCode !== 0) {
+            throw new \RuntimeException("Hook {$hookName} for {$plugin->name} returned non-zero exit code: {$exitCode}");
+        }
     }
 
     /**

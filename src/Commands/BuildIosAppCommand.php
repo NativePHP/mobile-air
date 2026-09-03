@@ -10,6 +10,7 @@ use Native\Mobile\Concerns\CleansEnvFile;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAppIcon;
 use Native\Mobile\Concerns\InstallsSplashScreen;
+use Native\Mobile\Concerns\RunsBundleHooks;
 use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
@@ -22,7 +23,7 @@ use function Laravel\Prompts\error;
 
 class BuildIosAppCommand extends Command
 {
-    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
+    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, RunsBundleHooks, ValidatesAppConfig;
 
     private bool $verbose;
 
@@ -138,6 +139,23 @@ class BuildIosAppCommand extends Command
             config('nativephp.cleanup_exclude_files', [])
         ));
         $this->cleanEnvFile($this->appPath.'.env');
+
+        // Runs on both CLI and Xcode-driven builds (NATIVEPHP_XCODE_BUILD=1),
+        // since bundleLaravelApp() is the first thing handle() does either
+        // way — the staging tree is fully prepared and nothing has been
+        // zipped yet, so plugins see exactly what will ship.
+        $appVersion = config('nativephp.version', 'DEBUG');
+        $versionCode = config('nativephp.version_code', 1);
+        $bundleVersionId = $appVersion === 'DEBUG' ? 'DEBUG' : "{$appVersion}b{$versionCode}";
+
+        $this->runPrepareBundleHook(
+            platform: 'ios',
+            buildPath: $this->basePath,
+            bundlePath: $this->appPath,
+            buildType: $this->option('release') ? 'release' : 'debug',
+            bundleVersionId: $bundleVersionId,
+        );
+
         $this->createAppZip();
     }
 
