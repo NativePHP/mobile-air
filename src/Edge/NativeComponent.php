@@ -2406,6 +2406,21 @@ abstract class NativeComponent
         return $this->nativeNavigationIntent;
     }
 
+    public function hasNavigationIntent(): bool
+    {
+        return $this->nativeNavigationIntent !== null;
+    }
+
+    /**
+     * Set the navigation intent from outside the component — the router uses
+     * this to turn a middleware denial into a redirect BEFORE mount() runs,
+     * so a guarded screen never executes its data loading.
+     */
+    public function setNavigationIntent(NavigationIntent $intent): void
+    {
+        $this->nativeNavigationIntent = $intent;
+    }
+
     /**
      * Clear a consumed navigation intent. The router calls this after reading the
      * intent so a component that STAYS on the stack (e.g. the launcher below a
