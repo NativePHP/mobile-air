@@ -476,6 +476,22 @@ class TailwindParser
                 return null;
             }
 
+            // A theme token resolves its own dark companion, so wrapping it blindly
+            // buried that companion a level deeper — where the merge in parse() never
+            // lifts it — and left the LIGHT hex sitting in the dark slot:
+            //
+            //   dark:bg-theme-surface
+            //     was  {dark: {bg: #FFF, dark: {bg: #000}}}   → white in dark mode
+            //     now  {dark: {bg: #000}}                     → black in dark mode
+            //
+            // Asking for a theme token under `dark:` can only mean its dark-mode form,
+            // so promote the companion rather than nest it.
+            if (isset($inner['dark']) && is_array($inner['dark'])) {
+                $companion = $inner['dark'];
+                unset($inner['dark']);
+                $inner = array_merge($inner, $companion);
+            }
+
             return ['dark' => $inner];
         }
 
