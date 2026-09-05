@@ -42,6 +42,8 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
+use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
+use Native\Mobile\Edge\Asgard\NullServerTransport;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\ElementRegistry;
@@ -137,6 +139,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
+        $this->registerAsgardTransport();
         $this->prepForIos();
         $this->registerJumpBridgeFallback();
 
@@ -217,6 +220,24 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->app->singleton(System::class, fn () => new System);
         $this->app->singleton(Dialog::class, fn () => new Dialog);
         $this->app->singleton(File::class, fn () => new File);
+    }
+
+    /**
+     * The seam a `#[Server]` method's request goes out through
+     * (docs/ASGARD-SERVER-METHODS.md §3).
+     *
+     * Bound to a transport that always fails, because the native bridge
+     * function that performs Asgard requests is a separate workstream.
+     * That is deliberately not a fatal: an unsent request takes the same
+     * path as a device with no network, so a screen written against
+     * `#[Server]` behaves correctly — loading flag cleared, error branch
+     * run — before there is anything to send with. `bind` rather than
+     * `singleton` so an app (or that workstream) can replace it without
+     * fighting a resolved instance.
+     */
+    protected function registerAsgardTransport(): void
+    {
+        $this->app->bind(ServerTransport::class, NullServerTransport::class);
     }
 
     protected function registerPluginServices(): void
