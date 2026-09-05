@@ -15,6 +15,9 @@ struct ContentView: View {
     // platform default. Shows behind screens and during transitions.
     @ObservedObject private var windowBackground = WindowBackgroundState.shared
     @Environment(\.colorScheme) private var colorScheme
+    // Last app-window orientation pushed to PHP (seeded from the first layout),
+    // so size changes only emit when the window aspect actually flips.
+    @State private var lastOrientation: String?
 
     /// The base color native screens render over — the PHP override when
     /// set, otherwise the system default.
@@ -116,10 +119,31 @@ struct ContentView: View {
         // flips (Control Center toggle, sunset auto-switch). Drives the
         // reactive `System::appearance()` / `#[On(AppearanceChanged)]` path.
         // ContentView is always mounted, so this observes every change.
-        .onChange(of: colorScheme) { newScheme in
+        .onChange(of: colorScheme) { _, newScheme in
             let mode = newScheme == .dark ? "dark" : "light"
             LaravelBridge.shared.send?("Native\\Mobile\\Events\\System\\AppearanceChanged", ["mode": mode])
         }
+        // Push a native OrientationChanged event to PHP when the app window's
+        // aspect flips. Read the actual window on both the push and query paths:
+        // GeometryReader's safe-area frame can become landscape-shaped when an
+        // iPad keyboard appears even though the window remains portrait. Seeded
+        // on first layout so only a real flip emits. Drives the reactive
+        // `System::orientation()` / `#[On(OrientationChanged)]` path.
+        .background(
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear {
+                        lastOrientation = SystemFunctions.currentWindowOrientation()
+                    }
+                    .onChange(of: geometry.size) { _, _ in
+                        let orientation = SystemFunctions.currentWindowOrientation()
+                        guard orientation != lastOrientation else { return }
+                        lastOrientation = orientation
+                        LaravelBridge.shared.send?("Native\\Mobile\\Events\\System\\OrientationChanged", ["orientation": orientation])
+                    }
+            }
+            .ignoresSafeArea(.keyboard)
+        )
     }
 
     /// One layer of the two-layer native screen swap. `id` is the screen's
