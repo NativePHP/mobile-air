@@ -252,5 +252,7 @@ class ReleaseBuildTester
 
     protected function updatePermissions(): void {}
 
+    protected function updateReleaseAudience(): void {}
+
     protected function updateIcuConfiguration(): void {}
 }
