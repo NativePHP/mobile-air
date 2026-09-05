@@ -278,6 +278,24 @@ return [
 
         /*
         |--------------------------------------------------------------------------
+        | Image Format for Generated Android Resources
+        |--------------------------------------------------------------------------
+        |
+        | Format used when NativePHP generates Android bitmap resources (launcher
+        | icons + splash screens) at build time from `public/icon.png`,
+        | `public/splash.png`, and `public/splash-dark.png`.
+        |
+        | Options:
+        |   'png'  - Default. Backwards compatible with existing projects.
+        |   'webp' - Recommended. 60-90% smaller AAB, satisfies Play Console's
+        |            "optimize bitmap images" recommendation. Requires PHP GD
+        |            compiled with WebP support (falls back to PNG otherwise).
+        |
+        */
+        'image_format' => env('NATIVEPHP_ANDROID_IMAGE_FORMAT', 'png'),
+
+        /*
+        |--------------------------------------------------------------------------
         | Android Theme Colors
         |--------------------------------------------------------------------------
         |
