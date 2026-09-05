@@ -497,7 +497,7 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $this->guard(fn () => $this->component->onBackPressed());
+        $this->guard(fn () => $this->component->handleSystemBack());
 
         return $this->afterInteraction();
     }
@@ -647,7 +647,7 @@ class TestableComponent
     public function goBack(): TestableComponent
     {
         if ($this->component->getNavigationIntent() === null) {
-            $this->guard(fn () => $this->component->onBackPressed());
+            $this->guard(fn () => $this->component->handleSystemBack());
         }
 
         $intent = $this->component->getNavigationIntent();
@@ -1423,8 +1423,8 @@ class TestableComponent
 
     /**
      * Post-interaction re-render, mirroring the runloop: a component that
-     * set a navigation intent has stopped (its final state was already
-     * published by publishFinalState()); otherwise render the next frame.
+     * set a navigation intent has stopped (and may have published a farewell
+     * frame as part of that navigation); otherwise render the next frame.
      */
     protected function afterInteraction(): static
     {
