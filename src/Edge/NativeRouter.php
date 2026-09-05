@@ -191,11 +191,26 @@ class NativeRouter
 
         // Pattern match with route parameters
         foreach (static::$routes as $pattern => $entry) {
-            $regex = preg_replace('/\{(\w+)\}/', '(?P<$1>[^/]+)', $pattern);
+            // Optional segments FIRST, and consuming their leading slash: `\w` does not
+            // match `?`, so a `{slug?}` placeholder previously survived into the regex
+            // literally and the pattern could only ever match the string "{slug?}".
+            // BootPlanner on both platforms matches these patterns happily, so a route
+            // using the documented `{param?}` syntax booted into the native runloop and
+            // then resolved to no screen at all — /posts/{slug?} matched neither
+            // /posts/hello nor /posts.
+            $regex = preg_replace('#/\{(\w+)\?\}#', '(?:/(?P<$1>[^/]+))?', $pattern);
+            $regex = preg_replace('/\{(\w+)\}/', '(?P<$1>[^/]+)', $regex);
             $regex = '#^'.$regex.'$#';
 
             if (preg_match($regex, $uri, $matches)) {
-                $params = array_filter($matches, fn ($key) => is_string($key), ARRAY_FILTER_USE_KEY);
+                // An omitted optional segment reports as an empty string; drop those so
+                // a screen sees a missing parameter rather than a blank one. `[^/]+`
+                // cannot match empty, so nothing legitimate is lost.
+                $params = array_filter(
+                    $matches,
+                    fn ($value, $key) => is_string($key) && $value !== '',
+                    ARRAY_FILTER_USE_BOTH
+                );
 
                 return [
                     'class' => $entry['class'],
