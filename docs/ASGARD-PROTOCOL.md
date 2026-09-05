@@ -226,16 +226,43 @@ fails any of the first three is discarded before anything parses its body.
 
 ## 8. Transport
 
-Region requests use **HTTP QUERY** over HTTPS: a safe method that carries a
+Region requests prefer **HTTP QUERY** over HTTPS: a safe method that carries a
 body. A body is required (state can be large and structured) and a GET query
 string is the wrong place for it: length-limited, and logged by everything in
 the path.
 
-> **Open:** QUERY is a recent method and intermediaries may not pass it. If
-> deployment testing shows common infrastructure rejecting it, the protocol
-> needs a documented fallback (`POST` plus an override header) negotiated in
-> the handshake. Do not treat this section as settled until that testing is
-> done.
+**QUERY cannot be the only transport.** OWASP Core Rule Set ships
+`tx.allowed_methods=GET HEAD POST OPTIONS` as its default
+(`REQUEST-901-INITIALIZATION.conf`), and rule 911100 blocks everything else at
+paranoia level 1, which is on by default. CRS rides inside Cloudflare's managed
+rules, Azure Front Door and App Gateway DRS, and Google Cloud Armor. That makes
+the failure follow any customer who switches on a managed WAF, on any platform,
+rather than being confined to particular vendors. Akamai is worse: `allowOptions`
+permits GET, HEAD and OPTIONS and 501s the rest, with per-verb allow behaviours
+and no `allowQuery` among them, so an Akamai customer has no configuration path
+to enable it at all.
+
+So the handshake negotiates transport, and the client latches the answer per
+installation:
+
+1. **QUERY** where it works.
+2. **POST plus `X-Asgard-Method: QUERY`** where it does not.
+
+The override header must be package-owned. All three conventional names
+(`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`) are in CRS's
+default `tx.restricted_headers_basic` and are blocked at PL1, and CloudFront
+strips the first independently. The `_method` parameter is blocked at PL2+ too.
+
+Two more rules fall out of the same research:
+
+- **Always send `Content-Type`.** RFC 10008 requires it on QUERY, and Envoy
+  1.40 will reject a QUERY without one on every protocol. Traffic that works
+  today would break on an upgrade.
+- **Uppercase the verb** on both clients.
+
+On the server side, Laravel 14 has `Route::query()` and treats QUERY as
+CSRF-exempt. On Laravel 13 and earlier the route is `Route::match(['QUERY'], …)`
+and CSRF exemption is the package's job.
 
 One endpoint handles all region requests, in the shape of Livewire's `/update`
 and mobile-web's `EdgeEndpoint`. The path is derived per installation from the
@@ -366,19 +393,21 @@ one version per build; servers may support several.
 
 ## 12. Open questions
 
-1. QUERY viability through real infrastructure, and whether a fallback is
-   required. §8.
-2. Whether a region can be rendered without a bearer token at all, for public
+1. Whether a region can be rendered without a bearer token at all, for public
    screens shown before sign-in.
-3. Fragment caching. Regions that do not depend on client state could be cached
-   and shared, but nothing here defines a cache key yet.
-4. Navigation from inside a fragment. §9.3 forbids a server writing
+2. Fragment caching, **in the application only**. Nothing in front of the app
+   will help: no CDN or reverse proxy caches QUERY, and Fastly converts a
+   non-GET/POST request to GET on cache lookup and drops the body, which is
+   documented as not overridable. Symfony's `HttpCache` does mix the request
+   body into the cache key, so an in-app cache works. Do not design around
+   edge-cached fragments.
+3. Navigation from inside a fragment. §9.3 forbids a server writing
    `_navigate`, which settles the security question but not the product one:
    there is currently no sanctioned way for a server-rendered element to move
    the app, and there probably should be.
-5. Offline queueing of events fired against a fragment that is no longer
+4. Offline queueing of events fired against a fragment that is no longer
    current.
-6. `server_region` has no native renderer on iOS or Android. A region is
+5. `server_region` has no native renderer on iOS or Android. A region is
    visible in the tree the client builds but will not paint on a device until
    either platform learns the type as a plain container, or the element
    serialises as a `column`.
