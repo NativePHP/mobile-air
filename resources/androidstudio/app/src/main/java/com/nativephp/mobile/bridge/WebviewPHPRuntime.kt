@@ -223,7 +223,9 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
 
         executor.execute {
             if (booted) {
-                bridge.nativeWebviewPhpShutdown()
+                PHPBridge.embedLifecycleLock.withLock {
+                    bridge.nativeWebviewPhpShutdown()
+                }
                 booted = false
                 Log.i(TAG, "context released")
             }
@@ -247,7 +249,13 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
             return
         }
 
-        val rc = bridge.nativeWebviewPhpBoot(bridge.webviewBootstrapScript)
+        // Serialised against every other lane's php_embed_init. The comment
+        // above describes this collision for the persistent reboot only; the
+        // worker and ephemeral lanes can arrive at the same moment and are
+        // not covered by `rebootInFlight`.
+        val rc = PHPBridge.embedLifecycleLock.withLock {
+            bridge.nativeWebviewPhpBoot(bridge.webviewBootstrapScript)
+        }
         booted = rc == 0
         // Leave the door open on failure — the next request retries rather
         // than leaving the webview permanently dead.
@@ -271,7 +279,9 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
             // ambiguous for a Unit-returning lambda.
             executor.submit(Runnable {
                 if (booted) {
-                    bridge.nativeWebviewPhpShutdown()
+                    PHPBridge.embedLifecycleLock.withLock {
+                        bridge.nativeWebviewPhpShutdown()
+                    }
                     booted = false
                     Log.i(TAG, "context suspended for runtime reboot")
                 }
