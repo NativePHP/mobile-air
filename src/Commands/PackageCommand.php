@@ -175,7 +175,7 @@ class PackageCommand extends Command
         }
 
         if (! $this->option('skip-prepare')) {
-            $this->prepareAndroidBuild();
+            $this->prepareAndroidBuild(buildType: $this->buildType);
         }
 
         if (! $this->compileAndroidPlugins()) {
