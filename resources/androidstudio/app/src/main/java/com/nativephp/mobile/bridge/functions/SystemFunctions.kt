@@ -1,10 +1,12 @@
 package com.nativephp.mobile.bridge.functions
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.UserManager
 import android.provider.Settings
 import android.util.Log
 import com.nativephp.mobile.bridge.BridgeError
@@ -76,6 +78,51 @@ object SystemFunctions {
             val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES
             return mapOf("appearance" to if (night) "dark" else "light")
+        }
+    }
+
+    /**
+     * Where this process is running and why it started — backs
+     * `Native\Mobile\Facades\ExecutionContext`. iOS twin:
+     * `Bridge/Functions/SystemFunctions.swift` (GetExecutionContext).
+     *
+     * Android's runtime is started by MainActivity, so the launch is always
+     * a foreground one and `headless` is always false — the shape iOS reports
+     * for a BGTaskScheduler cold launch has no Android equivalent. What does
+     * carry over is whether we are currently on screen (process importance)
+     * and whether protected storage is readable, which on Android is the
+     * direct-boot user-unlocked state.
+     *
+     * Returns the same keys as the iOS twin so PHP has one code path.
+     */
+    class GetExecutionContext(private val context: Context) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val info = ActivityManager.RunningAppProcessInfo()
+            ActivityManager.getMyMemoryState(info)
+
+            // FOREGROUND = a visible activity. FOREGROUND_SERVICE and lower
+            // importances mean the user is not looking at us.
+            val active = info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+            val foreground = info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
+
+            val unlocked = context.getSystemService(Context.USER_SERVICE)
+                ?.let { (it as UserManager).isUserUnlocked }
+                ?: true
+
+            return mapOf(
+                "launch" to "foreground",
+                "state" to when {
+                    active -> "active"
+                    foreground -> "inactive"
+                    else -> "background"
+                },
+                "foreground" to foreground,
+                "active" to active,
+                "has_become_active" to true,
+                "headless" to false,
+                "protected_data_available" to unlocked,
+                "interactive_boot_started" to true,
+            )
         }
     }
 }
