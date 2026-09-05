@@ -161,9 +161,32 @@ class NativeElementCollector
         return static::$streaming;
     }
 
-    public static function setCallbacks(CallbackRegistry $callbacks): void
+    /**
+     * Bind the registry callbacks register into. Nullable so a caller that
+     * swaps it for the length of a subtree (Asgard's `@server` regions) can
+     * put back exactly what it found, including "nothing bound yet".
+     */
+    public static function setCallbacks(?CallbackRegistry $callbacks): void
     {
         static::$callbacks = $callbacks;
+    }
+
+    /** The registry currently bound, so a caller can save and restore it. */
+    public static function callbacks(): ?CallbackRegistry
+    {
+        return static::$callbacks;
+    }
+
+    /**
+     * The container element the last open() pushed, so a caller can keep
+     * working on the node it just emitted. Null while streaming (nodes go
+     * straight to C, there is no Element) and null between elements.
+     */
+    public static function openElement(): ?Element
+    {
+        $top = end(static::$stack);
+
+        return $top instanceof Element ? $top : null;
     }
 
     // ── Child-component scopes ───────────────────────

@@ -614,6 +614,26 @@ class NativeServiceProvider extends PackageServiceProvider
                 }
             ?>";
         });
+
+        // Asgard regions (docs/ASGARD-PROTOCOL.md §3):
+        //
+        //     @server('sales-summary')
+        //         <x-skeleton-card />
+        //     @endserver
+        //
+        // open() emits the `server_region` node and returns whether the
+        // placeholder body should run — false means it already painted a
+        // fragment in its place. The body is guarded rather than always
+        // rendered because a fragment REPLACES the placeholder; rendering
+        // both and discarding one would run the placeholder's own Blade
+        // (and any component it mounts) for nothing.
+        Blade::directive('server', function ($expression) {
+            return "<?php if (\\Native\\Mobile\\Edge\\Asgard\\ServerRegion::open({$expression})): ?>";
+        });
+
+        Blade::directive('endserver', function () {
+            return '<?php endif; \\Native\\Mobile\\Edge\\Asgard\\ServerRegion::close(); ?>';
+        });
     }
 
     protected function registerFilesystems(): void
@@ -924,6 +944,11 @@ class NativeServiceProvider extends PackageServiceProvider
             // Gesture / interaction
             'gesture_area' => Elements\GestureArea::class,
             'refreshable' => Elements\Refreshable::class,
+
+            // Asgard regions — the container `@server(...)` opens. Registered
+            // as a core element so `<native:*>` resolution and fragment
+            // validation both see it; it is only ever emitted by the directive.
+            'server_region' => Elements\ServerRegion::class,
 
             // Canvas/shapes
             'canvas' => Elements\Canvas::class,

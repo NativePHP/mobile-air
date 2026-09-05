@@ -250,6 +250,14 @@ abstract class NativeComponent
         // state the next (recovered) frame still wants.
         $this->beginChildComponentFrame();
 
+        // Same idea for Asgard regions: the record of which regions are
+        // on screen belongs to one frame. Set here rather than off the
+        // collector's reset() because a screen can render without the
+        // collector at all (a programmatic Element tree), and such a
+        // screen must read as having no regions, not as still having the
+        // previous screen's.
+        Asgard\ServerRegion::beginFrame();
+
         $result = $this->render();
 
         $element = $result instanceof View
@@ -1566,6 +1574,7 @@ abstract class NativeComponent
         try {
             $t0 = microtime(true);
             $this->beginChildComponentFrame();
+            Asgard\ServerRegion::beginFrame();
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
             $this->endChildComponentFrame();
             $this->syncBladePolls(NativeElementCollector::takePollIntervals());
