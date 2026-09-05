@@ -9,7 +9,7 @@ use function Laravel\Prompts\select;
 
 trait WatchesIos
 {
-    use InteractsWithWatchTerminal, ManagesWatchman;
+    use HasHotReloadPort, InteractsWithWatchTerminal, ManagesWatchman;
 
     /**
      * UDID of the simulator or device being watched.
@@ -148,7 +148,7 @@ trait WatchesIos
 
     private function startIosWatchingDevice(string $target, string $appId): void
     {
-        // Start iproxy to forward port 9999 from the device to localhost over USB
+        // Start iproxy to forward the hot-reload port from the device to localhost over USB
         // This allows triggerIosReload() to reach the device's HotReloadServer
         if ($this->startIproxyForwarding($target)) {
             $this->info('USB port forwarding active - reload triggers will reach the device');
@@ -320,7 +320,9 @@ trait WatchesIos
         // Connect to the hot reload server to trigger a reload
         // For simulators this reaches the server directly (shared network)
         // For physical devices, iproxy forwards this to the device over USB
-        $socket = @fsockopen('127.0.0.1', 9999, $errno, $errstr, 1);
+        $port = $this->hotReloadPort();
+
+        $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
 
         if ($socket) {
             // Hold the connection open long enough for iproxy to forward
@@ -330,7 +332,7 @@ trait WatchesIos
         } else {
             // Transient rather than a scrollback line: the app being down is a
             // state, not an event, so repeating it once per save is just noise.
-            $this->watchActivity("reload failed — nothing listening on port 9999 ({$errstr})", 'yellow');
+            $this->watchActivity("reload failed — nothing listening on port {$port} ({$errstr})", 'yellow');
         }
     }
 
@@ -342,15 +344,16 @@ trait WatchesIos
             return false;
         }
 
-        // Kill any existing processes on port 9999
-        Process::run('lsof -ti:9999 | xargs kill 2>/dev/null');
+        // Kill any existing processes on the hot-reload port
+        $port = $this->hotReloadPort();
+        Process::run("lsof -ti:{$port} | xargs kill 2>/dev/null");
         usleep(500000);
 
         // Start iproxy in background for USB port forwarding
         // v2 syntax: iproxy -u UDID LOCAL_PORT:DEVICE_PORT
         $escapedTarget = escapeshellarg($target);
         $logFile = base_path('nativephp/iproxy.log');
-        exec("{$iproxyPath} -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!", $output);
+        exec("{$iproxyPath} -u {$escapedTarget} {$port}:{$port} > {$logFile} 2>&1 & echo \$!", $output);
         $pid = (int) ($output[0] ?? 0);
 
         if ($pid <= 0) {
@@ -365,7 +368,7 @@ trait WatchesIos
 
         // register_shutdown_function does NOT run when the watcher is stopped
         // with Ctrl-C (SIGINT) — the usual way — so iproxy would be orphaned
-        // and keep holding port 9999, breaking the next run's hot reload.
+        // and keep holding the hot-reload port, breaking the next run.
         // Install signal handlers that tear it down before exiting.
         if (function_exists('pcntl_async_signals')) {
             pcntl_async_signals(true);
@@ -509,8 +512,8 @@ trait WatchesIos
 
     private function killHotReloadServers(): void
     {
-        // Find processes listening on port 9999
-        $result = Process::run(['lsof', '-ti:9999']);
+        // Find processes listening on the hot-reload port
+        $result = Process::run(['lsof', '-ti:'.$this->hotReloadPort()]);
 
         if ($result->successful()) {
             $pids = array_filter(explode("\n", trim($result->output())));
