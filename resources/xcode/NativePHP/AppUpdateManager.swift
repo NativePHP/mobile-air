@@ -39,8 +39,12 @@ class AppUpdateManager {
             didExtract = true
         }
 
-        // Check for and apply any pending updates
-        if applyPendingUpdates() {
+        // DEBUG is the native:run payload. Always extract it (shouldUpdateFromBundle)
+        // and do not apply a leftover pending OTA on top — otherwise developers
+        // never see the PHP they just shipped. Versioned builds still apply pending.
+        if isDebugBundle() {
+            print("🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
+        } else if applyPendingUpdates() {
             didExtract = true
         }
 
@@ -215,8 +219,21 @@ class AppUpdateManager {
         print("📦 Installing app update from: \(zipPath)")
 
         let extractPath = updatesPath + "/extracted_" + UUID().uuidString
+        let envStashPath = updatesPath + "/.env.stash"
+        let currentEnvPath = appPath + "/.env"
 
         do {
+            // Stash the running .env so device-local values survive the payload replace.
+            // Restore it verbatim over the extracted .env; no key merge. Skip if none.
+            let hadEnv = FileManager.default.fileExists(atPath: currentEnvPath)
+            if hadEnv {
+                if FileManager.default.fileExists(atPath: envStashPath) {
+                    try FileManager.default.removeItem(atPath: envStashPath)
+                }
+                try FileManager.default.copyItem(atPath: currentEnvPath, toPath: envStashPath)
+                print("📦 Stashed existing .env before pending update")
+            }
+
             // Create extraction directory
             try FileManager.default.createDirectory(atPath: extractPath, withIntermediateDirectories: true)
 
@@ -228,6 +245,7 @@ class AppUpdateManager {
                 try FileManager.default.unzipItem(at: sourceURL, to: destinationURL)
             } catch {
                 print("❌ Failed to extract zip file: \(error)")
+                try? FileManager.default.removeItem(atPath: envStashPath)
                 return false
             }
 
@@ -235,6 +253,7 @@ class AppUpdateManager {
             guard isValidApp(at: extractPath) else {
                 print("❌ Invalid app structure in zip")
                 try? FileManager.default.removeItem(atPath: extractPath)
+                try? FileManager.default.removeItem(atPath: envStashPath)
                 return false
             }
 
@@ -245,6 +264,17 @@ class AppUpdateManager {
             // Move new app into place
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
 
+            // Restore the stashed .env over whatever the zip extracted
+            if hadEnv, FileManager.default.fileExists(atPath: envStashPath) {
+                let newEnvPath = appPath + "/.env"
+                if FileManager.default.fileExists(atPath: newEnvPath) {
+                    try FileManager.default.removeItem(atPath: newEnvPath)
+                }
+                try FileManager.default.copyItem(atPath: envStashPath, toPath: newEnvPath)
+                try? FileManager.default.removeItem(atPath: envStashPath)
+                print("📦 Restored stashed .env over extracted payload")
+            }
+
             // Create installed.version file for the new version
             createInstalledVersionFile()
 
@@ -254,6 +284,7 @@ class AppUpdateManager {
             // Cleanup
             try? FileManager.default.removeItem(atPath: extractPath)
             try? FileManager.default.removeItem(atPath: zipPath)
+            try? FileManager.default.removeItem(atPath: envStashPath)
 
             // Keep only the latest backup
             cleanupOldBackups()
@@ -266,6 +297,7 @@ class AppUpdateManager {
 
             // Cleanup on failure
             try? FileManager.default.removeItem(atPath: extractPath)
+            try? FileManager.default.removeItem(atPath: envStashPath)
             return false
         }
     }
@@ -285,7 +317,13 @@ class AppUpdateManager {
         let updateFiles = (try? FileManager.default.contentsOfDirectory(atPath: updatesPath)) ?? []
         let zipFiles = updateFiles.filter { $0.hasSuffix(".zip") }
 
-        for zipFile in zipFiles {
+        // Prefer a stable pending.zip (plugin download target) so leftover
+        // timestamped zips don't win. Still only apply one zip per boot.
+        let ordered = zipFiles.contains("pending.zip")
+            ? ["pending.zip"] + zipFiles.filter { $0 != "pending.zip" }
+            : zipFiles
+
+        for zipFile in ordered {
             let zipPath = updatesPath + "/" + zipFile
             if installUpdate(from: zipPath) {
                 // Only install one update at a time
@@ -404,9 +442,22 @@ class AppUpdateManager {
         return shouldUpdateWithVersion(bundledId)
     }
 
+    private func isDebugIdentity(_ id: String?) -> Bool {
+        guard let id else { return false }
+        return id.caseInsensitiveCompare("DEBUG") == .orderedSame
+    }
+
+    private func isDebugBundle() -> Bool {
+        if let fast = getBundledAppVersionFast(), isDebugIdentity(fast) {
+            return true
+        }
+        return isDebugIdentity(getBundledAppVersion())
+    }
+
     private func shouldUpdateWithVersion(_ bundledId: String) -> Bool {
-        // Special case: If bundled version is DEBUG, always update from bundle (for development)
-        if bundledId == "DEBUG" {
+        // DEBUG is what native:run ships. Always re-extract so developers see
+        // PHP changes without bumping a version (same as Android).
+        if isDebugIdentity(bundledId) {
             print("🚧 DEBUG version detected, updating from bundle")
             return true
         }
@@ -493,205 +544,10 @@ class AppUpdateManager {
         }
     }
 
-    // MARK: - OTA Updates (Bifrost API)
-
-    func checkForUpdates() {
-        // Skip OTA checks for DEBUG version
-        let currentVersion = getAppVersion() ?? "unknown"
-        if currentVersion == "DEBUG" {
-            print("🚧 DEBUG version detected, skipping OTA checks")
-            return
-        }
-
-        // Get BIFROST_APP_ID from Laravel environment
-        guard let bifrostAppId = getBifrostAppId() else {
-            print("🔍 No BIFROST_APP_ID configured, skipping OTA checks")
-            return
-        }
-
-        // Build Bifrost API URL
-        let urlString = "https://bifrost.nativephp.com/api/app/\(bifrostAppId)/ota?installed=\(currentVersion)"
-        guard let updateURL = URL(string: urlString) else {
-            print("❌ Invalid update URL: \(urlString)")
-            return
-        }
-
-        print("🔍 Checking for updates at: \(urlString)")
-
-        var request = URLRequest(url: updateURL)
-        request.timeoutInterval = 10.0 // 10 second timeout for check
-
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            if let error = error {
-                print("❌ Update check failed: \(error.localizedDescription)")
-                return
-            }
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let data = data else {
-                print("❌ Invalid update response")
-                return
-            }
-
-            // Parse Bifrost response
-            do {
-                if let updateInfo = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    let upToDate = updateInfo["upToDate"] as? Bool ?? true
-
-                    if !upToDate,
-                       let downloadURL = updateInfo["download_url"] as? String,
-                       let newVersion = updateInfo["current_version"] as? String {
-
-                        // Check if this is a compatible version update (patch/minor only)
-                        if self?.isCompatibleUpdate(from: currentVersion, to: newVersion) == true {
-                            print("🆕 Compatible update available: \(currentVersion) → \(newVersion)")
-                            self?.downloadUpdate(from: downloadURL, version: newVersion)
-                        } else {
-                            print("⚠️ Major version update detected (\(currentVersion) → \(newVersion)) - requires app store update")
-                        }
-                    } else {
-                        print("📱 App is up to date")
-                    }
-                }
-            } catch {
-                print("❌ Failed to parse update info: \(error)")
-            }
-        }
-
-        task.resume()
-    }
-
-    private func isCompatibleUpdate(from currentVersion: String, to newVersion: String) -> Bool {
-        // Parse semver versions
-        let currentSemver = parseSemver(currentVersion)
-        let newSemver = parseSemver(newVersion)
-
-        guard let current = currentSemver, let new = newSemver else {
-            print("⚠️ Unable to parse semver versions: \(currentVersion) → \(newVersion)")
-            // If we can't parse versions, allow the update (fallback behavior)
-            return true
-        }
-
-        // Only allow patch and minor version updates (same major version)
-        if new.major != current.major {
-            print("❌ Major version change detected: \(current.major) → \(new.major)")
-            return false
-        }
-
-        // Allow minor and patch updates
-        if new.minor > current.minor || (new.minor == current.minor && new.patch > current.patch) {
-            print("✅ Compatible update: \(currentVersion) → \(newVersion)")
-            return true
-        }
-
-        // Don't allow downgrades
-        print("⚠️ Version downgrade or same version: \(currentVersion) → \(newVersion)")
-        return false
-    }
-
-    private func parseSemver(_ version: String) -> (major: Int, minor: Int, patch: Int)? {
-        // Remove 'v' prefix if present
-        let cleanVersion = version.hasPrefix("v") ? String(version.dropFirst()) : version
-
-        // Split by dots and parse
-        let parts = cleanVersion.components(separatedBy: ".")
-
-        // Handle different semver formats
-        if parts.count >= 3 {
-            // Full semver: 1.2.3
-            guard let major = Int(parts[0]),
-                  let minor = Int(parts[1]),
-                  let patch = Int(parts[2]) else {
-                return nil
-            }
-            return (major, minor, patch)
-        } else if parts.count == 2 {
-            // Missing patch: 1.2 -> 1.2.0
-            guard let major = Int(parts[0]),
-                  let minor = Int(parts[1]) else {
-                return nil
-            }
-            return (major, minor, 0)
-        } else if parts.count == 1 {
-            // Only major: 1 -> 1.0.0
-            guard let major = Int(parts[0]) else {
-                return nil
-            }
-            return (major, 0, 0)
-        }
-
-        return nil
-    }
-
-    private func getBifrostAppId() -> String? {
-        // Read BIFROST_APP_ID from Info.plist
-        return Bundle.main.object(forInfoDictionaryKey: "BIFROST_APP_ID") as? String
-    }
-
-    private func downloadUpdate(from urlString: String, version: String) {
-        guard let url = URL(string: urlString) else {
-            print("❌ Invalid download URL: \(urlString)")
-            return
-        }
-
-        print("⬇️ Downloading update \(version) from: \(urlString)")
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 30.0 // 30 second timeout for download
-
-        let task = URLSession.shared.downloadTask(with: request) { [weak self] tempURL, response, error in
-            if let error = error {
-                print("❌ Download failed: \(error.localizedDescription)")
-                return
-            }
-
-            guard let tempURL = tempURL else {
-                print("❌ No download file received")
-                return
-            }
-
-            // Move downloaded file to updates directory
-            let filename = "update_\(version)_\(Int(Date().timeIntervalSince1970)).zip"
-            let finalPath = (self?.updatesPath ?? "") + "/" + filename
-
-            do {
-                if FileManager.default.fileExists(atPath: finalPath) {
-                    try FileManager.default.removeItem(atPath: finalPath)
-                }
-                try FileManager.default.moveItem(at: tempURL, to: URL(fileURLWithPath: finalPath))
-
-                print("✅ Update downloaded: \(filename)")
-
-                // Automatically install the update
-                DispatchQueue.main.async {
-                    if self?.installUpdate(from: finalPath) == true {
-                        self?.notifyUpdateInstalled(version: version)
-                    }
-                }
-
-            } catch {
-                print("❌ Failed to save downloaded update: \(error)")
-            }
-        }
-
-        task.resume()
-    }
-
-    private func notifyUpdateInstalled(version: String) {
-        // Notify the Laravel app that an update was installed
-        LaravelBridge.shared.send?(
-            "Native\\Mobile\\Events\\App\\UpdateInstalled",
-            ["version": version, "timestamp": Int(Date().timeIntervalSince1970)]
-        )
-
-        // Optionally show a toast or reload the WebView
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            NotificationCenter.default.post(name: .reloadWebViewNotification, object: nil)
-        }
-    }
-
     // MARK: - Fast Version Checking
+    //
+    // OTA check/download lives in the mobile-ota plugin. Core only applies
+    // pending zips from Documents/updates on boot via applyPendingUpdates().
 
     private func getBundledAppVersionFast() -> String? {
         guard let bundlePath = Bundle.main.path(forResource: "bundled", ofType: "version") else {
