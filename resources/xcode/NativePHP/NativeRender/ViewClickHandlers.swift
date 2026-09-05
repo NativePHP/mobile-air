@@ -84,7 +84,9 @@ private struct ClickHandlerModifier: ViewModifier {
             let nodeId = node.id
             view = AnyView(
                 view.onTapGesture(count: 2) {
-                    NativeUIBridge.sendPressEvent(doubleTapId, nodeId: nodeId)
+                    KeyboardFocusPolicy.dispatchPress {
+                        NativeUIBridge.sendPressEvent(doubleTapId, nodeId: nodeId)
+                    }
                 }
             )
         }
@@ -94,7 +96,9 @@ private struct ClickHandlerModifier: ViewModifier {
             let nodeId = node.id
             view = AnyView(
                 view.onTapGesture {
-                    NativeUIBridge.sendPressEvent(cbId, nodeId: nodeId)
+                    KeyboardFocusPolicy.dispatchPress {
+                        NativeUIBridge.sendPressEvent(cbId, nodeId: nodeId)
+                    }
                 }
             )
         }
@@ -104,7 +108,9 @@ private struct ClickHandlerModifier: ViewModifier {
             let nodeId = node.id
             view = AnyView(
                 view.onLongPressGesture(minimumDuration: 0.5) {
-                    NativeUIBridge.sendLongPressEvent(cbId, nodeId: nodeId)
+                    KeyboardFocusPolicy.dispatchPress {
+                        NativeUIBridge.sendLongPressEvent(cbId, nodeId: nodeId)
+                    }
                 }
             )
         }

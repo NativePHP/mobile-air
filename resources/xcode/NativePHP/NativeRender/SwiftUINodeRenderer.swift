@@ -103,6 +103,51 @@ struct NativeTreeRenderer: View {
 
 // MARK: - Tap-to-dismiss Keyboard
 
+/// Focus policy shared between the text-input renderers, which know
+/// whether the focused field opted into `keep-focus-on-submit`, and
+/// the gesture layer, which decides whether a tap on an interactive
+/// element should also dismiss the keyboard (mobile-air #335).
+enum KeyboardFocusPolicy {
+    /// Set by the input renderers on every focus change, cleared on blur.
+    static var focusedFieldKeepsFocus = false
+
+    /// True while any text field holds focus, so press dispatch knows
+    /// a pending autocorrection or debounced change might be in play.
+    static var focusedFieldActive = false
+
+    /// Registered by the focused input; flushes its undispatched text
+    /// change so PHP sees the field's latest value before a press.
+    static var flushFocusedField: (() -> Void)?
+
+    /// Dispatch a press event with focus handling around it: flush the
+    /// focused field's pending change, resign unless the field keeps
+    /// focus, and defer the press one runloop turn while focused so
+    /// a tap-committed autocorrection's change event lands in PHP
+    /// before the press does (mobile-air #335).
+    static func dispatchPress(_ send: @escaping () -> Void) {
+        flushFocusedField?()
+
+        if !focusedFieldKeepsFocus {
+            resignKeyboard()
+        }
+
+        if focusedFieldActive {
+            DispatchQueue.main.async(execute: send)
+        } else {
+            send()
+        }
+    }
+
+    static func resignKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+    }
+}
+
 extension View {
     /// Dismiss the keyboard when the user taps anywhere in this subtree.
     ///
@@ -120,20 +165,20 @@ extension View {
     /// also the correct scope — a tap on the tab bar or a toolbar button is
     /// that control's business, not a dismiss.
     ///
-    /// `simultaneousGesture` rather than `onTapGesture` so it runs ALONGSIDE
-    /// whatever it lands on: buttons, pressables and list rows underneath keep
-    /// receiving their own taps instead of having them swallowed.
+    /// A regular gesture rather than `simultaneousGesture`, so a child's own
+    /// tap wins and this only fires for taps nothing else claimed: the
+    /// plain-area tap-away path. Interactive elements dismiss through
+    /// `KeyboardFocusPolicy.dismissForInteractiveTap()` in their own
+    /// handlers, which is what lets `keep-focus-on-submit` exempt
+    /// them (mobile-air #335). The `contentShape` keeps empty
+    /// regions of the screen hit-testable for the gesture.
     func dismissesKeyboardOnTap() -> some View {
-        simultaneousGesture(
-            TapGesture().onEnded {
-                UIApplication.shared.sendAction(
-                    #selector(UIResponder.resignFirstResponder),
-                    to: nil,
-                    from: nil,
-                    for: nil
-                )
-            }
-        )
+        contentShape(Rectangle())
+            .gesture(
+                TapGesture().onEnded {
+                    KeyboardFocusPolicy.resignKeyboard()
+                }
+            )
     }
 }
 
@@ -325,7 +370,9 @@ private struct DoubleTapModifier: ViewModifier {
             content.onTapGesture(count: 2) {
                 // Reuses the Press event type — the callback id alone routes
                 // to the @doubleTap handler, and Press dispatch passes no args.
-                NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content
@@ -340,7 +387,9 @@ private struct TapModifier: ViewModifier {
     func body(content: Content) -> some View {
         if callbackId != 0 {
             content.onTapGesture {
-                NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content
@@ -355,7 +404,9 @@ private struct LongPressModifier: ViewModifier {
     func body(content: Content) -> some View {
         if callbackId != 0 {
             content.onLongPressGesture(minimumDuration: 0.5) {
-                NativeElementBridge.sendLongPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendLongPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content
