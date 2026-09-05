@@ -765,6 +765,14 @@ JNIEXPORT jint JNICALL native_set_env(JNIEnv *env, jobject thiz,
     return result;
 }
 
+JNIEXPORT void JNICALL native_unset_env(JNIEnv *env, jobject thiz, jstring name) {
+    const char *nameStr = (*env)->GetStringUTFChars(env, name, NULL);
+
+    unsetenv(nameStr);
+
+    (*env)->ReleaseStringUTFChars(env, name, nameStr);
+}
+
 JNIEXPORT void JNICALL native_set_request_info(JNIEnv *env, jobject thiz,
                                                      jstring method, jstring uri,
                                                      jstring post_data) {
@@ -1646,6 +1654,7 @@ static JNINativeMethod gMethods[] = {
 
         // LaravelEnvironment
         {"nativeSetEnv", "(Ljava/lang/String;Ljava/lang/String;I)I", (void *) native_set_env},
+        {"nativeUnsetEnv", "(Ljava/lang/String;)V", (void *) native_unset_env},
         {"nativeHandleRequest","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request},
         // Legacy name for compat
         {"nativeHandleRequestOnce","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request},
