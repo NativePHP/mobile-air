@@ -377,7 +377,11 @@ class NativeServiceProvider extends PackageServiceProvider
                     }
                 }
 
-                $exitUri = $router->start($componentClass, $params, $path);
+                // A cold deep link arrives as a real request, so its query
+                // parameters are on it rather than in the URI the router sees
+                // ($path is already stripped). Hand them to the launch screen as
+                // navigation data — the same place a warm deep link puts them.
+                $exitUri = $router->start($componentClass, $params, $path, request()->query->all());
 
                 if ($exitUri !== null) {
                     return redirect($exitUri);
