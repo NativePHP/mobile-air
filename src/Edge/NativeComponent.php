@@ -30,6 +30,7 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\System;
 use Symfony\Component\VarDumper\Cloner\VarCloner;
 use Symfony\Component\VarDumper\Dumper\CliDumper;
 use Symfony\Component\VarDumper\VarDumper;
@@ -2217,13 +2218,8 @@ abstract class NativeComponent
         // Claim this runloop as the current native session; the check at the top
         // of the loop makes any older, superseded runloop bail out so exactly one
         // ever drives the device.
-        //
-        // Gate on JUMP_BRIDGE_PORT (set only by `native:jump`). NOT on
-        // `function_exists('nativephp_call')` — in Jump mode the PHP fallback
-        // DEFINES that function, so it exists on both device and dev server and
-        // would gate this off everywhere.
         $jumpSessionToken = null;
-        if (getenv('JUMP_BRIDGE_PORT') !== false) {
+        if (System::runningInJump()) {
             $jumpSessionToken = $this->claimJumpSession();
         }
 
