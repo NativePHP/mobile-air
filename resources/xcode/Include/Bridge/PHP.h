@@ -39,6 +39,13 @@ const char *ephemeral_php_artisan(const char *command);
 void ephemeral_php_shutdown(void);
 int  ephemeral_php_is_booted(void);
 
+// Async Task Lane — a pool of TSRM contexts for immediate background work
+// (AsyncTask::dispatch()). Each slot is one worker thread with its own booted
+// context; Swift's AsyncTaskExecutor pins each slot handle to a serial queue.
+int  async_php_boot(const char *bootstrapPath);           // → slot handle ≥ 0, or negative error
+const char *async_php_run(int handle, const char *taskId); // run native:async:run --id=<taskId> on this slot
+void async_php_stop(int handle);
+
 // Webview PHP Runtimes — one dedicated thread + TSRM context per embedded
 // php-mode webview. The persistent lane is parked inside a native screen's
 // event-loop dispatch, so it can never answer php:// requests from an

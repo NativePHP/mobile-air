@@ -7,6 +7,7 @@ use Illuminate\Support\Str;
 use Illuminate\View\Engines\CompilerEngine;
 use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
+use Native\Mobile\AsyncTask;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
 use Native\Mobile\Attributes\Locked;
@@ -26,9 +27,14 @@ use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
 use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
 use Native\Mobile\Edge\Layouts\NativeLayout;
+use Native\Mobile\Events\Async\AsyncTaskFailed;
+use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
+use Native\Mobile\Exceptions\AsyncTaskException;
 use Native\Mobile\JumpBridge;
+use Native\Mobile\PendingAsyncTask;
 use Native\Mobile\Platform;
+use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\NativeCallbacks;
 use Symfony\Component\VarDumper\Cloner\VarCloner;
 use Symfony\Component\VarDumper\Dumper\CliDumper;
@@ -50,6 +56,20 @@ abstract class NativeComponent
     const EVENT_NATIVE = 20;
 
     private static bool $dumpHandlerRegistered = false;
+
+    /**
+     * The component currently driving the runloop (rendering or handling an
+     * event). Async tasks capture this at dispatch time so a completion arriving
+     * after the user has navigated away can be dropped instead of firing against
+     * the wrong live component. Only ever one component runs at a time.
+     *
+     * Held WEAKLY, and restored to its previous value when a runloop exits: a
+     * strong static would keep the last screen a user ever visited — and its
+     * whole state graph — alive for the life of the process.
+     *
+     * @var \WeakReference<self>|null
+     */
+    private static ?\WeakReference $nativeActiveComponent = null;
 
     private ?NativeDumpException $dumpException = null;
 
@@ -1757,6 +1777,16 @@ abstract class NativeComponent
             return;
         }
 
+        // Async task completion (AsyncTask::dispatch()->finished()/failed()).
+        // Handled before the generic callback path because it carries its own
+        // screen-scoping and shared-alias delivery policy.
+        $asyncClass = str_starts_with($eventName, 'native:') ? substr($eventName, 7) : $eventName;
+        if ($asyncClass === AsyncTaskFinished::class || $asyncClass === AsyncTaskFailed::class) {
+            $this->handleAsyncCompletion($asyncClass, is_array($payload) ? $payload : []);
+
+            return;
+        }
+
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
@@ -1942,6 +1972,87 @@ abstract class NativeComponent
     }
 
     /**
+     * Handle an async task completion (finished or failed).
+     *
+     * Delivery policy:
+     *   - shared('alias')  → re-dispatch as the named event so any active
+     *     component's #[On('alias')] / ->on('alias') handles it, no matter which
+     *     screen is showing. No origin-screen check.
+     *   - otherwise (scoped) → DROP if the screen that dispatched the task is no
+     *     longer topmost (firing a component-bound callback against the wrong
+     *     live component is a footgun). Else run the finished()/failed() callback,
+     *     rebound to this live component, with the raw result / an
+     *     AsyncTaskException.
+     */
+    private function handleAsyncCompletion(string $eventClass, array $payload): void
+    {
+        $id = $payload['id'] ?? null;
+        if (! is_string($id) || $id === '') {
+            return;
+        }
+
+        $failed = $eventClass === AsyncTaskFailed::class;
+        $scope = AsyncTaskRegistry::scope($id);
+
+        // Shared: deliver as a named event to whatever component is active.
+        if ($scope !== null && $scope['shared'] !== null) {
+            $status = $failed ? 'failed' : 'finished';
+            $this->dispatchNativeEvent([
+                'event' => $scope['shared'],
+                'payload' => $payload + ['status' => $status],
+            ]);
+            AsyncTaskRegistry::forget($id);
+            NativeCallbacks::forget($id);
+
+            return;
+        }
+
+        // Scoped: drop if the originating screen has been left. The weak
+        // reference reads back as null once that component has been freed, which
+        // is never === $this — so a recycled object id can't smuggle a callback
+        // onto an unrelated screen that happens to sit at the same address.
+        if ($scope !== null && $scope['origin'] !== null && $scope['origin']->get() !== $this) {
+            NativeRouter::debugLog("async {$id}: dropped completion — origin screen no longer topmost");
+            AsyncTaskRegistry::forget($id);
+            NativeCallbacks::forget($id);
+
+            return;
+        }
+
+        $callback = NativeCallbacks::resolve($id, $eventClass);
+
+        try {
+            if ($callback === null) {
+                return;
+            }
+
+            if (is_string($callback) && class_exists($callback)) {
+                $callback = app($callback);
+            }
+
+            // Bind the closure to this live component so finished()/failed() can
+            // mutate state via $this. Static closures run without $this.
+            if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
+                $callback = \Closure::bind($callback, $this, static::class);
+            }
+
+            if ($failed) {
+                $callback(new AsyncTaskException(
+                    (string) ($payload['message'] ?? 'Async task failed.'),
+                    (string) ($payload['exceptionClass'] ?? 'Exception'),
+                    $payload['trace'] ?? null,
+                ));
+            } else {
+                $callback($payload['result'] ?? null);
+            }
+        } finally {
+            // One outcome per task — drop the finished/failed sibling too.
+            NativeCallbacks::forget($id);
+            AsyncTaskRegistry::forget($id);
+        }
+    }
+
+    /**
      * Build an event object from a native payload, binding constructor
      * parameters by name and tolerating extra/missing keys.
      */
@@ -1967,6 +2078,63 @@ abstract class NativeComponent
         }
 
         return new $eventClass(...$args);
+    }
+
+    /**
+     * The component currently driving the runloop, or null when none is active
+     * (or the last active one has since been freed). Used by
+     * {@see PendingAsyncTask} to scope async completion callbacks to the screen
+     * that dispatched them.
+     */
+    public static function active(): ?self
+    {
+        return self::$nativeActiveComponent?->get();
+    }
+
+    /**
+     * Mark this component as the one driving the runloop, returning whatever was
+     * active before so a nested runloop can hand the baton back on the way out.
+     *
+     * @internal Public only so {@see NativeRouter} can cover the mount() it runs
+     *           before handing over to runLoop() — a task dispatched from mount()
+     *           must scope to the screen being mounted, not the one it replaced.
+     *
+     * @return \WeakReference<self>|null
+     */
+    public static function markActive(self $component): ?\WeakReference
+    {
+        $previous = self::$nativeActiveComponent;
+        self::$nativeActiveComponent = \WeakReference::create($component);
+
+        return $previous;
+    }
+
+    /**
+     * @internal Pairs with {@see markActive()}.
+     *
+     * @param  \WeakReference<self>|null  $previous
+     */
+    public static function restoreActive(?\WeakReference $previous): void
+    {
+        self::$nativeActiveComponent = $previous;
+    }
+
+    /**
+     * Dispatch background work on a separate PHP thread and handle the result
+     * back on this component — sugar for {@see AsyncTask::dispatch()} that reads
+     * naturally inside a handler:
+     *
+     *     $this->async(static fn () => ExpensiveReport::build()->toArray())
+     *         ->finished(fn ($result) => $this->report = $result);
+     *
+     * The work MUST be a static closure — it runs in another interpreter and
+     * cannot capture `$this`. Mutate state from `->finished()`/`->failed()`.
+     * `->failed()` also covers a task that never started or outran its timeout,
+     * so a spinner started here always has something to switch it off.
+     */
+    protected function async(\Closure $work): PendingAsyncTask
+    {
+        return AsyncTask::dispatch($work);
     }
 
     public function mount(): void
@@ -2082,6 +2250,13 @@ abstract class NativeComponent
         // (potentially slow) mount() so the first frame is instant.
         $this->publishPlaceholder();
 
+        // Before mount(), not after: "start loading when the screen opens" is
+        // the canonical async dispatch, and it happens IN mount(). Marking
+        // active afterwards would scope that task to the previous screen, so
+        // its completion — and its timeout failure, dropped by the same
+        // origin check — would never reach the screen that asked for it.
+        $previousActiveComponent = self::markActive($this);
+
         try {
             $this->mount();
         } catch (NativeDumpException $e) {
@@ -2092,6 +2267,7 @@ abstract class NativeComponent
         }
 
         while ($this->nativeRunning) {
+            self::markActive($this);
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2185,6 +2361,10 @@ abstract class NativeComponent
             }
         }
 
+        // Hand the baton back: this screen is done driving the runloop, so it
+        // must stop being what a later AsyncTask::dispatch() scopes itself to.
+        self::restoreActive($previousActiveComponent);
+
         $this->unmount();
 
         nativephp_element_shutdown();
@@ -2253,6 +2433,8 @@ abstract class NativeComponent
             $this->registerNativeEventListeners();
         }
 
+        $previousActiveComponent = self::markActive($this);
+
         while ($this->nativeRunning) {
             // Superseded by a newer Jump native session — this runloop is an
             // orphan (its WebView is gone). The device-side bridge wakes us from
@@ -2268,6 +2450,7 @@ abstract class NativeComponent
                 break;
             }
 
+            self::markActive($this);
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2399,6 +2582,10 @@ abstract class NativeComponent
                 $this->dispatch($event);
             }
         }
+
+        // Hand the baton back to whatever was driving before this hot-swapped
+        // loop took over, so a later dispatch scopes to the right screen.
+        self::restoreActive($previousActiveComponent);
     }
 
     public function getNavigationIntent(): ?NavigationIntent
