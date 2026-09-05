@@ -358,7 +358,8 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -453,7 +454,8 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -757,6 +759,33 @@ class NativeElementCollector
         }
         if (isset($attrs['press-translate-y'])) {
             $props['press-translate-y'] = (float) $attrs['press-translate-y'];
+        }
+
+        return $props;
+    }
+
+    /**
+     * Shared-element identity + motion props for the builtin streaming path.
+     *
+     * `ref` is the public identity (test handle AND morph id). Morph shape/timing
+     * ride alongside it. The Element-tree path already applies these via
+     * applyCallbacks/applyStyle; streaming builtins used to drop them.
+     */
+    public static function buildHeroProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['ref']) && $attrs['ref'] !== '') {
+            $props['ref'] = (string) $attrs['ref'];
+        }
+        if (isset($attrs['morph'])) {
+            $props['morph'] = (string) $attrs['morph'];
+        }
+        if (isset($attrs['morph-duration'])) {
+            $props['morph_duration'] = (float) $attrs['morph-duration'];
+        }
+        if (isset($attrs['morph-easing'])) {
+            $props['morph_easing'] = (string) $attrs['morph-easing'];
         }
 
         return $props;
@@ -1532,6 +1561,32 @@ class NativeElementCollector
         // auto-scrolls on new content when the user is already near the bottom.
         if (isset($attrs['scroll-anchor'])) {
             $element->setProp('scroll_anchor', (string) $attrs['scroll-anchor']);
+        }
+        // Shared-element motion controls. The element's IDENTITY is its
+        // `ref` (applied generically in applyCallbacks → Element::ref), so
+        // these only shape HOW a matched pair travels.
+        //
+        // Here rather than in `buildAnimationProps()` because that helper only
+        // runs on the builtin path, which would leave plugin elements
+        // (`<image>`, `<text>`) unable to be tuned.
+        //
+        //   morph          — frame (default: travel + resize) | position
+        //                    (travel, keep own size) | size (resize in place)
+        //                    | none (opt out; keeps `ref` as a plain handle)
+        //   morph-duration — ms; overrides the shared view-transition pace
+        //   morph-easing   — linear | ease-in | ease-out | ease-in-out | spring
+        //
+        // Deliberately distinct from `animate-duration` / `animate-easing`,
+        // which drive state-change transforms: an element may want a 200ms
+        // press response and a 600ms morph.
+        if (isset($attrs['morph'])) {
+            $element->setProp('morph', (string) $attrs['morph']);
+        }
+        if (isset($attrs['morph-duration'])) {
+            $element->setProp('morph_duration', (float) $attrs['morph-duration']);
+        }
+        if (isset($attrs['morph-easing'])) {
+            $element->setProp('morph_easing', (string) $attrs['morph-easing']);
         }
     }
 

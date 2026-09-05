@@ -71,6 +71,35 @@ struct ScreenExitModifier: ViewModifier {
 /// what actually drives `.move`, so it must be computed per staged
 /// transition rather than hardcoded. Effects with scoped animations
 /// (`ScreenExitModifier`'s recede, `value: isExiting`) are unaffected.
+/// The single animation shared by a `view_transition` swap: the screen
+/// cross-fade, and the `matchedGeometryEffect` source flip that drives the
+/// shared-element morph (`NodeHeroModifier`).
+///
+/// Deliberately ONE constant used by both. The morph and the cross-fade
+/// beneath it have to finish together — if the screens settle first the hero
+/// is left flying over a static background, and if the hero settles first it
+/// sits at its destination while the old screen is still visibly fading.
+let nativeViewTransitionAnimation: Animation = .easeInOut(duration: 0.35)
+
+/// The one string→`Animation` table for the whole renderer.
+///
+/// This mapping was independently duplicated in `NodeAnimationModifier` and
+/// `NodeContentTransitionModifier`; the shared-element morph would have made a
+/// third copy, so it lives here instead and those two call in. Vocabulary is
+/// the existing one PHP already emits for `animate-easing`, so nothing new has
+/// to be learned to tune a morph.
+func nativeEasedAnimation(_ easing: String, durationMs: Double) -> Animation {
+    let duration = durationMs / 1000.0
+    switch easing {
+    case "linear":      return .linear(duration: duration)
+    case "ease-in":     return .easeIn(duration: duration)
+    case "ease-out":    return .easeOut(duration: duration)
+    case "ease-in-out": return .easeInOut(duration: duration)
+    case "spring":      return .spring(duration: duration)
+    default:            return .easeInOut(duration: duration)
+    }
+}
+
 func nativeScreenSwapAnimation(for type: String?) -> Animation {
     switch type {
     case "parallax_push":
@@ -79,6 +108,8 @@ func nativeScreenSwapAnimation(for type: String?) -> Animation {
         return .easeInOut(duration: 0.40).delay(0.10)
     case "none":
         return .linear(duration: 0)
+    case "view_transition":
+        return nativeViewTransitionAnimation
     case "fade", "fade_from_bottom", "scale_from_center":
         return .easeInOut(duration: 0.3)
     default:
@@ -168,6 +199,15 @@ func nativeScreenTransition(for type: String?) -> AnyTransition {
             removal:   .identity
         )
         .animation(.easeInOut(duration: 0.55).delay(0.15))
+    case "view_transition":
+        // Shared-element swap. The screens themselves only cross-fade — the
+        // motion the user reads comes from the elements morphing across
+        // (`NodeHeroModifier`), and a directional slide underneath would
+        // fight it. Same held-outgoing/`.identity`-removal shape as `fade`,
+        // so the old screen stays opaque beneath for the whole window and
+        // the morphing element never flies over a bare background.
+        return .asymmetric(insertion: .opacity, removal: .identity)
+            .animation(nativeViewTransitionAnimation)
     case "none":
         // Instant cut. The incoming screen renders fully opaque on the same
         // frame (zIndexed above), so nothing flashes.
