@@ -296,6 +296,12 @@ class TailwindParser
             $result = array_merge($result, $parsed);
         }
 
+        // Apply a theme border's implied width only where no class set one explicitly.
+        if (isset($result['borderWidthDefault'])) {
+            $result['borderWidth'] ??= $result['borderWidthDefault'];
+            unset($result['borderWidthDefault']);
+        }
+
         self::$cache[$classString] = $result;
         self::$unsupportedCache[$classString] = array_keys($unsupported);
         self::recordUnsupported(self::$unsupportedCache[$classString]);
@@ -1136,7 +1142,12 @@ class TailwindParser
             return null;
         }
         $dark = self::resolveThemeToken($token, true);
-        $out = ['borderColor' => $light, 'borderWidth' => 1];
+        // borderWidthDefault, not borderWidth: a theme border needs *a* width to be
+        // visible at all, but must not overrule an explicit one. Asserting
+        // borderWidth here made `border-2 border-theme-outline` render 1px, while the
+        // reverse order rendered 2px — an order dependence with no visible cause.
+        // parse() resolves this key at the end, so the outcome is order-independent.
+        $out = ['borderColor' => $light, 'borderWidthDefault' => 1];
         if ($dark !== null && $dark !== $light) {
             $out['dark'] = ['borderColor' => $dark];
         }
