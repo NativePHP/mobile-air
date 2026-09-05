@@ -62,7 +62,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : FragmentActivity(), WebViewProvider {
+class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.WebEventSink {
     // Native-first boot: no WebView exists until a web response actually
     // needs painting. Compose state so MainScreen recomposes and attaches
     // the WebView the moment a renderer is lazily created.
@@ -123,6 +123,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+
+        // Claim the web delivery arm for device events (see onNativeEvent).
+        NativeElementBridge.installWebEventSink(this)
 
         // Seed the appearance tracker so a later config change (e.g. rotation)
         // only emits AppearanceChanged when the theme genuinely differs.
@@ -792,6 +795,22 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     override fun getWebViewOrNull(): WebView? = webRenderer?.webView
+
+    /**
+     * Web delivery arm for device events (NativeElementBridge.WebEventSink).
+     * While an EDGE screen owns the UI its runloop already drains the queue,
+     * and injecting into the page behind it would deliver the same event a
+     * second time when that page returns. Skips when no WebView exists yet.
+     */
+    override fun onNativeEvent(eventName: String, payloadJson: String) {
+        runOnUiThread {
+            if (NativeUIBridge.isActive.value) return@runOnUiThread
+
+            webRenderer?.webView?.let {
+                NativeActionCoordinator.dispatchToWebView(it, eventName, payloadJson)
+            }
+        }
+    }
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
