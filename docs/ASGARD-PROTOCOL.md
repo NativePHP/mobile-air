@@ -266,19 +266,72 @@ version drift.
 `accepts` in the handshake exists so a future encoding can be added without a
 breaking change. v1 defines one: `tree/json`.
 
-### 9.1 The client owns its own identifiers
+### 9.1 Node shape
 
-A server returns **no node ids and no callback ids**.
+```jsonc
+{
+  "type": "column",           // required, an element type name
+  "key": "total",             // optional, stable identity among siblings
+  "props": { "text": "42" },  // optional, see 9.4
+  "class": "p-4 gap-2",       // optional, Tailwind, resolved client-side
+  "on_press": "select('a')",  // optional callback expressions, see 9.3
+  "children": [ /* nodes */ ]
+}
+```
 
-Node ids on the device are a hash of a key path; callback ids are a hash of a
-scope plus an expression string. Both are namespaced to where they sit in the
-client's tree. A server has no way to know that namespace, and requiring it to
-would leak the client's internals into the protocol and make third-party
-servers hard to write.
+### 9.2 The client owns its identifiers, in two separate namespaces
 
-Instead the server returns relative keys and callback **expressions**. The
-client prefixes keys with the region's path and derives ids in its own scope
-when it encodes. The server never needs to know how ids are computed.
+A server returns **no node ids and no callback ids**. These are not one
+mechanism and getting only the first right leaves fragment callbacks colliding
+with the screen's own.
+
+- **Node ids** are a hash of a **key path**. The region node is keyed with its
+  region name, so a fragment key `total` lands at `/sales-summary/total`. The
+  existing parent-to-child path derivation does this on its own; a fragment
+  needs no id arithmetic.
+- **Callback ids** are a hash of a **registry scope** plus an expression
+  string. A fragment's callbacks register into their own scope
+  (`server:<region>`), pinned on the region node so the whole subtree inherits
+  it.
+
+A server sends relative keys and callback **expressions**, never ids. It never
+needs to know how either is computed.
+
+Placeholder callbacks stay in the screen's own scope. The placeholder is the
+client's markup, and a server-scoped id on it would silently fail to dispatch.
+
+### 9.3 What a fragment may not contain
+
+A fragment describes a subtree inside a region. It is not a screen.
+
+- **No screen chrome.** `top_bar`, `bottom_nav`, `bottom_bar`, `fab` and the
+  root stack/tabs elements are rejected. A region is a subtree; chrome belongs
+  to the screen that owns it.
+- **No nested `server_region`.** Regions are declared by the client, in client
+  markup. A server cannot create one.
+- **No compiler-internal prop keys.** `props` is a free-form bag authored by a
+  server, and the collector's attribute vocabulary includes spellings that are
+  not presentational: `_press` selects which method a press dispatches,
+  `_navigate` moves the app, `native-key` sets identity. A server writing
+  `_press` into `props` would choose which **client** method runs and walk
+  straight around the `#[NativeAction]` rule in §10.
+
+  Keys beginning `_`, `native-` or `native:` are stripped from `props` before
+  it reaches the collector. This is the fragment-side equivalent of the
+  hydration allowlist in §5.1, and for the same reason: the payload is
+  genuinely server-authored and the client must not let it reach into
+  machinery that isn't presentational.
+
+### 9.4 Fragments the client cannot render
+
+A fragment may name an element type this build does not have: a plugin the app
+never installed, or a type from a newer client. The natural implementation
+throws mid-render and takes the whole screen down, which is the opposite of
+what §3 promises.
+
+A fragment is therefore **validated before it is stored**, not during render.
+One that fails validation is rejected whole and the region keeps its
+placeholder, exactly as if the request had failed.
 
 ## 10. Events
 
@@ -319,7 +372,20 @@ one version per build; servers may support several.
    screens shown before sign-in.
 3. Fragment caching. Regions that do not depend on client state could be cached
    and shared, but nothing here defines a cache key yet.
-4. What happens when a region's fragment wants to navigate. Navigation is
-   screen-level and a region is a subtree.
+4. Navigation from inside a fragment. §9.3 forbids a server writing
+   `_navigate`, which settles the security question but not the product one:
+   there is currently no sanctioned way for a server-rendered element to move
+   the app, and there probably should be.
 5. Offline queueing of events fired against a fragment that is no longer
    current.
+6. `server_region` has no native renderer on iOS or Android. A region is
+   visible in the tree the client builds but will not paint on a device until
+   either platform learns the type as a plain container, or the element
+   serialises as a `column`.
+
+## 13. Notes for implementers
+
+`NativeElementCollector::reset()` is not a frame boundary, despite reading like
+one. It is called at both ends of a Blade render, and not at all for a screen
+that returns a programmatic `Element` tree. The real boundaries are
+`NativeComponent::renderToElement()` and `streamView()`.
