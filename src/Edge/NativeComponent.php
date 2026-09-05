@@ -2075,6 +2075,19 @@ abstract class NativeComponent
             return;
         }
 
+        // An Asgard `#[Server]` response (docs/ASGARD-SERVER-METHODS.md
+        // §3). The request was performed natively while this loop blocked,
+        // so its answer comes back on the one channel the loop is already
+        // waiting on. Route it to the pending-request table and stop: it
+        // is framework plumbing, not an event a component listens for, and
+        // the re-render at the top of the loop paints whatever the delta
+        // and the closure changed.
+        if ($eventName === Asgard\ServerMethods::RESPONSE_EVENT) {
+            Asgard\ServerMethods::deliver(is_array($payload) ? $payload : []);
+
+            return;
+        }
+
         // An event marked BroadcastsGlobally that another lane has fired. This
         // frame carries it, serialized and signed with the key of the app.
         // It is fired here as if this lane had fired it to begin with.
@@ -2940,6 +2953,30 @@ abstract class NativeComponent
         if (self::active() === $this) {
             self::$nativeActiveComponent = null;
         }
+
+        // Drop in-flight #[Server] requests owned by this component. The
+        // pending table holds this instance and the closure bound to it, so
+        // leaving entries behind keeps a dead screen alive; a response that
+        // arrives after this is discarded (ASGARD-SERVER-METHODS.md §4).
+        Asgard\ServerMethods::forget($this);
+    }
+
+    /**
+     * Call one of this component's `#[Server]` methods programmatically —
+     * the same path a `@tap` bound to one takes (ASGARD-SERVER-METHODS.md
+     * §2). The body runs here, the request goes to the transport, and the
+     * closure it returned is held until the answer arrives.
+     *
+     * Returns the request id, or null when nothing is in flight because
+     * the send failed (the closure has already run with a failed response).
+     *
+     * Calling the method directly — `$this->refreshChart('30d')` — runs the
+     * client body and hands back its closure with nothing to resolve it.
+     * Route through here instead.
+     */
+    public function callServerMethod(string $method, mixed ...$args): ?string
+    {
+        return Asgard\ServerMethods::call($this, $method, $args);
     }
 
     public function onResume(): void
@@ -4909,6 +4946,16 @@ abstract class NativeComponent
 
         if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {
             return $this->{$method}(...$parameters);
+        }
+
+        // A `#[Server]` method does not run to completion here. Its body
+        // runs, the state that body leaves behind is snapshotted and sent,
+        // and the closure it returned is held until the server answers
+        // (ASGARD-SERVER-METHODS.md §2). The body still goes through
+        // ComponentMethodInvoker inside call(), so the attribute narrows
+        // what is callable and never widens it.
+        if (Asgard\ServerMethods::isServerMethod($this, $method)) {
+            return Asgard\ServerMethods::call($this, $method, $parameters);
         }
 
         return ComponentMethodInvoker::invoke($this, $method, $parameters);
