@@ -951,14 +951,28 @@ class TestableComponent
         return $this;
     }
 
+    /**
+     * Assert the tab bar is hidden on this screen (`$hidesTabBar` /
+     * `tabBarOptions()->hidden()`), across both chrome paths: on the
+     * native-chrome path the sentinel carries `hide_tab_bar`; on the
+     * custom-Column path the bar is simply not rendered.
+     */
     public function assertTabBarHidden(): static
     {
         $tabs = $this->findElement($this->tree(), 'native_root_tabs');
 
-        Assert::assertNotNull($tabs, 'No native tab chrome rendered — nothing to be hidden.');
-        Assert::assertTrue(
-            (bool) ($tabs['props']['hide_tab_bar'] ?? false),
-            'Expected the tab bar to be hidden on this screen, but hide_tab_bar is not set.'
+        if ($tabs !== null) {
+            Assert::assertTrue(
+                (bool) ($tabs['props']['hide_tab_bar'] ?? false),
+                'Expected the tab bar to be hidden on this screen, but hide_tab_bar is not set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNull(
+            $this->findElement($this->tree(), 'bottom_nav'),
+            'Expected the tab bar to be hidden on this screen, but a bottom_nav element was rendered.'
         );
 
         return $this;
@@ -968,10 +982,18 @@ class TestableComponent
     {
         $tabs = $this->findElement($this->tree(), 'native_root_tabs');
 
-        Assert::assertNotNull($tabs, 'No native tab chrome rendered.');
-        Assert::assertFalse(
-            (bool) ($tabs['props']['hide_tab_bar'] ?? false),
-            'Expected the tab bar to be visible, but hide_tab_bar is set.'
+        if ($tabs !== null) {
+            Assert::assertFalse(
+                (bool) ($tabs['props']['hide_tab_bar'] ?? false),
+                'Expected the tab bar to be visible, but hide_tab_bar is set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNotNull(
+            $this->findElement($this->tree(), 'bottom_nav'),
+            'Expected the tab bar to be visible, but no bottom_nav element was rendered.'
         );
 
         return $this;
