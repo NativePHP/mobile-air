@@ -75,6 +75,7 @@ export function Flashlight(): Promise<{ success: boolean; state: boolean }>;
 export function GetId(): Promise<{ id: string }>;
 export function GetInfo(): Promise<{ info: string }>;
 export function GetBatteryInfo(): Promise<{ info: string }>;
+export function GetThermalState(): Promise<{ state: 'normal' | 'warm' | 'hot' | 'critical' }>;
 
 export const Device: {
     vibrate(): Promise<{ success: boolean }>;
@@ -82,6 +83,7 @@ export const Device: {
     getId(): Promise<{ id: string }>;
     getInfo(): Promise<{ info: string }>;
     getBatteryInfo(): Promise<{ info: string }>;
+    thermalState(): Promise<{ state: 'normal' | 'warm' | 'hot' | 'critical' }>;
 };
 
 // ============================================================================
@@ -437,6 +439,9 @@ export const Events: {
         PaymentCompleted: string;
         PaymentFailed: string;
         PaymentCancelled: string;
+    };
+    Device: {
+        ThermalStateChanged: string;
     };
 };
 

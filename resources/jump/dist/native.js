@@ -368,12 +368,21 @@ export async function getBatteryInfo() {
     return bridgeCall('Device.GetBatteryInfo', {});
 }
 
+/**
+ * Get the current device thermal state
+ * @returns {Promise<Object>} Object with state: "normal" | "warm" | "hot" | "critical"
+ */
+export async function thermalState() {
+    return bridgeCall('Device.GetThermalState', {});
+}
+
 export const device = {
     vibrate: deviceVibrate,
     flashlight: flashlight,
     getId: getId,
     getInfo: getInfo,
-    getBatteryInfo: getBatteryInfo
+    getBatteryInfo: getBatteryInfo,
+    thermalState: thermalState
 };
 
 // ============================================================================
@@ -1606,5 +1615,8 @@ export const Events = {
     },
     Scanner: {
         CodeScanned: 'Native\\Mobile\\Events\\Scanner\\CodeScanned',
-    }
+    },
+    Device: {
+        ThermalStateChanged: 'Native\\Mobile\\Events\\Device\\ThermalStateChanged',
+    },
 };

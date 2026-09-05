@@ -229,6 +229,11 @@ export const device: {
      * Get battery information
      */
     getBatteryInfo(): Promise<{ info: string }>;
+
+    /**
+     * Get the current device thermal state
+     */
+    thermalState(): Promise<{ state: 'normal' | 'warm' | 'hot' | 'critical' }>;
 };
 
 // ============================================================================
@@ -1094,5 +1099,8 @@ export const Events: {
     };
     Scanner: {
         CodeScanned: string;
+    };
+    Device: {
+        ThermalStateChanged: string;
     };
 };
