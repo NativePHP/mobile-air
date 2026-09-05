@@ -44,6 +44,25 @@ Two separate implementations sharing a name. The client body is a local
 pre-step: optimistic updates, a loading flag, validation. The server body is
 the remote work.
 
+The method must be **public**. A protected one passes the attribute check and
+then fatals on invocation, so it is rejected with a clear exception instead.
+
+### 1.1 How it gets called, and the trap in this shape
+
+Dispatch is intercepted in two places: the `@tap` path through
+`NativeComponent::dispatch()`, and an explicit `callServerMethod()`.
+
+**A direct `$this->refreshChart('30d')` is a silent no-op.** The body runs, a
+closure comes back, and nothing is sent, because PHP gives no way to intercept
+an ordinary method call. The shape in §1 invites exactly that mistake: it looks
+like a normal call and reads like one.
+
+This is a known flaw in the design, not in the implementation. Fixing it
+properly means changing the shape so the method hands back a request object
+that has to be acted on, rather than a closure that can be dropped on the
+floor. Until then, `callServerMethod()` is the only supported programmatic
+entry point.
+
 ## 2. What crosses the wire
 
 The method name, its arguments, and a snapshot of the component's public state
@@ -86,8 +105,15 @@ When a response arrives:
 4. Invoke the closure bound to the component instance.
 5. Re-render.
 
-The pending-request table holds a reference to the component and its closure,
-so it must be cleared on unmount or it keeps a dead screen alive.
+**The response does not come back to the component that made the call.** The
+`EVENT_NATIVE` frame lands on whichever component owns the runloop, which is
+the screen, but the request may have been made by a child several levels down.
+So the pending table is keyed by request id and shared, not held per component.
+
+**The closure keeps its component alive**, through its bound `$this`. Holding
+the component weakly in the table therefore buys nothing on its own; a weak
+reference only bites for a call with no continuation. Clearing the entry on
+unmount is the mechanism that actually works, and it is not optional.
 
 ## 5. Reconciliation
 
@@ -111,6 +137,18 @@ are still equal.
 That is compare-and-set, and it gives the behaviour asked for directly: a field
 the user touched while the request was in flight has diverged from what was
 sent, so the server's value is refused and the user's edit survives.
+
+**Equality is a fingerprint, not a value comparison, and this matters.** The
+naive implementation keeps the sent values and compares them to the current
+ones. For an object prop that is wrong in a way that loses data: the table
+holds the same instance the component holds, so mutating it in place mutates
+the "sent" copy too, every comparison says unchanged, and the user's edit is
+overwritten. The table stores `serialize()` of each prop at send time and
+compares strings.
+
+Two consequences worth knowing. An equal-but-rebuilt object reads as unchanged,
+which is the right answer. And a value that cannot be serialised falls back to
+identity, which errs towards refusing the server.
 
 Two properties fall out of it for free:
 
@@ -154,6 +192,16 @@ Network unreachable is a failure like any other. A `#[Server]` method called
 offline runs its client body, fails fast, and runs its closure. Nothing queues
 in v1.
 
+**Delivery never throws.** §5.3 of the protocol doc wants a throw in debug when
+the two halves have drifted, and that collides with the promise above: a throw
+out of delivery skips the closure and strands whatever it was going to clean
+up. Drift is reported as a refusal plus a debug log instead. The same applies
+to a fragment that fails §9.4 validation, which is reported rather than raised.
+
+**A send that never starts runs its closure inline**, before the calling method
+has returned. That is worth knowing before writing a closure that assumes it
+runs on a later frame.
+
 ## 8. Security
 
 `#[Server]` is the allowlist. A method without it is not callable from this
@@ -167,10 +215,25 @@ treated as untrusted input, hydration against exact class allowlists.
 ## 9. Open questions
 
 1. Whether a dedicated failure hook reads better than branching inside one
-   closure.
-2. Whether the closure should be allowed to call another `#[Server]` method,
-   and what stops a loop if so.
-3. Whether a `#[Server]` method may return no closure at all (fire and forget),
-   and whether that is a useful shape or a trap.
-4. Whether refused props (§5.2) should be a hard error in debug builds, the way
-   the field-compatibility rule is.
+   closure. **Still open.**
+2. **The silent direct call in §1.1.** The largest open question in this
+   design, and the one that decides whether the closure-return shape survives.
+3. A closure starting another `#[Server]` call is **safe** but unbounded: the
+   pending entry is dropped before the closure runs, so there is no re-entrancy
+   hazard, but nothing stops a loop.
+
+### Answered by implementing
+
+- **Returning no closure** works, and the delta still applies. It is also the
+  trap it looked like: a `: void` client body is indistinguishable from a
+  forgotten `return`.
+- **Refused props are not a debug error.** A refusal is the rule working
+  correctly, not a fault, and raising on it would train people to route around
+  the protection.
+
+## 10. Adjacent, pre-existing
+
+`NativeComponent::getPublicProperties()` throws on an uninitialised typed
+public property, so a component with one cannot render at all today,
+independently of anything here. State snapshots skip such props and treat
+absent-then, absent-now as unchanged.
