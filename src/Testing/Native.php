@@ -42,4 +42,14 @@ final class Native
     {
         return FakeBridge::enable();
     }
+
+    /**
+     * The fake Asgard transport for the current test — enable it before
+     * the component mounts to capture `#[Server]` requests and answer
+     * them by hand.
+     */
+    public static function fakeServerTransport(): FakeServerTransport
+    {
+        return FakeServerTransport::enable();
+    }
 }

@@ -316,7 +316,9 @@ class TestableComponent
         $this->startInteraction();
 
         // Same entry point the device runloop uses, so a template-callable
-        // method such as navigate() is callable from a test too.
+        // method such as navigate() is callable from a test too, and a
+        // #[Server] method reaches the transport instead of dropping its
+        // closure (docs/ASGARD-SERVER-METHODS.md §2).
         $this->guard(fn () => $this->component->__invokeInteraction($method, $args));
 
         return $this->afterInteraction();
