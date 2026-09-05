@@ -90,7 +90,7 @@ trait RunsIos
             ->all();
     }
 
-    public function runIos(): void
+    public function runIos(): bool
     {
         // iOS builds require the Xcode toolchain (xcrun, simctl, devicectl),
         // so bail out early with a clear message on Windows/Linux instead of
@@ -99,7 +99,7 @@ trait RunsIos
             error('iOS apps can only be built and run on macOS.');
             note('Use `php artisan native:run android` on this machine.');
 
-            return;
+            return false;
         }
 
         $this->watching = $this->option('watch');
@@ -112,7 +112,7 @@ trait RunsIos
             error('No iOS project found at [nativephp/ios].');
             note('Run `php artisan native:install` or ensure you have the correct folder structure.');
 
-            return;
+            return false;
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
@@ -133,7 +133,7 @@ trait RunsIos
             $this->simulated = true;
         }
 
-        $this->runTheIosBuild($target);
+        return $this->runTheIosBuild($target);
     }
 
     private function getAvailableIosDevices(): array
@@ -194,7 +194,7 @@ trait RunsIos
         return $devices;
     }
 
-    private function runTheIosBuild($target)
+    private function runTheIosBuild($target): bool
     {
         $basePath = base_path('nativephp/ios');
 
@@ -209,7 +209,7 @@ trait RunsIos
                 error('xcrun devicectl not found!');
                 note('Device deployment requires Xcode 15 or later. Simulator builds will still work.');
 
-                return;
+                return false;
             }
         }
 
@@ -226,19 +226,17 @@ trait RunsIos
             error('Build failed!');
             note('Inspect the nativephp/ios-build.log file or use the -v flag to enable verbose output.');
 
-            return;
+            return false;
         }
 
         if ($this->simulated) {
-            $this->runOnSimulator($basePath, $target, $verbose);
-
-            return;
+            return $this->runOnSimulator($basePath, $target, $verbose);
         }
 
-        $this->runOnRealDevice($basePath, $target, $verbose);
+        return $this->runOnRealDevice($basePath, $target, $verbose);
     }
 
-    private function runOnSimulator(string $basePath, string $target, bool $verbose = false)
+    private function runOnSimulator(string $basePath, string $target, bool $verbose = false): bool
     {
         $this->components->task('Booting simulator', function () use ($basePath, $target, $verbose) {
             Process::path($basePath)
@@ -306,9 +304,11 @@ trait RunsIos
                 'target' => $target,
             ]);
         }
+
+        return true;
     }
 
-    private function runOnRealDevice(string $basePath, string $target, bool $verbose = false): void
+    private function runOnRealDevice(string $basePath, string $target, bool $verbose = false): bool
     {
         $installFailed = false;
         $isRelease = $this->option('build') === 'release';
@@ -345,7 +345,7 @@ trait RunsIos
             error('App installation failed!');
             note('Check nativephp/ios-build.log for details.');
 
-            return;
+            return false;
         }
 
         $appId = config('nativephp.app_id');
@@ -387,6 +387,10 @@ trait RunsIos
                 'target' => $target,
             ]);
         }
+
+        // A launch that did not take still leaves an installed app the user
+        // can tap, so it is a warning above rather than a failed run.
+        return true;
     }
 
     private function promptForIosTarget(array $devices): string

@@ -1210,8 +1210,14 @@ class BuildIosAppCommand extends Command
             $compiler->compile();
 
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("❌ Plugin compilation failed: {$e->getMessage()}");
+
+            // A hook that fataled carries the real error underneath. Without
+            // this the author sees the message and no idea where it came from.
+            if ($cause = $e->getPrevious()) {
+                $this->line("   at {$cause->getFile()}:{$cause->getLine()}");
+            }
 
             return false;
         }
@@ -1241,7 +1247,14 @@ class BuildIosAppCommand extends Command
             output: $this->output
         );
 
-        $hookRunner->runPostBuildHooks();
+        // The app is already built by now, so a post_build hook that fails has
+        // nothing left to stop. Say so and leave the run green rather than
+        // unwinding over a finished build.
+        try {
+            $hookRunner->runPostBuildHooks();
+        } catch (\Throwable $e) {
+            $this->warn("⚠️  {$e->getMessage()}");
+        }
     }
 
     /**
