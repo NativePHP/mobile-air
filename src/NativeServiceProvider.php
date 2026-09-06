@@ -60,7 +60,6 @@ class NativeServiceProvider extends PackageServiceProvider
         $package
             ->name('nativephp-mobile')
             ->hasConfigFile('nativephp')
-            ->hasViews()
             ->hasRoute('api')
             ->hasCommands([
                 PackageCommand::class,
@@ -195,8 +194,10 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         parent::boot();
 
+        // Only src/resources/views is registered. The package root
+        // resources/ dir never ships in the app bundle, and the
+        // device's view:cache throws on any missing path.
         $this->loadViewsFrom(__DIR__.'/resources/views', 'nativephp-mobile');
-        $this->loadViewsFrom(__DIR__.'/../resources/jump/views', 'jump');
 
         // Register `resources/views/native` as a primary view-finder
         // location (mirrors Livewire's `resources/views/livewire`
@@ -436,11 +437,13 @@ class NativeServiceProvider extends PackageServiceProvider
             return "<?php
                 \$__nativeErrorArgs = [{$expression}];
                 \$__nativeErrorField = \$__nativeErrorArgs[0];
-                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? '#FF0000';
+                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? config('native-ui.theme.light.destructive', '#FF0000');
+                \$__nativeErrorDarkColor = isset(\$__nativeErrorArgs[1]) ? null : config('native-ui.theme.dark.destructive');
                 if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
                     \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
                         'text' => \$errors[\$__nativeErrorField],
                         'color' => \$__nativeErrorColor,
+                        'dark' => ['color' => \$__nativeErrorDarkColor],
                         'fontSize' => 12,
                     ]);
                 }

@@ -87,6 +87,31 @@ it('isolates rendering from attribute transformer failures', function () {
     expect($tree['props']['text'])->toBe('still renders');
 });
 
+it('preserves captured tooling metadata when a transformer changes flex direction', function (string $type, string $class, int $direction) {
+    NativeElementCollector::captureAttribute('class', 'raw_class');
+    NativeElementCollector::captureAttribute('debug-source', 'debug_source');
+    NativeElementCollector::transformAttributes('test.flex-direction', function (string $type, array $attrs) use ($class): array {
+        $attrs['class'] = $class;
+
+        return $attrs;
+    });
+
+    NativeElementCollector::open($type, [
+        'class' => 'p-2',
+        'debug-source' => 'native/home.blade.php:10',
+    ]);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['layout']['flex_direction'] ?? null)->toBe($direction)
+        ->and($tree['props']['raw_class'] ?? null)->toBe($class)
+        ->and($tree['props']['debug_source'] ?? null)->toBe('native/home.blade.php:10');
+})->with([
+    'column changed to row' => ['column', 'flex-row', 1],
+    'row changed to column' => ['row', 'flex-col', 0],
+]);
+
 it('stops a single named transformer without disturbing other packages', function () {
     NativeElementCollector::captureAttribute('marker', 'marker');
     NativeElementCollector::transformAttributes('pkg.a', function (string $type, array $attrs): array {

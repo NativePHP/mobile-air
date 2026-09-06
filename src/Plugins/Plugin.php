@@ -166,14 +166,25 @@ class Plugin
     /**
      * Gradle plugins this plugin needs declared in the root build.gradle.kts
      * plugins {} block, as `android.gradle_plugins` in nativephp.json.
-     * Each entry: ['id' => string, 'version' => string, 'apply' => bool (default false)].
-     * `apply => false` puts the plugin on the build classpath only, so the
-     * app module can apply it conditionally (e.g. google-services when a
-     * google-services.json is present).
+     * Each entry: ['id' => string, 'version' => string, 'apply' => bool
+     * (default false), 'apply_to' => 'app' (optional)].
      */
     public function getAndroidGradlePlugins(): array
     {
         return $this->manifest->android['gradle_plugins'] ?? [];
+    }
+
+    /**
+     * Application-owned files this plugin needs copied into the generated
+     * native project for the requested platform.
+     */
+    public function getProjectFiles(string $platform): array
+    {
+        return match (strtolower($platform)) {
+            'android' => $this->manifest->android['project_files'] ?? [],
+            'ios' => $this->manifest->ios['project_files'] ?? [],
+            default => [],
+        };
     }
 
     public function getAndroidFeatures(): array

@@ -46,6 +46,15 @@ struct NodeStyleModifier: ViewModifier {
             // a tint — that's what you want for `bg-red-500 glass` to
             // produce tinted glass.
             .background(backgroundFill(dark: dark))
+            // Corner clip BEFORE the glass. `.glassEffect(...)` renders into
+            // its own effect layer and a `.clipShape` applied downstream of it
+            // no longer reaches the view's own drawing: the glass plate came
+            // out correctly rounded while the `bg-*` fill stayed a hard
+            // rectangle. Verified on device — `rounded-full glass` drew a
+            // circular plate behind a square fill. Clipping first rounds the
+            // background and content; the glass below still takes its own
+            // shape from the same radii, so tinted glass is unchanged.
+            .modifier(ClipRadiusModifier(radius: radius, radii: radii))
             // Liquid Glass material — iOS 26+ real glass, iOS 18-25 falls
             // back to `.regularMaterial`. Applied AFTER background so the
             // optional bg color tints through. Shape inferred from the
@@ -56,7 +65,6 @@ struct NodeStyleModifier: ViewModifier {
                 cornerRadius: radius,
                 cornerRadii: radii
             ))
-            .modifier(ClipRadiusModifier(radius: radius, radii: radii))
             .overlay(borderOverlay(dark: dark, radius: radius))
             .shadow(
                 color: shadowColor,

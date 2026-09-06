@@ -92,6 +92,11 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertFalse($zip->statName('bootstrap/cache/packages.php'));
         $this->assertNotFalse($zip->statName('bootstrap/cache/'));
 
+        // The provider registers this location unconditionally, so the
+        // bundle must ship it even when the app never scaffolded a
+        // native component, or view:cache throws on device (#322).
+        $this->assertNotFalse($zip->statName('resources/views/native/'));
+
         // Delegation to BundleFileManager, asserted by outcome: config
         // excludes and vendor slimming patterns shape the final zip.
         $this->assertNotFalse($zip->statName('app/Example.php'));
@@ -248,6 +253,4 @@ class ReleaseBuildTester
     protected function updatePermissions(): void {}
 
     protected function updateIcuConfiguration(): void {}
-
-    protected function updateFirebaseConfiguration(): void {}
 }

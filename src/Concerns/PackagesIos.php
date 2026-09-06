@@ -1296,7 +1296,7 @@ trait PackagesIos
     }
 
     /**
-     * Configure app settings in the archive's Info.plist (export compliance and Firebase)
+     * Configure app settings in the archive's Info.plist.
      */
     protected function configureAppSettings(string $archivePath): bool
     {

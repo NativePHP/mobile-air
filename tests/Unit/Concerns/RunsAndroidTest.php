@@ -184,25 +184,6 @@ class RunsAndroidTest extends TestCase
         $this->assertStringNotContainsString('android.permission.POST_NOTIFICATIONS', $contents);
     }
 
-    public function test_update_firebase_configuration_copies_file()
-    {
-        // Create source google-services.json
-        $sourcePath = $this->testProjectPath.'/google-services.json';
-        File::put($sourcePath, '{"project_id": "test"}');
-
-        // Create target directory
-        $targetDir = $this->testProjectPath.'/nativephp/android/app';
-        File::makeDirectory($targetDir, 0755, true);
-
-        // Execute
-        $this->updateFirebaseConfiguration();
-
-        // Assert file was copied
-        $targetPath = $targetDir.'/google-services.json';
-        $this->assertFileExists($targetPath);
-        $this->assertEquals('{"project_id": "test"}', File::get($targetPath));
-    }
-
     public function test_update_local_properties_windows_path()
     {
         // Mock Windows environment

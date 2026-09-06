@@ -5,9 +5,11 @@ namespace Native\Mobile\Plugins\Compilers;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\LegacyFirebaseConfig;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Plugins\ProjectFileManager;
 use Native\Mobile\Plugins\SwiftSourceFilter;
 use Native\Mobile\Support\Stub;
 
@@ -111,6 +113,17 @@ class IOSPluginCompiler
         // duplicate-symbol build failures in Xcode.
         $this->clean();
         $this->files->ensureDirectoryExists($this->generatedPath);
+
+        // Copy app-owned files declared by plugins into the iOS project.
+        (new ProjectFileManager($this->files, $this->basePath, 'ios'))->sync($allPlugins);
+
+        // Back-compat: install GoogleService-Info.plist on behalf of a plugin
+        // that predates project_files. Does nothing once the plugin owns it.
+        $legacyFirebase = (new LegacyFirebaseConfig($this->files, $this->basePath))->sync($allPlugins, 'ios');
+
+        if ($legacyFirebase !== null) {
+            $this->warn(LegacyFirebaseConfig::deprecationNotice($legacyFirebase, 'ios'));
+        }
 
         // Get plugins with iOS code (for copying files)
         $pluginsWithCode = $allPlugins->filter(fn (Plugin $p) => $p->hasIosCode());
@@ -281,8 +294,21 @@ class IOSPluginCompiler
      */
     protected function warn(string $message): void
     {
-        if ($this->output !== null && method_exists($this->output, 'warn')) {
+        if ($this->output === null) {
+            return;
+        }
+
+        // A Command has warn(); Illuminate\Console\OutputStyle — which is what
+        // the build commands actually pass — does not, so calling it blindly
+        // fataled the build and guarding on it swallowed the message entirely.
+        if (method_exists($this->output, 'warn')) {
             $this->output->warn($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<comment>{$message}</comment>");
         }
     }
 
@@ -651,8 +677,8 @@ class IOSPluginCompiler
             if (str_contains($plist, "<key>{$key}</key>")) {
                 if (is_array($value)) {
                     $plist = $this->mergeArrayEntry($plist, $key, $value);
-                } elseif (is_string($value)) {
-                    $plist = $this->updateStringEntry($plist, $key, $this->substituteEnvPlaceholders($value));
+                } else {
+                    $plist = $this->updateScalarEntry($plist, $key, $value);
                 }
 
                 continue;
@@ -662,14 +688,11 @@ class IOSPluginCompiler
             if (is_array($value)) {
                 $arrayContent = '';
                 foreach ($value as $item) {
-                    $item = $this->substituteEnvPlaceholders($item);
-                    $arrayContent .= "\n\t\t<string>{$item}</string>";
+                    $arrayContent .= "\n\t\t".$this->plistScalar($item);
                 }
                 $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
             } else {
-                // Handle string values - substitute placeholders
-                $value = $this->substituteEnvPlaceholders($value);
-                $entry = "\n\t<key>{$key}</key>\n\t<string>{$value}</string>";
+                $entry = "\n\t<key>{$key}</key>\n\t".$this->plistScalar($value);
             }
 
             // Add before closing </dict>
@@ -687,6 +710,54 @@ class IOSPluginCompiler
     /**
      * Update an existing string entry's value in the plist
      */
+    /**
+     * Render a manifest value as a plist element.
+     *
+     * Booleans and numbers have their own plist types. Writing them as
+     * <string> gives "" for false and "1" for true, which readers such as
+     * Firebase cannot interpret as a boolean — the key reads as unset and
+     * the declared setting is silently ignored.
+     */
+    protected function plistScalar(mixed $value): string
+    {
+        if (is_bool($value)) {
+            return $value ? '<true/>' : '<false/>';
+        }
+
+        if (is_int($value)) {
+            return "<integer>{$value}</integer>";
+        }
+
+        if (is_float($value)) {
+            return "<real>{$value}</real>";
+        }
+
+        $value = $this->substituteEnvPlaceholders((string) $value);
+
+        return '<string>'.htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8').'</string>';
+    }
+
+    /**
+     * Replace an existing key's value, whatever plist type it currently has.
+     * Declaring `false` for a key that already holds a <string> must be able
+     * to change the element type, not just its contents.
+     */
+    protected function updateScalarEntry(string $plist, string $key, mixed $value): string
+    {
+        // Each type has an empty self-closing form too (<string/>), which is
+        // what a previously-mangled boolean leaves behind.
+        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*)'
+            .'(<string>[^<]*<\/string>|<integer>[^<]*<\/integer>|<real>[^<]*<\/real>'
+            .'|<(?:string|integer|real|true|false)\s*\/>)/';
+
+        return preg_replace_callback(
+            $pattern,
+            fn ($matches) => $matches[1].$this->plistScalar($value),
+            $plist,
+            1
+        ) ?? $plist;
+    }
+
     protected function updateStringEntry(string $plist, string $key, string $value): string
     {
         $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<string>)([^<]*)(<\/string>)/';

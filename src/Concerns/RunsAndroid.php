@@ -367,21 +367,6 @@ XML;
         return "            <!-- NATIVEPHP-DEEPLINKS-START -->\n".implode("\n", $filters)."\n            <!-- NATIVEPHP-DEEPLINKS-END -->";
     }
 
-    private function updateFirebaseConfiguration(): void
-    {
-        $source = base_path('nativephp/resources/google-services.json');
-
-        if (! file_exists($source)) {
-            $source = base_path('google-services.json');
-        }
-
-        $target = base_path('nativephp/android/app/google-services.json');
-
-        if (File::exists($source)) {
-            File::copy($source, $target);
-        }
-    }
-
     private function updateIcuConfiguration(): void
     {
         $lockPath = base_path('nativephp.lock');
