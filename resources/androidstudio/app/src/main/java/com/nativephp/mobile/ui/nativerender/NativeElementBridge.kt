@@ -428,6 +428,7 @@ class NativeElementBridge private constructor() {
         }
 
         /** Reset state for new hot-reload cycle */
+        @JvmStatic
         fun startWatching() {
             Log.d(TAG, "startWatching() — resetting state, starting shadow thread")
 

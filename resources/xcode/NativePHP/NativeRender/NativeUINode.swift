@@ -104,6 +104,8 @@ enum PropKey {
 final class GenericProps: Equatable {
     private let map: [String: Any]
 
+    var entries: [String: Any] { map }
+
     init(_ map: [String: Any] = [:]) {
         self.map = map
     }

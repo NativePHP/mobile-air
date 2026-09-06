@@ -3,6 +3,7 @@
 namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
+use InvalidArgumentException;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
@@ -14,6 +15,7 @@ use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
 
 /**
  * Livewire-style test harness for NativeComponent screens.
@@ -138,7 +140,58 @@ class TestableComponent
      */
     public static function test(string $componentClass, array $params = [], array $data = [], ?string $layout = null, ?string $platform = null): static
     {
-        return new static($componentClass, $params, $data, $layout, $platform);
+        $harness = static::harnessClass();
+
+        return new $harness($componentClass, $params, $data, $layout, $platform);
+    }
+
+    /** @var class-string<static>|null */
+    protected static ?string $harness = null;
+
+    /**
+     * Let development tooling decorate the native test harness without
+     * replacing Native::test() / Native::visit() or patching application tests.
+     * Passing null restores the built-in harness.
+     *
+     * @param  class-string<static>|null  $harnessClass
+     */
+    public static function useHarness(?string $harnessClass): void
+    {
+        if ($harnessClass !== null) {
+            if (! is_a($harnessClass, static::class, true)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Native test harness [%s] must extend %s.',
+                    $harnessClass,
+                    static::class,
+                ));
+            }
+
+            $reflection = new ReflectionClass($harnessClass);
+            $constructor = $reflection->getConstructor();
+
+            if ($reflection->isAbstract()
+                || $constructor?->isPrivate()
+                || ($constructor !== null && $constructor->getNumberOfRequiredParameters() > 5)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Native test harness [%s] must be concrete and expose a compatible constructor.',
+                    $harnessClass,
+                ));
+            }
+        }
+
+        static::$harness = $harnessClass;
+    }
+
+    /** @return class-string<static> */
+    protected static function harnessClass(): string
+    {
+        $harness = static::$harness;
+
+        if ($harness !== null && is_subclass_of($harness, self::class)) {
+            return $harness;
+        }
+
+        return static::class;
     }
 
     /**
@@ -155,7 +208,9 @@ class TestableComponent
             "No native route registered for [{$uri}]. Register it with Route::native() or test the component class directly."
         );
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri);
+        $harness = static::harnessClass();
+
+        return new $harness($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri);
     }
 
     protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null)

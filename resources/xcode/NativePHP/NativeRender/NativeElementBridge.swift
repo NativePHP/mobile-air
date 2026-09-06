@@ -519,7 +519,7 @@ final class NativeElementBridge {
                     bridge.screenKey += 1
                 }
                 if isFreshStackMount { NavigationCoordinator.shared.reset() }
-                bridge.currentTree = finalTree
+                bridge.publishTree(finalTree)
                 // First publish after a hot-reload dismisses the
                 // "Reloading…" pill. Set by `HotReloadCoordinator.reload`
                 // at the start of the reboot; cleared here when the
@@ -1055,7 +1055,7 @@ final class NativeElementBridge {
         if !preserveTree {
             DispatchQueue.main.async {
                 NativeUIBridge.shared.isActive = false
-                NativeUIBridge.shared.currentTree = nil
+                NativeUIBridge.shared.clearTree()
             }
         }
     }

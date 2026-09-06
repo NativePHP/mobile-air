@@ -6,11 +6,13 @@ use Native\Mobile\Edge\NativeElementCollector;
 beforeEach(function () {
     NativeElementCollector::reset();
     NativeElementCollector::stopCapturingAttributes();
+    NativeElementCollector::stopAllAttributeTransformers();
 });
 
 afterEach(function () {
     NativeElementCollector::reset();
     NativeElementCollector::stopCapturingAttributes();
+    NativeElementCollector::stopAllAttributeTransformers();
 });
 
 function capturedTree(string $type, array $attrs): array
@@ -52,4 +54,92 @@ it('strips but does not capture empty string values', function () {
 
     expect($tree['props'] ?? [])->not->toHaveKey('analytics_id')
         ->and($tree['props'] ?? [])->not->toHaveKey('track');
+});
+
+it('runs named raw attribute transformers before Tailwind parsing', function () {
+    NativeElementCollector::captureAttribute('debug-source', 'debug_source');
+    NativeElementCollector::captureAttribute('class', 'raw_class');
+    NativeElementCollector::transformAttributes('test.override', function (string $type, array $attrs): array {
+        expect($type)->toBe('text');
+        $attrs['class'] = 'p-8';
+
+        return $attrs;
+    });
+
+    $tree = capturedTree('text', [
+        'text' => 'x',
+        'class' => 'p-2',
+        'debug-source' => 'native/home.blade.php:10',
+    ]);
+
+    expect($tree['props']['raw_class'])->toBe('p-8')
+        ->and($tree['props']['debug_source'])->toBe('native/home.blade.php:10')
+        ->and($tree['layout']['padding'])->toBe(32.0);
+});
+
+it('isolates rendering from attribute transformer failures', function () {
+    NativeElementCollector::transformAttributes('test.failure', function (): never {
+        throw new RuntimeException('tooling failure');
+    });
+
+    $tree = capturedTree('text', ['text' => 'still renders']);
+
+    expect($tree['props']['text'])->toBe('still renders');
+});
+
+it('preserves captured tooling metadata when a transformer changes flex direction', function (string $type, string $class, int $direction) {
+    NativeElementCollector::captureAttribute('class', 'raw_class');
+    NativeElementCollector::captureAttribute('debug-source', 'debug_source');
+    NativeElementCollector::transformAttributes('test.flex-direction', function (string $type, array $attrs) use ($class): array {
+        $attrs['class'] = $class;
+
+        return $attrs;
+    });
+
+    NativeElementCollector::open($type, [
+        'class' => 'p-2',
+        'debug-source' => 'native/home.blade.php:10',
+    ]);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['layout']['flex_direction'] ?? null)->toBe($direction)
+        ->and($tree['props']['raw_class'] ?? null)->toBe($class)
+        ->and($tree['props']['debug_source'] ?? null)->toBe('native/home.blade.php:10');
+})->with([
+    'column changed to row' => ['column', 'flex-row', 1],
+    'row changed to column' => ['row', 'flex-col', 0],
+]);
+
+it('stops a single named transformer without disturbing other packages', function () {
+    NativeElementCollector::captureAttribute('marker', 'marker');
+    NativeElementCollector::transformAttributes('pkg.a', function (string $type, array $attrs): array {
+        $attrs['text'] = 'rewritten-by-a';
+
+        return $attrs;
+    });
+    NativeElementCollector::transformAttributes('pkg.b', function (string $type, array $attrs): array {
+        $attrs['marker'] = 'still-running';
+
+        return $attrs;
+    });
+
+    NativeElementCollector::stopTransformingAttributes('pkg.a');
+
+    $tree = capturedTree('text', ['text' => 'original']);
+
+    expect($tree['props']['text'])->toBe('original')
+        ->and($tree['props']['marker'])->toBe('still-running');
+});
+
+it('never lets captured metadata override an element-resolved prop', function () {
+    NativeElementCollector::captureAttribute('debug-text', 'text');
+
+    $tree = capturedTree('text', ['text' => 'element value', 'debug-text' => 'captured value']);
+
+    // Collision contract (see captureAttribute): rendering wins, uniformly
+    // across the builtin, plugin-element, and streaming paths — capturing a
+    // colliding name can never corrupt what the user sees.
+    expect($tree['props']['text'])->toBe('element value');
 });

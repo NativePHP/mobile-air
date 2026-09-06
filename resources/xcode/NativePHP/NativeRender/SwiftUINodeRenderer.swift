@@ -42,6 +42,8 @@ struct NativeTreeRenderer: View {
     let tree: NativeUITree
 
     var body: some View {
+        let decoratorPipeline = NativeNodeDecoratorRegistry.shared.currentPipeline
+
         // Fold any plugin-registered root hosts (side drawers, global overlays,
         // …) around the rendered tree. A host pulls its own sentinel child out
         // of `tree.root` and renders nothing when absent. When no hosts are
@@ -49,6 +51,7 @@ struct NativeTreeRenderer: View {
         // plugin chrome pay nothing — preserving the minimal-wrapping guarantee
         // below (for the iOS 26 tabs Liquid Glass capsule).
         NativeRootHostRegistry.shared.wrap(root: tree.root, content: AnyView(rootContent))
+            .environment(\.nativeNodeDecoratorPipeline, decoratorPipeline)
     }
 
     @ViewBuilder
@@ -148,6 +151,7 @@ struct NodeView: View, Equatable {
     @Environment(\.nativeSafeAreaBottom) private var safeAreaBottom
     @Environment(\.availableWidth) private var availableWidth
     @Environment(\.availableHeight) private var availableHeight
+    @Environment(\.nativeNodeDecoratorPipeline) private var decoratorPipeline
 
     static func == (lhs: NodeView, rhs: NodeView) -> Bool {
         // Reference identity. Between PHP publishes, `node` refs are stable
@@ -163,8 +167,9 @@ struct NodeView: View, Equatable {
         lhs.node === rhs.node
     }
 
+    @ViewBuilder
     var body: some View {
-        content
+        let rendered = content
             .modifier(NodeLayoutModifier(
                 layout: node.layout,
                 availableWidth: availableWidth,
@@ -194,6 +199,12 @@ struct NodeView: View, Equatable {
             // the tap and runs alongside it for press-in/press-out
             // tracking. No-op when no `press-*` prop is set.
             .modifier(NodePressFeedbackModifier(props: node.props))
+
+        if let decorate = decoratorPipeline {
+            decorate(node, AnyView(rendered))
+        } else {
+            rendered
+        }
     }
 
     // MARK: - Content Dispatch (via plugin registry)

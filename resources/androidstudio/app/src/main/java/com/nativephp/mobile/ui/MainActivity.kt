@@ -843,13 +843,15 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             val reloadFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/reload_signal.json")
             // PHP's storage_path() resolves to persisted_data/storage/ (set by LARAVEL_STORAGE_PATH)
             val restartFile = File("${appStorageDir.absolutePath}/persisted_data/storage/framework/.hot_restart")
-            var lastModified: Long = 0
+            // Signals survive process death. Treat existing files as already seen so a fresh
+            // process cannot race its initial queue-worker boot with a stale runtime reboot.
+            var lastModified: Long = reloadFile.takeIf { it.exists() }?.lastModified() ?: 0
             // Track .hot_restart's last-seen mtime so the polling loop
             // doesn't re-trigger reboot every iteration while the file
             // exists. PHP consumes the file (deletes it) inside its
             // Route::native macro after extracting the nav stack; the
             // loop here just needs to fire once per write.
-            var lastRestartModified: Long = 0
+            var lastRestartModified: Long = restartFile.takeIf { it.exists() }?.lastModified() ?: 0
             var pollCount = 0
             // Generation counter — increments on every hot-reload
             // cycle. Helps identify exactly which reload is stuck in

@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Edge\Runtime\ComponentIds;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -426,12 +427,10 @@ class NativeRouter
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
-                    $component->mount();
-                    $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
+                    $this->mountComponent($component, $entry['uri'] ?? null);
                 } else {
                     static::debugLog('loop: calling onResume() on '.get_class($component));
-                    $component->onResume();
-                    $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
+                    $this->resumeComponent($component, $entry['uri'] ?? null);
                 }
             } catch (NativeDumpException $e) {
                 $component->renderDumpScreen($e);
@@ -590,16 +589,37 @@ class NativeRouter
         return null;
     }
 
-    /**
-     * Unmount a component and tell the app it happened.
-     *
-     * Every pop in the loop above goes through here, so the event has one
-     * home rather than seven.
-     */
+    /** Mount a component and tell the app it happened. */
+    protected function mountComponent(NativeComponent $component, ?string $uri): void
+    {
+        $component->mount();
+        $this->announce(new ScreenMounted(
+            get_class($component),
+            $uri,
+            ComponentIds::id($component),
+        ));
+    }
+
+    /** Resume a component and tell the app it happened. */
+    protected function resumeComponent(NativeComponent $component, ?string $uri): void
+    {
+        $component->onResume();
+        $this->announce(new ScreenResumed(
+            get_class($component),
+            $uri,
+            ComponentIds::id($component),
+        ));
+    }
+
+    /** Unmount a component and tell the app it happened. */
     protected function unmountComponent(NativeComponent $component): void
     {
         $component->unmount();
-        $this->announce(new ScreenUnmounted(get_class($component), $this->currentUri()));
+        $this->announce(new ScreenUnmounted(
+            get_class($component),
+            $this->currentUri(),
+            ComponentIds::id($component),
+        ));
     }
 
     /**

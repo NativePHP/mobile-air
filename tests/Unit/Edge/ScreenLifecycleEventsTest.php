@@ -3,6 +3,9 @@
 use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\Runtime\ComponentIds;
+use Native\Mobile\Events\Screen\ScreenMounted;
+use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
 
 /*
@@ -15,7 +18,21 @@ use Native\Mobile\Events\Screen\ScreenUnmounted;
 
 class LifecycleProbeScreen extends NativeComponent
 {
+    public bool $mounted = false;
+
+    public bool $resumed = false;
+
     public bool $unmounted = false;
+
+    public function mount(): void
+    {
+        $this->mounted = true;
+    }
+
+    public function onResume(): void
+    {
+        $this->resumed = true;
+    }
 
     public function unmount(): void
     {
@@ -25,11 +42,46 @@ class LifecycleProbeScreen extends NativeComponent
 
 class ExposedRouter extends NativeRouter
 {
+    public function mountAndAnnounce(NativeComponent $component, ?string $uri): void
+    {
+        $this->mountComponent($component, $uri);
+    }
+
+    public function resumeAndAnnounce(NativeComponent $component, ?string $uri): void
+    {
+        $this->resumeComponent($component, $uri);
+    }
+
     public function unmountAndAnnounce(NativeComponent $component): void
     {
         $this->unmountComponent($component);
     }
 }
+
+it('announces the exact screen mounted and resumed by the navigation loop', function () {
+    Event::fake();
+    $router = new ExposedRouter;
+    $component = new LifecycleProbeScreen;
+
+    $router->mountAndAnnounce($component, '/counter');
+    $router->resumeAndAnnounce($component, '/counter');
+
+    expect($component->mounted)->toBeTrue()
+        ->and($component->resumed)->toBeTrue();
+
+    Event::assertDispatched(
+        ScreenMounted::class,
+        fn (ScreenMounted $event): bool => $event->component === LifecycleProbeScreen::class
+            && $event->uri === '/counter'
+            && $event->componentId === ComponentIds::id($component),
+    );
+    Event::assertDispatched(
+        ScreenResumed::class,
+        fn (ScreenResumed $event): bool => $event->component === LifecycleProbeScreen::class
+            && $event->uri === '/counter'
+            && $event->componentId === ComponentIds::id($component),
+    );
+});
 
 it('announces a screen leaving the stack', function () {
     Event::fake();
@@ -40,7 +92,8 @@ it('announces a screen leaving the stack', function () {
 
     Event::assertDispatched(
         ScreenUnmounted::class,
-        fn (ScreenUnmounted $event): bool => $event->component === LifecycleProbeScreen::class,
+        fn (ScreenUnmounted $event): bool => $event->component === LifecycleProbeScreen::class
+            && $event->componentId === ComponentIds::id($component),
     );
 });
 
