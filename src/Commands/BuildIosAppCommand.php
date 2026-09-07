@@ -77,6 +77,23 @@ class BuildIosAppCommand extends Command
         // Clear the last log
         file_put_contents($this->logPath, '');
 
+        if (! getenv('NATIVEPHP_XCODE_BUILD')) {
+            // The version and build number MUST be settled before the app is
+            // bundled. createAppZip() stamps bundled.version (and seals the .env
+            // carrying NATIVEPHP_APP_VERSION_CODE) from the current config, and
+            // AppUpdateManager compares that identity on launch to decide whether
+            // to re-extract app.zip. Resolving the build number afterwards left
+            // the shipped identity describing the PREVIOUS build, so the store
+            // accepted the upload — CFBundleVersion was new — while every device
+            // saw an unchanged identity and kept running the previous build's PHP.
+            //
+            // Android already does it in this order: PackageCommand resolves the
+            // build number from the Play Store before buildAndroid() writes the
+            // bundle, which is why only iOS was affected.
+            $this->updateAppVersion();
+            $this->updateBuildNumber();
+        }
+
         $this->bundleLaravelApp();
 
         if (! getenv('NATIVEPHP_XCODE_BUILD')) {
@@ -143,8 +160,9 @@ class BuildIosAppCommand extends Command
 
     private function configureXcodeProject(): bool
     {
-        $this->updateAppVersion();
-        $this->updateBuildNumber();
+        // updateAppVersion() / updateBuildNumber() are deliberately NOT called
+        // here — they run in handle() before the app is bundled, so the identity
+        // baked into app.zip matches the build number stamped on the project.
         $this->setAppName();
         $this->updateInfoPlistFiles();
         $this->configureDeviceOrientations();
