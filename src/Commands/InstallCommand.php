@@ -3,7 +3,7 @@
 namespace Native\Mobile\Commands;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Console\Command;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\InstallsAndroid;
@@ -285,7 +285,7 @@ class InstallCommand extends Command
                 (new Client)->get($versionsUrl)->getBody()->getContents(),
                 true
             );
-        } catch (RequestException $e) {
+        } catch (TransferException) {
             error("Failed to fetch versions manifest from: {$versionsUrl}");
         }
     }
