@@ -3,7 +3,7 @@
 namespace Native\Mobile\Traits;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use ZipArchive;
@@ -115,7 +115,7 @@ trait InstallsIos
                     ]);
 
                     return true;
-                } catch (RequestException) {
+                } catch (TransferException) {
                     // Remove any partial/error response written to disk
                     if (file_exists($zipFile)) {
                         unlink($zipFile);
