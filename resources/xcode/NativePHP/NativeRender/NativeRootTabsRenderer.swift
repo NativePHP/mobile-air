@@ -569,6 +569,12 @@ private struct PerTabContent: View {
                 // business, and wrapping the TabView risks iOS 26's search
                 // capsule (mobile-air #308).
                 .dismissesKeyboardOnTap()
+                // TabView hosts its content on its own `systemBackground`
+                // container, which covers the base layer ContentView paints —
+                // so without this the window background never reaches a tabbed
+                // screen. Attached here rather than to the TabView for the same
+                // reason as `dismissesKeyboardOnTap` above (#308).
+                .modifier(TabScreenBackgroundModifier())
         } else {
             Color.clear
         }
@@ -736,6 +742,26 @@ private struct BottomBarInsetModifier: ViewModifier {
         let darkBg = colorScheme == .dark ? node.props.getColor("dark_bg_color", default: 0) : 0
         let argb = darkBg != 0 ? darkBg : (node.style?.bgColor ?? 0)
         return argb != 0 ? Color(argb: argb) : .clear
+    }
+}
+
+/// Backgrounds a tab-hosted screen with the PHP-set window background
+/// (`UI.SetBackground`), extended through the safe areas. TabView draws its
+/// own `systemBackground` container behind tab content with no SwiftUI
+/// override hook, and that container covers the base layer `ContentView`
+/// paints — so without this a dark app renders on white in light appearance
+/// on every tabbed screen. Twin of `NativeRootStackRenderer`'s
+/// `StackScreenBackgroundModifier`. No-op when no override is set,
+/// preserving the stock appearance.
+private struct TabScreenBackgroundModifier: ViewModifier {
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
+
+    func body(content: Content) -> some View {
+        if let color = windowBackground.color {
+            content.background(color.ignoresSafeArea())
+        } else {
+            content
+        }
     }
 }
 
