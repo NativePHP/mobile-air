@@ -7,6 +7,7 @@ use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Enums\TextAlign;
+use Native\Mobile\Edge\Enums\WhiteSpace;
 use Native\Mobile\Platform;
 
 class TailwindParser
@@ -642,6 +643,14 @@ class TailwindParser
             $class === 'lowercase' => ['textTransform' => 2],
             $class === 'capitalize' => ['textTransform' => 3],
             $class === 'normal-case' => ['textTransform' => 0],
+
+            // Whitespace policy (CSS `white-space`). Decides how the collector
+            // normalizes `<text>` content: the default collapses every run to
+            // one space, `whitespace-pre-line` keeps the line breaks inside a
+            // `{{ $message }}` while still collapsing spaces, `whitespace-pre`
+            // keeps every byte. Sent as int in CSS keyword order: 0 normal,
+            // 1 nowrap, 2 pre, 3 pre-line, 4 pre-wrap.
+            str_starts_with($class, 'whitespace-') => self::parseWhiteSpace(substr($class, 11)),
 
             // Text selection (opt-in). Mirrors CSS `user-select`: `select-text`
             // makes this node's subtree long-press-selectable (native Copy
@@ -1341,6 +1350,13 @@ class TailwindParser
             'left' => ['positionLeft' => (float) $value],
             default => null,
         };
+    }
+
+    private static function parseWhiteSpace(string $token): ?array
+    {
+        $policy = WhiteSpace::fromToken($token);
+
+        return $policy === null ? null : ['whiteSpace' => $policy->value];
     }
 
     private static function resolveColor(string $value, string $key): ?array

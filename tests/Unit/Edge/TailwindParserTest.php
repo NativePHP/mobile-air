@@ -952,3 +952,14 @@ it('marks authored zero insets with the -0.0 sentinel so bottom-0 can anchor', f
     expect(TailwindParser::parse('bottom-2'))->toBe(['positionBottom' => 8]);
     expect(TailwindParser::parse('-right-8'))->toBe(['positionRight' => -32.0]);
 });
+
+// ── Whitespace ──────────────────────────────────────
+
+it('parses whitespace classes to the CSS keyword order', function () {
+    expect(TailwindParser::parse('whitespace-normal'))->toBe(['whiteSpace' => 0]);
+    expect(TailwindParser::parse('whitespace-nowrap'))->toBe(['whiteSpace' => 1]);
+    expect(TailwindParser::parse('whitespace-pre'))->toBe(['whiteSpace' => 2]);
+    expect(TailwindParser::parse('whitespace-pre-line'))->toBe(['whiteSpace' => 3]);
+    expect(TailwindParser::parse('whitespace-pre-wrap'))->toBe(['whiteSpace' => 4]);
+    expect(TailwindParser::parse('whitespace-bogus'))->toBe([]);
+});

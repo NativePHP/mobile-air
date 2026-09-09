@@ -17,9 +17,14 @@ class Text extends NativeBladeComponent
     {
         return function (array $data) {
             $attrs = $data['attributes']->getAttributes();
-            $text = preg_replace('/\s+/', ' ', trim(html_entity_decode(strip_tags($data['slot']->toHtml()), ENT_QUOTES, 'UTF-8')));
+            $text = NativeElementCollector::normalizeLeafText(
+                $data['slot']->toHtml(),
+                NativeElementCollector::whiteSpacePolicy($attrs)
+            );
             if ($text !== '') {
                 $attrs['text'] = $text;
+            } else {
+                $attrs = NativeElementCollector::applyTextWhiteSpace($attrs);
             }
 
             if (NativeElementCollector::isStreaming()) {
