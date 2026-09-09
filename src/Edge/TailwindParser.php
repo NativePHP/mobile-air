@@ -7,7 +7,6 @@ use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Enums\TextAlign;
-use Native\Mobile\Edge\Enums\WhiteSpace;
 use Native\Mobile\Platform;
 
 class TailwindParser
@@ -644,20 +643,20 @@ class TailwindParser
             $class === 'capitalize' => ['textTransform' => 3],
             $class === 'normal-case' => ['textTransform' => 0],
 
-            // Whitespace policy (CSS `white-space`). Decides how the collector
-            // normalizes `<text>` content: the default collapses every run to
-            // one space, `whitespace-pre-line` keeps the line breaks inside a
-            // `{{ $message }}` while still collapsing spaces, `whitespace-pre`
-            // keeps every byte. Sent as int in CSS keyword order: 0 normal,
-            // 1 nowrap, 2 pre, 3 pre-line, 4 pre-wrap.
-            str_starts_with($class, 'whitespace-') => self::parseWhiteSpace(substr($class, 11)),
-
             // Text selection (opt-in). Mirrors CSS `user-select`: `select-text`
             // makes this node's subtree long-press-selectable (native Copy
             // menu); `select-none` opts a subtree back out inside a selectable
             // ancestor. Inherited/container-scoped on both platforms.
             $class === 'select-text' => ['selectable' => 1],
             $class === 'select-none' => ['selectable' => 0],
+
+            // Whitespace (CSS white-space) for text content. Consumed by the
+            // PHP capture layer before the text prop is serialized, so it
+            // never rides the wire. `nowrap` and `pre-wrap` need native
+            // line-wrap props and stay unparsed for now.
+            $class === 'whitespace-normal' => ['whitespace' => 'normal'],
+            $class === 'whitespace-pre-line' => ['whitespace' => 'pre-line'],
+            $class === 'whitespace-pre-wrap' => ['whitespace' => 'pre-wrap'],
 
             // Letter spacing (tracking), in em (relative to font size).
             $class === 'tracking-tighter' => ['letterSpacing' => -0.05],
@@ -1350,13 +1349,6 @@ class TailwindParser
             'left' => ['positionLeft' => (float) $value],
             default => null,
         };
-    }
-
-    private static function parseWhiteSpace(string $token): ?array
-    {
-        $policy = WhiteSpace::fromToken($token);
-
-        return $policy === null ? null : ['whiteSpace' => $policy->value];
     }
 
     private static function resolveColor(string $value, string $key): ?array
