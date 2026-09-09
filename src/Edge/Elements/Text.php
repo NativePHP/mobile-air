@@ -5,7 +5,6 @@ namespace Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Enums\TextAlign;
-use Native\Mobile\Edge\Enums\WhiteSpace;
 
 class Text extends Element
 {
@@ -41,7 +40,6 @@ class Text extends Element
             'text-align' => 'textAlign',
             'max-lines' => 'maxLines',
             'content-transition' => 'contentTransition',
-            'white-space' => 'whiteSpace',
         ] as $kebab => $camel) {
             if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
                 $attrs[$camel] = $attrs[$kebab];
@@ -102,24 +100,6 @@ class Text extends Element
         if (isset($attrs['contentTransition'])) {
             $this->contentTransition((string) $attrs['contentTransition']);
         }
-        if (($whiteSpace = WhiteSpace::fromAttributes($attrs)) !== null) {
-            $this->whiteSpace($whiteSpace);
-        }
-    }
-
-    /**
-     * Whitespace policy (CSS `white-space`). The collector applies it to the
-     * text on capture; the wire value is forwarded so renderers can honour
-     * the wrapping half (`nowrap`, `pre`) natively.
-     */
-    public function whiteSpace(WhiteSpace|string $policy): static
-    {
-        $resolved = $policy instanceof WhiteSpace ? $policy : WhiteSpace::fromToken($policy);
-        if ($resolved !== null) {
-            $this->textProps['white_space'] = $resolved->value;
-        }
-
-        return $this;
     }
 
     public function fontSize(float $size): static
