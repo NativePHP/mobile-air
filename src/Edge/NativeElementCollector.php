@@ -10,6 +10,7 @@ use Native\Mobile\Edge\Elements\Stack;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
+use Native\Mobile\Edge\Enums\WhiteSpace;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
 
 class NativeElementCollector
@@ -101,6 +102,9 @@ class NativeElementCollector
      * (children === null means a leaf run).
      */
     protected static array $textFrames = [];
+
+    /** True while a captured slot descriptor is being emitted as a leaf (see leaf()). */
+    protected static bool $emittingText = false;
 
     /**
      * Plugin-registered attribute capture.
@@ -246,6 +250,7 @@ class NativeElementCollector
         static::$stack = [];
         static::$roots = [];
         static::$textFrames = [];
+        static::$emittingText = false;
         static::$keyPathStack = [];
 
         try {
@@ -1066,6 +1071,13 @@ class NativeElementCollector
         static::guardAgainstComponentSlot($type);
         $attrs = static::stripEventBindings($attrs);
 
+        // A `:text` attribute honours an explicit whitespace policy. Slot text
+        // arriving via emitTextDescriptor() was already normalized on capture
+        // (runs keep their edge spaces), so it must not pass through again.
+        if ($type === 'text' && ! static::$emittingText) {
+            $attrs = static::applyTextWhiteSpace($attrs);
+        }
+
         if (static::$streaming) {
             static::leafStreaming($type, $attrs);
 
@@ -1110,10 +1122,11 @@ class NativeElementCollector
         $buffer = ob_get_clean();
         $frame = array_pop(static::$textFrames);
         $isNested = ! empty(static::$textFrames);
+        $policy = static::whiteSpacePolicy($frame['attrs']);
 
         if (! empty($frame['children'])) {
             // Container: its own trailing buffer is a run; own text stays empty.
-            $tail = static::normalizeRunText($buffer);
+            $tail = static::normalizeRunText($buffer, $policy);
             if ($tail !== '') {
                 $frame['children'][] = ['attrs' => ['text' => $tail], 'children' => null];
             }
@@ -1123,7 +1136,7 @@ class NativeElementCollector
             // spaces), but a top-level leaf keeps today's exact trimmed +
             // whitespace-collapsed string so nothing else regresses.
             $attrs = $frame['attrs'];
-            $text = $isNested ? static::normalizeRunText($buffer) : static::normalizeLeafText($buffer);
+            $text = $isNested ? static::normalizeRunText($buffer, $policy) : static::normalizeLeafText($buffer, $policy);
             if ($text !== '') {
                 $attrs['text'] = $text;
             }
@@ -1144,9 +1157,9 @@ class NativeElementCollector
     /** Flush the currently-buffered raw text as a run of the top frame. */
     protected static function captureRawRunIntoTopFrame(): void
     {
-        $text = static::normalizeRunText(ob_get_clean());
+        $top = count(static::$textFrames) - 1;
+        $text = static::normalizeRunText(ob_get_clean(), static::whiteSpacePolicy(static::$textFrames[$top]['attrs']));
         if ($text !== '') {
-            $top = count(static::$textFrames) - 1;
             static::$textFrames[$top]['children'][] = ['attrs' => ['text' => $text], 'children' => null];
         }
     }
@@ -1154,24 +1167,65 @@ class NativeElementCollector
     /**
      * Whitespace policy for a raw run: drop pure-whitespace segments (inter-tag
      * newlines/indentation are formatting, not content) so multiline markup
-     * doesn't inject spurious spaces; collapse internal runs of whitespace to a
-     * single space but PRESERVE meaningful leading/trailing spaces (a run may be
-     * `" / "`, or prose like `"Use "` before an inline chip).
+     * doesn't inject spurious spaces; normalize internal whitespace per the
+     * element's policy (collapse by default) but PRESERVE meaningful
+     * leading/trailing spaces (a run may be `" / "`, or prose like `"Use "`
+     * before an inline chip).
      */
-    protected static function normalizeRunText(string $raw): string
+    protected static function normalizeRunText(string $raw, ?WhiteSpace $policy = null): string
     {
         $s = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
         if (trim($s) === '') {
             return '';
         }
 
-        return preg_replace('/\s+/', ' ', $s);
+        return ($policy ?? WhiteSpace::Normal)->apply($s);
     }
 
-    /** Leaf `<text>` text: today's exact behavior (trim + collapse). */
-    protected static function normalizeLeafText(string $raw): string
+    /**
+     * Leaf `<text>` slot text. The edges are always trimmed — the newline and
+     * indentation around a slot are template formatting under every policy —
+     * and the interior follows the element's whitespace policy: collapsed to
+     * single spaces by default, line breaks kept under `whitespace-pre-line`,
+     * every byte kept under `whitespace-pre`.
+     */
+    public static function normalizeLeafText(string $raw, ?WhiteSpace $policy = null): string
     {
-        return preg_replace('/\s+/', ' ', trim(html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8')));
+        return ($policy ?? WhiteSpace::Normal)->apply(trim(html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8')));
+    }
+
+    /**
+     * The whitespace policy an element's attributes declare, via a
+     * `whitespace-*` class or a `white-space` attribute. Null when the element
+     * says nothing, so each capture path keeps its own default.
+     */
+    public static function whiteSpacePolicy(array $attrs): ?WhiteSpace
+    {
+        if (isset($attrs['class']) && is_string($attrs['class']) && str_contains($attrs['class'], 'whitespace-')) {
+            $attrs = array_merge(TailwindParser::parse($attrs['class']), $attrs);
+        }
+
+        return WhiteSpace::fromAttributes($attrs);
+    }
+
+    /**
+     * A `:text` attribute reaches the tree byte-for-byte by default (the value
+     * came from PHP, not from a template buffer, so nothing needs undoing). An
+     * explicit whitespace policy on the element applies to it as well, so slot
+     * and attribute agree whenever the author has said what they want.
+     */
+    public static function applyTextWhiteSpace(array $attrs): array
+    {
+        if (! isset($attrs['text']) || ! is_string($attrs['text'])) {
+            return $attrs;
+        }
+
+        $policy = static::whiteSpacePolicy($attrs);
+        if ($policy !== null) {
+            $attrs['text'] = $policy->apply(trim($attrs['text']));
+        }
+
+        return $attrs;
     }
 
     /**
@@ -1182,7 +1236,12 @@ class NativeElementCollector
     protected static function emitTextDescriptor(array $descriptor): void
     {
         if ($descriptor['children'] === null) {
-            static::leaf('text', $descriptor['attrs']);
+            static::$emittingText = true;
+            try {
+                static::leaf('text', $descriptor['attrs']);
+            } finally {
+                static::$emittingText = false;
+            }
 
             return;
         }
@@ -1231,6 +1290,7 @@ class NativeElementCollector
         static::$streaming = false;
         static::$pollIntervals = [];
         static::$textFrames = [];
+        static::$emittingText = false;
         // Phase 1 — clear any leftover key-path entries between frames
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).
