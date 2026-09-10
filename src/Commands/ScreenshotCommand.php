@@ -13,14 +13,31 @@ final class ScreenshotCommand extends Command
     /** `xcrun simctl`'s own alias for "whichever simulator is currently booted". */
     private const string DEFAULT_IOS_TARGET = 'booted';
 
-    protected $signature = 'native:screenshot
+    private const float DEFAULT_CROP_PERCENT = 0.25;
+
+    /** Exclusive ceiling for `--crop-percent` when trimming both edges at once (each edge takes half the budget). */
+    private const float BOTH_EDGES_CROP_PERCENT_CEILING = 0.5;
+
+    /** Exclusive ceiling for `--crop-percent` when keeping a strip nearest a single edge. */
+    private const float SINGLE_EDGE_CROP_PERCENT_CEILING = 1.0;
+
+    protected $description = 'Capture a screenshot of the app on a running simulator, emulator, or device';
+
+    public function __construct()
+    {
+        $this->signature = sprintf(
+            'native:screenshot
         {os : Platform (android/a or ios/i)}
         {udid? : Specific simulator/emulator UDID (iOS defaults to the booted simulator; Android requires exactly one connected device when omitted)}
         {--output= : File path to write the PNG to}
         {--crop= : top/bottom keep only a strip nearest that edge; both trims that fraction off each edge and keeps the middle}
-        {--crop-percent=0.25 : Fraction of the full image height the crop strip uses (0-1, exclusive; below 0.5 for --crop=both), used with --crop}';
+        {--crop-percent=%s : Fraction of the full image height the crop strip uses (0-1, exclusive; below %s for --crop=both), used with --crop}',
+            self::DEFAULT_CROP_PERCENT,
+            self::BOTH_EDGES_CROP_PERCENT_CEILING,
+        );
 
-    protected $description = 'Capture a screenshot of the app on a running simulator, emulator, or device';
+        parent::__construct();
+    }
 
     public function handle(): int
     {
@@ -62,7 +79,9 @@ final class ScreenshotCommand extends Command
         }
 
         $cropPercent = (float) $this->option('crop-percent');
-        $cropPercentCeiling = $crop === ScreenshotCrop::Both ? 0.5 : 1.0;
+        $cropPercentCeiling = $crop === ScreenshotCrop::Both
+            ? self::BOTH_EDGES_CROP_PERCENT_CEILING
+            : self::SINGLE_EDGE_CROP_PERCENT_CEILING;
 
         if ($crop !== null && ($cropPercent <= 0 || $cropPercent >= $cropPercentCeiling)) {
             $this->error(sprintf(
