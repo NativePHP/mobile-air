@@ -39,6 +39,15 @@ import java.util.concurrent.locks.LockSupport
  * 154: prop_offset       158: prop_size (u16)
  */
 class NativeElementBridge private constructor() {
+
+    /**
+     * Delivery arm for the web surface, implemented by MainActivity.
+     * See sendNativeEvent for why it exists.
+     */
+    fun interface WebEventSink {
+        fun onNativeEvent(eventName: String, payloadJson: String)
+    }
+
     companion object {
         private const val TAG = "NativeElementBridge"
         // Wire-format node stride. Mirrors iOS's `nodeSize` and the
@@ -842,6 +851,12 @@ class NativeElementBridge private constructor() {
          * Inject a native event into the element event queue.
          * This wakes up nativephp_element_wait_event() on the PHP side.
          * Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
+         *
+         * The queue is only drained by an EDGE screen's PHP runloop, so the
+         * event is ALSO offered to the web delivery sink — on a webview
+         * screen nothing else would ever carry it to the page or to PHP.
+         * Internal control signals (`__`-prefixed, e.g. __deeplink) exist
+         * solely to wake the runloop and stay off the web arm.
          */
         fun sendNativeEvent(eventName: String, payloadJson: String) {
             val nameBytes = eventName.toByteArray(Charsets.UTF_8)
@@ -853,6 +868,21 @@ class NativeElementBridge private constructor() {
             buf.putInt(payloadBytes.size)
             buf.put(payloadBytes)
             nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+
+            if (!eventName.startsWith("__")) {
+                webEventSink?.get()?.onNativeEvent(eventName, payloadJson)
+            }
+        }
+
+        /** Held weakly so a destroyed activity is never kept alive. The
+         *  implementor must therefore be an object with its own lifecycle
+         *  (the activity), not a lambda owned only by this reference.
+         *  Volatile because plugin threads emit events off the main thread. */
+        @Volatile
+        private var webEventSink: java.lang.ref.WeakReference<WebEventSink>? = null
+
+        fun installWebEventSink(sink: WebEventSink) {
+            webEventSink = java.lang.ref.WeakReference(sink)
         }
 
         /* ── Tree Diff — reuse unchanged node references ── */
