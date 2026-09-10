@@ -394,10 +394,18 @@ trait RunsIos
         $lastUsedUdid = $this->getLastUsedIosDevice();
         $filteredDevices = $this->filterIosDevices($devices, $lastUsedUdid);
 
-        $target = $this->showDeviceSelector($filteredDevices, $lastUsedUdid, showAllOption: true);
+        // Mirrors RunsAndroid's single-device shortcut: with exactly one
+        // sensible candidate, there's nothing to choose between, so skip the
+        // interactive prompt — which also lets a --no-tty run (no attached
+        // terminal) succeed instead of failing on a prompt it can't answer.
+        if (count($filteredDevices) === 1) {
+            $target = $filteredDevices[0]['udid'];
+        } else {
+            $target = $this->showDeviceSelector($filteredDevices, $lastUsedUdid, showAllOption: true);
 
-        if ($target === '__show_all__') {
-            $target = $this->showDeviceSelector($devices, $lastUsedUdid, showAllOption: false);
+            if ($target === '__show_all__') {
+                $target = $this->showDeviceSelector($devices, $lastUsedUdid, showAllOption: false);
+            }
         }
 
         $this->saveLastUsedIosDevice($target);
