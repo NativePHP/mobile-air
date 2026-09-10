@@ -9,6 +9,7 @@ beforeEach(function () {
 
 afterEach(function () {
     NativeTagPrecompiler::setActive(false);
+    NativeTagPrecompiler::resetElementEvents();
 });
 
 it('rewrites unknown @event attributes to _event- bindings', function () {
@@ -38,4 +39,43 @@ it('supports blade interpolation in event binding expressions', function () {
     $result = ($this->precompiler)('<native:order-row @saved="markSaved({{ $id }})" />');
 
     expect($result)->toContain("'_event-saved' => 'markSaved(' . (\$id) . ')'");
+});
+
+it('rewrites a registered custom event to an underscored attr instead of _event-', function () {
+    NativeTagPrecompiler::registerElementEvents(['link']);
+
+    $result = ($this->precompiler)('<native:markdown @link="open" />');
+
+    expect($result)->toContain("'_link' => 'open'");
+    expect($result)->not->toContain('_event-link');
+    expect($result)->not->toContain('@link');
+});
+
+it('rewrites every registered custom event name, not only link', function () {
+    NativeTagPrecompiler::registerElementEvents(['link', 'scan']);
+
+    $result = ($this->precompiler)('<native:scanner @link="open" @scan="onScan" />');
+
+    expect($result)->toContain("'_link' => 'open'");
+    expect($result)->toContain("'_scan' => 'onScan'");
+    expect($result)->not->toContain('_event-link');
+    expect($result)->not->toContain('_event-scan');
+});
+
+it('still rewrites unregistered names as child-component bindings', function () {
+    NativeTagPrecompiler::registerElementEvents(['link']);
+
+    $result = ($this->precompiler)('<native:order-row @link="open" @order-shipped="markShipped(5)" />');
+
+    expect($result)->toContain("'_link' => 'open'");
+    expect($result)->toContain("'_event-order-shipped' => 'markShipped(5)'");
+});
+
+it('rewrites a hyphenated registered name to an underscored attr', function () {
+    NativeTagPrecompiler::registerElementEvents(['link-tapped']);
+
+    $result = ($this->precompiler)('<native:markdown @link-tapped="open" />');
+
+    expect($result)->toContain("'_link-tapped' => 'open'");
+    expect($result)->not->toContain('_event-link-tapped');
 });

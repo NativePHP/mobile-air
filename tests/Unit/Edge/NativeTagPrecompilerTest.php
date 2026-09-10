@@ -15,6 +15,7 @@ beforeEach(function () {
 
 afterEach(function () {
     NativeTagPrecompiler::setActive(false);
+    NativeTagPrecompiler::resetElementEvents();
 });
 
 it('is a no-op unless native compilation is active', function () {

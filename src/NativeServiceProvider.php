@@ -690,6 +690,10 @@ class NativeServiceProvider extends PackageServiceProvider
                 ElementRegistry::register($type, $elementClass);
             }
 
+            if (isset($component['element_events']) && is_array($component['element_events'])) {
+                NativeTagPrecompiler::registerElementEvents($component['element_events']);
+            }
+
             // Convert type to kebab Blade tag name:
             // "button" → "native-button"
             // "stripe.payment_sheet" → "native-stripe-payment-sheet"

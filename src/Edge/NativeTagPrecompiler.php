@@ -53,6 +53,42 @@ class NativeTagPrecompiler
         'tapUp' => 'pressUp',
     ];
 
+    /**
+     * Built-in `@event` names rewritten to `_event` before Blade treats `@`
+     * as a directive. Longer spellings precede their prefix so `pressDown`
+     * wins over `press`. UI plugins add more names via registerElementEvents().
+     *
+     * @var string[]
+     */
+    private const CORE_ELEMENT_EVENTS = [
+        'tapDown',
+        'tapUp',
+        'tap',
+        'pressDown',
+        'pressUp',
+        'press',
+        'longPress',
+        'doubleTap',
+        'selectionChange',
+        'change',
+        'submit',
+        'dismiss',
+        'refresh',
+        'endReached',
+        'swipeDelete',
+        'swipe',
+        'pinchEnd',
+        'navigated',
+    ];
+
+    /**
+     * Plugin-declared `@event` names, merged into the known-event pass so
+     * `@link` becomes `_link` instead of a child-component `_event-link`.
+     *
+     * @var string[]
+     */
+    private static array $customElementEvents = [];
+
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
     /**
@@ -124,6 +160,61 @@ class NativeTagPrecompiler
         self::$active = $active;
 
         return $previous;
+    }
+
+    /**
+     * Register extra `@event` names so they compile like `@change` instead of
+     * being rewritten as child-component `_event-*` bindings.
+     *
+     * Names are global at compile time — the same constraint as `@change`.
+     * Prefer spellings that will not collide with `$this->emit()` events on
+     * nested components. Core names are ignored if re-registered.
+     *
+     * @param  string[]  $names
+     */
+    public static function registerElementEvents(array $names): void
+    {
+        foreach ($names as $name) {
+            if (! is_string($name) || $name === '' || ! preg_match('/^[a-zA-Z][a-zA-Z0-9_-]*$/', $name)) {
+                continue;
+            }
+
+            if (in_array($name, self::CORE_ELEMENT_EVENTS, true) || in_array($name, self::$customElementEvents, true)) {
+                continue;
+            }
+
+            self::$customElementEvents[] = $name;
+        }
+    }
+
+    /**
+     * Plugin-declared event names (excludes the core `@press` / `@change` set).
+     *
+     * @return string[]
+     */
+    public static function customElementEvents(): array
+    {
+        return self::$customElementEvents;
+    }
+
+    /**
+     * Drop plugin-registered names. Used by tests; boot re-registers from
+     * plugin manifests and Element::elementEvents().
+     */
+    public static function resetElementEvents(): void
+    {
+        self::$customElementEvents = [];
+    }
+
+    /**
+     * Alternation of known element-event names, longest first, preg_quoted.
+     */
+    private static function elementEventAlternation(): string
+    {
+        $names = array_merge(self::CORE_ELEMENT_EVENTS, self::$customElementEvents);
+        usort($names, fn (string $a, string $b) => strlen($b) <=> strlen($a));
+
+        return implode('|', array_map(static fn (string $name) => preg_quote($name, '/'), $names));
     }
 
     /**
@@ -257,21 +348,19 @@ class NativeTagPrecompiler
             $value
         );
 
-        // Convert @tap, @tapDown, @tapUp, @longPress, @doubleTap, @change,
-        // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
-        // @pinchEnd, @navigated, @selectionChange to underscored versions before Blade
-        // interprets @ as a directive.
+        // Convert known `@event=` attributes (core + plugin-registered) to
+        // underscored versions before Blade interprets @ as a directive.
         // Longer spellings precede their prefix (`pressDown`/`pressUp` before
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
-        // `selectionChange` shares no prefix with `change` — the alternation
-        // is anchored at `@`, so `change` can't match mid-word — but it sits
-        // before it anyway to keep the longer-first convention obvious.
-        $value = preg_replace('/@(tapDown|tapUp|tap|pressDown|pressUp|press|longPress|doubleTap|selectionChange|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
+        $value = preg_replace('/@('.self::elementEventAlternation().')=/', '_$1=', $value);
 
         // Any REMAINING `@name="..."` attribute is a child-component event
         // binding — the tag-level half of `$this->emit()`:
         //
         //     <native:order-row :order="$o" @order-shipped="markShipped({{ $o->id }})" />
+        //
+        // Plugin-declared names (see registerElementEvents()) are consumed
+        // by the known-event pass above, so they never reach this rewrite.
         //
         // Rewritten to a plain `_event-name` attribute (the attr parser
         // rejects '@'), which mountChildComponent() strips off and maps to

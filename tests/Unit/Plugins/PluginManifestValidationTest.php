@@ -280,6 +280,73 @@ class PluginManifestValidationTest extends TestCase
     /**
      * @test
      *
+     * UI components may declare Blade `@event` names as element_events.
+     */
+    public function it_parses_component_element_events(): void
+    {
+        $manifest = new PluginManifest([
+            'namespace' => 'TestPlugin',
+            'components' => [
+                [
+                    'type' => 'markdown',
+                    'element' => 'Vendor\\Markdown\\Elements\\Markdown',
+                    'blade' => 'Vendor\\Markdown\\Components\\Markdown',
+                    'ios_renderer' => 'MarkdownRenderer',
+                    'element_events' => ['link', 'scan'],
+                ],
+            ],
+        ]);
+
+        $this->assertSame(['link', 'scan'], $manifest->components[0]['element_events']);
+    }
+
+    /**
+     * @test
+     */
+    public function it_rejects_invalid_element_events_names(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('element_events');
+
+        new PluginManifest([
+            'namespace' => 'TestPlugin',
+            'components' => [
+                [
+                    'type' => 'markdown',
+                    'element' => 'Vendor\\Markdown\\Elements\\Markdown',
+                    'blade' => 'Vendor\\Markdown\\Components\\Markdown',
+                    'ios_renderer' => 'MarkdownRenderer',
+                    'element_events' => ['not a valid name'],
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * @test
+     */
+    public function it_rejects_non_array_element_events(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('element_events');
+
+        new PluginManifest([
+            'namespace' => 'TestPlugin',
+            'components' => [
+                [
+                    'type' => 'markdown',
+                    'element' => 'Vendor\\Markdown\\Elements\\Markdown',
+                    'blade' => 'Vendor\\Markdown\\Components\\Markdown',
+                    'ios_renderer' => 'MarkdownRenderer',
+                    'element_events' => 'link',
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * @test
+     *
      * The manifest should be convertible to an array for serialization.
      */
     public function it_converts_to_array(): void
