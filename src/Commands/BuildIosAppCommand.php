@@ -1247,14 +1247,7 @@ class BuildIosAppCommand extends Command
             output: $this->output
         );
 
-        // The app is already built by now, so a post_build hook that fails has
-        // nothing left to stop. Say so and leave the run green rather than
-        // unwinding over a finished build.
-        try {
-            $hookRunner->runPostBuildHooks();
-        } catch (\Throwable $e) {
-            $this->warn("⚠️  {$e->getMessage()}");
-        }
+        $hookRunner->runPostBuildHooks();
     }
 
     /**

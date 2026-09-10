@@ -123,7 +123,16 @@ class PluginHookRunner
      */
     public function runPostBuildHooks(): void
     {
-        $this->runHook(self::HOOK_POST_BUILD);
+        // The app is already built by now, so one plugin's failed post_build
+        // hook has nothing left to stop and no claim on the plugins after it.
+        // Warn per plugin and keep going rather than abandoning the rest.
+        foreach ($this->plugins as $plugin) {
+            try {
+                $this->runPluginHook($plugin, self::HOOK_POST_BUILD);
+            } catch (\Throwable $e) {
+                $this->warn("⚠️  {$e->getMessage()}");
+            }
+        }
     }
 
     /**
