@@ -109,9 +109,15 @@ trait WatchesIos
             if ($viteRunning) {
                 $this->info('Vite dev server detected - syncing hot file to simulator');
                 $hotFileDestination = $derivedDataPath.'/Documents/app/public/ios-hot';
-                @mkdir(dirname($hotFileDestination), 0755, true);
-                copy($viteHotFile, $hotFileDestination);
-                $this->triggerIosReload();
+                $hotFileDirectory = dirname($hotFileDestination);
+
+                if (! is_dir($hotFileDirectory) && ! @mkdir($hotFileDirectory, 0755, true) && ! is_dir($hotFileDirectory)) {
+                    $this->warn("Could not create {$hotFileDirectory} - the app will not find the Vite dev server.");
+                } elseif (! @copy($viteHotFile, $hotFileDestination)) {
+                    $this->warn("Could not copy the hot file to {$hotFileDestination} - the app will not find the Vite dev server.");
+                } else {
+                    $this->triggerIosReload();
+                }
             }
 
             $this->startIosWatching($derivedDataPath, $viteHotFile);

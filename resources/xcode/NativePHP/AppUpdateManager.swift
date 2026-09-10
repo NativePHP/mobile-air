@@ -126,8 +126,9 @@ class AppUpdateManager {
             let utf8Path = entry.path(using: .utf8)
             let rawPath = utf8Path.isEmpty ? entry.path : utf8Path
 
-            // Normalize to NFC: macOS sources may emit NFD filenames; iOS APFS stores
-            // bytes verbatim, but PHP autoloaders look up the NFC form.
+            // Retained but inert: appendingPathComponent() re-decomposes the
+            // component, so the name still lands on disk as NFD. Lookups match
+            // anyway — the filesystem compares normalisation-insensitively.
             let normalizedPath = (rawPath as NSString).precomposedStringWithCanonicalMapping
             let destinationPath = destinationURL.appendingPathComponent(normalizedPath)
 
