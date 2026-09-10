@@ -38,7 +38,7 @@ class BuildIosAppCommand extends Command
 
     private string $xcodeProjectPath;
 
-    private int $buildNumber;
+    private int|string $buildNumber;
 
     protected $signature = 'native:build {--target=} {--release} {--simulated} {--no-tty} {--cleanup-provisioning-profile : Clean up CI provisioning profile settings}
         {--upload-to-app-store : Upload iOS app to App Store Connect after packaging}
@@ -52,7 +52,7 @@ class BuildIosAppCommand extends Command
     {
         // Building iOS apps needs Xcode and its command-line tools, so bail out
         // early before we touch the build log or copy any files.
-        if (PHP_OS_FAMILY !== 'Darwin') {
+        if (! $this->runningOnMacOs()) {
             $this->error('native:build requires macOS — building iOS apps needs Xcode and its command-line tools.');
 
             return Command::FAILURE;
@@ -102,6 +102,15 @@ class BuildIosAppCommand extends Command
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Overridable so the ordering in handle() can be exercised on Linux CI,
+     * where the real check would bail before the bundle step is reached.
+     */
+    protected function runningOnMacOs(): bool
+    {
+        return PHP_OS_FAMILY === 'Darwin';
     }
 
     protected function bundleLaravelApp(): void
@@ -228,12 +237,13 @@ class BuildIosAppCommand extends Command
      * config('nativephp.version_code'), so a number resolved any later never
      * reaches the runtime.
      */
-    protected function resolveBuildNumber(): int
+    protected function resolveBuildNumber(): int|string
     {
         // Only increment build number for actual packaging/release builds that will be uploaded
         // Skip for: device runs, simulator builds, cleanup operations, debug builds
         $shouldIncrementBuildNumber = $this->option('release') &&
                                      ! $this->option('target') &&
+                                     ! $this->option('simulated') &&
                                      ! $this->option('cleanup-provisioning-profile');
 
         // Get current build number from config
@@ -262,16 +272,20 @@ class BuildIosAppCommand extends Command
             }
         }
 
-        return $this->buildNumber = (int) $currentBuildNumber;
+        return $this->buildNumber = $currentBuildNumber;
     }
 
     private function applyBuildNumber(): void
     {
+        // handle() resolves before bundling; fall back rather than trip over an
+        // uninitialised property if a future caller reaches here without it.
+        $buildNumber = $this->buildNumber ?? $this->resolveBuildNumber();
+
         // Update CFBundleVersion (build number) in Xcode project
         Process::path($this->xcodeProjectPath)
             ->run([
                 'sed', '-i', null,
-                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$this->buildNumber};|g",
+                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$buildNumber};|g",
                 'project.pbxproj',
             ]);
     }

@@ -18,6 +18,9 @@ use Tests\TestCase;
  * bundle, so with the lookup running after the zip was sealed every TestFlight
  * upload of the same version shipped an identical identity and the device kept
  * running the previously extracted code.
+ *
+ * The probe answers the macOS check itself so the handle()-level ordering
+ * tests run on Linux CI, where the real command would bail before bundling.
  */
 class IosBuildNumberBeforeBundleTest extends TestCase
 {
@@ -78,22 +81,30 @@ class IosBuildNumberBeforeBundleTest extends TestCase
 
     public function test_device_and_simulator_runs_never_touch_the_build_number(): void
     {
-        $command = $this->makeCommand(storeLatestBuild: 41);
+        foreach ([['--target' => 'ABC123'], ['--simulated' => true]] as $options) {
+            $command = $this->makeCommand(storeLatestBuild: 41);
 
-        $number = $this->resolveWith($command, ['--release' => true, '--target' => 'ABC123']);
+            $number = $this->resolveWith($command, ['--release' => true, ...$options]);
 
-        $this->assertSame(1, $number);
-        $this->assertSame('0', config('nativephp.version_code'));
-        $this->assertStringContainsString('NATIVEPHP_APP_VERSION_CODE=0', File::get($this->testProjectPath.'/.env'));
-        $this->assertSame(0, $command->storeLookups);
+            $this->assertSame(1, $number);
+            $this->assertSame('0', config('nativephp.version_code'));
+            $this->assertStringContainsString('NATIVEPHP_APP_VERSION_CODE=0', File::get($this->testProjectPath.'/.env'));
+            $this->assertSame(0, $command->storeLookups);
+        }
+    }
+
+    public function test_a_dotted_build_number_reaches_the_xcode_project_untouched(): void
+    {
+        // CFBundleVersion accepts "1.5"; the old code interpolated the raw
+        // config value, so an int cast here would silently rewrite it.
+        config(['nativephp.version_code' => '1.5']);
+        $command = $this->makeCommand(storeLatestBuild: null);
+
+        $this->assertSame('1.5', $this->resolveWith($command, ['--target' => 'ABC123']));
     }
 
     public function test_build_number_is_resolved_before_the_laravel_app_is_bundled(): void
     {
-        if (PHP_OS_FAMILY !== 'Darwin') {
-            $this->markTestSkipped('native:build refuses to run off macOS; the source-order guard below covers CI.');
-        }
-
         $command = $this->makeCommand(storeLatestBuild: 41);
 
         try {
@@ -109,10 +120,6 @@ class IosBuildNumberBeforeBundleTest extends TestCase
 
     public function test_xcode_driven_builds_keep_their_own_build_number(): void
     {
-        if (PHP_OS_FAMILY !== 'Darwin') {
-            $this->markTestSkipped('native:build refuses to run off macOS.');
-        }
-
         // Xcode's build phase runs `native:build --release` with this set.
         // Archiving from Xcode must not bump .env or call App Store Connect.
         putenv('NATIVEPHP_XCODE_BUILD=1');
@@ -130,22 +137,6 @@ class IosBuildNumberBeforeBundleTest extends TestCase
         $this->assertSame(0, $command->storeLookups);
     }
 
-    public function test_handle_resolves_the_build_number_before_bundling_in_source(): void
-    {
-        // CI runs on Linux where handle() bails before any of this, so pin the
-        // ordering in the source as well: resolve, then bundle, then apply.
-        $source = file_get_contents((new \ReflectionClass(BuildIosAppCommand::class))->getFileName());
-        $handle = substr($source, strpos($source, 'public function handle()'));
-
-        $resolve = strpos($handle, '$this->resolveBuildNumber()');
-        $bundle = strpos($handle, '$this->bundleLaravelApp()');
-        $configure = strpos($handle, '$this->configureXcodeProject()');
-
-        $this->assertNotFalse($resolve);
-        $this->assertLessThan($bundle, $resolve);
-        $this->assertLessThan($configure, $bundle);
-    }
-
     private function makeCommand(?int $storeLatestBuild): IosBuildNumberProbe
     {
         $command = new IosBuildNumberProbe;
@@ -155,7 +146,7 @@ class IosBuildNumberBeforeBundleTest extends TestCase
         return $command;
     }
 
-    private function resolveWith(IosBuildNumberProbe $command, array $options, bool $viaHandle = false): int
+    private function resolveWith(IosBuildNumberProbe $command, array $options, bool $viaHandle = false): int|string
     {
         $input = new ArrayInput($options, $command->getDefinition());
         $output = new OutputStyle($input, new BufferedOutput);
@@ -182,9 +173,14 @@ class IosBuildNumberProbe extends BuildIosAppCommand
         $this->components = new Factory($output);
     }
 
-    public function resolveBuildNumber(): int
+    public function resolveBuildNumber(): int|string
     {
         return parent::resolveBuildNumber();
+    }
+
+    protected function runningOnMacOs(): bool
+    {
+        return true;
     }
 
     public function getLatestBuildNumberFromStore(string $platform): ?int
