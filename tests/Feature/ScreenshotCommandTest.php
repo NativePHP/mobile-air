@@ -206,4 +206,194 @@ final class ScreenshotCommandTest extends TestCase
         // reported as the zero-devices case.
         Process::assertRan('adb devices');
     }
+
+    public function test_it_rejects_an_invalid_crop_value(): void
+    {
+        Process::fake();
+
+        $this->artisan('native:screenshot', ['os' => 'ios', '--output' => $this->outputDir.'/shot.png', '--crop' => 'left'])
+            ->expectsOutputToContain("Invalid --crop 'left'")
+            ->assertFailed();
+
+        Process::assertNothingRan();
+    }
+
+    public function test_it_rejects_an_out_of_range_crop_percent(): void
+    {
+        Process::fake();
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $this->outputDir.'/shot.png',
+            '--crop' => 'top',
+            '--crop-percent' => '1.5',
+        ])
+            ->expectsOutputToContain('--crop-percent must be between 0 and 1')
+            ->assertFailed();
+
+        Process::assertNothingRan();
+    }
+
+    public function test_it_rejects_a_crop_percent_of_exactly_one_for_a_single_edge(): void
+    {
+        Process::fake();
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $this->outputDir.'/shot.png',
+            '--crop' => 'top',
+            '--crop-percent' => '1',
+        ])
+            ->expectsOutputToContain('--crop-percent must be between 0 and 1')
+            ->assertFailed();
+
+        Process::assertNothingRan();
+    }
+
+    public function test_ios_capture_crops_to_a_top_strip(): void
+    {
+        $outputPath = $this->outputDir.'/shot.png';
+
+        Process::fake([
+            '*simctl*screenshot*' => function () use ($outputPath) {
+                $this->writeTestPng($outputPath, 200, 1000);
+
+                return Process::result();
+            },
+        ]);
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $outputPath,
+            '--crop' => 'top',
+            '--crop-percent' => '0.3',
+        ])->assertSuccessful();
+
+        $cropped = imagecreatefrompng($outputPath);
+        $this->assertSame(200, imagesx($cropped));
+        $this->assertSame(300, imagesy($cropped));
+        imagedestroy($cropped);
+    }
+
+    public function test_capture_crops_both_edges_and_keeps_the_middle(): void
+    {
+        $outputPath = $this->outputDir.'/shot.png';
+
+        Process::fake([
+            '*simctl*screenshot*' => function () use ($outputPath) {
+                $this->writeTestPng($outputPath, 200, 1000);
+
+                return Process::result();
+            },
+        ]);
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $outputPath,
+            '--crop' => 'both',
+            '--crop-percent' => '0.1',
+        ])->assertSuccessful();
+
+        // 10% trimmed off each of the 1000px edges leaves the middle 800px.
+        $cropped = imagecreatefrompng($outputPath);
+        $this->assertSame(200, imagesx($cropped));
+        $this->assertSame(800, imagesy($cropped));
+        imagedestroy($cropped);
+    }
+
+    public function test_it_rejects_a_crop_percent_of_half_or_more_for_both_edges(): void
+    {
+        Process::fake();
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $this->outputDir.'/shot.png',
+            '--crop' => 'both',
+            '--crop-percent' => '0.5',
+        ])
+            ->expectsOutputToContain('--crop-percent must be between 0 and 0.5')
+            ->assertFailed();
+
+        Process::assertNothingRan();
+    }
+
+    public function test_capture_fails_cleanly_when_a_near_ceiling_both_crop_percent_rounds_away_the_whole_image(): void
+    {
+        $outputPath = $this->outputDir.'/shot.png';
+
+        // 1000 * 0.4995 = 499.5, which rounds to 500 per edge — 2 * 500 is
+        // the entire image height, leaving nothing for the middle. This is
+        // a valid --crop-percent by the (0, 0.5) exclusive range check, so
+        // only the crop step itself (not upfront validation) can catch it.
+        Process::fake([
+            '*simctl*screenshot*' => function () use ($outputPath) {
+                $this->writeTestPng($outputPath, 200, 1000);
+
+                return Process::result();
+            },
+        ]);
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $outputPath,
+            '--crop' => 'both',
+            '--crop-percent' => '0.4995',
+        ])
+            ->expectsOutputToContain('failed to crop')
+            ->assertFailed();
+    }
+
+    public function test_android_capture_crops_to_a_bottom_strip(): void
+    {
+        $outputPath = $this->outputDir.'/shot.png';
+
+        Process::fake([
+            'adb version' => Process::result(),
+            'adb devices' => Process::result(output: "List of devices attached\nemulator-5554\tdevice\n"),
+            '*screencap*' => function () use ($outputPath) {
+                $this->writeTestPng($outputPath, 200, 1000);
+
+                return Process::result();
+            },
+        ]);
+
+        $this->artisan('native:screenshot', [
+            'os' => 'android',
+            '--output' => $outputPath,
+            '--crop' => 'bottom',
+            '--crop-percent' => '0.2',
+        ])->assertSuccessful();
+
+        $cropped = imagecreatefrompng($outputPath);
+        $this->assertSame(200, imagesx($cropped));
+        $this->assertSame(200, imagesy($cropped));
+        imagedestroy($cropped);
+    }
+
+    public function test_capture_without_crop_leaves_the_image_full_size(): void
+    {
+        $outputPath = $this->outputDir.'/shot.png';
+
+        Process::fake([
+            '*simctl*screenshot*' => function () use ($outputPath) {
+                $this->writeTestPng($outputPath, 200, 1000);
+
+                return Process::result();
+            },
+        ]);
+
+        $this->artisan('native:screenshot', ['os' => 'ios', '--output' => $outputPath])
+            ->assertSuccessful();
+
+        $full = imagecreatefrompng($outputPath);
+        $this->assertSame(1000, imagesy($full));
+        imagedestroy($full);
+    }
+
+    private function writeTestPng(string $path, int $width, int $height): void
+    {
+        $image = imagecreatetruecolor($width, $height);
+        imagepng($image, $path);
+        imagedestroy($image);
+    }
 }

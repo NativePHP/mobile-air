@@ -16,7 +16,9 @@ final class ScreenshotCommand extends Command
     protected $signature = 'native:screenshot
         {os : Platform (android/a or ios/i)}
         {udid? : Specific simulator/emulator UDID (iOS defaults to the booted simulator; Android requires exactly one connected device when omitted)}
-        {--output= : File path to write the PNG to}';
+        {--output= : File path to write the PNG to}
+        {--crop= : top/bottom keep only a strip nearest that edge; both trims that fraction off each edge and keeps the middle}
+        {--crop-percent=0.25 : Fraction of the full image height the crop strip uses (0-1, exclusive; below 0.5 for --crop=both), used with --crop}';
 
     protected $description = 'Capture a screenshot of the app on a running simulator, emulator, or device';
 
@@ -47,10 +49,120 @@ final class ScreenshotCommand extends Command
             return self::FAILURE;
         }
 
-        return match ($platform) {
+        $crop = $this->resolveCrop();
+
+        if ($crop === false) {
+            return self::FAILURE;
+        }
+
+        if ($crop !== null && ! extension_loaded('gd')) {
+            $this->error('--crop requires the PHP gd extension, which is not loaded.');
+
+            return self::FAILURE;
+        }
+
+        $cropPercent = (float) $this->option('crop-percent');
+        $cropPercentCeiling = $crop === ScreenshotCrop::Both ? 0.5 : 1.0;
+
+        if ($crop !== null && ($cropPercent <= 0 || $cropPercent >= $cropPercentCeiling)) {
+            $this->error(sprintf(
+                '--crop-percent must be between 0 and %s (exclusive) for --crop=%s, got %s.',
+                $cropPercentCeiling,
+                $crop->value,
+                $this->option('crop-percent')
+            ));
+
+            return self::FAILURE;
+        }
+
+        $result = match ($platform) {
             ScreenshotPlatform::Ios => $this->captureIos($outputPath),
             ScreenshotPlatform::Android => $this->captureAndroid($outputPath),
         };
+
+        if ($result !== self::SUCCESS || $crop === null) {
+            return $result;
+        }
+
+        if (! $this->cropScreenshot($outputPath, $crop, $cropPercent)) {
+            $this->error(sprintf('Captured %s but failed to crop it.', $outputPath));
+
+            return self::FAILURE;
+        }
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Parses `--crop`. Returns null when the option was omitted (a valid,
+     * common case — no cropping), the resolved crop, or false after
+     * reporting an invalid value.
+     */
+    private function resolveCrop(): ScreenshotCrop|false|null
+    {
+        $raw = (string) $this->option('crop');
+
+        if ($raw === '') {
+            return null;
+        }
+
+        $crop = ScreenshotCrop::tryFrom($raw);
+
+        if ($crop === null) {
+            $this->error(sprintf("Invalid --crop '%s'. Use 'top', 'bottom', or 'both'.", $raw));
+
+            return false;
+        }
+
+        return $crop;
+    }
+
+    /**
+     * `top`/`bottom` keep only a `$percent` strip nearest that edge —
+     * useful for a screenshot meant to show one bar (a top nav bar, a
+     * bottom tab bar) without the rest of the screen. `both` trims
+     * `$percent` off each edge instead and keeps the middle — useful for
+     * dropping OS chrome (the status bar, the home indicator) while
+     * keeping the app's own content visible.
+     */
+    private function cropScreenshot(string $path, ScreenshotCrop $crop, float $percent): bool
+    {
+        $source = @imagecreatefrompng($path);
+
+        if ($source === false) {
+            return false;
+        }
+
+        $width = imagesx($source);
+        $height = imagesy($source);
+        $edge = max(1, (int) round($height * $percent));
+
+        [$y, $cropHeight] = match ($crop) {
+            ScreenshotCrop::Top => [0, $edge],
+            ScreenshotCrop::Bottom => [$height - $edge, $edge],
+            ScreenshotCrop::Both => [$edge, $height - (2 * $edge)],
+        };
+
+        // A --crop-percent near the (0.5, exclusive) ceiling for --crop=both
+        // can round two symmetric edges into consuming the entire image —
+        // fail rather than silently write a near-empty screenshot.
+        if ($cropHeight < 1) {
+            imagedestroy($source);
+
+            return false;
+        }
+
+        $cropped = imagecrop($source, ['x' => 0, 'y' => $y, 'width' => $width, 'height' => $cropHeight]);
+        imagedestroy($source);
+
+        if ($cropped === false) {
+            return false;
+        }
+
+        $saved = imagepng($cropped, $path);
+        imagedestroy($cropped);
+
+        return $saved;
     }
 
     private function captureIos(string $outputPath): int
