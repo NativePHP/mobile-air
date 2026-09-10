@@ -38,6 +38,8 @@ class BuildIosAppCommand extends Command
 
     private string $xcodeProjectPath;
 
+    private int $buildNumber;
+
     protected $signature = 'native:build {--target=} {--release} {--simulated} {--no-tty} {--cleanup-provisioning-profile : Clean up CI provisioning profile settings}
         {--upload-to-app-store : Upload iOS app to App Store Connect after packaging}
         {--jump-by= : Add extra number to the suggested version (e.g. --jump-by=10 to skip ahead)}
@@ -77,6 +79,17 @@ class BuildIosAppCommand extends Command
         // Clear the last log
         file_put_contents($this->logPath, '');
 
+        // Resolve the build number BEFORE the Laravel app is bundled. The zipped
+        // .env and bundled.version are the runtime's only way to tell one build
+        // from the next: if they're sealed with the boot-time value and the
+        // App Store Connect lookup only runs afterwards, every upload of the
+        // same version ships an identical bundle identity and the device never
+        // re-extracts. Xcode-driven builds manage their own build number and
+        // must not have .env bumped underneath them, so they keep the boot value.
+        if (! getenv('NATIVEPHP_XCODE_BUILD')) {
+            $this->resolveBuildNumber();
+        }
+
         $this->bundleLaravelApp();
 
         if (! getenv('NATIVEPHP_XCODE_BUILD')) {
@@ -91,7 +104,7 @@ class BuildIosAppCommand extends Command
         return Command::SUCCESS;
     }
 
-    private function bundleLaravelApp(): void
+    protected function bundleLaravelApp(): void
     {
         @mkdir($this->appPath, 0755, true);
 
@@ -144,7 +157,7 @@ class BuildIosAppCommand extends Command
     private function configureXcodeProject(): bool
     {
         $this->updateAppVersion();
-        $this->updateBuildNumber();
+        $this->applyBuildNumber();
         $this->setAppName();
         $this->updateInfoPlistFiles();
         $this->configureDeviceOrientations();
@@ -206,7 +219,16 @@ class BuildIosAppCommand extends Command
             ]);
     }
 
-    private function updateBuildNumber(): void
+    /**
+     * Work out the build number this build ships with, and persist it to .env
+     * and config so everything downstream (the zipped .env, bundled.version,
+     * bundle_meta.json, plugin hooks and the Xcode project) agrees on it.
+     *
+     * Must run before bundleLaravelApp(): the bundle copies .env and reads
+     * config('nativephp.version_code'), so a number resolved any later never
+     * reaches the runtime.
+     */
+    protected function resolveBuildNumber(): int
     {
         // Only increment build number for actual packaging/release builds that will be uploaded
         // Skip for: device runs, simulator builds, cleanup operations, debug builds
@@ -230,19 +252,26 @@ class BuildIosAppCommand extends Command
             $currentBuildNumber = 1;
             if ($shouldIncrementBuildNumber) {
                 $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+                config(['nativephp.version_code' => $currentBuildNumber]);
             }
         } else {
             if ($shouldIncrementBuildNumber) {
                 $currentBuildNumber = (int) $currentBuildNumber + 1;
                 $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+                config(['nativephp.version_code' => $currentBuildNumber]);
             }
         }
 
+        return $this->buildNumber = (int) $currentBuildNumber;
+    }
+
+    private function applyBuildNumber(): void
+    {
         // Update CFBundleVersion (build number) in Xcode project
         Process::path($this->xcodeProjectPath)
             ->run([
                 'sed', '-i', null,
-                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$currentBuildNumber};|g",
+                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$this->buildNumber};|g",
                 'project.pbxproj',
             ]);
     }
