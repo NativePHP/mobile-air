@@ -3,6 +3,7 @@
 namespace Tests\Unit\Concerns;
 
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Process;
 use Laravel\Prompts\Exceptions\NonInteractiveValidationException;
 use Native\Mobile\Concerns\RunsIos;
 use Orchestra\Testbench\TestCase;
@@ -21,6 +22,8 @@ class RunsIosTest extends TestCase
         File::makeDirectory($this->testProjectPath, 0755, true);
 
         app()->setBasePath($this->testProjectPath);
+
+        Process::preventStrayProcesses();
     }
 
     protected function tearDown(): void
@@ -70,5 +73,69 @@ class RunsIosTest extends TestCase
         $this->expectException(NonInteractiveValidationException::class);
 
         $this->promptForIosTarget($devices);
+    }
+
+    public function test_resolve_default_target_prefers_the_one_booted_simulator_over_prompting()
+    {
+        // Two installed simulators would normally force a prompt, but only
+        // one of them is actually booted.
+        $devices = [
+            [
+                'name' => 'iPhone 17 Pro',
+                'version' => '26.5',
+                'udid' => 'FC4BFF3D-8B7B-4331-ACB7-ED78DCC313A6',
+                'category' => 'Simulators',
+            ],
+            [
+                'name' => 'iPhone 17',
+                'version' => '26.5',
+                'udid' => '0D25A1A9-959C-404C-8E40-7863A7AF508F',
+                'category' => 'Simulators',
+            ],
+        ];
+
+        Process::fake([
+            '*simctl*list*devices*booted*' => Process::result(json_encode([
+                'devices' => [
+                    'com.apple.CoreSimulator.SimRuntime.iOS-26-5' => [
+                        ['udid' => 'FC4BFF3D-8B7B-4331-ACB7-ED78DCC313A6', 'state' => 'Booted'],
+                    ],
+                ],
+            ])),
+        ]);
+
+        $target = $this->resolveDefaultIosTarget($devices);
+
+        $this->assertSame('FC4BFF3D-8B7B-4331-ACB7-ED78DCC313A6', $target);
+    }
+
+    public function test_resolve_default_target_falls_back_to_prompting_with_no_booted_simulator()
+    {
+        $devices = [
+            [
+                'name' => 'iPhone 17 Pro',
+                'version' => '18.6',
+                'udid' => 'FC4BFF3D-8B7B-4331-ACB7-ED78DCC313A6',
+                'category' => 'Simulators',
+            ],
+            [
+                'name' => 'iPhone 17',
+                'version' => '18.6',
+                'udid' => '0D25A1A9-959C-404C-8E40-7863A7AF508F',
+                'category' => 'Simulators',
+            ],
+        ];
+
+        Process::fake([
+            '*simctl*list*devices*booted*' => Process::result(json_encode([
+                'devices' => [
+                    'com.apple.CoreSimulator.SimRuntime.iOS-18-6' => [],
+                ],
+            ])),
+        ]);
+
+        $this->expectException(NonInteractiveValidationException::class);
+
+        $this->resolveDefaultIosTarget($devices);
     }
 }
