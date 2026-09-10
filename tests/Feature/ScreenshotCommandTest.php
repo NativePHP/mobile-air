@@ -343,6 +343,115 @@ final class ScreenshotCommandTest extends TestCase
             ->assertFailed();
     }
 
+    public function test_ios_capture_crops_to_a_top_strip_excluding_an_offset(): void
+    {
+        $outputPath = $this->outputDir.'/shot.png';
+
+        Process::fake([
+            '*simctl*screenshot*' => function () use ($outputPath) {
+                $this->writeTestPng($outputPath, 200, 1000);
+
+                return Process::result();
+            },
+        ]);
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $outputPath,
+            '--crop' => 'top',
+            '--crop-percent' => '0.3',
+            '--crop-offset' => '0.1',
+        ])->assertSuccessful();
+
+        // Skips the first 10% (100px, the "status bar"), then keeps a 30%
+        // (300px) strip below it.
+        $cropped = imagecreatefrompng($outputPath);
+        $this->assertSame(200, imagesx($cropped));
+        $this->assertSame(300, imagesy($cropped));
+        imagedestroy($cropped);
+    }
+
+    public function test_android_capture_crops_to_a_bottom_strip_excluding_an_offset(): void
+    {
+        $outputPath = $this->outputDir.'/shot.png';
+
+        Process::fake([
+            'adb version' => Process::result(),
+            'adb devices' => Process::result(output: "List of devices attached\nemulator-5554\tdevice\n"),
+            '*screencap*' => function () use ($outputPath) {
+                $this->writeTestPng($outputPath, 200, 1000);
+
+                return Process::result();
+            },
+        ]);
+
+        $this->artisan('native:screenshot', [
+            'os' => 'android',
+            '--output' => $outputPath,
+            '--crop' => 'bottom',
+            '--crop-percent' => '0.2',
+            '--crop-offset' => '0.05',
+        ])->assertSuccessful();
+
+        // Skips the last 5% (50px, e.g. the home indicator), then keeps a
+        // 20% (200px) strip above it.
+        $cropped = imagecreatefrompng($outputPath);
+        $this->assertSame(200, imagesx($cropped));
+        $this->assertSame(200, imagesy($cropped));
+        imagedestroy($cropped);
+    }
+
+    public function test_it_rejects_crop_offset_with_both_edges(): void
+    {
+        Process::fake();
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $this->outputDir.'/shot.png',
+            '--crop' => 'both',
+            '--crop-percent' => '0.1',
+            '--crop-offset' => '0.1',
+        ])
+            ->expectsOutputToContain('--crop-offset is not supported with --crop=both')
+            ->assertFailed();
+
+        Process::assertNothingRan();
+    }
+
+    public function test_it_rejects_a_crop_offset_that_leaves_no_room_for_crop_percent(): void
+    {
+        Process::fake();
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $this->outputDir.'/shot.png',
+            '--crop' => 'top',
+            '--crop-percent' => '0.3',
+            '--crop-offset' => '0.8',
+        ])
+            ->expectsOutputToContain('--crop-offset (0.8) plus --crop-percent (0.3) must be less than 1')
+            ->assertFailed();
+
+        Process::assertNothingRan();
+    }
+
+    public function test_it_rejects_a_negative_crop_offset(): void
+    {
+        Process::fake();
+
+        $this->artisan('native:screenshot', [
+            'os' => 'ios',
+            '--output' => $this->outputDir.'/shot.png',
+            '--crop' => 'top',
+            '--crop-percent' => '0.3',
+            '--crop-offset' => '-0.1',
+        ])
+            ->expectsOutputToContain('--crop-offset (-0.1) plus --crop-percent (0.3) must be less than 1')
+            ->assertFailed();
+
+        Process::assertNothingRan();
+    }
+
     public function test_android_capture_crops_to_a_bottom_strip(): void
     {
         $outputPath = $this->outputDir.'/shot.png';

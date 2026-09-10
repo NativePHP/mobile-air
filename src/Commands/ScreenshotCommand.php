@@ -15,6 +15,8 @@ final class ScreenshotCommand extends Command
 
     private const float DEFAULT_CROP_PERCENT = 0.25;
 
+    private const float DEFAULT_CROP_OFFSET = 0.0;
+
     /** Exclusive ceiling for `--crop-percent` when trimming both edges at once (each edge takes half the budget). */
     private const float BOTH_EDGES_CROP_PERCENT_CEILING = 0.5;
 
@@ -31,9 +33,11 @@ final class ScreenshotCommand extends Command
         {udid? : Specific simulator/emulator UDID (iOS defaults to the booted simulator; Android requires exactly one connected device when omitted)}
         {--output= : File path to write the PNG to}
         {--crop= : top/bottom keep only a strip nearest that edge; both trims that fraction off each edge and keeps the middle}
-        {--crop-percent=%s : Fraction of the full image height the crop strip uses (0-1, exclusive; below %s for --crop=both), used with --crop}',
+        {--crop-percent=%s : Fraction of the full image height the crop strip uses (0-1, exclusive; below %s for --crop=both), used with --crop}
+        {--crop-offset=%s : Fraction of the full image height to skip from the --crop edge before measuring --crop-percent — e.g. to exclude the OS status bar from a --crop=top strip. top/bottom only.}',
             self::DEFAULT_CROP_PERCENT,
             self::BOTH_EDGES_CROP_PERCENT_CEILING,
+            self::DEFAULT_CROP_OFFSET,
         );
 
         parent::__construct();
@@ -94,6 +98,27 @@ final class ScreenshotCommand extends Command
             return self::FAILURE;
         }
 
+        $cropOffset = (float) $this->option('crop-offset');
+
+        if ($crop !== null && $cropOffset !== self::DEFAULT_CROP_OFFSET) {
+            if ($crop === ScreenshotCrop::Both) {
+                $this->error('--crop-offset is not supported with --crop=both.');
+
+                return self::FAILURE;
+            }
+
+            if ($cropOffset < 0 || $cropOffset + $cropPercent >= self::SINGLE_EDGE_CROP_PERCENT_CEILING) {
+                $this->error(sprintf(
+                    '--crop-offset (%s) plus --crop-percent (%s) must be less than %s.',
+                    $this->option('crop-offset'),
+                    $this->option('crop-percent'),
+                    self::SINGLE_EDGE_CROP_PERCENT_CEILING,
+                ));
+
+                return self::FAILURE;
+            }
+        }
+
         $result = match ($platform) {
             ScreenshotPlatform::Ios => $this->captureIos($outputPath),
             ScreenshotPlatform::Android => $this->captureAndroid($outputPath),
@@ -103,7 +128,7 @@ final class ScreenshotCommand extends Command
             return $result;
         }
 
-        if (! $this->cropScreenshot($outputPath, $crop, $cropPercent)) {
+        if (! $this->cropScreenshot($outputPath, $crop, $cropPercent, $cropOffset)) {
             $this->error(sprintf('Captured %s but failed to crop it.', $outputPath));
 
             return self::FAILURE;
@@ -142,9 +167,12 @@ final class ScreenshotCommand extends Command
      * bottom tab bar) without the rest of the screen. `both` trims
      * `$percent` off each edge instead and keeps the middle — useful for
      * dropping OS chrome (the status bar, the home indicator) while
-     * keeping the app's own content visible.
+     * keeping the app's own content visible. `$offset` (top/bottom only)
+     * skips that fraction of the height from the crop edge first — e.g.
+     * a `top` crop with an offset can keep a nav bar strip while still
+     * excluding the OS status bar sitting above it.
      */
-    private function cropScreenshot(string $path, ScreenshotCrop $crop, float $percent): bool
+    private function cropScreenshot(string $path, ScreenshotCrop $crop, float $percent, float $offset = 0.0): bool
     {
         $source = @imagecreatefrompng($path);
 
@@ -155,17 +183,19 @@ final class ScreenshotCommand extends Command
         $width = imagesx($source);
         $height = imagesy($source);
         $edge = max(1, (int) round($height * $percent));
+        $offsetPx = (int) round($height * $offset);
 
         [$y, $cropHeight] = match ($crop) {
-            ScreenshotCrop::Top => [0, $edge],
-            ScreenshotCrop::Bottom => [$height - $edge, $edge],
+            ScreenshotCrop::Top => [$offsetPx, $edge],
+            ScreenshotCrop::Bottom => [$height - $edge - $offsetPx, $edge],
             ScreenshotCrop::Both => [$edge, $height - (2 * $edge)],
         };
 
-        // A --crop-percent near the (0.5, exclusive) ceiling for --crop=both
-        // can round two symmetric edges into consuming the entire image —
-        // fail rather than silently write a near-empty screenshot.
-        if ($cropHeight < 1) {
+        // An --crop-offset large enough to push the window past the far
+        // edge, or a --crop-percent near the (0.5, exclusive) ceiling for
+        // --crop=both rounding two symmetric edges into consuming the
+        // entire image — fail rather than silently write a wrong crop.
+        if ($cropHeight < 1 || $y < 0 || $y + $cropHeight > $height) {
             imagedestroy($source);
 
             return false;
