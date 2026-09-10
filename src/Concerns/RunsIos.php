@@ -266,8 +266,10 @@ trait RunsIos
 
         $this->fixProductBundleName($basePath, 'build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app');
 
-        $this->components->task('Installing app on simulator', function () use ($basePath, $target, $verbose) {
-            Process::path($basePath)
+        $installFailed = false;
+
+        $this->components->task('Installing app on simulator', function () use ($basePath, $target, $verbose, &$installFailed) {
+            $installResult = Process::path($basePath)
                 ->forever()
                 ->tty($verbose && ! $this->option('no-tty'))
                 ->run(
@@ -280,12 +282,28 @@ trait RunsIos
                         }
                     }
                 );
+
+            if (! $installResult->successful()) {
+                $installFailed = true;
+
+                return false;
+            }
+
+            return true;
         });
 
-        $appId = config('nativephp.app_id');
+        if ($installFailed) {
+            error('App installation failed!');
+            note('Check nativephp/ios-build.log for details.');
 
-        $this->components->task('Launching app', function () use ($basePath, $target, $appId, $verbose) {
-            Process::path($basePath)
+            return false;
+        }
+
+        $appId = config('nativephp.app_id');
+        $launchFailed = false;
+
+        $this->components->task('Launching app', function () use ($basePath, $target, $appId, $verbose, &$launchFailed) {
+            $launchResult = Process::path($basePath)
                 ->tty($verbose && ! $this->option('no-tty'))
                 ->run("xcrun simctl launch {$target} {$appId}", function ($type, $output) use ($verbose) {
                     file_put_contents($this->iosLogPath, $output, FILE_APPEND);
@@ -294,9 +312,21 @@ trait RunsIos
                         $this->output->write($output);
                     }
                 });
+
+            if (! $launchResult->successful()) {
+                $launchFailed = true;
+
+                return false;
+            }
+
+            return true;
         });
 
-        outro('App launched!');
+        if ($launchFailed) {
+            warning('App installed but launch failed - tap the app icon in the simulator.');
+        } else {
+            outro('App launched!');
+        }
 
         if ($this->watching) {
             $this->call('native:watch', [
