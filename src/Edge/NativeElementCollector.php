@@ -1752,26 +1752,12 @@ class NativeElementCollector
         static::applyCustomElementEvents($element, $attrs);
     }
 
-    /**
-     * Wire plugin-declared `@event` attrs (`_link`, `_scan`, …) to
-     * `onLink()` / `onScan()` when those methods exist on the element.
-     *
-     * Names come from NativeTagPrecompiler::customElementEvents() (manifest
-     * + Element::elementEvents() at registration) plus the element's own
-     * elementEvents() so a class that declares them still wires even if the
-     * global registry was reset.
-     */
     protected static function applyCustomElementEvents(Element $element, array $attrs): void
     {
-        $events = array_unique(array_merge(
-            NativeTagPrecompiler::customElementEvents(),
-            $element::elementEvents(),
-        ));
-
-        foreach ($events as $event) {
+        foreach (NativeTagPrecompiler::customElementEvents() as $event) {
             $attr = '_'.$event;
 
-            if (! isset($attrs[$attr]) || ! is_string($attrs[$attr]) || $attrs[$attr] === '') {
+            if (! isset($attrs[$attr])) {
                 continue;
             }
 

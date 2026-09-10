@@ -54,9 +54,7 @@ class NativeTagPrecompiler
     ];
 
     /**
-     * Built-in `@event` names rewritten to `_event` before Blade treats `@`
-     * as a directive. Longer spellings precede their prefix so `pressDown`
-     * wins over `press`. UI plugins add more names via registerElementEvents().
+     * Built-in `@event` names rewritten to `_event` before Blade treats `@` as a directive.
      *
      * @var string[]
      */
@@ -81,12 +79,7 @@ class NativeTagPrecompiler
         'navigated',
     ];
 
-    /**
-     * Plugin-declared `@event` names, merged into the known-event pass so
-     * `@link` becomes `_link` instead of a child-component `_event-link`.
-     *
-     * @var string[]
-     */
+    /** @var string[] Plugin-declared `@event` names. */
     private static array $customElementEvents = [];
 
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
@@ -163,12 +156,8 @@ class NativeTagPrecompiler
     }
 
     /**
-     * Register extra `@event` names so they compile like `@change` instead of
-     * being rewritten as child-component `_event-*` bindings.
-     *
-     * Names are global at compile time — the same constraint as `@change`.
-     * Prefer spellings that will not collide with `$this->emit()` events on
-     * nested components. Core names are ignored if re-registered.
+     * Register extra `@event` names so they compile like `@change`.
+     * Names are global at compile time. Core names are ignored.
      *
      * @param  string[]  $names
      */
@@ -188,8 +177,6 @@ class NativeTagPrecompiler
     }
 
     /**
-     * Plugin-declared event names (excludes the core `@press` / `@change` set).
-     *
      * @return string[]
      */
     public static function customElementEvents(): array
@@ -197,18 +184,13 @@ class NativeTagPrecompiler
         return self::$customElementEvents;
     }
 
-    /**
-     * Drop plugin-registered names. Used by tests; boot re-registers from
-     * plugin manifests and Element::elementEvents().
-     */
+    /** Drop plugin-registered names. Used by tests. */
     public static function resetElementEvents(): void
     {
         self::$customElementEvents = [];
     }
 
-    /**
-     * Alternation of known element-event names, longest first, preg_quoted.
-     */
+    /** Known `@event` names, longest first, preg_quoted. */
     private static function elementEventAlternation(): string
     {
         $names = array_merge(self::CORE_ELEMENT_EVENTS, self::$customElementEvents);
@@ -358,9 +340,6 @@ class NativeTagPrecompiler
         // binding — the tag-level half of `$this->emit()`:
         //
         //     <native:order-row :order="$o" @order-shipped="markShipped({{ $o->id }})" />
-        //
-        // Plugin-declared names (see registerElementEvents()) are consumed
-        // by the known-event pass above, so they never reach this rewrite.
         //
         // Rewritten to a plain `_event-name` attribute (the attr parser
         // rejects '@'), which mountChildComponent() strips off and maps to

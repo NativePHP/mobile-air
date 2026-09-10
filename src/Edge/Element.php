@@ -130,15 +130,7 @@ abstract class Element
     }
 
     /**
-     * Extra Blade `@event` names this element accepts as first-class handlers.
-     *
-     * Each name is rewritten `@link="open"` → `_link="open"` (instead of a
-     * child-component `_event-link` binding) and, when the element defines
-     * `onLink()`, NativeElementCollector::applyCallbacks() calls it.
-     *
-     * Registered automatically when the element class is added to
-     * ElementRegistry. Plugins may also list the same names as
-     * `element_events` on the component entry in nativephp.json.
+     * Extra Blade `@event` names this element accepts (`@link`, `@scan`, …).
      *
      * @return string[]
      */

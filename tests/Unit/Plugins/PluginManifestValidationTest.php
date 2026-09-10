@@ -279,8 +279,6 @@ class PluginManifestValidationTest extends TestCase
 
     /**
      * @test
-     *
-     * UI components may declare Blade `@event` names as element_events.
      */
     public function it_parses_component_element_events(): void
     {

@@ -69,7 +69,7 @@ class Markdown extends Element
 
 Apps then write `@link="openMarkdownLink"`. The native renderer still sends the payload with `sendTextChangeEvent(callbackId, …)` — PHP routes by callback id.
 
-Registered names are **global** at compile time (the same as `@change`). Pick spellings that will not collide with `$this->emit()` events on nested components.
+Registered names are **global** at compile time (the same as `@change`). If a plugin registers `link`, `@link` on a nested child component is no longer `$this->emit('link')` — it becomes a first-class element handler. Pick spellings that will not collide with child-component emits.
 
 ## v4 Compatibility
 

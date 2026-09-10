@@ -23,7 +23,6 @@ beforeEach(function () {
 afterEach(function () {
     NativeElementCollector::reset();
     NativeTagPrecompiler::resetElementEvents();
-    ElementRegistry::reset();
 });
 
 it('builds a single leaf element', function () {
@@ -379,12 +378,14 @@ it('wires registered custom events to onLink and onScan', function () {
         ->and($props)->toHaveKey('on_scan');
 });
 
-it('wires custom events declared on the element class without global registration', function () {
+it('does not wire class-declared events that were never registered globally', function () {
+    NativeTagPrecompiler::resetElementEvents();
+
     $element = new CustomEventElement;
     $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
     $apply->invoke(null, $element, ['_link' => 'open']);
 
-    expect($element->linkMethod)->toBe('open');
+    expect($element->linkMethod)->toBeNull();
 });
 
 it('ignores a custom event attr when the element has no matching onX method', function () {

@@ -1318,20 +1318,6 @@ class {$name} extends Element
         return \$this;
     }
 
-    /**
-     * Extra Blade `@event` names this element accepts (`@link`, `@scan`, …).
-     * Each name compiles to `_link` / `_scan` instead of a child-component
-     * `_event-*` binding. Pair with onLink() / onScan() and register the
-     * callback id in resolveProps(). Or list the same names as
-     * `element_events` on this component in nativephp.json.
-     *
-     * @return string[]
-     */
-    public static function elementEvents(): array
-    {
-        return [];
-    }
-
     protected function resolveProps(CallbackRegistry \$registry): array
     {
         \$props = \$this->componentProps;

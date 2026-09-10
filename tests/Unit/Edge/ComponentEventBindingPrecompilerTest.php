@@ -41,16 +41,6 @@ it('supports blade interpolation in event binding expressions', function () {
     expect($result)->toContain("'_event-saved' => 'markSaved(' . (\$id) . ')'");
 });
 
-it('rewrites a registered custom event to an underscored attr instead of _event-', function () {
-    NativeTagPrecompiler::registerElementEvents(['link']);
-
-    $result = ($this->precompiler)('<native:markdown @link="open" />');
-
-    expect($result)->toContain("'_link' => 'open'");
-    expect($result)->not->toContain('_event-link');
-    expect($result)->not->toContain('@link');
-});
-
 it('rewrites every registered custom event name, not only link', function () {
     NativeTagPrecompiler::registerElementEvents(['link', 'scan']);
 
@@ -60,6 +50,8 @@ it('rewrites every registered custom event name, not only link', function () {
     expect($result)->toContain("'_scan' => 'onScan'");
     expect($result)->not->toContain('_event-link');
     expect($result)->not->toContain('_event-scan');
+    expect($result)->not->toContain('@link');
+    expect($result)->not->toContain('@scan');
 });
 
 it('still rewrites unregistered names as child-component bindings', function () {

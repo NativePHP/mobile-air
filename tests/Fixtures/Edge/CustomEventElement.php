@@ -5,9 +5,6 @@ namespace Tests\Fixtures\Edge;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
 
-/**
- * Plugin-style leaf used to assert custom `@link` / `@scan` wiring.
- */
 class CustomEventElement extends Element
 {
     protected string $type = 'custom_widget';
