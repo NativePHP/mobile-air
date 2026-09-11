@@ -129,6 +129,16 @@ abstract class Element
         // No-op by default — built-in elements use applyElementProps()
     }
 
+    /**
+     * Extra Blade `@event` names this element accepts (`@link`, `@scan`, …).
+     *
+     * @return string[]
+     */
+    public static function elementEvents(): array
+    {
+        return [];
+    }
+
     // ── Tree building ─────────────────────────────────
 
     public function addChild(Element $child): static

@@ -9,6 +9,10 @@ class ElementRegistry
     public static function register(string $type, string $elementClass): void
     {
         static::$elements[$type] = $elementClass;
+
+        if (is_a($elementClass, Element::class, true)) {
+            NativeTagPrecompiler::registerElementEvents($elementClass::elementEvents());
+        }
     }
 
     public static function has(string $type): bool

@@ -1748,6 +1748,25 @@ class NativeElementCollector
         if (isset($attrs['_navigate'])) {
             $element->setNavigateConfig($attrs['_navigate']);
         }
+
+        static::applyCustomElementEvents($element, $attrs);
+    }
+
+    protected static function applyCustomElementEvents(Element $element, array $attrs): void
+    {
+        foreach (NativeTagPrecompiler::customElementEvents() as $event) {
+            $attr = '_'.$event;
+
+            if (! isset($attrs[$attr])) {
+                continue;
+            }
+
+            $method = 'on'.str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $event)));
+
+            if (method_exists($element, $method)) {
+                $element->{$method}($attrs[$attr]);
+            }
+        }
     }
 
     public static function applyElementProps(Element $element, array $attrs): void

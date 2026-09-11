@@ -22,6 +22,55 @@ Plugins can leverage:
 - **init_function** — native code called during app initialization
 - **Native EDGE components** — plugins can ship their own SwiftUI/Compose EDGE elements
 
+## UI component element events
+
+A UI plugin that needs a first-class Blade handler (`@link`, `@scan`, `@signed`) must **declare** the name. Undeclared `@foo` is rewritten as a child-component binding (`_event-foo`) and stripped off a plain element — that is why hijacking `@change` used to be the only option.
+
+Declare names in either place (both are merged at boot):
+
+```json
+{
+  "type": "markdown",
+  "element": "Vendor\\Markdown\\Elements\\Markdown",
+  "blade": "Vendor\\Markdown\\Components\\Markdown",
+  "ios_renderer": "MarkdownRenderer",
+  "android_renderer": "com.vendor.plugins.markdown.MarkdownRenderer",
+  "element_events": ["link"]
+}
+```
+
+```php
+class Markdown extends Element
+{
+    public static function elementEvents(): array
+    {
+        return ['link'];
+    }
+
+    public function onLink(string $method): static
+    {
+        $this->componentProps['on_link'] = $method;
+
+        return $this;
+    }
+
+    protected function resolveProps(CallbackRegistry $registry): array
+    {
+        $props = $this->componentProps;
+
+        if (isset($props['on_link'])) {
+            $props['on_link'] = $registry->register($props['on_link']);
+        }
+
+        return $props;
+    }
+}
+```
+
+Apps then write `@link="openMarkdownLink"`. The native renderer still sends the payload with `sendTextChangeEvent(callbackId, …)` — PHP routes by callback id.
+
+Registered names are **global** at compile time (the same as `@change`). If a plugin registers `link`, `@link` on a nested child component is no longer `$this->emit('link')` — it becomes a first-class element handler. Pick spellings that will not collide with child-component emits.
+
 ## v4 Compatibility
 
 - Require the SDK with a constraint that allows v4: `"nativephp/mobile": "^3.0|^4.0"`.
@@ -54,7 +103,8 @@ The manifest is the central configuration file. Key fields:
 |---|---|
 | `namespace` | Plugin identifier for code generation |
 | `bridge_functions` | Maps PHP calls to native implementations |
-| `events` | Event classes the plugin dispatches |
+| `events` | Event classes the plugin dispatches (Laravel events from native code) |
+| `components[].element_events` | Blade `@event` names this UI element owns (`["link"]` → `@link`). Do not reuse the top-level `events` key. |
 | `init_function` | Native function called during app init |
 | `android.permissions` | Required Android permissions |
 | `android.dependencies` | Gradle dependencies |
