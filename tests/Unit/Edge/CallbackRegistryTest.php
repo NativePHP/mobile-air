@@ -70,3 +70,45 @@ it('exposes stored navigation configs keyed by stable content-addressed keys', f
         // Same config re-registered anywhere reproduces the identical key.
         ->and((new CallbackRegistry)->registerNavigation(['uri' => '/detail/7']))->toBe($key);
 });
+
+// ── Argument literals ───────────────────────────────
+
+// The conversion to JSON used to be `str_replace("'", '"')`, which rewrote every
+// apostrophe whatever its role. Three silent failures came out of that, and the
+// third is the one worth the guard: the handler runs, with data nobody wrote.
+
+it('keeps an apostrophe inside a double-quoted argument', function () {
+    expect(CallbackRegistry::parse('save("don\'t")'))
+        ->toBe(['method' => 'save', 'args' => ["don't"]]);
+});
+
+it('keeps an escaped apostrophe inside a single-quoted argument', function () {
+    // Previously became `it"s fine` — no error, wrong value, handler invoked anyway.
+    expect(CallbackRegistry::parse("rename('it\\'s fine')"))
+        ->toBe(['method' => 'rename', 'args' => ["it's fine"]]);
+});
+
+it('keeps a double quote inside a single-quoted argument', function () {
+    expect(CallbackRegistry::parse("say('he said \"hi\"')"))
+        ->toBe(['method' => 'say', 'args' => ['he said "hi"']]);
+});
+
+it('still parses the ordinary literals', function () {
+    expect(CallbackRegistry::parse('add(5)'))->toBe(['method' => 'add', 'args' => [5]])
+        ->and(CallbackRegistry::parse("setName('Ada')"))->toBe(['method' => 'setName', 'args' => ['Ada']])
+        ->and(CallbackRegistry::parse('flag(true, null)'))->toBe(['method' => 'flag', 'args' => [true, null]])
+        ->and(CallbackRegistry::parse("pair('a', 'b')"))->toBe(['method' => 'pair', 'args' => ['a', 'b']])
+        ->and(CallbackRegistry::parse('increment'))->toBe(['method' => 'increment', 'args' => []])
+        ->and(CallbackRegistry::parse('reset()'))->toBe(['method' => 'reset', 'args' => []]);
+});
+
+it('keeps a comma inside a quoted argument out of the argument split', function () {
+    expect(CallbackRegistry::parse("greet('Hello, world')"))
+        ->toBe(['method' => 'greet', 'args' => ['Hello, world']]);
+});
+
+it('falls back to no arguments for an expression it cannot parse', function () {
+    // The contract callers rely on (they spread the result), but no longer silent.
+    expect(CallbackRegistry::parse('save(this is not a literal)'))
+        ->toBe(['method' => 'save', 'args' => []]);
+});
