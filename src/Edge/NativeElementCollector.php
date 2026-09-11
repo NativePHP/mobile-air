@@ -10,6 +10,7 @@ use Native\Mobile\Edge\Elements\Stack;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
+use Native\Mobile\Edge\Enums\TextAlign;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
 
 class NativeElementCollector
@@ -358,7 +359,8 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + static::buildVariantProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -407,7 +409,8 @@ class NativeElementCollector
             $props = $element->getResolvedProps(static::$callbacks);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
-                + static::buildCornerRadiusProps($attrs);
+                + static::buildCornerRadiusProps($attrs)
+                + static::buildVariantProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -453,7 +456,8 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildAnimationProps($attrs)
+                + static::buildVariantProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -497,7 +501,8 @@ class NativeElementCollector
             $props = $element->getResolvedProps(static::$callbacks);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
-                + static::buildCornerRadiusProps($attrs);
+                + static::buildCornerRadiusProps($attrs)
+                + static::buildVariantProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -856,6 +861,90 @@ class NativeElementCollector
      * Build dark mode override props from the 'dark' attribute key.
      * Maps TailwindParser output keys to prop names prefixed with 'dark_'.
      */
+    /**
+     * Responsive variants — the `md:` / `lg:` class buckets — as ONE
+     * `_variants` prop: a JSON list of `{min, layout?, style?, props?}`
+     * deltas sorted by min-width. Each delta is built with the same
+     * layout / style / prop builders the base node uses, so a variant
+     * key means exactly what the unprefixed class would have meant.
+     *
+     * Deltas are NOT pre-merged here: the native side folds them onto the
+     * base node cumulatively (base → sm → md → …) at decode time, then
+     * picks the widest entry whose min fits the live window width.
+     * Shipping deltas keeps the wire small and the fold order in one
+     * place.
+     */
+    public static function buildVariantProps(array $attrs): array
+    {
+        if (empty($attrs['variants']) || ! is_array($attrs['variants'])) {
+            return [];
+        }
+
+        $entries = [];
+        foreach ($attrs['variants'] as $name => $inner) {
+            $min = TailwindParser::breakpointMinWidth((string) $name);
+            if ($min === null || ! is_array($inner)) {
+                continue;
+            }
+
+            $entry = ['min' => $min];
+            if (($layout = static::buildLayoutArray($inner)) !== []) {
+                $entry['layout'] = $layout;
+            }
+            if (($style = static::buildStyleArray($inner)) !== []) {
+                $entry['style'] = $style;
+            }
+            $props = static::buildDarkProps($inner)
+                + static::buildGradientProps($inner)
+                + static::buildCornerRadiusProps($inner)
+                + static::buildVariantElementProps($inner);
+            if ($props !== []) {
+                $entry['props'] = $props;
+            }
+            if (count($entry) > 1) {
+                $entries[] = $entry;
+            }
+        }
+
+        if ($entries === []) {
+            return [];
+        }
+
+        usort($entries, fn (array $a, array $b) => $a['min'] <=> $b['min']);
+
+        return ['_variants' => json_encode(array_values($entries))];
+    }
+
+    /**
+     * Element-level keys a variant can carry. These normally reach the
+     * wire through an element's own applyAttributes (Text::fontSize → the
+     * `font_size` prop, LazyGrid::columns → `columns`); a variant has no
+     * element to apply them to, so map the generic ones to their wire
+     * names directly. Kept to keys whose wire name is the same on every
+     * element that honours them.
+     */
+    protected static function buildVariantElementProps(array $attrs): array
+    {
+        $props = [];
+        if (isset($attrs['fontSize'])) {
+            $props['font_size'] = (float) $attrs['fontSize'];
+        }
+        if (isset($attrs['fontWeight'])) {
+            $props['font_weight'] = max(1, min(7, (int) $attrs['fontWeight']));
+        }
+        if (isset($attrs['color'])) {
+            $props['color'] = $attrs['color'];
+        }
+        if (isset($attrs['textAlign']) && ($align = TextAlign::parse($attrs['textAlign'])) !== null) {
+            $props['text_align'] = $align;
+        }
+        if (isset($attrs['gridColumns'])) {
+            $props['columns'] = max(1, (int) $attrs['gridColumns']);
+        }
+
+        return $props;
+    }
+
     public static function buildDarkProps(array $attrs): array
     {
         if (! isset($attrs['dark']) || ! is_array($attrs['dark'])) {
@@ -1507,6 +1596,12 @@ class NativeElementCollector
         // Per-corner radius rides the prop bag for the same reason — the
         // packed node has only one `border_radius` float.
         foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+        // Responsive variants (`md:` / `lg:` classes) ride the prop bag as
+        // one JSON string the native NodeView resolves against the live
+        // window width — the packed node has no room for alternatives.
+        foreach (static::buildVariantProps($attrs) as $key => $value) {
             $element->setProp($key, $value);
         }
 

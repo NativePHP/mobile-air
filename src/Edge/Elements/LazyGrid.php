@@ -50,6 +50,10 @@ class LazyGrid extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        // `grid-cols-N` class first so an explicit `:columns` attribute wins.
+        if (isset($attrs['gridColumns'])) {
+            $this->columns((int) $attrs['gridColumns']);
+        }
         if (isset($attrs['columns'])) {
             $this->columns((int) $attrs['columns']);
         }
