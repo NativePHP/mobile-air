@@ -130,6 +130,34 @@ class PHPBridge(private val context: Context) {
         @Volatile
         private var persistentBooted = false
 
+        /**
+         * Every `php_embed_init` / `php_embed_shutdown` in this process runs
+         * under this lock, whichever lane asks for it.
+         *
+         * `php_embed_init` is process-global however many TSRM contexts the
+         * lanes end up owning: it walks the module registry and allocates
+         * thread-resource ids, and two of them running at once corrupt that
+         * state rather than sharing it. Two concurrent boots SEGV inside
+         * `ts_allocate_fast_id` → `tsrm_update_active_threads` →
+         * `cwd_globals_ctor` → `_emalloc`, and the crash takes the whole
+         * process down — including the activity that was booting.
+         *
+         * The persistent lane has always taken this lock (see
+         * `LaravelEnvironment.extractionLock`, whose comment describes the
+         * same hazard against the classic embed cycles). The worker lane, the
+         * webview lane and the ephemeral lane did not, and the ephemeral one
+         * has no wrapper at all — a plugin reaches it through the raw
+         * `nativeEphemeralBoot` external. A background job starting while the
+         * user opens the app is not an unusual moment; for anything shipping
+         * a widget, a shortcut or a notification it is the normal one.
+         *
+         * Held across boot *and* shutdown, because a shutdown landing in the
+         * middle of another lane's boot is the same collision from the other
+         * side. Not held for the life of a runtime: the lanes are built to
+         * run concurrently once they exist, and they do.
+         */
+        internal val embedLifecycleLock = LaravelEnvironment.extractionLock
+
         init {
             System.loadLibrary("php_wrapper")
         }
@@ -247,7 +275,9 @@ class PHPBridge(private val context: Context) {
         }
 
         val future = phpExecutor.submit<Unit> {
-            nativePersistentShutdown()
+            embedLifecycleLock.withLock {
+                nativePersistentShutdown()
+            }
             persistentBooted = false
             Log.i(TAG, "Persistent runtime shut down")
         }
@@ -279,7 +309,7 @@ class PHPBridge(private val context: Context) {
      * Boot the worker PHP runtime on a dedicated TSRM context.
      * Does NOT use phpExecutor — no contention with UI requests.
      */
-    fun bootWorkerRuntime(): Boolean {
+    fun bootWorkerRuntime(): Boolean = embedLifecycleLock.withLock {
         ensureRuntimeInitialized()
         val result = nativeWorkerBoot(workerBootstrapScript)
         if (result == 0) {
@@ -301,9 +331,57 @@ class PHPBridge(private val context: Context) {
     /**
      * Shut down the worker runtime.
      */
-    fun shutdownWorkerRuntime() {
+    fun shutdownWorkerRuntime() = embedLifecycleLock.withLock {
         nativeWorkerShutdown()
         Log.i(TAG, "Worker runtime shut down")
+    }
+
+    /**
+     * Boot the ephemeral PHP runtime — the generic background TSRM context
+     * documented for plugin use, and the lane a WorkManager job takes when it
+     * started the process after the app was killed.
+     *
+     * Runs on the caller's thread and must: `ephemeral_embed_init` does
+     * `ts_resource(0)` on whichever thread calls it and the shutdown does
+     * `ts_free_thread()`, so boot, run and shutdown all belong to one thread.
+     * Callers are expected to own a single-thread lane for that reason.
+     *
+     * Prefer this over calling [nativeEphemeralBoot] directly: the raw
+     * external does not serialise against the other lanes' `php_embed_init`,
+     * and a background job booting at the same moment as a cold app launch
+     * SEGVs the process. See [embedLifecycleLock].
+     */
+    fun bootEphemeralRuntime(bootstrapPath: String = persistentBootstrapScript): Boolean =
+        embedLifecycleLock.withLock {
+            ensureRuntimeInitialized()
+            val result = nativeEphemeralBoot(bootstrapPath)
+            if (result == 0) {
+                Log.i(TAG, "Ephemeral runtime booted")
+            } else {
+                Log.e(TAG, "Ephemeral runtime boot FAILED (code=$result)")
+            }
+            return result == 0
+        }
+
+    /**
+     * Run an artisan command through the ephemeral interpreter. The lane has
+     * no dispatch: an artisan command is how background PHP is reached.
+     *
+     * Deliberately not under [embedLifecycleLock] — the command is the work,
+     * it can run for minutes, and holding the lock would make every other
+     * lane (a cold app launch among them) wait for it. Only the init and the
+     * shutdown have to be exclusive.
+     */
+    fun runEphemeralArtisan(command: String): String = nativeEphemeralArtisan(command)
+
+    /**
+     * Shut the ephemeral runtime down. Always — an ephemeral runtime left
+     * booted by a background job is a `php_embed_init` the user's next app
+     * launch has to survive.
+     */
+    fun shutdownEphemeralRuntime() = embedLifecycleLock.withLock {
+        nativeEphemeralShutdown()
+        Log.i(TAG, "Ephemeral runtime shut down")
     }
 
     fun handleLaravelRequest(request: PHPRequest): String {
