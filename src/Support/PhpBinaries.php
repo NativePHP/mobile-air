@@ -25,6 +25,10 @@ namespace Native\Mobile\Support;
  * `NativeElementBridge.swift`. They compare the number on the first publish
  * and refuse to render at all on a mismatch, so an app built with mismatched
  * halves runs normally and never draws anything.
+ *
+ * You don't have to remember that: `FormatVersionSyncTest` fails the build
+ * when the two readers disagree with each other, or with the `format_version`
+ * published in the manifest for the release pinned below.
  */
 class PhpBinaries
 {
