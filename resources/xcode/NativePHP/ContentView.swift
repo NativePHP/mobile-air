@@ -186,13 +186,26 @@ struct HotReloadIndicator: View {
 /// Wraps the glass / thin-material material lookup behind an iOS-26
 /// availability check. iOS 26+ gets the real Liquid Glass capsule;
 /// earlier versions fall back to a Capsule-shaped `.thinMaterial`.
+///
+/// The `#if` keeps `.glassEffect` out of the compilation entirely on
+/// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+/// `LiquidGlassAvailability.swift`.
 private struct GlassPillBackground: ViewModifier {
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             content.glassEffect(in: .capsule)
         } else {
-            content.background(.thinMaterial, in: .capsule)
+            fallback(content)
         }
+        #else
+        fallback(content)
+        #endif
+    }
+
+    @ViewBuilder
+    private func fallback(_ content: Content) -> some View {
+        content.background(.thinMaterial, in: .capsule)
     }
 }
 
