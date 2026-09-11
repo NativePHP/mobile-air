@@ -16,6 +16,13 @@ class System
      */
     private static ?string $appearance = null;
 
+    /**
+     * Process-cached current app-window orientation. Same lifecycle as $appearance:
+     * seeded on first read via `System.GetOrientation`, kept fresh by the
+     * OrientationChanged event.
+     */
+    private static ?string $orientation = null;
+
     public function isIos(): bool
     {
         $info = Device::getInfo();
@@ -87,6 +94,50 @@ class System
     {
         if ($mode === 'light' || $mode === 'dark') {
             self::$appearance = $mode;
+        }
+    }
+
+    /**
+     * Current app-window orientation: 'portrait' or 'landscape'. This describes
+     * the window aspect rather than the physical device, which matters in
+     * multi-window modes. Off device (tests, web preview), the bridge is absent
+     * and this returns 'portrait'.
+     */
+    public function orientation(): string
+    {
+        if (self::$orientation !== null) {
+            return self::$orientation;
+        }
+
+        if (function_exists('nativephp_call')) {
+            $result = nativephp_call('System.GetOrientation', '{}');
+            $orientation = json_decode($result ?: '{}', true)['orientation'] ?? null;
+            if ($orientation === 'portrait' || $orientation === 'landscape') {
+                return self::$orientation = $orientation;
+            }
+        }
+
+        return 'portrait';
+    }
+
+    public function isPortrait(): bool
+    {
+        return $this->orientation() === 'portrait';
+    }
+
+    public function isLandscape(): bool
+    {
+        return $this->orientation() === 'landscape';
+    }
+
+    /**
+     * Update the process-cached orientation. Called by the OrientationChanged
+     * listener so `orientation()` stays fresh without re-probing the bridge.
+     */
+    public static function rememberOrientation(string $orientation): void
+    {
+        if ($orientation === 'portrait' || $orientation === 'landscape') {
+            self::$orientation = $orientation;
         }
     }
 

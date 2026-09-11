@@ -14,6 +14,10 @@ use Illuminate\Support\Facades\Facade;
  * @method static bool isDarkMode()
  * @method static bool isLightMode()
  * @method static void rememberAppearance(string $mode)
+ * @method static string orientation()
+ * @method static bool isPortrait()
+ * @method static bool isLandscape()
+ * @method static void rememberOrientation(string $orientation)
  */
 class System extends Facade
 {
