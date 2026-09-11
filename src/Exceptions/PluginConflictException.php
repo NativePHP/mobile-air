@@ -15,11 +15,13 @@ class PluginConflictException extends RuntimeException
         $messages = [];
         foreach ($conflicts as $conflict) {
             $plugins = implode(' and ', $conflict['plugins']);
-            if ($conflict['type'] === 'namespace') {
-                $messages[] = "Namespace '{$conflict['value']}' is used by both {$plugins}";
-            } else {
-                $messages[] = "Bridge function '{$conflict['value']}' is registered by both {$plugins}";
-            }
+            $messages[] = match ($conflict['type']) {
+                'namespace' => "Namespace '{$conflict['value']}' is used by both {$plugins}",
+                'android_dependency' => "Android dependency '{$conflict['value']}' has version conflicts between {$plugins}",
+                'ios_pod_dependency' => "CocoaPods dependency '{$conflict['value']}' has version conflicts between {$plugins}",
+                'ios_swift_package_dependency' => "Swift Package '{$conflict['value']}' has version conflicts between {$plugins}",
+                default => "Bridge function '{$conflict['value']}' is registered by both {$plugins}",
+            };
         }
 
         parent::__construct(
