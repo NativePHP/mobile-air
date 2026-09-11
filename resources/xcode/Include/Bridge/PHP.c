@@ -456,8 +456,24 @@ static void do_dispatch(const dispatch_params_t *params) {
         SG(request_info).content_length = 0;
     }
 
-    // Build dispatch eval code — same pattern as Android
-    static char eval_code[8192];
+    // Build dispatch eval code — same pattern as Android.
+    //
+    // The body is captured with ob_start()/ob_get_clean() around sendContent()
+    // rather than echoed straight through, so it can be inspected before it
+    // crosses the C -> Swift boundary. sendContent() (not getContent()) is still
+    // what generates it, so StreamedResponse / BinaryFileResponse keep working.
+    //
+    // The whole HTTP response (headers + body) travels back to Swift as one
+    // NUL-terminated C string (strdup'd below, then String(cString:) on the
+    // Swift side). A binary body (image, PDF, etc.) breaks that two ways: an
+    // embedded NUL byte truncates the response outright via strdup/strlen, and
+    // non-UTF-8 bytes get mangled by String(cString:). So the body is base64-
+    // encoded whenever it isn't valid UTF-8 or contains a NUL, flagged with an
+    // X-Native-Body-Encoding header that PHPSchemeHandler strips and decodes.
+    //
+    // Keep the PHP below comment-free: it is re-parsed by zend_eval_string on
+    // every request and has to fit eval_code alongside the substituted URI.
+    static char eval_code[16384];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
         "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
@@ -534,14 +550,21 @@ static void do_dispatch(const dispatch_params_t *params) {
         "    );\n"
         "    $__code = $__response->getStatusCode();\n"
         "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
+        "    ob_start();\n"
+        "    $__response->sendContent();\n"
+        "    $__body = ob_get_clean();\n"
+        "    $__isBinary = @preg_match('//u', $__body) !== 1 || strpos($__body, \"\\0\") !== false;\n"
         "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
         "    foreach ($__response->headers->all() as $__name => $__values) {\n"
         "        foreach ($__values as $__value) {\n"
         "            echo \"{$__name}: {$__value}\\r\\n\";\n"
         "        }\n"
         "    }\n"
+        "    if ($__isBinary) {\n"
+        "        echo \"X-Native-Body-Encoding: base64\\r\\n\";\n"
+        "    }\n"
         "    echo \"\\r\\n\";\n"
-        "    $__response->sendContent();\n"
+        "    echo $__isBinary ? base64_encode($__body) : $__body;\n"
         "} catch (\\Throwable $e) {\n"
         "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
         "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
@@ -1341,6 +1364,10 @@ static void do_webview_dispatch(webview_php_slot_t *slot) {
     // Same dispatch shape as the persistent lane, but every request value is
     // inlined — no getenv() merge, so the persistent lane's transient
     // request env vars can never bleed into (or race) this context.
+    // Body capture / base64 handling mirrors do_dispatch above — see the
+    // comment there for why a non-UTF-8 or NUL-bearing body cannot cross the
+    // C -> Swift boundary raw. Keep the PHP below comment-free: it is
+    // re-parsed by zend_eval_string on every request.
     char *eval_code = NULL;
     asprintf(&eval_code,
         "try {\n"
@@ -1407,14 +1434,21 @@ static void do_webview_dispatch(webview_php_slot_t *slot) {
         "    );\n"
         "    $__code = $__response->getStatusCode();\n"
         "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
+        "    ob_start();\n"
+        "    $__response->sendContent();\n"
+        "    $__body = ob_get_clean();\n"
+        "    $__isBinary = @preg_match('//u', $__body) !== 1 || strpos($__body, \"\\0\") !== false;\n"
         "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
         "    foreach ($__response->headers->all() as $__name => $__values) {\n"
         "        foreach ($__values as $__value) {\n"
         "            echo \"{$__name}: {$__value}\\r\\n\";\n"
         "        }\n"
         "    }\n"
+        "    if ($__isBinary) {\n"
+        "        echo \"X-Native-Body-Encoding: base64\\r\\n\";\n"
+        "    }\n"
         "    echo \"\\r\\n\";\n"
-        "    $__response->sendContent();\n"
+        "    echo $__isBinary ? base64_encode($__body) : $__body;\n"
         "} catch (\\Throwable $e) {\n"
         "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
         "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
