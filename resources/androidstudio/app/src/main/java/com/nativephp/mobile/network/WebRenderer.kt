@@ -43,7 +43,7 @@ class WebRenderer(
         WebCookieMirror.markWebViewAvailable()
         val jar = CookieManager.getInstance()
         LaravelCookieStore.all().forEach { (name, value) ->
-            jar.setCookie("http://127.0.0.1", "$name=$value")
+            jar.setCookie(WebCookieMirror.COOKIE_ORIGIN, "$name=$value")
         }
         jar.flush()
 
