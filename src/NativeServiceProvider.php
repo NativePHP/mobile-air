@@ -43,6 +43,7 @@ use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Events\Device\ThermalStateChanged;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
@@ -140,13 +141,18 @@ class NativeServiceProvider extends PackageServiceProvider
      * Keep query-side caches in sync with their push events. When the OS flips
      * the theme, AppearanceChanged fires (and auto-dispatches globally); this
      * listener updates System's cached appearance so `System::appearance()` /
-     * `isDark()` stay fresh without re-probing the bridge.
+     * `isDark()` stay fresh without re-probing the bridge. ThermalStateChanged
+     * does the same for Device::thermalState().
      */
     protected function registerSystemEventListeners(): void
     {
         Event::listen(
             AppearanceChanged::class,
             fn (AppearanceChanged $e) => System::rememberAppearance($e->mode),
+        );
+        Event::listen(
+            ThermalStateChanged::class,
+            fn (ThermalStateChanged $e) => Device::rememberThermalState($e->state),
         );
     }
 
