@@ -35,6 +35,7 @@ abstract class NativePluginHookCommand extends Command
     {
         $this->addOption('platform', null, InputOption::VALUE_REQUIRED, 'Target platform (ios/android)');
         $this->addOption('build-path', null, InputOption::VALUE_REQUIRED, 'Path to native project');
+        $this->addOption('bundle-path', null, InputOption::VALUE_REQUIRED, 'Path to the Laravel bundle staging tree (prepare_bundle only)');
         $this->addOption('plugin-path', null, InputOption::VALUE_REQUIRED, 'Path to plugin package');
         $this->addOption('app-id', null, InputOption::VALUE_REQUIRED, 'Application ID');
         $this->addOption('config', null, InputOption::VALUE_REQUIRED, 'Build configuration (JSON)');
@@ -75,6 +76,34 @@ abstract class NativePluginHookCommand extends Command
     protected function buildPath(): string
     {
         return $this->option('build-path') ?? '';
+    }
+
+    /**
+     * Get the absolute path of the Laravel bundle staging tree.
+     *
+     * Only populated for the prepare_bundle hook; empty for the other four.
+     */
+    protected function bundlePath(): string
+    {
+        return $this->option('bundle-path') ?? '';
+    }
+
+    /**
+     * Get the normalised build type (debug|release|bundle|profileable on
+     * Android, debug|release on iOS)
+     */
+    protected function buildType(): string
+    {
+        return $this->config()['build_type'] ?? 'debug';
+    }
+
+    /**
+     * Check whether this build is a release build, derived from build_type
+     * so hooks don't need to know each platform's vocabulary
+     */
+    protected function isRelease(): bool
+    {
+        return (bool) ($this->config()['release'] ?? false);
     }
 
     /**

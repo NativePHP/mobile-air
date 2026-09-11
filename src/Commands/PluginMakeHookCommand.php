@@ -16,7 +16,7 @@ class PluginMakeHookCommand extends Command
 {
     protected $signature = 'native:plugin:make-hook
                             {plugin? : Path to the plugin directory}
-                            {hook? : Hook type (pre_compile, post_compile, copy_assets, post_build)}
+                            {hook? : Hook type (pre_compile, post_compile, copy_assets, post_build, prepare_bundle)}
                             {--force : Overwrite existing file}';
 
     protected $description = 'Create a lifecycle hook command for a NativePHP plugin';
@@ -30,6 +30,7 @@ class PluginMakeHookCommand extends Command
         'post_compile',
         'copy_assets',
         'post_build',
+        'prepare_bundle',
     ];
 
     protected array $hookDescriptions = [
@@ -37,6 +38,7 @@ class PluginMakeHookCommand extends Command
         'post_compile' => 'Runs after native code compilation',
         'copy_assets' => 'Copy assets to native project',
         'post_build' => 'Runs after native build completes',
+        'prepare_bundle' => 'Runs after the Laravel bundle is staged, before it is archived',
     ];
 
     public function __construct(Filesystem $files, PluginRegistry $registry)
@@ -250,6 +252,7 @@ class PluginMakeHookCommand extends Command
             'post_compile' => 'PostCompileCommand',
             'copy_assets' => 'CopyAssetsCommand',
             'post_build' => 'PostBuildCommand',
+            'prepare_bundle' => 'PrepareBundleCommand',
         };
     }
 
@@ -280,8 +283,10 @@ use Native\\Mobile\\Plugins\\Commands\\NativePluginHookCommand;
  * - \$this->platform() - 'ios' or 'android'
  * - \$this->isAndroid(), \$this->isIos()
  * - \$this->buildPath() - Path to native project
+ * - \$this->bundlePath() - Path to the Laravel bundle staging tree (prepare_bundle only)
  * - \$this->pluginPath() - Path to this plugin
  * - \$this->appId() - e.g., 'com.example.app'
+ * - \$this->buildType(), \$this->isRelease()
  * - \$this->copyToAndroidAssets(\$src, \$dest)
  * - \$this->copyToIosBundle(\$src, \$dest)
  * - \$this->downloadIfMissing(\$url, \$dest)
@@ -335,6 +340,14 @@ CODE,
         // Could upload to TestFlight, notify team, etc.
 
         $this->info("Build completed for {$this->platform()}");
+CODE,
+            'prepare_bundle' => <<<'CODE'
+        // Example: transform files inside the staged Laravel bundle before
+        // it is archived. A non-zero exit code or thrown exception aborts
+        // the build, so validate the result before returning success.
+        // $this->bundlePath() is the staging tree, not the native project.
+
+        $this->info("Preparing {$this->buildType()} bundle for {$this->platform()}");
 CODE,
         };
     }
