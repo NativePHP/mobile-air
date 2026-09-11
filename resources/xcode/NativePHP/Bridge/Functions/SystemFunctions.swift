@@ -50,4 +50,35 @@ enum SystemFunctions {
             return ["appearance": mode]
         }
     }
+
+    // MARK: - System.GetExecutionContext
+
+    /// Where this process is running and why it started — backs
+    /// `Native\Mobile\Facades\ExecutionContext`.
+    ///
+    /// The signal that matters for scheduled work is `headless`: true when
+    /// iOS cold-launched the app in the background (BGTaskScheduler, silent
+    /// push, background fetch) and it has never been on screen. Code woken
+    /// that way should do its job and return rather than touch the UI, and
+    /// `protected_data_available` tells it whether the device is unlocked
+    /// enough to read keychain items and protected files.
+    ///
+    /// Reads a lock-guarded mirror of the UIKit lifecycle state, so it is
+    /// safe from the PHP worker thread — no hop to main, no deadlock when
+    /// main is itself waiting on PHP.
+    ///
+    /// Returns:
+    ///   - launch: string - "foreground" or "background"
+    ///   - state: string - "active", "inactive" or "background"
+    ///   - foreground: boolean - not backgrounded (active or inactive)
+    ///   - active: boolean - frontmost and receiving events
+    ///   - has_become_active: boolean - has been on screen at least once
+    ///   - headless: boolean - background launch that never became active
+    ///   - protected_data_available: boolean - Data Protection unlocked
+    ///   - interactive_boot_started: boolean - start URL has been dispatched
+    class GetExecutionContext: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            ExecutionContext.shared.snapshot()
+        }
+    }
 }
