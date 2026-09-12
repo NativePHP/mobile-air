@@ -54,6 +54,16 @@ fun NativeUIContent() {
 
     val focusManager = LocalFocusManager.current
 
+    // Gesture modifiers dispatch @press outside composable scope, so the
+    // policy carries a clear-focus hook for them; interactive taps route
+    // through it and honor `keep-focus-on-submit` (mobile-air #335).
+    DisposableEffect(focusManager) {
+        KeyboardFocusPolicy.clearFocus = { focusManager.clearFocus() }
+        onDispose {
+            KeyboardFocusPolicy.clearFocus = null
+        }
+    }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -62,7 +72,9 @@ fun NativeUIContent() {
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() }
             ) {
-                // Tap outside any input dismisses keyboard
+                // Tap on a plain area dismisses the keyboard. Fires only for
+                // taps no child consumed; interactive elements dismiss via
+                // KeyboardFocusPolicy in their own handlers instead.
                 focusManager.clearFocus()
             }
     ) {

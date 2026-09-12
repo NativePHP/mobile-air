@@ -328,19 +328,26 @@ fun Modifier.nodeGestures(
     if (callbackId == 0 && longPressId == 0 && doubleTapId == 0) return mod
 
     val onClickAction: () -> Unit = {
+        KeyboardFocusPolicy.dismissForInteractiveTap()
         if (callbackId != 0) {
             NativeElementBridge.sendPressEvent(callbackId, nodeId)
         }
     }
     val onLongClickAction: (() -> Unit)? = if (longPressId != 0) {
-        { NativeElementBridge.sendLongPressEvent(longPressId, nodeId) }
+        {
+            KeyboardFocusPolicy.dismissForInteractiveTap()
+            NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
+        }
     } else {
         null
     }
     // Double-tap reuses the press event type — the callback id alone routes
     // to the @doubleTap handler on the PHP side.
     val onDoubleClickAction: (() -> Unit)? = if (doubleTapId != 0) {
-        { NativeElementBridge.sendPressEvent(doubleTapId, nodeId) }
+        {
+            KeyboardFocusPolicy.dismissForInteractiveTap()
+            NativeElementBridge.sendPressEvent(doubleTapId, nodeId)
+        }
     } else {
         null
     }
