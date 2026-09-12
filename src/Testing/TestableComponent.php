@@ -8,6 +8,7 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
+use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
 use Native\Mobile\Platform;
@@ -155,10 +156,16 @@ class TestableComponent
             "No native route registered for [{$uri}]. Register it with Route::native() or test the component class directly."
         );
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri);
+        // Run the route's middleware exactly as in-app navigation does, so a
+        // screen guarded by `->middleware('auth')` is testable — mounting the
+        // component class directly bypasses this, which is how a middleware
+        // regression can hide from an otherwise thorough suite.
+        $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
+
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
@@ -210,7 +217,16 @@ class TestableComponent
             $this->registerNativeEventListeners();
         });
 
-        $this->guard(function () use ($component) {
+        $this->guard(function () use ($component, $denial) {
+            // Middleware refused this navigation — the router turns that into
+            // an intent and never mounts, so neither do we.
+            if ($denial !== null) {
+                $component->setNavigationIntent($denial);
+                $this->lastTree = $this->bridge->lastPublish();
+
+                return;
+            }
+
             // #[Lazy] components paint a placeholder before mount() on
             // device; keep that behavior so the publish is observable.
             $component->publishPlaceholder();

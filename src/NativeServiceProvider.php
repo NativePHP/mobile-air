@@ -306,7 +306,7 @@ class NativeServiceProvider extends PackageServiceProvider
         Route::macro('native', function (string $uri, string $componentClass) {
             NativeRouter::register($uri, $componentClass);
 
-            return Route::get($uri, function () use ($componentClass) {
+            $route = Route::get($uri, function () use ($componentClass) {
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these
@@ -390,6 +390,14 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+
+            // Hand the route object to the native registry so in-app
+            // navigation can run this route's middleware too — see
+            // [ScreenGuard]. Stored as the live instance, so middleware
+            // chained AFTER this macro returns is still picked up.
+            NativeRouter::bindRoute($uri, $route);
+
+            return $route;
         });
 
         // Route::nativeGroup(layout: TabsLayout::class, function () { ... })
