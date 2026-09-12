@@ -124,21 +124,16 @@ struct NativePHPApp: App {
 
         // 6. Reload handling + hot reload server. The coordinator must be
         // registered before anything can post reloadWebViewNotification —
-        // HotReloadServer triggers (DEBUG) or AppUpdateManager after an OTA
-        // update (production) — and independently of the WebView, which a
-        // native-direct boot never mounts.
+        // HotReloadServer triggers (DEBUG) — and independently of the WebView,
+        // which a native-direct boot never mounts.
         HotReloadCoordinator.shared.activate()
         #if DEBUG
         HotReloadServer.shared.start()
         #endif
 
-        // 7. OTA check commented out — parity with Android, where the boot-time
-        // Bifrost request was disabled for its network latency on cold boot.
-        // TODO: Re-enable on BOTH platforms together when OTA is ready for
-        // production, as an async check after first content — never on the
-        // boot path.
-        // NSLog("[NativePHP] checkForUpdates START")
-        // AppUpdateManager.shared.checkForUpdates()
+        // 7. OTA check/download lives in the mobile-ota plugin. Core only
+        // applies pending zips from Documents/updates on boot (ensureAppExists
+        // → applyPendingUpdates). Do not re-enable a Bifrost client here.
 
         // 8. Defer queue worker boot — start AFTER critical path completes
         //    so it doesn't compete for CPU/memory during first page render
