@@ -4,11 +4,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val googleServicesJson = file("google-services.json")
-if (googleServicesJson.exists()) {
-    apply(plugin = "com.google.gms.google-services")
-}
-
 android {
     namespace = "com.nativephp.mobile"
     compileSdk = REPLACE_COMPILE_SDK

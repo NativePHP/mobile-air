@@ -6,7 +6,7 @@ namespace Native\Mobile\Edge;
  * A component event whose destination can be fluently narrowed.
  *
  * Derived from Livewire's `Livewire\Features\SupportEvents\Event`.
- * Copyright (c) Caleb Porzio, MIT licensed. See THIRD-PARTY.md.
+ * Copyright (c) Caleb Porzio, MIT licensed. See LICENSE.md.
  */
 class ComponentEvent
 {

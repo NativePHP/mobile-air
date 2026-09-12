@@ -38,6 +38,8 @@ class BuildIosAppCommand extends Command
 
     private string $xcodeProjectPath;
 
+    private int|string $buildNumber;
+
     protected $signature = 'native:build {--target=} {--release} {--simulated} {--no-tty} {--cleanup-provisioning-profile : Clean up CI provisioning profile settings}
         {--upload-to-app-store : Upload iOS app to App Store Connect after packaging}
         {--jump-by= : Add extra number to the suggested version (e.g. --jump-by=10 to skip ahead)}
@@ -50,7 +52,7 @@ class BuildIosAppCommand extends Command
     {
         // Building iOS apps needs Xcode and its command-line tools, so bail out
         // early before we touch the build log or copy any files.
-        if (PHP_OS_FAMILY !== 'Darwin') {
+        if (! $this->runningOnMacOs()) {
             $this->error('native:build requires macOS — building iOS apps needs Xcode and its command-line tools.');
 
             return Command::FAILURE;
@@ -77,6 +79,17 @@ class BuildIosAppCommand extends Command
         // Clear the last log
         file_put_contents($this->logPath, '');
 
+        // Resolve the build number BEFORE the Laravel app is bundled. The zipped
+        // .env and bundled.version are the runtime's only way to tell one build
+        // from the next: if they're sealed with the boot-time value and the
+        // App Store Connect lookup only runs afterwards, every upload of the
+        // same version ships an identical bundle identity and the device never
+        // re-extracts. Xcode-driven builds manage their own build number and
+        // must not have .env bumped underneath them, so they keep the boot value.
+        if (! getenv('NATIVEPHP_XCODE_BUILD')) {
+            $this->resolveBuildNumber();
+        }
+
         $this->bundleLaravelApp();
 
         if (! getenv('NATIVEPHP_XCODE_BUILD')) {
@@ -91,7 +104,16 @@ class BuildIosAppCommand extends Command
         return Command::SUCCESS;
     }
 
-    private function bundleLaravelApp(): void
+    /**
+     * Overridable so the ordering in handle() can be exercised on Linux CI,
+     * where the real check would bail before the bundle step is reached.
+     */
+    protected function runningOnMacOs(): bool
+    {
+        return PHP_OS_FAMILY === 'Darwin';
+    }
+
+    protected function bundleLaravelApp(): void
     {
         @mkdir($this->appPath, 0755, true);
 
@@ -144,7 +166,7 @@ class BuildIosAppCommand extends Command
     private function configureXcodeProject(): bool
     {
         $this->updateAppVersion();
-        $this->updateBuildNumber();
+        $this->applyBuildNumber();
         $this->setAppName();
         $this->updateInfoPlistFiles();
         $this->configureDeviceOrientations();
@@ -152,8 +174,6 @@ class BuildIosAppCommand extends Command
         $this->configureProvisioningProfile();
         $this->installIosIcon();
         $this->installIosSplashScreen();
-        $this->installGoogleServicesPlist();
-
         $this->updateIcuConfiguration();
 
         // Compile plugins AFTER core config so plugin entries (like info_plist)
@@ -208,12 +228,22 @@ class BuildIosAppCommand extends Command
             ]);
     }
 
-    private function updateBuildNumber(): void
+    /**
+     * Work out the build number this build ships with, and persist it to .env
+     * and config so everything downstream (the zipped .env, bundled.version,
+     * bundle_meta.json, plugin hooks and the Xcode project) agrees on it.
+     *
+     * Must run before bundleLaravelApp(): the bundle copies .env and reads
+     * config('nativephp.version_code'), so a number resolved any later never
+     * reaches the runtime.
+     */
+    protected function resolveBuildNumber(): int|string
     {
         // Only increment build number for actual packaging/release builds that will be uploaded
         // Skip for: device runs, simulator builds, cleanup operations, debug builds
         $shouldIncrementBuildNumber = $this->option('release') &&
                                      ! $this->option('target') &&
+                                     ! $this->option('simulated') &&
                                      ! $this->option('cleanup-provisioning-profile');
 
         // Get current build number from config
@@ -232,19 +262,30 @@ class BuildIosAppCommand extends Command
             $currentBuildNumber = 1;
             if ($shouldIncrementBuildNumber) {
                 $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+                config(['nativephp.version_code' => $currentBuildNumber]);
             }
         } else {
             if ($shouldIncrementBuildNumber) {
                 $currentBuildNumber = (int) $currentBuildNumber + 1;
                 $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+                config(['nativephp.version_code' => $currentBuildNumber]);
             }
         }
+
+        return $this->buildNumber = $currentBuildNumber;
+    }
+
+    private function applyBuildNumber(): void
+    {
+        // handle() resolves before bundling; fall back rather than trip over an
+        // uninitialised property if a future caller reaches here without it.
+        $buildNumber = $this->buildNumber ?? $this->resolveBuildNumber();
 
         // Update CFBundleVersion (build number) in Xcode project
         Process::path($this->xcodeProjectPath)
             ->run([
                 'sed', '-i', null,
-                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$currentBuildNumber};|g",
+                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$buildNumber};|g",
                 'project.pbxproj',
             ]);
     }
@@ -816,22 +857,6 @@ class BuildIosAppCommand extends Command
 
             file_put_contents($entitlementsFile, $entitlementsContent);
         }
-    }
-
-    private function installGoogleServicesPlist(): void
-    {
-        $path = base_path('nativephp/resources/GoogleService-Info.plist');
-
-        if (! file_exists($path)) {
-            $path = base_path('GoogleService-Info.plist');
-        }
-
-        if (! file_exists($path)) {
-            return;
-        }
-
-        $destinationPath = $this->containerPath.'GoogleService-Info.plist';
-        @copy($path, $destinationPath);
     }
 
     private function determineApsEnvironment(): string

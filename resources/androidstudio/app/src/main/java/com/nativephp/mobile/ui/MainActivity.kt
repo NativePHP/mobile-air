@@ -62,7 +62,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : FragmentActivity(), WebViewProvider {
+class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.WebEventSink {
     // Native-first boot: no WebView exists until a web response actually
     // needs painting. Compose state so MainScreen recomposes and attaches
     // the WebView the moment a renderer is lazily created.
@@ -123,6 +123,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+
+        // Claim the web delivery arm for device events (see onNativeEvent).
+        NativeElementBridge.installWebEventSink(this)
 
         // Seed the appearance tracker so a later config change (e.g. rotation)
         // only emits AppearanceChanged when the theme genuinely differs.
@@ -622,11 +625,18 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      * and NativeRouter pushes the screen (same path as an in-app @tap navigate).
      * WebView/Inertia apps keep the direct loadUrl().
      */
-    private fun navigateWarm(route: String) {
+    private fun navigateWarm(route: String, externalUrl: String? = null) {
         if (NativeUIBridge.isActive.value) {
             val escaped = route.replace("\\", "\\\\").replace("\"", "\\\"")
+            // Carry the original https URL too. If PHP finds no route for the
+            // path it hands this straight back to the browser rather than
+            // dropping the user on a local 404.
+            val url = externalUrl
+                ?.replace("\\", "\\\\")?.replace("\"", "\\\"")
+                ?.let { ",\"url\":\"$it\"" }
+                ?: ""
             Log.d("DeepLink", "🚀 native-ui: dispatching __deeplink event: $route")
-            NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"}")
+            NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"$url}")
         } else {
             val fullUrl = "http://127.0.0.1$route"
             Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
@@ -713,11 +723,15 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
         }
 
+        // Only a real web URL can be handed back to the browser; a custom-scheme
+        // link (jump://…) has nowhere else to go.
+        val externalUrl = if (uri.scheme == "https" || uri.scheme == "http") uri.toString() else null
+
         Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
         pendingDeepLink = laravelUrl
         if (::laravelEnv.isInitialized && bootReady) {
             // Only navigate immediately once the boot pipeline is ready
-            navigateWarm(laravelUrl)
+            navigateWarm(laravelUrl, externalUrl)
         } else {
             Log.d("DeepLink", "⏳ Deep link saved, waiting for app initialization to complete")
         }
@@ -792,6 +806,22 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     override fun getWebViewOrNull(): WebView? = webRenderer?.webView
+
+    /**
+     * Web delivery arm for device events (NativeElementBridge.WebEventSink).
+     * While an EDGE screen owns the UI its runloop already drains the queue,
+     * and injecting into the page behind it would deliver the same event a
+     * second time when that page returns. Skips when no WebView exists yet.
+     */
+    override fun onNativeEvent(eventName: String, payloadJson: String) {
+        runOnUiThread {
+            if (NativeUIBridge.isActive.value) return@runOnUiThread
+
+            webRenderer?.webView?.let {
+                NativeActionCoordinator.dispatchToWebView(it, eventName, payloadJson)
+            }
+        }
+    }
 
     override fun onRequestPermissionsResult(
         requestCode: Int,

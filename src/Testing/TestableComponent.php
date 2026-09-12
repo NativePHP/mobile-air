@@ -950,32 +950,29 @@ class TestableComponent
 
     public function assertDispatchedTo(string $target, string $event, mixed ...$params): static
     {
-        $this->assertDispatched($event, ...$params);
-
         Assert::assertTrue(
-            collect($this->component->dispatchedEvents())->contains(
-                fn (array $item) => $item['name'] === $event
-                    && ($item['component'] ?? null) === $target
-            ),
+            $this->testDispatched($event, $params, $target),
             "Failed asserting that event [{$event}] was dispatched to [{$target}]."
         );
 
         return $this;
     }
 
-    private function testDispatched(string $event, array $params): bool
+    private function testDispatched(string $event, array $params, ?string $target = null): bool
     {
         $events = collect($this->component->dispatchedEvents())
             ->where('name', $event);
+
+        if ($target !== null) {
+            $events = $events->where('component', $target);
+        }
 
         if ($params === []) {
             return $events->isNotEmpty();
         }
 
         if (isset($params[0]) && is_callable($params[0]) && ! is_string($params[0])) {
-            $dispatch = $events->first();
-
-            return $dispatch !== null && (bool) $params[0]($event, $dispatch['params']);
+            return $events->contains(fn (array $dispatch) => (bool) $params[0]($event, $dispatch['params']));
         }
 
         return $events->contains(function (array $dispatch) use ($params) {
@@ -1014,14 +1011,28 @@ class TestableComponent
         return $this;
     }
 
+    /**
+     * Assert the tab bar is hidden on this screen (`$hidesTabBar` /
+     * `tabBarOptions()->hidden()`), across both chrome paths: on the
+     * native-chrome path the sentinel carries `hide_tab_bar`; on the
+     * custom-Column path the bar is simply not rendered.
+     */
     public function assertTabBarHidden(): static
     {
         $tabs = $this->findElement($this->tree(), 'native_root_tabs');
 
-        Assert::assertNotNull($tabs, 'No native tab chrome rendered — nothing to be hidden.');
-        Assert::assertTrue(
-            (bool) ($tabs['props']['hide_tab_bar'] ?? false),
-            'Expected the tab bar to be hidden on this screen, but hide_tab_bar is not set.'
+        if ($tabs !== null) {
+            Assert::assertTrue(
+                (bool) ($tabs['props']['hide_tab_bar'] ?? false),
+                'Expected the tab bar to be hidden on this screen, but hide_tab_bar is not set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNull(
+            $this->findElement($this->tree(), 'bottom_nav'),
+            'Expected the tab bar to be hidden on this screen, but a bottom_nav element was rendered.'
         );
 
         return $this;
@@ -1031,10 +1042,18 @@ class TestableComponent
     {
         $tabs = $this->findElement($this->tree(), 'native_root_tabs');
 
-        Assert::assertNotNull($tabs, 'No native tab chrome rendered.');
-        Assert::assertFalse(
-            (bool) ($tabs['props']['hide_tab_bar'] ?? false),
-            'Expected the tab bar to be visible, but hide_tab_bar is set.'
+        if ($tabs !== null) {
+            Assert::assertFalse(
+                (bool) ($tabs['props']['hide_tab_bar'] ?? false),
+                'Expected the tab bar to be visible, but hide_tab_bar is set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNotNull(
+            $this->findElement($this->tree(), 'bottom_nav'),
+            'Expected the tab bar to be visible, but no bottom_nav element was rendered.'
         );
 
         return $this;

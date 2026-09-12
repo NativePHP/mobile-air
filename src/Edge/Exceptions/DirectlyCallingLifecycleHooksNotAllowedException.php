@@ -8,7 +8,7 @@ use Native\Mobile\Edge\NativeComponent;
 /**
  * Derived from Livewire's
  * `Livewire\Exceptions\DirectlyCallingLifecycleMethodsNotAllowedException`.
- * Copyright (c) Caleb Porzio, MIT licensed. See THIRD-PARTY.md.
+ * Copyright (c) Caleb Porzio, MIT licensed. See LICENSE.md.
  */
 class DirectlyCallingLifecycleHooksNotAllowedException extends BadMethodCallException
 {

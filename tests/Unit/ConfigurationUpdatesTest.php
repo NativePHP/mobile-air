@@ -66,9 +66,6 @@ class ConfigurationUpdatesTest extends TestCase
             'nativephp.android.build.debug_symbols' => 'SYMBOL_TABLE',
         ]);
 
-        // Create google-services.json
-        File::put($this->testProjectPath.'/google-services.json', '{"project_id": "test"}');
-
         // Enable ICU via nativephp.lock
         File::put($this->testProjectPath.'/nativephp.lock', json_encode(['php' => ['version' => '8.4.7', 'icu' => true]]));
 
@@ -81,7 +78,6 @@ class ConfigurationUpdatesTest extends TestCase
         $this->assertAppNameUpdated();
         $this->assertPermissionsUpdated();
         $this->assertDeepLinksConfigured();
-        $this->assertFirebaseConfigCopied();
         $this->assertSdkPathUpdated();
         $this->assertIcuConfigured();
         $this->assertBuildConfigurationUpdated();
@@ -333,13 +329,6 @@ Java_com_nativephp_mobile_bridge_PHPBridge',
         $this->assertStringContainsString('android:host="new.example.com"', $contents);
     }
 
-    protected function assertFirebaseConfigCopied(): void
-    {
-        $targetPath = $this->testProjectPath.'/nativephp/android/app/google-services.json';
-        $this->assertFileExists($targetPath);
-        $this->assertEquals('{"project_id": "test"}', File::get($targetPath));
-    }
-
     protected function assertSdkPathUpdated(): void
     {
         $localPropertiesPath = $this->testProjectPath.'/nativephp/android/local.properties';
@@ -584,16 +573,6 @@ Java_com_nativephp_mobile_bridge_PHPBridge',
                 $contents = str_replace('System.loadLibrary("php")', 'System.loadLibrary("icudata")'.PHP_EOL.'        System.loadLibrary("php")', $contents);
             }
             File::put($bridgePath, $contents);
-        }
-    }
-
-    protected function updateFirebaseConfiguration(): void
-    {
-        $sourcePath = $this->testProjectPath.'/google-services.json';
-        $targetPath = $this->testProjectPath.'/nativephp/android/app/google-services.json';
-
-        if (File::exists($sourcePath)) {
-            File::copy($sourcePath, $targetPath);
         }
     }
 

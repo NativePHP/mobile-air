@@ -11,7 +11,7 @@ use ReflectionProperty;
  *
  * The updating/updated hook names and their ordering are derived from
  * Livewire's `Livewire\Features\SupportLifecycleHooks\SupportLifecycleHooks`.
- * Copyright (c) Caleb Porzio, MIT licensed. See THIRD-PARTY.md.
+ * Copyright (c) Caleb Porzio, MIT licensed. See LICENSE.md.
  */
 class ComponentState
 {

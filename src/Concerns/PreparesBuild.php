@@ -145,9 +145,6 @@ trait PreparesBuild
             }
             $this->updateDeepLinkConfiguration();
 
-            $this->logToFile('  Updating Firebase configuration...');
-            $this->updateFirebaseConfiguration();
-
             $this->logToFile('  Updating build configuration...');
             $buildConfig = config('nativephp.android.build', []);
             $this->logToFile('    Minify: '.($buildConfig['minify_enabled'] ?? false ? 'enabled' : 'disabled'));
@@ -975,8 +972,6 @@ trait PreparesBuild
     abstract protected function updatePermissions(): void;
 
     abstract protected function updateIcuConfiguration(): void;
-
-    abstract protected function updateFirebaseConfiguration(): void;
 
     abstract protected function removeDirectory(string $path): void;
 }

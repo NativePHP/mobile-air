@@ -395,12 +395,12 @@ class NativeRouter
                 continue;
             }
 
-            $resolved = static::resolve($uri);
-            if ($resolved === null) {
-                continue;
-            }
-
             try {
+                $resolved = static::resolve($uri);
+                if ($resolved === null) {
+                    continue;
+                }
+
                 $component = $this->createComponent(
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),

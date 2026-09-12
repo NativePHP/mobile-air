@@ -333,6 +333,4 @@ REPLACE_CUSTOM_PROGUARD_RULES',
     protected function updatePermissions(): void {}
 
     protected function updateIcuConfiguration(): void {}
-
-    protected function updateFirebaseConfiguration(): void {}
 }

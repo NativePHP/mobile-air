@@ -253,6 +253,4 @@ class ReleaseBuildTester
     protected function updatePermissions(): void {}
 
     protected function updateIcuConfiguration(): void {}
-
-    protected function updateFirebaseConfiguration(): void {}
 }

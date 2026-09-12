@@ -23,7 +23,7 @@ use ReflectionNamedType;
  * Derived from Livewire's `Livewire\ImplicitlyBoundMethod`; the lifecycle-hook
  * guard in ensureCallable() comes from
  * `Livewire\Features\SupportLifecycleHooks\SupportLifecycleHooks::call()`.
- * Copyright (c) Caleb Porzio, MIT licensed. See THIRD-PARTY.md.
+ * Copyright (c) Caleb Porzio, MIT licensed. See LICENSE.md.
  */
 class ComponentMethodInvoker extends BoundMethod
 {

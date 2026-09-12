@@ -10,6 +10,7 @@ use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
+use PHPUnit\Framework\ExpectationFailedException;
 use Tests\Fixtures\Edge\ComponentFeaturesScreen;
 use Tests\Fixtures\Edge\CounterScreen;
 use Tests\Fixtures\Edge\InteractionFailureScreen;
@@ -238,4 +239,35 @@ it('uses soft-deletable child binding for scoped routes that allow trashed model
 
     expect($resolved['params']['parent_record']->id)->toBe('parent:1')
         ->and($resolved['params']['child_record']->id)->toBe('trashed-child:2');
+});
+
+it('skips failed model bindings when restoring the navigation stack', function () {
+    Route::native('/restore/{record}', ComponentFeaturesScreen::class);
+    Route::native('/restore-home', CounterScreen::class);
+    Native::fakeBridge();
+
+    $router = new NativeRouter;
+    $router->preloadStack([
+        ['uri' => '/restore/missing'],
+        ['uri' => '/restore-home'],
+    ]);
+
+    expect($router->stackDepth())->toBe(1)
+        ->and($router->currentUri())->toBe('/restore-home');
+});
+
+it('matches event predicates against every dispatch', function () {
+    Native::test(ComponentFeaturesScreen::class)
+        ->call('dispatchNormally')
+        ->call('dispatchToSelf')
+        ->assertDispatched('parity-saved', fn ($name, $params) => $params['id'] === 11);
+});
+
+it('requires the event target and payload to match the same dispatch', function () {
+    $screen = Native::test(ComponentFeaturesScreen::class)
+        ->call('dispatchNormally')
+        ->call('dispatchToClass');
+
+    expect(fn () => $screen->assertDispatchedTo(ComponentFeaturesScreen::class, 'parity-saved', id: 10))
+        ->toThrow(ExpectationFailedException::class);
 });
