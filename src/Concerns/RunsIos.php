@@ -426,7 +426,15 @@ trait RunsIos
             return [];
         }
 
-        return collect($devices)->flatten(1)->pluck('udid')->all();
+        // Keyed by runtime identifier (e.g.
+        // "com.apple.CoreSimulator.SimRuntime.iOS-18-6"), which also covers
+        // watchOS/tvOS runtimes — filter to iOS before flattening so a lone
+        // booted Watch/TV simulator is never auto-selected as the target.
+        return collect($devices)
+            ->filter(fn (array $devicesForRuntime, string $runtime): bool => str_contains($runtime, '.SimRuntime.iOS-'))
+            ->flatten(1)
+            ->pluck('udid')
+            ->all();
     }
 
     private function promptForIosTarget(array $devices): string

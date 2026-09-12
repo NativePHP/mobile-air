@@ -138,4 +138,34 @@ class RunsIosTest extends TestCase
 
         $this->resolveDefaultIosTarget($devices);
     }
+
+    public function test_resolve_default_target_ignores_a_lone_booted_watch_simulator()
+    {
+        // Only one simulator is booted overall, but it's a Watch — the iOS
+        // device list has neither of these UDIDs, so falling through to the
+        // (single-candidate) prompt shortcut proves the Watch was filtered
+        // out rather than wrongly auto-selected.
+        $devices = [
+            [
+                'name' => 'iPhone 17 Pro',
+                'version' => '18.6',
+                'udid' => 'FC4BFF3D-8B7B-4331-ACB7-ED78DCC313A6',
+                'category' => 'Simulators',
+            ],
+        ];
+
+        Process::fake([
+            '*simctl*list*devices*booted*' => Process::result(json_encode([
+                'devices' => [
+                    'com.apple.CoreSimulator.SimRuntime.watchOS-10-0' => [
+                        ['udid' => '11111111-2222-3333-4444-555555555555', 'state' => 'Booted'],
+                    ],
+                ],
+            ])),
+        ]);
+
+        $target = $this->resolveDefaultIosTarget($devices);
+
+        $this->assertSame('FC4BFF3D-8B7B-4331-ACB7-ED78DCC313A6', $target);
+    }
 }

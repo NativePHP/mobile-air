@@ -291,7 +291,11 @@ final class ScreenshotCommand extends Command
         $devices = $this->parseAdbDevices($adbCommand);
 
         if (count($devices) === 1) {
-            return array_key_first($devices);
+            // Not array_key_first(): PHP casts a purely-numeric string key
+            // (a serial like "1234567890") to int, which would violate this
+            // method's ?string return type. The values are the same serials
+            // as plain strings, unaffected by that casting.
+            return reset($devices);
         }
 
         $this->error($devices === []

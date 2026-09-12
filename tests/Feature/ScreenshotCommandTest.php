@@ -191,6 +191,25 @@ final class ScreenshotCommandTest extends TestCase
             ->assertFailed();
     }
 
+    public function test_android_capture_auto_selects_a_purely_numeric_serial(): void
+    {
+        // A serial that's all digits (some real device serials are) becomes
+        // an int array key under PHP's numeric-string casting — regression
+        // test for a TypeError this used to throw via array_key_first().
+        Process::fake([
+            'adb version' => Process::result(),
+            'adb devices' => Process::result(output: "List of devices attached\n1234567890\tdevice\n"),
+            '*screencap*' => Process::result(),
+        ]);
+
+        $outputPath = $this->outputDir.'/shot.png';
+
+        $this->artisan('native:screenshot', ['os' => 'android', '--output' => $outputPath])
+            ->assertSuccessful();
+
+        Process::assertRan(sprintf("'adb' -s '1234567890' exec-out screencap -p > '%s'", $outputPath));
+    }
+
     public function test_android_capture_fails_when_multiple_devices_are_connected_and_no_udid_given(): void
     {
         Process::fake([
