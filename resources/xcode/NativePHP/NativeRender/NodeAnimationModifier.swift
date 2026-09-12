@@ -119,16 +119,11 @@ struct NodeAnimationModifier: ViewModifier {
         !props.getString("\(prop)_sv", default: "").isEmpty
     }
 
+    /// Delegates to the shared table in ScreenTransitions.swift so the
+    /// easing vocabulary cannot drift between animation, content transitions
+    /// and shared-element morphs.
     private func animationFor(easing: String, durationMs: Float) -> Animation {
-        let duration = Double(durationMs) / 1000.0
-        switch easing {
-        case "linear":        return .linear(duration: duration)
-        case "ease-in":       return .easeIn(duration: duration)
-        case "ease-out":      return .easeOut(duration: duration)
-        case "ease-in-out":   return .easeInOut(duration: duration)
-        case "spring":        return .spring(duration: duration)
-        default:              return .easeInOut(duration: duration)
-        }
+        nativeEasedAnimation(easing, durationMs: Double(durationMs))
     }
 }
 

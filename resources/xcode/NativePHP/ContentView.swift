@@ -64,6 +64,11 @@ struct ContentView: View {
                                 x: -10
                             )
                             .transition(nativeScreenTransition(for: nativeUIBridge.pendingTransition))
+                            // Shared-element plumbing. A screen on its way
+                            // out must stop reporting frames — the store
+                            // captured them at the swap and is flying from
+                            // them right now.
+                            .environment(\.heroIsOutgoing, screen.isOutgoing)
                             // Each new screen sits above the previous one
                             // (keys increment), so slides cover in push
                             // order and a fade has a defined front/back.
@@ -80,6 +85,12 @@ struct ContentView: View {
                 // WebKit processes for nothing.
                 screenBackground.ignoresSafeArea()
             }
+        }
+        // Shared elements in transit, drawn ABOVE both screens so a morph is
+        // never occluded by the incoming screen fading in over it. Renders
+        // nothing at all when no element is flying.
+        .overlay {
+            HeroFlightOverlay()
         }
         .overlay(alignment: .top) {
             // Hot-reload indicator. Mirrors iOS 26's Liquid Glass pill
