@@ -161,7 +161,11 @@ final class DeepLinkRouter {
                 // the target route; NativeComponent::dispatchNativeEvent turns
                 // it into a NavigationIntent::NAVIGATE and NativeRouter pushes
                 // the screen — the same path an in-app @tap navigate uses.
-                dispatchNativeUIDeepLink(normalizedRoute)
+                // Hand the original https URL along; PHP gives it back to
+                // Safari when the app has no route for the path, instead of
+                // exiting to the WebView and serving a local 404.
+                let externalURL = (url.scheme == "https" || url.scheme == "http") ? url.absoluteString : nil
+                dispatchNativeUIDeepLink(normalizedRoute, externalURL: externalURL)
             } else {
                 // Inertia/WebView SPA: use the SPA router to preserve state.
                 // This prevents Inertia from returning raw JSON on subsequent
@@ -178,11 +182,18 @@ final class DeepLinkRouter {
 
     /// Wake the blocked native-ui PHP loop with the deep-link route (the
     /// same path an in-app @tap navigate uses).
-    private func dispatchNativeUIDeepLink(_ route: String) {
+    private func dispatchNativeUIDeepLink(_ route: String, externalURL: String? = nil) {
         let escaped = route
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
-        let json = "{\"uri\":\"\(escaped)\"}"
+        var urlField = ""
+        if let externalURL {
+            let escapedURL = externalURL
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            urlField = ",\"url\":\"\(escapedURL)\""
+        }
+        let json = "{\"uri\":\"\(escaped)\"\(urlField)}"
         DebugLogger.shared.log("🔗 native-ui: dispatching __deeplink event: \(route)")
         NativeElementBridge.sendNativeEvent(eventName: "__deeplink", payloadJson: json)
     }
