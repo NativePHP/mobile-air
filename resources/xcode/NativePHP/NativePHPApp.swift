@@ -145,6 +145,11 @@ struct NativePHPApp: App {
         if booted {
             NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
+
+            // Async task lane (AsyncTask::dispatch()) — pool boots on a
+            // background thread, so this returns immediately.
+            NSLog("[NativePHP] AsyncTaskExecutor.start() (deferred)")
+            AsyncTaskExecutor.shared.start()
         } else {
             NSLog("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
         }

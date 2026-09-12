@@ -2,7 +2,10 @@
 
 namespace Tests;
 
+use Native\Mobile\AsyncTask;
 use Native\Mobile\NativeServiceProvider;
+use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\NativeCallbacks;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
 abstract class TestCase extends BaseTestCase
@@ -12,6 +15,17 @@ abstract class TestCase extends BaseTestCase
         return [
             NativeServiceProvider::class,
         ];
+    }
+
+    protected function tearDown(): void
+    {
+        // Async task state lives in process statics (persistent-runtime shaped),
+        // so reset it between tests for isolation.
+        AsyncTask::clearFake();
+        AsyncTaskRegistry::flush();
+        NativeCallbacks::flush();
+
+        parent::tearDown();
     }
 
     protected function getEnvironmentSetUp($app)

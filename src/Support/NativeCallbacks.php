@@ -39,10 +39,21 @@ class NativeCallbacks
     /** How long a pending callback may wait for its result before it's considered abandoned. */
     protected static int $ttlMinutes = 5;
 
-    public static function register(string $id, string $eventClass, Closure|array|string $callback): void
+    /**
+     * @param  bool  $durable  Whether to keep the tier-2 copy. Pass false for a
+     *                         callback whose pending operation cannot itself
+     *                         survive a process kill (async tasks hold their work
+     *                         in RAM and a temp file), so the durable copy would
+     *                         cost a cache write with nothing to survive to.
+     */
+    public static function register(string $id, string $eventClass, Closure|array|string $callback, bool $durable = true): void
     {
         // Tier 1: always available for this process, no serialization constraints.
         static::$memory[$id][$eventClass] = $callback;
+
+        if (! $durable) {
+            return;
+        }
 
         // Tier 2: best-effort durable copy so the callback survives a process kill.
         try {
