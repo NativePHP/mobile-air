@@ -3,6 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Support\EnvValue;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\password;
@@ -82,6 +83,11 @@ trait CreatesAndroidCredentials
 
         if (empty($keyPassword)) {
             $keyPassword = $password;
+        }
+
+        $this->warnIfPasswordNeedsQuoting($password);
+        if ($keyPassword !== $password) {
+            $this->warnIfPasswordNeedsQuoting($keyPassword);
         }
 
         // Collect certificate information
@@ -246,6 +252,8 @@ trait CreatesAndroidCredentials
 
         // Use same password for key password (standard for upload keystores)
         $keyPassword = $password;
+
+        $this->warnIfPasswordNeedsQuoting($password);
 
         // Collect certificate information
         $this->info('📋 Certificate information:');
@@ -427,7 +435,7 @@ trait CreatesAndroidCredentials
                 if (empty($addedVars)) {
                     $envContent .= PHP_EOL.'# Android Keystore Configuration'.PHP_EOL;
                 }
-                $envContent .= "{$key}={$value}".PHP_EOL;
+                $envContent .= "{$key}=".EnvValue::quote($value).PHP_EOL;
                 $addedVars[] = $key;
             }
         }
@@ -447,7 +455,44 @@ trait CreatesAndroidCredentials
             foreach ($existingVars as $var) {
                 $this->line("  - {$var}");
             }
+
+            $untouchedPasswordVars = array_values(array_intersect(
+                $existingVars,
+                ['ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD']
+            ));
+
+            if ($untouchedPasswordVars !== []) {
+                $this->newLine();
+                $verb = count($untouchedPasswordVars) > 1 ? 'were' : 'was';
+                $this->warn('⚠️  '.implode(' and ', $untouchedPasswordVars)." {$verb} not overwritten. If your");
+                $this->line('   password contains special characters, make sure the existing value is');
+                $this->line('   wrapped in double quotes:');
+                $this->line('       ANDROID_KEYSTORE_PASSWORD="your#password"');
+                $this->line('   An unquoted # is treated as the start of a comment and silently');
+                $this->line('   truncates the password, which fails keystore signing at package time.');
+            }
         }
+    }
+
+    /**
+     * Warn at entry time when a chosen password will need quoting — the
+     * value is written to .env double quoted (safe), but the same password
+     * passed via --keystore-password / --key-password goes through the
+     * shell, which mangles it unless single quoted.
+     */
+    private function warnIfPasswordNeedsQuoting(string $password): void
+    {
+        if (! EnvValue::needsQuoting($password)) {
+            return;
+        }
+
+        $this->newLine();
+        $this->warn('⚠️  That password contains characters that need quoting.');
+        $this->line('   It will be written to .env double quoted, which is safe, but if you');
+        $this->line('   ever pass it via --keystore-password or --key-password, wrap it in');
+        $this->line('   single quotes so your shell does not alter it before PHP sees it.');
+        $this->line('   An alphanumeric password avoids the issue entirely.');
+        $this->newLine();
     }
 
     private function addCredentialsToGitignore(): void
