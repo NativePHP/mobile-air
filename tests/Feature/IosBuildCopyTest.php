@@ -11,6 +11,13 @@ use Tests\TestCase;
 
 class IosBuildCopyTest extends TestCase
 {
+    private function requireRsyncPlatform(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Windows bundle copies use robocopy instead of rsync.');
+        }
+    }
+
     protected string $testProjectPath;
 
     protected function setUp(): void
@@ -137,6 +144,7 @@ class IosBuildCopyTest extends TestCase
 
     public function test_copy_runs_rsync_with_correct_flags_and_excludes(): void
     {
+        $this->requireRsyncPlatform();
         $appPath = $this->fakeRsyncAndGetAppPath();
 
         BundleFileManager::copy(base_path(), $appPath);
@@ -174,6 +182,7 @@ class IosBuildCopyTest extends TestCase
 
     public function test_copy_throws_on_rsync_failure(): void
     {
+        $this->requireRsyncPlatform();
         $appPath = $this->fakeRsyncAndGetAppPath(exitCode: 1);
 
         $this->expectException(\Exception::class);
@@ -184,6 +193,7 @@ class IosBuildCopyTest extends TestCase
 
     public function test_copy_includes_vendor_export_ignore_patterns_in_rsync(): void
     {
+        $this->requireRsyncPlatform();
         $this->createVendorGitattributes('acme/plugin', "/tests export-ignore\n/docs export-ignore\n");
         $appPath = $this->fakeRsyncAndGetAppPath();
 
@@ -199,6 +209,7 @@ class IosBuildCopyTest extends TestCase
 
     public function test_copy_passes_vendor_non_runtime_excludes_to_rsync(): void
     {
+        $this->requireRsyncPlatform();
         $appPath = $this->fakeRsyncAndGetAppPath();
 
         BundleFileManager::copy(base_path(), $appPath);
@@ -218,6 +229,7 @@ class IosBuildCopyTest extends TestCase
 
     public function test_copy_passes_project_anchored_excludes_to_rsync(): void
     {
+        $this->requireRsyncPlatform();
         $appPath = $this->fakeRsyncAndGetAppPath();
 
         BundleFileManager::copy(base_path(), $appPath);
@@ -463,6 +475,7 @@ class IosBuildCopyTest extends TestCase
 
     public function test_copy_passes_config_excludes_to_rsync(): void
     {
+        $this->requireRsyncPlatform();
         $appPath = $this->fakeRsyncAndGetAppPath();
 
         BundleFileManager::copy(base_path(), $appPath, [

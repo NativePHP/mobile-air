@@ -223,6 +223,8 @@ object ColorParser {
  */
 class GenericProps(private val map: Map<String, Any> = emptyMap()) {
 
+    val entries: Map<String, Any> get() = map
+
     fun getString(key: String, default: String = ""): String =
         (map[key] as? String) ?: default
 

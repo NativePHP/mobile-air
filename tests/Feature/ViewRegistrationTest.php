@@ -13,7 +13,11 @@ it('registers only package view paths that ship in the app bundle', function () 
     // Resolve ".." segments lexically so a path like src/../resources/views
     // is caught even when the directory no longer exists and realpath
     // falls back to the raw string, as Spatie's hasViews() does.
-    $normalize = fn (string $path): string => '/'.(new WhitespacePathNormalizer)->normalizePath($path);
+    $normalize = function (string $path): string {
+        $normalized = (new WhitespacePathNormalizer)->normalizePath($path);
+
+        return preg_match('/^[A-Za-z]:\//', $normalized) ? $normalized : '/'.$normalized;
+    };
 
     // A registered dir is stripped when it is an excluded path itself or
     // sits anywhere below one, hence the slash-crossing second match.

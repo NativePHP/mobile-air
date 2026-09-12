@@ -131,14 +131,14 @@ class ReleaseBuildBundleTest extends TestCase
         $missingAtInstallTime = [];
 
         Process::fake([
-            'composer install*' => function () use (&$missingAtInstallTime) {
+            'composer install*' => function ($process) use (&$missingAtInstallTime) {
                 foreach ([
                     'bootstrap/cache',
                     'storage/framework/cache',
                     'storage/framework/sessions',
                     'storage/framework/views',
                 ] as $dir) {
-                    if (! is_dir($this->testProjectPath.'/nativephp/android/laravel/'.$dir)) {
+                    if (! is_dir($process->path.'/'.$dir)) {
                         $missingAtInstallTime[] = $dir;
                     }
                 }

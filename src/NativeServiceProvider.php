@@ -799,7 +799,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 continue;
             }
 
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            $relativePath = substr(str_replace('\\', '/', $file->getPathname()), strlen($componentPath) + 1);
             $classPath = substr($relativePath, 0, -4);
 
             // Tag name from the class basename: UserCard → user-card.
@@ -836,7 +836,7 @@ class NativeServiceProvider extends PackageServiceProvider
             }
 
             // Get relative path from Components directory
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            $relativePath = substr(str_replace('\\', '/', $file->getPathname()), strlen($componentPath) + 1);
 
             // Remove .php extension
             $classPath = substr($relativePath, 0, -4);

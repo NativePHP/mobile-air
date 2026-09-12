@@ -627,8 +627,8 @@ class NestedClass {}');
         $this->assertNotEmpty($files);
 
         // Should include the registration file
-        $registrationFile = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginBridgeFunctionRegistration.swift';
-        $this->assertContains($registrationFile, $files);
+        $registrationFile = str_replace('\\', '/', $this->testBasePath).'/ios/NativePHP/Bridge/Plugins/PluginBridgeFunctionRegistration.swift';
+        $this->assertContains($registrationFile, array_map(fn ($path) => str_replace('\\', '/', $path), $files));
     }
 
     /**

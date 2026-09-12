@@ -61,7 +61,7 @@ it('treats an empty array as contributing nothing', function () {
     $doc = PlistDocument::fromXml($this->base);
     $doc->merge(['NSAppTransportSecurity' => [], 'UIBackgroundModes' => []]);
 
-    expect($doc->toXml())->toBe($this->base);
+    expect($doc->toXml())->toBe(str_replace("\r\n", "\n", $this->base));
 });
 
 it('drops null entries at any depth', function () {

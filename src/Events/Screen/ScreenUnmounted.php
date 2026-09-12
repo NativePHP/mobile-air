@@ -24,5 +24,6 @@ class ScreenUnmounted
         /** @var class-string */
         public string $component,
         public ?string $uri = null,
+        public ?string $componentId = null,
     ) {}
 }

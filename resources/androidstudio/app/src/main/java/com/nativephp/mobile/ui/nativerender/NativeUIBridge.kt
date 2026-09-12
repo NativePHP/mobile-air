@@ -26,6 +26,12 @@ class NativeUIBridge private constructor() {
         internal fun publishTree(tree: NativeUITree) {
             currentTree.value = tree
             treePublicationId.longValue++
+            NativeTreeObserverRegistry.publish(
+                NativeTreeObserverRegistry.Publication(
+                    id = treePublicationId.longValue,
+                    tree = tree,
+                ),
+            )
         }
 
         /** Whether the native UI system is active */
