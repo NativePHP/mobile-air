@@ -35,12 +35,43 @@ trait HandlesNativeCallbacks
     /**
      * Register a callback for a specific event class. Public escape hatch for
      * custom events; also the primitive every named method funnels through.
+     *
+     * Ordering: call ->id() BEFORE registering callbacks — registration
+     * keys on the id at call time, and only ->event() re-keys existing
+     * registrations (a later ->id() does not).
      */
     public function on(string $eventClass, Closure|array|string $callback): static
     {
         NativeCallbacks::register($this->getId(), $eventClass, $callback);
 
         return $this;
+    }
+
+    /**
+     * Register a callback for the operation's SUCCESS event without naming
+     * it — `->onSuccess(fn ($event) => …)` reads the same on every builder
+     * (photoTaken, mediaSelected, videoRecorded, …). A ->event(Custom::class)
+     * override is honored in EITHER order: event() re-keys registrations
+     * made under the previous success event (see retargetPendingCallbacks).
+     */
+    public function onSuccess(Closure|array|string $callback): static
+    {
+        return $this->on($this->eventClass, $callback);
+    }
+
+    /**
+     * Re-key callbacks registered under a previous success event class.
+     * Every builder's event() calls this before assigning the override,
+     * so ->onSuccess(...)->event(Custom::class) doesn't leave the
+     * callback stranded under the default event, silently never firing.
+     */
+    protected function retargetPendingCallbacks(?string $from, string $to): void
+    {
+        if ($from === null || $from === $to) {
+            return;
+        }
+
+        NativeCallbacks::retarget($this->getId(), $from, $to);
     }
 
     /**

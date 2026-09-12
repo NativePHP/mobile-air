@@ -4,6 +4,7 @@ namespace Native\Mobile\Http\Controllers;
 
 use Closure;
 use Illuminate\Http\Request;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Support\NativeCallbacks;
 use ReflectionFunction;
 
@@ -66,6 +67,30 @@ class DispatchEventFromAppController
             return false;
         }
 
+        // The ONLY string shape this controller can fire is an invokable
+        // class. Everything else — method-name strings like 'onPicked',
+        // but also method names that happen to shadow a loadable class
+        // ('error', 'log', any materialized facade alias) — names a method
+        // on the OWNING COMPONENT, which only the Edge loop can fire.
+        // Peek-and-bail BEFORE consuming, or the durable copy is destroyed
+        // here and the Edge loop finds nothing.
+        if (is_string($peek) && (! class_exists($peek) || ! method_exists($peek, '__invoke'))) {
+            return false;
+        }
+
+        // A string that DOES name an invokable class is still ambiguous —
+        // a component method can share the name. The durable owner tag
+        // settles it: recorded owner means component-owned, Edge-only.
+        if (is_string($peek) && NativeCallbacks::ownerOf($id, $eventClass) !== null) {
+            return false;
+        }
+
+        // [$component, 'method'] arrays are component-owned like
+        // $this-closures — firing here would run against a dead instance.
+        if (is_array($peek) && ($peek[0] ?? null) instanceof NativeComponent) {
+            return false;
+        }
+
         $callback = NativeCallbacks::resolve($id, $eventClass);
 
         // Normalise an invokable class-string into a resolved instance so it can
@@ -75,10 +100,13 @@ class DispatchEventFromAppController
             $callback = app($callback);
         }
 
-        call_user_func($callback, $event);
-
-        // One outcome per capture — drop the success/cancel/denied siblings too.
-        NativeCallbacks::forget($id, $eventClass);
+        // One outcome per capture, even when the callback throws — drop the
+        // success/cancel/denied siblings too.
+        try {
+            call_user_func($callback, $event);
+        } finally {
+            NativeCallbacks::forget($id, $eventClass);
+        }
 
         return true;
     }

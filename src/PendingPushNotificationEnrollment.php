@@ -58,6 +58,8 @@ class PendingPushNotificationEnrollment
             throw new InvalidArgumentException("Event class {$eventClass} does not exist");
         }
 
+        $this->retargetPendingCallbacks($this->eventClass, $eventClass);
+
         $this->eventClass = $eventClass;
 
         return $this;
