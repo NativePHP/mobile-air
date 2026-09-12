@@ -126,7 +126,7 @@ trait RunsIos
         $devices = $this->getAvailableIosDevices();
 
         if (! $target = $this->argument('udid')) {
-            $target = $this->promptForIosTarget($devices);
+            $target = $this->resolveDefaultIosTarget($devices);
         }
 
         if (array_key_exists($target, $this->simulators)) {
@@ -389,15 +389,71 @@ trait RunsIos
         }
     }
 
+    /**
+     * `xctrace list devices` (which feeds `promptForIosTarget`'s filtering)
+     * lists every installed simulator, booted or not — so on a machine with
+     * several iPhone models installed, filtering alone rarely narrows to
+     * one. Prefer a simulator that's already booted instead: that's the one
+     * the developer is actually looking at, the same "just use what's
+     * running" default `native:screenshot` already applies via simctl's own
+     * `booted` alias.
+     */
+    private function resolveDefaultIosTarget(array $devices): string
+    {
+        $bootedSimulators = $this->getBootedIosSimulatorUdids();
+
+        if (count($bootedSimulators) === 1) {
+            return $bootedSimulators[0];
+        }
+
+        return $this->promptForIosTarget($devices);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function getBootedIosSimulatorUdids(): array
+    {
+        $result = Process::run(['xcrun', 'simctl', 'list', 'devices', 'booted', '-j']);
+
+        if (! $result->successful()) {
+            return [];
+        }
+
+        $devices = json_decode($result->output(), true)['devices'] ?? null;
+
+        if (! is_array($devices)) {
+            return [];
+        }
+
+        // Keyed by runtime identifier (e.g.
+        // "com.apple.CoreSimulator.SimRuntime.iOS-18-6"), which also covers
+        // watchOS/tvOS runtimes — filter to iOS before flattening so a lone
+        // booted Watch/TV simulator is never auto-selected as the target.
+        return collect($devices)
+            ->filter(fn (array $devicesForRuntime, string $runtime): bool => str_contains($runtime, '.SimRuntime.iOS-'))
+            ->flatten(1)
+            ->pluck('udid')
+            ->all();
+    }
+
     private function promptForIosTarget(array $devices): string
     {
         $lastUsedUdid = $this->getLastUsedIosDevice();
         $filteredDevices = $this->filterIosDevices($devices, $lastUsedUdid);
 
-        $target = $this->showDeviceSelector($filteredDevices, $lastUsedUdid, showAllOption: true);
+        // Mirrors RunsAndroid's single-device shortcut: with exactly one
+        // sensible candidate, there's nothing to choose between, so skip the
+        // interactive prompt — which also lets a --no-tty run (no attached
+        // terminal) succeed instead of failing on a prompt it can't answer.
+        if (count($filteredDevices) === 1) {
+            $target = $filteredDevices[0]['udid'];
+        } else {
+            $target = $this->showDeviceSelector($filteredDevices, $lastUsedUdid, showAllOption: true);
 
-        if ($target === '__show_all__') {
-            $target = $this->showDeviceSelector($devices, $lastUsedUdid, showAllOption: false);
+            if ($target === '__show_all__') {
+                $target = $this->showDeviceSelector($devices, $lastUsedUdid, showAllOption: false);
+            }
         }
 
         $this->saveLastUsedIosDevice($target);
