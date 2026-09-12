@@ -139,5 +139,5 @@ it('falls back to plain lines when the output is not decorated', function () {
     $console->note('adb push failed');
 
     // No footer, no cursor games — just readable log lines.
-    expect($output->fetch())->toBe("synced routes/web.php\nadb push failed\n");
+    expect($output->fetch())->toBe('synced routes/web.php'.PHP_EOL.'adb push failed'.PHP_EOL);
 });

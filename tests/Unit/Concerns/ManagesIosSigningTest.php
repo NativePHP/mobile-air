@@ -107,12 +107,18 @@ class ManagesIosSigningTest extends TestCase
         file_put_contents($tempFile, 'content');
         chmod($tempFile, 0000); // Remove all permissions
 
-        $result = $this->resolveCredentialFromPath($tempFile);
-        $this->assertNull($result);
+        try {
+            clearstatcache(true, $tempFile);
+            if (is_readable($tempFile)) {
+                $this->markTestSkipped('This environment cannot remove file read permissions with chmod.');
+            }
 
-        // Clean up (restore permissions first)
-        chmod($tempFile, 0644);
-        unlink($tempFile);
+            $result = $this->resolveCredentialFromPath($tempFile);
+            $this->assertNull($result);
+        } finally {
+            chmod($tempFile, 0644);
+            unlink($tempFile);
+        }
     }
 
     public function test_prioritizes_path_vars_over_base64_vars()
