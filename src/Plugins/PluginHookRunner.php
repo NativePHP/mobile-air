@@ -2,8 +2,11 @@
 
 namespace Native\Mobile\Plugins;
 
+use Illuminate\Console\OutputStyle;
+use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
+use Native\Mobile\Plugins\Exceptions\PluginHookFailedException;
 
 class PluginHookRunner
 {
@@ -69,6 +72,9 @@ class PluginHookRunner
         $this->twoColumnDetail("<fg=blue>Running {$hookName} hook</>", $plugin->name);
 
         try {
+            // Without an output to write to, Artisan buffers the hook's own
+            // output and nobody ever reads it back — a hook explaining why it
+            // failed said it into a buffer that was thrown away.
             $exitCode = Artisan::call($command, [
                 '--platform' => $this->platform,
                 '--build-path' => $this->buildPath,
@@ -76,13 +82,15 @@ class PluginHookRunner
                 '--app-id' => $this->appId,
                 '--config' => json_encode($this->config),
                 '--plugins' => json_encode($this->plugins->map->toArray()->toArray()),
-            ]);
+            ], $this->output);
 
             if ($exitCode !== 0) {
-                $this->warn("Hook {$hookName} for {$plugin->name} returned non-zero exit code: {$exitCode}");
+                throw new PluginHookFailedException($plugin->name, $hookName, $exitCode);
             }
-        } catch (\Exception $e) {
-            $this->error("Hook {$hookName} for {$plugin->name} failed: {$e->getMessage()}");
+        } catch (PluginHookFailedException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new PluginHookFailedException($plugin->name, $hookName, 1, $e);
         }
     }
 
@@ -115,7 +123,16 @@ class PluginHookRunner
      */
     public function runPostBuildHooks(): void
     {
-        $this->runHook(self::HOOK_POST_BUILD);
+        // The app is already built by now, so one plugin's failed post_build
+        // hook has nothing left to stop and no claim on the plugins after it.
+        // Warn per plugin and keep going rather than abandoning the rest.
+        foreach ($this->plugins as $plugin) {
+            try {
+                $this->runPluginHook($plugin, self::HOOK_POST_BUILD);
+            } catch (\Throwable $e) {
+                $this->warn("⚠️  {$e->getMessage()}");
+            }
+        }
     }
 
     /**
@@ -247,8 +264,18 @@ class PluginHookRunner
      */
     protected function info(string $message): void
     {
-        if ($this->output && method_exists($this->output, 'info')) {
+        if ($this->output === null) {
+            return;
+        }
+
+        if (method_exists($this->output, 'info')) {
             $this->output->info($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<info>{$message}</info>");
         }
     }
 
@@ -257,8 +284,21 @@ class PluginHookRunner
      */
     protected function warn(string $message): void
     {
-        if ($this->output && method_exists($this->output, 'warn')) {
+        if ($this->output === null) {
+            return;
+        }
+
+        // A Command has warn(); Illuminate\Console\OutputStyle — which is what
+        // the build commands actually pass — does not, so guarding on it left
+        // every hook warning unprinted no matter how the build was invoked.
+        if (method_exists($this->output, 'warn')) {
             $this->output->warn($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<comment>{$message}</comment>");
         }
     }
 
@@ -267,8 +307,18 @@ class PluginHookRunner
      */
     protected function error(string $message): void
     {
-        if ($this->output && method_exists($this->output, 'error')) {
+        if ($this->output === null) {
+            return;
+        }
+
+        if (method_exists($this->output, 'error')) {
             $this->output->error($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<error>{$message}</error>");
         }
     }
 
@@ -277,8 +327,21 @@ class PluginHookRunner
      */
     protected function twoColumnDetail(string $label, string $value): void
     {
-        if ($this->output && isset($this->output->components)) {
+        if ($this->output === null) {
+            return;
+        }
+
+        // $components belongs to the Command and is protected there, so an
+        // isset() from out here is false for every object the build passes.
+        // The factory is what the Command builds it with anyway.
+        if (isset($this->output->components)) {
             $this->output->components->twoColumnDetail($label, $value);
+
+            return;
+        }
+
+        if ($this->output instanceof OutputStyle) {
+            (new Factory($this->output))->twoColumnDetail($label, $value);
         }
     }
 }
