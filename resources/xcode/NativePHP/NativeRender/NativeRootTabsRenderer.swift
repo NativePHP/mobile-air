@@ -136,7 +136,9 @@ struct NativeRootTabsRenderer: View {
         // bar even with no string title / back button — otherwise a layout that
         // sets only `titleView()` gets no nav bar and the logo never renders.
         let hasTitleView = node.children.contains { $0.type == "top_bar_title" }
-        let hasNavBar = navBack || !navTitleText.isEmpty || hasTitleView
+        // a bar carrying only actions must still render.
+        let hasNavActions = node.children.contains { $0.type == "top_bar_action" }
+        let hasNavBar = navBack || !navTitleText.isEmpty || hasTitleView || hasNavActions
 
         // Search-tab plumbing for iOS 26's `Tab(role: .search)` floating
         // Liquid Glass capsule. `SearchTabContainer` owns the query state

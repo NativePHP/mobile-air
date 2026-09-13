@@ -184,7 +184,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val navSubtitle = node.props.getString("nav_subtitle", "")
     val navBgArgb = node.props.getColor("nav_background_color", 0)
     val navTextArgb = node.props.getColor("nav_text_color", 0)
-    val hasNavBar = navBack || navTitle.isNotEmpty() || titleNode != null
+    // a bar carrying only actions must still render.
+    val hasNavActions = node.children.any { it.type == "top_bar_action" }
+    val hasNavBar = navBack || navTitle.isNotEmpty() || titleNode != null || hasNavActions
     // Per-layout / per-bar chrome fonts, resolved through the plugin seam.
     // `font_name` = the tab bar's font; `nav_font_name` = the folded nav
     // bar's font (falls back to the tab bar's). Null → inherit the ambient
