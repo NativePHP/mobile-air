@@ -479,6 +479,10 @@ final class NativeElementBridge {
                     return
                 }
 
+                // The actual tree swap — hoisted into a closure so it can be
+                // DEFERRED while a screen / tab transition is animating (see
+                // the settle-window gate below).
+                let apply: () -> Void = {
                 let wasActive = bridge.isActive
                 bridge.isActive = true
 
@@ -525,6 +529,39 @@ final class NativeElementBridge {
                 // at the start of the reboot; cleared here when the
                 // fresh tree from the rebooted PHP runtime lands.
                 if bridge.isReloading { bridge.isReloading = false }
+                }
+
+                // ── Transition settle window ──
+                // A heavy SwiftUI tree update landing MID-animation (the
+                // lazy screen's real content arriving 100-300ms after its
+                // placeholder, or a tab's content after the pane swap) drops
+                // frames and reads as stutter. Native apps never mutate the
+                // incoming screen while it's animating in, so: a screen-swap
+                // publish (nav, non-continuation) opens a settle window and
+                // applies immediately; any other publish arriving inside the
+                // window is held (latest wins) and applied once it closes.
+                // The tabs renderer opens the same window on a tab switch.
+                let now = CACurrentMediaTime()
+                let isScreenSwap = isNav && !nativeChromeContinuation
+                if isScreenSwap {
+                    bridge.deferredTreeApply = nil
+                    bridge.transitionSettleDeadline = now + 0.45
+                    apply()
+                } else if now < bridge.transitionSettleDeadline {
+                    let alreadyScheduled = bridge.deferredTreeApply != nil
+                    bridge.deferredTreeApply = apply
+                    if !alreadyScheduled {
+                        let delay = bridge.transitionSettleDeadline - now
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            if let pending = bridge.deferredTreeApply {
+                                bridge.deferredTreeApply = nil
+                                pending()
+                            }
+                        }
+                    }
+                } else {
+                    apply()
+                }
             }
         }
     }
