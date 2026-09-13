@@ -21,6 +21,9 @@ class TopBarAction extends Element
      */
     private IosSymbol|string|null $iosIcon = null;
 
+    /** Screen-swap transition for the URL auto-navigate (see applyAttributes). */
+    private ?string $urlTransition = null;
+
     private AndroidSymbol|string|null $androidIcon = null;
 
     public static function make(): static
