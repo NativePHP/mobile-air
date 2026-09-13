@@ -63,6 +63,11 @@ class BundleExclusions
         'storage/framework/cache',
         'storage/framework/sessions',
         'storage/framework/views',
+        // The provider registers this as a view-finder location for every
+        // app, and the device's view:cache throws when it is missing.
+        // Only native:make-component creates it, so apps without a
+        // scaffolded component must still ship the empty dir.
+        'resources/views/native',
     ];
 
     /** Non-runtime patterns matched only inside vendor packages. */

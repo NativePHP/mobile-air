@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
@@ -61,6 +60,10 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             var mod: Modifier = Modifier
             val layout = node.layout
             if (layout != null) {
+                // Constraint bounds first, so a `w-full max-w-*` node fills
+                // within its bound rather than being clamped afterwards —
+                // same ordering rule as `buildChildModifier`.
+                mod = mod.applySizeConstraints(layout)
                 when (layout.widthMode) {
                     SizeMode.FILL -> mod = mod.fillMaxWidth()
                     SizeMode.FIXED -> if (layout.width > 0f) mod = mod.width(layout.width.dp)
@@ -90,14 +93,16 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         // (rounded tappable surfaces) → click region (nodeGestures) →
         // inset children (nodeLayout).
         //
-        // The conditional `.clip(RoundedCornerShape)` is the reason
+        // The conditional `.clip(nodeShape(...))` is the reason
         // ripples stay inside the pill / rounded-button shape instead
         // of bleeding past the corners. It applies ONLY when both
         // conditions hold:
         //   - the node has a press / long-press handler (so ripple
         //     will actually be drawn — clipping a non-tappable surface
         //     wouldn't do anything useful)
-        //   - the node has a non-zero border radius
+        //   - the node has a non-zero uniform radius, OR per-corner
+        //     radii from `rounded-<side>-*` (which can be asymmetric
+        //     with a zero uniform radius — a squared-off chat bubble)
         // Non-tappable rounded surfaces (cards, chips with overflowing
         // avatars, etc.) intentionally skip the clip — the existing
         // policy in NodeModifiers.kt explains why we don't clip
@@ -276,8 +281,11 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
 
         modifier = modifier.nodeStyle(node.style, node.props, isDarkMode)
 
-        if (hasPress && radius > 0f) {
-            modifier = modifier.clip(RoundedCornerShape(radius.dp))
+        // Per-corner radii also count as "has a radius" here — otherwise a
+        // tappable bubble squared off with `rounded-br-none` would fall to the
+        // un-clipped branch and its ripple would bleed past the rounded corners.
+        if (hasPress && (radius > 0f || node.props.has("radius_tl"))) {
+            modifier = modifier.clip(nodeShape(radius, node.props))
         }
         modifier = modifier
             .nodeGestures(node, interactionSource)

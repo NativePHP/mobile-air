@@ -259,6 +259,11 @@ struct NativeRootStackRenderer: View {
             // and the press transition renders as a visible flicker
             // behind the touched element. iOS 26+ only.
             NodeView(node: node)
+                // Tapping outside a focused field dismisses the keyboard, the
+                // same as on a chrome-less screen. Attached per-screen because
+                // the NavigationStack root itself is deliberately left unwrapped
+                // (mobile-air #308).
+                .dismissesKeyboardOnTap()
                 .withGlassContainer()
                 // NavigationStack hosts screens on its own container
                 // background (systemBackground — white in light mode) and

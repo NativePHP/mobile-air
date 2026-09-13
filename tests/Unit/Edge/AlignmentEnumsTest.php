@@ -28,15 +28,24 @@ it('pins the alignment wire values to the native protocol', function () {
     expect([TextAlign::Left->value, TextAlign::Center->value, TextAlign::Right->value])
         ->toBe([0, 1, 2]);
 
+    // Start is 4, NOT 0. 0 is reserved for "unset" — the layout array omits
+    // `align_items` when no items-*/self-* class was authored, and the
+    // renderers apply their own default for it. Collapsing Start onto 0 is
+    // what made iOS unable to fix `items-start` without also flipping every
+    // unclassed container (mobile-air #309).
     expect([
         AlignItems::Start->value, AlignItems::Center->value,
         AlignItems::End->value, AlignItems::Stretch->value,
-    ])->toBe([0, 1, 2, 3]);
+    ])->toBe([4, 1, 2, 3]);
 
     expect([
         AlignSelf::Start->value, AlignSelf::Center->value,
         AlignSelf::End->value, AlignSelf::Stretch->value,
-    ])->toBe([0, 1, 2, 3]);
+    ])->toBe([4, 1, 2, 3]);
+
+    // 0 must not resolve to any case, or the "unset" slot leaks back.
+    expect(AlignItems::tryFrom(0))->toBeNull()
+        ->and(AlignSelf::tryFrom(0))->toBeNull();
 
     expect([
         JustifyContent::Start->value, JustifyContent::Center->value,
@@ -157,16 +166,22 @@ it('keeps Tailwind alignment classes mapping to the same wire values', function 
 it('rejects integers outside the enum instead of passing them to the wire', function () {
     // The native renderers switch on this value and silently fall back to
     // their own default for anything unknown, so an out-of-range int must not
-    // reach them — that just moves the failure somewhere harder to see. This
-    // is why the old `Align::BASELINE = 4` was removed.
-    expect(AlignItems::parse(4))->toBeNull();
+    // reach them — that just moves the failure somewhere harder to see. The
+    // old `Align::BASELINE = 4` was removed for this reason; 4 has since been
+    // reassigned to Start (#309) and no renderer still reads it as baseline.
+    expect(AlignItems::parse(5))->toBeNull();
     expect(AlignItems::parse(-1))->toBeNull();
     expect(JustifyContent::parse(6))->toBeNull();
     expect(TextAlign::parse(3))->toBeNull();
 
+    // 0 is the "unset" slot and is not a case, so it must not resolve either —
+    // an explicit `alignItems="0"` leaves the native default in place, which
+    // is exactly what unset should do.
+    expect(AlignItems::parse(0))->toBeNull();
+
     // ...and the setter leaves the native default in place rather than
     // writing a value the renderer can't read.
-    $el = Column::make()->alignItems(4)->toArray(new CallbackRegistry);
+    $el = Column::make()->alignItems(5)->toArray(new CallbackRegistry);
     expect($el['layout'] ?? [])->not->toHaveKey('align_items');
 });
 

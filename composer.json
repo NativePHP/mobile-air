@@ -26,7 +26,7 @@
         "ext-dom": "*",
         "ext-simplexml": "*",
         "workerman/workerman": "^4.1",
-        "guzzlehttp/guzzle": "^7.9",
+        "guzzlehttp/guzzle": "^7.9 || ^8.0",
         "illuminate/contracts": "^10.0|^11.0|^12.0|^13.0",
         "illuminate/support": "^10.0|^11.0|^12.0|^13.0",
         "laravel/prompts": "^0.1.1|^0.2|^0.3",
