@@ -78,7 +78,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
     LaunchedEffect(node) {
         if (currentUri.isNotEmpty()) {
-            coordinator.receive(currentUri, node)
+            coordinator.receive(currentUri, node.props.getInt("stack_depth", 0), node)
         }
     }
 
