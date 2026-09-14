@@ -4,7 +4,7 @@ import UIKit
 // MARK: - Node Style Modifier
 
 /// Applies visual style properties from a NativeUINode to a SwiftUI view.
-/// Handles background color, corner radius, border, shadow, opacity,
+/// Handles background color, corner radius, border, shadow, glow, blur, opacity,
 /// and dark mode overrides from dark_* props.
 struct NodeStyleModifier: ViewModifier {
     let style: NodeStyle?
@@ -79,6 +79,9 @@ struct NodeStyleModifier: ViewModifier {
                 radius: glowRadius,
                 opacity: glowOpacity
             ))
+            // Tailwind `blur-*` — Gaussian softens the node's own pixels
+            // (page-bg orbs). Props-bag radius in points; no-op at 0.
+            .modifier(BlurFilterModifier(radius: blurRadius))
             .opacity(opacity)
     }
 
@@ -226,6 +229,14 @@ struct NodeStyleModifier: ViewModifier {
         Double(props.getFloat("glow_opacity", default: 0))
     }
 
+    // MARK: - Blur
+
+    /// Gaussian blur radius from `blur-*` / `blur-[Npx]` / `blur` EDGE prop.
+    /// Distinct from glow (halo) and elevation shadow (depth cast).
+    private var blurRadius: CGFloat {
+        CGFloat(props.getFloat("blur", default: 0))
+    }
+
     // MARK: - Opacity
 
     private func resolvedOpacity(dark: Bool) -> Double {
@@ -266,6 +277,22 @@ private struct GlowShadowModifier: ViewModifier {
             content
                 .shadow(color: color.opacity(opacity * 0.55), radius: radius, x: 0, y: 0)
                 .shadow(color: color.opacity(opacity), radius: max(radius * 0.5, 1), x: 0, y: 0)
+        } else {
+            content
+        }
+    }
+}
+
+/// Applies SwiftUI `.blur(radius:)` when `blur-*` set a positive radius.
+/// Softens the node's own pixels (filled shapes become soft orbs); layout
+/// bounds are unchanged — bloom paints outside the frame like CSS filter.
+private struct BlurFilterModifier: ViewModifier {
+    let radius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if radius > 0 {
+            content.blur(radius: radius)
         } else {
             content
         }

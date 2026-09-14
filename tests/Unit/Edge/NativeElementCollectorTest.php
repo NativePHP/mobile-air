@@ -307,6 +307,27 @@ it('wires EDGE glowColor attrs into the props bag with defaults', function () {
     expect($tree['props']['glow_opacity'])->toBe(0.55);
 });
 
+it('wires blur-* utilities into the props bag without touching elevation', function () {
+    $el = Column::make()->class('blur-3xl shadow-md');
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['props']['blur'])->toBe(64.0);
+    expect($tree['style']['elevation'])->toBe(6.0);
+});
+
+it('wires EDGE blur attr and Element::blur into the props bag', function () {
+    $el = Column::make();
+    NativeElementCollector::applyStyle($el, ['blur' => 100.0]);
+
+    $tree = $el->toArray(new CallbackRegistry);
+    expect($tree['props']['blur'])->toBe(100.0);
+
+    $el2 = Column::make()->blur(48.0);
+    $tree2 = $el2->toArray(new CallbackRegistry);
+    expect($tree2['props']['blur'])->toBe(48.0);
+});
+
 // ── Callback attribute wiring ────────────
 
 it('wires _navigated to onNavigated when the element supports it', function () {

@@ -1693,6 +1693,11 @@ class NativeElementCollector
                 $element->setProp('glow_opacity', (float) $attrs['glowOpacity']);
             }
         }
+        // Gaussian blur filter (`blur-*` / `blur-[Npx]`). Props bag — same
+        // path as glow; no NodeStyle binary-layout change. Radius in points.
+        if (isset($attrs['blur'])) {
+            $element->setProp('blur', (float) $attrs['blur']);
+        }
         // Liquid Glass material (1 = regular, 2 = thick). Stored as a
         // generic prop so the renderer can read it via `props.getInt`
         // — no NodeStyle binary-layout change needed.

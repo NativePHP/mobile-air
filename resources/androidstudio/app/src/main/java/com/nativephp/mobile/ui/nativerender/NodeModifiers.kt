@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.draw.shadow
@@ -95,7 +96,7 @@ fun argbToComposeColor(argb: Int): Color {
 
 /**
  * Applies visual style properties from a NativeUINode.
- * Handles background color, corner radius, border, shadow, opacity,
+ * Handles background color, corner radius, border, shadow, glow, blur, opacity,
  * and dark mode overrides from dark_* props.
  */
 /**
@@ -240,6 +241,15 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
                 mod = mod.border(style.borderWidth.dp, borderColor, shape)
             }
         }
+    }
+
+    // Tailwind `blur-*` — Gaussian softens the node's own pixels (page-bg
+    // orbs). Compose `Modifier.blur` uses RenderEffect and is API 31+ only;
+    // on older devices it is a documented no-op (Compose framework behavior).
+    // Default NativePHP minSdk is 33, so production apps get real blur.
+    val blurRadius = props.getFloat("blur", 0f)
+    if (blurRadius > 0f) {
+        mod = mod.blur(blurRadius.dp)
     }
 
     return mod

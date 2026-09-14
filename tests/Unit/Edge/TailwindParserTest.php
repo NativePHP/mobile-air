@@ -464,6 +464,31 @@ it('parses named glow utilities without touching elevation', function () {
     ]);
 });
 
+it('parses blur utilities for page-bg orbs', function () {
+    expect(TailwindParser::parse('blur'))->toBe(['blur' => 8.0]);
+    expect(TailwindParser::parse('blur-none'))->toBe(['blur' => 0.0]);
+    expect(TailwindParser::parse('blur-sm'))->toBe(['blur' => 4.0]);
+    expect(TailwindParser::parse('blur-md'))->toBe(['blur' => 12.0]);
+    expect(TailwindParser::parse('blur-lg'))->toBe(['blur' => 16.0]);
+    expect(TailwindParser::parse('blur-xl'))->toBe(['blur' => 24.0]);
+    expect(TailwindParser::parse('blur-2xl'))->toBe(['blur' => 40.0]);
+    expect(TailwindParser::parse('blur-3xl'))->toBe(['blur' => 64.0]);
+
+    // Arbitrary radius (Stitch page orbs often use blur-[100px]).
+    expect(TailwindParser::parse('blur-[100px]'))->toBe(['blur' => 100.0]);
+    expect(TailwindParser::parse('blur-[64]'))->toBe(['blur' => 64.0]);
+
+    // Unknown size → dropped.
+    expect(TailwindParser::parse('blur-4xl'))->toBe([]);
+
+    // Coexists with elevation and glow; does not overload either.
+    expect(TailwindParser::parse('blur-3xl shadow-md glow-indigo'))->toMatchArray([
+        'blur' => 64.0,
+        'elevation' => 6,
+        'glowColor' => '#6366F1',
+    ]);
+});
+
 it('parses safe-area', function () {
     expect(TailwindParser::parse('safe-area'))->toBe(['safeArea' => true]);
 });

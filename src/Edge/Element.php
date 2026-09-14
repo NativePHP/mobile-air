@@ -551,6 +551,18 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Gaussian blur filter. Programmatic twin of `blur-*` / `blur-[Npx]`
+     * — rides the props bag (`blur` radius in points), not NodeStyle.
+     * Softens the node's own pixels (page-bg orbs); distinct from glow/shadow.
+     */
+    public function blur(float $radius): static
+    {
+        $this->extraProps['blur'] = $radius;
+
+        return $this;
+    }
+
     // ── Node-level events ────────────────────────────
 
     public function onPress(string $method): static

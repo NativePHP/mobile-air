@@ -262,6 +262,27 @@ class TailwindParser
     private const GLOW_DEFAULT_OPACITY = 0.55;
 
     /**
+     * Tailwind `blur-*` / `blur` / `blur-none` — Gaussian filter radius in
+     * points. Distinct from elevation `shadow-*` and colored `glow-*`
+     * (those paint halos; blur softens the node's own pixels). Used for
+     * Stitch-style page-bg orbs (`blur-3xl` / `blur-[100px]` on large soft
+     * discs). Arbitrary `blur-[Npx]` is handled in parseArbitrary.
+     *
+     * Scale matches Tailwind CSS filter blur defaults.
+     */
+    private const BLUR_RADIUS = [
+        'none' => 0,
+        'sm' => 4,
+        'md' => 12,
+        'lg' => 16,
+        'xl' => 24,
+        '2xl' => 40,
+        '3xl' => 64,
+    ];
+
+    private const BLUR_DEFAULT_RADIUS = 8;
+
+    /**
      * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
      * Values are the rem sizes converted at the 16px root Tailwind assumes.
      * Most are far wider than a phone, but they're what authors type and a
@@ -709,6 +730,9 @@ class TailwindParser
             str_starts_with($class, 'shadow-') => self::parseShadow(substr($class, 7)),
             // Colored glow halo — separate from elevation `shadow-*`.
             str_starts_with($class, 'glow-') => self::parseGlow(substr($class, 5)),
+            // Gaussian blur filter — softens the node's own pixels (page orbs).
+            $class === 'blur' => ['blur' => (float) self::BLUR_DEFAULT_RADIUS],
+            str_starts_with($class, 'blur-') => self::parseBlur(substr($class, 5)),
             str_starts_with($class, 'opacity-') => self::parseOpacity(substr($class, 8)),
 
             // Alignment
@@ -1341,6 +1365,22 @@ class TailwindParser
         ];
     }
 
+    /**
+     * `blur-sm` … `blur-3xl` / `blur-none`. Bare `blur` is handled in the
+     * match arm. Emits camelCase `blur` radius (float pt) for the collector
+     * props bag — no NodeStyle bump.
+     *
+     * @return array{blur: float}|null
+     */
+    private static function parseBlur(string $value): ?array
+    {
+        if (! isset(self::BLUR_RADIUS[$value])) {
+            return null;
+        }
+
+        return ['blur' => (float) self::BLUR_RADIUS[$value]];
+    }
+
     private static function parseOpacity(string $value): ?array
     {
         if (is_numeric($value)) {
@@ -1406,6 +1446,8 @@ class TailwindParser
             'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
+            // `blur-[100px]` / `blur-[64]` — Gaussian radius in points.
+            'blur' => ['blur' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
             // Line height: `leading-[24px]` → absolute; `leading-[1.4]` →
             // unitless multiplier of the font size.
