@@ -17,9 +17,9 @@ trait PublishesToPlayStore
             return false;
         }
 
-        // The manifest of a non-production build declares a closed testing
-        // audience, so Play would reject the production track anyway. Refuse it
-        // here, where the reason can still be explained.
+        // The manifest of a non-production build declares a NONPRODUCTION
+        // release audience, so Play would reject the production track anyway.
+        // Refuse it here, where the reason can still be explained.
         if (($config['track'] ?? null) === 'production' && ! $this->buildsForProduction()) {
             $this->error('❌ Refusing to publish to the production track: this app was built with APP_ENV='.config('app.env').'.');
             $this->line('   Build with APP_ENV=production to make a production release.');

@@ -265,10 +265,13 @@ trait RunsAndroid
 
     /**
      * Declare to Google Play how far this build may travel. Anything built
-     * outside the production environment carries the closed testing audience,
+     * outside the production environment carries the NONPRODUCTION audience,
      * which Play holds the artifact to: it cannot be promoted to the
      * production track later. A production build carries no ceiling, so a
      * declaration left behind by an earlier build is stripped.
+     *
+     * Play reads the audience from the meta-data name's suffix and requires an
+     * empty value; an audience placed in the value is silently ignored.
      */
     private function updateReleaseAudience(): void
     {
@@ -284,7 +287,7 @@ trait RunsAndroid
         // reused between builds, so a stale audience would otherwise survive a
         // move back to production.
         $contents = preg_replace(
-            '/\s*<meta-data\s+android:name="'.preg_quote(self::LARGEST_RELEASE_AUDIENCE_KEY, '/').'"[^>]*\/>/s',
+            '/\s*<meta-data\s+android:name="'.preg_quote(self::LARGEST_RELEASE_AUDIENCE_KEY, '/').'(?:\.[A-Z_]+)?"[^>]*\/>/s',
             '',
             $contents
         );
@@ -292,7 +295,7 @@ trait RunsAndroid
         $audience = $this->largestReleaseAudience();
 
         if ($audience !== null) {
-            $entry = "\n        <meta-data\n            android:name=\"".self::LARGEST_RELEASE_AUDIENCE_KEY."\"\n            android:value=\"{$audience}\" />";
+            $entry = "\n        <meta-data\n            android:name=\"".self::LARGEST_RELEASE_AUDIENCE_KEY.".{$audience}\"\n            android:value=\"\" />";
 
             $contents = preg_replace_callback(
                 '/<application[^>]*>/',

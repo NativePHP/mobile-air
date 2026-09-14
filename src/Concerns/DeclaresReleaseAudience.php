@@ -13,7 +13,10 @@ trait DeclaresReleaseAudience
 {
     /**
      * The AndroidManifest meta-data Google Play reads to learn how far a
-     * release may travel.
+     * release may travel. Play expects the audience as a suffix of this name
+     * (for example `.NONPRODUCTION`) and an empty `android:value`.
+     *
+     * @see https://developer.android.com/google/play/release-audience-restriction
      */
     protected const LARGEST_RELEASE_AUDIENCE_KEY = 'com.google.android.play.largest_release_audience';
 
@@ -24,11 +27,13 @@ trait DeclaresReleaseAudience
 
     /**
      * The largest audience this build may be released to, or null when it is
-     * a production build and no ceiling applies.
+     * a production build and no ceiling applies. NONPRODUCTION keeps every
+     * testing track and internal app sharing open and blocks only the
+     * production track, matching the Play upload guard.
      */
     protected function largestReleaseAudience(): ?string
     {
-        return $this->buildsForProduction() ? null : 'CLOSED_TESTING';
+        return $this->buildsForProduction() ? null : 'NONPRODUCTION';
     }
 
     /**

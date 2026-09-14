@@ -35,18 +35,19 @@ class ReleaseAudienceTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_a_testing_build_declares_a_closed_testing_audience_to_play(): void
+    public function test_a_testing_build_declares_a_non_production_audience_to_play(): void
     {
         config(['app.env' => 'testing']);
         $this->writeManifest();
 
         $this->updateReleaseAudience();
 
-        $this->assertStringContainsString(
-            'android:name="com.google.android.play.largest_release_audience"',
+        // Play reads the audience from the name's suffix and requires an empty
+        // value; anything else is ignored and every track stays open.
+        $this->assertMatchesRegularExpression(
+            '/<meta-data\s+android:name="com\.google\.android\.play\.largest_release_audience\.NONPRODUCTION"\s+android:value=""\s*\/>/',
             $this->manifest()
         );
-        $this->assertStringContainsString('android:value="CLOSED_TESTING"', $this->manifest());
     }
 
     public function test_the_declaration_sits_inside_the_application_element(): void
@@ -78,10 +79,30 @@ class ReleaseAudienceTest extends TestCase
 
         config(['app.env' => 'testing']);
         $this->updateReleaseAudience();
-        $this->assertStringContainsString('CLOSED_TESTING', $this->manifest());
+        $this->assertStringContainsString('largest_release_audience.NONPRODUCTION', $this->manifest());
 
         config(['app.env' => 'production']);
         $this->updateReleaseAudience();
+        $this->assertStringNotContainsString('largest_release_audience', $this->manifest());
+    }
+
+    public function test_a_declaration_with_another_audience_is_stripped_too(): void
+    {
+        File::put($this->manifestPath(), <<<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="NativePHP">
+        <meta-data
+            android:name="com.google.android.play.largest_release_audience.CLOSED_TESTING"
+            android:value="" />
+        <activity android:name=".MainActivity" />
+    </application>
+</manifest>
+XML);
+
+        config(['app.env' => 'production']);
+        $this->updateReleaseAudience();
+
         $this->assertStringNotContainsString('largest_release_audience', $this->manifest());
     }
 
@@ -114,7 +135,7 @@ class ReleaseAudienceTest extends TestCase
 
         foreach (['local', 'testing', 'staging'] as $env) {
             config(['app.env' => $env]);
-            $this->assertSame('CLOSED_TESTING', $audience->invoke($command), $env);
+            $this->assertSame('NONPRODUCTION', $audience->invoke($command), $env);
             $this->assertTrue($internal->invoke($command), $env);
         }
 
