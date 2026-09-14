@@ -41,6 +41,7 @@ class PHPBridge(private val context: Context) {
 
     external fun nativeExecuteScript(filename: String): String
     external fun nativeSetEnv(name: String, value: String, overwrite: Int): Int
+    external fun nativeUnsetEnv(name: String)
     external fun runArtisanCommand(command: String): String
     external fun initialize()
     external fun setRequestInfo(method: String, uri: String, postData: String?)
@@ -319,47 +320,54 @@ class PHPBridge(private val context: Context) {
         val future = phpExecutor.submit<String> {
             val prepStart = System.currentTimeMillis()
 
-            // Clear Inertia-related env vars first - they persist between requests
-            // and cause Laravel to return JSON instead of HTML
-            val inertiaEnvVars = listOf(
-                "HTTP_X_INERTIA",
-                "HTTP_X_INERTIA_VERSION",
-                "HTTP_X_INERTIA_PARTIAL_DATA",
-                "HTTP_X_INERTIA_PARTIAL_COMPONENT",
-                "HTTP_X_INERTIA_PARTIAL_EXCEPT"
-            )
-            inertiaEnvVars.forEach { envVar ->
-                nativeSetEnv(envVar, "", 1)
+            // Headers travel as process env vars, which outlive the dispatch,
+            // so the next request would inherit every header of this one.
+            // Track what this request sets and drop it afterwards — the same
+            // thing iOS does in PersistentPHPRuntime.swift.
+            val headerEnvKeys = mutableListOf<String>()
+
+            fun setHeaderEnv(name: String, value: String) {
+                headerEnvKeys.add(name)
+
+                if (nativeSetEnv(name, value, 1) != 0) {
+                    headerEnvKeys.removeAt(headerEnvKeys.lastIndex)
+                    error("Failed to set request environment variable: $name")
+                }
             }
 
-            request.headers.forEach { (key, value) ->
-                val envKey = "HTTP_" + key.replace("-", "_").uppercase()
-                nativeSetEnv(envKey, value, 1)
-            }
+            val prepTime: Long
+            val jniStart: Long
 
-            val cookieHeader = LaravelCookieStore.asCookieHeader()
-            nativeSetEnv("HTTP_COOKIE", cookieHeader, 1)
+            val output = try {
+                request.headers.forEach { (key, value) ->
+                    setHeaderEnv("HTTP_" + key.replace("-", "_").uppercase(), value)
+                }
 
-            val prepTime = System.currentTimeMillis() - prepStart
-            val jniStart = System.currentTimeMillis()
+                setHeaderEnv("HTTP_COOKIE", LaravelCookieStore.asCookieHeader())
 
-            val output = if (persistentMode && persistentBooted) {
-                // Persistent mode: dispatch through the already-running interpreter
-                nativePersistentDispatch(
-                    request.method,
-                    request.uri,
-                    request.body,
-                    nativePhpScript
-                )
-            } else {
-                // Classic mode: full init/shutdown per request
-                ensureRuntimeInitialized()
-                nativeHandleRequest(
-                    request.method,
-                    request.uri,
-                    request.body,
-                    nativePhpScript
-                )
+                prepTime = System.currentTimeMillis() - prepStart
+                jniStart = System.currentTimeMillis()
+
+                if (persistentMode && persistentBooted) {
+                    // Persistent mode: dispatch through the already-running interpreter
+                    nativePersistentDispatch(
+                        request.method,
+                        request.uri,
+                        request.body,
+                        nativePhpScript
+                    )
+                } else {
+                    // Classic mode: full init/shutdown per request
+                    ensureRuntimeInitialized()
+                    nativeHandleRequest(
+                        request.method,
+                        request.uri,
+                        request.body,
+                        nativePhpScript
+                    )
+                }
+            } finally {
+                headerEnvKeys.forEach { nativeUnsetEnv(it) }
             }
 
             val jniTime = System.currentTimeMillis() - jniStart
