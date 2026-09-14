@@ -283,11 +283,13 @@ trait RunsAndroid
 
         $contents = File::get($manifestPath);
 
-        // Always drop the previous declaration first: the native project is
+        // Always drop our own previous declaration first: the native project is
         // reused between builds, so a stale audience would otherwise survive a
-        // move back to production.
+        // move back to production. Only the entry this tool writes is touched;
+        // a developer's own restriction is left alone, since Play applies the
+        // most restrictive one present.
         $contents = preg_replace(
-            '/\s*<meta-data\s+android:name="'.preg_quote(self::LARGEST_RELEASE_AUDIENCE_KEY, '/').'(?:\.[A-Z_]+)?"[^>]*\/>/s',
+            '/\s*<meta-data\s+android:name="'.preg_quote(self::LARGEST_RELEASE_AUDIENCE_KEY.'.NONPRODUCTION', '/').'"[^>]*\/>/s',
             '',
             $contents
         );
