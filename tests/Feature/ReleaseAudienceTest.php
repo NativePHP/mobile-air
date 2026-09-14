@@ -86,7 +86,7 @@ class ReleaseAudienceTest extends TestCase
         $this->assertStringNotContainsString('largest_release_audience', $this->manifest());
     }
 
-    public function test_a_declaration_with_another_audience_is_stripped_too(): void
+    public function test_a_developer_authored_audience_is_left_alone(): void
     {
         File::put($this->manifestPath(), <<<'XML'
 <?xml version="1.0" encoding="utf-8"?>
@@ -102,8 +102,12 @@ XML);
 
         config(['app.env' => 'production']);
         $this->updateReleaseAudience();
+        $this->assertStringContainsString('largest_release_audience.CLOSED_TESTING', $this->manifest());
 
-        $this->assertStringNotContainsString('largest_release_audience', $this->manifest());
+        config(['app.env' => 'testing']);
+        $this->updateReleaseAudience();
+        $this->assertStringContainsString('largest_release_audience.CLOSED_TESTING', $this->manifest());
+        $this->assertStringContainsString('largest_release_audience.NONPRODUCTION', $this->manifest());
     }
 
     public function test_repeated_testing_builds_declare_the_audience_once(): void
