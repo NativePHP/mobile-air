@@ -172,7 +172,7 @@ class HotReloadCoordinator {
                 _ = PersistentPHPRuntime.shared.artisan(command: "view:clear")
                 PHPQueueWorker.shared.start()
             } else {
-                _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
+                _ = NativePHPApp.artisan(additionalArgs: ["view:clear"])
             }
 
             if isNativeUI {
