@@ -143,7 +143,7 @@ class TestableComponent
 
     /**
      * Mount the component registered for a native route URI, with the
-     * route's params and layout resolved exactly as navigation would.
+     * route's params, query and layout resolved exactly as navigation would.
      * Requires the app's Route::native() registrations to be loaded.
      */
     public static function visit(string $uri, array $data = [], ?string $platform = null): static
@@ -155,7 +155,9 @@ class TestableComponent
             "No native route registered for [{$uri}]. Register it with Route::native() or test the component class directly."
         );
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri);
+        // Visiting '/detail?tab=2' must put `tab` where the device puts it.
+        // An explicit $data argument still wins — the test said so directly.
+        return new static($resolved['class'], $resolved['params'], array_merge($resolved['query'], $data), $resolved['layout'], $platform, $uri);
     }
 
     protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null)
@@ -617,7 +619,7 @@ class TestableComponent
         // re-fire it (NativeRouter::loop does exactly this).
         $this->component->resetNavigationIntent();
 
-        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri);
+        $next = new static($resolved['class'], $resolved['params'], array_merge($resolved['query'], $intent->data), $resolved['layout'], $this->platform, $intent->uri);
 
         if ($intent->type === NavigationIntent::REPLACE) {
             // Replaced screens leave the stack entirely.
