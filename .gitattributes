@@ -1,0 +1,2 @@
+# Pint expects LF line endings on every platform.
+*.php text eol=lf
