@@ -67,7 +67,15 @@ struct ContentView: View {
                             // Each new screen sits above the previous one
                             // (keys increment), so slides cover in push
                             // order and a fade has a defined front/back.
-                            .zIndex(Double(screen.id))
+                            // EXCEPT the slide_to_bottom modal reveal: there
+                            // the OUTGOING layer must stay on top while it
+                            // slides down, revealing the incoming beneath.
+                            .zIndex(
+                                screen.isOutgoing
+                                    && nativeUIBridge.outgoingScreen?.transition == "slide_to_bottom"
+                                    ? Double(screen.id) + 10_000
+                                    : Double(screen.id)
+                            )
                     }
                 }
             } else if bootState.webViewAllowed {
