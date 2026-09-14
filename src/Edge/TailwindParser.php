@@ -235,6 +235,33 @@ class TailwindParser
     ];
 
     /**
+     * Named colored glows (Slice 1). Distinct from elevation `shadow-*` —
+     * these emit glowColor / glowRadius / glowOpacity props for a soft
+     * zero-offset halo on both platforms. Colors are the palette 500
+     * shade; sizes mirror a soft scale independent of SHADOW elevation.
+     *
+     *   glow-emerald / glow-indigo / glow-rose
+     *   glow-emerald-sm / glow-indigo-md / glow-rose-lg
+     *
+     * Arbitrary `shadow-[…]` / `glow-[…]` forms are deferred.
+     */
+    private const GLOW_COLORS = [
+        'emerald' => '#10B981',
+        'indigo' => '#6366F1',
+        'rose' => '#F43F5E',
+    ];
+
+    private const GLOW_RADIUS = [
+        'sm' => 8,
+        'md' => 16,
+        'lg' => 24,
+    ];
+
+    private const GLOW_DEFAULT_RADIUS = 16;
+
+    private const GLOW_DEFAULT_OPACITY = 0.55;
+
+    /**
      * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
      * Values are the rem sizes converted at the 16px root Tailwind assumes.
      * Most are far wider than a phone, but they're what authors type and a
@@ -680,6 +707,8 @@ class TailwindParser
             str_starts_with($class, 'border-') => self::parseBorder(substr($class, 7)),
             str_starts_with($class, 'rounded-') => self::parseRounded(substr($class, 8)),
             str_starts_with($class, 'shadow-') => self::parseShadow(substr($class, 7)),
+            // Colored glow halo — separate from elevation `shadow-*`.
+            str_starts_with($class, 'glow-') => self::parseGlow(substr($class, 5)),
             str_starts_with($class, 'opacity-') => self::parseOpacity(substr($class, 8)),
 
             // Alignment
@@ -1270,6 +1299,46 @@ class TailwindParser
         }
 
         return null;
+    }
+
+    /**
+     * `glow-emerald`, `glow-indigo-sm`, `glow-rose-lg`.
+     *
+     * Emits camelCase EDGE attrs (glowColor / glowRadius / glowOpacity)
+     * that `NativeElementCollector::applyStyle` forwards into the props
+     * bag — same path as `glass` / `dark_bg_color`, no NodeStyle bump.
+     *
+     * @return array{glowColor: string, glowRadius: float, glowOpacity: float}|null
+     */
+    private static function parseGlow(string $value): ?array
+    {
+        $color = null;
+        $radius = self::GLOW_DEFAULT_RADIUS;
+
+        if (isset(self::GLOW_COLORS[$value])) {
+            $color = self::GLOW_COLORS[$value];
+        } else {
+            $lastDash = strrpos($value, '-');
+            if ($lastDash === false) {
+                return null;
+            }
+
+            $family = substr($value, 0, $lastDash);
+            $size = substr($value, $lastDash + 1);
+
+            if (! isset(self::GLOW_COLORS[$family], self::GLOW_RADIUS[$size])) {
+                return null;
+            }
+
+            $color = self::GLOW_COLORS[$family];
+            $radius = self::GLOW_RADIUS[$size];
+        }
+
+        return [
+            'glowColor' => $color,
+            'glowRadius' => (float) $radius,
+            'glowOpacity' => self::GLOW_DEFAULT_OPACITY,
+        ];
     }
 
     private static function parseOpacity(string $value): ?array

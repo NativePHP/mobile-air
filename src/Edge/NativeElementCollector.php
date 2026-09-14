@@ -1671,6 +1671,28 @@ class NativeElementCollector
         if (isset($attrs['elevation'])) {
             $element->elevation((float) $attrs['elevation']);
         }
+        // Colored glow halo (`glow-emerald` etc.). Props bag — same path
+        // as glass / dark_bg_color; no NodeStyle binary-layout change.
+        // Defaults match TailwindParser Slice 1 (radius 16, opacity 0.55)
+        // so an EDGE `glowColor` attr alone still produces a visible halo.
+        if (isset($attrs['glowColor'])) {
+            $element->setProp('glow_color', (string) $attrs['glowColor']);
+            $element->setProp(
+                'glow_radius',
+                isset($attrs['glowRadius']) ? (float) $attrs['glowRadius'] : 16.0
+            );
+            $element->setProp(
+                'glow_opacity',
+                isset($attrs['glowOpacity']) ? (float) $attrs['glowOpacity'] : 0.55
+            );
+        } else {
+            if (isset($attrs['glowRadius'])) {
+                $element->setProp('glow_radius', (float) $attrs['glowRadius']);
+            }
+            if (isset($attrs['glowOpacity'])) {
+                $element->setProp('glow_opacity', (float) $attrs['glowOpacity']);
+            }
+        }
         // Liquid Glass material (1 = regular, 2 = thick). Stored as a
         // generic prop so the renderer can read it via `props.getInt`
         // — no NodeStyle binary-layout change needed.

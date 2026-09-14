@@ -18,11 +18,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 
 // MARK: - Linear Gradient
@@ -158,10 +161,52 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
     val bgArgb = if (darkBg != 0) darkBg else style.bgColor
     val shape = nodeShape(radius, props)
 
-    // Shadow — must come before background. Compose shadow requires a shape
-    // to cast from; the background provides the visual fill.
+    // Elevation `shadow-*` — must come before background. Compose shadow
+    // requires a shape to cast from; the background provides the visual fill.
     if (style.elevation > 0f) {
         mod = mod.shadow(elevation = style.elevation.dp, shape = shape)
+    }
+
+    // Colored `glow-*` halo (Slice 1). Prefer Compose `dropShadow` (BOM
+    // 2025.12 / Compose 1.10) for a true zero-offset colored blur. If that
+    // API is unavailable on an older toolchain, fall back to elevation
+    // `shadow` with matching ambientColor/spotColor — documented below.
+    val glowArgb = props.getColor("glow_color", 0)
+    val glowRadius = props.getFloat("glow_radius", 0f)
+    val glowOpacity = props.getFloat("glow_opacity", 0f)
+    if (glowArgb != 0 && glowRadius > 0f && glowOpacity > 0f) {
+        val base = argbToComposeColor(glowArgb)
+        // Stack two dropShadows (outer softer / inner denser) to mirror
+        // iOS's double zero-offset `.shadow` stack.
+        val outer = base.copy(alpha = (base.alpha * glowOpacity * 0.55f).coerceIn(0f, 1f))
+        val inner = base.copy(alpha = (base.alpha * glowOpacity).coerceIn(0f, 1f))
+        mod = mod
+            .dropShadow(
+                shape = shape,
+                shadow = Shadow(
+                    radius = glowRadius.dp,
+                    color = outer,
+                    offset = DpOffset.Zero,
+                ),
+            )
+            .dropShadow(
+                shape = shape,
+                shadow = Shadow(
+                    radius = (glowRadius * 0.5f).coerceAtLeast(1f).dp,
+                    color = inner,
+                    offset = DpOffset.Zero,
+                ),
+            )
+        // Fallback (documented): when `dropShadow` is not on the classpath,
+        // replace the block above with elevation-colored shadows —
+        //   mod = mod.shadow(
+        //       elevation = glowRadius.dp,
+        //       shape = shape,
+        //       ambientColor = inner,
+        //       spotColor = inner,
+        //   )
+        // That approximates a colored halo via Material elevation lighting
+        // rather than a true zero-offset blur; prefer dropShadow on BOM 2025.12+.
     }
 
     // Background — a linear gradient wins over the flat color when declared,
@@ -175,8 +220,8 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         if (bgColor != Color.Transparent) {
             mod = mod.background(bgColor, shape)
         }
-    } else if (style.elevation > 0f) {
-        // Shadow needs a background to be visible — add white if none specified
+    } else if (style.elevation > 0f || (glowArgb != 0 && glowRadius > 0f)) {
+        // Elevation / glow needs a background to be visible — add white if none specified
         mod = mod.background(Color.White, shape)
     }
 
