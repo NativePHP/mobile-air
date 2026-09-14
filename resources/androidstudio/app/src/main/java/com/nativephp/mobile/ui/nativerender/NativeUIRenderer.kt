@@ -1,6 +1,8 @@
 package com.nativephp.mobile.ui.nativerender
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
@@ -28,6 +30,8 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -37,6 +41,7 @@ import androidx.core.view.WindowInsetsCompat
  * Captures safe area insets and viewport size, provides them
  * via CompositionLocals, and renders the tree via NodeView.
  */
+@OptIn(ExperimentalSharedTransitionApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun NativeUIContent() {
     val tree by NativeUIBridge.currentTree
@@ -57,6 +62,11 @@ fun NativeUIContent() {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
+            // Publishes every `testTag` in this tree as a resource-id, which
+            // is the only way UiAutomator — and therefore a Maestro `id:`
+            // selector — can see a Compose test tag. Set once at the root
+            // rather than per node.
+            .semantics { testTagsAsResourceId = true }
             .imePadding()
             .clickable(
                 indication = null,
@@ -95,27 +105,45 @@ fun NativeUIContent() {
             // exiting pane keeps the last tree it showed and releases it
             // when its exit animation completes.
             val treesByKey = remember { HashMap<Int, NativeUITree>() }
-            AnimatedContent(
-                targetState = screenKey,
-                transitionSpec = { transitionFor(pendingTransition) },
-                label = "screen-transition"
-            ) { key ->
-                DisposableEffect(key) {
-                    onDispose { treesByKey.remove(key) }
-                }
-                val paneTree = if (key == screenKey) {
-                    tree?.also { treesByKey[key] = it }
-                } else {
-                    treesByKey[key]
-                }
-                paneTree?.let { t ->
-                    // Fold any plugin-registered root hosts (side drawers,
-                    // global overlays, …) around the rendered tree. A host
-                    // pulls its own sentinel child out of `t.root` and renders
-                    // nothing when absent. A no-op pass-through when none are
-                    // registered, so trees using no plugin chrome pay nothing.
-                    NativeRootHostRegistry.Wrap(root = t.root) {
-                        NodeView(node = t.root)
+
+            // SharedTransitionLayout wraps the swap so elements sharing a
+            // `ref` across the two panes morph between them. Compose matches
+            // and animates these itself — unlike iOS, which has no equivalent
+            // and needs the source/slave roles driven by hand.
+            //
+            // A ref present on only one pane simply never matches and renders
+            // normally, so no pairing set is needed here.
+            SharedTransitionLayout {
+                AnimatedContent(
+                    targetState = screenKey,
+                    transitionSpec = { transitionFor(pendingTransition) },
+                    label = "screen-transition"
+                ) { key ->
+                    DisposableEffect(key) {
+                        onDispose { treesByKey.remove(key) }
+                    }
+                    val paneTree = if (key == screenKey) {
+                        tree?.also { treesByKey[key] = it }
+                    } else {
+                        treesByKey[key]
+                    }
+                    paneTree?.let { t ->
+                        // Publish both scopes down the tree: `NodeView` is a
+                        // plain recursive composable and cannot receive them
+                        // any other way.
+                        CompositionLocalProvider(
+                            LocalSharedTransitionScope provides this@SharedTransitionLayout,
+                            LocalAnimatedVisibilityScope provides this@AnimatedContent
+                        ) {
+                            // Fold any plugin-registered root hosts (side drawers,
+                            // global overlays, …) around the rendered tree. A host
+                            // pulls its own sentinel child out of `t.root` and renders
+                            // nothing when absent. A no-op pass-through when none are
+                            // registered, so trees using no plugin chrome pay nothing.
+                            NativeRootHostRegistry.Wrap(root = t.root) {
+                                NodeView(node = t.root)
+                            }
+                        }
                     }
                 }
             }
@@ -168,6 +196,12 @@ internal fun transitionFor(type: String?): ContentTransform {
         // staying visible beneath the incoming screen for a layered depth cue.
         "parallax_push" -> (slideInHorizontally(intSpec) { it }) togetherWith
             slideOutHorizontally(intSpec) { -it / 3 }
+        // Shared-element swap: the screens only cross-fade, because the motion
+        // the user reads comes from elements morphing across (see
+        // `Modifier.heroMorph`). Duration matches iOS's
+        // `nativeViewTransitionAnimation` so a morph is paced the same on both
+        // platforms.
+        "view_transition" -> fadeIn(tween(350)) togetherWith fadeOut(tween(350))
         "none" -> fadeIn(tween(0)) togetherWith fadeOut(tween(0))
         else -> fadeIn(spec) togetherWith fadeOut(spec)
     }
