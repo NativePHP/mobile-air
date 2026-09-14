@@ -1120,7 +1120,7 @@ describe('Lifecycle Hooks', function () {
         if (isset(\$manifest['hooks'])) {
             expect(\$manifest['hooks'])->toBeArray();
 
-            \$validHooks = ['pre_compile', 'post_compile', 'copy_assets', 'post_build'];
+            \$validHooks = ['pre_compile', 'post_compile', 'copy_assets', 'post_build', 'prepare_bundle'];
             foreach (array_keys(\$manifest['hooks']) as \$hook) {
                 expect(\$hook)->toBeIn(\$validHooks);
             }
@@ -1590,6 +1590,7 @@ PHP;
                 '<info>post_compile</info> - After native code compilation',
                 '<info>copy_assets</info> - Copy ML models, binary files, etc.',
                 '<info>post_build</info> - After native build completes',
+                '<info>prepare_bundle</info> - After the Laravel bundle is staged, before it is archived',
             ]);
         }
 

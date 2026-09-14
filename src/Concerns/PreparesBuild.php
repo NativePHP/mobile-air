@@ -12,7 +12,7 @@ use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
 {
-    use CleansEnvFile, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
+    use CleansEnvFile, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations, RunsBundleHooks;
 
     /**
      * Validate required environment variables for building
@@ -55,7 +55,7 @@ trait PreparesBuild
     /**
      * Prepare Android build environment
      */
-    protected function prepareAndroidBuild(bool $cleanCache = true, bool $excludeDevDependencies = true): void
+    protected function prepareAndroidBuild(bool $cleanCache = true, bool $excludeDevDependencies = true, ?string $buildType = null): void
     {
         $this->logToFile('--- Preparing Android Build ---');
 
@@ -68,7 +68,7 @@ trait PreparesBuild
         $this->updateAndroidConfiguration();
         $this->installAndroidIcon();
         $this->installAndroidSplashScreen();
-        $this->prepareLaravelBundle($excludeDevDependencies);
+        $this->prepareLaravelBundle($excludeDevDependencies, $buildType);
         $this->logToFile('--- Android Build Preparation Complete ---');
     }
 
@@ -197,7 +197,7 @@ trait PreparesBuild
     /**
      * Prepare Laravel bundle
      */
-    protected function prepareLaravelBundle(bool $excludeDevDependencies = true): void
+    protected function prepareLaravelBundle(bool $excludeDevDependencies = true, ?string $buildType = null): void
     {
         $this->logToFile('Preparing Laravel bundle...');
 
@@ -301,6 +301,18 @@ trait PreparesBuild
             $version = config('nativephp.version', now()->format('Ymd-His'));
             $versionCode = config('nativephp.version_code', 1);
             $bundleVersionId = $version === 'DEBUG' ? 'DEBUG' : "{$version}b{$versionCode}";
+
+            // The staging tree is fully prepared at this point (copied, composer
+            // installed, autoload-optimised, cleaned up) and nothing has been
+            // written or zipped yet, so plugins see exactly what will ship.
+            $this->runPrepareBundleHook(
+                platform: 'android',
+                buildPath: base_path('nativephp/android'),
+                bundlePath: $tempDir,
+                buildType: $buildType ?? 'debug',
+                bundleVersionId: $bundleVersionId,
+            );
+
             $this->logToFile("  Writing version file: $bundleVersionId");
             file_put_contents($tempDir.DIRECTORY_SEPARATOR.'.version', $bundleVersionId.PHP_EOL);
 
