@@ -53,6 +53,35 @@ class NativeTagPrecompiler
         'tapUp' => 'pressUp',
     ];
 
+    /**
+     * Built-in `@event` names rewritten to `_event` before Blade treats `@` as a directive.
+     *
+     * @var string[]
+     */
+    private const CORE_ELEMENT_EVENTS = [
+        'tapDown',
+        'tapUp',
+        'tap',
+        'pressDown',
+        'pressUp',
+        'press',
+        'longPress',
+        'doubleTap',
+        'selectionChange',
+        'change',
+        'submit',
+        'dismiss',
+        'refresh',
+        'endReached',
+        'swipeDelete',
+        'swipe',
+        'pinchEnd',
+        'navigated',
+    ];
+
+    /** @var string[] Plugin-declared `@event` names. */
+    private static array $customElementEvents = [];
+
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
     /**
@@ -124,6 +153,50 @@ class NativeTagPrecompiler
         self::$active = $active;
 
         return $previous;
+    }
+
+    /**
+     * Register extra `@event` names so they compile like `@change`.
+     * Names are global at compile time. Core names are ignored.
+     *
+     * @param  string[]  $names
+     */
+    public static function registerElementEvents(array $names): void
+    {
+        foreach ($names as $name) {
+            if (! is_string($name) || $name === '' || ! preg_match('/^[a-zA-Z][a-zA-Z0-9_-]*$/', $name)) {
+                continue;
+            }
+
+            if (in_array($name, self::CORE_ELEMENT_EVENTS, true) || in_array($name, self::$customElementEvents, true)) {
+                continue;
+            }
+
+            self::$customElementEvents[] = $name;
+        }
+    }
+
+    /**
+     * @return string[]
+     */
+    public static function customElementEvents(): array
+    {
+        return self::$customElementEvents;
+    }
+
+    /** Drop plugin-registered names. Used by tests. */
+    public static function resetElementEvents(): void
+    {
+        self::$customElementEvents = [];
+    }
+
+    /** Known `@event` names, longest first, preg_quoted. */
+    private static function elementEventAlternation(): string
+    {
+        $names = array_merge(self::CORE_ELEMENT_EVENTS, self::$customElementEvents);
+        usort($names, fn (string $a, string $b) => strlen($b) <=> strlen($a));
+
+        return implode('|', array_map(static fn (string $name) => preg_quote($name, '/'), $names));
     }
 
     /**
@@ -257,16 +330,11 @@ class NativeTagPrecompiler
             $value
         );
 
-        // Convert @tap, @tapDown, @tapUp, @longPress, @doubleTap, @change,
-        // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
-        // @pinchEnd, @navigated, @selectionChange to underscored versions before Blade
-        // interprets @ as a directive.
+        // Convert known `@event=` attributes (core + plugin-registered) to
+        // underscored versions before Blade interprets @ as a directive.
         // Longer spellings precede their prefix (`pressDown`/`pressUp` before
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
-        // `selectionChange` shares no prefix with `change` — the alternation
-        // is anchored at `@`, so `change` can't match mid-word — but it sits
-        // before it anyway to keep the longer-first convention obvious.
-        $value = preg_replace('/@(tapDown|tapUp|tap|pressDown|pressUp|press|longPress|doubleTap|selectionChange|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
+        $value = preg_replace('/@('.self::elementEventAlternation().')=/', '_$1=', $value);
 
         // Any REMAINING `@name="..."` attribute is a child-component event
         // binding — the tag-level half of `$this->emit()`:
