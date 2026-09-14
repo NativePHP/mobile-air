@@ -79,6 +79,12 @@ class NativeRootStack extends Element
         if (isset($attrs['currentUri'])) {
             $this->props['current_uri'] = $attrs['currentUri'];
         }
+        // Router stack depth for the published screen. The device-side
+        // NavigationCoordinator reconciles push / pop by depth so a URI
+        // that appears twice on the stack is handled correctly.
+        if (isset($attrs['stackDepth'])) {
+            $this->props['stack_depth'] = (int) $attrs['stackDepth'];
+        }
 
         // Inline NavBar search field — Apple HIG / Expo pattern.
         // iOS attaches `.searchable` to the destination view; Android

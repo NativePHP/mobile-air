@@ -38,6 +38,11 @@ final class PerTabNavigationCoordinator: ObservableObject {
     /// same URI; mirrors the guard in `NavigationCoordinator`.
     private var lastProcessedNode: NativeUINode?
 
+    /// PHP router stack depth observed at this tab's root (a publish
+    /// whose uri == rootUri). Lets pushed-level publishes translate
+    /// absolute depth to a path length; 1 until learned.
+    private var rootDepth: Int = 1
+
     init(rootUri: String) {
         self.rootUri = rootUri
     }
@@ -51,7 +56,12 @@ final class PerTabNavigationCoordinator: ObservableObject {
 
     /// Reconcile this tab's path with a PHP publish whose `currentUri`
     /// has been determined to belong to this tab.
-    func receive(uri: String, rootNode: NativeUINode) {
+    ///
+    /// `depth` is the PHP router stack depth (`stack_depth` prop, 0 when
+    /// absent). Depth-based reconciliation distinguishes pushing a NEW
+    /// level whose URI already exists on this tab's stack from popping
+    /// back to that level — see `NavigationCoordinator.receive`.
+    func receive(uri: String, depth: Int = 0, rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
         rootNodeCache[uri] = rootNode
@@ -63,6 +73,9 @@ final class PerTabNavigationCoordinator: ObservableObject {
 
         // Re-render of tab root — pop all pushed levels.
         if uri == rootUri {
+            if depth > 0 {
+                rootDepth = depth
+            }
             if !path.isEmpty {
                 path = []
             }
@@ -70,6 +83,13 @@ final class PerTabNavigationCoordinator: ObservableObject {
             scheduleEviction()
             return
         }
+
+        if depth > 0 {
+            receiveByDepth(uri: uri, depth: depth)
+            return
+        }
+
+        // ── Legacy URI-based reconciliation (no stack_depth prop) ──
 
         // Re-render of the current top-of-stack (state change at pushed level).
         if path.last == uri {
@@ -90,6 +110,45 @@ final class PerTabNavigationCoordinator: ObservableObject {
         let nextPath = path + [uri]
         phpSnapshot = nextPath
         path = nextPath
+        scheduleEviction()
+    }
+
+    /// Depth-authoritative reconciliation for pushed levels; mirrors
+    /// `NavigationCoordinator.receiveByDepth`.
+    private func receiveByDepth(uri: String, depth: Int) {
+        let target = depth - rootDepth
+        guard target > 0 else {
+            // Below/at root depth with a non-root URI — treat as a root
+            // swap within the tab (replace at root); clear pushed levels.
+            if !path.isEmpty {
+                path = []
+            }
+            phpSnapshot = path
+            scheduleEviction()
+            return
+        }
+
+        if path.count == target, path.last == uri {
+            phpSnapshot = path
+            return
+        }
+
+        var next = path
+        if next.count > target {
+            next = Array(next.prefix(target))
+            if next.last != uri {
+                next[target - 1] = uri
+            }
+        } else if next.count == target {
+            next[target - 1] = uri
+        } else {
+            while next.count < target - 1 {
+                next.append(uri)
+            }
+            next.append(uri)
+        }
+        phpSnapshot = next
+        path = next
         scheduleEviction()
     }
 
