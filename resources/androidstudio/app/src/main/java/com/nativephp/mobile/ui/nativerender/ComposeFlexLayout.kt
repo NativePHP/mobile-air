@@ -17,7 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -96,54 +99,39 @@ fun FlexContainer(
     val hasAbsolute = childNodes.any { (it.layout?.positionType ?: 0) == PositionType.ABSOLUTE }
 
     if (hasAbsolute) {
-        Box(modifier = modifier) {
-            // Render flow children in Column/Row. They must size NORMALLY so the
-            // flow content DETERMINES the Box's size; the absolute children then
-            // overlay on top via `.align`. Using `matchParentSize()` here is the
-            // opposite — it makes the flow content match the Box, whose size is
-            // then driven only by the (typically tiny) absolute child, clipping
-            // the real content to the badge/button's size.
+        // The flow block must size NORMALLY (never `matchParentSize()`) so
+        // it can DETERMINE the Box's size when nothing else constrains it —
+        // matching the Box to the flow content, not to the (typically tiny)
+        // absolute child. The flip side: when the Box IS externally sized
+        // (weight, fillMax), the content-sized flow block needs placing, and
+        // the container's own justify/align decide where it sits — CSS lays
+        // flow children out in the container's full box. Without this,
+        // `items-center justify-center` silently top-start-pinned the flow
+        // content on any container that also had absolute children.
+        Box(
+            modifier = modifier,
+            contentAlignment = flowContentAlignment(direction, justify, align)
+        ) {
             if (direction == FlexDirection.ROW) {
                 FlexRow(justify, align, gap, wrap, childNodes, Modifier, content)
             } else {
                 FlexColumn(justify, align, gap, childNodes, Modifier, content)
             }
-            // Render absolute children on top — anchor to the appropriate
-            // corner based on which edge insets are set, then offset inward.
-            // Same convention as iOS FlexContainer.placeAbsolute: +0.0 means
-            // unset, any non-zero value anchors (negatives overhang — the
-            // `-right-8` Tailwind bleed), and IEEE -0.0 is an authored
-            // explicit zero (`bottom-0`, `right-0`), which anchors to that
-            // edge too. When both opposing edges are authored, left/top win
-            // (CSS precedence).
-            childNodes.forEachIndexed { i, node ->
+            // Overlay absolute children on the container's real bounds.
+            // CSS semantics, mirroring iOS `FlexContainer.placeAbsolute`:
+            // one edge set anchors to it; BOTH opposing edges set stretch
+            // the child between them (`inset-0` fills the container,
+            // `inset-x-0` is full-bleed width); neither set falls back to
+            // the top/leading origin. +0.0 means unset, any non-zero value
+            // anchors (negatives overhang — the `-right-8` Tailwind bleed),
+            // and IEEE -0.0 is an authored explicit zero (`bottom-0`).
+            //
+            // `matchParentSize()` hands each child the container's exact
+            // bounds without letting it influence them — absolute children
+            // never size the container (parity with iOS).
+            childNodes.forEach { node ->
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
-                    val left = node.layout?.positionLeft ?: 0f
-                    val top = node.layout?.positionTop ?: 0f
-                    val right = node.layout?.positionRight ?: 0f
-                    val bottom = node.layout?.positionBottom ?: 0f
-
-                    // -0.0f == 0f in Kotlin, so authored zeros need the
-                    // raw sign bit.
-                    fun isSet(v: Float) = v != 0f || v.toRawBits() != 0
-                    val anchorEnd = isSet(right) && !isSet(left)
-                    val anchorBottom = isSet(bottom) && !isSet(top)
-                    val anchor = when {
-                        anchorEnd && anchorBottom -> Alignment.BottomEnd
-                        anchorEnd                 -> Alignment.TopEnd
-                        anchorBottom              -> Alignment.BottomStart
-                        else                      -> Alignment.TopStart
-                    }
-                    val offsetX = if (anchorEnd) (-right).dp else left.dp
-                    val offsetY = if (anchorBottom) (-bottom).dp else top.dp
-
-                    Box(
-                        modifier = Modifier
-                            .align(anchor)
-                            .offset(x = offsetX, y = offsetY)
-                    ) {
-                        NodeView(node = node)
-                    }
+                    AbsolutePositionedChild(node = node, modifier = Modifier.matchParentSize())
                 }
             }
         }
@@ -152,6 +140,87 @@ fun FlexContainer(
             FlexRow(justify, align, gap, wrap, childNodes, modifier, content)
         } else {
             FlexColumn(justify, align, gap, childNodes, modifier, content)
+        }
+    }
+}
+
+/**
+ * Placement of the content-sized flow block inside a Box that also hosts
+ * absolute children. space-between/around/evenly need the full main axis to
+ * mean anything for a content-sized block, so they fall back to start.
+ */
+private fun flowContentAlignment(direction: Int, justify: Int, align: Int): Alignment {
+    fun mainBias(j: Int): Float = when (j) {
+        JustifyContent.CENTER -> 0f
+        JustifyContent.END -> 1f
+        else -> -1f
+    }
+    fun crossBias(a: Int): Float = when (a) {
+        AlignItems.CENTER -> 0f
+        AlignItems.END -> 1f
+        else -> -1f
+    }
+    return if (direction == FlexDirection.ROW) {
+        BiasAlignment(mainBias(justify), crossBias(align))
+    } else {
+        BiasAlignment(crossBias(align), mainBias(justify))
+    }
+}
+
+/**
+ * Measures and places one absolute child against the container bounds the
+ * `matchParentSize` modifier hands us. A stretched axis (both opposing
+ * insets set) is measured TIGHT — `absolute inset-x-0 justify-center` must
+ * make the child the container's full width so its own arrangement can
+ * center content, exactly like iOS proposes the stretched size. Unset axes
+ * measure within the bounds and anchor to whichever edge was authored.
+ */
+@Composable
+private fun AbsolutePositionedChild(node: NativeUINode, modifier: Modifier) {
+    val l = node.layout
+    val left = l?.positionLeft ?: 0f
+    val top = l?.positionTop ?: 0f
+    val right = l?.positionRight ?: 0f
+    val bottom = l?.positionBottom ?: 0f
+    // -0.0f == 0f in Kotlin, so authored zeros need the raw sign bit.
+    fun isSet(v: Float) = v != 0f || v.toRawBits() != 0
+    val hasLeft = isSet(left)
+    val hasTop = isSet(top)
+    val hasRight = isSet(right)
+    val hasBottom = isSet(bottom)
+
+    Layout(content = { NodeView(node = node) }, modifier = modifier) { measurables, constraints ->
+        val boundsW = constraints.maxWidth
+        val boundsH = constraints.maxHeight
+        val leftPx = left.dp.roundToPx()
+        val topPx = top.dp.roundToPx()
+        val rightPx = right.dp.roundToPx()
+        val bottomPx = bottom.dp.roundToPx()
+        val stretchW = if (hasLeft && hasRight) (boundsW - leftPx - rightPx).coerceAtLeast(0) else null
+        val stretchH = if (hasTop && hasBottom) (boundsH - topPx - bottomPx).coerceAtLeast(0) else null
+        val childConstraints = Constraints(
+            minWidth = stretchW ?: 0,
+            maxWidth = stretchW ?: boundsW,
+            minHeight = stretchH ?: 0,
+            maxHeight = stretchH ?: boundsH
+        )
+        // A NodeView normally emits exactly one measurable, but a renderer
+        // can legitimately emit none (display:none) — don't assume.
+        val placeables = measurables.map { it.measure(childConstraints) }
+        layout(boundsW, boundsH) {
+            placeables.forEach { placeable ->
+                val x = when {
+                    hasLeft -> leftPx
+                    hasRight -> boundsW - placeable.width - rightPx
+                    else -> 0
+                }
+                val y = when {
+                    hasTop -> topPx
+                    hasBottom -> boundsH - placeable.height - bottomPx
+                    else -> 0
+                }
+                placeable.place(x, y)
+            }
         }
     }
 }
