@@ -70,7 +70,12 @@ struct NativeRootStackRenderer: View {
         if let cached = coordinator.rootNodeCache[uri] {
             renderRoot(cached, isRoot: isRoot)
         } else {
+            // Nothing cached for this URI yet. `screenView` backgrounds the
+            // rendered path; this branch never reaches it, so it takes the
+            // window background itself rather than flashing the
+            // NavigationStack's container.
             Color.clear
+                .modifier(WindowBackgroundModifier())
         }
     }
 
@@ -251,31 +256,37 @@ struct NativeRootStackRenderer: View {
 
     @ViewBuilder
     private func screenView(_ node: NativeUINode?) -> some View {
-        if let node = node {
-            // GlassEffectContainer coordinates `.interactive(true)` press
-            // animations across glass surfaces in this screen so they
-            // crossfade between idle and pressed states cleanly. Without
-            // a container, the per-glass-effect animation isn't scoped
-            // and the press transition renders as a visible flicker
-            // behind the touched element. iOS 26+ only.
-            NodeView(node: node)
-                // Tapping outside a focused field dismisses the keyboard, the
-                // same as on a chrome-less screen. Attached per-screen because
-                // the NavigationStack root itself is deliberately left unwrapped
-                // (mobile-air #308).
-                .dismissesKeyboardOnTap()
-                .withGlassContainer()
-                // NavigationStack hosts screens on its own container
-                // background (systemBackground — white in light mode) and
-                // SwiftUI exposes no override hook for it, so a dark app
-                // gets a white band in the bottom safe-area inset. When
-                // PHP set a window background (`UI.SetBackground`), paint
-                // it behind the screen extended through the safe areas.
-                // No-op when unset, preserving the stock appearance.
-                .modifier(StackScreenBackgroundModifier())
-        } else {
-            Color.clear
+        Group {
+            if let node = node {
+                // GlassEffectContainer coordinates `.interactive(true)` press
+                // animations across glass surfaces in this screen so they
+                // crossfade between idle and pressed states cleanly. Without
+                // a container, the per-glass-effect animation isn't scoped
+                // and the press transition renders as a visible flicker
+                // behind the touched element. iOS 26+ only.
+                NodeView(node: node)
+                    // Tapping outside a focused field dismisses the keyboard, the
+                    // same as on a chrome-less screen. Attached per-screen because
+                    // the NavigationStack root itself is deliberately left unwrapped
+                    // (mobile-air #308).
+                    .dismissesKeyboardOnTap()
+                    .withGlassContainer()
+            } else {
+                // Placeholder until this level's tree publishes.
+                Color.clear
+            }
         }
+        // NavigationStack hosts screens on its own container background
+        // (systemBackground — white in light mode) and SwiftUI exposes no
+        // override hook for it, so a dark app gets a white band in the
+        // bottom safe-area inset. When PHP set a window background
+        // (`UI.SetBackground`), paint it behind the screen extended
+        // through the safe areas. Wraps both branches so the placeholder
+        // is backgrounded too — otherwise the frame before a screen's
+        // tree publishes flashes the container through. No-op when unset,
+        // preserving the stock appearance. The tabs renderer applies the
+        // same modifier.
+        .modifier(WindowBackgroundModifier())
     }
 
     /// Renders one trailing action — plain Button when the action has
@@ -464,18 +475,31 @@ private struct NavigationSubtitleModifier: ViewModifier {
 }
 
 
-/// Backgrounds a stack-hosted screen with the PHP-set window background
+/// Backgrounds a chrome-hosted screen with the PHP-set window background
 /// (`UI.SetBackground`), extended through the safe areas. NavigationStack
-/// draws its own `systemBackground` container behind screen content with
-/// no SwiftUI override hook — without this, a dark app shows a white band
-/// in the bottom safe-area inset on every stack screen. No-op when no
-/// override is set, preserving the stock appearance.
-private struct StackScreenBackgroundModifier: ViewModifier {
+/// and TabView both draw their own `systemBackground` container behind
+/// screen content with no SwiftUI override hook — without this, a themed
+/// app shows a system-background band in every safe-area inset the screen
+/// content cannot reach. No-op when no override is set, preserving the
+/// stock appearance.
+///
+/// The paint goes in a background BUILDER, not a background value: the
+/// builder form keeps the expanded color out of the parent's layout, so
+/// ignoring the keyboard region paints under the keyboard without the
+/// chrome measuring against a screen the keyboard never shrank.
+///
+/// Shared by both chrome renderers, and applied to their placeholder
+/// branches as well as their rendered ones: a level renders `Color.clear`
+/// until its tree publishes, and an unbackgrounded placeholder flashes the
+/// container through on the first visit to a screen.
+struct WindowBackgroundModifier: ViewModifier {
     @ObservedObject private var windowBackground = WindowBackgroundState.shared
 
     func body(content: Content) -> some View {
         if let color = windowBackground.color {
-            content.background(color.ignoresSafeArea())
+            content.background {
+                color.ignoresSafeArea()
+            }
         } else {
             content
         }
