@@ -94,6 +94,42 @@ abstract class NativePluginHookCommand extends Command
     }
 
     /**
+     * Get the path to NativePHP's own template sources — the tree the native
+     * project is installed from.
+     *
+     * A plugin that replaces a file core installs verbatim reads its original
+     * from here, so restoring one never reinstates a pre-upgrade version.
+     *
+     * @param  string  $path  Relative path within resources/ (e.g. 'xcode/NativePHP/SplashView.swift')
+     */
+    protected function coreTemplatePath(string $path = ''): string
+    {
+        $resources = dirname(__DIR__, 3).'/resources';
+
+        return $path === '' ? $resources : $resources.'/'.ltrim($path, '/');
+    }
+
+    /**
+     * Get the path to a file in the iOS template sources
+     *
+     * @param  string  $path  Relative path within resources/xcode/ (e.g. 'NativePHP/LaunchScreen.storyboard')
+     */
+    protected function iosTemplatePath(string $path = ''): string
+    {
+        return $this->coreTemplatePath('xcode'.($path === '' ? '' : '/'.ltrim($path, '/')));
+    }
+
+    /**
+     * Get the path to a file in the Android template sources
+     *
+     * @param  string  $path  Relative path within resources/androidstudio/ (e.g. 'app/src/main/AndroidManifest.xml')
+     */
+    protected function androidTemplatePath(string $path = ''): string
+    {
+        return $this->coreTemplatePath('androidstudio'.($path === '' ? '' : '/'.ltrim($path, '/')));
+    }
+
+    /**
      * Get the build configuration array
      */
     protected function config(): array
