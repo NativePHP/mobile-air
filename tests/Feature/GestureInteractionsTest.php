@@ -41,3 +41,19 @@ it('dispatches pinch-end by ref through the on_pinch_end prop', function () {
         ->pinch('gesture-surface', 0.5)
         ->assertSet('zoom', 0.5);
 });
+
+// ── Drag end ────────────────────────────────────────
+
+it('dispatches drag-end as two floats decoded from the "x,y" payload', function () {
+    Native::test(GestureScreen::class)
+        ->dragEnd('released', 142.5, -8)
+        ->assertSet('releasedX', 142.5)
+        ->assertSet('releasedY', -8.0);
+});
+
+it('reports 0 for a missing axis in the drag-end payload', function () {
+    Native::test(GestureScreen::class)
+        ->fireEvent('released', 2, ['text' => '-90'])
+        ->assertSet('releasedX', -90.0)
+        ->assertSet('releasedY', 0.0);
+});

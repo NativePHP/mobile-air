@@ -12,15 +12,25 @@ use Native\Mobile\Edge\SharedValue;
  * fires a discrete callback into PHP (one-shot gestures). Children
  * render normally — gesture detection wraps the whole content frame.
  *
- * Pan — drag translation into a SharedValue:
+ * Pan — drag translation into a SharedValue, one per axis. Bind either
+ * or both; an unbound axis is ignored. `@dragEnd` fires when the finger
+ * lifts, with the final translation of each axis as two floats (0 for
+ * an unbound axis), so PHP can decide what the release means — a
+ * swipe-to-decide card, a snap-to-position, a dismiss threshold:
  *
- *     $drag = SharedValue::make();
+ *     $dx = SharedValue::make();
  *
- *     <native:gesture-area :pan-y="$drag" @drag-end="onRelease">
- *         <native:column :translate-y="$drag" ...>
+ *     <native:gesture-area :pan-x="$dx" @dragEnd="onRelease">
+ *         <native:column :translate-x="$dx" :rotate="$dx->interpolate([-300, 300], [-15, 15])">
  *             content
  *         </native:column>
  *     </native:gesture-area>
+ *
+ *     public function onRelease(float $x, float $y): void
+ *
+ * Per-frame values never reach PHP. A fresh `SharedValue::make()` each
+ * render re-seeds the store from the initial, so a re-render after
+ * `@dragEnd` puts the content back at rest without any write-back.
  *
  * Pinch — zoom scale factor into a SharedValue (1.0 = identity). The
  * optional `pinch-min` / `pinch-max` bounds clamp the value AT THE
@@ -55,6 +65,10 @@ class GestureArea extends Element
     /** Initial value of the bound shared value (set at element build
      *  time so the renderer can seed its store before the gesture
      *  starts). */
+    private ?int $panXId = null;
+
+    private float $panXInitial = 0.0;
+
     private ?int $panYId = null;
 
     private float $panYInitial = 0.0;
@@ -74,6 +88,8 @@ class GestureArea extends Element
 
     protected ?string $pinchEndMethod = null;
 
+    protected ?string $dragEndMethod = null;
+
     public static function make(): static
     {
         return new static;
@@ -81,6 +97,11 @@ class GestureArea extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        if (isset($attrs['pan-x']) && $attrs['pan-x'] instanceof SharedValue) {
+            $this->panXId = $attrs['pan-x']->id;
+            $this->panXInitial = $attrs['pan-x']->value();
+        }
+
         if (isset($attrs['pan-y']) && $attrs['pan-y'] instanceof SharedValue) {
             $this->panYId = $attrs['pan-y']->id;
             $this->panYInitial = $attrs['pan-y']->value();
@@ -120,9 +141,23 @@ class GestureArea extends Element
         return $this;
     }
 
+    /** Drag-end handler. Receives the final pan translation as two
+     *  floats, `(x, y)` in points; an unbound axis reports 0. */
+    public function onDragEnd(string $method): static
+    {
+        $this->dragEndMethod = $method;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         $props = [];
+        if ($this->panXId !== null) {
+            $props['pan-x-id'] = $this->panXId;
+            $props['pan-x-initial'] = $this->panXInitial;
+        }
+
         if ($this->panYId !== null) {
             $props['pan-y-id'] = $this->panYId;
             $props['pan-y-initial'] = $this->panYInitial;
@@ -156,6 +191,12 @@ class GestureArea extends Element
             // Rides the SLIDER_CHANGE event format: float payload = the
             // final scale factor.
             $props['on_pinch_end'] = $registry->register($this->pinchEndMethod);
+        }
+
+        if ($this->dragEndMethod !== null) {
+            // Rides the TEXT_CHANGE event format as "x,y"; the `drag_end`
+            // kind tells dispatch to decode it into two floats.
+            $props['on_drag_end'] = $registry->register($this->dragEndMethod, 'drag_end');
         }
 
         return $props;

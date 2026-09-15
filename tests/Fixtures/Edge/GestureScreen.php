@@ -12,13 +12,18 @@ use Native\Mobile\Edge\SharedValue;
 
 /**
  * Fixture for the gesture-area discrete callbacks: three-finger swipe
- * (direction string) and pinch-end (final scale float).
+ * (direction string), pinch-end (final scale float) and drag-end (final
+ * pan translation, two floats).
  */
 class GestureScreen extends NativeComponent
 {
     public string $swiped = 'none';
 
     public float $zoom = 1.0;
+
+    public float $releasedX = 0.0;
+
+    public float $releasedY = 0.0;
 
     public function handleSwipe(string $direction): void
     {
@@ -30,16 +35,25 @@ class GestureScreen extends NativeComponent
         $this->zoom = $scale;
     }
 
+    public function released(float $x, float $y): void
+    {
+        $this->releasedX = $x;
+        $this->releasedY = $y;
+    }
+
     public function render(): Element|View
     {
         $pinch = SharedValue::make(1.0);
+        $dx = SharedValue::make();
 
         $area = GestureArea::make()
             ->onSwipe('handleSwipe')
             ->onPinchEnd('zoomEnded')
+            ->onDragEnd('released')
             ->ref('gesture-surface');
         $area->applyAttributes([
             'pinch' => $pinch,
+            'pan-x' => $dx,
             'swipe-fingers' => 3,
         ]);
         $area->setProp('a11y_label', 'Gesture surface');

@@ -430,6 +430,16 @@ class TestableComponent
         return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $scale]);
     }
 
+    /**
+     * Fire a gesture-area drag-end bound to `@dragEnd`, delivering the
+     * final pan translation as two floats — packed as "x,y" text, exactly
+     * as the device sends it.
+     */
+    public function dragEnd(string $target, float $x, float $y = 0.0): static
+    {
+        return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $x.','.$y]);
+    }
+
     public function selectRadio(string $target, string $value): static
     {
         return $this->fireEvent($target, self::EVENT_RADIO_CHANGE, ['value' => $value]);

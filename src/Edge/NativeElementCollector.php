@@ -1769,6 +1769,9 @@ class NativeElementCollector
         if (isset($attrs['_pinchEnd']) && method_exists($element, 'onPinchEnd')) {
             $element->onPinchEnd($attrs['_pinchEnd']);
         }
+        if (isset($attrs['_dragEnd']) && method_exists($element, 'onDragEnd')) {
+            $element->onDragEnd($attrs['_dragEnd']);
+        }
         if (isset($attrs['_navigated']) && method_exists($element, 'onNavigated')) {
             $element->onNavigated($attrs['_navigated']);
         }
