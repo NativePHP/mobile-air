@@ -3476,6 +3476,18 @@ abstract class NativeComponent
             return;
         }
 
+        // 'drag_end' callbacks (gesture-area `@dragEnd`) also ride the
+        // TEXT_CHANGE format: native packs the final pan translation as
+        // "x,y" (points); we decode and pass two floats.
+        if ($kind === 'drag_end') {
+            $parts = explode(',', $event['text'] ?? '', 2);
+            $x = (float) ($parts[0] ?? 0);
+            $y = (float) ($parts[1] ?? 0);
+            $this->$method(...[...$args, $x, $y]);
+
+            return;
+        }
+
         // 'text_selection' callbacks (registered by text-input elements
         // for `@selectionChange`) also ride the TEXT_CHANGE format.
         // Native packs "{start},{end}\x1F{text}": the selection header
