@@ -29,6 +29,7 @@ struct NativePHPApp: App {
         // All heavy initialization is deferred to after the splash view is visible
         DebugLogger.shared.log("📱 NativePHPApp.init() registering bridge functions")
         registerBridgeFunctions()
+        ThermalStateMonitor.start()
 
         DebugLogger.shared.log("📱 NativePHPApp.init() completed (minimal)")
     }

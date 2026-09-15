@@ -13,6 +13,7 @@ func registerBridgeFunctions() {
     registry.register("Device.GetId",           function: DeviceFunctions.GetId())
     registry.register("Device.GetInfo",         function: DeviceFunctions.GetInfo())
     registry.register("Device.GetBatteryInfo",  function: DeviceFunctions.GetBatteryInfo())
+    registry.register("Device.GetThermalState", function: DeviceFunctions.GetThermalState())
 
     // System.* — core built-in (migrated from the nativephp/mobile-system
     // plugin). Android twin: bridge/functions/SystemFunctions.kt.
