@@ -13,9 +13,10 @@ use Native\Mobile\Edge\SharedValue;
  * render normally — gesture detection wraps the whole content frame.
  *
  * Pan — drag translation into a SharedValue, one per axis. Bind either
- * or both; an unbound axis is ignored. `@dragEnd` fires when the finger
- * lifts, with the final translation of each axis as two floats (0 for
- * an unbound axis), so PHP can decide what the release means — a
+ * or both; an unbound axis drives nothing. `@dragEnd` fires when the
+ * finger lifts, with the final translation of each axis as two floats
+ * (a bound axis reports its SharedValue, an unbound one the raw gesture
+ * translation), so PHP can decide what the release means — a
  * swipe-to-decide card, a snap-to-position, a dismiss threshold:
  *
  *     $dx = SharedValue::make();
@@ -142,7 +143,8 @@ class GestureArea extends Element
     }
 
     /** Drag-end handler. Receives the final pan translation as two
-     *  floats, `(x, y)` in points; an unbound axis reports 0. */
+     *  floats, `(x, y)` in points: a bound axis reports its SharedValue,
+     *  an unbound one the raw gesture translation. */
     public function onDragEnd(string $method): static
     {
         $this->dragEndMethod = $method;
