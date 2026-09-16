@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Edge;
 
+use GuzzleHttp\Promise\PromiseInterface;
+use Illuminate\Http\Client\Promises\LazyPromise;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
@@ -75,6 +77,21 @@ abstract class NativeComponent
 
     /** Blade `native:poll` re-render timers: interval(ms) → next deadline(ms). Rebuilt from the template each frame. */
     private array $bladePollDeadlines = [];
+
+    /**
+     * Background work (background()): promises the runloop pumps between
+     * events. While any is pending the event wait is capped at
+     * BACKGROUND_TICK_MS so the transfers keep moving; a settled promise
+     * marks the component dirty and the next loop iteration re-renders.
+     */
+    private int $backgroundPending = 0;
+
+    private bool $backgroundDirty = false;
+
+    /** Set on an idle tick that changed nothing: the next loop iteration skips the render + publish. */
+    private bool $nativeSkipRender = false;
+
+    private const BACKGROUND_TICK_MS = 20;
 
     /** Whether this component class carries #[Lazy]. Null until reflected. */
     private ?bool $lazy = null;
@@ -1579,6 +1596,59 @@ abstract class NativeComponent
         }
     }
 
+    // ── Background work ─────────────────────────────
+
+    /**
+     * Register a promise for the runloop to pump between events. Laravel's
+     * `Http::...->async()` hands back a LazyPromise that only sends on
+     * wait(); it is built here so the transfer is on the wire immediately.
+     * `$onSettled` runs on the runloop thread with the resolved value — or
+     * null when the promise rejected — and the screen re-renders afterwards.
+     *
+     * @param  callable(mixed): void|null  $onSettled
+     */
+    public function background(PromiseInterface $promise, ?callable $onSettled = null): void
+    {
+        if ($promise instanceof LazyPromise && $promise->promiseNeedsBuilt()) {
+            $promise = $promise->buildPromise();
+        }
+
+        $this->backgroundPending++;
+
+        $settle = function (mixed $value) use ($onSettled): void {
+            $this->backgroundPending = max(0, $this->backgroundPending - 1);
+            $this->backgroundDirty = true;
+            if ($onSettled !== null) {
+                $onSettled($value);
+            }
+        };
+
+        $promise->then($settle, fn (mixed $reason) => $settle(null));
+    }
+
+    /** True while at least one background promise is pending. */
+    public function hasBackgroundWork(): bool
+    {
+        return $this->backgroundPending > 0;
+    }
+
+    /**
+     * Advance the background transfers and run the callbacks that became
+     * due. Returns true when something settled — state may have changed and
+     * the screen should re-render.
+     */
+    public function pumpBackgroundWork(): bool
+    {
+        if ($this->backgroundPending === 0) {
+            return false;
+        }
+
+        $this->backgroundDirty = false;
+        BackgroundHttp::tick();
+
+        return $this->backgroundDirty;
+    }
+
     /**
      * Timeout (ms) to pass to `nativephp_element_wait_event`. Returns -1
      * (block indefinitely) when there are no polls (class #[Poll] or Blade
@@ -1590,6 +1660,10 @@ abstract class NativeComponent
         $deadlines = array_map(fn ($def) => $def['next'], $this->pollDefinitions());
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
+        }
+        // Background work pending: wake soon to pump the transfers.
+        if ($this->backgroundPending > 0) {
+            $deadlines[] = microtime(true) * 1000 + self::BACKGROUND_TICK_MS;
         }
 
         if (empty($deadlines)) {
@@ -1606,15 +1680,17 @@ abstract class NativeComponent
      * trigger the re-render. Rescheduling off `$now` (not the prior
      * deadline) avoids catch-up storms after a long-blocked frame.
      */
-    private function runDuePolls(): void
+    private function runDuePolls(): bool
     {
         $now = microtime(true) * 1000;
+        $fired = false;
 
         if (! empty($this->pollDefinitions)) {
             foreach ($this->pollDefinitions as $i => $def) {
                 if ($now < $def['next']) {
                     continue;
                 }
+                $fired = true;
 
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
                     $this->{$def['method']}();
@@ -1627,8 +1703,11 @@ abstract class NativeComponent
         foreach ($this->bladePollDeadlines as $ms => $next) {
             if ($now >= $next) {
                 $this->bladePollDeadlines[$ms] = $now + $ms;
+                $fired = true;
             }
         }
+
+        return $fired;
     }
 
     // ── Lazy placeholder (#[Lazy]) ───────────────────
@@ -2153,6 +2232,11 @@ abstract class NativeComponent
         }
 
         while ($this->nativeRunning) {
+            if ($this->nativeSkipRender) {
+                // Nothing changed on the last idle tick — keep the published
+                // tree and its callbacks, go straight back to waiting.
+                $this->nativeSkipRender = false;
+            } else {
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2173,13 +2257,17 @@ abstract class NativeComponent
                     $this->renderErrorScreen($e);
                 }
             }
+            } // nativeSkipRender gate
 
             $event = nativephp_element_wait_event($this->nextEventTimeout());
 
             if ($event === null) {
-                // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                // Idle tick: pump the background transfers and fire any due
+                // polls. Re-render only when one of them changed something —
+                // a tick that just moved bytes must not republish the tree.
+                $settled = $this->pumpBackgroundWork();
+                $polled = $this->runDuePolls();
+                $this->nativeSkipRender = ! $settled && ! $polled;
 
                 continue;
             }
@@ -2329,6 +2417,11 @@ abstract class NativeComponent
                 break;
             }
 
+            if ($this->nativeSkipRender) {
+                // Nothing changed on the last idle tick — keep the published
+                // tree and its callbacks, go straight back to waiting.
+                $this->nativeSkipRender = false;
+            } else {
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2372,13 +2465,17 @@ abstract class NativeComponent
                     $this->renderErrorScreen($e);
                 }
             }
+            } // nativeSkipRender gate
 
             $event = nativephp_element_wait_event($this->nextEventTimeout());
 
             if ($event === null) {
-                // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                // Idle tick: pump the background transfers and fire any due
+                // polls. Re-render only when one of them changed something —
+                // a tick that just moved bytes must not republish the tree.
+                $settled = $this->pumpBackgroundWork();
+                $polled = $this->runDuePolls();
+                $this->nativeSkipRender = ! $settled && ! $polled;
 
                 continue;
             }
