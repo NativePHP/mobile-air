@@ -304,6 +304,8 @@ class EdgeCasesAndErrorHandlingTest extends TestCase
         // Test UNC path handling
         $networkPath = '\\\\server\\share\\Android\\Sdk';
 
+        File::ensureDirectoryExists($this->testProjectPath.'/nativephp/android');
+
         config(['nativephp.android.android_sdk_path' => $networkPath]);
 
         // Should handle without crashing

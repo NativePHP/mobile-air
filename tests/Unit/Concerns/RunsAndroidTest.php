@@ -197,8 +197,10 @@ class RunsAndroidTest extends TestCase
         $path = $this->testProjectPath.'/nativephp/android/local.properties';
         $contents = File::get($path);
 
-        // The actual implementation converts to forward slashes on Windows
-        $this->assertEquals("sdk.dir=C:/Users/test/Android/Sdk\n", $contents);
+        $expected = PHP_OS_FAMILY === 'Windows'
+            ? 'C\\:\\\\Users\\\\test\\\\Android\\\\Sdk'
+            : 'C:/Users/test/Android/Sdk';
+        $this->assertEquals('sdk.dir='.$expected.PHP_EOL, $contents);
     }
 
     public function test_update_local_properties_unix_path()
@@ -214,7 +216,7 @@ class RunsAndroidTest extends TestCase
         $path = $this->testProjectPath.'/nativephp/android/local.properties';
         $contents = File::get($path);
 
-        $this->assertEquals("sdk.dir=/home/user/Android/Sdk\n", $contents);
+        $this->assertEquals('sdk.dir=/home/user/Android/Sdk'.PHP_EOL, $contents);
     }
 
     public function test_update_deep_link_configuration()

@@ -1,0 +1,46 @@
+package com.nativephp.mobile.ui.nativerender
+
+import java.util.concurrent.atomic.AtomicInteger
+
+/** Opt-in registry for accepted native tree publications. */
+object NativeTreeObserverRegistry {
+    data class Publication(
+        /** Process-local ID used to deduplicate replay and live delivery. */
+        val id: Long,
+        val tree: NativeUITree,
+    )
+
+    data class Subscription internal constructor(internal val id: Int)
+
+    private val sequence = AtomicInteger(0)
+    private val lock = Any()
+    private val observers = linkedMapOf<Int, (Publication) -> Unit>()
+    // Retained for late-subscriber replay until replaced or process exit.
+    @Volatile private var latestPublication: Publication? = null
+    @Volatile private var hasObservers = false
+
+    fun register(observer: (Publication) -> Unit): Subscription {
+        val id = sequence.incrementAndGet()
+        val replay = synchronized(lock) {
+            observers[id] = observer
+            hasObservers = true
+            latestPublication
+        }
+        replay?.let { publication -> runCatching { observer(publication) } }
+        return Subscription(id)
+    }
+
+    fun unregister(subscription: Subscription) {
+        synchronized(lock) {
+            observers.remove(subscription.id)
+            hasObservers = observers.isNotEmpty()
+        }
+    }
+
+    internal fun publish(publication: Publication) {
+        latestPublication = publication
+        if (!hasObservers) return
+        val current = synchronized(lock) { observers.values.toList() }
+        current.forEach { observer -> runCatching { observer(publication) } }
+    }
+}

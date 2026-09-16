@@ -118,7 +118,9 @@ class InstallsSplashScreenTest extends TestCase
         File::put($target.'/keep-me.png', 'artwork the app owns');
 
         File::deleteDirectory($this->imageSet);
-        symlink($target, $this->imageSet);
+        if (! @symlink($target, $this->imageSet)) {
+            $this->markTestSkipped('Creating symlinks requires filesystem support and permission.');
+        }
 
         $this->writeSplash('splash.png');
 
