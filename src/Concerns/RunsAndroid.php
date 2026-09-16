@@ -119,7 +119,7 @@ trait RunsAndroid
         $cleanCache = $this->buildType !== 'debug';
         $excludeDevDependencies = $this->buildType !== 'debug';
 
-        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies);
+        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies, $this->buildType);
 
         if (! $this->compileAndroidPlugins()) {
             return;
