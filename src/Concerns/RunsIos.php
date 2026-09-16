@@ -13,6 +13,7 @@ use function Laravel\Prompts\warning;
 
 trait RunsIos
 {
+    use LaunchesIosSimulator;
     use ValidatesAppConfig;
 
     protected string $iosLogPath = 'nativephp/ios-build.log';
@@ -252,7 +253,7 @@ trait RunsIos
                 });
         });
 
-        shell_exec('open -a Simulator');
+        $this->openSimulatorUi($target, false);
 
         // Free the hot-reload port before (re)launching. Two stale holders can
         // block the fresh app from binding 9999, which silently breaks hot
