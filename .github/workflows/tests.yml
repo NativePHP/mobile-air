@@ -13,7 +13,9 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        php: [8.4]
+        # Keep 8.3: it's our minimum. If a dependency stops installing on it, loosen that
+        # constraint instead of dropping this leg (e.g. endroid/qr-code 6.1+ needs PHP 8.4).
+        php: [8.3, 8.4]
 
     name: Tests - PHP ${{ matrix.php }}
 
@@ -46,7 +48,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: 8.4
+          php-version: 8.3
           extensions: dom, simplexml, mbstring
           coverage: none
 
@@ -68,7 +70,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: 8.4
+          php-version: 8.3
           extensions: dom, simplexml, mbstring
           coverage: none
 
