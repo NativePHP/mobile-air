@@ -13,6 +13,11 @@ import android.webkit.CookieManager
  * calls [markWebViewAvailable] and back-fills the jar from the store.
  */
 object WebCookieMirror {
+    // CookieManager silently drops Secure cookies set for an HTTP URL. Chromium
+    // treats http://127.0.0.1 as trustworthy, so cookies written against HTTPS
+    // remain available on the HTTP origin the app is served from.
+    internal const val COOKIE_ORIGIN = "https://127.0.0.1"
+
     @Volatile
     private var available = false
 
@@ -22,7 +27,7 @@ object WebCookieMirror {
 
     fun set(cookieHeaderValue: String) {
         if (!available) return
-        CookieManager.getInstance().setCookie("http://127.0.0.1", cookieHeaderValue)
+        CookieManager.getInstance().setCookie(COOKIE_ORIGIN, cookieHeaderValue)
     }
 
     fun flush() {
