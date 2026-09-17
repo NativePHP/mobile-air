@@ -12,6 +12,14 @@ trait WatchesIos
     use InteractsWithWatchTerminal, ManagesWatchman;
 
     /**
+     * Sent, newline-terminated, to ask the app's hot reload server for a
+     * reload. The server ignores any other connection, because dev tools
+     * probe listening ports. Must match `HotReloadServer.reloadCommand` in
+     * resources/xcode/NativePHP/HotReloadServer.swift.
+     */
+    protected const IOS_RELOAD_COMMAND = 'nativephp:hot-reload';
+
+    /**
      * UDID of the simulator or device being watched.
      */
     private ?string $iosTarget = null;
@@ -323,12 +331,16 @@ trait WatchesIos
 
     private function triggerIosReload(): void
     {
-        // Connect to the hot reload server to trigger a reload
+        $port = $this->iosHotReloadPort();
+
+        // Connect to the hot reload server and send the reload command
         // For simulators this reaches the server directly (shared network)
         // For physical devices, iproxy forwards this to the device over USB
-        $socket = @fsockopen('127.0.0.1', 9999, $errno, $errstr, 1);
+        $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
 
         if ($socket) {
+            @fwrite($socket, self::IOS_RELOAD_COMMAND."\n");
+
             // Hold the connection open long enough for iproxy to forward
             // it to the device over USB before we close
             usleep(200000);
@@ -336,8 +348,17 @@ trait WatchesIos
         } else {
             // Transient rather than a scrollback line: the app being down is a
             // state, not an event, so repeating it once per save is just noise.
-            $this->watchActivity("reload failed — nothing listening on port 9999 ({$errstr})", 'yellow');
+            $this->watchActivity("reload failed — nothing listening on port {$port} ({$errstr})", 'yellow');
         }
+    }
+
+    /**
+     * Host port reload triggers connect to: the simulator app's hot reload
+     * server, or iproxy forwarding to a physical device. Tests override it.
+     */
+    protected function iosHotReloadPort(): int
+    {
+        return 9999;
     }
 
     private function startIproxyForwarding(string $target): bool

@@ -2,6 +2,7 @@ package com.nativephp.mobile.ui
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.hardware.Sensor
@@ -863,6 +864,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     }
 
     private fun startHotReloadWatcher() {
+        // Debuggable builds only. native:watch delivers reloads through
+        // `adb shell run-as`, which can't reach a non-debuggable app, so a
+        // release build would poll the filesystem and disable WebView caching
+        // for nothing. Leaving hotReloadWatcherThread null also keeps
+        // onWebRendererCreated from applying LOAD_NO_CACHE.
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
+
         // Configure WebView for development - disable caching for hot reload.
         // On a native-first boot no renderer exists yet; onWebRendererCreated
         // applies the same mode when one appears.
