@@ -460,8 +460,8 @@ return [
     | `md:`, `lg:` class prefixes on native elements. Mobile-first like
     | Tailwind: `md:flex-row` applies from 768 up. Resolved natively against
     | the live window width, so screens re-flow on rotation and Split View.
-    | `medium` / `expanded` mirror the Apple and Material window size
-    | classes. Leave empty to use the defaults shown here.
+    | `medium` / `expanded` mirror Material's window size classes. Leave
+    | empty to use the defaults shown here.
     |
     */
     'breakpoints' => [

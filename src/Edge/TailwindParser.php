@@ -47,7 +47,7 @@ class TailwindParser
      * min-width thresholds in points (iOS) / dp (Android). Mobile-first
      * like Tailwind: a prefixed class applies from that width UP, and a
      * wider prefix wins over a narrower one. `medium` / `expanded` mirror
-     * the Apple / Material window size classes so both vocabularies work.
+     * Material's window size classes so both vocabularies work.
      *
      * Resolution happens on the native side against the live window
      * width, so the same tree re-flows on rotation and Split View
