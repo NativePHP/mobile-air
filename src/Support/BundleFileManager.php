@@ -132,7 +132,7 @@ class BundleFileManager
         $sourceWin = str_replace('/', '\\', $source);
         $destinationWin = str_replace('/', '\\', $destination);
 
-        $result = Process::run("robocopy \"{$sourceWin}\" \"{$destinationWin}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}");
+        $result = Process::timeout(0)->run("robocopy \"{$sourceWin}\" \"{$destinationWin}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}");
 
         // Robocopy exit codes < 8 are success
         if ($result->exitCode() >= 8) {
