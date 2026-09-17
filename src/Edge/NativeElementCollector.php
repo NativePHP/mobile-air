@@ -634,6 +634,11 @@ class NativeElementCollector
         if (isset($attrs['display'])) {
             $layout['display'] = (int) $attrs['display'];
         }
+        // The `hidden` attribute (`<native:column hidden>`, `:hidden="$x"`)
+        // wins over any display class, like the HTML attribute it mirrors.
+        if (! empty($attrs['hidden'])) {
+            $layout['display'] = 1;
+        }
         if (isset($attrs['alignSelf']) && ($alignSelf = AlignSelf::parse($attrs['alignSelf'])) !== null) {
             $layout['align_self'] = $alignSelf;
         }
@@ -1684,6 +1689,9 @@ class NativeElementCollector
         }
         if (isset($attrs['display'])) {
             $element->display((int) $attrs['display']);
+        }
+        if (! empty($attrs['hidden'])) {
+            $element->hidden();
         }
         // Padding (uniform + directional from Tailwind classes)
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;

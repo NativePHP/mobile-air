@@ -200,6 +200,16 @@ it('shows a hidden node from a breakpoint up', function () {
     ]);
 });
 
+it('hides a node with the hidden attribute, over any display class', function () {
+    NativeElementCollector::open('column', ['hidden' => true, 'class' => 'flex']);
+    NativeElementCollector::close();
+    expect(NativeElementCollector::collect()->toArray(new CallbackRegistry)['layout']['display'])->toBe(1);
+
+    NativeElementCollector::open('column', ['hidden' => false]);
+    NativeElementCollector::close();
+    expect(NativeElementCollector::collect()->toArray(new CallbackRegistry)['layout'] ?? [])->not->toHaveKey('display');
+});
+
 it('carries element props exactly as the unprefixed class would', function () {
     NativeElementCollector::leaf('text', ['text' => 'Hi', 'class' => 'md:tracking-wide md:leading-loose md:uppercase md:italic md:underline md:font-mono md:text-7xl']);
     $text = NativeElementCollector::collect()->toArray(new CallbackRegistry);
