@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
-    key(node.id) {
+    key(node.id, node.type) {
         val renderer = NativeRendererRegistry.get(node.type)
         val isDarkMode = isSystemInDarkTheme()
         val safeAreaTop = LocalSafeAreaTop.current
