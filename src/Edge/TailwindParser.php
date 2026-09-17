@@ -257,6 +257,7 @@ class TailwindParser
     private const FONT_SIZES = [
         'xs' => 12, 'sm' => 14, 'base' => 16, 'lg' => 18, 'xl' => 20,
         '2xl' => 24, '3xl' => 30, '4xl' => 36, '5xl' => 48, '6xl' => 60,
+        '7xl' => 72, '8xl' => 96, '9xl' => 128,
     ];
 
     private const FONT_WEIGHTS = [
@@ -384,7 +385,7 @@ class TailwindParser
 
                 continue;
             }
-            $result = self::mergeParsed($result, $parsed);
+            $result = self::mergeAttributes($result, $parsed);
         }
 
         self::$cache[$classString] = $result;
@@ -395,7 +396,8 @@ class TailwindParser
     }
 
     /**
-     * Merge one class's parsed keys into the running result. The `dark`,
+     * Merge one class's parsed keys into the running result — and, in the
+     * collector, one breakpoint's keys over everything narrower. The `dark`,
      * `gradient` and `variants` buckets merge by KEY rather than being
      * replaced, so a class that contributes to an existing bucket adds to
      * it instead of clobbering what came before:
@@ -408,7 +410,7 @@ class TailwindParser
      *    variant's own `dark` / `gradient` keys merge recursively the same
      *    way (`md:dark:bg-x md:dark:text-y`).
      */
-    private static function mergeParsed(array $result, array $parsed): array
+    public static function mergeAttributes(array $result, array $parsed): array
     {
         if (isset($parsed['dark'])) {
             $result['dark'] = isset($result['dark'])
@@ -424,7 +426,7 @@ class TailwindParser
         }
         if (isset($parsed['variants'])) {
             foreach ($parsed['variants'] as $breakpoint => $inner) {
-                $result['variants'][$breakpoint] = self::mergeParsed(
+                $result['variants'][$breakpoint] = self::mergeAttributes(
                     $result['variants'][$breakpoint] ?? [],
                     $inner,
                 );
@@ -608,6 +610,23 @@ class TailwindParser
                 return null;
             }
 
+            // `dark:md:bg-x` — a breakpoint must stay the OUTER bucket, the
+            // way `md:dark:bg-x` parses: each breakpoint entry carries its own
+            // dark keys, and nothing reads a `variants` bucket under `dark`.
+            // Hoist it so both orders land in the same shape.
+            if (isset($inner['variants'])) {
+                $result = [];
+                foreach ($inner['variants'] as $breakpoint => $variant) {
+                    $result['variants'][$breakpoint] = ['dark' => $variant];
+                }
+                unset($inner['variants']);
+                if ($inner !== []) {
+                    $result['dark'] = $inner;
+                }
+
+                return $result;
+            }
+
             return ['dark' => $inner];
         }
 
@@ -778,6 +797,13 @@ class TailwindParser
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
+
+            // Display. `hidden` takes the node out of layout (Display.none);
+            // the Tailwind display utilities put it back, so the responsive
+            // `hidden md:flex` pattern works. Native has one flow model, so
+            // every visible display value means the same thing.
+            $class === 'hidden' => ['display' => 1],
+            in_array($class, ['flex', 'inline-flex', 'block', 'inline-block', 'grid'], true) => ['display' => 0],
 
             // Font family. Exact matches MUST precede the `font-` weight branch.
             // Sent as int: 0 = sans (default), 1 = serif, 2 = mono.

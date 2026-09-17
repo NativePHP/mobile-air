@@ -3,6 +3,7 @@
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Image;
 use Native\Mobile\Edge\Elements\LazyGrid;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
@@ -15,6 +16,7 @@ beforeEach(function () {
     ElementRegistry::reset();
     ElementRegistry::register('text', Text::class);
     ElementRegistry::register('lazy_grid', LazyGrid::class);
+    ElementRegistry::register('image', Image::class);
 });
 
 afterEach(function () {
@@ -25,6 +27,15 @@ afterEach(function () {
 function collectedVariants(array $tree): array
 {
     return json_decode($tree['props']['_variants'], true);
+}
+
+function collectColumn(string $class): array
+{
+    NativeElementCollector::reset();
+    NativeElementCollector::open('column', ['class' => $class]);
+    NativeElementCollector::close();
+
+    return NativeElementCollector::collect()->toArray(new CallbackRegistry);
 }
 
 // ── Parser ──────────────────────────────────────────
@@ -56,6 +67,18 @@ it('composes breakpoint, platform and dark prefixes in either order', function (
     ]);
 
     TailwindParser::setPlatform(null);
+});
+
+it('parses dark:md: into the same shape as md:dark:', function () {
+    expect(TailwindParser::parse('dark:md:bg-[#111111]'))
+        ->toBe(TailwindParser::parse('md:dark:bg-[#111111]'))
+        ->toBe(['variants' => ['md' => ['dark' => ['bg' => '#111111']]]]);
+});
+
+it('maps hidden and the display utilities to display', function () {
+    expect(TailwindParser::parse('hidden'))->toBe(['display' => 1]);
+    expect(TailwindParser::parse('flex'))->toBe(['display' => 0]);
+    expect(TailwindParser::parse('hidden md:flex'))->toBe(['display' => 1, 'variants' => ['md' => ['display' => 0]]]);
 });
 
 it('treats an unknown prefix as an unsupported class', function () {
@@ -127,4 +150,86 @@ it('ships variants from the programmatic class() path too', function () {
     expect(collectedVariants($tree))->toEqual([
         ['min' => 768.0, 'layout' => ['padding' => 16.0]],
     ]);
+});
+
+// ── Building on the base ────────────────────────────
+
+it('keeps the base edges a breakpoint does not override', function () {
+    expect(collectedVariants(collectColumn('p-4 md:px-8')))->toEqual([
+        ['min' => 768.0, 'layout' => ['padding' => [16.0, 32.0, 16.0, 32.0]]],
+    ]);
+    expect(collectedVariants(collectColumn('mt-2 md:mx-4')))->toEqual([
+        ['min' => 768.0, 'layout' => ['margin' => [8.0, 16.0, 0.0, 16.0]]],
+    ]);
+});
+
+it('keeps the base radius on corners a breakpoint does not round', function () {
+    expect(collectedVariants(collectColumn('rounded-xl md:rounded-t-3xl')))->toEqual([
+        ['min' => 768.0, 'props' => ['radius_tl' => 24.0, 'radius_tr' => 24.0, 'radius_br' => 12.0, 'radius_bl' => 12.0]],
+    ]);
+});
+
+it('widens a border without restating the base border colour', function () {
+    // A width alone never reached the wire before — the style builder
+    // only emits a border with its colour. The colour is unchanged, so
+    // only the width ships and the native fold keeps the base colour.
+    expect(collectedVariants(collectColumn('border border-[#FF0000] md:border-2')))->toEqual([
+        ['min' => 768.0, 'style' => ['border_width' => 2.0]],
+    ]);
+});
+
+it('ships only what each breakpoint changes over the narrower ones', function () {
+    expect(collectedVariants(collectColumn('p-2 sm:p-4 sm:flex-row md:p-4 lg:flex-col')))->toEqual([
+        ['min' => 640.0, 'layout' => ['padding' => 16.0, 'flex_direction' => 1]],
+        ['min' => 1024.0, 'layout' => ['flex_direction' => 0]],
+    ]);
+});
+
+it('ships dark overrides from either prefix order', function () {
+    expect(collectedVariants(collectColumn('dark:md:bg-[#111111]')))
+        ->toEqual(collectedVariants(collectColumn('md:dark:bg-[#111111]')))
+        ->toEqual([['min' => 768.0, 'props' => ['dark_bg_color' => '#111111']]]);
+});
+
+it('shows a hidden node from a breakpoint up', function () {
+    $tree = collectColumn('hidden md:flex');
+
+    expect($tree['layout']['display'])->toBe(1);
+    expect(collectedVariants($tree))->toEqual([
+        ['min' => 768.0, 'layout' => ['display' => 0]],
+    ]);
+});
+
+it('carries element props exactly as the unprefixed class would', function () {
+    NativeElementCollector::leaf('text', ['text' => 'Hi', 'class' => 'md:tracking-wide md:leading-loose md:uppercase md:italic md:underline md:font-mono md:text-7xl']);
+    $text = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect(collectedVariants($text))->toEqual([
+        ['min' => 768.0, 'props' => [
+            'font_size' => 72.0,
+            'font_style' => 1,
+            'font_family' => 2,
+            'underline' => 1,
+            'text_transform' => 1,
+            'letter_spacing' => 0.025,
+            'line_height' => 2.0,
+        ]],
+    ]);
+
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('image', ['src' => 'a.png', 'class' => 'object-cover md:object-contain']);
+    $image = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect(collectedVariants($image))->toEqual([
+        ['min' => 768.0, 'props' => ['fit' => 1]],
+    ]);
+});
+
+it('does not register callbacks while building breakpoints', function () {
+    NativeElementCollector::leaf('text', ['text' => 'A', '_press' => 'handleA', 'class' => 'p-2 md:p-4']);
+    $registry = new CallbackRegistry;
+    $tree = NativeElementCollector::collect()->toArray($registry);
+
+    expect($tree['on_press'])->toBe($registry->lookup('handleA'));
+    expect($registry->expressions())->toHaveCount(1);
 });

@@ -59,7 +59,14 @@ struct NativeTreeRenderer: View {
 
     var body: some View {
         rootWithHosts
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                // Flex measurements cached at the old width would place
+                // children at stale sizes — see `measurementGeneration`.
+                if windowWidth > 0 && width != windowWidth {
+                    FlexContainer.measurementGeneration &+= 1
+                }
+                windowWidth = width
+            }
             .environment(\.windowWidth, windowWidth)
     }
 

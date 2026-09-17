@@ -10,7 +10,6 @@ use Native\Mobile\Edge\Elements\Stack;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
-use Native\Mobile\Edge\Enums\TextAlign;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
 
 class NativeElementCollector
@@ -360,7 +359,7 @@ class NativeElementCollector
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildAnimationProps($attrs)
-                + static::buildVariantProps($attrs);
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -410,7 +409,7 @@ class NativeElementCollector
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildVariantProps($attrs);
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -457,7 +456,7 @@ class NativeElementCollector
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildAnimationProps($attrs)
-                + static::buildVariantProps($attrs);
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -502,7 +501,7 @@ class NativeElementCollector
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildVariantProps($attrs);
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -631,6 +630,9 @@ class NativeElementCollector
         }
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
+        }
+        if (isset($attrs['display'])) {
+            $layout['display'] = (int) $attrs['display'];
         }
         if (isset($attrs['alignSelf']) && ($alignSelf = AlignSelf::parse($attrs['alignSelf'])) !== null) {
             $layout['align_self'] = $alignSelf;
@@ -858,93 +860,112 @@ class NativeElementCollector
     }
 
     /**
-     * Build dark mode override props from the 'dark' attribute key.
-     * Maps TailwindParser output keys to prop names prefixed with 'dark_'.
-     */
-    /**
      * Responsive variants — the `md:` / `lg:` class buckets — as ONE
      * `_variants` prop: a JSON list of `{min, layout?, style?, props?}`
-     * deltas sorted by min-width. Each delta is built with the same
-     * layout / style / prop builders the base node uses, so a variant
-     * key means exactly what the unprefixed class would have meant.
+     * entries sorted by min-width. The native NodeView folds them over the
+     * base node cumulatively (base → sm → md → …) at decode time and picks
+     * the widest entry whose min fits the live window width.
      *
-     * Deltas are NOT pre-merged here: the native side folds them onto the
-     * base node cumulatively (base → sm → md → …) at decode time, then
-     * picks the widest entry whose min fits the live window width.
-     * Shipping deltas keeps the wire small and the fold order in one
-     * place.
+     * Each entry is the difference between two complete builds of the node:
+     * everything up to the previous breakpoint, and that plus this
+     * breakpoint's classes. Building a breakpoint's classes on their own
+     * gets composite values wrong, because the builders read sibling keys
+     * the breakpoint doesn't carry — `p-4 md:px-8` would ship
+     * `[0, 32, 0, 32]` and lose the vertical padding, `rounded-xl
+     * md:rounded-t-3xl` would square the bottom corners, and `md:border-2`
+     * would vanish for want of a colour. Building through a real element
+     * also means a prefixed class reaches the wire exactly as the
+     * unprefixed class does, element props included (Text tracking, Image
+     * fit, LazyGrid columns).
+     *
+     * @param  \Closure(): ?Element  $make  a fresh element of the node's type
      */
-    public static function buildVariantProps(array $attrs): array
+    public static function buildVariantProps(array $attrs, \Closure $make): array
     {
         if (empty($attrs['variants']) || ! is_array($attrs['variants'])) {
             return [];
         }
 
-        $entries = [];
+        $breakpoints = [];
         foreach ($attrs['variants'] as $name => $inner) {
             $min = TailwindParser::breakpointMinWidth((string) $name);
-            if ($min === null || ! is_array($inner)) {
-                continue;
+            if ($min !== null && is_array($inner)) {
+                $breakpoints[] = [$min, $inner];
             }
+        }
+        usort($breakpoints, fn (array $a, array $b) => $a[0] <=> $b[0]);
+
+        $cumulative = $attrs;
+        unset($cumulative['variants']);
+        $previous = static::variantSnapshot($make, $cumulative);
+        if ($previous === null) {
+            return [];
+        }
+
+        $entries = [];
+        foreach ($breakpoints as [$min, $inner]) {
+            $cumulative = TailwindParser::mergeAttributes($cumulative, $inner);
+            $current = static::variantSnapshot($make, $cumulative);
 
             $entry = ['min' => $min];
-            if (($layout = static::buildLayoutArray($inner)) !== []) {
-                $entry['layout'] = $layout;
-            }
-            if (($style = static::buildStyleArray($inner)) !== []) {
-                $entry['style'] = $style;
-            }
-            $props = static::buildDarkProps($inner)
-                + static::buildGradientProps($inner)
-                + static::buildCornerRadiusProps($inner)
-                + static::buildVariantElementProps($inner);
-            if ($props !== []) {
-                $entry['props'] = $props;
+            foreach (['layout', 'style', 'props'] as $part) {
+                $changed = array_filter(
+                    $current[$part],
+                    fn (mixed $value, string $key): bool => ! array_key_exists($key, $previous[$part])
+                        || $previous[$part][$key] !== $value,
+                    ARRAY_FILTER_USE_BOTH,
+                );
+                if ($changed !== []) {
+                    $entry[$part] = $changed;
+                }
             }
             if (count($entry) > 1) {
                 $entries[] = $entry;
             }
+
+            $previous = $current;
         }
 
-        if ($entries === []) {
-            return [];
-        }
-
-        usort($entries, fn (array $a, array $b) => $a['min'] <=> $b['min']);
-
-        return ['_variants' => json_encode(array_values($entries))];
+        return $entries === [] ? [] : ['_variants' => json_encode($entries)];
     }
 
     /**
-     * Element-level keys a variant can carry. These normally reach the
-     * wire through an element's own applyAttributes (Text::fontSize → the
-     * `font_size` prop, LazyGrid::columns → `columns`); a variant has no
-     * element to apply them to, so map the generic ones to their wire
-     * names directly. Kept to keys whose wire name is the same on every
-     * element that honours them.
+     * The layout / style / props a node of `$make`'s type serializes to
+     * for `$attrs` — the same appliers the element path runs, on a
+     * throwaway element with a throwaway callback registry, so nothing
+     * leaks into the screen's callback ids.
+     *
+     * @return array{layout: array, style: array, props: array}|null
      */
-    protected static function buildVariantElementProps(array $attrs): array
+    protected static function variantSnapshot(\Closure $make, array $attrs): ?array
     {
-        $props = [];
-        if (isset($attrs['fontSize'])) {
-            $props['font_size'] = (float) $attrs['fontSize'];
-        }
-        if (isset($attrs['fontWeight'])) {
-            $props['font_weight'] = max(1, min(7, (int) $attrs['fontWeight']));
-        }
-        if (isset($attrs['color'])) {
-            $props['color'] = $attrs['color'];
-        }
-        if (isset($attrs['textAlign']) && ($align = TextAlign::parse($attrs['textAlign'])) !== null) {
-            $props['text_align'] = $align;
-        }
-        if (isset($attrs['gridColumns'])) {
-            $props['columns'] = max(1, (int) $attrs['gridColumns']);
+        $element = $make();
+        if (! $element instanceof Element) {
+            return null;
         }
 
-        return $props;
+        $element->applyAttributes($attrs);
+        static::applyLayout($element, $attrs);
+        static::applyStyle($element, $attrs);
+        static::applyElementProps($element, $attrs);
+        $element->mergeDarkProps(static::buildDarkProps($attrs));
+        foreach (static::buildGradientProps($attrs) + static::buildCornerRadiusProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+
+        $node = $element->toArray(new CallbackRegistry);
+
+        return [
+            'layout' => $node['layout'] ?? [],
+            'style' => $node['style'] ?? [],
+            'props' => $node['props'] ?? [],
+        ];
     }
 
+    /**
+     * Build dark mode override props from the 'dark' attribute key.
+     * Maps TailwindParser output keys to prop names prefixed with 'dark_'.
+     */
     public static function buildDarkProps(array $attrs): array
     {
         if (! isset($attrs['dark']) || ! is_array($attrs['dark'])) {
@@ -1489,6 +1510,32 @@ class NativeElementCollector
         static::$componentDepth = 0;
     }
 
+    /**
+     * A fresh, unconfigured element for a node type — the builtins plus
+     * anything registered with ElementRegistry — or null when the type is
+     * unknown.
+     */
+    protected static function makeElement(string $type): ?Element
+    {
+        return match ($type) {
+            'column' => Column::make(),
+            'row' => Row::make(),
+            'stack' => Stack::make(),
+            'scroll_view' => ScrollView::make(),
+            'spacer' => Elements\Spacer::make(),
+            'divider' => Elements\Divider::make(),
+            'pressable' => Elements\Pressable::make(),
+            'canvas' => Elements\Canvas::make(),
+            // Inline `<native:bottom-bar>` — bottom-pinned content (chat input,
+            // search bar, …). Hoisted out of the screen tree to the
+            // native-chrome root in NativeComponent::wrapWithNativeChrome and
+            // pinned via `.safeAreaInset(.bottom)` (iOS) / `Scaffold(bottomBar=)`
+            // (Android), which keeps it above the software keyboard natively.
+            'bottom_bar' => Elements\BottomBar::make(),
+            default => ElementRegistry::resolve($type),
+        };
+    }
+
     protected static function createElement(string $type, array $attrs): Element
     {
         // Raw-class capture happens BEFORE parsing consumes the attribute.
@@ -1511,24 +1558,8 @@ class NativeElementCollector
             unset($attrs['native-key'], $attrs['native:key']);
         }
 
-        $element = match ($type) {
-            'column' => Column::make(),
-            'row' => Row::make(),
-            'stack' => Stack::make(),
-            'scroll_view' => ScrollView::make(),
-            'spacer' => Elements\Spacer::make(),
-            'divider' => Elements\Divider::make(),
-            'pressable' => Elements\Pressable::make(),
-            'canvas' => Elements\Canvas::make(),
-            // Inline `<native:bottom-bar>` — bottom-pinned content (chat input,
-            // search bar, …). Hoisted out of the screen tree to the
-            // native-chrome root in NativeComponent::wrapWithNativeChrome and
-            // pinned via `.safeAreaInset(.bottom)` (iOS) / `Scaffold(bottomBar=)`
-            // (Android), which keeps it above the software keyboard natively.
-            'bottom_bar' => Elements\BottomBar::make(),
-            default => ElementRegistry::resolve($type)
-                ?? throw new \RuntimeException("Unknown native element type: {$type}"),
-        };
+        $element = static::makeElement($type)
+            ?? throw new \RuntimeException("Unknown native element type: {$type}");
 
         if ($rawClass !== null) {
             $element->setProp(static::$capturedAttributes['class'], $rawClass);
@@ -1601,7 +1632,7 @@ class NativeElementCollector
         // Responsive variants (`md:` / `lg:` classes) ride the prop bag as
         // one JSON string the native NodeView resolves against the live
         // window width — the packed node has no room for alternatives.
-        foreach (static::buildVariantProps($attrs) as $key => $value) {
+        foreach (static::buildVariantProps($attrs, fn () => static::makeElement($type)) as $key => $value) {
             $element->setProp($key, $value);
         }
 
@@ -1650,6 +1681,9 @@ class NativeElementCollector
         }
         if (isset($attrs['flexDirection'])) {
             $element->flexDirection((int) $attrs['flexDirection']);
+        }
+        if (isset($attrs['display'])) {
+            $element->display((int) $attrs['display']);
         }
         // Padding (uniform + directional from Tailwind classes)
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;
