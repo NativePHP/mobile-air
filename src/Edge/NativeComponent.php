@@ -2546,29 +2546,29 @@ abstract class NativeComponent
 
     // ── Navigation methods ──────────────────────────
 
-    public function navigate(string $uri, array $data = []): static
+    public function navigate(string $uri, array $data = [], Transition|string|null $transition = null): static
     {
         // Navigation is a screen-level concern: a nested child forwards to
         // the screen so the intent lands where the runloop reads it (and
         // publishFinalState renders the full screen, not the child alone).
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->navigate($uri, $data);
+            $this->rootScreen()->navigate($uri, $data, $transition);
 
             return $this;
         }
 
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data, $transition);
         $this->publishFinalState();
         $this->stop();
 
         return $this;
     }
 
-    public function back(): static
+    public function back(Transition|string|null $transition = null): static
     {
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->back();
+            $this->rootScreen()->back($transition);
 
             return $this;
         }
@@ -2588,23 +2588,23 @@ abstract class NativeComponent
             return $this;
         }
 
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK, transition: $transition);
         $this->publishFinalState();
         $this->stop();
 
         return $this;
     }
 
-    public function replace(string $uri, array $data = []): static
+    public function replace(string $uri, array $data = [], Transition|string|null $transition = null): static
     {
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->replace($uri, $data);
+            $this->rootScreen()->replace($uri, $data, $transition);
 
             return $this;
         }
 
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data, $transition);
         $this->publishFinalState();
         $this->stop();
 

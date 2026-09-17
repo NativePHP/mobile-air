@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Exit effect for the outgoing screen of a router-level swap.
 ///
@@ -26,6 +27,12 @@ struct ScreenExitModifier: ViewModifier {
 
     private var isParallax: Bool { isExiting && transition == "parallax_push" }
 
+    /// Modal reveal: the outgoing screen slides DOWN off the bottom edge
+    /// while the incoming screen sits fully rendered beneath it (its
+    /// insertion is `.identity`; ContentView z-orders the outgoing layer on
+    /// top for this transition). Inverse of `slide_from_bottom`.
+    private var isSlideDown: Bool { isExiting && transition == "slide_to_bottom" }
+
     func body(content: Content) -> some View {
         // "Old drifts BACK underneath": the outgoing screen recedes in
         // depth — scales down, drifts toward the leading edge, dims, and
@@ -42,6 +49,11 @@ struct ScreenExitModifier: ViewModifier {
         content
             .scaleEffect(isParallax ? 0.88 : 1.0)
             .offset(x: isParallax ? -120 : 0)
+            // Modal dismissal slide — pushes the whole held screen below the
+            // bottom edge. UIScreen height is a safe upper bound here (the
+            // held layer is full-screen); animated by the scoped animation
+            // below, same as the parallax recede.
+            .offset(y: isSlideDown ? UIScreen.main.bounds.height : 0)
             .overlay(
                 Color.black
                     .opacity(isParallax ? 0.40 : 0)
@@ -57,7 +69,10 @@ struct ScreenExitModifier: ViewModifier {
             // screen visibly drops back FIRST, then the new one sweeps
             // over it. Without that beat of sequencing the recede happens
             // entirely underneath the cover and reads as a plain slide.
-            .animation(.easeOut(duration: 0.50), value: isExiting)
+            .animation(
+                isSlideDown ? .easeInOut(duration: 0.30) : .easeOut(duration: 0.50),
+                value: isExiting
+            )
     }
 }
 
@@ -78,6 +93,10 @@ func nativeScreenSwapAnimation(for type: String?) -> Animation {
         // scoped animation) gets a visible beat before the cover moves.
         return .easeInOut(duration: 0.40).delay(0.10)
     case "none":
+        return .linear(duration: 0)
+    case "slide_to_bottom":
+        // Incoming inserts with .identity (it sits beneath); the visible
+        // motion is the outgoing layer's scoped slide-down animation.
         return .linear(duration: 0)
     case "fade", "fade_from_bottom", "scale_from_center":
         return .easeInOut(duration: 0.3)
@@ -168,6 +187,12 @@ func nativeScreenTransition(for type: String?) -> AnyTransition {
             removal:   .identity
         )
         .animation(.easeInOut(duration: 0.55).delay(0.15))
+    case "slide_to_bottom":
+        // Modal reveal: the incoming screen appears instantly BENEATH the
+        // held outgoing layer (ContentView z-orders the outgoing on top for
+        // this transition); the outgoing's ScreenExitModifier slides it down
+        // off-screen. No insertion motion here by design.
+        return .identity
     case "none":
         // Instant cut. The incoming screen renders fully opaque on the same
         // frame (zIndexed above), so nothing flashes.
