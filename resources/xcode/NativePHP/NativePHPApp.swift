@@ -33,193 +33,6 @@ struct NativePHPApp: App {
         DebugLogger.shared.log("📱 NativePHPApp.init() completed (minimal)")
     }
 
-    /// Performs heavy initialization work after the splash view is visible.
-    /// This runs on a background thread to avoid blocking the main thread.
-    private func performDeferredInitialization() {
-        NSLog("[NativePHP] Deferred initialization starting")
-
-        // 1. Initialize PHP environment (env vars, php.ini, database)
-        NSLog("[NativePHP] preparePhpEnvironment START")
-        _ = preparePhpEnvironment()
-        NSLog("[NativePHP] preparePhpEnvironment DONE")
-
-        // 2. Ensure app is extracted from bundle if needed
-        NSLog("[NativePHP] ensureAppExists START")
-        let didExtract = AppUpdateManager.shared.ensureAppExists()
-        NSLog("[NativePHP] ensureAppExists DONE (didExtract=\(didExtract))")
-
-        // 3. Boot persistent PHP runtime (one-time Laravel boot) — unless classic mode
-        let runtimeMode = Self.getRuntimeMode()
-        NSLog("[NativePHP] Runtime mode: \(runtimeMode)")
-
-        let booted: Bool
-        if runtimeMode == "classic" {
-            NSLog("[NativePHP] Classic mode configured — skipping persistent runtime boot")
-            booted = false
-            createStorageLink()
-        } else {
-            NSLog("[NativePHP] PersistentPHPRuntime.boot() START")
-            booted = PersistentPHPRuntime.shared.boot()
-            NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
-
-            if booted {
-                // Only run artisan commands when app was extracted or updated
-                if didExtract {
-                    NSLog("[NativePHP] artisan migrate START (post-extraction)")
-                    _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
-                    NSLog("[NativePHP] artisan migrate DONE")
-
-                    NSLog("[NativePHP] artisan storage:link START")
-                    _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
-                    NSLog("[NativePHP] artisan storage:link DONE")
-                } else {
-                    NSLog("[NativePHP] Skipping artisan commands — no extraction needed")
-                }
-
-                // Execute plugin post-boot callbacks
-                NativePHPPluginRegistry.shared.executeOnAppReady()
-            } else {
-                NSLog("[NativePHP] persistent boot failed, falling back to classic mode")
-                createStorageLink()
-            }
-        }
-
-        // 4. Now that PHP is booted, decide the boot transport (native-first).
-        // NATIVE_DIRECT: dispatch the start route straight into the persistent
-        // runtime — no WKWebView, no WebContent/Networking processes — and let
-        // the first published native tree dismiss the splash (honest first
-        // content; ContentView flips it via onChange(isActive)). WEB_LEGACY:
-        // byte-identical to the old flow.
-        let startPath = NativePHPApp.getStartURL()
-        let hasPendingDeepLink = DeepLinkRouter.shared.hasPendingURL()
-        let plan: BootPlanner.Entry = hasPendingDeepLink
-            ? .webLegacy // cold deep links keep the proven WebView path for now
-            : BootPlanner.plan(startPath: startPath)
-
-        switch plan {
-        case .nativeDirect:
-            DispatchQueue.main.async {
-                NSLog("TRACE[15]: native-direct boot — WebView withheld")
-                BootState.shared.webViewAllowed = false
-                DeepLinkRouter.shared.markPhpReady()
-                AppState.shared.markReadyToLoad()
-                // markInitialized deliberately NOT called here — the splash
-                // dismisses on first native content, or via the watchdog.
-            }
-            startNativeSession(startPath)
-            startFirstContentWatchdog()
-        case .webLegacy:
-            DispatchQueue.main.async {
-                NSLog("TRACE[15]: markPhpReady + markReadyToLoad + markInitialized on main thread")
-                DeepLinkRouter.shared.markPhpReady()
-                AppState.shared.markReadyToLoad()
-                AppState.shared.markInitialized()
-            }
-        }
-
-        // 5. Execute plugin initialization callbacks (on main thread)
-        DispatchQueue.main.async {
-            NativePHPPluginRegistry.shared.executeOnAppLaunch()
-        }
-
-        // 6. Reload handling + hot reload server. The coordinator must be
-        // registered before anything can post reloadWebViewNotification —
-        // HotReloadServer triggers (DEBUG) or AppUpdateManager after an OTA
-        // update (production) — and independently of the WebView, which a
-        // native-direct boot never mounts.
-        HotReloadCoordinator.shared.activate()
-        #if DEBUG
-        HotReloadServer.shared.start()
-        #endif
-
-        // 7. OTA check commented out — parity with Android, where the boot-time
-        // Bifrost request was disabled for its network latency on cold boot.
-        // TODO: Re-enable on BOTH platforms together when OTA is ready for
-        // production, as an async check after first content — never on the
-        // boot path.
-        // NSLog("[NativePHP] checkForUpdates START")
-        // AppUpdateManager.shared.checkForUpdates()
-
-        // 8. Defer queue worker boot — start AFTER critical path completes
-        //    so it doesn't compete for CPU/memory during first page render
-        if booted {
-            NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
-            PHPQueueWorker.shared.start()
-        } else {
-            NSLog("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
-        }
-
-        NSLog("[NativePHP] Deferred initialization completed")
-    }
-
-    /// Native-first boot: dispatch the start route directly into the
-    /// persistent runtime (same entry hot reload uses — the iOS analog of
-    /// Android's executeNativeRoute). The dispatch blocks its queue for the
-    /// life of the native session; the eventual response is the session's
-    /// exit envelope: 3xx+Location = EXIT_WEB, 204 = hot-restart, else the
-    /// stack emptied.
-    private func startNativeSession(_ uri: String) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            NSLog("[NativeBoot] 🚀 Direct native dispatch: \(uri)")
-            let request = RequestData(
-                method: "GET",
-                uri: uri,
-                data: nil,
-                query: nil,
-                headers: [:]
-            )
-            let raw = PersistentPHPRuntime.shared.dispatch(request: request)
-            handleNativeSessionExit(raw)
-        }
-    }
-
-    private func handleNativeSessionExit(_ rawResponse: String) {
-        let head = rawResponse.components(separatedBy: "\r\n\r\n").first ?? rawResponse
-        let lines = head.components(separatedBy: "\r\n")
-        let status = lines.first?
-            .components(separatedBy: " ")
-            .dropFirst().first.flatMap { Int($0) } ?? 200
-        let location = lines
-            .first { $0.lowercased().hasPrefix("location:") }?
-            .components(separatedBy: ":").dropFirst().joined(separator: ":")
-            .trimmingCharacters(in: .whitespaces)
-
-        NSLog("[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
-
-        if (300...399).contains(status), let location, !location.isEmpty {
-            let path = location.hasPrefix("http") || location.hasPrefix("php:")
-                ? (URL(string: location)?.path ?? "/")
-                : location
-            DispatchQueue.main.async {
-                NSLog("[NativeBoot] ⇄ EXIT_WEB → \(path)")
-                BootState.shared.allowWebView(loading: path)
-                // Drop the native branch explicitly. The usual clearers can't
-                // run here: didCommit needs the WebView to load, but the
-                // WebView only MOUNTS once the native branch unmounts — and
-                // the region teardown may be preserve-tree'd. Without this
-                // the exit deadlocks on a frozen native screen.
-                NativeUIBridge.shared.isActive = false
-                AppState.shared.markInitialized()
-            }
-        }
-        // 204 = hot restart in flight (the reload path re-dispatches);
-        // anything else = the native stack emptied — iOS apps can't finish()
-        // themselves, so the splash-free native background simply remains.
-    }
-
-    /// A broken PHP boot in native-direct mode would otherwise wedge on the
-    /// splash forever (no WebView error page to fall back on). After 10s
-    /// without content, fall back to the legacy WebView path.
-    private func startFirstContentWatchdog() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-            if !AppState.shared.isInitialized {
-                NSLog("[NativeBoot] ⏰ No content 10s after native boot — falling back to WebView")
-                BootState.shared.allowWebView(loading: nil)
-                AppState.shared.markInitialized()
-            }
-        }
-    }
-
     var body: some Scene {
         WindowGroup {
             ZStack {
@@ -235,10 +48,10 @@ struct NativePHPApp: App {
                         .transition(.opacity)
                         .onAppear {
                             // Phase 1: Start deferred initialization on a background thread
-                            // This runs AFTER the splash view is visible, avoiding watchdog timeout
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                performDeferredInitialization()
-                            }
+                            // This runs AFTER the splash view is visible, avoiding watchdog timeout.
+                            // Idempotent — a headless background launch may already
+                            // have booted the runtime from AppDelegate.
+                            NativePHPBootstrap.shared.start()
                         }
                 }
             }
@@ -267,7 +80,7 @@ struct NativePHPApp: App {
         }
     }
 
-    private func getAppSupportDir(dir: String) -> String {
+    private static func getAppSupportDir(dir: String) -> String {
         // Get the URL for the Library directory in the user domain
         let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
 
@@ -333,7 +146,7 @@ struct NativePHPApp: App {
         return "/"
     }
 
-    private func createPhpIni() -> String {
+    private static func createPhpIni() -> String {
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? "Path not found"
 
         let phpIni = """
@@ -355,7 +168,7 @@ struct NativePHPApp: App {
         return supportDir.appendingPathComponent("php.ini").path(percentEncoded: false)
     }
 
-    private func createDatabase() {
+    private static func createDatabase() {
         let fileManager = FileManager.default
 
         let databaseFileURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -371,19 +184,19 @@ struct NativePHPApp: App {
         }
     }
 
-    private func migrateDatabase() {
+    private static func migrateDatabase() {
         _ = artisan(additionalArgs: ["migrate", "--force"])
     }
 
-    private func clearCaches() {
+    private static func clearCaches() {
         _ = artisan(additionalArgs: ["view:clear"])
     }
 
-    private func createStorageLink() {
+    static func createStorageLink() {
         _ = artisan(additionalArgs: ["storage:link"])
     }
 
-    private func preparePhpEnvironment() -> String {
+    static func preparePhpEnvironment() -> String {
         let phpIniPath = createPhpIni()
 
         setenv("PHPRC", phpIniPath, 1)
@@ -495,7 +308,7 @@ struct NativePHPApp: App {
         return output
     }
 
-    private func setupEnvironment() {
+    private static func setupEnvironment() {
         let storageDir = getAppSupportDir(dir: "storage")
         let viewCacheDir = getAppSupportDir(dir: "storage/framework/views")
         let databaseDir = getAppSupportDir(dir: "database")
@@ -521,7 +334,7 @@ struct NativePHPApp: App {
     }
 
     /// Retrieves APP_KEY from Keychain or generates a new one on first launch
-    private func getOrGenerateAppKey() -> String? {
+    private static func getOrGenerateAppKey() -> String? {
         let service = Bundle.main.bundleIdentifier ?? "com.nativephp.app"
         let account = "APP_KEY"
 
@@ -577,7 +390,7 @@ struct NativePHPApp: App {
     }
 
     /// Generates a new Laravel-compatible APP_KEY (base64:...)
-    private func generateAppKey() -> String? {
+    private static func generateAppKey() -> String? {
         var keyData = Data(count: 32)
         let result = keyData.withUnsafeMutableBytes {
             SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!)
@@ -592,7 +405,7 @@ struct NativePHPApp: App {
         return "base64:\(base64Key)"
     }
 
-    func artisan(additionalArgs: [String] = []) -> String {
+    static func artisan(additionalArgs: [String] = []) -> String {
         print("Running `php artisan \(additionalArgs.joined())`...")
 
         output = ""
