@@ -235,6 +235,54 @@ class TailwindParser
     ];
 
     /**
+     * Named colored glows (Slice 1). Distinct from elevation `shadow-*` —
+     * these emit glowColor / glowRadius / glowOpacity props for a soft
+     * zero-offset halo on both platforms. Colors are the palette 500
+     * shade; sizes mirror a soft scale independent of SHADOW elevation.
+     *
+     *   glow-emerald / glow-indigo / glow-rose
+     *   glow-emerald-sm / glow-indigo-md / glow-rose-lg
+     *
+     * Arbitrary `shadow-[…]` / `glow-[…]` forms are deferred.
+     */
+    private const GLOW_COLORS = [
+        'emerald' => '#10B981',
+        'indigo' => '#6366F1',
+        'rose' => '#F43F5E',
+    ];
+
+    private const GLOW_RADIUS = [
+        'sm' => 8,
+        'md' => 16,
+        'lg' => 24,
+    ];
+
+    private const GLOW_DEFAULT_RADIUS = 16;
+
+    private const GLOW_DEFAULT_OPACITY = 0.55;
+
+    /**
+     * Tailwind `blur-*` / `blur` / `blur-none` — Gaussian filter radius in
+     * points. Distinct from elevation `shadow-*` and colored `glow-*`
+     * (those paint halos; blur softens the node's own pixels). Used for
+     * Stitch-style page-bg orbs (`blur-3xl` / `blur-[100px]` on large soft
+     * discs). Arbitrary `blur-[Npx]` is handled in parseArbitrary.
+     *
+     * Scale matches Tailwind CSS filter blur defaults.
+     */
+    private const BLUR_RADIUS = [
+        'none' => 0,
+        'sm' => 4,
+        'md' => 12,
+        'lg' => 16,
+        'xl' => 24,
+        '2xl' => 40,
+        '3xl' => 64,
+    ];
+
+    private const BLUR_DEFAULT_RADIUS = 8;
+
+    /**
      * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
      * Values are the rem sizes converted at the 16px root Tailwind assumes.
      * Most are far wider than a phone, but they're what authors type and a
@@ -680,6 +728,11 @@ class TailwindParser
             str_starts_with($class, 'border-') => self::parseBorder(substr($class, 7)),
             str_starts_with($class, 'rounded-') => self::parseRounded(substr($class, 8)),
             str_starts_with($class, 'shadow-') => self::parseShadow(substr($class, 7)),
+            // Colored glow halo — separate from elevation `shadow-*`.
+            str_starts_with($class, 'glow-') => self::parseGlow(substr($class, 5)),
+            // Gaussian blur filter — softens the node's own pixels (page orbs).
+            $class === 'blur' => ['blur' => (float) self::BLUR_DEFAULT_RADIUS],
+            str_starts_with($class, 'blur-') => self::parseBlur(substr($class, 5)),
             str_starts_with($class, 'opacity-') => self::parseOpacity(substr($class, 8)),
 
             // Alignment
@@ -1272,6 +1325,62 @@ class TailwindParser
         return null;
     }
 
+    /**
+     * `glow-emerald`, `glow-indigo-sm`, `glow-rose-lg`.
+     *
+     * Emits camelCase EDGE attrs (glowColor / glowRadius / glowOpacity)
+     * that `NativeElementCollector::applyStyle` forwards into the props
+     * bag — same path as `glass` / `dark_bg_color`, no NodeStyle bump.
+     *
+     * @return array{glowColor: string, glowRadius: float, glowOpacity: float}|null
+     */
+    private static function parseGlow(string $value): ?array
+    {
+        $color = null;
+        $radius = self::GLOW_DEFAULT_RADIUS;
+
+        if (isset(self::GLOW_COLORS[$value])) {
+            $color = self::GLOW_COLORS[$value];
+        } else {
+            $lastDash = strrpos($value, '-');
+            if ($lastDash === false) {
+                return null;
+            }
+
+            $family = substr($value, 0, $lastDash);
+            $size = substr($value, $lastDash + 1);
+
+            if (! isset(self::GLOW_COLORS[$family], self::GLOW_RADIUS[$size])) {
+                return null;
+            }
+
+            $color = self::GLOW_COLORS[$family];
+            $radius = self::GLOW_RADIUS[$size];
+        }
+
+        return [
+            'glowColor' => $color,
+            'glowRadius' => (float) $radius,
+            'glowOpacity' => self::GLOW_DEFAULT_OPACITY,
+        ];
+    }
+
+    /**
+     * `blur-sm` … `blur-3xl` / `blur-none`. Bare `blur` is handled in the
+     * match arm. Emits camelCase `blur` radius (float pt) for the collector
+     * props bag — no NodeStyle bump.
+     *
+     * @return array{blur: float}|null
+     */
+    private static function parseBlur(string $value): ?array
+    {
+        if (! isset(self::BLUR_RADIUS[$value])) {
+            return null;
+        }
+
+        return ['blur' => (float) self::BLUR_RADIUS[$value]];
+    }
+
     private static function parseOpacity(string $value): ?array
     {
         if (is_numeric($value)) {
@@ -1337,6 +1446,8 @@ class TailwindParser
             'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
+            // `blur-[100px]` / `blur-[64]` — Gaussian radius in points.
+            'blur' => ['blur' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
             // Line height: `leading-[24px]` → absolute; `leading-[1.4]` →
             // unitless multiplier of the font size.

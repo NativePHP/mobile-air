@@ -61,6 +61,44 @@ it('registers on_pinch_end with a resolvable callback id', function () {
     expect($registry->resolve($props['on_pinch_end'])['method'])->toBe('zoomEnded');
 });
 
+// ── Pan ─────────────────────────────────────────────
+
+it('carries pan-x and pan-y SharedValues as id / initial props, each axis independently', function () {
+    $dx = SharedValue::make(12.0);
+    $dy = SharedValue::make(-4.0);
+
+    $area = GestureArea::make();
+    $area->applyAttributes(['pan-x' => $dx, 'pan-y' => $dy]);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props['pan-x-id'])->toBe($dx->id)
+        ->and($props['pan-x-initial'])->toBe(12.0)
+        ->and($props['pan-y-id'])->toBe($dy->id)
+        ->and($props['pan-y-initial'])->toBe(-4.0);
+
+    $xOnly = GestureArea::make();
+    $xOnly->applyAttributes(['pan-x' => $dx]);
+    $props = $xOnly->getResolvedProps(new CallbackRegistry);
+
+    expect($props)->toHaveKey('pan-x-id')
+        ->and($props)->not->toHaveKey('pan-y-id');
+});
+
+it('registers on_drag_end with the drag_end kind so dispatch decodes "x,y"', function () {
+    $registry = new CallbackRegistry;
+
+    $props = GestureArea::make()
+        ->onDragEnd('released')
+        ->getResolvedProps($registry);
+
+    expect($props['on_drag_end'])->toBeInt()->toBeGreaterThan(0)
+        ->and($registry->resolve($props['on_drag_end'])['method'])->toBe('released')
+        ->and($registry->kind($props['on_drag_end']))->toBe('drag_end');
+
+    expect(GestureArea::make()->getResolvedProps(new CallbackRegistry))->not->toHaveKey('on_drag_end');
+});
+
 // ── Swipe ───────────────────────────────────────────
 
 it('registers on_swipe with the finger count from swipe-fingers', function () {
@@ -119,6 +157,14 @@ describe('precompiler @swipe / @pinchEnd conversion', function () {
         expect($result)->toContain("'_swipe' => 'onSwipe'");
         expect($result)->toContain("'_pinchEnd' => 'onZoomEnd'");
         expect($result)->toContain("'swipe-fingers' => '3'");
+    });
+
+    it('converts @dragEnd to an underscored attr', function () {
+        $result = ($this->precompiler)(
+            '<native:gesture-area :pan-x="$dx" @dragEnd="onRelease">x</native:gesture-area>'
+        );
+
+        expect($result)->toContain("'_dragEnd' => 'onRelease'");
     });
 
     it('still converts @swipeDelete despite the shared prefix with @swipe', function () {

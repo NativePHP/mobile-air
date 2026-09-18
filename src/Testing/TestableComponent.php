@@ -87,7 +87,7 @@ class TestableComponent
     protected const EVENT_CALLBACK_KEYS = [
         self::EVENT_PRESS => ['on_press'],
         self::EVENT_LONG_PRESS => ['on_long_press'],
-        self::EVENT_TEXT_CHANGE => ['on_change', 'on_swipe'],
+        self::EVENT_TEXT_CHANGE => ['on_change', 'on_swipe', 'on_drag_end'],
         self::EVENT_TOGGLE_CHANGE => ['on_change'],
         self::EVENT_SUBMIT => ['on_submit'],
         self::EVENT_SLIDER_CHANGE => ['on_change', 'on_pinch_end'],
@@ -431,6 +431,19 @@ class TestableComponent
         return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $scale]);
     }
 
+    /**
+     * Fire a gesture-area drag-end bound to `@dragEnd`, delivering the
+     * final pan translation as two floats — packed as "x,y" text, exactly
+     * as the device sends it.
+     */
+    public function dragEnd(string $target, float $x, float $y = 0.0): static
+    {
+        // Drag-end shares the TEXT_CHANGE wire type with @swipe, so a ref
+        // must resolve to `on_drag_end` specifically — an area with both
+        // handlers would otherwise hand the coordinates to its swipe one.
+        return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $x.','.$y], ['on_drag_end']);
+    }
+
     public function selectRadio(string $target, string $value): static
     {
         return $this->fireEvent($target, self::EVENT_RADIO_CHANGE, ['value' => $value]);
@@ -457,12 +470,12 @@ class TestableComponent
      * model-bound property name, or an element `ref`. This is the generic
      * primitive behind the input/toggle/slide/... sugar.
      */
-    public function fireEvent(string $target, int $type, array $fields = []): static
+    public function fireEvent(string $target, int $type, array $fields = [], ?array $refKeys = null): static
     {
         $this->startInteraction();
 
         $callbackId = $this->callbackIdFor($target)
-            ?? $this->callbackIdByRef($this->tree(), $target, $type);
+            ?? $this->callbackIdByRef($this->tree(), $target, $refKeys ?? self::EVENT_CALLBACK_KEYS[$type] ?? []);
 
         Assert::assertNotNull(
             $callbackId,
@@ -1602,7 +1615,7 @@ class TestableComponent
     /** Press callback id of the node with the given ref, if any. */
     protected function pressableIdByRef(array $node, string $ref): ?int
     {
-        return $this->callbackIdByRef($node, $ref, self::EVENT_PRESS);
+        return $this->callbackIdByRef($node, $ref, self::EVENT_CALLBACK_KEYS[self::EVENT_PRESS]);
     }
 
     /**
@@ -1632,10 +1645,13 @@ class TestableComponent
      * event type dispatches through — node-level (on_press/on_long_press)
      * or in the props map, wherever the element put it.
      */
-    protected function callbackIdByRef(array $node, string $ref, int $type): ?int
+    /**
+     * @param  array<int, string>  $keys  wire prop keys to try on the ref'd node, in order
+     */
+    protected function callbackIdByRef(array $node, string $ref, array $keys): ?int
     {
         if (($node['ref'] ?? null) === $ref) {
-            foreach (self::EVENT_CALLBACK_KEYS[$type] ?? [] as $key) {
+            foreach ($keys as $key) {
                 $id = $node[$key] ?? $node['props'][$key] ?? null;
                 if (is_int($id)) {
                     return $id;
@@ -1646,7 +1662,7 @@ class TestableComponent
         }
 
         foreach ($node['children'] ?? [] as $child) {
-            if (($id = $this->callbackIdByRef($child, $ref, $type)) !== null) {
+            if (($id = $this->callbackIdByRef($child, $ref, $keys)) !== null) {
                 return $id;
             }
         }
