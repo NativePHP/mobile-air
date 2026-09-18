@@ -12,7 +12,7 @@ use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
 {
-    use CleansEnvFile, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
+    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
 
     /**
      * Validate required environment variables for building
@@ -131,6 +131,10 @@ trait PreparesBuild
             $this->logToFile('  Updating permissions...');
             $this->updatePermissions();
 
+            $audience = $this->largestReleaseAudience();
+            $this->logToFile('  Updating release audience: '.($audience ?? 'unrestricted (production)'));
+            $this->updateReleaseAudience();
+
             $this->logToFile('  Updating orientation configuration...');
             $this->updateOrientationConfiguration();
 
@@ -144,9 +148,6 @@ trait PreparesBuild
                 $this->logToFile("    Host: $host");
             }
             $this->updateDeepLinkConfiguration();
-
-            $this->logToFile('  Updating Firebase configuration...');
-            $this->updateFirebaseConfiguration();
 
             $this->logToFile('  Updating build configuration...');
             $buildConfig = config('nativephp.android.build', []);
@@ -974,9 +975,9 @@ trait PreparesBuild
 
     abstract protected function updatePermissions(): void;
 
-    abstract protected function updateIcuConfiguration(): void;
+    abstract protected function updateReleaseAudience(): void;
 
-    abstract protected function updateFirebaseConfiguration(): void;
+    abstract protected function updateIcuConfiguration(): void;
 
     abstract protected function removeDirectory(string $path): void;
 }

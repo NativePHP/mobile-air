@@ -259,14 +259,14 @@ class NativeTagPrecompiler
 
         // Convert @tap, @tapDown, @tapUp, @longPress, @doubleTap, @change,
         // @submit, @dismiss, @refresh, @endReached, @swipeDelete, @swipe,
-        // @pinchEnd, @navigated, @selectionChange to underscored versions before Blade
+        // @pinchEnd, @dragEnd, @navigated, @selectionChange to underscored versions before Blade
         // interprets @ as a directive.
         // Longer spellings precede their prefix (`pressDown`/`pressUp` before
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
         // `selectionChange` shares no prefix with `change` — the alternation
         // is anchored at `@`, so `change` can't match mid-word — but it sits
         // before it anyway to keep the longer-first convention obvious.
-        $value = preg_replace('/@(tapDown|tapUp|tap|pressDown|pressUp|press|longPress|doubleTap|selectionChange|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
+        $value = preg_replace('/@(tapDown|tapUp|tap|pressDown|pressUp|press|longPress|doubleTap|selectionChange|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|dragEnd|navigated)=/', '_$1=', $value);
 
         // Any REMAINING `@name="..."` attribute is a child-component event
         // binding — the tag-level half of `$this->emit()`:
@@ -398,6 +398,13 @@ class NativeTagPrecompiler
     {
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
+
+        // A self-closing <text /> carries attribute text only. Route it
+        // through textLeaf so a whitespace-* class governs `:text`
+        // exactly as the paired form does at textClose.
+        if ($tag === 'text') {
+            return '<?php '.self::C."::textLeaf({$attrs}); ?>";
+        }
 
         // <native:virtual-list /> is special: open the element, loop the
         // window, render the `item` Blade view once per index (each render

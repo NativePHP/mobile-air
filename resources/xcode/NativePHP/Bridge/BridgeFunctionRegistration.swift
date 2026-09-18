@@ -6,6 +6,11 @@ import SwiftUI
 func registerBridgeFunctions() {
     let registry = BridgeFunctionRegistry.shared
 
+    // AsyncTask.* — background PHP work with UI completion callbacks
+    // (AsyncTask::dispatch()). Android twin: bridge/functions/AsyncFunctions.kt.
+    registry.register("AsyncTask.Dispatch", function: AsyncFunctions.Dispatch())
+    registry.register("AsyncTask.Complete", function: AsyncFunctions.Complete())
+
     // Device.* — core built-in (migrated from the nativephp/mobile-device
     // plugin). Android twin: bridge/functions/DeviceFunctions.kt.
     registry.register("Device.Vibrate",         function: DeviceFunctions.Vibrate())
