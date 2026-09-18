@@ -56,6 +56,12 @@ use Spatie\LaravelPackageTools\PackageServiceProvider;
 
 class NativeServiceProvider extends PackageServiceProvider
 {
+    /**
+     * Real path of the routes/mobile.php this provider loaded. Tells our own
+     * include on an earlier boot apart from the app's (see appLoadsMobileRoutes).
+     */
+    protected static ?string $loadedMobileRoutes = null;
+
     public function configurePackage(Package $package): void
     {
         $package
@@ -430,12 +436,17 @@ class NativeServiceProvider extends PackageServiceProvider
     protected function loadMobileRoutes(): void
     {
         $this->app->booted(function () {
-            $path = base_path('routes/mobile.php');
+            $path = realpath(base_path('routes/mobile.php'));
 
-            if (! $this->shouldLoadMobileRoutes() || $this->app->routesAreCached() || ! file_exists($path)) {
+            if ($path === false || ! $this->shouldLoadMobileRoutes() || $this->app->routesAreCached()) {
                 return;
             }
 
+            if ($this->appLoadsMobileRoutes($path)) {
+                return;
+            }
+
+            static::$loadedMobileRoutes = $path;
             Route::middleware('web')->group($path);
 
             // Route::native(...)->name(...) names a route after it has been
@@ -444,6 +455,29 @@ class NativeServiceProvider extends PackageServiceProvider
             $routes->refreshNameLookups();
             $routes->refreshActionLookups();
         });
+    }
+
+    /**
+     * An app that already loads routes/mobile.php itself (withRouting, a
+     * `then:` callback, a require from web.php) keeps its own middleware and
+     * prefix, and we stay out of the way. Included files last for the whole
+     * process, and a test suite boots many apps in one, so the file only
+     * counts as the app's if we didn't include it on an earlier boot. Not
+     * handled: an app that loads it itself on some boots but not others.
+     */
+    protected function appLoadsMobileRoutes(string $path): bool
+    {
+        if (static::$loadedMobileRoutes === $path) {
+            return false;
+        }
+
+        foreach (get_included_files() as $file) {
+            if (str_ends_with($file, 'mobile.php') && realpath($file) === $path) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

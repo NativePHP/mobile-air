@@ -97,6 +97,9 @@ Route::native('/', Home::class);
 Route::native('/item/{id}', ItemDetail::class);
 ```
 
+If the app already loads `routes/mobile.php` itself, the package leaves it alone and it isn't gated. Remove that
+registration to get the native-only behaviour.
+
 Inside a `NativeComponent`: `$this->param('id')`, `$this->data('key', 'default')`, `$this->navigate('/item/42')`,
 `$this->back()`, `$this->replace('/login')`, `$this->exitToWeb('/dashboard')`; chain
 `->transition(Transition::SlideFromBottom)` to customize animation. In Blade, `@navigate="/path"` works on any

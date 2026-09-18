@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use Closure;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Support\Providers\RouteServiceProvider;
 use Illuminate\Support\Facades\Route;
 use Native\Mobile\Edge\NativeRouter;
@@ -22,6 +24,16 @@ class MobileRoutesTest extends TestCase
 
     private ?string $routeCache = null;
 
+    /**
+     * A throwaway app root for each test that writes route files. Included
+     * files last for the whole PHP process, so sharing one path would let
+     * one test's include look like the next test's app loading the file.
+     */
+    private ?string $basePath = null;
+
+    /** How the stand-in app route provider loads routes. */
+    private ?Closure $appRoutes = null;
+
     protected function setUp(): void
     {
         $this->argv = $_SERVER['argv'];
@@ -34,8 +46,11 @@ class MobileRoutesTest extends TestCase
 
     protected function tearDown(): void
     {
-        @unlink(base_path('routes/mobile.php'));
-        @unlink(base_path('routes/web.php'));
+        if ($this->basePath !== null) {
+            (new Filesystem)->deleteDirectory($this->basePath);
+        }
+
+        unset($GLOBALS['mobile_routes_requires']);
 
         if ($this->routeCache !== null) {
             @unlink($this->routeCache);
@@ -57,18 +72,26 @@ class MobileRoutesTest extends TestCase
      */
     protected function defineEnvironment($app)
     {
+        if ($this->basePath !== null) {
+            $app->setBasePath($this->basePath);
+        }
+
         // The web middleware group encrypts cookies.
         $app['config']->set('app.key', 'base64:'.base64_encode(random_bytes(32)));
 
-        $app->register(new class($app) extends RouteServiceProvider
+        $routes = $this->appRoutes ?? function () {
+            if (file_exists($web = base_path('routes/web.php'))) {
+                Route::middleware('web')->group($web);
+            }
+        };
+
+        $app->register(new class($app, $routes) extends RouteServiceProvider
         {
-            public function boot(): void
+            public function __construct($app, Closure $routes)
             {
-                $this->routes(function () {
-                    if (file_exists($web = base_path('routes/web.php'))) {
-                        Route::middleware('web')->group($web);
-                    }
-                });
+                parent::__construct($app);
+
+                $this->routes($routes);
             }
         });
     }
@@ -147,6 +170,85 @@ class MobileRoutesTest extends TestCase
         $this->get('/about')->assertOk()->assertSee('website about');
     }
 
+    public function test_it_loads_mobile_routes_again_on_every_boot_in_one_process(): void
+    {
+        $this->bootWithRoutes(mobile: <<<'PHP'
+            <?php
+
+            use Illuminate\Support\Facades\Route;
+            use Tests\Fixtures\Edge\CounterScreen;
+
+            Route::native('/', CounterScreen::class);
+            PHP);
+
+        // From here on the file is already included, as it is for every test
+        // after the first in an app's own test suite.
+        $this->assertContains(realpath(base_path('routes/mobile.php')), get_included_files());
+
+        foreach ([1, 2, 3] as $boot) {
+            if ($boot > 1) {
+                NativeRouter::clearRoutes();
+                $this->refreshApplication();
+            }
+
+            $this->assertSame(CounterScreen::class, NativeRouter::registeredRoutes()['/']['class'] ?? null, "boot {$boot}");
+            $this->assertArrayHasKey('/', $this->app['router']->getRoutes()->getRoutesByMethod()['GET'], "boot {$boot}");
+        }
+    }
+
+    public function test_it_leaves_an_app_that_loads_mobile_routes_itself_alone(): void
+    {
+        $this->appRoutes = function () {
+            Route::middleware(['web', 'auth'])->prefix('app')->group(base_path('routes/mobile.php'));
+        };
+
+        $this->bootWithRoutes(mobile: <<<'PHP'
+            <?php
+
+            use Illuminate\Support\Facades\Route;
+            use Tests\Fixtures\Edge\CounterScreen;
+
+            Route::native('/', CounterScreen::class);
+            PHP);
+
+        $routes = $this->app['router']->getRoutes()->getRoutesByMethod()['GET'];
+
+        $this->assertSame(['web', 'auth'], $routes['app']->gatherMiddleware());
+        $this->assertArrayNotHasKey('/', $routes);
+    }
+
+    public function test_it_does_not_require_mobile_routes_again_when_the_app_already_did(): void
+    {
+        // Declares a function, so a second require in this process would be
+        // fatal. The name is unique per run so the test can repeat.
+        $helper = 'mobile_routes_helper_'.bin2hex(random_bytes(6));
+        $GLOBALS['mobile_routes_requires'] = 0;
+
+        $this->bootWithRoutes(
+            web: <<<'PHP'
+                <?php
+
+                require __DIR__.'/mobile.php';
+                PHP,
+            mobile: str_replace('HELPER', $helper, <<<'PHP'
+                <?php
+
+                use Illuminate\Support\Facades\Route;
+                use Tests\Fixtures\Edge\CounterScreen;
+
+                $GLOBALS['mobile_routes_requires']++;
+
+                function HELPER() {}
+
+                Route::native('/', CounterScreen::class);
+                PHP),
+        );
+
+        $this->assertSame(1, $GLOBALS['mobile_routes_requires']);
+        $this->assertTrue(function_exists($helper));
+        $this->assertArrayHasKey('/', $this->app['router']->getRoutes()->getRoutesByMethod()['GET']);
+    }
+
     public function test_it_stays_off_for_a_website_request(): void
     {
         $this->pretendToBeAWebsite();
@@ -204,17 +306,20 @@ class MobileRoutesTest extends TestCase
     }
 
     /**
-     * Write the given route files, then boot a fresh app so they are loaded
-     * the way a real app loads them.
+     * Write the given route files into a fresh app root, then boot an app
+     * there so they are loaded the way a real app loads them.
      */
     private function bootWithRoutes(?string $web = null, ?string $mobile = null): void
     {
+        $this->basePath = sys_get_temp_dir().'/nativephp-mobile-routes-'.uniqid();
+        mkdir($this->basePath.'/routes', 0755, true);
+
         if ($web !== null) {
-            file_put_contents(base_path('routes/web.php'), $web);
+            file_put_contents($this->basePath.'/routes/web.php', $web);
         }
 
         if ($mobile !== null) {
-            file_put_contents(base_path('routes/mobile.php'), $mobile);
+            file_put_contents($this->basePath.'/routes/mobile.php', $mobile);
         }
 
         NativeRouter::clearRoutes();
