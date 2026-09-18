@@ -337,12 +337,29 @@ class AppUpdateManager {
 
         let kept = env
             .components(separatedBy: .newlines)
-            .filter { !$0.hasPrefix("NATIVEPHP_APP_VERSION=") && !$0.hasPrefix("NATIVEPHP_APP_VERSION_CODE=") }
+            .filter {
+                !$0.hasPrefix("NATIVEPHP_APP_VERSION=")
+                    && !$0.hasPrefix("NATIVEPHP_APP_VERSION_CODE=")
+                    && !$0.hasPrefix("NATIVEPHP_OTA_SHELL_BUILT_AT=")
+                    && !$0.hasPrefix("NATIVEPHP_OTA_SHELL_COMMIT=")
+            }
             .joined(separator: "\n")
 
         env = kept.hasSuffix("\n") ? kept : kept + "\n"
         env += "NATIVEPHP_APP_VERSION=\"\(meta.version)\"\n"
         env += "NATIVEPHP_APP_VERSION_CODE=\(meta.versionCode)\n"
+
+        // The shell's own baseline travels with it, not with the payload: a
+        // lane must not offer an app a release older than the code it shipped
+        // with.
+        if let json = bundleMetaJson() {
+            if let builtAt = json["shell_built_at"] as? String, !builtAt.isEmpty {
+                env += "NATIVEPHP_OTA_SHELL_BUILT_AT=\"\(builtAt)\"\n"
+            }
+            if let commit = json["shell_commit"] as? String, !commit.isEmpty {
+                env += "NATIVEPHP_OTA_SHELL_COMMIT=\"\(commit)\"\n"
+            }
+        }
 
         do {
             try env.write(toFile: envPath, atomically: true, encoding: .utf8)
@@ -850,15 +867,17 @@ class AppUpdateManager {
     /// wrote bundled.version, so that stays as a fallback until every shell in
     /// the field carries the metadata.
     private func bundleMetadata() -> (version: String, versionCode: Int)? {
+        guard let json = bundleMetaJson(), let version = json["version"] as? String else { return nil }
+
+        return (version, (json["version_code"] as? NSNumber)?.intValue ?? 0)
+    }
+
+    private func bundleMetaJson() -> [String: Any]? {
         guard let path = Bundle.main.path(forResource: "bundle_meta", ofType: "json"),
-              let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = json["version"] as? String
+              let data = FileManager.default.contents(atPath: path)
         else { return nil }
 
-        let code = (json["version_code"] as? NSNumber)?.intValue ?? 0
-
-        return (version, code)
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     private func getBundledAppVersionFast() -> String? {

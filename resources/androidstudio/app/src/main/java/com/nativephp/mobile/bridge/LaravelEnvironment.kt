@@ -29,7 +29,11 @@ class LaravelEnvironment(private val context: Context) {
         val version: String?,
         val versionCode: String?,
         val bifrostAppId: String?,
-        val runtimeMode: String?
+        val runtimeMode: String?,
+        // What this shell ships with, so a lane cannot offer it a release that
+        // predates its own code.
+        val shellBuiltAt: String? = null,
+        val shellCommit: String? = null
     )
 
     companion object {
@@ -385,8 +389,10 @@ class LaravelEnvironment(private val context: Context) {
             }
             val bifrostAppId = if (obj.has("bifrost_app_id") && !obj.isNull("bifrost_app_id")) obj.getString("bifrost_app_id") else null
             val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
+            val shellBuiltAt = if (obj.has("shell_built_at") && !obj.isNull("shell_built_at")) obj.getString("shell_built_at") else null
+            val shellCommit = if (obj.has("shell_commit") && !obj.isNull("shell_commit")) obj.getString("shell_commit") else null
             Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, version_code=$versionCode, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
-            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode)
+            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit)
             bundleMetadataCache = metadata
             return metadata
         } catch (e: Exception) {
@@ -713,15 +719,26 @@ class LaravelEnvironment(private val context: Context) {
         }
 
         val kept = envFile.readLines().filterNot {
-            it.startsWith("NATIVEPHP_APP_VERSION=") || it.startsWith("NATIVEPHP_APP_VERSION_CODE=")
+            it.startsWith("NATIVEPHP_APP_VERSION=") ||
+                it.startsWith("NATIVEPHP_APP_VERSION_CODE=") ||
+                it.startsWith("NATIVEPHP_OTA_SHELL_BUILT_AT=") ||
+                it.startsWith("NATIVEPHP_OTA_SHELL_COMMIT=")
         }
 
-        envFile.writeText(
-            (kept + listOf(
-                "NATIVEPHP_APP_VERSION=\"$version\"",
-                "NATIVEPHP_APP_VERSION_CODE=${meta.versionCode ?: "0"}",
-            )).joinToString("\n", postfix = "\n")
+        val restored = mutableListOf(
+            "NATIVEPHP_APP_VERSION=\"$version\"",
+            "NATIVEPHP_APP_VERSION_CODE=${meta.versionCode ?: "0"}",
         )
+
+        // The shell's baseline travels with the shell, not with the payload.
+        meta.shellBuiltAt?.takeIf { it.isNotEmpty() }?.let {
+            restored += "NATIVEPHP_OTA_SHELL_BUILT_AT=\"$it\""
+        }
+        meta.shellCommit?.takeIf { it.isNotEmpty() }?.let {
+            restored += "NATIVEPHP_OTA_SHELL_COMMIT=\"$it\""
+        }
+
+        envFile.writeText((kept + restored).joinToString("\n", postfix = "\n"))
 
         Log.d(TAG, "📝 Restored shell version ${version}b${meta.versionCode ?: "0"} into the payload's .env")
     }
