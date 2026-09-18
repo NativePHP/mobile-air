@@ -50,6 +50,10 @@ class NavScreen extends NativeComponent
             Button::make('Push with transition')->onPress('pushWithTransition'),
             Button::make('Replace with transition')->onPress('replaceWithTransition'),
             Button::make('Push named')->onPress('pushNamed'),
+            Button::make('Direct push')->onPress("navigate('/detail/9')"),
+            Button::make('Direct replace')->onPress("replace('/login')"),
+            Button::make('Direct exit')->onPress("exitToWeb('/settings')"),
+            Button::make('Direct back')->onPress('back'),
         );
     }
 }
