@@ -73,6 +73,9 @@ class LaravelEnvironment(private val context: Context) {
 
         // Directory paths
         private const val DIR_LARAVEL = "laravel"
+        private const val DIR_UPDATES = "updates"
+        private const val PENDING_ZIP = "pending.zip"
+        private const val OTA_MANIFEST = "ota.json"
         private const val DIR_PERSISTED = "persisted_data"
         private const val DIR_STORAGE = "persisted_data/storage"
         private const val DIR_FRAMEWORK = "persisted_data/storage/framework"
@@ -237,26 +240,17 @@ class LaravelEnvironment(private val context: Context) {
         val laravelDir = File(appStorageDir, DIR_LARAVEL)
         val otaMarkerFile = File(laravelDir, OTA_MARKER)
 
-        // Check if OTA is configured in both bundled and extracted versions
-        val bundledBifrostId = getBifrostAppId()
-        val extractedBifrostId = getBifrostAppIdFromExtracted()
-        val isBundledOtaConfigured = !bundledBifrostId.isNullOrEmpty()
-        val isExtractedOtaConfigured = !extractedBifrostId.isNullOrEmpty()
-
-        // If OTA marker exists but bundled version no longer has OTA configured, remove marker and force extraction
-        if (otaMarkerFile.exists() && !isBundledOtaConfigured) {
-            val otaVersion = otaMarkerFile.readText().trim()
-            Log.d(TAG, "🔄 OTA removed from bundled version, rolling back from OTA version $otaVersion to bundled version")
-            Log.d(TAG, "🔍 Bundled BIFROST_APP_ID: '$bundledBifrostId', Extracted BIFROST_APP_ID: '$extractedBifrostId'")
-            otaMarkerFile.delete()
-            // Continue with extraction to rollback to bundled version
-        }
-        // If OTA marker exists and bundled version still has OTA configured, skip extraction
-        else if (otaMarkerFile.exists() && isBundledOtaConfigured) {
-            val otaVersion = otaMarkerFile.readText().trim()
-            Log.d(TAG, "✅ OTA update version $otaVersion is active, skipping bundle extraction")
-            return false
-        }
+        // Two questions, in this order, and neither may answer the other:
+        //
+        //   1. Which shell am I? The baked bundle against .version. A store
+        //      update means new native code, so its payload must win — an OTA
+        //      applied to the previous shell belongs to a fingerprint that no
+        //      longer describes this app.
+        //   2. Which release am I? A payload queued by the OTA client, which
+        //      applies on top of the shell it was fetched for.
+        //
+        // The OTA marker used to short-circuit step 1 entirely, so a store
+        // update silently kept running OTA'd code from the shell before it.
 
         // Build composite "version+b+versionCode" identity from bundle metadata.
         // This is what we compare against the extracted .env so a build-number-only
@@ -303,7 +297,9 @@ class LaravelEnvironment(private val context: Context) {
 
         if (!shouldExtract) {
             Log.d(TAG, "✅ Laravel already up to date (id $embeddedId)")
-            return false
+
+            // Same shell as last boot, so a queued payload is still meant for it.
+            return applyPendingUpdate(laravelDir, otaMarkerFile)
         }
 
         Log.d(TAG, "📦 Extracting Laravel bundle — current: ${currentId ?: "none"}, embedded: $embeddedId")
@@ -333,10 +329,13 @@ class LaravelEnvironment(private val context: Context) {
             val zipStream = context.assets.open(BUNDLE_ZIP)
             unzip(zipStream, laravelDir)
 
-            // Remove OTA marker if it exists (we're back to bundled version)
+            // Back to the bundled shell: the marker and any queued payload
+            // describe the previous one, and a payload built against a
+            // fingerprint this shell no longer has must never be applied.
             if (otaMarkerFile.exists()) {
                 otaMarkerFile.delete()
             }
+            File(File(appStorageDir, DIR_UPDATES), PENDING_ZIP).delete()
 
             // Record WHAT WAS JUST EXTRACTED: the embedded composite, verbatim.
             // Recomputing from the extracted .env loses the version code (no
@@ -679,6 +678,67 @@ class LaravelEnvironment(private val context: Context) {
             }
             
             false
+        }
+    }
+
+    /**
+     * Apply a payload the OTA client queued at app_storage/updates/pending.zip,
+     * on top of the shell this boot already established. Returns true when one
+     * was applied, so callers can run the post-extraction artisan commands.
+     *
+     * Exactly one name is read. Scanning the directory for any zip would let a
+     * leftover download — fetched for a shell that has since been replaced —
+     * install itself over the app.
+     */
+    private fun applyPendingUpdate(laravelDir: File, otaMarkerFile: File): Boolean {
+        val pendingZip = File(File(appStorageDir, DIR_UPDATES), PENDING_ZIP)
+
+        if (!pendingZip.isFile) {
+            return false
+        }
+
+        Log.d(TAG, "📦 Applying queued OTA payload (${pendingZip.length()} bytes)")
+
+        return try {
+            // The payload replaces the app tree; persisted_data is a sibling
+            // and is never touched, so databases and storage survive.
+            if (laravelDir.exists()) {
+                Runtime.getRuntime().exec(arrayOf("rm", "-rf", laravelDir.absolutePath)).waitFor()
+            }
+            laravelDir.mkdirs()
+
+            pendingZip.inputStream().use { unzip(it, laravelDir) }
+
+            // The payload says which release it is; record it so the client can
+            // report what the device holds without unpacking anything.
+            val release = readReleaseUuid(File(laravelDir, OTA_MANIFEST))
+            if (release != null) {
+                otaMarkerFile.writeText(release)
+            }
+
+            pendingZip.delete()
+            Log.d(TAG, "✅ OTA payload applied${release?.let { " (release $it)" } ?: ""}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to apply queued OTA payload", e)
+            // Leave the zip alone: a half-written app is worse than a retry, and
+            // the next boot re-extracts the bundled shell if this one is broken.
+            false
+        }
+    }
+
+    /** release_uuid out of the payload's ota.json, or null when it carries none. */
+    private fun readReleaseUuid(manifest: File): String? {
+        if (!manifest.isFile) {
+            return null
+        }
+
+        return try {
+            val uuid = org.json.JSONObject(manifest.readText()).optString("release_uuid")
+            uuid.ifEmpty { null }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read ${manifest.name}: ${e.message}")
+            null
         }
     }
 

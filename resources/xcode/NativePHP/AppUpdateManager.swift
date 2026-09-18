@@ -274,26 +274,32 @@ class AppUpdateManager {
     private func isValidApp(at path: String) -> Bool {
         let envFile = path + "/.env"
         let vendorDir = path + "/vendor"
-        let bootstrapFile = path + "/vendor/nativephp/mobile-lite/bootstrap/ios/native.php"
+        // The package was renamed from mobile-lite to mobile, and this kept
+        // the old path — so every payload failed validation and was deleted,
+        // and an OTA could never apply. A bundle built before the rename is
+        // still a valid app, so both names are accepted.
+        let bootstraps = [
+            path + "/vendor/nativephp/mobile/bootstrap/ios/native.php",
+            path + "/vendor/nativephp/mobile-lite/bootstrap/ios/native.php",
+        ]
 
         return FileManager.default.fileExists(atPath: envFile) &&
                FileManager.default.fileExists(atPath: vendorDir) &&
-               FileManager.default.fileExists(atPath: bootstrapFile)
+               bootstraps.contains(where: { FileManager.default.fileExists(atPath: $0) })
     }
 
     @discardableResult
     private func applyPendingUpdates() -> Bool {
-        let updateFiles = (try? FileManager.default.contentsOfDirectory(atPath: updatesPath)) ?? []
-        let zipFiles = updateFiles.filter { $0.hasSuffix(".zip") }
+        // One queued payload, at one known name. Scanning for any zip would
+        // let a leftover download — fetched for a shell that has since been
+        // replaced — install itself over the app.
+        let pendingPath = updatesPath + "/pending.zip"
 
-        for zipFile in zipFiles {
-            let zipPath = updatesPath + "/" + zipFile
-            if installUpdate(from: zipPath) {
-                // Only install one update at a time
-                return true
-            }
+        guard FileManager.default.fileExists(atPath: pendingPath) else {
+            return false
         }
-        return false
+
+        return installUpdate(from: pendingPath)
     }
 
     private func cleanupOldBackups() {
