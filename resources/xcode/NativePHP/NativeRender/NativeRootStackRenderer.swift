@@ -356,17 +356,32 @@ private struct StackBottomBarInsetModifier: ViewModifier {
             // the input floats mid-screen over a giant empty bar, and on the
             // `.safeAreaBar` path the bar's scroll-edge effect then dims the
             // whole content region behind it.
+            //
+            // The `#if` keeps `.safeAreaBar` out of the compilation entirely
+            // on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+            // `LiquidGlassAvailability.swift`.
+            #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 content.safeAreaBar(edge: .bottom) {
                     barContent(inner)
                 }
             } else {
-                content.safeAreaInset(edge: .bottom, spacing: 0) {
-                    barContent(inner)
-                }
+                fallback(content, inner)
             }
+            #else
+            fallback(content, inner)
+            #endif
         } else {
             content
+        }
+    }
+
+    /// Pre-26 placement: a plain bottom safe-area inset, no floating glass
+    /// bar primitive.
+    @ViewBuilder
+    private func fallback(_ content: Content, _ inner: NativeUINode) -> some View {
+        content.safeAreaInset(edge: .bottom, spacing: 0) {
+            barContent(inner)
         }
     }
 
@@ -452,13 +467,22 @@ private struct NavigationSubtitleModifier: ViewModifier {
     let subtitle: String
     let showsAsPrincipal: Bool
 
+    /// The `#if` keeps `.navigationSubtitle` out of the compilation entirely
+    /// on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+    /// `LiquidGlassAvailability.swift`.
     func body(content: Content) -> some View {
         if subtitle.isEmpty || showsAsPrincipal {
             content
-        } else if #available(iOS 26.0, *) {
-            content.navigationSubtitle(subtitle)
         } else {
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                content.navigationSubtitle(subtitle)
+            } else {
+                content
+            }
+            #else
             content
+            #endif
         }
     }
 }
