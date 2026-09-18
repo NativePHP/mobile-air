@@ -6,16 +6,20 @@ data class PHPRequest(
     val body: String = "",
     val headers: Map<String, String> = emptyMap(),
     val getParameters: Map<String, String> = emptyMap(),
+    val queryString: String = "",
     val postParameters: Map<String, String> = emptyMap(),
     val cookies: Map<String, String> = emptyMap()
 ) {
     val uri: String
         get() {
-            val queryString = if (getParameters.isNotEmpty()) {
-                "?" + getParameters.entries.joinToString("&") { (key, value) ->
+            return if (queryString.isNotBlank()) {
+                "$url?$queryString"
+            } else if (getParameters.isNotEmpty()) {
+                "$url?" + getParameters.entries.joinToString("&") { (key, value) ->
                     "$key=$value"
                 }
-            } else ""
-            return url + queryString
+            } else {
+                url
+            }
         }
 }

@@ -3,8 +3,7 @@
 namespace Native\Mobile\Commands;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\GuzzleException;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Console\Command;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAndroid;
@@ -309,18 +308,17 @@ class InstallCommand extends Command
                 (new Client)->get($versionsUrl)->getBody()->getContents(),
                 true
             );
-        } catch (GuzzleException $e) {
-            // GuzzleException rather than RequestException, because
-            // ConnectException extends TransferException directly: an
-            // unresolvable host, a refused connection or a TLS error is not a
-            // RequestException, and used to escape here as a stack trace.
-            //
-            // A 404 is still worth separating out. The manifest is named for the
-            // binary release this package pins, so a missing one means that
-            // release was withdrawn — not that the CDN is down. Say which,
-            // because the fixes are completely different. Only a RequestException
-            // carries a response to ask about.
-            if ($e instanceof RequestException && $e->getResponse()?->getStatusCode() === 404) {
+        } catch (TransferException $e) {
+            // A 404 here is specific: the manifest is named for the binary
+            // release this package pins, so a missing one means that release
+            // was withdrawn — not that the CDN is down. Say which, because the
+            // fixes are completely different.
+            // method_exists() keeps this working on both Guzzle 7 (where the
+            // response lives on RequestException) and Guzzle 8 (where only
+            // the ResponseException branch exposes getResponse()).
+            $statusCode = method_exists($e, 'getResponse') ? $e->getResponse()?->getStatusCode() : null;
+
+            if ($statusCode === 404) {
                 $this->failInstall(sprintf(
                     'PHP binaries release %s is no longer published.'
                     ."\n".'Update nativephp/mobile to a version that pins a current release:'

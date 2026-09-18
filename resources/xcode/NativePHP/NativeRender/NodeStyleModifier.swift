@@ -4,7 +4,7 @@ import UIKit
 // MARK: - Node Style Modifier
 
 /// Applies visual style properties from a NativeUINode to a SwiftUI view.
-/// Handles background color, corner radius, border, shadow, opacity,
+/// Handles background color, corner radius, border, shadow, glow, blur, opacity,
 /// and dark mode overrides from dark_* props.
 struct NodeStyleModifier: ViewModifier {
     let style: NodeStyle?
@@ -46,6 +46,15 @@ struct NodeStyleModifier: ViewModifier {
             // a tint — that's what you want for `bg-red-500 glass` to
             // produce tinted glass.
             .background(backgroundFill(dark: dark))
+            // Corner clip BEFORE the glass. `.glassEffect(...)` renders into
+            // its own effect layer and a `.clipShape` applied downstream of it
+            // no longer reaches the view's own drawing: the glass plate came
+            // out correctly rounded while the `bg-*` fill stayed a hard
+            // rectangle. Verified on device — `rounded-full glass` drew a
+            // circular plate behind a square fill. Clipping first rounds the
+            // background and content; the glass below still takes its own
+            // shape from the same radii, so tinted glass is unchanged.
+            .modifier(ClipRadiusModifier(radius: radius, radii: radii))
             // Liquid Glass material — iOS 26+ real glass, iOS 18-25 falls
             // back to `.regularMaterial`. Applied AFTER background so the
             // optional bg color tints through. Shape inferred from the
@@ -56,14 +65,23 @@ struct NodeStyleModifier: ViewModifier {
                 cornerRadius: radius,
                 cornerRadii: radii
             ))
-            .modifier(ClipRadiusModifier(radius: radius, radii: radii))
             .overlay(borderOverlay(dark: dark, radius: radius))
+            // Elevation `shadow-*` — black, y-offset cast (unchanged).
             .shadow(
                 color: shadowColor,
                 radius: shadowRadius,
                 x: 0,
                 y: shadowY
             )
+            // Colored `glow-*` — stacked zero-offset halos (Slice 1).
+            .modifier(GlowShadowModifier(
+                color: glowColor,
+                radius: glowRadius,
+                opacity: glowOpacity
+            ))
+            // Tailwind `blur-*` — Gaussian softens the node's own pixels
+            // (page-bg orbs). Props-bag radius in points; no-op at 0.
+            .modifier(BlurFilterModifier(radius: blurRadius))
             .opacity(opacity)
     }
 
@@ -193,6 +211,32 @@ struct NodeStyleModifier: ViewModifier {
         return .black.opacity(0.25)
     }
 
+    // MARK: - Glow
+
+    /// Soft colored halo from `glow-*` utilities / `glowColor` EDGE props.
+    /// Distinct from elevation — zero offset, stacked twice for density.
+    private var glowColor: Color {
+        // default:0 → transparent sentinel; glow is opt-in.
+        let argb = props.getColor("glow_color", default: 0)
+        return colorFromARGB(argb)
+    }
+
+    private var glowRadius: CGFloat {
+        CGFloat(props.getFloat("glow_radius", default: 0))
+    }
+
+    private var glowOpacity: Double {
+        Double(props.getFloat("glow_opacity", default: 0))
+    }
+
+    // MARK: - Blur
+
+    /// Gaussian blur radius from `blur-*` / `blur-[Npx]` / `blur` EDGE prop.
+    /// Distinct from glow (halo) and elevation shadow (depth cast).
+    private var blurRadius: CGFloat {
+        CGFloat(props.getFloat("blur", default: 0))
+    }
+
     // MARK: - Opacity
 
     private func resolvedOpacity(dark: Bool) -> Double {
@@ -214,6 +258,45 @@ func colorFromARGB(_ argb: Int) -> Color {
     let g = Double((v >> 8) & 0xFF) / 255.0
     let b = Double(v & 0xFF) / 255.0
     return Color(.sRGB, red: r, green: g, blue: b, opacity: a)
+}
+
+/// Stacks two zero-offset colored shadows for a soft `glow-*` halo.
+/// Applied only when a glow color + positive radius are present; no-ops
+/// otherwise so elevation `shadow-*` stays the sole cast when unused.
+private struct GlowShadowModifier: ViewModifier {
+    let color: Color
+    let radius: CGFloat
+    let opacity: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if radius > 0, opacity > 0 {
+            // Two stacked zero-offset shadows: outer (full radius, softer)
+            // and inner (half radius, denser). Both x:0,y:0 so the halo sits
+            // centered on the view rather than casting like elevation.
+            content
+                .shadow(color: color.opacity(opacity * 0.55), radius: radius, x: 0, y: 0)
+                .shadow(color: color.opacity(opacity), radius: max(radius * 0.5, 1), x: 0, y: 0)
+        } else {
+            content
+        }
+    }
+}
+
+/// Applies SwiftUI `.blur(radius:)` when `blur-*` set a positive radius.
+/// Softens the node's own pixels (filled shapes become soft orbs); layout
+/// bounds are unchanged — bloom paints outside the frame like CSS filter.
+private struct BlurFilterModifier: ViewModifier {
+    let radius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if radius > 0 {
+            content.blur(radius: radius)
+        } else {
+            content
+        }
+    }
 }
 
 /// Only clips when corner radius > 0. A zero-radius clipShape clips to a sharp

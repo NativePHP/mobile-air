@@ -3,7 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
@@ -192,13 +192,7 @@ trait InstallsAndroid
                         ]);
 
                         return true;
-                    } catch (GuzzleException $e) {
-                        // GuzzleException, not RequestException: ConnectException
-                        // extends TransferException directly, so a DNS failure, a
-                        // refused connection or a TLS error is not a
-                        // RequestException and escaped this catch as an unhandled
-                        // exception with a stack trace.
-                        //
+                    } catch (TransferException $e) {
                         // Remove any partial/error response written to disk
                         if (file_exists($zipFile)) {
                             unlink($zipFile);
@@ -214,7 +208,7 @@ trait InstallsAndroid
                         throw $e;
                     }
                 });
-            } catch (GuzzleException) {
+            } catch (TransferException) {
                 // Already reported by the task line; the message is below.
             }
 

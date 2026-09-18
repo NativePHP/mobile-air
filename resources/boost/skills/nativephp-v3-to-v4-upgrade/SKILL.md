@@ -175,7 +175,7 @@ These cost the most time. All verified from renderer source.
    the image overflows every sibling below it. Put `aspect-[3/4]` on the stack and give the image
    `w-full h-full`.
 5. **Unsupported Tailwind classes are dropped in silence.** Verify before assuming:
-   `TailwindParser::parse('the-class')` returning `[]` means unsupported. Known gaps: `blur-*`,
+   `TailwindParser::parse('the-class')` returning `[]` means unsupported. Known gaps:
    `scale-*`, per-corner radii (`rounded-t-xl` — only uniform keys parse), `max-w-*` / `min-w-*`.
    Gradients (`bg-gradient-to-*` / `bg-linear-to-*` with `from`/`via`/`to`) and `inset-*` ARE
    supported as of 2026-07.
