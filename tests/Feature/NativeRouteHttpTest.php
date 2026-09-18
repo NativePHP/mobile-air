@@ -1,7 +1,13 @@
 <?php
 
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
+use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Text;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\ChromeTabsLayout;
@@ -61,7 +67,7 @@ it('keeps a layout set on a prefixed route under the same key', function () {
         Route::native('/settings', CounterScreen::class)->layout(ChromeTabsLayout::class);
     });
 
-    expect(NativeRouter::registeredRoutes())->toBe([
+    expect(registeredRouteSummaries())->toBe([
         '/app/settings' => ['class' => CounterScreen::class, 'layout' => ChromeTabsLayout::class],
     ]);
 });
@@ -97,9 +103,63 @@ it('registers routes outside a prefix exactly as before', function () {
     Route::native('/settings', CounterScreen::class)->layout(ChromeTabsLayout::class);
     Route::native('items/{id}', DetailScreen::class);
 
-    expect(NativeRouter::registeredRoutes())->toBe([
+    expect(registeredRouteSummaries())->toBe([
         '/' => ['class' => CounterScreen::class, 'layout' => null],
         '/settings' => ['class' => CounterScreen::class, 'layout' => ChromeTabsLayout::class],
         '/items/{id}' => ['class' => DetailScreen::class, 'layout' => null],
     ])->and(NativeRouter::resolve('/items/9')['params'] ?? null)->toBe(['id' => '9']);
 });
+
+it('resolves route parameters from the normalized path in subdirectory deployments', function () {
+    Route::native('/native-subdir/{id}', SubdirectoryParamScreen::class);
+    Native::fakeBridge();
+
+    $originalEnvironment = app()->environment();
+    app()->instance('env', 'production');
+
+    $request = Request::create(
+        'http://localhost/subdirectory/native-subdir/42?tab=details',
+        'GET',
+        server: [
+            'SCRIPT_NAME' => '/subdirectory/index.php',
+            'SCRIPT_FILENAME' => '/var/www/public/index.php',
+            'PHP_SELF' => '/subdirectory/index.php',
+        ],
+    );
+
+    $kernel = app(Kernel::class);
+
+    try {
+        $response = $kernel->handle($request);
+        $kernel->terminate($request, $response);
+    } finally {
+        app()->instance('env', $originalEnvironment);
+    }
+
+    expect(SubdirectoryParamScreen::$mountedId)->toBe('42');
+});
+
+class SubdirectoryParamScreen extends NativeComponent
+{
+    public static string $mountedId = '';
+
+    public function mount(string $id = 'missing'): void
+    {
+        static::$mountedId = $id;
+        $this->exitToWeb('/done');
+    }
+
+    public function render(): Element
+    {
+        return Column::make(Text::make('Subdirectory route'));
+    }
+}
+
+/** Registered routes without the retained Illuminate route, for exact comparisons. */
+function registeredRouteSummaries(): array
+{
+    return array_map(
+        fn (array $entry) => ['class' => $entry['class'], 'layout' => $entry['layout']],
+        NativeRouter::registeredRoutes(),
+    );
+}

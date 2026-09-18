@@ -397,9 +397,10 @@ class NativeServiceProvider extends PackageServiceProvider
                 return '';
             });
 
-            // Register under the route's own URI, which includes any group
-            // prefix. It's also the key ->layout() looks up.
-            NativeRouter::register($route->uri(), $componentClass);
+            // Register the route itself so native navigation shares its
+            // constraints and binders. Its URI includes any group prefix, and
+            // is also the key ->layout() looks up.
+            NativeRouter::register($route, $componentClass);
 
             return $route;
         });
