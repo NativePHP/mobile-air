@@ -39,8 +39,13 @@ class AppUpdateManager {
             didExtract = true
         }
 
+        if didExtract {
+            clearCompiledCaches()
+        }
+
         // Check for and apply any pending updates
         if applyPendingUpdates() {
+            clearCompiledCaches()
             didExtract = true
         }
 
@@ -269,6 +274,48 @@ class AppUpdateManager {
             try? FileManager.default.removeItem(atPath: extractPath)
             return false
         }
+    }
+
+    /// Compiled Blade views and the bootstrap cache live in Application
+    /// Support, which deliberately survives the app directory being replaced —
+    /// that is where the database lives. But they describe the code that was
+    /// there before, so after any extraction they are stale: a template the
+    /// update changed keeps rendering from the old compiled copy.
+    ///
+    /// Cleared here rather than through `artisan view:clear`, because
+    /// extraction happens before the PHP runtime exists.
+    private func clearCompiledCaches() {
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+
+        guard let appSupport else { return }
+
+        let caches = [
+            appSupport.appendingPathComponent("storage/framework/views"),
+            appSupport.appendingPathComponent("storage/framework/cache/data"),
+        ]
+
+        for cache in caches {
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: cache, includingPropertiesForKeys: nil
+            ) else { continue }
+
+            for entry in entries {
+                try? FileManager.default.removeItem(at: entry)
+            }
+        }
+
+        // The app's own bootstrap cache ships inside the payload, so it goes
+        // with the directory — but a config cache left behind would pin the
+        // previous release's environment.
+        let bootstrapCache = URL(fileURLWithPath: appPath).appendingPathComponent("bootstrap/cache")
+        if let entries = try? FileManager.default.contentsOfDirectory(at: bootstrapCache, includingPropertiesForKeys: nil) {
+            for entry in entries where entry.lastPathComponent.hasSuffix(".php") {
+                try? FileManager.default.removeItem(at: entry)
+            }
+        }
+
+        print("🧹 Cleared compiled caches after extraction")
     }
 
     private func isValidApp(at path: String) -> Bool {

@@ -343,6 +343,7 @@ class LaravelEnvironment(private val context: Context) {
             // staleness check compared against "…b1" — a permanent
             // re-extraction loop.
             File(laravelDir, VERSION_FILE).writeText(embeddedId)
+            clearCompiledCaches()
             Log.d(TAG, "✅ Updated .version file to: $embeddedId")
 
             Log.d(TAG, "✅ Extraction complete to ${laravelDir.absolutePath}")
@@ -682,6 +683,38 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     /**
+     * Compiled Blade views and the framework cache live under persisted_data,
+     * which deliberately survives the laravel directory being replaced — that
+     * is where the database lives. They describe the code that was there
+     * before, though, so after any extraction they are stale: a template the
+     * update changed keeps rendering from its old compiled copy.
+     *
+     * Cleared from Kotlin rather than through `artisan view:clear`, because
+     * extraction happens before PHP is available.
+     */
+    private fun clearCompiledCaches() {
+        val stale = listOf(
+            File(appStorageDir, DIR_VIEWS),
+            File(appStorageDir, "$DIR_CACHE/data"),
+            File(File(appStorageDir, DIR_LARAVEL), "bootstrap/cache"),
+        )
+
+        var removed = 0
+        for (dir in stale) {
+            dir.listFiles()?.forEach { entry ->
+                if (entry.isFile && entry.delete()) {
+                    removed++
+                } else if (entry.isDirectory) {
+                    entry.deleteRecursively()
+                    removed++
+                }
+            }
+        }
+
+        Log.d(TAG, "🧹 Cleared $removed compiled cache entries after extraction")
+    }
+
+    /**
      * Apply a payload the OTA client queued at app_storage/updates/pending.zip,
      * on top of the shell this boot already established. Returns true when one
      * was applied, so callers can run the post-extraction artisan commands.
@@ -717,6 +750,7 @@ class LaravelEnvironment(private val context: Context) {
             }
 
             pendingZip.delete()
+            clearCompiledCaches()
             Log.d(TAG, "✅ OTA payload applied${release?.let { " (release $it)" } ?: ""}")
             true
         } catch (e: Exception) {
