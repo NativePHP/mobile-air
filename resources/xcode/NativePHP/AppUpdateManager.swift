@@ -260,6 +260,9 @@ class AppUpdateManager {
             // Move new app into place
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
 
+            restoreShellVersion()
+            mergePendingManifest()
+
             if let installedVersion, !installedVersion.isEmpty {
                 try? installedVersion.write(
                     toFile: appPath + "/installed.version", atomically: true, encoding: .utf8
@@ -308,6 +311,77 @@ class AppUpdateManager {
     ///
     /// Cleared here rather than through `artisan view:clear`, because
     /// extraction happens before the PHP runtime exists.
+    /// A payload ships the whole Laravel .env, and it deliberately carries no
+    /// app version: which shell this is belongs to the shell. The values are
+    /// written back from bundle_meta so the running app reports the version it
+    /// was installed as, and so the identity check keeps matching.
+    ///
+    /// Dotenv is immutable — the first definition of a key wins — so existing
+    /// lines are removed rather than appended after.
+    ///
+    /// When the metadata cannot be read, nothing is written: the app then has
+    /// no version, which reads as DEBUG and re-extracts the bundle every
+    /// launch. A slow boot beats running a payload we cannot identify.
+    private func restoreShellVersion() {
+        guard let meta = bundleMetadata() else {
+            print("⚠️ No bundle metadata — leaving the payload without a version")
+            return
+        }
+
+        let envPath = appPath + "/.env"
+
+        guard var env = try? String(contentsOfFile: envPath, encoding: .utf8) else {
+            print("⚠️ No .env in the payload to restore the version into")
+            return
+        }
+
+        let kept = env
+            .components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("NATIVEPHP_APP_VERSION=") && !$0.hasPrefix("NATIVEPHP_APP_VERSION_CODE=") }
+            .joined(separator: "\n")
+
+        env = kept.hasSuffix("\n") ? kept : kept + "\n"
+        env += "NATIVEPHP_APP_VERSION=\"\(meta.version)\"\n"
+        env += "NATIVEPHP_APP_VERSION_CODE=\(meta.versionCode)\n"
+
+        do {
+            try env.write(toFile: envPath, atomically: true, encoding: .utf8)
+            print("📝 Restored shell version \(meta.version)b\(meta.versionCode) into the payload's .env")
+        } catch {
+            print("❌ Could not restore the shell version: \(error)")
+        }
+    }
+
+    /// What the server said about the release, written beside the download by
+    /// the OTA client and moved in here so the installed payload carries the
+    /// checksum and publish time alongside what the build already described.
+    private func mergePendingManifest() {
+        let pendingManifest = updatesPath + "/pending.json"
+
+        guard let data = FileManager.default.contents(atPath: pendingManifest),
+              let server = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        let manifestPath = appPath + "/ota.json"
+        var merged: [String: Any] = [:]
+
+        if let existing = FileManager.default.contents(atPath: manifestPath),
+           let built = try? JSONSerialization.jsonObject(with: existing) as? [String: Any] {
+            merged = built
+        }
+
+        for (key, value) in server where key != "download_url" {
+            merged[key] = value
+        }
+
+        if let out = try? JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: URL(fileURLWithPath: manifestPath))
+            print("📌 Recorded release \(merged["release_uuid"] as? String ?? "?") from the server's answer")
+        }
+
+        try? FileManager.default.removeItem(atPath: pendingManifest)
+    }
+
     private func clearCompiledCaches() {
         let appSupport = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -771,9 +845,32 @@ class AppUpdateManager {
 
     // MARK: - Fast Version Checking
 
+    /// version + version_code out of bundle_meta.json — the one identity file
+    /// both platforms write and read. Android has only ever had this; iOS also
+    /// wrote bundled.version, so that stays as a fallback until every shell in
+    /// the field carries the metadata.
+    private func bundleMetadata() -> (version: String, versionCode: Int)? {
+        guard let path = Bundle.main.path(forResource: "bundle_meta", ofType: "json"),
+              let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = json["version"] as? String
+        else { return nil }
+
+        let code = (json["version_code"] as? NSNumber)?.intValue ?? 0
+
+        return (version, code)
+    }
+
     private func getBundledAppVersionFast() -> String? {
+        if let meta = bundleMetadata() {
+            let id = meta.version.uppercased() == "DEBUG" ? "DEBUG" : "\(meta.version)b\(meta.versionCode)"
+            print("🔢 Got bundled version from bundle_meta.json: \(id)")
+
+            return id
+        }
+
         guard let bundlePath = Bundle.main.path(forResource: "bundled", ofType: "version") else {
-            print("❌ No bundled.version file found")
+            print("❌ No bundle_meta.json or bundled.version file found")
             return nil
         }
 

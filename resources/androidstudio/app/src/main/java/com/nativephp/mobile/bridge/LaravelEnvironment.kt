@@ -75,6 +75,7 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_LARAVEL = "laravel"
         private const val DIR_UPDATES = "updates"
         private const val PENDING_ZIP = "pending.zip"
+        private const val PENDING_MANIFEST = "pending.json"
         private const val OTA_MANIFEST = "ota.json"
         private const val DIR_PERSISTED = "persisted_data"
         private const val DIR_STORAGE = "persisted_data/storage"
@@ -683,6 +684,85 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     /**
+     * A payload ships the whole Laravel .env, and it deliberately carries no
+     * app version: which shell this is belongs to the shell. The values are
+     * written back from bundle_meta.json so the running app reports the version
+     * it was installed as, and so the identity check keeps matching.
+     *
+     * Dotenv is immutable — the first definition of a key wins — so existing
+     * lines are removed rather than appended after.
+     *
+     * When the metadata cannot be read, nothing is written: the app then has no
+     * version, which reads as DEBUG and re-extracts the bundle every launch. A
+     * slow boot beats running a payload we cannot identify.
+     */
+    private fun restoreShellVersion(laravelDir: File) {
+        val meta = readBundleMetadata()
+        val version = meta.version
+
+        if (version.isNullOrEmpty()) {
+            Log.w(TAG, "⚠️ No bundle metadata — leaving the payload without a version")
+            return
+        }
+
+        val envFile = File(laravelDir, ENV_FILE)
+
+        if (!envFile.isFile) {
+            Log.w(TAG, "⚠️ No .env in the payload to restore the version into")
+            return
+        }
+
+        val kept = envFile.readLines().filterNot {
+            it.startsWith("NATIVEPHP_APP_VERSION=") || it.startsWith("NATIVEPHP_APP_VERSION_CODE=")
+        }
+
+        envFile.writeText(
+            (kept + listOf(
+                "NATIVEPHP_APP_VERSION=\"$version\"",
+                "NATIVEPHP_APP_VERSION_CODE=${meta.versionCode ?: "0"}",
+            )).joinToString("\n", postfix = "\n")
+        )
+
+        Log.d(TAG, "📝 Restored shell version ${version}b${meta.versionCode ?: "0"} into the payload's .env")
+    }
+
+    /**
+     * What the server said about the release, written beside the download by the
+     * OTA client and moved in here so the installed payload carries the checksum
+     * and publish time alongside what the build already described.
+     */
+    private fun mergePendingManifest(laravelDir: File) {
+        val pendingManifest = File(File(appStorageDir, DIR_UPDATES), PENDING_MANIFEST)
+
+        if (!pendingManifest.isFile) {
+            return
+        }
+
+        try {
+            val server = org.json.JSONObject(pendingManifest.readText())
+            val manifestFile = File(laravelDir, OTA_MANIFEST)
+            val merged = if (manifestFile.isFile) {
+                org.json.JSONObject(manifestFile.readText())
+            } else {
+                org.json.JSONObject()
+            }
+
+            for (key in server.keys()) {
+                if (key != "download_url") {
+                    merged.put(key, server.get(key))
+                }
+            }
+
+            manifestFile.writeText(merged.toString(2))
+            Log.d(TAG, "📌 Recorded release ${merged.optString("release_uuid", "?")} from the server's answer")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not merge the server's release manifest: ${e.message}")
+        } finally {
+            pendingManifest.delete()
+        }
+    }
+
+    /**
      * Compiled Blade views and the framework cache live under persisted_data,
      * which deliberately survives the laravel directory being replaced — that
      * is where the database lives. They describe the code that was there
@@ -744,6 +824,9 @@ class LaravelEnvironment(private val context: Context) {
 
             // The payload says which release it is; record it so the client can
             // report what the device holds without unpacking anything.
+            restoreShellVersion(laravelDir)
+            mergePendingManifest(laravelDir)
+
             val release = readReleaseUuid(File(laravelDir, OTA_MANIFEST))
             if (release != null) {
                 otaMarkerFile.writeText(release)
