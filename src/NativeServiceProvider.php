@@ -415,6 +415,51 @@ class NativeServiceProvider extends PackageServiceProvider
 
             return $this;
         });
+
+        $this->loadMobileRoutes();
+    }
+
+    /**
+     * Load the app's native screens from `routes/mobile.php`.
+     *
+     * Deferred to booted() so it registers after the app's own route files,
+     * which load while the app's route provider boots. A later route with the
+     * same method and URI replaces the earlier one, so a native screen at `/`
+     * takes over from a website's `/` in web.php.
+     */
+    protected function loadMobileRoutes(): void
+    {
+        $this->app->booted(function () {
+            $path = base_path('routes/mobile.php');
+
+            if (! $this->shouldLoadMobileRoutes() || $this->app->routesAreCached() || ! file_exists($path)) {
+                return;
+            }
+
+            Route::middleware('web')->group($path);
+
+            // Route::native(...)->name(...) names a route after it has been
+            // added, so rebuild the lookups like the app's route provider does.
+            $routes = $this->app['router']->getRoutes();
+            $routes->refreshNameLookups();
+            $routes->refreshActionLookups();
+        });
+    }
+
+    /**
+     * Native routes are only registered where something native will use them,
+     * because the same app can also be deployed as a plain website. That means
+     * on device, in tests, in a Jump session (the device boots from this
+     * machine's server) and in native:* commands (builds bake the routes into
+     * bundle_meta.json, native:watch lists them). Not any console command:
+     * `route:cache` on a web server would bake them into its route cache.
+     */
+    protected function shouldLoadMobileRoutes(): bool
+    {
+        return (bool) config('nativephp-internal.running')
+            || $this->app->runningUnitTests()
+            || getenv('JUMP_BRIDGE_PORT') !== false
+            || ($this->app->runningInConsole() && str_starts_with($_SERVER['argv'][1] ?? '', 'native:'));
     }
 
     protected function registerBladeDirectives(): void

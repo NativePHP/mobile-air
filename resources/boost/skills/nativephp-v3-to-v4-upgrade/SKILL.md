@@ -79,8 +79,10 @@ Produce three docs (parallel agents if orchestrating):
 ## Phase 2 — Scaffold (foundation before fan-out)
 
 Order: publish native-ui config → fill theme+fonts → `native-ui:generate-icons` → write `NativeLayout`
-classes (tabs / stack / form-stack / guest; `theme()` for all chrome colors, no hex) → rewrite
-`routes/web.php` with `Route::native()`/`Route::nativeGroup()` preserving every URI and route name →
+classes (tabs / stack / form-stack / guest; `theme()` for all chrome colors, no hex) → move the screens
+into `routes/mobile.php` as `Route::native()`/`Route::nativeGroup()` preserving every URI and route name,
+and delete the Livewire routes from `routes/web.php` (the package loads `routes/mobile.php` itself, only in
+native contexts) →
 generate ONE component with `native:make` to prove path conventions → write a `conventions.md`
 contract doc (namespaces, paths, layout assignments, theme tokens, gotchas) that all converters read.
 

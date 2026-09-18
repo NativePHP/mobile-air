@@ -88,8 +88,9 @@ OS support: macOS builds iOS + Android; Windows/Linux build Android only; WSL un
 
 ## SuperNative Screens
 
-Scaffold with `php artisan native:make Counter` (remove with `native:rm`). Register in routes (a
-`routes/mobile.php` is a clean convention):
+Scaffold with `php artisan native:make Counter` (remove with `native:rm`). Register screens in
+`routes/mobile.php`. The package loads it automatically, but only in native contexts (on device, under Jump,
+in `native:*` commands and in tests), so a web deploy of the same app never exposes them:
 
 ```php
 Route::native('/', Home::class);
