@@ -118,7 +118,7 @@ class MakeNativeComponentCommand extends Command
         $this->components->twoColumnDetail('View', $relativeViewPath);
 
         $this->newLine();
-        $this->line('  Register it in your routes:');
+        $this->line('  Register it in routes/mobile.php:');
         $this->line("  <comment>Route::native('/".Str::kebab($className)."', \\{$namespace}\\{$className}::class);</comment>");
 
         return self::SUCCESS;
