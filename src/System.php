@@ -49,6 +49,31 @@ class System
     }
 
     /**
+     * Is this process running under `native:jump`?
+     *
+     * In Jump hybrid mode PHP runs on the DEVELOPER'S MACHINE and only bridge
+     * calls cross to the phone. Anything the app hands the device that resolves
+     * locally — a filesystem path, a `localhost` URL — is meaningless over
+     * there, because "there" is a different computer. Code that builds
+     * device-bound values (core and plugins alike) checks this to hand over
+     * something the device can actually reach.
+     *
+     * Gated on `JUMP_BRIDGE_PORT`, which `native:jump` exports into the Laravel
+     * server it spawns. NOT on `function_exists('nativephp_call')` — in Jump
+     * mode the PHP fallback DEFINES that function (see
+     * NativeServiceProvider::registerJumpBridgeFallback()), so it exists on the
+     * dev server as well as on device and would report true everywhere.
+     *
+     * Static, and a bare env read, because callers include per-element render
+     * paths that also run on device, where this must not cost a facade resolve
+     * or a bridge round-trip.
+     */
+    public static function runningInJump(): bool
+    {
+        return getenv('JUMP_BRIDGE_PORT') !== false;
+    }
+
+    /**
      * Current system appearance: 'light' or 'dark'. Off the device (tests, web
      * preview) the bridge is absent and this returns 'light'.
      */

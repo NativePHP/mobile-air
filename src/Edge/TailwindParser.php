@@ -207,8 +207,91 @@ class TailwindParser
         'xl' => 12, '2xl' => 16, '3xl' => 24, 'full' => 9999,
     ];
 
+    /**
+     * Which corners each `rounded-<side>-*` suffix touches. Sides expand to
+     * their two corners, exactly as Tailwind's longhand does.
+     *
+     * Only the PHYSICAL spellings are here. Tailwind's logical variants
+     * (`rounded-s-*`, `rounded-ee-*`, …) resolve against the writing
+     * direction, and neither renderer flips corners for RTL yet — accepting
+     * them would silently render LTR geometry in an RTL layout, so they stay
+     * unparsed and land in the dropped-class diagnostics instead.
+     *
+     * @var array<string, list<string>>
+     */
+    private const BORDER_RADIUS_CORNERS = [
+        'tl' => ['borderRadiusTopLeft'],
+        'tr' => ['borderRadiusTopRight'],
+        'br' => ['borderRadiusBottomRight'],
+        'bl' => ['borderRadiusBottomLeft'],
+        't' => ['borderRadiusTopLeft', 'borderRadiusTopRight'],
+        'r' => ['borderRadiusTopRight', 'borderRadiusBottomRight'],
+        'b' => ['borderRadiusBottomRight', 'borderRadiusBottomLeft'],
+        'l' => ['borderRadiusTopLeft', 'borderRadiusBottomLeft'],
+    ];
+
     private const SHADOW = [
         'sm' => 1, 'md' => 6, 'lg' => 8, 'xl' => 12, '2xl' => 16, 'none' => 0,
+    ];
+
+    /**
+     * Named colored glows (Slice 1). Distinct from elevation `shadow-*` —
+     * these emit glowColor / glowRadius / glowOpacity props for a soft
+     * zero-offset halo on both platforms. Colors are the palette 500
+     * shade; sizes mirror a soft scale independent of SHADOW elevation.
+     *
+     *   glow-emerald / glow-indigo / glow-rose
+     *   glow-emerald-sm / glow-indigo-md / glow-rose-lg
+     *
+     * Arbitrary `shadow-[…]` / `glow-[…]` forms are deferred.
+     */
+    private const GLOW_COLORS = [
+        'emerald' => '#10B981',
+        'indigo' => '#6366F1',
+        'rose' => '#F43F5E',
+    ];
+
+    private const GLOW_RADIUS = [
+        'sm' => 8,
+        'md' => 16,
+        'lg' => 24,
+    ];
+
+    private const GLOW_DEFAULT_RADIUS = 16;
+
+    private const GLOW_DEFAULT_OPACITY = 0.55;
+
+    /**
+     * Tailwind `blur-*` / `blur` / `blur-none` — Gaussian filter radius in
+     * points. Distinct from elevation `shadow-*` and colored `glow-*`
+     * (those paint halos; blur softens the node's own pixels). Used for
+     * Stitch-style page-bg orbs (`blur-3xl` / `blur-[100px]` on large soft
+     * discs). Arbitrary `blur-[Npx]` is handled in parseArbitrary.
+     *
+     * Scale matches Tailwind CSS filter blur defaults.
+     */
+    private const BLUR_RADIUS = [
+        'none' => 0,
+        'sm' => 4,
+        'md' => 12,
+        'lg' => 16,
+        'xl' => 24,
+        '2xl' => 40,
+        '3xl' => 64,
+    ];
+
+    private const BLUR_DEFAULT_RADIUS = 8;
+
+    /**
+     * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
+     * Values are the rem sizes converted at the 16px root Tailwind assumes.
+     * Most are far wider than a phone, but they're what authors type and a
+     * constraint that never binds is still better than a dropped class.
+     */
+    private const CONTAINER_SIZES = [
+        '3xs' => 256, '2xs' => 288, 'xs' => 320, 'sm' => 384, 'md' => 448,
+        'lg' => 512, 'xl' => 576, '2xl' => 672, '3xl' => 768, '4xl' => 896,
+        '5xl' => 1024, '6xl' => 1152, '7xl' => 1280,
     ];
 
     private const WIDTH_FRACTIONS = [
@@ -538,8 +621,17 @@ class TailwindParser
             str_starts_with($class, 'ml-') => self::parseSpacingSide('marginLeft', substr($class, 3)),
             str_starts_with($class, 'm-') => self::parseSpacingUniform('margin', substr($class, 2)),
 
-            // Gap, dimensions
+            // Gap, dimensions.
+            //
+            // The min-/max- constraints MUST precede the bare `w-`/`h-`
+            // branches only for readability — they don't actually collide
+            // (`max-w-4` doesn't start with `w-`) — but grouping them keeps
+            // the sizing rules together.
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
+            str_starts_with($class, 'min-w-') => self::parseSizeConstraint('minWidth', substr($class, 6)),
+            str_starts_with($class, 'max-w-') => self::parseSizeConstraint('maxWidth', substr($class, 6)),
+            str_starts_with($class, 'min-h-') => self::parseSizeConstraint('minHeight', substr($class, 6)),
+            str_starts_with($class, 'max-h-') => self::parseSizeConstraint('maxHeight', substr($class, 6)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
             // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
@@ -606,6 +698,14 @@ class TailwindParser
             $class === 'select-text' => ['selectable' => 1],
             $class === 'select-none' => ['selectable' => 0],
 
+            // Whitespace (CSS white-space) for text content. Consumed by the
+            // PHP capture layer before the text prop is serialized, so it
+            // never rides the wire. `nowrap` and `pre-wrap` need native
+            // line-wrap props and stay unparsed for now.
+            $class === 'whitespace-normal' => ['whitespace' => 'normal'],
+            $class === 'whitespace-pre-line' => ['whitespace' => 'pre-line'],
+            $class === 'whitespace-pre-wrap' => ['whitespace' => 'pre-wrap'],
+
             // Letter spacing (tracking), in em (relative to font size).
             $class === 'tracking-tighter' => ['letterSpacing' => -0.05],
             $class === 'tracking-tight' => ['letterSpacing' => -0.025],
@@ -628,6 +728,11 @@ class TailwindParser
             str_starts_with($class, 'border-') => self::parseBorder(substr($class, 7)),
             str_starts_with($class, 'rounded-') => self::parseRounded(substr($class, 8)),
             str_starts_with($class, 'shadow-') => self::parseShadow(substr($class, 7)),
+            // Colored glow halo — separate from elevation `shadow-*`.
+            str_starts_with($class, 'glow-') => self::parseGlow(substr($class, 5)),
+            // Gaussian blur filter — softens the node's own pixels (page orbs).
+            $class === 'blur' => ['blur' => (float) self::BLUR_DEFAULT_RADIUS],
+            str_starts_with($class, 'blur-') => self::parseBlur(substr($class, 5)),
             str_starts_with($class, 'opacity-') => self::parseOpacity(substr($class, 8)),
 
             // Alignment
@@ -867,6 +972,36 @@ class TailwindParser
     {
         if (isset(self::SPACING[$value])) {
             return ['height' => self::SPACING[$value]];
+        }
+
+        return null;
+    }
+
+    /**
+     * `max-w-*` / `min-w-*` / `max-h-*` / `min-h-*`.
+     *
+     * Accepts the spacing scale (`max-w-64`), the container scale that only
+     * max-width has in Tailwind (`max-w-sm`), and `none` (an explicit "no
+     * constraint", which is what the wire's 0 already means).
+     *
+     * The `full` / `screen*` / `min` / `max` / `fit` keywords are deliberately
+     * NOT accepted: the packed node carries min/max as bare floats with no
+     * companion size mode, so there is nowhere to put "100% of the parent".
+     * Leaving them unparsed lands them in the dropped-class diagnostics
+     * instead of silently doing nothing.
+     */
+    private static function parseSizeConstraint(string $key, string $value): ?array
+    {
+        if ($value === 'none') {
+            return [$key => 0];
+        }
+
+        if (isset(self::SPACING[$value])) {
+            return [$key => self::SPACING[$value]];
+        }
+
+        if (($key === 'maxWidth' || $key === 'minWidth') && isset(self::CONTAINER_SIZES[$value])) {
+            return [$key => self::CONTAINER_SIZES[$value]];
         }
 
         return null;
@@ -1131,13 +1266,54 @@ class TailwindParser
         return self::resolveColor($value, 'borderColor');
     }
 
+    /**
+     * `rounded-*` — uniform, per-side and per-corner.
+     *
+     * The scale keys carry no dashes, so a dash unambiguously separates a
+     * side from its size: `2xl` is uniform, `br-none` is one corner.
+     * A bare side (`rounded-t`) takes Tailwind's default 4pt radius, the
+     * same as a bare `rounded`.
+     *
+     * Per-corner keys are emitted ALONGSIDE any uniform `borderRadius` rather
+     * than merged into it, so `rounded-2xl rounded-br-none` keeps both and the
+     * collector resolves the precedence. That makes the result independent of
+     * the order the classes appear in — which matches Tailwind, where the
+     * longhand always follows the shorthand in the generated stylesheet
+     * regardless of how the author ordered the attribute.
+     */
     private static function parseRounded(string $value): ?array
     {
         if (isset(self::BORDER_RADIUS[$value])) {
             return ['borderRadius' => self::BORDER_RADIUS[$value]];
         }
 
-        return null;
+        [$side, $size] = array_pad(explode('-', $value, 2), 2, null);
+
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+        if ($corners === null) {
+            return null;
+        }
+
+        // Bare side (`rounded-b`) → the same default `rounded` uses.
+        $radius = $size === null ? 4 : (self::BORDER_RADIUS[$size] ?? null);
+        if ($radius === null) {
+            return null;
+        }
+
+        return array_fill_keys($corners, $radius);
+    }
+
+    /**
+     * Arbitrary per-corner radius — `rounded-br-[4px]`, `rounded-t-[12]`.
+     * The uniform `rounded-[N]` form is handled inline in parseArbitrary.
+     *
+     * @return array<string, float>|null
+     */
+    private static function parseArbitraryRounded(string $side, string $value): ?array
+    {
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+
+        return $corners === null ? null : array_fill_keys($corners, (float) $value);
     }
 
     private static function parseShadow(string $value): ?array
@@ -1147,6 +1323,62 @@ class TailwindParser
         }
 
         return null;
+    }
+
+    /**
+     * `glow-emerald`, `glow-indigo-sm`, `glow-rose-lg`.
+     *
+     * Emits camelCase EDGE attrs (glowColor / glowRadius / glowOpacity)
+     * that `NativeElementCollector::applyStyle` forwards into the props
+     * bag — same path as `glass` / `dark_bg_color`, no NodeStyle bump.
+     *
+     * @return array{glowColor: string, glowRadius: float, glowOpacity: float}|null
+     */
+    private static function parseGlow(string $value): ?array
+    {
+        $color = null;
+        $radius = self::GLOW_DEFAULT_RADIUS;
+
+        if (isset(self::GLOW_COLORS[$value])) {
+            $color = self::GLOW_COLORS[$value];
+        } else {
+            $lastDash = strrpos($value, '-');
+            if ($lastDash === false) {
+                return null;
+            }
+
+            $family = substr($value, 0, $lastDash);
+            $size = substr($value, $lastDash + 1);
+
+            if (! isset(self::GLOW_COLORS[$family], self::GLOW_RADIUS[$size])) {
+                return null;
+            }
+
+            $color = self::GLOW_COLORS[$family];
+            $radius = self::GLOW_RADIUS[$size];
+        }
+
+        return [
+            'glowColor' => $color,
+            'glowRadius' => (float) $radius,
+            'glowOpacity' => self::GLOW_DEFAULT_OPACITY,
+        ];
+    }
+
+    /**
+     * `blur-sm` … `blur-3xl` / `blur-none`. Bare `blur` is handled in the
+     * match arm. Emits camelCase `blur` radius (float pt) for the collector
+     * props bag — no NodeStyle bump.
+     *
+     * @return array{blur: float}|null
+     */
+    private static function parseBlur(string $value): ?array
+    {
+        if (! isset(self::BLUR_RADIUS[$value])) {
+            return null;
+        }
+
+        return ['blur' => (float) self::BLUR_RADIUS[$value]];
     }
 
     private static function parseOpacity(string $value): ?array
@@ -1201,11 +1433,21 @@ class TailwindParser
             'gap' => ['gap' => (float) $value],
             'w' => ['width' => (float) $value],
             'h' => ['height' => (float) $value],
+            'min-w' => ['minWidth' => (float) $value],
+            'max-w' => ['maxWidth' => (float) $value],
+            'min-h' => ['minHeight' => (float) $value],
+            'max-h' => ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
+            // `rounded-br-[4px]` etc. The arbitrary regex is non-greedy up to
+            // the final `-[`, so the whole `rounded-<side>` arrives as prefix.
+            'rounded-tl', 'rounded-tr', 'rounded-br', 'rounded-bl',
+            'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
+            // `blur-[100px]` / `blur-[64]` — Gaussian radius in points.
+            'blur' => ['blur' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
             // Line height: `leading-[24px]` → absolute; `leading-[1.4]` →
             // unitless multiplier of the font size.

@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static bool isAndroid()
  * @method static bool isIos()
  * @method static bool isMobile()
+ * @method static bool runningInJump()
  * @method static void appSettings()
  * @method static string appearance()
  * @method static bool isDarkMode()

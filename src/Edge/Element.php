@@ -167,6 +167,10 @@ abstract class Element
      * `NativeElementCollector` uses for blade-driven elements, so the
      * resolved keys map to the same node fields with no behavioural
      * drift between blade and programmatic construction.
+     *
+     * One exception: `whitespace-*` is a capture-time policy that only
+     * blade-authored text passes through. Programmatic text strings
+     * ship verbatim, the way code-built values are literal.
      */
     public function class(string $classes): static
     {
@@ -508,6 +512,53 @@ abstract class Element
     public function elevation(float $value): static
     {
         $this->style['elevation'] = $value;
+
+        return $this;
+    }
+
+    /**
+     * Colored zero-offset glow halo. Programmatic twin of `glow-*`
+     * utilities — rides the props bag (`glow_color` / `glow_radius` /
+     * `glow_opacity`), not the packed NodeStyle elevation slot.
+     */
+    public function glow(string $color, float $radius = 16.0, float $opacity = 0.55): static
+    {
+        $this->extraProps['glow_color'] = $color;
+        $this->extraProps['glow_radius'] = $radius;
+        $this->extraProps['glow_opacity'] = $opacity;
+
+        return $this;
+    }
+
+    public function glowColor(string $color): static
+    {
+        $this->extraProps['glow_color'] = $color;
+
+        return $this;
+    }
+
+    public function glowRadius(float $radius): static
+    {
+        $this->extraProps['glow_radius'] = $radius;
+
+        return $this;
+    }
+
+    public function glowOpacity(float $opacity): static
+    {
+        $this->extraProps['glow_opacity'] = $opacity;
+
+        return $this;
+    }
+
+    /**
+     * Gaussian blur filter. Programmatic twin of `blur-*` / `blur-[Npx]`
+     * — rides the props bag (`blur` radius in points), not NodeStyle.
+     * Softens the node's own pixels (page-bg orbs); distinct from glow/shadow.
+     */
+    public function blur(float $radius): static
+    {
+        $this->extraProps['blur'] = $radius;
 
         return $this;
     }
