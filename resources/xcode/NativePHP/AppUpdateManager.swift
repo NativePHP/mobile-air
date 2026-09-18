@@ -248,11 +248,35 @@ class AppUpdateManager {
             let backupPath = updatesPath + "/backup_" + String(Int(Date().timeIntervalSince1970))
             try FileManager.default.moveItem(atPath: appPath, toPath: backupPath)
 
+            // Carry the shell's identity across: which shell this is does not
+            // change because a payload arrived. Rewriting it from the payload's
+            // .env recorded the release's own version instead — "OTAb0" — so
+            // the next boot compared that against the baked bundle, saw a
+            // difference, and re-extracted the bundle over the update.
+            let installedVersion = try? String(
+                contentsOfFile: backupPath + "/installed.version", encoding: .utf8
+            )
+
             // Move new app into place
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
 
-            // Create installed.version file for the new version
-            createInstalledVersionFile()
+            if let installedVersion, !installedVersion.isEmpty {
+                try? installedVersion.write(
+                    toFile: appPath + "/installed.version", atomically: true, encoding: .utf8
+                )
+                print("📝 Kept shell identity across update: \(installedVersion.trimmingCharacters(in: .whitespacesAndNewlines))")
+            } else {
+                createInstalledVersionFile()
+            }
+
+            // The release this payload carries, so the client can report it
+            // without unpacking anything.
+            if let manifest = try? Data(contentsOf: URL(fileURLWithPath: appPath + "/ota.json")),
+               let json = try? JSONSerialization.jsonObject(with: manifest) as? [String: Any],
+               let release = json["release_uuid"] as? String {
+                try? release.write(toFile: appPath + "/.ota_release", atomically: true, encoding: .utf8)
+                print("📌 Applied OTA release \(release)")
+            }
 
             // Run migrations and clear caches for updated app
             runMigrationsAndClearCaches()
