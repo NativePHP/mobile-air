@@ -306,9 +306,7 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Route::macro('native', function (string $uri, string $componentClass) {
-            NativeRouter::register($uri, $componentClass);
-
-            return Route::get($uri, function () use ($componentClass) {
+            $route = Route::get($uri, function () use ($componentClass) {
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these
@@ -392,6 +390,12 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+
+            // Register under the route's own URI, which includes any group
+            // prefix. It's also the key ->layout() looks up.
+            NativeRouter::register($route->uri(), $componentClass);
+
+            return $route;
         });
 
         // Route::nativeGroup(layout: TabsLayout::class, function () { ... })
