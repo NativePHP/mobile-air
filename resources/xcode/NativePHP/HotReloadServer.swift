@@ -256,8 +256,13 @@ class HotReloadServer {
     /// `native:watch` wants the app to reload. Keep the two in sync.
     static let reloadCommand = "nativephp:hot-reload"
 
+    /// Where `native:run` puts the port to listen on, in the launch
+    /// environment. Matches `ManagesIosHotReloadPort::IOS_HOT_RELOAD_PORT_KEY`
+    /// in the PHP package.
+    static let portKey = "NATIVEPHP_HOT_RELOAD_PORT"
+
     private var listener: NWListener?
-    private let port: NWEndpoint.Port = 9999
+    private let port = HotReloadServer.resolvePort()
     private let queue = DispatchQueue(label: "HotReloadServer")
     private var retryCount = 0
     private let maxRetries = 15
@@ -270,13 +275,34 @@ class HotReloadServer {
 
     private init() {}
 
+    /// Every simulator app shares the Mac's network stack, so `native:run`
+    /// gives each launch a free port instead of a fixed one. The port is kept
+    /// so a relaunch from the home screen or Xcode listens where `native:watch`
+    /// expects. Apps on a physical device never get one and use 9999, which
+    /// the watcher's iproxy forwards to.
+    private static func resolvePort() -> NWEndpoint.Port {
+        let defaults = UserDefaults.standard
+
+        if let value = ProcessInfo.processInfo.environment[portKey].flatMap({ UInt16($0) }), value > 0 {
+            defaults.set(Int(value), forKey: portKey)
+        }
+
+        let saved = defaults.integer(forKey: portKey)
+
+        if let value = UInt16(exactly: saved), value > 0, let port = NWEndpoint.Port(rawValue: value) {
+            return port
+        }
+
+        return 9999
+    }
+
     func start() {
         guard listener == nil else { return }
 
         do {
             let params = NWParameters.tcp
             // SO_REUSEADDR: lets us rebind immediately if a just-terminated
-            // previous instance left port 9999 in TIME_WAIT.
+            // previous instance left the port in TIME_WAIT.
             params.allowLocalEndpointReuse = true
 
             let listener = try NWListener(using: params, on: port)

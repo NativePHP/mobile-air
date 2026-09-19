@@ -9,7 +9,7 @@ use function Laravel\Prompts\select;
 
 trait WatchesIos
 {
-    use InteractsWithWatchTerminal, ManagesWatchman;
+    use InteractsWithWatchTerminal, ManagesIosHotReloadPort, ManagesWatchman;
 
     /**
      * Sent, newline-terminated, to ask the app's hot reload server for a
@@ -96,6 +96,8 @@ trait WatchesIos
         $this->line('Watching iOS paths: '.implode(', ', $this->getIosWatchPaths()));
 
         if ($isSimulator) {
+            $this->line('Hot reload port: '.$this->iosHotReloadPort());
+
             // Get the derived data path / data container path
             $derivedDataPath = Process::run("xcrun simctl get_app_container {$target} {$appId} data")
                 ->output();
@@ -162,9 +164,9 @@ trait WatchesIos
 
     private function startIosWatchingDevice(string $target, string $appId): void
     {
-        // Start iproxy to forward port 9999 from the device to localhost over USB or Wi-Fi
-        // This allows triggerIosReload() to reach the device's HotReloadServer
-        if ($this->startIproxyForwarding($target)) {
+        // Start iproxy to forward a free Mac port to the device's hot reload
+        // port over USB or Wi-Fi. This allows triggerIosReload() to reach it.
+        if ($forwarding = $this->startIproxyForwarding($target)) {
             $this->info('Port forwarding active over USB or Wi-Fi - reload triggers will reach the device');
         } else {
             $this->warn('iproxy not found - files will sync but automatic reload is unavailable.');
@@ -183,7 +185,13 @@ trait WatchesIos
                     $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId);
                 },
                 fn () => $this->pumpWatchTerminal(),
-                fn () => $this->triggerIosReload(),
+                // Without iproxy the trigger would land on whatever else
+                // holds the port on this Mac, such as a simulator app.
+                function () use ($forwarding) {
+                    if ($forwarding) {
+                        $this->triggerIosReload();
+                    }
+                },
             );
         } finally {
             // Reached when the watcher stops on its own (watchman died); the
@@ -354,11 +362,13 @@ trait WatchesIos
 
     /**
      * Host port reload triggers connect to: the simulator app's hot reload
-     * server, or iproxy forwarding to a physical device. Tests override it.
+     * server, or iproxy forwarding to a physical device. Read on every
+     * trigger, so a watcher follows the app when `native:run` relaunches it
+     * on a new port. Tests override it.
      */
     protected function iosHotReloadPort(): int
     {
-        return 9999;
+        return $this->recordedIosHotReloadPort((string) $this->iosTarget) ?? self::IOS_DEFAULT_HOT_RELOAD_PORT;
     }
 
     private function startIproxyForwarding(string $target): bool
@@ -369,13 +379,15 @@ trait WatchesIos
             return false;
         }
 
-        // Kill any existing processes on port 9999
-        Process::run('lsof -ti:9999 | xargs kill 2>/dev/null');
-        usleep(500000);
+        // Only the Mac end needs a free port. The device end is the app's
+        // default port, which nothing on this Mac competes for, so apps
+        // launched from Xcode or the home screen are reachable too.
+        $port = $this->pickIosHotReloadPort($target);
+        $this->recordIosHotReloadPort($target, $port);
 
         // Start iproxy in the background
         $logFile = base_path('nativephp/iproxy.log');
-        exec($this->iproxyCommand($iproxyPath, $target, $logFile), $output);
+        exec($this->iproxyCommand($iproxyPath, $target, $port, $logFile), $output);
         $pid = (int) ($output[0] ?? 0);
 
         if ($pid <= 0) {
@@ -390,8 +402,8 @@ trait WatchesIos
 
         // register_shutdown_function does NOT run when the watcher is stopped
         // with Ctrl-C (SIGINT) — the usual way — so iproxy would be orphaned
-        // and keep holding port 9999, breaking the next run's hot reload.
-        // Install signal handlers that tear it down before exiting.
+        // and keep holding its port. Install signal handlers that tear it
+        // down before exiting.
         if (function_exists('pcntl_async_signals')) {
             pcntl_async_signals(true);
             $teardown = function () use ($pid) {
@@ -417,7 +429,7 @@ trait WatchesIos
             return false;
         }
 
-        $this->line("iproxy running (PID {$pid}), log: {$logFile}");
+        $this->line("iproxy forwarding port {$port} to the device (PID {$pid}), log: {$logFile}");
 
         return true;
     }
@@ -430,11 +442,12 @@ trait WatchesIos
      * reloads: the connection to iproxy on localhost still succeeded, so the
      * watcher had no way to report the failure.
      */
-    private function iproxyCommand(string $iproxyPath, string $target, string $logFile): string
+    private function iproxyCommand(string $iproxyPath, string $target, int $port, string $logFile): string
     {
         $escapedTarget = escapeshellarg($target);
+        $devicePort = self::IOS_DEFAULT_HOT_RELOAD_PORT;
 
-        return "{$iproxyPath} -l -n -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!";
+        return "{$iproxyPath} -l -n -u {$escapedTarget} {$port}:{$devicePort} > {$logFile} 2>&1 & echo \$!";
     }
 
     private function promptForWatchTarget(): ?string
@@ -545,30 +558,6 @@ trait WatchesIos
     private function getIosExcludePatterns(): array
     {
         return config('nativephp.hot_reload.exclude_patterns', $this->iosExcludePatterns);
-    }
-
-    private function killHotReloadServers(): void
-    {
-        // Find processes listening on port 9999
-        $result = Process::run(['lsof', '-ti:9999']);
-
-        if ($result->successful()) {
-            $pids = array_filter(explode("\n", trim($result->output())));
-
-            foreach ($pids as $pid) {
-                if (is_numeric($pid)) {
-                    // Try graceful shutdown first
-                    Process::run(['kill', '-15', $pid]);
-                    sleep(3); // Wait 3 seconds for graceful shutdown
-
-                    // Check if process is still running, force kill if needed
-                    $stillRunning = Process::run(['kill', '-0', $pid])->successful();
-                    if ($stillRunning) {
-                        Process::run(['kill', '-9', $pid]);
-                    }
-                }
-            }
-        }
     }
 
     private function quitOtherRunningApps(string $target, string $currentAppId): void
