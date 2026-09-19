@@ -63,12 +63,9 @@ struct NativePHPApp: App {
             NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
 
             if booted {
-                // Only run artisan commands when app was extracted or updated
+                // Only run artisan commands when app was extracted or updated.
+                // Migrate already ran in ensureAppExists, once per extraction.
                 if didExtract {
-                    NSLog("[NativePHP] artisan migrate START (post-extraction)")
-                    _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
-                    NSLog("[NativePHP] artisan migrate DONE")
-
                     NSLog("[NativePHP] artisan storage:link START")
                     _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
                     NSLog("[NativePHP] artisan storage:link DONE")
@@ -508,6 +505,9 @@ struct NativePHPApp: App {
         // Get temporary directory
         let tempDir = FileManager.default.temporaryDirectory.path
 
+        // Before any PHP runs, so the migrate after extraction loads the
+        // package's migrations in both runtime modes.
+        setenv("NATIVEPHP_RUNNING", "true", 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("LARAVEL_STORAGE_PATH", storageDir, 1)
