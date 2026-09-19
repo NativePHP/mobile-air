@@ -245,6 +245,12 @@ struct ResolvedNodeView: View, Equatable {
             // the tap and runs alongside it for press-in/press-out
             // tracking. No-op when no `press-*` prop is set.
             .modifier(NodePressFeedbackModifier(props: node.props))
+            // Hidden (`display: none`) outside everything above, so the
+            // background and border go with the content. FlexContainer never
+            // places a hidden child and SwiftUI centres it at the container's
+            // size, so hiding only the content painted its `bg-*` over its
+            // siblings (`xl:hidden` in a row showed an empty bar).
+            .opacity(node.layout?.display == Display.none ? 0 : 1)
     }
 
     // MARK: - Content Dispatch (via plugin registry)

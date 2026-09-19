@@ -117,6 +117,10 @@ fun FlexContainer(
             // edge too. When both opposing edges are authored, left/top win
             // (CSS precedence).
             childNodes.forEachIndexed { i, node ->
+                // Skipped like hidden flow children. Composed, a hidden
+                // absolute child still drew its `bg-*` at its fixed size,
+                // because nodeLayout's size(0) / alpha(0) sit inside nodeStyle.
+                if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
                     val left = node.layout?.positionLeft ?: 0f
                     val top = node.layout?.positionTop ?: 0f
