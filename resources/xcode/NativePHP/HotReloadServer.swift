@@ -166,11 +166,16 @@ class HotReloadCoordinator {
             // (see `WebviewPHPRuntime.suspendAllForRuntimeReboot`).
             if PersistentPHPRuntime.shared.isBooted {
                 PHPQueueWorker.shared.stopAndWait()
+                // Same reason as the queue worker: the async slots' live TSRM
+                // contexts reference Zend module state that php_embed_shutdown
+                // frees. stop() serializes shutdown after any in-flight task.
+                AsyncTaskExecutor.shared.stop()
                 _ = PersistentPHPRuntime.shared.reboot()
                 // Clear compiled Blade views so templates are recompiled from
                 // the updated source files copied by the watcher.
                 _ = PersistentPHPRuntime.shared.artisan(command: "view:clear")
                 PHPQueueWorker.shared.start()
+                AsyncTaskExecutor.shared.start()
             } else {
                 _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])
             }
@@ -246,11 +251,20 @@ class HotReloadCoordinator {
 }
 
 class HotReloadServer {
+    /// The request that triggers a reload. `WatchesIos::triggerIosReload()`
+    /// in the PHP package sends it, newline-terminated, whenever
+    /// `native:watch` wants the app to reload. Keep the two in sync.
+    static let reloadCommand = "nativephp:hot-reload"
+
     private var listener: NWListener?
     private let port: NWEndpoint.Port = 9999
     private let queue = DispatchQueue(label: "HotReloadServer")
     private var retryCount = 0
     private let maxRetries = 15
+
+    /// Most bytes buffered while waiting for a newline. The reload command is
+    /// far shorter, so a client that sends more is dropped without a reload.
+    private static let maxRequestLength = 64
 
     static let shared = HotReloadServer()
 
@@ -313,15 +327,62 @@ class HotReloadServer {
     
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
-        
-        // Any connection triggers a reload
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .reloadWebViewNotification, object: nil)
+
+        // Cut off a client that never finishes its request. Cancelling ends
+        // the pending receive just like the client closing would, so note the
+        // timeout: a command without its newline mustn't count as complete.
+        // Both closures run on `queue`.
+        var timedOut = false
+        let timeout = DispatchWorkItem {
+            timedOut = true
+            connection.cancel()
         }
-        
-        // Immediately close the connection
-        connection.cancel()
-        print("🔄 Hot reload triggered")
+        queue.asyncAfter(deadline: .now() + 2, execute: timeout)
+
+        // Only the explicit command reloads, not any connection. Dev tools
+        // probe listening ports (SimDeck sends HTTP requests to anything whose
+        // process name contains "native" while looking for DevTools targets),
+        // and every probe used to reboot the app.
+        HotReloadServer.receiveRequest(on: connection, buffer: Data()) { request in
+            timeout.cancel()
+            connection.cancel()
+
+            let command = request.map {
+                String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+            guard !timedOut, command == HotReloadServer.reloadCommand else {
+                print("🙈 Ignored a connection to the hot reload port: not a reload request")
+                return
+            }
+
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .reloadWebViewNotification, object: nil)
+            }
+            print("🔄 Hot reload triggered")
+        }
+    }
+
+    /// Accumulate bytes until a newline or EOF and pass on what came before
+    /// the newline. Passes nil when the client sends too much or the
+    /// connection fails.
+    private static func receiveRequest(on connection: NWConnection, buffer: Data, completion: @escaping (Data?) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: maxRequestLength) { content, _, isComplete, error in
+            var buffer = buffer
+            if let content {
+                buffer.append(content)
+            }
+
+            if let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                completion(buffer[..<newline])
+            } else if error != nil || buffer.count > maxRequestLength {
+                completion(nil)
+            } else if isComplete {
+                completion(buffer)
+            } else {
+                receiveRequest(on: connection, buffer: buffer, completion: completion)
+            }
+        }
     }
 }
 

@@ -332,5 +332,7 @@ REPLACE_CUSTOM_PROGUARD_RULES',
 
     protected function updatePermissions(): void {}
 
+    protected function updateReleaseAudience(): void {}
+
     protected function updateIcuConfiguration(): void {}
 }

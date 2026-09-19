@@ -12,6 +12,14 @@ trait WatchesIos
     use InteractsWithWatchTerminal, ManagesWatchman;
 
     /**
+     * Sent, newline-terminated, to ask the app's hot reload server for a
+     * reload. The server ignores any other connection, because dev tools
+     * probe listening ports. Must match `HotReloadServer.reloadCommand` in
+     * resources/xcode/NativePHP/HotReloadServer.swift.
+     */
+    protected const IOS_RELOAD_COMMAND = 'nativephp:hot-reload';
+
+    /**
      * UDID of the simulator or device being watched.
      */
     private ?string $iosTarget = null;
@@ -154,10 +162,10 @@ trait WatchesIos
 
     private function startIosWatchingDevice(string $target, string $appId): void
     {
-        // Start iproxy to forward port 9999 from the device to localhost over USB
+        // Start iproxy to forward port 9999 from the device to localhost over USB or Wi-Fi
         // This allows triggerIosReload() to reach the device's HotReloadServer
         if ($this->startIproxyForwarding($target)) {
-            $this->info('USB port forwarding active - reload triggers will reach the device');
+            $this->info('Port forwarding active over USB or Wi-Fi - reload triggers will reach the device');
         } else {
             $this->warn('iproxy not found - files will sync but automatic reload is unavailable.');
             $this->line('Install it for automatic reload: <fg=cyan>brew install libimobiledevice</fg=cyan>');
@@ -323,21 +331,34 @@ trait WatchesIos
 
     private function triggerIosReload(): void
     {
-        // Connect to the hot reload server to trigger a reload
+        $port = $this->iosHotReloadPort();
+
+        // Connect to the hot reload server and send the reload command
         // For simulators this reaches the server directly (shared network)
-        // For physical devices, iproxy forwards this to the device over USB
-        $socket = @fsockopen('127.0.0.1', 9999, $errno, $errstr, 1);
+        // For physical devices, iproxy forwards this to the device over USB or Wi-Fi
+        $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
 
         if ($socket) {
+            @fwrite($socket, self::IOS_RELOAD_COMMAND."\n");
+
             // Hold the connection open long enough for iproxy to forward
-            // it to the device over USB before we close
+            // it to the device before we close
             usleep(200000);
             fclose($socket);
         } else {
             // Transient rather than a scrollback line: the app being down is a
             // state, not an event, so repeating it once per save is just noise.
-            $this->watchActivity("reload failed — nothing listening on port 9999 ({$errstr})", 'yellow');
+            $this->watchActivity("reload failed — nothing listening on port {$port} ({$errstr})", 'yellow');
         }
+    }
+
+    /**
+     * Host port reload triggers connect to: the simulator app's hot reload
+     * server, or iproxy forwarding to a physical device. Tests override it.
+     */
+    protected function iosHotReloadPort(): int
+    {
+        return 9999;
     }
 
     private function startIproxyForwarding(string $target): bool
@@ -352,11 +373,9 @@ trait WatchesIos
         Process::run('lsof -ti:9999 | xargs kill 2>/dev/null');
         usleep(500000);
 
-        // Start iproxy in background for USB port forwarding
-        // v2 syntax: iproxy -u UDID LOCAL_PORT:DEVICE_PORT
-        $escapedTarget = escapeshellarg($target);
+        // Start iproxy in the background
         $logFile = base_path('nativephp/iproxy.log');
-        exec("{$iproxyPath} -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!", $output);
+        exec($this->iproxyCommand($iproxyPath, $target, $logFile), $output);
         $pid = (int) ($output[0] ?? 0);
 
         if ($pid <= 0) {
@@ -401,6 +420,21 @@ trait WatchesIos
         $this->line("iproxy running (PID {$pid}), log: {$logFile}");
 
         return true;
+    }
+
+    /**
+     * Shell command that starts iproxy in the background and echoes its PID.
+     *
+     * `-l -n` looks the device up over USB and over Wi-Fi. With neither flag
+     * iproxy only finds USB devices, so a phone on Wi-Fi never got its
+     * reloads: the connection to iproxy on localhost still succeeded, so the
+     * watcher had no way to report the failure.
+     */
+    private function iproxyCommand(string $iproxyPath, string $target, string $logFile): string
+    {
+        $escapedTarget = escapeshellarg($target);
+
+        return "{$iproxyPath} -l -n -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!";
     }
 
     private function promptForWatchTarget(): ?string

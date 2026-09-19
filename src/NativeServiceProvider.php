@@ -30,6 +30,7 @@ use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
+use Native\Mobile\Commands\RunAsyncTaskCommand;
 use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\SimCommand;
 use Native\Mobile\Commands\TailCommand;
@@ -55,6 +56,12 @@ use Spatie\LaravelPackageTools\PackageServiceProvider;
 
 class NativeServiceProvider extends PackageServiceProvider
 {
+    /**
+     * Real path of the routes/mobile.php this provider loaded. Tells our own
+     * include on an earlier boot apart from the app's (see appLoadsMobileRoutes).
+     */
+    protected static ?string $loadedMobileRoutes = null;
+
     public function configurePackage(Package $package): void
     {
         $package
@@ -69,6 +76,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 DebugCommand::class,
                 InstallCommand::class,
                 RunCommand::class,
+                RunAsyncTaskCommand::class,
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
                 SimCommand::class,
@@ -304,9 +312,7 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Route::macro('native', function (string $uri, string $componentClass) {
-            NativeRouter::register($uri, $componentClass);
-
-            return Route::get($uri, function () use ($componentClass) {
+            $route = Route::get($uri, function () use ($componentClass) {
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these
@@ -390,6 +396,13 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+
+            // Register the route itself so native navigation shares its
+            // constraints and binders. Its URI includes any group prefix, and
+            // is also the key ->layout() looks up.
+            NativeRouter::register($route, $componentClass);
+
+            return $route;
         });
 
         // Route::nativeGroup(layout: TabsLayout::class, function () { ... })
@@ -413,6 +426,79 @@ class NativeServiceProvider extends PackageServiceProvider
 
             return $this;
         });
+
+        $this->loadMobileRoutes();
+    }
+
+    /**
+     * Load the app's native screens from `routes/mobile.php`.
+     *
+     * Deferred to booted() so it registers after the app's own route files,
+     * which load while the app's route provider boots. A later route with the
+     * same method and URI replaces the earlier one, so a native screen at `/`
+     * takes over from a website's `/` in web.php.
+     */
+    protected function loadMobileRoutes(): void
+    {
+        $this->app->booted(function () {
+            $path = realpath(base_path('routes/mobile.php'));
+
+            if ($path === false || ! $this->shouldLoadMobileRoutes() || $this->app->routesAreCached()) {
+                return;
+            }
+
+            if ($this->appLoadsMobileRoutes($path)) {
+                return;
+            }
+
+            static::$loadedMobileRoutes = $path;
+            Route::middleware('web')->group($path);
+
+            // Route::native(...)->name(...) names a route after it has been
+            // added, so rebuild the lookups like the app's route provider does.
+            $routes = $this->app['router']->getRoutes();
+            $routes->refreshNameLookups();
+            $routes->refreshActionLookups();
+        });
+    }
+
+    /**
+     * An app that already loads routes/mobile.php itself (withRouting, a
+     * `then:` callback, a require from web.php) keeps its own middleware and
+     * prefix, and we stay out of the way. Included files last for the whole
+     * process, and a test suite boots many apps in one, so the file only
+     * counts as the app's if we didn't include it on an earlier boot. Not
+     * handled: an app that loads it itself on some boots but not others.
+     */
+    protected function appLoadsMobileRoutes(string $path): bool
+    {
+        if (static::$loadedMobileRoutes === $path) {
+            return false;
+        }
+
+        foreach (get_included_files() as $file) {
+            if (str_ends_with($file, 'mobile.php') && realpath($file) === $path) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Native routes are only registered where something native will use them,
+     * because the same app can also be deployed as a plain website. That means
+     * on device, in tests, in a Jump session (the device boots from this
+     * machine's server) and in native:* commands (builds bake the routes into
+     * bundle_meta.json, native:watch lists them). Not any console command:
+     * `route:cache` on a web server would bake them into its route cache.
+     */
+    protected function shouldLoadMobileRoutes(): bool
+    {
+        return (bool) config('nativephp-internal.running')
+            || $this->app->runningUnitTests()
+            || getenv('JUMP_BRIDGE_PORT') !== false
+            || ($this->app->runningInConsole() && str_starts_with($_SERVER['argv'][1] ?? '', 'native:'));
     }
 
     protected function registerBladeDirectives(): void
