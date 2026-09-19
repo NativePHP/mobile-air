@@ -162,10 +162,10 @@ trait WatchesIos
 
     private function startIosWatchingDevice(string $target, string $appId): void
     {
-        // Start iproxy to forward port 9999 from the device to localhost over USB
+        // Start iproxy to forward port 9999 from the device to localhost over USB or Wi-Fi
         // This allows triggerIosReload() to reach the device's HotReloadServer
         if ($this->startIproxyForwarding($target)) {
-            $this->info('USB port forwarding active - reload triggers will reach the device');
+            $this->info('Port forwarding active over USB or Wi-Fi - reload triggers will reach the device');
         } else {
             $this->warn('iproxy not found - files will sync but automatic reload is unavailable.');
             $this->line('Install it for automatic reload: <fg=cyan>brew install libimobiledevice</fg=cyan>');
@@ -335,14 +335,14 @@ trait WatchesIos
 
         // Connect to the hot reload server and send the reload command
         // For simulators this reaches the server directly (shared network)
-        // For physical devices, iproxy forwards this to the device over USB
+        // For physical devices, iproxy forwards this to the device over USB or Wi-Fi
         $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
 
         if ($socket) {
             @fwrite($socket, self::IOS_RELOAD_COMMAND."\n");
 
             // Hold the connection open long enough for iproxy to forward
-            // it to the device over USB before we close
+            // it to the device before we close
             usleep(200000);
             fclose($socket);
         } else {
@@ -373,11 +373,9 @@ trait WatchesIos
         Process::run('lsof -ti:9999 | xargs kill 2>/dev/null');
         usleep(500000);
 
-        // Start iproxy in background for USB port forwarding
-        // v2 syntax: iproxy -u UDID LOCAL_PORT:DEVICE_PORT
-        $escapedTarget = escapeshellarg($target);
+        // Start iproxy in the background
         $logFile = base_path('nativephp/iproxy.log');
-        exec("{$iproxyPath} -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!", $output);
+        exec($this->iproxyCommand($iproxyPath, $target, $logFile), $output);
         $pid = (int) ($output[0] ?? 0);
 
         if ($pid <= 0) {
@@ -422,6 +420,21 @@ trait WatchesIos
         $this->line("iproxy running (PID {$pid}), log: {$logFile}");
 
         return true;
+    }
+
+    /**
+     * Shell command that starts iproxy in the background and echoes its PID.
+     *
+     * `-l -n` looks the device up over USB and over Wi-Fi. With neither flag
+     * iproxy only finds USB devices, so a phone on Wi-Fi never got its
+     * reloads: the connection to iproxy on localhost still succeeded, so the
+     * watcher had no way to report the failure.
+     */
+    private function iproxyCommand(string $iproxyPath, string $target, string $logFile): string
+    {
+        $escapedTarget = escapeshellarg($target);
+
+        return "{$iproxyPath} -l -n -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!";
     }
 
     private function promptForWatchTarget(): ?string
