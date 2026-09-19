@@ -92,12 +92,17 @@ struct NodeStyleModifier: ViewModifier {
     ///
     /// A gradient wins over `bg_color` — matching CSS, where `background-image`
     /// paints over `background-color`.
-    @ViewBuilder
-    private func backgroundFill(dark: Bool) -> some View {
+    ///
+    /// Returned as a ShapeStyle, not a View: `.background(_ style:)` fills
+    /// through the safe areas by default (`ignoresSafeAreaEdges: .all`), so a
+    /// full-screen `bg-*` reaches under the status bar and a floating tab bar.
+    /// The `.background(_ view:)` overload stops at the safe area, which left
+    /// the platform default (black in dark mode) showing in those insets.
+    private func backgroundFill(dark: Bool) -> AnyShapeStyle {
         if let gradient = linearGradient {
-            gradient
+            AnyShapeStyle(gradient)
         } else {
-            backgroundColor(dark: dark)
+            AnyShapeStyle(backgroundColor(dark: dark))
         }
     }
 
