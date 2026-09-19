@@ -58,6 +58,17 @@ final class NativeUIBridge: ObservableObject {
     /// Flag set by UI.SetTransition bridge function
     var navigationPending = false
 
+    /// Transition settle window (CACurrentMediaTime deadline). While a
+    /// screen / tab transition is animating, non-swap tree updates are held
+    /// and applied once the window closes, so heavy SwiftUI re-renders
+    /// don't drop frames mid-animation. See NativeElementBridge's shadow
+    /// loop and NativeRootTabsRenderer's switch handler.
+    var transitionSettleDeadline: TimeInterval = 0
+
+    /// The latest deferred tree apply (coalesced — only the newest tree
+    /// that arrived inside the settle window is applied when it closes).
+    var deferredTreeApply: (() -> Void)?
+
     private init() {}
 
     // MARK: - Navigation
