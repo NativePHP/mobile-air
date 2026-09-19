@@ -1,17 +1,23 @@
 <?php
 
+use Illuminate\Database\Events\MigrationStarted;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Schema;
 
 /**
  * The package ships its own create_jobs_table for apps that deleted theirs.
  * Named 0001_01_01_000001 it sorted ahead of the app's
  * 0001_01_01_000002_create_jobs_table, which then failed with "table jobs
- * already exists" and took every later app migration down with it.
+ * already exists" and took every later app migration down with it. Dated
+ * app migrations, like Laravel 10's, sorted after 0001_01_01_000003 too, so
+ * the package's are now dated 9999 to run after anything an app has.
  *
  * These run the real migrations against SQLite, the only database the
- * package's migrations ever meet on device. The app's migration is a
- * verbatim copy of laravel/laravel's current default.
+ * package's migrations ever meet on device. The app's migrations are
+ * verbatim copies of laravel/laravel's current default and Laravel 10's
+ * skeleton and queue:table stub.
  */
 function packageMigrationsPath(string $file = ''): string
 {
@@ -36,7 +42,31 @@ function runMigrations(string ...$paths): void
 
 function reshapeMigration(): object
 {
-    return require packageMigrationsPath('0001_01_01_000004_reshape_failed_jobs_table.php');
+    return require packageMigrationsPath('9999_12_31_000001_reshape_failed_jobs_table.php');
+}
+
+/**
+ * The tables each migration created, keyed by migration in the order they ran.
+ */
+function tablesCreatedByEachMigration(Closure $run): array
+{
+    $created = [];
+    $running = null;
+
+    Event::listen(MigrationStarted::class, function (MigrationStarted $event) use (&$created, &$running) {
+        $running = basename((new ReflectionObject($event->migration))->getFileName(), '.php');
+        $created[$running] = [];
+    });
+
+    DB::listen(function (QueryExecuted $query) use (&$created, &$running) {
+        if ($running && preg_match('/^create table "(\w+)"/', $query->sql, $match)) {
+            $created[$running][] = $match[1];
+        }
+    });
+
+    $run();
+
+    return $created;
 }
 
 /**
@@ -76,12 +106,32 @@ function expectLaravelQueueTables(array $laravel): void
 it('runs after the app\'s own jobs migration instead of clashing with it', function () {
     $laravel = laravelQueueTablesSchema();
 
-    runMigrations(appMigrationsPath(), packageMigrationsPath());
+    runMigrations(appMigrationsPath('0001_01_01_000002_create_jobs_table.php'), packageMigrationsPath());
 
     expect(app('migrator')->getRepository()->getRan())->toBe([
         '0001_01_01_000002_create_jobs_table',
-        '0001_01_01_000003_create_jobs_table',
-        '0001_01_01_000004_reshape_failed_jobs_table',
+        '9999_12_31_000000_create_jobs_table',
+        '9999_12_31_000001_reshape_failed_jobs_table',
+    ]);
+
+    expectLaravelQueueTables($laravel);
+});
+
+it('runs after an app\'s dated queue migrations in the same migrate', function () {
+    $laravel = laravelQueueTablesSchema();
+
+    // Laravel 10's skeleton ships failed_jobs; jobs comes from queue:table.
+    $created = tablesCreatedByEachMigration(fn () => runMigrations(
+        appMigrationsPath('2019_08_19_000000_create_failed_jobs_table.php'),
+        appMigrationsPath('2023_06_14_093012_create_jobs_table.php'),
+        packageMigrationsPath(),
+    ));
+
+    expect($created)->toBe([
+        '2019_08_19_000000_create_failed_jobs_table' => ['failed_jobs'],
+        '2023_06_14_093012_create_jobs_table' => ['jobs'],
+        '9999_12_31_000000_create_jobs_table' => ['job_batches'],
+        '9999_12_31_000001_reshape_failed_jobs_table' => ['failed_jobs'],
     ]);
 
     expectLaravelQueueTables($laravel);
@@ -90,7 +140,7 @@ it('runs after the app\'s own jobs migration instead of clashing with it', funct
 it('brings tables an older install created up to Laravel\'s shape', function () {
     $laravel = laravelQueueTablesSchema();
 
-    runMigrations(packageMigrationsPath('0001_01_01_000003_create_jobs_table.php'));
+    runMigrations(packageMigrationsPath('9999_12_31_000000_create_jobs_table.php'));
 
     expect(Schema::getColumnType('failed_jobs', 'connection'))->toBe('text')
         ->and(Schema::hasIndex('failed_jobs', ['connection', 'queue', 'failed_at']))->toBeFalse();
@@ -106,7 +156,7 @@ it('brings tables an older install created up to Laravel\'s shape', function () 
     ];
     DB::table('failed_jobs')->insert($failedJob);
 
-    runMigrations(packageMigrationsPath('0001_01_01_000004_reshape_failed_jobs_table.php'));
+    runMigrations(packageMigrationsPath('9999_12_31_000001_reshape_failed_jobs_table.php'));
 
     expectLaravelQueueTables($laravel);
     expect((array) DB::table('failed_jobs')->first())->toBe($failedJob);
