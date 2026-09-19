@@ -78,7 +78,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
     LaunchedEffect(node) {
         if (currentUri.isNotEmpty()) {
-            coordinator.receive(currentUri, node)
+            coordinator.receive(currentUri, node.props.getInt("stack_depth", 0), node)
         }
     }
 
@@ -361,12 +361,33 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // the padding it was last laid out with, and each level's
         // vertical origin stays fixed for the whole slide.
         val levelPaddings = remember { HashMap<String, PaddingValues>() }
+        // Remember how deep each level sat when it
+        // was shown so the slide can tell push from pop. A pop (target
+        // shallower than the level leaving) slides the leaving screen out to
+        // the RIGHT and the previous one back in from the left, as iOS does;
+        // the symmetric spec played the push animation both ways.
+        val levelDepths = remember { HashMap<String, Int>() }
+        levelDepths[activeUri] = path.size
+        // …and the last tree seen for each level, so a popped level still
+        // has content while it slides out: PHP's republish evicts it from
+        // the coordinator cache within the slide, and the empty fallback
+        // made the outgoing page vanish instead of sliding.
+        val levelNodes = remember { HashMap<String, NativeUINode>() }
+        if (levelNodes.size > 16) {
+            levelNodes.keys.retainAll((path + listOfNotNull(rootUri, activeUri)).toSet())
+        }
         AnimatedContent(
             targetState = activeUri,
             transitionSpec = {
                 val intSpec = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 250)
-                slideInHorizontally(intSpec) { it } togetherWith
-                    slideOutHorizontally(intSpec) { -it }
+                val popping = (levelDepths[targetState] ?: 0) < (levelDepths[initialState] ?: 0)
+                if (popping) {
+                    slideInHorizontally(intSpec) { -it } togetherWith
+                        slideOutHorizontally(intSpec) { it }
+                } else {
+                    slideInHorizontally(intSpec) { it } togetherWith
+                        slideOutHorizontally(intSpec) { -it }
+                }
             },
             label = "stack-level",
             modifier = Modifier.fillMaxSize()
@@ -390,7 +411,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 levelPaddings[uri] ?: padding
             }
             Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
-                val levelNode = coordinator.rootNodeCache[uri]
+                val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
                 val levelContent = levelNode?.children?.firstOrNull {
                     it.type != "top_bar_action" && it.type != "top_bar_title" &&
                         it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
