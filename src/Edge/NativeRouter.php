@@ -115,10 +115,20 @@ class NativeRouter
     protected ?Transition $deferredTransition = null;
 
     /**
+     * Events that were waiting in the queue when a screen swap reset it,
+     * and that aren't tied to the outgoing screen. The incoming screen
+     * handles them before it waits for new ones.
+     *
+     * @var list<array>
+     */
+    protected array $heldEvents = [];
+
+    /**
      * Flush the deferred transition — resets buffers and signals the
      * transition type to Kotlin. Called just before the first publish()
      * of a new component so the old tree stays visible until the new
-     * one is ready.
+     * one is ready. Queued events that survive the reset are kept in
+     * $heldEvents (see holdQueuedEvents()).
      */
     public function flushDeferredTransition(): void
     {
@@ -130,7 +140,59 @@ class NativeRouter
         $this->deferredTransition = null;
 
         static::signalTransition($t);
+        $this->holdQueuedEvents();
         static::resetBuffers();
+    }
+
+    /**
+     * Save the queued events the reset would otherwise throw away.
+     *
+     * The reset drops the whole queue so a tap meant for the outgoing
+     * screen can't land on a callback of the incoming one. Events that
+     * aren't bound to a screen's callbacks don't have that problem, and
+     * losing them is worse. The one that matters most is a system back:
+     * native pushes a #[Lazy] screen's placeholder before mount() runs,
+     * so the user can pop it while PHP is still busy. Dropping that back
+     * left PHP on a screen the user had already left, and its next frame
+     * pushed that screen straight back on (#471).
+     */
+    protected function holdQueuedEvents(): void
+    {
+        $unbound = [
+            NativeComponent::EVENT_SYSTEM_BACK,
+            NativeComponent::EVENT_HOT_RELOAD,
+            NativeComponent::EVENT_SHUTDOWN,
+            NativeComponent::EVENT_NATIVE,
+        ];
+
+        while (($event = nativephp_element_wait_event(0)) !== null) {
+            if (in_array($event['type'] ?? -1, $unbound, true)) {
+                $this->heldEvents[] = $event;
+            }
+        }
+    }
+
+    /**
+     * Next event held over from the last screen swap, oldest first.
+     */
+    public function takeHeldEvent(): ?array
+    {
+        return array_shift($this->heldEvents);
+    }
+
+    /**
+     * True while a held system back is waiting: the user has already left
+     * the screen on top, so it shouldn't publish again before handling it.
+     */
+    public function holdsSystemBack(): bool
+    {
+        foreach ($this->heldEvents as $event) {
+            if (($event['type'] ?? -1) === NativeComponent::EVENT_SYSTEM_BACK) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ── Static registry ─────────────────────────────
