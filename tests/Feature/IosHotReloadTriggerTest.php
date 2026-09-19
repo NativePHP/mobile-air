@@ -24,9 +24,9 @@ function iosReloadWatcher(int $port): object
             $this->triggerIosReload();
         }
 
-        public function iproxy(string $iproxyPath, string $target, string $logFile): string
+        public function iproxy(string $iproxyPath, string $target, int $port, string $logFile): string
         {
-            return $this->iproxyCommand($iproxyPath, $target, $logFile);
+            return $this->iproxyCommand($iproxyPath, $target, $port, $logFile);
         }
 
         public function line(string $string): void
@@ -83,10 +83,11 @@ it('sends exactly the reload command the app listens for', function () {
 
 it('forwards reloads to a physical device over USB or Wi-Fi', function () {
     // Without -n, iproxy only finds USB devices and a phone on Wi-Fi silently
-    // misses every reload.
-    $command = iosReloadWatcher(9999)->iproxy('/opt/homebrew/bin/iproxy', '00008140-00092D393431801C', '/tmp/iproxy.log');
+    // misses every reload. The Mac end is the port picked for this device;
+    // the app on the device always listens on 9999.
+    $command = iosReloadWatcher(9999)->iproxy('/opt/homebrew/bin/iproxy', '00008140-00092D393431801C', 51234, '/tmp/iproxy.log');
 
-    expect($command)->toBe("/opt/homebrew/bin/iproxy -l -n -u '00008140-00092D393431801C' 9999:9999 > /tmp/iproxy.log 2>&1 & echo \$!");
+    expect($command)->toBe("/opt/homebrew/bin/iproxy -l -n -u '00008140-00092D393431801C' 51234:9999 > /tmp/iproxy.log 2>&1 & echo \$!");
 });
 
 it('reports a failed reload when nothing is listening', function () {
