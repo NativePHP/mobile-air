@@ -22,6 +22,7 @@
         {
             "type": "button",
             "props": {
+                "ref": "increment-btn",
                 "label": "Increment"
             },
             "on_press": "@increment",
@@ -50,6 +51,7 @@
         {
             "type": "text_input",
             "props": {
+                "ref": "query-input",
                 "on_change": "@__syncProperty('query')"
             },
             "ref": "query-input"

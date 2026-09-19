@@ -55,6 +55,8 @@ final class NativeUIBridge: ObservableObject {
 
     @Published var outgoingScreen: OutgoingScreen?
 
+
+
     /// Flag set by UI.SetTransition bridge function
     var navigationPending = false
 

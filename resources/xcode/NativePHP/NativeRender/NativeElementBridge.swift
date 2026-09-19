@@ -1,5 +1,6 @@
 
 import Foundation
+import SwiftUI // withAnimation, for the view_transition hero source flip
 import UIKit // needed for UIScreen.main, UIApplication
 import os
 import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags (Phase 0 format check)
@@ -516,6 +517,21 @@ final class NativeElementBridge {
                             }
                         }
                     }
+                    // Shared elements: hand the incoming tree's ref'd nodes to
+                    // the flight store. It already holds the outgoing screen's
+                    // frames (reported while that screen was live), so it can
+                    // pair the two sides and fly a copy of each match in the
+                    // overlay above both screens. Done synchronously here so
+                    // matched elements are hidden before the incoming screen's
+                    // very first layout — otherwise they paint once at their
+                    // destination before taking off.
+                    if bridge.pendingTransition == "view_transition" {
+                        HeroFlightStore.shared.beginSwap(
+                            incomingNodes: Self.collectRefNodes(finalTree.root)
+                        )
+                    } else {
+                        HeroFlightStore.shared.cancelAll()
+                    }
                     bridge.screenKey += 1
                 }
                 if isFreshStackMount { NavigationCoordinator.shared.reset() }
@@ -527,6 +543,29 @@ final class NativeElementBridge {
                 if bridge.isReloading { bridge.isReloading = false }
             }
         }
+    }
+
+    /// Every ref'd node in a tree, keyed by ref. The flight store pairs these
+    /// against the outgoing screen's reported frames and renders a copy of the
+    /// matched ones in flight. Walks the incoming tree once per navigation — the
+    /// trees are already in memory and this runs on the same publish that
+    /// builds them, so it costs a single traversal per swap rather than any
+    /// per-frame work.
+    static func collectRefNodes(_ node: NativeUINode) -> [String: NativeUINode] {
+        var found: [String: NativeUINode] = [:]
+
+        func walk(_ n: NativeUINode) {
+            let ref = n.props.getString("ref", default: "")
+            // First wins. A duplicated ref on one screen is malformed markup —
+            // a name identifies ONE element — and picking deterministically
+            // beats letting the last one silently take over.
+            if !ref.isEmpty, found[ref] == nil { found[ref] = n }
+            for child in n.children { walk(child) }
+        }
+
+        walk(node)
+
+        return found
     }
 
     // MARK: - Event Sending
