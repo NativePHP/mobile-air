@@ -39,12 +39,17 @@ class AppUpdateManager {
             didExtract = true
         }
 
+        if didExtract {
+            clearCompiledCaches()
+        }
+
         // DEBUG is the native:run payload. Always extract it (shouldUpdateFromBundle)
         // and do not apply a leftover pending OTA on top — otherwise developers
         // never see the PHP they just shipped. Versioned builds still apply pending.
         if isDebugBundle() {
             print("🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
         } else if applyPendingUpdates() {
+            clearCompiledCaches()
             didExtract = true
         }
 
@@ -262,10 +267,20 @@ class AppUpdateManager {
             let backupPath = updatesPath + "/backup_" + String(Int(Date().timeIntervalSince1970))
             try FileManager.default.moveItem(atPath: appPath, toPath: backupPath)
 
+            // Carry the shell's identity across: which shell this is does not
+            // change because a payload arrived. Rewriting it from the payload's
+            // .env recorded the release's own version instead — "OTAb0" — so
+            // the next boot compared that against the baked bundle, saw a
+            // difference, and re-extracted the bundle over the update.
+            let installedVersion = try? String(
+                contentsOfFile: backupPath + "/installed.version", encoding: .utf8
+            )
+
             // Move new app into place
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
 
-            // Restore the stashed .env over whatever the zip extracted
+            // Restore the stashed .env over whatever the zip extracted: the
+            // environment belongs to the installed app, not to the payload.
             if hadEnv, FileManager.default.fileExists(atPath: envStashPath) {
                 let newEnvPath = appPath + "/.env"
                 if FileManager.default.fileExists(atPath: newEnvPath) {
@@ -276,8 +291,26 @@ class AppUpdateManager {
                 print("📦 Restored stashed .env over extracted payload")
             }
 
-            // Create installed.version file for the new version
-            createInstalledVersionFile()
+            restoreShellVersion()
+            mergePendingManifest()
+
+            if let installedVersion, !installedVersion.isEmpty {
+                try? installedVersion.write(
+                    toFile: appPath + "/installed.version", atomically: true, encoding: .utf8
+                )
+                print("📝 Kept shell identity across update: \(installedVersion.trimmingCharacters(in: .whitespacesAndNewlines))")
+            } else {
+                createInstalledVersionFile()
+            }
+
+            // The release this payload carries, so the client can report it
+            // without unpacking anything.
+            if let manifest = try? Data(contentsOf: URL(fileURLWithPath: appPath + "/ota.json")),
+               let json = try? JSONSerialization.jsonObject(with: manifest) as? [String: Any],
+               let release = json["release_uuid"] as? String {
+                try? release.write(toFile: appPath + "/.ota_release", atomically: true, encoding: .utf8)
+                print("📌 Applied OTA release \(release)")
+            }
 
             // Run migrations and clear caches for updated app
             runMigrationsAndClearCaches()
@@ -303,35 +336,165 @@ class AppUpdateManager {
         }
     }
 
+    /// Compiled Blade views and the bootstrap cache live in Application
+    /// Support, which deliberately survives the app directory being replaced —
+    /// that is where the database lives. But they describe the code that was
+    /// there before, so after any extraction they are stale: a template the
+    /// update changed keeps rendering from the old compiled copy.
+    ///
+    /// Cleared here rather than through `artisan view:clear`, because
+    /// extraction happens before the PHP runtime exists.
+    /// A payload ships the whole Laravel .env, and it deliberately carries no
+    /// app version: which shell this is belongs to the shell. The values are
+    /// written back from bundle_meta so the running app reports the version it
+    /// was installed as, and so the identity check keeps matching.
+    ///
+    /// Dotenv is immutable — the first definition of a key wins — so existing
+    /// lines are removed rather than appended after.
+    ///
+    /// When the metadata cannot be read, nothing is written: the app then has
+    /// no version, which reads as DEBUG and re-extracts the bundle every
+    /// launch. A slow boot beats running a payload we cannot identify.
+    private func restoreShellVersion() {
+        guard let meta = bundleMetadata() else {
+            print("⚠️ No bundle metadata — leaving the payload without a version")
+            return
+        }
+
+        let envPath = appPath + "/.env"
+
+        guard var env = try? String(contentsOfFile: envPath, encoding: .utf8) else {
+            print("⚠️ No .env in the payload to restore the version into")
+            return
+        }
+
+        let kept = env
+            .components(separatedBy: .newlines)
+            .filter {
+                !$0.hasPrefix("NATIVEPHP_APP_VERSION=")
+                    && !$0.hasPrefix("NATIVEPHP_APP_VERSION_CODE=")
+                    && !$0.hasPrefix("NATIVEPHP_OTA_SHELL_BUILT_AT=")
+                    && !$0.hasPrefix("NATIVEPHP_OTA_SHELL_COMMIT=")
+            }
+            .joined(separator: "\n")
+
+        env = kept.hasSuffix("\n") ? kept : kept + "\n"
+        env += "NATIVEPHP_APP_VERSION=\"\(meta.version)\"\n"
+        env += "NATIVEPHP_APP_VERSION_CODE=\(meta.versionCode)\n"
+
+        // The shell's own baseline travels with it, not with the payload: a
+        // lane must not offer an app a release older than the code it shipped
+        // with.
+        if let json = bundleMetaJson() {
+            if let builtAt = json["shell_built_at"] as? String, !builtAt.isEmpty {
+                env += "NATIVEPHP_OTA_SHELL_BUILT_AT=\"\(builtAt)\"\n"
+            }
+            if let commit = json["shell_commit"] as? String, !commit.isEmpty {
+                env += "NATIVEPHP_OTA_SHELL_COMMIT=\"\(commit)\"\n"
+            }
+        }
+
+        do {
+            try env.write(toFile: envPath, atomically: true, encoding: .utf8)
+            print("📝 Restored shell version \(meta.version)b\(meta.versionCode) into the payload's .env")
+        } catch {
+            print("❌ Could not restore the shell version: \(error)")
+        }
+    }
+
+    /// What the server said about the release, written beside the download by
+    /// the OTA client and moved in here so the installed payload carries the
+    /// checksum and publish time alongside what the build already described.
+    private func mergePendingManifest() {
+        let pendingManifest = updatesPath + "/pending.json"
+
+        guard let data = FileManager.default.contents(atPath: pendingManifest),
+              let server = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        let manifestPath = appPath + "/ota.json"
+        var merged: [String: Any] = [:]
+
+        if let existing = FileManager.default.contents(atPath: manifestPath),
+           let built = try? JSONSerialization.jsonObject(with: existing) as? [String: Any] {
+            merged = built
+        }
+
+        for (key, value) in server where key != "download_url" {
+            merged[key] = value
+        }
+
+        if let out = try? JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: URL(fileURLWithPath: manifestPath))
+            print("📌 Recorded release \(merged["release_uuid"] as? String ?? "?") from the server's answer")
+        }
+
+        try? FileManager.default.removeItem(atPath: pendingManifest)
+    }
+
+    private func clearCompiledCaches() {
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+
+        guard let appSupport else { return }
+
+        let caches = [
+            appSupport.appendingPathComponent("storage/framework/views"),
+            appSupport.appendingPathComponent("storage/framework/cache/data"),
+        ]
+
+        for cache in caches {
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: cache, includingPropertiesForKeys: nil
+            ) else { continue }
+
+            for entry in entries {
+                try? FileManager.default.removeItem(at: entry)
+            }
+        }
+
+        // The app's own bootstrap cache ships inside the payload, so it goes
+        // with the directory — but a config cache left behind would pin the
+        // previous release's environment.
+        let bootstrapCache = URL(fileURLWithPath: appPath).appendingPathComponent("bootstrap/cache")
+        if let entries = try? FileManager.default.contentsOfDirectory(at: bootstrapCache, includingPropertiesForKeys: nil) {
+            for entry in entries where entry.lastPathComponent.hasSuffix(".php") {
+                try? FileManager.default.removeItem(at: entry)
+            }
+        }
+
+        print("🧹 Cleared compiled caches after extraction")
+    }
+
     private func isValidApp(at path: String) -> Bool {
         let envFile = path + "/.env"
         let vendorDir = path + "/vendor"
-        let bootstrapFile = path + "/vendor/nativephp/mobile-lite/bootstrap/ios/native.php"
+        // The package was renamed from mobile-lite to mobile, and this kept
+        // the old path — so every payload failed validation and was deleted,
+        // and an OTA could never apply. A bundle built before the rename is
+        // still a valid app, so both names are accepted.
+        let bootstraps = [
+            path + "/vendor/nativephp/mobile/bootstrap/ios/native.php",
+            path + "/vendor/nativephp/mobile-lite/bootstrap/ios/native.php",
+        ]
 
         return FileManager.default.fileExists(atPath: envFile) &&
                FileManager.default.fileExists(atPath: vendorDir) &&
-               FileManager.default.fileExists(atPath: bootstrapFile)
+               bootstraps.contains(where: { FileManager.default.fileExists(atPath: $0) })
     }
 
     @discardableResult
     private func applyPendingUpdates() -> Bool {
-        let updateFiles = (try? FileManager.default.contentsOfDirectory(atPath: updatesPath)) ?? []
-        let zipFiles = updateFiles.filter { $0.hasSuffix(".zip") }
+        // One queued payload, at one known name. Scanning for any zip would
+        // let a leftover download — fetched for a shell that has since been
+        // replaced — install itself over the app.
+        let pendingPath = updatesPath + "/pending.zip"
 
-        // Prefer a stable pending.zip (plugin download target) so leftover
-        // timestamped zips don't win. Still only apply one zip per boot.
-        let ordered = zipFiles.contains("pending.zip")
-            ? ["pending.zip"] + zipFiles.filter { $0 != "pending.zip" }
-            : zipFiles
-
-        for zipFile in ordered {
-            let zipPath = updatesPath + "/" + zipFile
-            if installUpdate(from: zipPath) {
-                // Only install one update at a time
-                return true
-            }
+        guard FileManager.default.fileExists(atPath: pendingPath) else {
+            return false
         }
-        return false
+
+        return installUpdate(from: pendingPath)
     }
 
     private func cleanupOldBackups() {
@@ -550,9 +713,34 @@ class AppUpdateManager {
     // OTA check/download lives in the mobile-ota plugin. Core only applies
     // pending zips from Documents/updates on boot via applyPendingUpdates().
 
+    /// version + version_code out of bundle_meta.json — the one identity file
+    /// both platforms write and read. Android has only ever had this; iOS also
+    /// wrote bundled.version, so that stays as a fallback until every shell in
+    /// the field carries the metadata.
+    private func bundleMetadata() -> (version: String, versionCode: Int)? {
+        guard let json = bundleMetaJson(), let version = json["version"] as? String else { return nil }
+
+        return (version, (json["version_code"] as? NSNumber)?.intValue ?? 0)
+    }
+
+    private func bundleMetaJson() -> [String: Any]? {
+        guard let path = Bundle.main.path(forResource: "bundle_meta", ofType: "json"),
+              let data = FileManager.default.contents(atPath: path)
+        else { return nil }
+
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
     private func getBundledAppVersionFast() -> String? {
+        if let meta = bundleMetadata() {
+            let id = meta.version.uppercased() == "DEBUG" ? "DEBUG" : "\(meta.version)b\(meta.versionCode)"
+            print("🔢 Got bundled version from bundle_meta.json: \(id)")
+
+            return id
+        }
+
         guard let bundlePath = Bundle.main.path(forResource: "bundled", ofType: "version") else {
-            print("❌ No bundled.version file found")
+            print("❌ No bundle_meta.json or bundled.version file found")
             return nil
         }
 
