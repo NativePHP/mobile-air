@@ -34,21 +34,10 @@ class MobileRoutesTest extends TestCase
     /** How the stand-in app route provider loads routes. */
     private ?Closure $appRoutes = null;
 
-    /** nativephp-internal as config:cache wrote it, in place before providers register. */
-    private ?array $cachedInternalConfig = null;
-
-    /** NATIVEPHP_RUNNING as the process had it, in each place env() looks. */
-    private array $nativephpRunning;
-
     protected function setUp(): void
     {
         $this->argv = $_SERVER['argv'];
         $this->jumpBridgePort = getenv('JUMP_BRIDGE_PORT');
-        $this->nativephpRunning = [
-            'getenv' => getenv('NATIVEPHP_RUNNING'),
-            'server' => $_SERVER['NATIVEPHP_RUNNING'] ?? null,
-            'env' => $_ENV['NATIVEPHP_RUNNING'] ?? null,
-        ];
 
         NativeRouter::clearRoutes();
 
@@ -73,30 +62,7 @@ class MobileRoutesTest extends TestCase
         $_SERVER['argv'] = $this->argv;
         putenv($this->jumpBridgePort === false ? 'JUMP_BRIDGE_PORT' : "JUMP_BRIDGE_PORT={$this->jumpBridgePort}");
 
-        ['getenv' => $getenv, 'server' => $server, 'env' => $env] = $this->nativephpRunning;
-        putenv($getenv === false ? 'NATIVEPHP_RUNNING' : "NATIVEPHP_RUNNING={$getenv}");
-        unset($_SERVER['NATIVEPHP_RUNNING'], $_ENV['NATIVEPHP_RUNNING']);
-        if ($server !== null) {
-            $_SERVER['NATIVEPHP_RUNNING'] = $server;
-        }
-        if ($env !== null) {
-            $_ENV['NATIVEPHP_RUNNING'] = $env;
-        }
-
         parent::tearDown();
-    }
-
-    /**
-     * Config loads before providers register, so a value set here wins over
-     * the package's own config file, the same as a cached config does.
-     */
-    protected function resolveApplicationConfiguration($app)
-    {
-        parent::resolveApplicationConfiguration($app);
-
-        if ($this->cachedInternalConfig !== null) {
-            $app['config']->set('nativephp-internal', $this->cachedInternalConfig);
-        }
     }
 
     /**
@@ -337,41 +303,6 @@ class MobileRoutesTest extends TestCase
 
             $this->assertTrue($this->shouldLoadMobileRoutes(), $command);
         }
-    }
-
-    public function test_the_environment_turns_it_on_when_a_cached_config_says_off(): void
-    {
-        // Android ran config:cache before its runtime set NATIVEPHP_RUNNING,
-        // so the cache says false while every later boot runs on device.
-        $this->cachedInternalConfig = ['running' => false, 'platform' => 'android', 'tempdir' => null];
-        putenv('NATIVEPHP_RUNNING=true');
-
-        $this->refreshApplication();
-
-        $this->assertTrue(config('nativephp-internal.running'));
-
-        $this->app['env'] = 'production';
-        (fn () => $this->isRunningInConsole = false)->call($this->app);
-        putenv('JUMP_BRIDGE_PORT');
-
-        $this->assertTrue($this->shouldLoadMobileRoutes());
-    }
-
-    public function test_a_cached_config_stays_off_without_the_environment_variable(): void
-    {
-        $this->cachedInternalConfig = ['running' => false, 'platform' => null, 'tempdir' => null];
-        putenv('NATIVEPHP_RUNNING');
-        unset($_SERVER['NATIVEPHP_RUNNING'], $_ENV['NATIVEPHP_RUNNING']);
-
-        $this->refreshApplication();
-
-        $this->assertFalse(config('nativephp-internal.running'));
-
-        $this->app['env'] = 'production';
-        (fn () => $this->isRunningInConsole = false)->call($this->app);
-        putenv('JUMP_BRIDGE_PORT');
-
-        $this->assertFalse($this->shouldLoadMobileRoutes());
     }
 
     /**

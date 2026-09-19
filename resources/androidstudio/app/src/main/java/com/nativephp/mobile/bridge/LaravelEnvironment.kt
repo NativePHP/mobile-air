@@ -644,6 +644,15 @@ class LaravelEnvironment(private val context: Context) {
         phpBridge.runArtisanCommand("optimize:clear")
         phpBridge.runArtisanCommand("storage:unlink")
         phpBridge.runArtisanCommand("storage:link")
+
+        // Migrate twice, like iOS. The package only loads its jobs migrations
+        // when NATIVEPHP_RUNNING is set, and they must run after the app's own:
+        // a dated create_jobs_table sorts after ours and would clash. So the
+        // app migrates first, then the flag goes on for the rest of the process.
+        // config:cache needs it too, or the cache records running => false and
+        // routes/mobile.php never loads on device.
+        phpBridge.runArtisanCommand("migrate --force")
+        setEnvironmentVariable("NATIVEPHP_RUNNING", "true")
         phpBridge.runArtisanCommand("migrate --force")
 
         // Cache the Laravel bootstrap so every subsequent cold boot skips config
