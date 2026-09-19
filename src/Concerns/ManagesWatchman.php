@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Concerns;
 
+use Native\Mobile\Support\PathHelper;
 use Symfony\Component\Process\Process;
 
 use function Laravel\Prompts\error;
@@ -214,7 +215,7 @@ trait ManagesWatchman
     {
         foreach ($watchPaths as $watchPath) {
             // Remove base_path prefix if present
-            $watchPath = str_replace(base_path().'/', '', $watchPath);
+            $watchPath = PathHelper::relativeTo($watchPath, base_path());
 
             if (str_starts_with($relativePath, $watchPath.'/') || $relativePath === $watchPath) {
                 return true;
