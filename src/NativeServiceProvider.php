@@ -112,6 +112,13 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
+        // A cached config can predate NATIVEPHP_RUNNING: Android runs
+        // config:cache before its runtime sets it, which baked in false.
+        // The environment is the truth on device, so let it switch this on.
+        if (env('NATIVEPHP_RUNNING')) {
+            config(['nativephp-internal.running' => true]);
+        }
+
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
