@@ -453,6 +453,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Responsive Breakpoints
+    |--------------------------------------------------------------------------
+    |
+    | Min-width thresholds (points on iOS, dp on Android) behind the `sm:`,
+    | `md:`, `lg:` class prefixes on native elements. Mobile-first like
+    | Tailwind: `md:flex-row` applies from 768 up. Resolved natively against
+    | the live window width, so screens re-flow on rotation and Split View.
+    | `medium` / `expanded` mirror Material's window size classes. Leave
+    | empty to use the defaults shown here.
+    |
+    */
+    'breakpoints' => [
+        'sm' => 640,
+        'medium' => 600,
+        'md' => 768,
+        'expanded' => 840,
+        'lg' => 1024,
+        'xl' => 1280,
+        '2xl' => 1536,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | iPad Support
     |--------------------------------------------------------------------------
     |

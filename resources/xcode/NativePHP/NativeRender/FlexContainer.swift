@@ -104,11 +104,25 @@ struct FlexContainer: Layout {
         /// measurement. Returning the cached size leaves whatever idealSize
         /// the most recent actual measurement set.
         var sizeCache: [ProposalKey: CGSize] = [:]
+        /// The `measurementGeneration` `sizeCache` was filled under.
+        var generation = FlexContainer.measurementGeneration
         /// The proposal the children's `idealSize`s were last measured for.
         /// `placeSubviews` reuses those sizes, so it needs to know they match
         /// the proposal it's placing for (see there).
         var measuredKey: ProposalKey?
     }
+
+    /// Bumped when the window width changes (rotation, Split View, Stage
+    /// Manager). `sizeCache` outlives a layout pass — SwiftUI only calls
+    /// `updateCache` when the container or its subviews change, and a resize
+    /// changes neither — while a cache hit leaves `idealSize` at whatever the
+    /// last real measurement set. After a resize that pairing goes stale: a
+    /// row whose text wrapped under a narrow window measures `.unspecified`
+    /// again, hits, and `placeSubviews` lays the text out at the old wrapped
+    /// width in a window that now has room for one line. Emptying the cache
+    /// on the first call of a new generation re-measures once per resize.
+    /// Main thread only, like the rest of layout.
+    static var measurementGeneration = 0
 
     /// Quantized proposal hash. CGFloat sizes can drift sub-pixel between
     /// SwiftUI calls; rounding to 1/1000 pt absorbs the noise.
@@ -270,6 +284,10 @@ struct FlexContainer: Layout {
 
         // Memoization: SwiftUI calls sizeThatFits multiple times per layout
         // pass with the same proposal. Skip the full subview walk on repeats.
+        if cache.generation != Self.measurementGeneration {
+            cache.sizeCache.removeAll(keepingCapacity: true)
+            cache.generation = Self.measurementGeneration
+        }
         let key = ProposalKey(proposal)
         if let cached = cache.sizeCache[key] {
             return cached
