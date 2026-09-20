@@ -203,7 +203,7 @@ final class ExecutionContext: @unchecked Sendable {
 
     /// Run `block` once the app is on screen — either because the work
     /// touches the UI, or because it costs resources a headless background
-    /// wake never asked for (the queue worker's second PHP context).
+    /// wake never asked for (the queue worker and async pool's PHP contexts).
     ///
     /// Runs immediately when the app is already on screen (a foreground launch
     /// that hasn't been backgrounded, or any launch that has reached
