@@ -1,9 +1,22 @@
 import Foundation
 import SwiftUI
 
-/// Register all bridge functions with the registry
-/// Call this once during app initialization
+/// Register all bridge functions with the registry.
+///
+/// Safe to call more than once and from any thread — only the first call does
+/// the work (Swift initialises a global `let` lazily, exactly once). Two
+/// callers need that: `NativePHPApp.init()` on a normal launch, and
+/// `NativePHPBootstrap` on a headless background launch, where SwiftUI may
+/// never build the App value because no scene connects. Without the second
+/// call PHP could boot with no bridge at all and every `nativephp_call()`
+/// during background work would fail.
+private let bridgeFunctionsRegistered: Void = performBridgeFunctionRegistration()
+
 func registerBridgeFunctions() {
+    _ = bridgeFunctionsRegistered
+}
+
+private func performBridgeFunctionRegistration() {
     let registry = BridgeFunctionRegistry.shared
 
     // AsyncTask.* — background PHP work with UI completion callbacks

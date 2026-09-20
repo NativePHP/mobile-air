@@ -55,6 +55,13 @@ final class NativePHPBootstrap: @unchecked Sendable {
     private func bootRuntime() {
         NSLog("[NativePHP] Deferred initialization starting (headless=\(ExecutionContext.shared.isHeadless))")
 
+        // 0. Normally done by NativePHPApp.init(), but a headless background
+        // launch connects no scene, so SwiftUI may never build the App value.
+        // PHP would then boot with no bridge and every nativephp_call() from
+        // the work we were woken for would fail. One-shot, so this is a no-op
+        // on a normal launch.
+        registerBridgeFunctions()
+
         // 1. Initialize PHP environment (env vars, php.ini, database)
         NSLog("[NativePHP] preparePhpEnvironment START")
         _ = NativePHPApp.preparePhpEnvironment()
