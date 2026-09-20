@@ -178,23 +178,11 @@ return [
     | language, falling back to the value in `permissions` (Info.plist).
     |
     | Plugins can ship their own localizations via `ios.info_plist_localizations`
-    | in their nativephp.json — app-level entries win on key collisions.
+    | in their nativephp.json — app-level entries win on key collisions. Only
+    | locales your app declares in `supported_locales` below are written: a
+    | plugin contributes translations, never languages.
     |
     */
-
-    /*
-    |--------------------------------------------------------------------------
-    | Default Locale
-    |--------------------------------------------------------------------------
-    |
-    | The language your unlocalized strings (Info.plist values, UI copy) are
-    | written in. It leads the Android locales_config.xml generated when you
-    | declare `permission_localizations`, so users can always switch back to
-    | it explicitly in the per-app language picker.
-    |
-    */
-
-    'default_locale' => 'en',
 
     'permission_localizations' => [
         // 'nl' => [
@@ -205,6 +193,35 @@ return [
         // 'fr' => [
         //     'NSCameraUsageDescription' => 'Utilisé pour prendre une photo de profil.',
         // ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Supported Locales
+    |--------------------------------------------------------------------------
+    |
+    | The languages your app supports, and the only thing that decides them.
+    |
+    | Both platforms read this list. Android points the manifest at a generated
+    | locale-config so your app appears in Settings → [App] → Language, iOS
+    | declares them as CFBundleLocalizations so it appears in Settings → [App]
+    | → Preferred Language, and both stores advertise exactly these languages
+    | on your app's page.
+    |
+    | Declaring nothing means supporting one language: `config('app.locale')`,
+    | which always leads the list so users can explicitly switch back to it.
+    | It is read at build time, so the base language of a binary is whatever
+    | APP_LOCALE said on the machine that built it.
+    |
+    | Listing a locale here only lets the user pick it — translating your app
+    | is still up to you and your `lang/` files.
+    |
+    */
+
+    'supported_locales' => [
+        // 'fr',
+        // 'nl',
+        // 'zh-Hans',
     ],
 
     /*

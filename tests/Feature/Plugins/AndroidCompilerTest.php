@@ -1852,15 +1852,13 @@ object TestFunctions {
     /**
      * @test
      *
-     * Declaring permission_localizations should produce a locales_config.xml
-     * (default locale first) and point the manifest's <application> at it,
-     * so Android 13+ lists the app in the per-app language picker.
+     * The languages the app declares become the locale-config Android reads,
+     * base language first, and the manifest points at it — which is the only
+     * thing that gets an app listed in Settings' per-app language picker.
      */
-    public function it_writes_locales_config_when_the_app_declares_localizations(): void
+    public function it_writes_locales_config_from_the_declared_locales(): void
     {
-        config(['nativephp.permission_localizations' => [
-            'fr' => ['NSCameraUsageDescription' => 'Photo de profil.'],
-        ]]);
+        config(['nativephp.supported_locales' => ['fr', 'nl']]);
 
         $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
 
@@ -1872,6 +1870,9 @@ object TestFunctions {
         $xml = $this->files->get($xmlPath);
         $this->assertStringContainsString('<locale android:name="en" />', $xml);
         $this->assertStringContainsString('<locale android:name="fr" />', $xml);
+        $this->assertStringContainsString('<locale android:name="nl" />', $xml);
+
+        // app.locale leads, so the user can always switch back to it.
         $this->assertLessThan(strpos($xml, '"fr"'), strpos($xml, '"en"'));
 
         $manifest = $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml');
@@ -1881,10 +1882,38 @@ object TestFunctions {
     /**
      * @test
      *
-     * Apps that declare no localizations anywhere must be left untouched —
-     * no locales_config.xml, no manifest attribute.
+     * A plugin shipping its permission explainer in another language must not
+     * make the app offer that language. Plugins contribute translations; the
+     * app decides which languages it supports.
      */
-    public function it_leaves_apps_without_localizations_untouched(): void
+    public function it_does_not_let_plugins_add_languages(): void
+    {
+        config(['nativephp.supported_locales' => ['fr']]);
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [],
+                'dependencies' => [],
+                'info_plist_localizations' => ['nl' => ['NSCameraUsageDescription' => 'Profielfoto.']],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $xml = $this->files->get($this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml');
+        $this->assertStringContainsString('<locale android:name="fr" />', $xml);
+        $this->assertStringNotContainsString('nl', $xml);
+    }
+
+    /**
+     * @test
+     *
+     * An app that declares nothing supports one language, and a picker with a
+     * single entry is worse than none — leave the project untouched.
+     */
+    public function it_leaves_apps_that_declare_no_locales_untouched(): void
     {
         $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
 
@@ -1900,34 +1929,83 @@ object TestFunctions {
     /**
      * @test
      *
-     * Plugin-declared localizations contribute their locales too, and a
-     * second compile must not duplicate the manifest attribute.
+     * Dropping the last extra language has to un-ship the picker: `nativephp/`
+     * is gitignored, so a long-lived scaffold would otherwise keep offering
+     * languages the app no longer claims until someone ran native:install.
      */
-    public function it_merges_plugin_locales_and_stays_idempotent(): void
+    public function it_clears_the_locale_config_when_the_locales_are_removed(): void
     {
-        config(['nativephp.permission_localizations' => [
-            'fr' => ['NSCameraUsageDescription' => 'Photo de profil.'],
-        ]]);
+        config(['nativephp.supported_locales' => ['fr', 'nl']]);
 
-        $plugin = $this->createTestPlugin([
-            'ios' => [
-                'info_plist' => [],
-                'dependencies' => [],
-                'info_plist_localizations' => ['nl' => ['NSCameraUsageDescription' => 'Profielfoto.']],
-            ],
-        ]);
-
-        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
 
         $this->compiler->compile();
+
+        $xmlPath = $this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml';
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $this->assertFileExists($xmlPath);
+
+        config(['nativephp.supported_locales' => []]);
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($xmlPath);
+        $this->assertStringNotContainsString('android:localeConfig', $this->files->get($manifestPath));
+        // The rest of the <application> tag survives the surgery.
+        $this->assertStringContainsString('<application', $this->files->get($manifestPath));
+    }
+
+    /**
+     * @test
+     *
+     * Recompiling must not stack a second attribute onto <application>.
+     */
+    public function it_stays_idempotent_across_recompiles(): void
+    {
+        config(['nativephp.supported_locales' => ['fr']]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $manifest = $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml');
+        $this->assertSame(1, substr_count($manifest, 'android:localeConfig'));
+    }
+
+    /**
+     * @test
+     *
+     * These values are interpolated straight into an XML attribute, so a typo
+     * is dropped and named rather than written out.
+     */
+    public function it_ignores_invalid_locale_declarations(): void
+    {
+        config(['nativephp.supported_locales' => ['fr', 'not a locale']]);
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
         $this->compiler->compile();
 
         $xml = $this->files->get($this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml');
         $this->assertStringContainsString('<locale android:name="fr" />', $xml);
-        $this->assertStringContainsString('<locale android:name="nl" />', $xml);
+        $this->assertStringNotContainsString('not a locale', $xml);
 
-        $manifest = $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml');
-        $this->assertSame(1, substr_count($manifest, 'android:localeConfig'));
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn (string $warning) => str_contains($warning, "Ignoring invalid locale 'not a locale'")
+        ));
     }
 
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin

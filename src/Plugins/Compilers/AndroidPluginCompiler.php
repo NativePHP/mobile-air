@@ -11,6 +11,7 @@ use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\ProjectFileManager;
 use Native\Mobile\Support\Stub;
+use Native\Mobile\Support\SupportedLocales;
 
 class AndroidPluginCompiler
 {
@@ -210,10 +211,10 @@ class AndroidPluginCompiler
             $this->warn(LegacyFirebaseConfig::deprecationNotice($legacyFirebase, 'android'));
         }
 
-        // Declare the app's locales so Android 13+ offers the per-app
-        // language picker (runs even with no plugins — the app's own
-        // permission_localizations are reason enough).
-        $this->writeLocalesConfig($allPlugins);
+        // Declare the languages the app supports so Android 13+ offers the
+        // per-app language picker (runs even when the list is empty so a
+        // dropped language stops being offered).
+        $this->writeLocalesConfig();
 
         // Declare plugin-required Gradle plugins in the root build file (runs
         // even when the list is empty so a removed plugin's declaration is cleared).
@@ -981,85 +982,97 @@ class AndroidPluginCompiler
     }
 
     /**
-     * Merge plugin AndroidManifest.xml entries into main manifest
-     */
-    /**
-     * Declare the app's supported locales to Android.
+     * Declare the languages the app supports to Android.
      *
      * Android 13+ only lists an app in Settings' per-app language picker when
-     * its manifest points at a locale-config resource. Mirror what the iOS
-     * compiler already does with these same declarations (per-locale
-     * InfoPlist.strings + knownRegions): collect every locale declared by the
-     * app's `permission_localizations` config and by plugins'
-     * `ios.info_plist_localizations`, write res/xml/locales_config.xml and
-     * reference it from the <application> tag.
+     * its manifest points at a locale-config resource, so the declarations in
+     * config('nativephp.supported_locales') have to be written out as one.
      *
-     * Apps that declare no localizations are left completely untouched.
+     * Runs on every compile, including when nothing is declared, so dropping a
+     * language also drops the picker entry offering it — the same contract
+     * injectGradlePlugins and injectPluginProguardRules keep for their blocks.
+     * Without it the only thing that clears a stale manifest is a fresh
+     * native:install, and `nativephp/` is gitignored.
      */
-    protected function writeLocalesConfig(Collection $plugins): void
+    protected function writeLocalesConfig(): void
     {
-        $locales = [];
+        $locales = SupportedLocales::fromConfig();
 
-        foreach ($plugins as $plugin) {
-            foreach (array_keys($plugin->getIosInfoPlistLocalizations()) as $locale) {
-                $locales[] = $this->normalizeLocale((string) $locale);
-            }
+        foreach ($locales->warnings(lang_path()) as $warning) {
+            $this->warn($warning);
         }
 
-        foreach (array_keys((array) config('nativephp.permission_localizations', [])) as $locale) {
-            $locales[] = $this->normalizeLocale((string) $locale);
-        }
+        $xmlPath = $this->androidProjectPath.'/app/src/main/res/xml/locales_config.xml';
+        $manifestPath = $this->androidProjectPath.'/app/src/main/AndroidManifest.xml';
 
-        $locales = array_values(array_unique(array_filter($locales)));
+        // One supported language is the default, and a picker listing a single
+        // entry is worse than no picker: leave (or put back) the untouched app.
+        if (! $locales->offersChoice()) {
+            $this->clearLocalesConfig($xmlPath, $manifestPath);
 
-        if (empty($locales)) {
             return;
         }
 
-        // The default (unlocalized) language leads the list so users can
-        // always switch back to it explicitly.
-        $default = $this->normalizeLocale((string) config('nativephp.default_locale', 'en'));
-        $locales = array_values(array_unique(array_merge([$default], $locales)));
-
-        $xmlDir = $this->androidProjectPath.'/app/src/main/res/xml';
-        $this->files->ensureDirectoryExists($xmlDir);
-
         $entries = implode("\n", array_map(
             fn (string $locale) => '    <locale android:name="'.$locale.'" />',
-            $locales
+            $locales->all()
         ));
 
-        $this->files->put(
-            $xmlDir.'/locales_config.xml',
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        $xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
             ."<locale-config xmlns:android=\"http://schemas.android.com/apk/res/android\">\n"
             .$entries."\n"
-            ."</locale-config>\n"
-        );
+            ."</locale-config>\n";
 
-        $manifestPath = $this->androidProjectPath.'/app/src/main/AndroidManifest.xml';
+        // Only touch the file when it actually changes — rewriting a resource
+        // on every compile invalidates Gradle's incremental resource task.
+        if (! $this->files->exists($xmlPath) || $this->files->get($xmlPath) !== $xml) {
+            $this->files->ensureDirectoryExists(dirname($xmlPath));
+            $this->files->put($xmlPath, $xml);
+        }
+
+        if (! $this->files->exists($manifestPath)) {
+            return;
+        }
+
         $manifest = $this->files->get($manifestPath);
 
-        if (! str_contains($manifest, 'android:localeConfig')) {
-            $manifest = preg_replace(
-                '/<application\b/',
-                "<application\n        android:localeConfig=\"@xml/locales_config\"",
-                $manifest,
-                1
-            );
-            $this->files->put($manifestPath, $manifest);
+        if (str_contains($manifest, 'android:localeConfig')) {
+            return;
+        }
+
+        $this->files->put($manifestPath, preg_replace(
+            '/<application\b/',
+            "<application\n        android:localeConfig=\"@xml/locales_config\"",
+            $manifest,
+            1
+        ));
+    }
+
+    /**
+     * Undo writeLocalesConfig(): the app declares nothing to choose between,
+     * so it must not keep advertising languages a previous build wrote.
+     */
+    protected function clearLocalesConfig(string $xmlPath, string $manifestPath): void
+    {
+        if ($this->files->exists($xmlPath)) {
+            $this->files->delete($xmlPath);
+        }
+
+        if (! $this->files->exists($manifestPath)) {
+            return;
+        }
+
+        $manifest = $this->files->get($manifestPath);
+        $stripped = preg_replace('/\s*android:localeConfig="@xml\/locales_config"/', '', $manifest, 1);
+
+        if ($stripped !== null && $stripped !== $manifest) {
+            $this->files->put($manifestPath, $stripped);
         }
     }
 
     /**
-     * `nl_NL` and `nl-NL` both mean the same thing; Android locale-config
-     * entries use BCP 47 hyphens.
+     * Merge plugin AndroidManifest.xml entries into main manifest
      */
-    protected function normalizeLocale(string $locale): string
-    {
-        return str_replace('_', '-', trim($locale));
-    }
-
     protected function mergeManifestEntries(Collection $plugins): void
     {
         $mainManifestPath = $this->androidProjectPath.'/app/src/main/AndroidManifest.xml';
