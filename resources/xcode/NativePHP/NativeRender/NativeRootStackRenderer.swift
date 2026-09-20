@@ -464,22 +464,24 @@ private struct NavigationSubtitleModifier: ViewModifier {
 
     /// The `#if` keeps `.navigationSubtitle` out of the compilation entirely
     /// on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
-    /// `LiquidGlassAvailability.swift`.
+    /// `LiquidGlassAvailability.swift`. It gates the whole `body` so the
+    /// Xcode 26 arm keeps the original `if / else if / else` chain — see the
+    /// note on `GlassModifier.body` for why the nesting matters.
+    #if compiler(>=6.2)
     func body(content: Content) -> some View {
         if subtitle.isEmpty || showsAsPrincipal {
             content
+        } else if #available(iOS 26.0, *) {
+            content.navigationSubtitle(subtitle)
         } else {
-            #if compiler(>=6.2)
-            if #available(iOS 26.0, *) {
-                content.navigationSubtitle(subtitle)
-            } else {
-                content
-            }
-            #else
             content
-            #endif
         }
     }
+    #else
+    func body(content: Content) -> some View {
+        content
+    }
+    #endif
 }
 
 

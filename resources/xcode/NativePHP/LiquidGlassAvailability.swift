@@ -38,7 +38,19 @@
 //      #endif
 //
 //  with the pre-26 branch factored into a `fallback` helper so the two
-//  `#if` arms can't drift apart. Call sites:
+//  `#if` arms can't drift apart.
+//
+//  Where the runtime check is the middle link of an `if / else if / else`
+//  chain, the `#if` goes around the WHOLE `body` instead, duplicating the
+//  signature. Dropping it into the `else` arm re-nests what ViewBuilder
+//  emits — `_ConditionalContent<_ConditionalContent<A, B>, C>` becomes
+//  `_ConditionalContent<A, _ConditionalContent<B, C>>` — and that changes
+//  the SwiftUI view type on Xcode 26 builds, which this fix is meant to
+//  leave untouched. `GlassModifier` and `NavigationSubtitleModifier` are
+//  the two that need it. Verified by diffing emitted symbols against a
+//  pre-fix build.
+//
+//  Call sites:
 //
 //    • ContentView.GlassPillBackground              — .glassEffect(in:)
 //    • NodeStyleModifier.GlassModifier              — .glassEffect(_:in:)

@@ -219,25 +219,36 @@ private struct GlassModifier: ViewModifier {
     /// The `#if` keeps `.glassEffect` out of the compilation entirely on
     /// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
     /// `LiquidGlassAvailability.swift`.
+    ///
+    /// It gates the whole `body` rather than sitting inside it so that the
+    /// Xcode 26 arm keeps the original `if / else if / else` chain verbatim.
+    /// A `#if` nested in the `else` arm re-nests what ViewBuilder emits —
+    /// `_ConditionalContent<_ConditionalContent<A, B>, C>` becomes
+    /// `_ConditionalContent<A, _ConditionalContent<B, C>>` — which changes
+    /// the view type on builds this fix is supposed to leave alone.
+    #if compiler(>=6.2)
+    func body(content: Content) -> some View {
+        if !enabled {
+            content
+        } else if #available(iOS 26.0, *) {
+            if clear {
+                content.glassEffect(.clear.interactive(interactive), in: glassShape)
+            } else {
+                content.glassEffect(.regular.interactive(interactive), in: glassShape)
+            }
+        } else {
+            fallback(content)
+        }
+    }
+    #else
     func body(content: Content) -> some View {
         if !enabled {
             content
         } else {
-            #if compiler(>=6.2)
-            if #available(iOS 26.0, *) {
-                if clear {
-                    content.glassEffect(.clear.interactive(interactive), in: glassShape)
-                } else {
-                    content.glassEffect(.regular.interactive(interactive), in: glassShape)
-                }
-            } else {
-                fallback(content)
-            }
-            #else
             fallback(content)
-            #endif
         }
     }
+    #endif
 
     /// Older-iOS fallback can't simulate touch-highlight — drop the
     /// interactive flag silently. `.ultraThinMaterial` is the closest
