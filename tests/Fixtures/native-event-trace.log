@@ -1,0 +1,6 @@
+09-20 14:00:00.000 I/NativePHPTrace: stage=native_dispatch trace_id=alpha monotonic_ns=1000000000 event=Example
+09-20 14:00:00.001 I/NativePHPTrace: stage=webview_intercept trace_id=alpha monotonic_ns=1002000000 path=/_native/api/events
+09-20 14:00:00.002 I/NativePHPTrace: stage=php_executor_start trace_id=alpha queue_ns=1000000 monotonic_ns=1003000000
+09-20 14:00:00.004 I/NativePHPTrace: stage=php_executor_end trace_id=alpha execution_ns=2000000 monotonic_ns=1005000000
+09-20 14:00:00.005 I/NativePHPTrace: stage=webview_response trace_id=alpha monotonic_ns=1006000000 status=200
+09-20 14:00:00.005 I/NativePHPTrace: stage=php_event_handler trace_id=alpha handler_us=500

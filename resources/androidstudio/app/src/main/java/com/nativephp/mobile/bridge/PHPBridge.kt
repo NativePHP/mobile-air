@@ -3,6 +3,7 @@
 package com.nativephp.mobile.bridge
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
 import org.json.JSONObject
@@ -182,8 +183,19 @@ class PHPBridge(private val context: Context) {
 
     fun handleLaravelRequest(request: PHPRequest): String {
         val requestStart = System.currentTimeMillis()
+        val queuedAtNs = SystemClock.elapsedRealtimeNanos()
+        val traceId = request.headers.entries.firstOrNull {
+            it.key.equals("X-NativePHP-Trace-Id", ignoreCase = true)
+        }?.value
+        val isTraced = traceId != null && request.headers.entries.any {
+            it.key.equals("X-NativePHP-Event-Trace", ignoreCase = true) && it.value == "1"
+        }
 
         val future = phpExecutor.submit<String> {
+            val executionStartedAtNs = SystemClock.elapsedRealtimeNanos()
+            if (isTraced) {
+                Log.i("NativePHPTrace", "stage=php_executor_start trace_id=$traceId queue_ns=${executionStartedAtNs - queuedAtNs} monotonic_ns=$executionStartedAtNs")
+            }
             val prepStart = System.currentTimeMillis()
 
             // Clear Inertia-related env vars first - they persist between requests
@@ -237,6 +249,10 @@ class PHPBridge(private val context: Context) {
             val processTime = System.currentTimeMillis() - processStart
             val mode = if (persistentMode && persistentBooted) "PERSISTENT" else "CLASSIC"
             Log.d("PerfTiming", "BRIDGE[$mode] [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms")
+            if (isTraced) {
+                val executionEndedAtNs = SystemClock.elapsedRealtimeNanos()
+                Log.i("NativePHPTrace", "stage=php_executor_end trace_id=$traceId execution_ns=${executionEndedAtNs - executionStartedAtNs} monotonic_ns=$executionEndedAtNs")
+            }
 
             processedOutput
         }

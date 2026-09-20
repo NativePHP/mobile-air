@@ -1,0 +1,101 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+if ($argc !== 2 || ! is_file($argv[1])) {
+    fwrite(STDERR, "Usage: bin/analyse-native-event-trace <logcat-file>\n");
+    exit(1);
+}
+
+$traces = [];
+
+foreach (file($argv[1], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+    if (! str_contains($line, "NativePHPTrace") || ! preg_match('/stage=([^ ]+) trace_id=([^ ]+)(.*)$/', $line, $matches)) {
+        continue;
+    }
+
+    [, $stage, $traceId, $fields] = $matches;
+    $values = [];
+
+    preg_match_all('/([a-z_]+)=([^ ]+)/', $fields, $fieldMatches, PREG_SET_ORDER);
+    foreach ($fieldMatches as [, $key, $value]) {
+        $values[$key] = $value;
+    }
+
+    $traces[$traceId][$stage] = $values;
+}
+
+$metrics = [
+    'native_to_webview_ms' => [],
+    'executor_queue_ms' => [],
+    'php_request_ms' => [],
+    'native_round_trip_ms' => [],
+    'php_event_handler_ms' => [],
+];
+
+foreach ($traces as $trace) {
+    $dispatch = $trace['native_dispatch']['monotonic_ns'] ?? null;
+    $intercept = $trace['webview_intercept']['monotonic_ns'] ?? null;
+    $executorStart = $trace['php_executor_start']['monotonic_ns'] ?? null;
+    $executorEnd = $trace['php_executor_end']['monotonic_ns'] ?? null;
+    $response = $trace['webview_response']['monotonic_ns'] ?? null;
+    $handlerUs = $trace['php_event_handler']['handler_us'] ?? null;
+
+    if ($dispatch !== null && $intercept !== null) {
+        $metrics['native_to_webview_ms'][] = ((int) $intercept - (int) $dispatch) / 1_000_000;
+    }
+
+    if ($intercept !== null && $executorStart !== null) {
+        $metrics['executor_queue_ms'][] = ((int) $executorStart - (int) $intercept) / 1_000_000;
+    }
+
+    if ($executorStart !== null && $executorEnd !== null) {
+        $metrics['php_request_ms'][] = ((int) $executorEnd - (int) $executorStart) / 1_000_000;
+    }
+
+    if ($dispatch !== null && $response !== null) {
+        $metrics['native_round_trip_ms'][] = ((int) $response - (int) $dispatch) / 1_000_000;
+    }
+
+    if ($handlerUs !== null) {
+        $metrics['php_event_handler_ms'][] = (int) $handlerUs / 1_000;
+    }
+}
+
+printf("traces=%d\n", count($traces));
+
+foreach ($metrics as $name => $samples) {
+    if ($samples === []) {
+        printf("%s count=0\n", $name);
+
+        continue;
+    }
+
+    sort($samples, SORT_NUMERIC);
+    $count = count($samples);
+    $median = percentile($samples, 0.50);
+    $p95 = percentile($samples, 0.95);
+
+    printf(
+        "%s count=%d median_ms=%.3f p95_ms=%.3f max_ms=%.3f\n",
+        $name,
+        $count,
+        $median,
+        $p95,
+        $samples[$count - 1],
+    );
+}
+
+function percentile(array $values, float $percentile): float
+{
+    $index = (count($values) - 1) * $percentile;
+    $lower = (int) floor($index);
+    $upper = (int) ceil($index);
+
+    if ($lower === $upper) {
+        return $values[$lower];
+    }
+
+    return $values[$lower] + (($values[$upper] - $values[$lower]) * ($index - $lower));
+}

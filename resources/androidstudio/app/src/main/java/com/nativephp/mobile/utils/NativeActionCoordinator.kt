@@ -2,10 +2,12 @@ package com.nativephp.mobile.utils
 
 import android.util.Log
 import android.webkit.WebView
+import android.os.SystemClock
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
 import org.json.JSONObject
+import java.util.UUID
 
 interface WebViewProvider {
     fun getWebView(): WebView
@@ -54,8 +56,11 @@ class NativeActionCoordinator : Fragment() {
     }
 
     private fun dispatch(event: String, payloadJson: String) {
+            val traceId = UUID.randomUUID().toString()
+            val dispatchedAtNs = SystemClock.elapsedRealtimeNanos()
             Log.d("JSFUNC", "native:$event");
             Log.d("JSFUNC", "$payloadJson");
+            Log.i("NativePHPTrace", "stage=native_dispatch trace_id=$traceId monotonic_ns=$dispatchedAtNs event=$event")
             val eventForJs = event.replace("\\", "\\\\")
             val js = """
                 (function () {
@@ -73,7 +78,9 @@ class NativeActionCoordinator : Fragment() {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-NativePHP-Trace-Id': '$traceId',
+                            'X-NativePHP-Event-Trace': '1'
                         },
                         body: JSON.stringify({
                             event: "$eventForJs",

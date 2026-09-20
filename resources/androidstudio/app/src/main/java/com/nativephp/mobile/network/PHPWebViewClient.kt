@@ -5,6 +5,7 @@ import android.webkit.*
 import java.io.ByteArrayInputStream
 import java.io.BufferedInputStream
 import android.content.Context
+import android.os.SystemClock
 import java.io.File
 import android.net.Uri
 import com.nativephp.mobile.bridge.PHPBridge
@@ -164,6 +165,15 @@ class PHPWebViewClient(
 
         val headers = HashMap<String, String>(request.requestHeaders)
         headers.remove("X-NativePHP-Req-Id")
+        val traceId = headers.entries.firstOrNull {
+            it.key.equals("X-NativePHP-Trace-Id", ignoreCase = true)
+        }?.value
+        val isTraced = traceId != null && headers.entries.any {
+            it.key.equals("X-NativePHP-Event-Trace", ignoreCase = true) && it.value == "1"
+        }
+        if (isTraced) {
+            Log.i("NativePHPTrace", "stage=webview_intercept trace_id=$traceId monotonic_ns=${SystemClock.elapsedRealtimeNanos()} path=$path")
+        }
 
         // ✅ Apply CSRF token and cookies
         LaravelSecurity.applyToHeaders(headers)
@@ -200,6 +210,9 @@ class PHPWebViewClient(
 
         val parseTime = System.currentTimeMillis() - parseStart
         Log.d("PerfTiming", "⏱️ WEBCLIENT [$path] prep=${prepTime}ms php=${phpTime}ms parse=${parseTime}ms")
+        if (isTraced) {
+            Log.i("NativePHPTrace", "stage=webview_response trace_id=$traceId monotonic_ns=${SystemClock.elapsedRealtimeNanos()} status=$statusCode")
+        }
 
         // ✅ Handle Set-Cookie headers
         responseHeaders.entries
@@ -295,6 +308,11 @@ class PHPWebViewClient(
        // Log PHP timing header if present
        headers["X-PHP-Timing"]?.let { timing ->
            Log.d("PerfTiming", "⏱️ PHP_TIMING $timing")
+       }
+
+       headers["X-NativePHP-Event-Handler-Us"]?.let { handlerUs ->
+           val traceId = headers["X-NativePHP-Trace-Id"] ?: "unknown"
+           Log.i("NativePHPTrace", "stage=php_event_handler trace_id=$traceId handler_us=$handlerUs")
        }
 
        // Set cookies
