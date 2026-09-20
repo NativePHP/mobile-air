@@ -51,7 +51,10 @@ final class ExecutionContext: @unchecked Sendable {
 
     private let lock = NSLock()
 
-    private var _launch: Launch = .foreground
+    /// Provisional until `classifyLaunch()` settles it one runloop turn in.
+    /// Starts pessimistic: assume no UI until we have seen one.
+    private var _launch: Launch = .background
+    private var _launchResolved = false
     private var _state: RunState = .inactive
     private var _hasBecomeActive = false
     private var _protectedDataAvailable = true
@@ -81,7 +84,9 @@ final class ExecutionContext: @unchecked Sendable {
 
     var isActive: Bool { lock.withLock { _state == .active } }
 
-    /// True when iOS cold-launched this process into the background.
+    /// True when iOS started this process for background work rather than
+    /// because someone opened the app. Provisionally true for the first
+    /// runloop turn of any launch, until `classifyLaunch()` settles it.
     var launchedInBackground: Bool { launch == .background }
 
     /// True once the app has been active at least once in this process. A
@@ -122,10 +127,13 @@ final class ExecutionContext: @unchecked Sendable {
 
     // MARK: - Lifecycle wiring
 
-    /// Capture how the process started and begin mirroring lifecycle changes.
-    /// Called from `AppDelegate.application(_:didFinishLaunchingWithOptions:)`,
-    /// which runs before any scene connects — so the launch reason is recorded
-    /// before anything can boot off it. Idempotent.
+    /// Begin mirroring lifecycle changes. Called from
+    /// `AppDelegate.application(_:didFinishLaunchingWithOptions:)`.
+    ///
+    /// `launchState` is only the state at that instant, which is `.background`
+    /// on every launch because no scene has connected yet. Why the process
+    /// started is settled a runloop turn later by `classifyLaunch()`.
+    /// Idempotent.
     @MainActor
     func start(launchState: UIApplication.State) {
         let run = RunState(launchState)
@@ -139,7 +147,6 @@ final class ExecutionContext: @unchecked Sendable {
         let alreadyStarted: Bool = lock.withLock {
             guard !started else { return true }
             started = true
-            _launch = run == .background ? .background : .foreground
             _state = run
             _hasBecomeActive = run == .active
             _protectedDataAvailable = protectedData
@@ -148,7 +155,9 @@ final class ExecutionContext: @unchecked Sendable {
 
         guard !alreadyStarted else { return }
 
-        NSLog("[ExecutionContext] launch=\(launch.rawValue) state=\(run.rawValue) protectedData=\(isProtectedDataAvailable)")
+        NSLog("[ExecutionContext] start: state=\(run.rawValue) protectedData=\(isProtectedDataAvailable)")
+
+        classifyLaunch()
 
         observe(UIApplication.didBecomeActiveNotification) { $0.didBecomeActive() }
         observe(UIApplication.willResignActiveNotification) { $0.set(state: .inactive) }
@@ -159,6 +168,45 @@ final class ExecutionContext: @unchecked Sendable {
         }
         observe(UIApplication.protectedDataWillBecomeUnavailableNotification) {
             $0.set(protectedDataAvailable: false)
+        }
+    }
+
+    /// Decide why the process started — on the next main-runloop turn, never
+    /// synchronously.
+    ///
+    /// Inside `didFinishLaunchingWithOptions` no scene has connected yet, so
+    /// `UIApplication.applicationState` reads `.background` for EVERY launch,
+    /// ordinary foreground ones included. Measured on a simulator: `.background`
+    /// with zero scenes at t=0, then `.inactive` with one connected foreground
+    /// scene ~160ms later, `.active` at ~500ms. Classifying at t=0 therefore
+    /// marks every single launch headless, which is the opposite of useful.
+    ///
+    /// UIKit connects the scene before it returns to the runloop, so a block
+    /// queued here runs after that has happened — it is an ordering guarantee,
+    /// not a timing race. A real background launch connects no scene at all, so
+    /// it still reads `.background` here and stays classified that way.
+    private func classifyLaunch() {
+        DispatchQueue.main.async { [self] in
+            let app = UIApplication.shared
+            let live = RunState(app.applicationState)
+            let hasForegroundScene = app.connectedScenes.contains {
+                $0.activationState == .foregroundActive
+                    || $0.activationState == .foregroundInactive
+            }
+            let foreground = live != .background || hasForegroundScene
+
+            lock.withLock {
+                // Refresh the mirrored state too: no notification fires for the
+                // initial background → inactive step, so without this the first
+                // half-second of every launch reports `background`.
+                _state = live
+
+                guard !_launchResolved else { return }
+                _launchResolved = true
+                _launch = foreground ? .foreground : .background
+            }
+
+            NSLog("[ExecutionContext] launch=\(launch.rawValue) state=\(state.rawValue) scenes=\(app.connectedScenes.count)")
         }
     }
 
@@ -183,6 +231,13 @@ final class ExecutionContext: @unchecked Sendable {
         let parked: [() -> Void] = lock.withLock {
             _state = .active
             _hasBecomeActive = true
+            // Becoming active proves a foreground launch, if classifyLaunch
+            // has not already said otherwise (a background launch the user
+            // later opened stays classified `.background`).
+            if !_launchResolved {
+                _launchResolved = true
+                _launch = .foreground
+            }
             defer { pendingInteractive.removeAll() }
             return pendingInteractive
         }
@@ -226,10 +281,11 @@ final class ExecutionContext: @unchecked Sendable {
         // it (the first-content watchdog only arms inside the boot this gate
         // is withholding).
         let runNow: Bool = lock.withLock {
-            // A foreground launch is on its way to `.active` by definition;
-            // waiting for the notification would stall the normal boot.
+            // Purely a question of whether anything is on screen right now.
+            // It deliberately does NOT consult the launch classification:
+            // at t=0 that is still provisional, and every launch starts out
+            // looking like a background one.
             let interactive = _state != .background
-                && (_launch == .foreground || _hasBecomeActive)
 
             if !interactive {
                 pendingInteractive.append(block)

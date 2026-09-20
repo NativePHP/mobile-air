@@ -53,7 +53,10 @@ final class NativePHPBootstrap: @unchecked Sendable {
     /// Performs heavy initialization work after the splash view is visible.
     /// This runs on a background thread to avoid blocking the main thread.
     private func bootRuntime() {
-        NSLog("[NativePHP] Deferred initialization starting (headless=\(ExecutionContext.shared.isHeadless))")
+        // The launch classification is still provisional this early (see
+        // ExecutionContext.classifyLaunch), so don't assert it here —
+        // ExecutionContext logs the settled verdict a runloop turn later.
+        NSLog("[NativePHP] Deferred initialization starting")
 
         // 0. Normally done by NativePHPApp.init(), but a headless background
         // launch connects no scene, so SwiftUI may never build the App value.
