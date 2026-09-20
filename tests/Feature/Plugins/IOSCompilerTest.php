@@ -8,6 +8,7 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginManifest;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\PlistDocument;
 use Tests\TestCase;
 
 /**
@@ -339,6 +340,125 @@ class NestedClass {}');
         $this->assertStringContainsString('This app uses camera', $content);
         $this->assertStringContainsString('NSMicrophoneUsageDescription', $content);
         $this->assertStringContainsString('This app uses microphone', $content);
+    }
+
+    /**
+     * @test
+     *
+     * A manifest boolean must land as <true/> / <false/>. Written as a
+     * <string> it renders as "" for false, which Firebase and friends read
+     * as unset — the declared setting is silently ignored.
+     */
+    public function it_writes_manifest_booleans_as_plist_booleans(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [
+                    'FirebaseAppDelegateProxyEnabled' => false,
+                    'UIFileSharingEnabled' => true,
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+
+        $this->assertMatchesRegularExpression(
+            '/<key>FirebaseAppDelegateProxyEnabled<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertMatchesRegularExpression(
+            '/<key>UIFileSharingEnabled<\/key>\s*<true\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString(
+            '<key>FirebaseAppDelegateProxyEnabled</key>',
+            str_replace('<key>FirebaseAppDelegateProxyEnabled</key>', '', $content)
+        );
+    }
+
+    /**
+     * @test
+     *
+     * An earlier build wrote booleans as <string/>. Recompiling has to
+     * replace that self-closing element, not skip it as unmatched.
+     */
+    public function it_repairs_a_boolean_previously_written_as_an_empty_string(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, str_replace(
+            '</dict>',
+            "\t<key>FirebaseAppDelegateProxyEnabled</key>\n\t<string/>\n</dict>",
+            $this->files->get($plistPath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['FirebaseAppDelegateProxyEnabled' => false]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($plistPath);
+
+        $this->assertMatchesRegularExpression(
+            '/<key>FirebaseAppDelegateProxyEnabled<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString('<string/>', $content);
+    }
+
+    /** @test */
+    public function it_writes_manifest_integers_as_plist_integers(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['SomeNumericSetting' => 42]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+
+        $this->assertMatchesRegularExpression(
+            '/<key>SomeNumericSetting<\/key>\s*<integer>42<\/integer>/',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Declaring a boolean for a key that already holds a <string> has to
+     * change the element type, not just its contents.
+     */
+    public function it_replaces_an_existing_string_entry_with_a_boolean(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Camera access']],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->assertStringContainsString('<string>Camera access</string>', $this->files->get($plistPath));
+
+        config()->set('nativephp.permissions', ['NSCameraUsageDescription' => false]);
+        $this->compiler->compile();
+
+        $content = $this->files->get($plistPath);
+
+        $this->assertMatchesRegularExpression(
+            '/<key>NSCameraUsageDescription<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString('<string>Camera access</string>', $content);
     }
 
     /**
@@ -903,6 +1023,349 @@ class NestedClass {}');
         $this->assertEquals(1, substr_count($pbxproj, "\tnl,"));
 
         config()->set('nativephp.permission_localizations', []);
+    }
+
+    /**
+     * @test
+     *
+     * A Swift Package under resources/ios/ must not be copied into the app
+     * target. The app's NativePHP folder is a synchronized root group, so
+     * every file copied under it joins the compile sources phase — and a
+     * SwiftPM manifest imports PackageDescription, which an app target has no
+     * access to.
+     */
+    public function it_does_not_copy_an_embedded_swift_package(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/swiftpm-plugin';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath.'/Core/Sources/Core');
+        $this->files->ensureDirectoryExists($iosPath.'/Core/Tests/CoreTests');
+        $this->files->ensureDirectoryExists($iosPath.'/Core/.build/debug');
+
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+        $this->files->put($iosPath.'/Core/Package.swift', "import PackageDescription\nlet package = Package(name: \"Core\")");
+        $this->files->put($iosPath.'/Core/Sources/Core/Core.swift', 'public enum Core {}');
+        $this->files->put($iosPath.'/Core/Tests/CoreTests/CoreTests.swift', "import XCTest\n@testable import Core");
+        $this->files->put($iosPath.'/Core/.build/debug/Generated.swift', 'let generated = true');
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $copiedDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+
+        // The bridge file is the plugin's actual iOS surface.
+        $this->assertFileExists($copiedDir.'/PluginFunctions.swift');
+
+        // None of the package's files may reach the app target.
+        $this->assertFileDoesNotExist($copiedDir.'/Core/Package.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Core/Sources/Core/Core.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Core/Tests/CoreTests/CoreTests.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Core/.build/debug/Generated.swift');
+    }
+
+    /**
+     * @test
+     *
+     * A Tests/ directory is SwiftPM's test-target convention. Its files import
+     * XCTest and use @testable, neither of which an app target has.
+     */
+    public function it_does_not_copy_a_tests_directory(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/tests-plugin';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath.'/Tests');
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+        $this->files->put($iosPath.'/Tests/PluginTests.swift', 'import XCTest');
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $copiedDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+
+        $this->assertFileExists($copiedDir.'/PluginFunctions.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Tests/PluginTests.swift');
+    }
+
+    /**
+     * @test
+     *
+     * A plugin that declares `platforms: ["android"]` contributes nothing to
+     * an iOS build, whatever it happens to have under resources/ios/.
+     */
+    public function it_skips_plugins_that_do_not_declare_ios_support(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/android-only';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath);
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+
+        $plugin = $this->createTestPlugin([
+            'platforms' => ['android'],
+            'bridge_functions' => [
+                ['name' => 'Test.Execute', 'android' => 'com.test.Execute', 'ios' => 'TestFunctions.Execute'],
+            ],
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Should not be merged']],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/PluginFunctions.swift'
+        );
+
+        // No registration for a class that was never copied — that would be a
+        // link error rather than a compile error.
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginBridgeFunctionRegistration.swift'
+        );
+        $this->assertStringNotContainsString('TestFunctions.Execute', $registration);
+
+        // And no Info.plist keys from a plugin that is not part of this build.
+        $plist = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+        $this->assertStringNotContainsString('NSCameraUsageDescription', $plist);
+    }
+
+    /**
+     * @test
+     *
+     * A plugin whose manifest says nothing about platforms is treated as
+     * supporting both, so nothing that worked before this key was read breaks.
+     */
+    public function it_still_copies_sources_when_platforms_is_absent(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/no-platforms';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath);
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/PluginFunctions.swift'
+        );
+    }
+
+    /**
+     * @test
+     *
+     * `ios.sources` is the escape hatch for a layout the exclusions get wrong:
+     * when it is present, it is the whole list.
+     */
+    public function it_copies_only_the_declared_ios_sources(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/declared-sources';
+        $iosPath = $pluginPath.'/resources/ios';
+
+        $this->files->ensureDirectoryExists($iosPath.'/Renderers');
+        $this->files->ensureDirectoryExists($iosPath.'/Scratch');
+
+        $this->files->put($iosPath.'/PluginFunctions.swift', 'import Foundation');
+        $this->files->put($iosPath.'/Renderers/Badge.swift', 'import SwiftUI');
+        $this->files->put($iosPath.'/Scratch/Draft.swift', 'import Foundation');
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['sources' => ['PluginFunctions.swift', 'Renderers']],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $copiedDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+
+        $this->assertFileExists($copiedDir.'/PluginFunctions.swift');
+        $this->assertFileExists($copiedDir.'/Renderers/Badge.swift');
+        $this->assertFileDoesNotExist($copiedDir.'/Scratch/Draft.swift');
+    }
+
+    /**
+     * @test
+     *
+     * Apple keys such as SKAdNetworkItems are arrays of dicts. They must
+     * land with their structure intact, and a rebuild must not duplicate.
+     */
+    public function it_merges_arrays_of_dicts_into_info_plist(): void
+    {
+        $items = [
+            ['SKAdNetworkIdentifier' => 'cstr6suwn9.skadnetwork'],
+            ['SKAdNetworkIdentifier' => '4fzdc2evr5.skadnetwork'],
+        ];
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['SKAdNetworkItems' => $items]],
+        ]);
+
+        $this->files->copy(
+            $this->testBasePath.'/ios/NativePHP/Info.plist',
+            $this->testBasePath.'/ios/NativePHP-simulator-Info.plist'
+        );
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $this->assertSame($items, $this->readPlist()->get('SKAdNetworkItems'));
+        $this->assertSame($items, $this->readPlist('NativePHP-simulator-Info.plist')->get('SKAdNetworkItems'));
+        $this->assertNull($this->readPlist('NativePHP-simulator-Info.plist')->get('UIBackgroundModes'));
+    }
+
+    /**
+     * @test
+     *
+     * Bools and integers keep their plist type, and a value the old text
+     * merge wrote with the wrong type is corrected on the next build.
+     */
+    public function it_writes_typed_plist_values(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, str_replace(
+            '<dict>',
+            "<dict>\n\t<key>FirebaseAppDelegateProxyEnabled</key>\n\t<string></string>",
+            $this->files->get($plistPath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => [
+                'FirebaseAppDelegateProxyEnabled' => false,
+                'UIFileSharingEnabled' => true,
+                'ITSAppUsesNonExemptEncryption' => 0,
+            ]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $plist = $this->readPlist();
+
+        $this->assertFalse($plist->get('FirebaseAppDelegateProxyEnabled'));
+        $this->assertTrue($plist->get('UIFileSharingEnabled'));
+        $this->assertSame(0, $plist->get('ITSAppUsesNonExemptEncryption'));
+        $this->assertStringNotContainsString('<string></string>', $this->files->get($plistPath));
+    }
+
+    /**
+     * @test
+     *
+     * A plugin's resources/ios/Info.plist is merged with every value type,
+     * and keys nested inside it never surface at the top level.
+     */
+    public function it_merges_plugin_info_plist_files_structurally(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $this->files->ensureDirectoryExists($pluginPath.'/resources/ios');
+        $this->files->put($pluginPath.'/resources/ios/Info.plist', '<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Any file</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>');
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Camera access']],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $plist = $this->readPlist();
+
+        $this->assertTrue($plist->get('UIFileSharingEnabled'));
+        $this->assertSame([[
+            'CFBundleTypeName' => 'Any file',
+            'LSItemContentTypes' => ['public.data'],
+        ]], $plist->get('CFBundleDocumentTypes'));
+        $this->assertNull($plist->get('CFBundleTypeName'));
+    }
+
+    /**
+     * @test
+     *
+     * ${ENV_VAR} placeholders resolve inside nested values too.
+     */
+    public function it_substitutes_placeholders_inside_nested_values(): void
+    {
+        putenv('NATIVEPHP_TEST_SKAN=4fzdc2evr5.skadnetwork');
+        $_ENV['NATIVEPHP_TEST_SKAN'] = '4fzdc2evr5.skadnetwork';
+
+        try {
+            $plugin = $this->createTestPlugin([
+                'ios' => ['info_plist' => [
+                    'SKAdNetworkItems' => [['SKAdNetworkIdentifier' => '${NATIVEPHP_TEST_SKAN}']],
+                ]],
+            ]);
+
+            $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+            $this->compiler->compile();
+
+            $this->assertSame('4fzdc2evr5.skadnetwork', $this->readPlist()->get('SKAdNetworkItems')[0]['SKAdNetworkIdentifier']);
+        } finally {
+            putenv('NATIVEPHP_TEST_SKAN');
+            unset($_ENV['NATIVEPHP_TEST_SKAN']);
+        }
+    }
+
+    /**
+     * @test
+     *
+     * Background modes share the plist merge, so they union with what
+     * the base plist already declares and never duplicate on rebuild.
+     */
+    public function it_unions_background_modes_with_the_base_plist(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, $this->files->get(__DIR__.'/../../../resources/xcode/NativePHP/Info.plist'));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => ['NSLocationWhenInUseUsageDescription' => 'Location access'],
+                'background_modes' => ['remote-notification', 'location'],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $plist = $this->readPlist();
+
+        $this->assertSame(['remote-notification', 'location'], $plist->get('UIBackgroundModes'));
+    }
+
+    private function readPlist(string $file = 'NativePHP/Info.plist'): PlistDocument
+    {
+        return PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/'.$file));
     }
 
     /**

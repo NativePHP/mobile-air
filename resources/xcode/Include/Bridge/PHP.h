@@ -39,6 +39,13 @@ const char *ephemeral_php_artisan(const char *command);
 void ephemeral_php_shutdown(void);
 int  ephemeral_php_is_booted(void);
 
+// Async Task Lane — a pool of TSRM contexts for immediate background work
+// (AsyncTask::dispatch()). Each slot is one worker thread with its own booted
+// context; Swift's AsyncTaskExecutor pins each slot handle to a serial queue.
+int  async_php_boot(const char *bootstrapPath);           // → slot handle ≥ 0, or negative error
+const char *async_php_run(int handle, const char *taskId); // run native:async:run --id=<taskId> on this slot
+void async_php_stop(int handle);
+
 // Webview PHP Runtimes — one dedicated thread + TSRM context per embedded
 // php-mode webview. The persistent lane is parked inside a native screen's
 // event-loop dispatch, so it can never answer php:// requests from an
@@ -67,10 +74,15 @@ uint8_t *nphp_get_active_flat_buffer(uint32_t *size_out);
 uint8_t *nphp_get_active_prop_buffer(uint32_t *size_out);
 
 // Native → PHP event producer. Swift hands the event body bytes here; the
-// extension owns the event mutex, the growable heap buffer, and the header
-// framing (single source of truth for the wire format). Replaces Swift poking
-// the region's inline event buffer by offset, and lifts the 4KB payload cap.
-void nphp_element_post_event(int type, int callback_id, int node_id,
-                             const uint8_t *data, uint32_t data_len);
+// extension owns the event mutex, the event queue, and the header framing
+// (single source of truth for the wire format). Replaces Swift poking the
+// region's inline event buffer by offset, and lifts the 4KB payload cap.
+//
+// Returns 1 if the event was queued, 0 if it was dropped (no region, or the
+// queue is over its backlog cap because PHP has stopped draining). Was void
+// before format v4; ignoring the result is still fine, but a caller that
+// needs to know its event will be delivered can now check.
+int nphp_element_post_event(int type, int callback_id, int node_id,
+                            const uint8_t *data, uint32_t data_len);
 
 #endif

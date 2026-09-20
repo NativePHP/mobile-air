@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Support\Facades\Log;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
@@ -11,6 +12,15 @@ use Native\Mobile\Platform;
 class TailwindParser
 {
     private static array $cache = [];
+
+    /** @var array<string, list<string>> */
+    private static array $unsupportedCache = [];
+
+    /** @var list<array{view: string, enabled: bool, classes: array<string, true>}> */
+    private static array $diagnosticScopes = [];
+
+    /** @var array<string, array<string, true>> */
+    private static array $reportedUnsupportedByView = [];
 
     /**
      * Plugin-provided resolver for `bg-theme-*` / `text-theme-*` classes —
@@ -32,16 +42,78 @@ class TailwindParser
      */
     private static $themeDarkResolver = null;
 
+    /**
+     * Responsive breakpoints — the `md:` / `lg:` class prefixes — as
+     * min-width thresholds in points (iOS) / dp (Android). Mobile-first
+     * like Tailwind: a prefixed class applies from that width UP, and a
+     * wider prefix wins over a narrower one. `medium` / `expanded` mirror
+     * Material's window size classes so both vocabularies work.
+     *
+     * Resolution happens on the native side against the live window
+     * width, so the same tree re-flows on rotation and Split View
+     * without a PHP round-trip. Override via `nativephp.breakpoints`.
+     */
+    public const DEFAULT_BREAKPOINTS = [
+        'sm' => 640,
+        'medium' => 600,
+        'md' => 768,
+        'expanded' => 840,
+        'lg' => 1024,
+        'xl' => 1280,
+        '2xl' => 1536,
+    ];
+
+    /** @var array<string, float|int>|null */
+    private static ?array $breakpoints = null;
+
+    /**
+     * Test seam / runtime override for the breakpoint table. Pass null to
+     * fall back to config (`nativephp.breakpoints`) and then the defaults.
+     *
+     * @param  array<string, float|int>|null  $breakpoints
+     */
+    public static function setBreakpoints(?array $breakpoints): void
+    {
+        static::$breakpoints = $breakpoints;
+        static::clearCache();
+    }
+
+    /** @return array<string, float|int> */
+    public static function breakpoints(): array
+    {
+        if (static::$breakpoints !== null) {
+            return static::$breakpoints;
+        }
+
+        $configured = null;
+        try {
+            if (function_exists('app') && app()->bound('config')) {
+                $configured = config('nativephp.breakpoints');
+            }
+        } catch (\Throwable) {
+            $configured = null;
+        }
+
+        return is_array($configured) && $configured !== [] ? $configured : self::DEFAULT_BREAKPOINTS;
+    }
+
+    public static function breakpointMinWidth(string $name): ?float
+    {
+        $table = static::breakpoints();
+
+        return isset($table[$name]) ? (float) $table[$name] : null;
+    }
+
     public static function setThemeResolver(?callable $resolver): void
     {
         static::$themeResolver = $resolver;
-        static::$cache = [];
+        static::clearCache();
     }
 
     public static function setThemeDarkResolver(?callable $resolver): void
     {
         static::$themeDarkResolver = $resolver;
-        static::$cache = [];
+        static::clearCache();
     }
 
     /**
@@ -52,7 +124,7 @@ class TailwindParser
     public static function setPlatform(?string $platform): void
     {
         Platform::set($platform);
-        static::$cache = [];
+        static::clearCache();
     }
 
     private static function currentPlatform(): ?string
@@ -185,6 +257,7 @@ class TailwindParser
     private const FONT_SIZES = [
         'xs' => 12, 'sm' => 14, 'base' => 16, 'lg' => 18, 'xl' => 20,
         '2xl' => 24, '3xl' => 30, '4xl' => 36, '5xl' => 48, '6xl' => 60,
+        '7xl' => 72, '8xl' => 96, '9xl' => 128,
     ];
 
     private const FONT_WEIGHTS = [
@@ -197,8 +270,91 @@ class TailwindParser
         'xl' => 12, '2xl' => 16, '3xl' => 24, 'full' => 9999,
     ];
 
+    /**
+     * Which corners each `rounded-<side>-*` suffix touches. Sides expand to
+     * their two corners, exactly as Tailwind's longhand does.
+     *
+     * Only the PHYSICAL spellings are here. Tailwind's logical variants
+     * (`rounded-s-*`, `rounded-ee-*`, …) resolve against the writing
+     * direction, and neither renderer flips corners for RTL yet — accepting
+     * them would silently render LTR geometry in an RTL layout, so they stay
+     * unparsed and land in the dropped-class diagnostics instead.
+     *
+     * @var array<string, list<string>>
+     */
+    private const BORDER_RADIUS_CORNERS = [
+        'tl' => ['borderRadiusTopLeft'],
+        'tr' => ['borderRadiusTopRight'],
+        'br' => ['borderRadiusBottomRight'],
+        'bl' => ['borderRadiusBottomLeft'],
+        't' => ['borderRadiusTopLeft', 'borderRadiusTopRight'],
+        'r' => ['borderRadiusTopRight', 'borderRadiusBottomRight'],
+        'b' => ['borderRadiusBottomRight', 'borderRadiusBottomLeft'],
+        'l' => ['borderRadiusTopLeft', 'borderRadiusBottomLeft'],
+    ];
+
     private const SHADOW = [
         'sm' => 1, 'md' => 6, 'lg' => 8, 'xl' => 12, '2xl' => 16, 'none' => 0,
+    ];
+
+    /**
+     * Named colored glows (Slice 1). Distinct from elevation `shadow-*` —
+     * these emit glowColor / glowRadius / glowOpacity props for a soft
+     * zero-offset halo on both platforms. Colors are the palette 500
+     * shade; sizes mirror a soft scale independent of SHADOW elevation.
+     *
+     *   glow-emerald / glow-indigo / glow-rose
+     *   glow-emerald-sm / glow-indigo-md / glow-rose-lg
+     *
+     * Arbitrary `shadow-[…]` / `glow-[…]` forms are deferred.
+     */
+    private const GLOW_COLORS = [
+        'emerald' => '#10B981',
+        'indigo' => '#6366F1',
+        'rose' => '#F43F5E',
+    ];
+
+    private const GLOW_RADIUS = [
+        'sm' => 8,
+        'md' => 16,
+        'lg' => 24,
+    ];
+
+    private const GLOW_DEFAULT_RADIUS = 16;
+
+    private const GLOW_DEFAULT_OPACITY = 0.55;
+
+    /**
+     * Tailwind `blur-*` / `blur` / `blur-none` — Gaussian filter radius in
+     * points. Distinct from elevation `shadow-*` and colored `glow-*`
+     * (those paint halos; blur softens the node's own pixels). Used for
+     * Stitch-style page-bg orbs (`blur-3xl` / `blur-[100px]` on large soft
+     * discs). Arbitrary `blur-[Npx]` is handled in parseArbitrary.
+     *
+     * Scale matches Tailwind CSS filter blur defaults.
+     */
+    private const BLUR_RADIUS = [
+        'none' => 0,
+        'sm' => 4,
+        'md' => 12,
+        'lg' => 16,
+        'xl' => 24,
+        '2xl' => 40,
+        '3xl' => 64,
+    ];
+
+    private const BLUR_DEFAULT_RADIUS = 8;
+
+    /**
+     * Tailwind's container scale, used by `max-w-*` (and, in v4, `min-w-*`).
+     * Values are the rem sizes converted at the 16px root Tailwind assumes.
+     * Most are far wider than a phone, but they're what authors type and a
+     * constraint that never binds is still better than a dropped class.
+     */
+    private const CONTAINER_SIZES = [
+        '3xs' => 256, '2xs' => 288, 'xs' => 320, 'sm' => 384, 'md' => 448,
+        'lg' => 512, 'xl' => 576, '2xl' => 672, '3xl' => 768, '4xl' => 896,
+        '5xl' => 1024, '6xl' => 1152, '7xl' => 1280,
     ];
 
     private const WIDTH_FRACTIONS = [
@@ -211,47 +367,148 @@ class TailwindParser
     public static function parse(string $classString): array
     {
         if (isset(self::$cache[$classString])) {
+            self::recordUnsupported(self::$unsupportedCache[$classString] ?? []);
+
             return self::$cache[$classString];
         }
 
         $result = [];
+        $unsupported = [];
         $classes = preg_split('/\s+/', trim($classString), -1, PREG_SPLIT_NO_EMPTY);
 
         foreach ($classes as $class) {
             $parsed = self::parseClass($class);
             if ($parsed === null) {
+                if (! self::isInactivePlatformVariant($class)) {
+                    $unsupported[$class] = true;
+                }
+
                 continue;
             }
-            // Merge dark companion separately so a class that contributes BOTH
-            // a light key AND a dark key (e.g. `bg-theme-surface`) doesn't
-            // drop one side when another dark-bearing class is already merged.
-            if (isset($parsed['dark'])) {
-                $result['dark'] = isset($result['dark'])
-                    ? array_merge($result['dark'], $parsed['dark'])
-                    : $parsed['dark'];
-                unset($parsed['dark']);
-            }
-            // Same reason for gradients: direction and each colour stop arrive
-            // as separate classes contributing separate keys to one `gradient`
-            // array. A flat merge would let `to-transparent` clobber the
-            // direction and `from-` stop that came before it.
-            if (isset($parsed['gradient'])) {
-                $result['gradient'] = isset($result['gradient'])
-                    ? array_merge($result['gradient'], $parsed['gradient'])
-                    : $parsed['gradient'];
-                unset($parsed['gradient']);
-            }
-            $result = array_merge($result, $parsed);
+            $result = self::mergeAttributes($result, $parsed);
         }
 
         self::$cache[$classString] = $result;
+        self::$unsupportedCache[$classString] = array_keys($unsupported);
+        self::recordUnsupported(self::$unsupportedCache[$classString]);
 
         return $result;
+    }
+
+    /**
+     * Merge one class's parsed keys into the running result — and, in the
+     * collector, one breakpoint's keys over everything narrower. The `dark`,
+     * `gradient` and `variants` buckets merge by KEY rather than being
+     * replaced, so a class that contributes to an existing bucket adds to
+     * it instead of clobbering what came before:
+     *
+     *  - `bg-theme-surface` contributes both a light key and a `dark` key;
+     *    another dark-bearing class must not drop either side.
+     *  - Gradient direction and each colour stop arrive as separate classes
+     *    contributing separate keys to one `gradient` array.
+     *  - `md:p-4 md:flex-row` both land in the `md` variant bucket, and a
+     *    variant's own `dark` / `gradient` keys merge recursively the same
+     *    way (`md:dark:bg-x md:dark:text-y`).
+     */
+    public static function mergeAttributes(array $result, array $parsed): array
+    {
+        if (isset($parsed['dark'])) {
+            $result['dark'] = isset($result['dark'])
+                ? array_merge($result['dark'], $parsed['dark'])
+                : $parsed['dark'];
+            unset($parsed['dark']);
+        }
+        if (isset($parsed['gradient'])) {
+            $result['gradient'] = isset($result['gradient'])
+                ? array_merge($result['gradient'], $parsed['gradient'])
+                : $parsed['gradient'];
+            unset($parsed['gradient']);
+        }
+        if (isset($parsed['variants'])) {
+            foreach ($parsed['variants'] as $breakpoint => $inner) {
+                $result['variants'][$breakpoint] = self::mergeAttributes(
+                    $result['variants'][$breakpoint] ?? [],
+                    $inner,
+                );
+            }
+            unset($parsed['variants']);
+        }
+
+        return array_merge($result, $parsed);
     }
 
     public static function clearCache(): void
     {
         self::$cache = [];
+        self::$unsupportedCache = [];
+    }
+
+    /**
+     * Group unsupported utility diagnostics under the Blade view currently
+     * being rendered. Scopes nest for child components and partials, so each
+     * warning points back to the view that authored the dropped classes.
+     */
+    public static function beginViewDiagnostics(string $view): void
+    {
+        self::$diagnosticScopes[] = [
+            'view' => $view,
+            'enabled' => (bool) config('app.debug', false),
+            'classes' => [],
+        ];
+    }
+
+    public static function endViewDiagnostics(): void
+    {
+        $scope = array_pop(self::$diagnosticScopes);
+
+        if ($scope === null || ! $scope['enabled'] || $scope['classes'] === []) {
+            return;
+        }
+
+        $reported = self::$reportedUnsupportedByView[$scope['view']] ?? [];
+        $classes = array_values(array_filter(
+            array_keys($scope['classes']),
+            fn (string $class): bool => ! isset($reported[$class])
+        ));
+
+        if ($classes === []) {
+            return;
+        }
+
+        foreach ($classes as $class) {
+            self::$reportedUnsupportedByView[$scope['view']][$class] = true;
+        }
+
+        Log::warning('NativePHP EDGE dropped unsupported Tailwind classes.', [
+            'view' => $scope['view'],
+            'classes' => $classes,
+        ]);
+    }
+
+    /** @param  list<string>  $classes */
+    private static function recordUnsupported(array $classes): void
+    {
+        $scopeIndex = array_key_last(self::$diagnosticScopes);
+
+        if ($scopeIndex === null || ! self::$diagnosticScopes[$scopeIndex]['enabled']) {
+            return;
+        }
+
+        foreach ($classes as $class) {
+            self::$diagnosticScopes[$scopeIndex]['classes'][$class] = true;
+        }
+    }
+
+    /**
+     * Platform variants that target another platform are intentional no-ops,
+     * not unsupported utilities. A malformed class containing both platform
+     * targets is still reported when one target matches the current platform.
+     */
+    private static function isInactivePlatformVariant(string $class): bool
+    {
+        $targets = array_values(array_intersect(explode(':', $class), ['ios', 'android']));
+
+        return $targets !== [] && ! in_array(self::currentPlatform(), $targets, true);
     }
 
     /**
@@ -353,7 +610,52 @@ class TailwindParser
                 return null;
             }
 
+            // `dark:md:bg-x` — a breakpoint must stay the OUTER bucket, the
+            // way `md:dark:bg-x` parses: each breakpoint entry carries its own
+            // dark keys, and nothing reads a `variants` bucket under `dark`.
+            // Hoist it so both orders land in the same shape.
+            if (isset($inner['variants'])) {
+                $result = [];
+                foreach ($inner['variants'] as $breakpoint => $variant) {
+                    $result['variants'][$breakpoint] = ['dark' => $variant];
+                }
+                unset($inner['variants']);
+                if ($inner !== []) {
+                    $result['dark'] = $inner;
+                }
+
+                return $result;
+            }
+
             return ['dark' => $inner];
+        }
+
+        // Responsive variant: md:class-name (any name in the breakpoint
+        // table). Unlike `ios:` / `dark:` this can't be resolved here —
+        // PHP doesn't know the window width, and on iPad it changes under
+        // a running screen (rotation, Split View). The inner class parses
+        // normally and is bucketed under `variants[<name>]`; the collector
+        // ships each bucket as a per-breakpoint layout / style / prop
+        // delta that the native NodeView applies against the live width.
+        // Composes with the other prefixes in either order: `md:ios:x`
+        // lands here first and recurses; `ios:md:x` recurses here.
+        if (($colon = strpos($class, ':')) !== false) {
+            $prefix = substr($class, 0, $colon);
+            if (self::breakpointMinWidth($prefix) !== null) {
+                $inner = self::parseClass(substr($class, $colon + 1));
+                if ($inner === null) {
+                    return null;
+                }
+
+                return ['variants' => [$prefix => $inner]];
+            }
+        }
+
+        // Grid tracks: `grid-cols-N`. Rides attrs as `gridColumns` so the
+        // lazy grid picks it up as `columns`, and so `md:grid-cols-3` can
+        // re-track the grid per breakpoint like any other class.
+        if (preg_match('/^grid-cols-(\d+)$/', $class, $m)) {
+            return ['gridColumns' => max(1, (int) $m[1])];
         }
 
         // Negative utilities: `-mt-4`, `-right-8`, `-left-[12]`. Parsed by
@@ -385,10 +687,10 @@ class TailwindParser
             $class === 'flex-row', $class === 'flex-row-reverse' => ['flexDirection' => 1],
             $class === 'flex-col', $class === 'flex-col-reverse' => ['flexDirection' => 0],
             $class === 'flex-1' => ['flexGrow' => 1, 'flexShrink' => 1, 'flexBasis' => 0],
-            $class === 'flex-grow' => ['flexGrow' => 1],
-            $class === 'flex-grow-0' => ['flexGrow' => 0],
-            $class === 'flex-shrink' => ['flexShrink' => 1],
-            $class === 'flex-shrink-0' => ['flexShrink' => 0],
+            $class === 'flex-grow', $class === 'grow' => ['flexGrow' => 1],
+            $class === 'flex-grow-0', $class === 'grow-0' => ['flexGrow' => 0],
+            $class === 'flex-shrink', $class === 'shrink' => ['flexShrink' => 1],
+            $class === 'flex-shrink-0', $class === 'shrink-0' => ['flexShrink' => 0],
             $class === 'flex-wrap' => ['flexWrap' => 1],
             $class === 'flex-nowrap' => ['flexWrap' => 0],
             $class === 'flex-wrap-reverse' => ['flexWrap' => 2],
@@ -450,21 +752,30 @@ class TailwindParser
             str_starts_with($class, 'ml-') => self::parseSpacingSide('marginLeft', substr($class, 3)),
             str_starts_with($class, 'm-') => self::parseSpacingUniform('margin', substr($class, 2)),
 
-            // Gap, dimensions
+            // Gap, dimensions.
+            //
+            // The min-/max- constraints MUST precede the bare `w-`/`h-`
+            // branches only for readability — they don't actually collide
+            // (`max-w-4` doesn't start with `w-`) — but grouping them keeps
+            // the sizing rules together.
             str_starts_with($class, 'gap-') => self::parseSpacingUniform('gap', substr($class, 4)),
+            str_starts_with($class, 'min-w-') => self::parseSizeConstraint('minWidth', substr($class, 6)),
+            str_starts_with($class, 'max-w-') => self::parseSizeConstraint('maxWidth', substr($class, 6)),
+            str_starts_with($class, 'min-h-') => self::parseSizeConstraint('minHeight', substr($class, 6)),
+            str_starts_with($class, 'max-h-') => self::parseSizeConstraint('maxHeight', substr($class, 6)),
             str_starts_with($class, 'w-') => self::parseWidth(substr($class, 2)),
             str_starts_with($class, 'h-') => self::parseHeight(substr($class, 2)),
             // Inset shorthands. `inset-x-`/`inset-y-` MUST precede the bare
             // `inset-` branch, which would otherwise match them first and try
             // to parse "x-0" as a spacing value.
-            str_starts_with($class, 'inset-x-') => self::parseInset(substr($class, 8), ['positionLeft', 'positionRight']),
-            str_starts_with($class, 'inset-y-') => self::parseInset(substr($class, 8), ['positionTop', 'positionBottom']),
-            str_starts_with($class, 'inset-') => self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft']),
+            str_starts_with($class, 'inset-x-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionLeft', 'positionRight'])),
+            str_starts_with($class, 'inset-y-') => self::explicitInsets(self::parseInset(substr($class, 8), ['positionTop', 'positionBottom'])),
+            str_starts_with($class, 'inset-') => self::explicitInsets(self::parseInset(substr($class, 6), ['positionTop', 'positionRight', 'positionBottom', 'positionLeft'])),
 
-            str_starts_with($class, 'left-') => self::parseSpacingUniform('positionLeft', substr($class, 5)),
-            str_starts_with($class, 'top-') => self::parseSpacingUniform('positionTop', substr($class, 4)),
-            str_starts_with($class, 'right-') => self::parseSpacingUniform('positionRight', substr($class, 6)),
-            str_starts_with($class, 'bottom-') => self::parseSpacingUniform('positionBottom', substr($class, 7)),
+            str_starts_with($class, 'left-') => self::explicitInsets(self::parseSpacingUniform('positionLeft', substr($class, 5))),
+            str_starts_with($class, 'top-') => self::explicitInsets(self::parseSpacingUniform('positionTop', substr($class, 4))),
+            str_starts_with($class, 'right-') => self::explicitInsets(self::parseSpacingUniform('positionRight', substr($class, 6))),
+            str_starts_with($class, 'bottom-') => self::explicitInsets(self::parseSpacingUniform('positionBottom', substr($class, 7))),
 
             // Colors and text
             // Theme-aware tokens: `bg-theme-primary`, `text-theme-on-surface`, etc.
@@ -486,6 +797,13 @@ class TailwindParser
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
+
+            // Display. `hidden` takes the node out of layout (Display.none);
+            // the Tailwind display utilities put it back, so the responsive
+            // `hidden md:flex` pattern works. Native has one flow model, so
+            // every visible display value means the same thing.
+            $class === 'hidden' => ['display' => 1],
+            in_array($class, ['flex', 'inline-flex', 'block', 'inline-block', 'grid'], true) => ['display' => 0],
 
             // Font family. Exact matches MUST precede the `font-` weight branch.
             // Sent as int: 0 = sans (default), 1 = serif, 2 = mono.
@@ -518,6 +836,14 @@ class TailwindParser
             $class === 'select-text' => ['selectable' => 1],
             $class === 'select-none' => ['selectable' => 0],
 
+            // Whitespace (CSS white-space) for text content. Consumed by the
+            // PHP capture layer before the text prop is serialized, so it
+            // never rides the wire. `nowrap` and `pre-wrap` need native
+            // line-wrap props and stay unparsed for now.
+            $class === 'whitespace-normal' => ['whitespace' => 'normal'],
+            $class === 'whitespace-pre-line' => ['whitespace' => 'pre-line'],
+            $class === 'whitespace-pre-wrap' => ['whitespace' => 'pre-wrap'],
+
             // Letter spacing (tracking), in em (relative to font size).
             $class === 'tracking-tighter' => ['letterSpacing' => -0.05],
             $class === 'tracking-tight' => ['letterSpacing' => -0.025],
@@ -540,6 +866,11 @@ class TailwindParser
             str_starts_with($class, 'border-') => self::parseBorder(substr($class, 7)),
             str_starts_with($class, 'rounded-') => self::parseRounded(substr($class, 8)),
             str_starts_with($class, 'shadow-') => self::parseShadow(substr($class, 7)),
+            // Colored glow halo — separate from elevation `shadow-*`.
+            str_starts_with($class, 'glow-') => self::parseGlow(substr($class, 5)),
+            // Gaussian blur filter — softens the node's own pixels (page orbs).
+            $class === 'blur' => ['blur' => (float) self::BLUR_DEFAULT_RADIUS],
+            str_starts_with($class, 'blur-') => self::parseBlur(substr($class, 5)),
             str_starts_with($class, 'opacity-') => self::parseOpacity(substr($class, 8)),
 
             // Alignment
@@ -785,6 +1116,36 @@ class TailwindParser
     }
 
     /**
+     * `max-w-*` / `min-w-*` / `max-h-*` / `min-h-*`.
+     *
+     * Accepts the spacing scale (`max-w-64`), the container scale that only
+     * max-width has in Tailwind (`max-w-sm`), and `none` (an explicit "no
+     * constraint", which is what the wire's 0 already means).
+     *
+     * The `full` / `screen*` / `min` / `max` / `fit` keywords are deliberately
+     * NOT accepted: the packed node carries min/max as bare floats with no
+     * companion size mode, so there is nowhere to put "100% of the parent".
+     * Leaving them unparsed lands them in the dropped-class diagnostics
+     * instead of silently doing nothing.
+     */
+    private static function parseSizeConstraint(string $key, string $value): ?array
+    {
+        if ($value === 'none') {
+            return [$key => 0];
+        }
+
+        if (isset(self::SPACING[$value])) {
+            return [$key => self::SPACING[$value]];
+        }
+
+        if (($key === 'maxWidth' || $key === 'minWidth') && isset(self::CONTAINER_SIZES[$value])) {
+            return [$key => self::CONTAINER_SIZES[$value]];
+        }
+
+        return null;
+    }
+
+    /**
      * Parse an aspect-ratio token — either `W/H` (e.g. `16/9`) or a plain
      * decimal (e.g. `1.5`). A plain `(float)` cast can't be used for the
      * `W/H` form because PHP would stop at the slash (`"16/9"` casts to
@@ -812,6 +1173,29 @@ class TailwindParser
      * @param  list<string>  $edges
      * @return array<string, mixed>|null
      */
+    /**
+     * Mark explicitly-authored zero insets as IEEE -0.0. The wire's packed
+     * node has no spare byte to distinguish "unset" from "explicit 0", so
+     * +0.0 means unset and the sign bit carries "the author wrote
+     * `bottom-0`" — which must anchor to the bottom edge, not fall through
+     * to the top default. -0.0 survives the f32 wire bit-exactly; the
+     * native layout treats `!= 0 || signbit` as "edge is set".
+     */
+    private static function explicitInsets(?array $parsed): ?array
+    {
+        if ($parsed === null) {
+            return null;
+        }
+
+        foreach ($parsed as $key => $value) {
+            if ($value === 0 || $value === 0.0) {
+                $parsed[$key] = -0.0;
+            }
+        }
+
+        return $parsed;
+    }
+
     private static function parseInset(string $value, array $edges): ?array
     {
         $result = [];
@@ -1020,13 +1404,54 @@ class TailwindParser
         return self::resolveColor($value, 'borderColor');
     }
 
+    /**
+     * `rounded-*` — uniform, per-side and per-corner.
+     *
+     * The scale keys carry no dashes, so a dash unambiguously separates a
+     * side from its size: `2xl` is uniform, `br-none` is one corner.
+     * A bare side (`rounded-t`) takes Tailwind's default 4pt radius, the
+     * same as a bare `rounded`.
+     *
+     * Per-corner keys are emitted ALONGSIDE any uniform `borderRadius` rather
+     * than merged into it, so `rounded-2xl rounded-br-none` keeps both and the
+     * collector resolves the precedence. That makes the result independent of
+     * the order the classes appear in — which matches Tailwind, where the
+     * longhand always follows the shorthand in the generated stylesheet
+     * regardless of how the author ordered the attribute.
+     */
     private static function parseRounded(string $value): ?array
     {
         if (isset(self::BORDER_RADIUS[$value])) {
             return ['borderRadius' => self::BORDER_RADIUS[$value]];
         }
 
-        return null;
+        [$side, $size] = array_pad(explode('-', $value, 2), 2, null);
+
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+        if ($corners === null) {
+            return null;
+        }
+
+        // Bare side (`rounded-b`) → the same default `rounded` uses.
+        $radius = $size === null ? 4 : (self::BORDER_RADIUS[$size] ?? null);
+        if ($radius === null) {
+            return null;
+        }
+
+        return array_fill_keys($corners, $radius);
+    }
+
+    /**
+     * Arbitrary per-corner radius — `rounded-br-[4px]`, `rounded-t-[12]`.
+     * The uniform `rounded-[N]` form is handled inline in parseArbitrary.
+     *
+     * @return array<string, float>|null
+     */
+    private static function parseArbitraryRounded(string $side, string $value): ?array
+    {
+        $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
+
+        return $corners === null ? null : array_fill_keys($corners, (float) $value);
     }
 
     private static function parseShadow(string $value): ?array
@@ -1036,6 +1461,62 @@ class TailwindParser
         }
 
         return null;
+    }
+
+    /**
+     * `glow-emerald`, `glow-indigo-sm`, `glow-rose-lg`.
+     *
+     * Emits camelCase EDGE attrs (glowColor / glowRadius / glowOpacity)
+     * that `NativeElementCollector::applyStyle` forwards into the props
+     * bag — same path as `glass` / `dark_bg_color`, no NodeStyle bump.
+     *
+     * @return array{glowColor: string, glowRadius: float, glowOpacity: float}|null
+     */
+    private static function parseGlow(string $value): ?array
+    {
+        $color = null;
+        $radius = self::GLOW_DEFAULT_RADIUS;
+
+        if (isset(self::GLOW_COLORS[$value])) {
+            $color = self::GLOW_COLORS[$value];
+        } else {
+            $lastDash = strrpos($value, '-');
+            if ($lastDash === false) {
+                return null;
+            }
+
+            $family = substr($value, 0, $lastDash);
+            $size = substr($value, $lastDash + 1);
+
+            if (! isset(self::GLOW_COLORS[$family], self::GLOW_RADIUS[$size])) {
+                return null;
+            }
+
+            $color = self::GLOW_COLORS[$family];
+            $radius = self::GLOW_RADIUS[$size];
+        }
+
+        return [
+            'glowColor' => $color,
+            'glowRadius' => (float) $radius,
+            'glowOpacity' => self::GLOW_DEFAULT_OPACITY,
+        ];
+    }
+
+    /**
+     * `blur-sm` … `blur-3xl` / `blur-none`. Bare `blur` is handled in the
+     * match arm. Emits camelCase `blur` radius (float pt) for the collector
+     * props bag — no NodeStyle bump.
+     *
+     * @return array{blur: float}|null
+     */
+    private static function parseBlur(string $value): ?array
+    {
+        if (! isset(self::BLUR_RADIUS[$value])) {
+            return null;
+        }
+
+        return ['blur' => (float) self::BLUR_RADIUS[$value]];
     }
 
     private static function parseOpacity(string $value): ?array
@@ -1090,11 +1571,21 @@ class TailwindParser
             'gap' => ['gap' => (float) $value],
             'w' => ['width' => (float) $value],
             'h' => ['height' => (float) $value],
+            'min-w' => ['minWidth' => (float) $value],
+            'max-w' => ['maxWidth' => (float) $value],
+            'min-h' => ['minHeight' => (float) $value],
+            'max-h' => ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
+            // `rounded-br-[4px]` etc. The arbitrary regex is non-greedy up to
+            // the final `-[`, so the whole `rounded-<side>` arrives as prefix.
+            'rounded-tl', 'rounded-tr', 'rounded-br', 'rounded-bl',
+            'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
             'opacity' => ['opacity' => (float) $value],
+            // `blur-[100px]` / `blur-[64]` — Gaussian radius in points.
+            'blur' => ['blur' => (float) $value],
             'aspect' => ['aspectRatio' => self::parseRatio($value)],
             // Line height: `leading-[24px]` → absolute; `leading-[1.4]` →
             // unitless multiplier of the font size.

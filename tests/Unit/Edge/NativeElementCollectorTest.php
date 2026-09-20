@@ -2,7 +2,9 @@
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\LazyGrid;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
 
@@ -195,6 +197,42 @@ it('applies scroll view props', function () {
     expect($tree['children'])->toHaveCount(1);
 });
 
+it('applies lazy grid scroll-indicator props', function () {
+    // The lazy_grid type is registered by the native-ui plugin's manifest,
+    // but the element class is core-owned — register it explicitly so this
+    // stays testable without the plugin.
+    ElementRegistry::register('lazy_grid', LazyGrid::class);
+
+    NativeElementCollector::open('lazy_grid', [
+        'columns' => 3,
+        'shows-indicators' => true,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Cell']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('lazy_grid');
+    expect($tree['props']['columns'])->toBe(3);
+    expect($tree['props']['shows_indicators'])->toBeTrue();
+
+    ElementRegistry::reset();
+});
+
+it('applies refreshable scroll-indicator props', function () {
+    NativeElementCollector::open('refreshable', [
+        'shows-indicators' => false,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Scrollable']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('refreshable');
+    expect($tree['props']['shows_indicators'])->toBeFalse();
+    expect($tree['children'])->toHaveCount(1);
+});
+
 it('applies node-level onPress and onLongPress', function () {
     NativeElementCollector::open('column', [
         '_press' => 'tapColumn',
@@ -245,6 +283,49 @@ it('applies dark companion props from programmatic class()', function () {
     expect($tree['style']['bg_color'] ?? $tree['props']['bg_color'] ?? null)->not->toBeNull();
     expect($tree['props']['dark_bg_color'])->toBe('#050714');
     expect($tree['children'][0]['props']['dark_color'])->toBe('#FFFFFF');
+});
+
+it('wires glow-* utilities into props without touching elevation', function () {
+    $el = Column::make()->class('glow-emerald shadow-md');
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['props']['glow_color'])->toBe('#10B981');
+    expect($tree['props']['glow_radius'])->toBe(16.0);
+    expect($tree['props']['glow_opacity'])->toBe(0.55);
+    expect($tree['style']['elevation'])->toBe(6.0);
+});
+
+it('wires EDGE glowColor attrs into the props bag with defaults', function () {
+    $el = Column::make();
+    NativeElementCollector::applyStyle($el, ['glowColor' => '#6366F1']);
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['props']['glow_color'])->toBe('#6366F1');
+    expect($tree['props']['glow_radius'])->toBe(16.0);
+    expect($tree['props']['glow_opacity'])->toBe(0.55);
+});
+
+it('wires blur-* utilities into the props bag without touching elevation', function () {
+    $el = Column::make()->class('blur-3xl shadow-md');
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['props']['blur'])->toBe(64.0);
+    expect($tree['style']['elevation'])->toBe(6.0);
+});
+
+it('wires EDGE blur attr and Element::blur into the props bag', function () {
+    $el = Column::make();
+    NativeElementCollector::applyStyle($el, ['blur' => 100.0]);
+
+    $tree = $el->toArray(new CallbackRegistry);
+    expect($tree['props']['blur'])->toBe(100.0);
+
+    $el2 = Column::make()->blur(48.0);
+    $tree2 = $el2->toArray(new CallbackRegistry);
+    expect($tree2['props']['blur'])->toBe(48.0);
 });
 
 // ── Callback attribute wiring ────────────

@@ -2,17 +2,23 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Contracts\Routing\UrlRoutable;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Http\Request;
+use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\View\Engines\CompilerEngine;
 use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
+use Native\Mobile\AsyncTask;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
 use Native\Mobile\Attributes\Locked;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
+use Native\Mobile\Browser;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -26,10 +32,16 @@ use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBar;
 use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
 use Native\Mobile\Edge\Layouts\NativeLayout;
+use Native\Mobile\Events\Async\AsyncTaskFailed;
+use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
+use Native\Mobile\Exceptions\AsyncTaskException;
 use Native\Mobile\JumpBridge;
+use Native\Mobile\PendingAsyncTask;
 use Native\Mobile\Platform;
+use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\System;
 use Symfony\Component\VarDumper\Cloner\VarCloner;
 use Symfony\Component\VarDumper\Dumper\CliDumper;
 use Symfony\Component\VarDumper\VarDumper;
@@ -50,6 +62,20 @@ abstract class NativeComponent
     const EVENT_NATIVE = 20;
 
     private static bool $dumpHandlerRegistered = false;
+
+    /**
+     * The component currently driving the runloop (rendering or handling an
+     * event). Async tasks capture this at dispatch time so a completion arriving
+     * after the user has navigated away can be dropped instead of firing against
+     * the wrong live component. Only ever one component runs at a time.
+     *
+     * Held WEAKLY, and restored to its previous value when a runloop exits: a
+     * strong static would keep the last screen a user ever visited — and its
+     * whole state graph — alive for the life of the process.
+     *
+     * @var \WeakReference<self>|null
+     */
+    private static ?\WeakReference $nativeActiveComponent = null;
 
     private ?NativeDumpException $dumpException = null;
 
@@ -96,6 +122,14 @@ abstract class NativeComponent
     protected array $nativeParams = [];
 
     protected array $nativeNavigationData = [];
+
+    /** @var list<array{source: NativeComponent, event: ComponentEvent}> */
+    private array $nativePendingComponentEvents = [];
+
+    /** @var list<array{name: string, params: array, self?: bool, component?: string}> */
+    private array $nativeDispatchedComponentEvents = [];
+
+    private bool $nativeFlushingComponentEvents = false;
 
     /** Layout class for this screen (set by router from route metadata). */
     protected ?string $nativeLayout = null;
@@ -526,6 +560,17 @@ abstract class NativeComponent
             }
         } elseif (! $hasCustomBottomNav && $layout !== null) {
             $tabBar = $layout->tabBar($this);
+            // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
+            // builder), mirroring the NavBar handling above. On the
+            // custom-Column path hiding is identical to the layout
+            // returning null — dropping the bar also hands the bottom
+            // safe-area edge back to the wrapper in buildChromeColumn().
+            // The native-chrome path instead keeps the config and folds a
+            // `hide_tab_bar` prop onto the sentinel, so the TabView
+            // survives for tab switching.
+            if ($tabBar !== null && ! $usesNativeChrome && $this->shouldHideTabBar()) {
+                $tabBar = null;
+            }
             if ($tabBar !== null) {
                 $currentUri = $this->nativeRouter?->currentUri();
                 if ($currentUri !== null) {
@@ -1296,11 +1341,16 @@ abstract class NativeComponent
         // returns a View. We need the View to access its engine + path.
         $view = view($name, $data);
         $engine = $view->getEngine();
+        TailwindParser::beginViewDiagnostics($view->getName());
 
         if (! $engine instanceof CompilerEngine) {
             // Non-blade engine — fall back to the standard render path.
             // $this won't be bound, but at least the view still runs.
-            $view->render();
+            try {
+                $view->render();
+            } finally {
+                TailwindParser::endViewDiagnostics();
+            }
 
             return;
         }
@@ -1373,6 +1423,7 @@ abstract class NativeComponent
             $factory->flushStateIfDoneRendering();
         } finally {
             NativeTagPrecompiler::setActive($wasActive);
+            TailwindParser::endViewDiagnostics();
         }
     }
 
@@ -1597,11 +1648,13 @@ abstract class NativeComponent
                     continue;
                 }
 
-                if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    $this->{$def['method']}();
-                }
-
+                // Reschedule before user code runs so a failing callback is
+                // contained by the error screen without becoming a hot-loop.
                 $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
+
+                if ($def['method'] !== null && method_exists($this, $def['method'])) {
+                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
+                }
             }
         }
 
@@ -1609,6 +1662,21 @@ abstract class NativeComponent
             if ($now >= $next) {
                 $this->bladePollDeadlines[$ms] = $now + $ms;
             }
+        }
+
+        $this->flushDispatchedEvents();
+    }
+
+    /** Keep callback failures inside the component's error-screen lifecycle. */
+    private function runGuardedInteraction(string $operation, callable $interaction): void
+    {
+        try {
+            $interaction();
+        } catch (NativeDumpException $e) {
+            $this->renderDumpScreen($e);
+        } catch (\Throwable $e) {
+            NativeRouter::debugLog($operation.' FAILED in '.static::class.': '.$e->getMessage());
+            $this->renderErrorScreen($e);
         }
     }
 
@@ -1727,6 +1795,34 @@ abstract class NativeComponent
     }
 
     /**
+     * Can this app render the target of a deep link?
+     *
+     * True for a Route::native screen, and also for a plain Laravel route —
+     * those legitimately exit to the WebView and render there, which is how
+     * WebView and hybrid apps have always handled deep links. Only a URI that
+     * matches neither is a guaranteed 404.
+     */
+    protected static function routableDeepLink(string $uri): bool
+    {
+        if (NativeRouter::isNativeRoute($uri)) {
+            return true;
+        }
+
+        // Deliberately not RouteCollection::match() — that binds the request to
+        // the matched Route object the collection holds, mutating shared state
+        // from what is only meant to be a question.
+        $request = Request::create($uri, 'GET');
+
+        foreach (app('router')->getRoutes()->getRoutes() as $route) {
+            if (in_array('GET', $route->methods(), true) && $route->matches($request)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Handle a native event (type 20) by looking up #[OnNative] listeners.
      */
     protected function dispatchNativeEvent(array $event): void
@@ -1742,11 +1838,41 @@ abstract class NativeComponent
         // an in-app @tap navigate.
         if ($eventName === '__deeplink') {
             $uri = is_array($payload) ? ($payload['uri'] ?? null) : null;
+            $url = is_array($payload) ? ($payload['url'] ?? null) : null;
+
             if (is_string($uri) && $uri !== '') {
+                // A verified app link the app has no route for. Navigating would
+                // tear the native UI down and hand the path to the WebView, which
+                // serves a local 404 — a dead end the user can't back out of. The
+                // link belongs to the site we took it from, so give it back to the
+                // browser and leave the current screen alone.
+                // open() is a no-op when the app doesn't ship a browser handler,
+                // so only swallow the link if it was actually handed off —
+                // otherwise fall through and behave exactly as before.
+                if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
+                    NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
+
+                    if ((new Browser)->open($url)) {
+                        return;
+                    }
+
+                    NativeRouter::debugLog('DEEPLINK: browser handoff unavailable, navigating anyway');
+                }
+
                 NativeRouter::debugLog("DEEPLINK: navigating to $uri");
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri);
                 $this->stop();
             }
+
+            return;
+        }
+
+        // Async task completion (AsyncTask::dispatch()->finished()/failed()).
+        // Handled before the generic callback path because it carries its own
+        // screen-scoping and shared-alias delivery policy.
+        $asyncClass = str_starts_with($eventName, 'native:') ? substr($eventName, 7) : $eventName;
+        if ($asyncClass === AsyncTaskFinished::class || $asyncClass === AsyncTaskFailed::class) {
+            $this->handleAsyncCompletion($asyncClass, is_array($payload) ? $payload : []);
 
             return;
         }
@@ -1790,34 +1916,39 @@ abstract class NativeComponent
         }
 
         if (is_array($payload)) {
-            $reflect = new \ReflectionMethod($this, $method);
-            $args = [];
-            foreach ($reflect->getParameters() as $param) {
-                $name = $param->getName();
-                if (array_key_exists($name, $payload)) {
-                    $value = $payload[$name];
-
-                    // Coerce the value to match the parameter's type hint
-                    $type = $param->getType();
-                    if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
-                        $value = match ($type->getName()) {
-                            'int' => (int) $value,
-                            'float' => (float) $value,
-                            'string' => (string) $value,
-                            'bool' => (bool) $value,
-                            default => $value,
-                        };
-                    }
-
-                    $args[] = $value;
-                } elseif ($param->isDefaultValueAvailable()) {
-                    $args[] = $param->getDefaultValue();
+            $parameters = [];
+            foreach ((new \ReflectionMethod($this, $method))->getParameters() as $parameter) {
+                if (array_key_exists($parameter->getName(), $payload)) {
+                    $parameters[$parameter->getName()] = $this->coerceNativePayloadValue(
+                        $parameter,
+                        $payload[$parameter->getName()],
+                    );
                 }
             }
-            $this->$method(...$args);
-        } else {
-            $this->$method($payload);
+
+            ComponentMethodInvoker::invoke($this, $method, $parameters);
+
+            return;
         }
+
+        ComponentMethodInvoker::invoke($this, $method, [$payload]);
+    }
+
+    private function coerceNativePayloadValue(\ReflectionParameter $parameter, mixed $value): mixed
+    {
+        $type = $parameter->getType();
+
+        if (! $type instanceof \ReflectionNamedType || ! $type->isBuiltin()) {
+            return $value;
+        }
+
+        return match ($type->getName()) {
+            'int' => (int) $value,
+            'float' => (float) $value,
+            'string' => (string) $value,
+            'bool' => (bool) $value,
+            default => $value,
+        };
     }
 
     /**
@@ -1936,6 +2067,87 @@ abstract class NativeComponent
     }
 
     /**
+     * Handle an async task completion (finished or failed).
+     *
+     * Delivery policy:
+     *   - shared('alias')  → re-dispatch as the named event so any active
+     *     component's #[On('alias')] / ->on('alias') handles it, no matter which
+     *     screen is showing. No origin-screen check.
+     *   - otherwise (scoped) → DROP if the screen that dispatched the task is no
+     *     longer topmost (firing a component-bound callback against the wrong
+     *     live component is a footgun). Else run the finished()/failed() callback,
+     *     rebound to this live component, with the raw result / an
+     *     AsyncTaskException.
+     */
+    private function handleAsyncCompletion(string $eventClass, array $payload): void
+    {
+        $id = $payload['id'] ?? null;
+        if (! is_string($id) || $id === '') {
+            return;
+        }
+
+        $failed = $eventClass === AsyncTaskFailed::class;
+        $scope = AsyncTaskRegistry::scope($id);
+
+        // Shared: deliver as a named event to whatever component is active.
+        if ($scope !== null && $scope['shared'] !== null) {
+            $status = $failed ? 'failed' : 'finished';
+            $this->dispatchNativeEvent([
+                'event' => $scope['shared'],
+                'payload' => $payload + ['status' => $status],
+            ]);
+            AsyncTaskRegistry::forget($id);
+            NativeCallbacks::forget($id);
+
+            return;
+        }
+
+        // Scoped: drop if the originating screen has been left. The weak
+        // reference reads back as null once that component has been freed, which
+        // is never === $this — so a recycled object id can't smuggle a callback
+        // onto an unrelated screen that happens to sit at the same address.
+        if ($scope !== null && $scope['origin'] !== null && $scope['origin']->get() !== $this) {
+            NativeRouter::debugLog("async {$id}: dropped completion — origin screen no longer topmost");
+            AsyncTaskRegistry::forget($id);
+            NativeCallbacks::forget($id);
+
+            return;
+        }
+
+        $callback = NativeCallbacks::resolve($id, $eventClass);
+
+        try {
+            if ($callback === null) {
+                return;
+            }
+
+            if (is_string($callback) && class_exists($callback)) {
+                $callback = app($callback);
+            }
+
+            // Bind the closure to this live component so finished()/failed() can
+            // mutate state via $this. Static closures run without $this.
+            if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
+                $callback = \Closure::bind($callback, $this, static::class);
+            }
+
+            if ($failed) {
+                $callback(new AsyncTaskException(
+                    (string) ($payload['message'] ?? 'Async task failed.'),
+                    (string) ($payload['exceptionClass'] ?? 'Exception'),
+                    $payload['trace'] ?? null,
+                ));
+            } else {
+                $callback($payload['result'] ?? null);
+            }
+        } finally {
+            // One outcome per task — drop the finished/failed sibling too.
+            NativeCallbacks::forget($id);
+            AsyncTaskRegistry::forget($id);
+        }
+    }
+
+    /**
      * Build an event object from a native payload, binding constructor
      * parameters by name and tolerating extra/missing keys.
      */
@@ -1963,9 +2175,201 @@ abstract class NativeComponent
         return new $eventClass(...$args);
     }
 
-    public function mount(): void
+    /**
+     * The component currently driving the runloop, or null when none is active
+     * (or the last active one has since been freed). Used by
+     * {@see PendingAsyncTask} to scope async completion callbacks to the screen
+     * that dispatched them.
+     */
+    public static function active(): ?self
     {
-        //
+        return self::$nativeActiveComponent?->get();
+    }
+
+    /**
+     * Mark this component as the one driving the runloop, returning whatever was
+     * active before so a nested runloop can hand the baton back on the way out.
+     *
+     * @internal Public only so {@see NativeRouter} can cover the mount() it runs
+     *           before handing over to runLoop() — a task dispatched from mount()
+     *           must scope to the screen being mounted, not the one it replaced.
+     *
+     * @return \WeakReference<self>|null
+     */
+    public static function markActive(self $component): ?\WeakReference
+    {
+        $previous = self::$nativeActiveComponent;
+        self::$nativeActiveComponent = \WeakReference::create($component);
+
+        return $previous;
+    }
+
+    /**
+     * @internal Pairs with {@see markActive()}.
+     *
+     * @param  \WeakReference<self>|null  $previous
+     */
+    public static function restoreActive(?\WeakReference $previous): void
+    {
+        self::$nativeActiveComponent = $previous;
+    }
+
+    /**
+     * Dispatch background work on a separate PHP thread and handle the result
+     * back on this component — sugar for {@see AsyncTask::dispatch()} that reads
+     * naturally inside a handler:
+     *
+     *     $this->async(static fn () => ExpensiveReport::build()->toArray())
+     *         ->finished(fn ($result) => $this->report = $result);
+     *
+     * The work MUST be a static closure — it runs in another interpreter and
+     * cannot capture `$this`. Mutate state from `->finished()`/`->failed()`.
+     * `->failed()` also covers a task that never started or outran its timeout,
+     * so a spinner started here always has something to switch it off.
+     */
+    protected function async(\Closure $work): PendingAsyncTask
+    {
+        return AsyncTask::dispatch($work);
+    }
+
+    /**
+     * Hydrate route-bound public properties and invoke the component's
+     * optional mount() method through Laravel's container.
+     *
+     * NativeComponent deliberately does not declare mount() itself. That lets
+     * application components use any signature, including route-bound models
+     * and container dependencies, without violating PHP's inheritance rules.
+     *
+     * @internal Called by the router, runloop, and test harness.
+     */
+    final public function mountComponent(): void
+    {
+        $this->hydrateRouteBoundProperties();
+
+        if (! method_exists($this, 'mount')) {
+            return;
+        }
+
+        $parameters = [];
+
+        foreach ((new \ReflectionMethod($this, 'mount'))->getParameters() as $parameter) {
+            $routeParameter = $this->routeParameterFor($parameter->getName());
+
+            if ($routeParameter === null) {
+                continue;
+            }
+
+            [$routeParameterName, $value] = $routeParameter;
+            $value = $this->resolveRouteValue($parameter->getType(), $value);
+
+            $parameters[$parameter->getName()] = $value;
+            $this->nativeParams[$routeParameterName] = $value;
+        }
+
+        ComponentMethodInvoker::invokeLifecycle($this, 'mount', $parameters);
+    }
+
+    /** Hydrate typed public properties from matching route parameters. */
+    private function hydrateRouteBoundProperties(): void
+    {
+        $reflection = new \ReflectionClass($this);
+
+        foreach ($reflection->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
+            if ($property->isStatic()) {
+                continue;
+            }
+
+            $routeParameter = $this->routeParameterFor($property->getName());
+
+            if ($routeParameter === null) {
+                continue;
+            }
+
+            [$routeParameterName, $value] = $routeParameter;
+            $value = $this->resolveRouteValue($property->getType(), $value);
+
+            $property->setValue($this, $value);
+            $this->nativeParams[$routeParameterName] = $value;
+        }
+    }
+
+    /** @return array{string, mixed}|null */
+    private function routeParameterFor(string $name): ?array
+    {
+        foreach ([$name, Str::snake($name)] as $candidate) {
+            if (array_key_exists($candidate, $this->nativeParams)) {
+                return [$candidate, $this->nativeParams[$candidate]];
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveRouteValue(?\ReflectionType $type, mixed $value): mixed
+    {
+        if (! $type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return $value;
+        }
+
+        $class = $type->getName();
+
+        // Match ComponentMethodInvoker: an empty value for a nullable binding
+        // means "absent", not "case not found".
+        if ($value === '' && $type->allowsNull()) {
+            return null;
+        }
+
+        if (enum_exists($class) && is_subclass_of($class, \BackedEnum::class)) {
+            return $this->resolveRouteEnum($class, $value);
+        }
+
+        if (is_a($class, UrlRoutable::class, true)) {
+            return $this->resolveRouteBinding($class, $value);
+        }
+
+        return $value;
+    }
+
+    /** @param class-string<\BackedEnum> $class */
+    private function resolveRouteEnum(string $class, mixed $value): ?\BackedEnum
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof $class) {
+            return $value;
+        }
+
+        $resolved = $class::tryFrom($value);
+
+        if ($resolved === null) {
+            throw new BackedEnumCaseNotFoundException($class, $value);
+        }
+
+        return $resolved;
+    }
+
+    /** @param class-string<UrlRoutable> $class */
+    private function resolveRouteBinding(string $class, mixed $value): ?UrlRoutable
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof $class) {
+            return $value;
+        }
+
+        /** @var UrlRoutable $instance */
+        $instance = app()->make($class);
+        $resolved = $instance->resolveRouteBinding($value);
+
+        if (! $resolved instanceof $class) {
+            throw (new ModelNotFoundException)->setModel($class, [$value]);
+        }
+
+        return $resolved;
     }
 
     public function unmount(): void
@@ -2076,8 +2480,15 @@ abstract class NativeComponent
         // (potentially slow) mount() so the first frame is instant.
         $this->publishPlaceholder();
 
+        // Before mount(), not after: "start loading when the screen opens" is
+        // the canonical async dispatch, and it happens IN mount(). Marking
+        // active afterwards would scope that task to the previous screen, so
+        // its completion — and its timeout failure, dropped by the same
+        // origin check — would never reach the screen that asked for it.
+        $previousActiveComponent = self::markActive($this);
+
         try {
-            $this->mount();
+            $this->mountComponent();
         } catch (NativeDumpException $e) {
             $this->renderDumpScreen($e);
         } catch (\Throwable $e) {
@@ -2086,6 +2497,11 @@ abstract class NativeComponent
         }
 
         while ($this->nativeRunning) {
+            self::markActive($this);
+            $this->runGuardedInteraction(
+                'flushDispatchedEvents()',
+                fn () => $this->flushDispatchedEvents(),
+            );
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2111,8 +2527,15 @@ abstract class NativeComponent
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                // fire any due polls, then loop back to re-render. Polls stay
+                // parked while the error screen is up, so a throwing callback
+                // cannot repaint the overlay on every tick.
+                if (! $this->nativeHasError) {
+                    $this->runGuardedInteraction(
+                        'runDuePolls()',
+                        fn () => $this->runDuePolls(),
+                    );
+                }
 
                 continue;
             }
@@ -2153,6 +2576,7 @@ abstract class NativeComponent
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
                     $this->dispatchNativeEvent($event);
+                    $this->flushDispatchedEvents();
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -2167,17 +2591,21 @@ abstract class NativeComponent
             // (except overlay controls like font size buttons)
             if (! $this->nativeHasError) {
                 try {
-                    $this->dispatch($event);
+                    $this->dispatchUiEvent($event);
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog('dispatch() FAILED in '.static::class.': '.$e->getMessage());
+                    NativeRouter::debugLog('dispatchUiEvent() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
             } elseif (in_array($event['callback_id'] ?? 0, $this->overlayCallbackIds)) {
-                $this->dispatch($event);
+                $this->dispatchUiEvent($event);
             }
         }
+
+        // Hand the baton back: this screen is done driving the runloop, so it
+        // must stop being what a later AsyncTask::dispatch() scopes itself to.
+        self::restoreActive($previousActiveComponent);
 
         $this->unmount();
 
@@ -2211,13 +2639,8 @@ abstract class NativeComponent
         // Claim this runloop as the current native session; the check at the top
         // of the loop makes any older, superseded runloop bail out so exactly one
         // ever drives the device.
-        //
-        // Gate on JUMP_BRIDGE_PORT (set only by `native:jump`). NOT on
-        // `function_exists('nativephp_call')` — in Jump mode the PHP fallback
-        // DEFINES that function, so it exists on both device and dev server and
-        // would gate this off everywhere.
         $jumpSessionToken = null;
-        if (getenv('JUMP_BRIDGE_PORT') !== false) {
+        if (System::runningInJump()) {
             $jumpSessionToken = $this->claimJumpSession();
         }
 
@@ -2247,6 +2670,8 @@ abstract class NativeComponent
             $this->registerNativeEventListeners();
         }
 
+        $previousActiveComponent = self::markActive($this);
+
         while ($this->nativeRunning) {
             // Superseded by a newer Jump native session — this runloop is an
             // orphan (its WebView is gone). The device-side bridge wakes us from
@@ -2262,6 +2687,11 @@ abstract class NativeComponent
                 break;
             }
 
+            self::markActive($this);
+            $this->runGuardedInteraction(
+                'flushDispatchedEvents()',
+                fn () => $this->flushDispatchedEvents(),
+            );
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
 
@@ -2310,8 +2740,15 @@ abstract class NativeComponent
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                // fire any due polls, then loop back to re-render. Polls stay
+                // parked while the error screen is up, so a throwing callback
+                // cannot repaint the overlay on every tick.
+                if (! $this->nativeHasError) {
+                    $this->runGuardedInteraction(
+                        'runDuePolls()',
+                        fn () => $this->runDuePolls(),
+                    );
+                }
 
                 continue;
             }
@@ -2359,7 +2796,10 @@ abstract class NativeComponent
 
                     continue;
                 }
-                $this->onBackPressed();
+                $this->runGuardedInteraction('onBackPressed()', function () {
+                    $this->onBackPressed();
+                    $this->flushDispatchedEvents();
+                });
 
                 continue;
             }
@@ -2368,6 +2808,7 @@ abstract class NativeComponent
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
                     $this->dispatchNativeEvent($event);
+                    $this->flushDispatchedEvents();
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -2382,17 +2823,21 @@ abstract class NativeComponent
             // (except overlay controls like font size buttons)
             if (! $this->nativeHasError) {
                 try {
-                    $this->dispatch($event);
+                    $this->dispatchUiEvent($event);
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog('dispatch() FAILED in '.static::class.': '.$e->getMessage());
+                    NativeRouter::debugLog('dispatchUiEvent() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
             } elseif (in_array($event['callback_id'] ?? 0, $this->overlayCallbackIds)) {
-                $this->dispatch($event);
+                $this->dispatchUiEvent($event);
             }
         }
+
+        // Hand the baton back to whatever was driving before this hot-swapped
+        // loop took over, so a later dispatch scopes to the right screen.
+        self::restoreActive($previousActiveComponent);
     }
 
     public function getNavigationIntent(): ?NavigationIntent
@@ -2490,6 +2935,7 @@ abstract class NativeComponent
             return $this;
         }
 
+        $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -2521,6 +2967,7 @@ abstract class NativeComponent
             return $this;
         }
 
+        $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
         $this->publishFinalState();
         $this->stop();
@@ -2537,6 +2984,7 @@ abstract class NativeComponent
             return $this;
         }
 
+        $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -2673,6 +3121,13 @@ abstract class NativeComponent
 
     public function renderErrorScreen(\Throwable $e): void
     {
+        // The exception message, its origin and the stack trace are for whoever is BUILDING
+        // the app, never for whoever is using it. With debug off a released app would
+        // otherwise show a customer the sandbox path, compiled view hashes, internal class
+        // names, and whatever the message itself carries - an API error body, a token
+        // fragment, a database detail.
+        $showDetail = (bool) config('app.debug', false);
+
         $this->nativeHasError = true;
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;
@@ -2683,14 +3138,18 @@ abstract class NativeComponent
             // ── Fixed header ──
             $header = Column::make()->fillWidth()->padding(24, 20, 12, 20)->gap(4);
             $this->overlayAddText($header, 'Something went wrong', ['fontSize' => 22, 'fontWeight' => 7, 'color' => '#7F1D1D']);
-            $this->overlayAddText($header, class_basename($e).' · '.class_basename(static::class), ['fontSize' => 13, 'color' => '#B91C1C']);
+            $this->overlayAddText($header, $showDetail
+                ? class_basename($e).' · '.class_basename(static::class)
+                : 'Please try again, or go back.', ['fontSize' => 13, 'color' => '#B91C1C']);
 
-            $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#DC2626', 'trackColor' => '#FECACA']);
-            if ($slider) {
-                if (method_exists($slider, 'onChange')) {
-                    $slider->onChange('__overlaySetFontSize');
+            if ($showDetail) {
+                $slider = $this->resolveElement('slider', ['value' => (float) $this->overlayFontSize, 'min' => 6, 'max' => 40, 'step' => 2, 'color' => '#DC2626', 'trackColor' => '#FECACA']);
+                if ($slider) {
+                    if (method_exists($slider, 'onChange')) {
+                        $slider->onChange('__overlaySetFontSize');
+                    }
+                    $header->addChild($slider->fillWidth());
                 }
-                $header->addChild($slider->fillWidth());
             }
 
             $screen->addChild($header);
@@ -2699,40 +3158,42 @@ abstract class NativeComponent
             $scroll = Elements\ScrollView::make()->fillWidth()->flexGrow(1);
             $body = Column::make()->fillWidth()->padding(4, 20, 12, 20)->gap(12);
 
-            // What happened — the message, then where it points in the
-            // developer's own code (the origin can be deep in vendor).
-            $card = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
-            $message = $e->getMessage() !== '' ? $e->getMessage() : get_class($e);
-            $this->overlayAddText($card, $message, ['fontSize' => max(15, $this->overlayFontSize + 3), 'fontWeight' => 6, 'color' => '#B91C1C']);
+            if ($showDetail) {
+                // What happened — the message, then where it points in the
+                // developer's own code (the origin can be deep in vendor).
+                $card = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
+                $message = $e->getMessage() !== '' ? $e->getMessage() : get_class($e);
+                $this->overlayAddText($card, $message, ['fontSize' => max(15, $this->overlayFontSize + 3), 'fontWeight' => 6, 'color' => '#B91C1C']);
 
-            $origin = str_replace(base_path().'/', '', $e->getFile()).':'.$e->getLine();
-            $appFrame = $this->firstApplicationFrame($e);
+                $origin = str_replace(base_path().'/', '', $e->getFile()).':'.$e->getLine();
+                $appFrame = $this->firstApplicationFrame($e);
 
-            if ($appFrame === $origin) {
-                $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
-                $this->overlayAddText($card, $origin, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
-            } else {
-                $this->overlayAddText($card, 'THROWN AT', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
-                $this->overlayAddText($card, $origin, ['fontSize' => 12, 'color' => '#57534E']);
-                if ($appFrame !== null) {
+                if ($appFrame === $origin) {
                     $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
-                    $this->overlayAddText($card, $appFrame, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+                    $this->overlayAddText($card, $origin, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+                } else {
+                    $this->overlayAddText($card, 'THROWN AT', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                    $this->overlayAddText($card, $origin, ['fontSize' => 12, 'color' => '#57534E']);
+                    if ($appFrame !== null) {
+                        $this->overlayAddText($card, 'YOUR CODE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                        $this->overlayAddText($card, $appFrame, ['fontSize' => 12, 'fontWeight' => 6, 'color' => '#B91C1C']);
+                    }
                 }
-            }
-            $body->addChild($card);
+                $body->addChild($card);
 
-            // Stack trace, condensed and vendor-path-stripped.
-            $traceCard = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
-            $this->overlayAddText($traceCard, 'STACK TRACE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
+                // Stack trace, condensed and vendor-path-stripped.
+                $traceCard = Column::make()->fillWidth()->bg('#FFFFFF')->borderRadius(16)->border(1, '#FECACA')->padding(16, 16, 16, 16)->gap(8);
+                $this->overlayAddText($traceCard, 'STACK TRACE', ['fontSize' => 11, 'fontWeight' => 6, 'color' => '#A8A29E']);
 
-            $trace = str_replace(base_path().'/', '', $e->getTraceAsString());
-            $traceLines = explode("\n", $trace);
-            $shortTrace = implode("\n", array_slice($traceLines, 0, 15));
-            if (count($traceLines) > 15) {
-                $shortTrace .= "\n… (".count($traceLines).' frames total)';
+                $trace = str_replace(base_path().'/', '', $e->getTraceAsString());
+                $traceLines = explode("\n", $trace);
+                $shortTrace = implode("\n", array_slice($traceLines, 0, 15));
+                if (count($traceLines) > 15) {
+                    $shortTrace .= "\n… (".count($traceLines).' frames total)';
+                }
+                $this->overlayAddText($traceCard, $shortTrace, ['fontSize' => $this->overlayFontSize, 'color' => '#78716C']);
+                $body->addChild($traceCard);
             }
-            $this->overlayAddText($traceCard, $shortTrace, ['fontSize' => $this->overlayFontSize, 'color' => '#78716C']);
-            $body->addChild($traceCard);
 
             $scroll->addChild($body);
             $screen->addChild($scroll);
@@ -3003,27 +3464,30 @@ abstract class NativeComponent
 
     // ── Model binding ──────────────────────────────
 
+    /**
+     * Apply an externally supplied state update through the shared pipeline.
+     *
+     * @throws LockedPropertyException when the root property has #[Locked]
+     *
+     * @see Locked
+     */
     public function __syncProperty(string $property, mixed $value): void
     {
-        if (! property_exists($this, $property)) {
-            return;
+        ComponentState::set($this, $property, $value);
+    }
+
+    /** @internal State pipeline hook dispatch, scoped inside the component. */
+    final public function __invokeStateHook(string $method, array $parameters): void
+    {
+        if (method_exists($this, $method)) {
+            $this->{$method}(...$parameters);
         }
+    }
 
-        if ((new \ReflectionProperty($this, $property))->getAttributes(Locked::class) !== []) {
-            throw new LockedPropertyException(static::class, $property);
-        }
-
-        $this->{$property} = $value;
-
-        // A state change can invalidate any computed value (incl.
-        // persisted ones) — drop the whole memo so they recompute.
+    /** @internal State pipeline computed-cache invalidation. */
+    final public function __forgetComputedAfterStateMutation(): void
+    {
         $this->computedCache = [];
-
-        $hook = 'updated'.ucfirst($property);
-
-        if (method_exists($this, $hook)) {
-            $this->{$hook}($value);
-        }
     }
 
     // ── Child components (nested <native:*> component tags) ──
@@ -3157,7 +3621,7 @@ abstract class NativeComponent
         $this->nativeChildComponentsSeen[$identity] = true;
 
         if ($isNew) {
-            $child->mount();
+            $child->mountComponent();
         }
 
         $child->renderAsChild();
@@ -3284,6 +3748,115 @@ abstract class NativeComponent
     }
 
     /**
+     * Queue a component event for delivery after the current interaction.
+     *
+     * Delivery happens after the current action returns, leaving time for the
+     * returned event to be narrowed with ->self() or ->to(Component::class).
+     */
+    public function dispatch(string $event, mixed ...$params): ComponentEvent
+    {
+        $dispatch = new ComponentEvent($event, $params);
+        $this->rootScreen()->nativePendingComponentEvents[] = [
+            'source' => $this,
+            'event' => $dispatch,
+        ];
+
+        return $dispatch;
+    }
+
+    /** @internal Flush events queued during the preceding interaction. */
+    public function flushDispatchedEvents(): void
+    {
+        $root = $this->rootScreen();
+
+        if ($root !== $this) {
+            $root->flushDispatchedEvents();
+
+            return;
+        }
+
+        if ($this->nativeFlushingComponentEvents) {
+            return;
+        }
+
+        $this->nativeFlushingComponentEvents = true;
+
+        try {
+            while ($queued = array_shift($this->nativePendingComponentEvents)) {
+                $source = $queued['source'];
+                $event = $queued['event'];
+
+                $this->nativeDispatchedComponentEvents[] = $event->serialize();
+                $this->deliverComponentEvent($source, $event);
+            }
+        } finally {
+            $this->nativeFlushingComponentEvents = false;
+        }
+    }
+
+    /**
+     * @internal Test-harness and runloop introspection of flushed events.
+     *
+     * @return list<array{name: string, params: array, self?: bool, component?: string}>
+     */
+    public function dispatchedEvents(): array
+    {
+        return $this->rootScreen()->nativeDispatchedComponentEvents;
+    }
+
+    private function deliverComponentEvent(NativeComponent $source, ComponentEvent $event): void
+    {
+        if ($event->isSelfOnly()) {
+            $source->invokeComponentEventListener($event->name(), $event->params());
+
+            return;
+        }
+
+        if (($target = $event->target()) !== null) {
+            foreach ($this->componentTree() as $component) {
+                $matches = $target instanceof NativeComponent
+                    ? $component === $target
+                    : is_a($component, $target);
+
+                if ($matches) {
+                    $component->invokeComponentEventListener($event->name(), $event->params());
+                }
+            }
+
+            return;
+        }
+
+        // Native component events bubble from their source through its parent
+        // chain, preserving parent-first component event bubbling.
+        $source->invokeComponentEventListener($event->name(), $event->params());
+
+        $parent = $source->nativeParentComponent;
+        if ($parent !== null && isset($source->nativeChildEventBindings[$event->name()])) {
+            $binding = CallbackRegistry::parse($source->nativeChildEventBindings[$event->name()]);
+
+            $this->invokeComponentEventAction(
+                $parent,
+                $binding['method'],
+                [...$binding['args'], ...$event->params()],
+            );
+        }
+
+        for ($ancestor = $parent; $ancestor !== null; $ancestor = $ancestor->nativeParentComponent) {
+            $ancestor->invokeComponentEventListener($event->name(), $event->params());
+        }
+    }
+
+    /** @return \Generator<int, NativeComponent> */
+    private function componentTree(): \Generator
+    {
+        yield $this;
+
+        foreach ($this->nativeChildComponents as $child) {
+            yield from $child->componentTree();
+        }
+    }
+
+    /**
      * Emit a component event up the ancestor chain (child → parent → … →
      * screen). Delivery, per ancestor:
      *
@@ -3307,7 +3880,11 @@ abstract class NativeComponent
             $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
 
             if (method_exists($parent, $binding['method'])) {
-                $parent->{$binding['method']}(...[...$binding['args'], ...$args]);
+                $this->invokeComponentEventAction(
+                    $parent,
+                    $binding['method'],
+                    [...$binding['args'], ...$args],
+                );
             }
         }
 
@@ -3328,13 +3905,28 @@ abstract class NativeComponent
             ?? null;
 
         if ($method !== null && method_exists($this, $method)) {
-            $this->{$method}(...$args);
+            // An #[On] listener names itself through the attribute, so it is
+            // never remote input. Skip the callable guard that protects
+            // template- and device-supplied method names: a listener may be
+            // protected, and may legitimately be named updatedFoo().
+            $this->invokeComponentEventAction($this, $method, $args, guarded: false);
         }
+    }
+
+    private function invokeComponentEventAction(
+        NativeComponent $component,
+        string $method,
+        array $parameters,
+        bool $guarded = true,
+    ): mixed {
+        return $guarded
+            ? ComponentMethodInvoker::invoke($component, $method, $parameters)
+            : ComponentMethodInvoker::invokeLifecycle($component, $method, $parameters);
     }
 
     // ── Event dispatch ──────────────────────────────
 
-    protected function dispatch(array $event): void
+    protected function dispatchUiEvent(array $event): void
     {
         $callbackId = (int) ($event['callback_id'] ?? 0);
 
@@ -3350,7 +3942,7 @@ abstract class NativeComponent
         }
 
         if ($owner !== $this) {
-            $owner->dispatch($event);
+            $owner->dispatchUiEvent($event);
 
             return;
         }
@@ -3387,7 +3979,7 @@ abstract class NativeComponent
         $kind = $this->nativeCallbacks->kind($event['callback_id'] ?? 0);
 
         if ($kind === 'search_query') {
-            $result = $this->$method(...[...$args, ...$eventArgs]);
+            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
@@ -3404,7 +3996,19 @@ abstract class NativeComponent
             $parts = explode(',', $payload, 2);
             $from = (int) ($parts[0] ?? 0);
             $to = (int) ($parts[1] ?? 0);
-            $this->$method(...[...$args, $from, $to]);
+            $this->invokeUiInteraction($method, [...$args, $from, $to]);
+
+            return;
+        }
+
+        // 'drag_end' callbacks (gesture-area `@dragEnd`) also ride the
+        // TEXT_CHANGE format: native packs the final pan translation as
+        // "x,y" (points); we decode and pass two floats.
+        if ($kind === 'drag_end') {
+            $parts = explode(',', $event['text'] ?? '', 2);
+            $x = (float) ($parts[0] ?? 0);
+            $y = (float) ($parts[1] ?? 0);
+            $this->$method(...[...$args, $x, $y]);
 
             return;
         }
@@ -3436,11 +4040,51 @@ abstract class NativeComponent
                 $start = $end = mb_strlen($text, 'UTF-8');
             }
 
-            $this->$method(...[...$args, $text, $start, $end]);
+            $this->invokeUiInteraction($method, [...$args, $text, $start, $end]);
 
             return;
         }
 
-        $this->$method(...[...$args, ...$eventArgs]);
+        $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+    }
+
+    private function invokeUiInteraction(string $method, array $parameters): mixed
+    {
+        $result = $this->__invokeInteraction($method, $parameters);
+        $this->flushDispatchedEvents();
+
+        return $result;
+    }
+
+    /**
+     * @internal The single interaction entry point shared by the device
+     *           runloop and the test harness, so both accept the same methods.
+     */
+    public function __invokeInteraction(string $method, array $parameters): mixed
+    {
+        $internalCallbacks = [
+            '__navigate',
+            '__overlayBack',
+            '__overlayDismiss',
+            '__overlaySetFontSize',
+            '__syncProperty',
+        ];
+
+        // Direct template navigation remains supported for compatibility.
+        // New templates should prefer @navigate; component PHP can continue
+        // calling these methods normally.
+        $navigationCallbacks = [
+            'navigate',
+            'back',
+            'replace',
+            'exitToWeb',
+            'emit',
+        ];
+
+        if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {
+            return $this->{$method}(...$parameters);
+        }
+
+        return ComponentMethodInvoker::invoke($this, $method, $parameters);
     }
 }

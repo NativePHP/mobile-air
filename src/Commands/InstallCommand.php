@@ -3,12 +3,15 @@
 namespace Native\Mobile\Commands;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Console\Command;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAndroid;
 use Native\Mobile\Concerns\InstallsIos;
 use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Concerns\TracksInstallFailures;
+use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\TransferFailure;
 
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
@@ -18,7 +21,7 @@ use function Laravel\Prompts\text;
 
 class InstallCommand extends Command
 {
-    use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations;
+    use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations, TracksInstallFailures;
 
     protected bool $forcing = true;
 
@@ -35,7 +38,7 @@ class InstallCommand extends Command
 
     protected $description = 'Install all of the NativePHP resources';
 
-    public function handle(): void
+    public function handle(): int
     {
         intro('Installing NativePHP for Mobile');
 
@@ -44,7 +47,9 @@ class InstallCommand extends Command
         $this->forcing = ! $this->option('no-force');
 
         if ($this->option('force')) {
-            $cacheDir = base_path('nativephp/binaries');
+            // Scoped to the current branch: forcing a re-download of one
+            // branch's binaries is no reason to evict another's.
+            $cacheDir = PhpBinaries::cacheDirectory();
             if (is_dir($cacheDir)) {
                 $this->components->task('Clearing cached PHP binaries', function () use ($cacheDir) {
                     $files = glob($cacheDir.'/*.zip');
@@ -68,7 +73,7 @@ class InstallCommand extends Command
         if ($platform && ! in_array($platform, ['android', 'ios', 'both'])) {
             error('Invalid platform. Please specify "android" (a), "ios" (i), or "both".');
 
-            return;
+            return self::FAILURE;
         }
 
         // Check for WSL environment - Android is not supported in WSL
@@ -80,7 +85,7 @@ class InstallCommand extends Command
                 Please run this command from Windows CMD instead of WSL.
                 NOTE);
 
-            return;
+            return self::FAILURE;
         }
 
         // Determine which platforms to install
@@ -96,7 +101,7 @@ class InstallCommand extends Command
             if ($platform === 'ios') {
                 error('iOS installation is only available on macOS.');
 
-                return;
+                return self::FAILURE;
             }
             $installAndroid = true;
         }
@@ -115,10 +120,24 @@ class InstallCommand extends Command
 
         $path = base_path('nativephp');
 
-        if ($this->forcing && is_dir($path)) {
-            $this->components->task('Removing existing native app directories', function () use ($path) {
-                $this->removeDirectory($path.DIRECTORY_SEPARATOR.'ios');
-                $this->removeDirectory($path.DIRECTORY_SEPARATOR.'android');
+        // Only the platforms actually being installed. Removing the other one's
+        // directory deletes a project this command was never asked to touch, and
+        // then reports success — so `native:install ios` followed by
+        // `native:install android` leaves you with no iOS project at all, with
+        // nothing in either run's output to say so.
+        $removing = array_values(array_filter([
+            $installAndroid ? 'android' : null,
+            $installIos ? 'ios' : null,
+        ]));
+
+        if ($this->forcing && is_dir($path) && $removing !== []) {
+            $label = 'Removing existing '.implode(' and ', $removing).' '
+                .(count($removing) === 1 ? 'directory' : 'directories');
+
+            $this->components->task($label, function () use ($path, $removing) {
+                foreach ($removing as $platform) {
+                    $this->removeDirectory($path.DIRECTORY_SEPARATOR.$platform);
+                }
             });
         }
 
@@ -167,9 +186,26 @@ class InstallCommand extends Command
             });
         }
 
+        if ($this->installFailed()) {
+            // No success banner and no marketing over a broken install, and a
+            // non-zero exit so a caller can tell. The messages were printed
+            // where they happened, so this counts rather than repeats them.
+            $this->newLine();
+
+            $count = count($this->installFailures);
+            error($count === 1
+                ? '1 error was reported above — the app is not ready to build.'
+                : "{$count} errors were reported above — the app is not ready to build.");
+            note('Fix the cause and re-run `php artisan native:install --force`.');
+
+            return self::FAILURE;
+        }
+
         outro('NativePHP for Mobile installed successfully!');
 
         $this->showSuperNativeBanner();
+
+        return self::SUCCESS;
     }
 
     protected function ensureAppIdIsSet(): void
@@ -259,21 +295,42 @@ class InstallCommand extends Command
 
     protected function getBinaryBranch(): string
     {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
+        return PhpBinaries::branch();
     }
 
     protected function fetchVersionsManifest(): void
     {
         $branch = $this->getBinaryBranch();
-        $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
+        $versionsUrl = PhpBinaries::manifestUrl($branch);
 
         try {
             $this->versionsManifest = json_decode(
                 (new Client)->get($versionsUrl)->getBody()->getContents(),
                 true
             );
-        } catch (RequestException $e) {
-            error("Failed to fetch versions manifest from: {$versionsUrl}");
+        } catch (TransferException $e) {
+            // A 404 here is specific: the manifest is named for the binary
+            // release this package pins, so a missing one means that release
+            // was withdrawn — not that the CDN is down. Say which, because the
+            // fixes are completely different.
+            // method_exists() keeps this working on both Guzzle 7 (where the
+            // response lives on RequestException) and Guzzle 8 (where only
+            // the ResponseException branch exposes getResponse()).
+            $statusCode = method_exists($e, 'getResponse') ? $e->getResponse()?->getStatusCode() : null;
+
+            if ($statusCode === 404) {
+                $this->failInstall(sprintf(
+                    'PHP binaries release %s is no longer published.'
+                    ."\n".'Update nativephp/mobile to a version that pins a current release:'
+                    ."\n".'    composer update nativephp/mobile',
+                    PhpBinaries::VERSION
+                ));
+
+                return;
+            }
+
+            $this->failInstall("Failed to fetch the PHP binaries manifest from: {$versionsUrl}"
+                ."\n".TransferFailure::describe($e));
         }
     }
 

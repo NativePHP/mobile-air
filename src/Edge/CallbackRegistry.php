@@ -169,6 +169,19 @@ class CallbackRegistry
     }
 
     /**
+     * All stored navigation configs, keyed by content-addressed key —
+     * the introspection counterpart to expressions(). Re-registering a
+     * config recomputes the identical key, so consumers (tooling, the
+     * testing harness) can enumerate exactly what a render registered.
+     *
+     * @return array<string, array>
+     */
+    public function navigations(): array
+    {
+        return $this->navigationConfigs;
+    }
+
+    /**
      * Parse a `method('arg', ...)` expression into method + literal args.
      * Public because NativeComponent::emit() reuses it for tag-level
      * `@event="method(...)"` bindings on child-component tags.

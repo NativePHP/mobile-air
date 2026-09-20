@@ -4,10 +4,15 @@ namespace Native\Mobile\Plugins\Compilers;
 
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
+use InvalidArgumentException;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\LegacyFirebaseConfig;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Plugins\ProjectFileManager;
+use Native\Mobile\Plugins\SwiftSourceFilter;
+use Native\Mobile\Support\PlistDocument;
 use Native\Mobile\Support\Stub;
 
 class IOSPluginCompiler
@@ -93,7 +98,11 @@ class IOSPluginCompiler
             throw new PluginConflictException($conflicts);
         }
 
-        $allPlugins = $this->registry->all();
+        // A plugin that declares `platforms: ["android"]` contributes nothing
+        // to an iOS build: no sources, no registrations, no Info.plist keys.
+        // Hooks still run for every plugin — a hook is the plugin's own code
+        // and gets to decide for itself.
+        $allPlugins = $this->registry->all()->filter(fn (Plugin $p) => $p->supportsPlatform('ios'));
         $hookRunner = $this->getHookRunner();
 
         // Run pre-compile hooks
@@ -106,6 +115,17 @@ class IOSPluginCompiler
         // duplicate-symbol build failures in Xcode.
         $this->clean();
         $this->files->ensureDirectoryExists($this->generatedPath);
+
+        // Copy app-owned files declared by plugins into the iOS project.
+        (new ProjectFileManager($this->files, $this->basePath, 'ios'))->sync($allPlugins);
+
+        // Back-compat: install GoogleService-Info.plist on behalf of a plugin
+        // that predates project_files. Does nothing once the plugin owns it.
+        $legacyFirebase = (new LegacyFirebaseConfig($this->files, $this->basePath))->sync($allPlugins, 'ios');
+
+        if ($legacyFirebase !== null) {
+            $this->warn(LegacyFirebaseConfig::deprecationNotice($legacyFirebase, 'ios'));
+        }
 
         // Get plugins with iOS code (for copying files)
         $pluginsWithCode = $allPlugins->filter(fn (Plugin $p) => $p->hasIosCode());
@@ -160,7 +180,7 @@ class IOSPluginCompiler
         // Copy plugin source files
         $pluginsWithCode->each(fn (Plugin $plugin) => $this->copyPluginSources($plugin));
 
-        // Generate the registration file (uses all plugins, filters for iOS functions internally)
+        // Generate the registration file (filters for iOS functions internally)
         $this->generateBridgeFunctionRegistration($allPlugins);
 
         // Generate UI plugin renderer registration
@@ -171,9 +191,6 @@ class IOSPluginCompiler
 
         // Write per-locale InfoPlist.strings for any localized permission entries
         $this->writeInfoPlistLocalizations($allPlugins);
-
-        // Merge background modes into Info.plist
-        $this->mergeBackgroundModes($allPlugins);
 
         // Merge entitlements from plugins
         $this->mergeEntitlements($allPlugins);
@@ -212,40 +229,85 @@ class IOSPluginCompiler
         $pluginDir = $this->generatedPath.'/'.$plugin->getNamespace();
         $this->files->ensureDirectoryExists($pluginDir);
 
-        // Copy all Swift files recursively
+        $explicit = $plugin->getIosSources();
+
+        if ($explicit !== []) {
+            $this->copyDeclaredSwiftSources($plugin, $sourcePath, $pluginDir, $explicit);
+
+            return;
+        }
+
         $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
     }
 
     /**
-     * Recursively copy Swift files, preserving directory structure
+     * Copy only the paths a plugin names in `ios.sources`.
+     *
+     * A named file is copied as-is; a named directory is walked with the same
+     * exclusions as the automatic path, so an explicit list still cannot drag
+     * a test target into the app.
+     *
+     * @param  list<string>  $sources
+     */
+    protected function copyDeclaredSwiftSources(Plugin $plugin, string $source, string $destination, array $sources): void
+    {
+        foreach ($sources as $relative) {
+            $relative = trim($relative, '/');
+            $path = $source.'/'.$relative;
+
+            if ($this->files->isDirectory($path)) {
+                $this->copySwiftFilesRecursively($path, $destination.'/'.$relative);
+
+                continue;
+            }
+
+            if (! $this->files->isFile($path)) {
+                $this->warn("Plugin '{$plugin->name}': ios.sources names a path that does not exist: {$relative}");
+
+                continue;
+            }
+
+            $this->files->ensureDirectoryExists(dirname($destination.'/'.$relative));
+            $this->files->copy($path, $destination.'/'.$relative);
+        }
+    }
+
+    /**
+     * Recursively copy Swift files, preserving directory structure.
+     *
+     * SwiftPM manifests, test targets and build residue are skipped —
+     * see SwiftSourceFilter for why each one cannot compile in an app target.
      */
     protected function copySwiftFilesRecursively(string $source, string $destination): void
     {
-        // First, copy any Swift files at the root level
-        $rootFiles = glob($source.'/*.swift') ?: [];
-        foreach ($rootFiles as $file) {
-            $filename = basename($file);
-            $this->files->copy($file, $destination.'/'.$filename);
-        }
-
-        // Then recursively handle subdirectories
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::SELF_FIRST
-        );
-
-        foreach ($iterator as $item) {
-            $relativePath = substr($item->getPathname(), strlen($source) + 1);
+        foreach (SwiftSourceFilter::collect($source) as $relativePath) {
             $destPath = $destination.'/'.$relativePath;
 
-            if ($item->isDir()) {
-                $this->files->ensureDirectoryExists($destPath);
-            } elseif ($item->isFile() && $item->getExtension() === 'swift') {
-                // Skip root files (already copied above)
-                if (dirname($item->getPathname()) !== $source) {
-                    $this->files->copy($item->getPathname(), $destPath);
-                }
-            }
+            $this->files->ensureDirectoryExists(dirname($destPath));
+            $this->files->copy($source.'/'.$relativePath, $destPath);
+        }
+    }
+
+    /**
+     * Surface a build-time warning, when there is an output to surface it on.
+     */
+    protected function warn(string $message): void
+    {
+        if ($this->output === null) {
+            return;
+        }
+
+        // A Command has warn(); Illuminate\Console\OutputStyle — which is what
+        // the build commands actually pass — does not, so calling it blindly
+        // fataled the build and guarding on it swallowed the message entirely.
+        if (method_exists($this->output, 'warn')) {
+            $this->output->warn($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<comment>{$message}</comment>");
         }
     }
 
@@ -376,48 +438,69 @@ class IOSPluginCompiler
     }
 
     /**
-     * Merge plugin Info.plist entries into main plist and simulator plist
+     * Merge every plugin's Info.plist contributions into the device and
+     * simulator plists: a resources/ios/Info.plist file, the manifest's
+     * info_plist entries and its background modes, with app-level
+     * overrides applied last so they always win over plugins.
      */
     protected function mergeInfoPlistEntries(Collection $plugins): void
     {
-        // Both device and simulator Info.plist files need plugin entries
         $plistPaths = [
             $this->iosProjectPath.'/NativePHP/Info.plist',
             $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
         ];
-
-        $appOverrides = $this->getAppInfoPlistOverrides();
 
         foreach ($plistPaths as $plistPath) {
             if (! $this->files->exists($plistPath)) {
                 continue;
             }
 
-            $plist = $this->files->get($plistPath);
+            $plist = $this->openPlist($plistPath);
 
             foreach ($plugins as $plugin) {
-                // First check for Info.plist file
                 $pluginPlistPath = $plugin->path.'/resources/ios/Info.plist';
 
                 if ($this->files->exists($pluginPlistPath)) {
-                    $pluginPlist = $this->files->get($pluginPlistPath);
-                    $plist = $this->mergePlists($plist, $pluginPlist);
+                    $this->mergeIntoPlist($plist, $this->openPlist($pluginPlistPath)->all());
                 }
 
-                // Also merge info_plist entries from nativephp.json
-                $infoPlistEntries = $plugin->getIosInfoPlist();
-                if (! empty($infoPlistEntries)) {
-                    $plist = $this->injectPlistEntries($plist, $infoPlistEntries);
+                $this->mergeIntoPlist($plist, $plugin->getIosInfoPlist());
+
+                if ($modes = $plugin->getIosBackgroundModes()) {
+                    $this->mergeIntoPlist($plist, ['UIBackgroundModes' => $modes]);
                 }
             }
 
-            // Apply app-level overrides last so they always win over plugins.
-            if (! empty($appOverrides)) {
-                $plist = $this->injectPlistEntries($plist, $appOverrides);
-            }
+            $this->mergeIntoPlist($plist, $this->getAppInfoPlistOverrides());
 
-            $this->files->put($plistPath, $plist);
+            $this->files->put($plistPath, $plist->toXml());
         }
+    }
+
+    /**
+     * Open a plist, naming the file when it does not parse.
+     */
+    protected function openPlist(string $path): PlistDocument
+    {
+        try {
+            return PlistDocument::fromXml($this->files->get($path));
+        } catch (InvalidArgumentException $e) {
+            throw new InvalidArgumentException("{$path}: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Merge entries into a plist, resolving ${ENV_VAR} placeholders on the way in.
+     */
+    protected function mergeIntoPlist(PlistDocument $plist, array $entries): void
+    {
+        array_walk_recursive($entries, function (&$value) {
+            if (is_string($value)) {
+                $value = $this->substituteEnvPlaceholders($value);
+            }
+        });
+
+        $plist->merge($entries);
     }
 
     /**
@@ -589,100 +672,6 @@ class IOSPluginCompiler
     }
 
     /**
-     * Merge two plist files
-     */
-    protected function mergePlists(string $main, string $plugin): string
-    {
-        // Extract key-value pairs from plugin plist
-        preg_match_all('/<key>([^<]+)<\/key>\s*<string>([^<]+)<\/string>/s', $plugin, $matches, PREG_SET_ORDER);
-
-        $entries = [];
-        foreach ($matches as $match) {
-            $entries[$match[1]] = $match[2];
-        }
-
-        return $this->injectPlistEntries($main, $entries);
-    }
-
-    /**
-     * Inject entries into plist
-     */
-    protected function injectPlistEntries(string $plist, array $entries): string
-    {
-        foreach ($entries as $key => $value) {
-            // Check if key already exists
-            if (str_contains($plist, "<key>{$key}</key>")) {
-                if (is_array($value)) {
-                    $plist = $this->mergeArrayEntry($plist, $key, $value);
-                } elseif (is_string($value)) {
-                    $plist = $this->updateStringEntry($plist, $key, $this->substituteEnvPlaceholders($value));
-                }
-
-                continue;
-            }
-
-            // Handle array values
-            if (is_array($value)) {
-                $arrayContent = '';
-                foreach ($value as $item) {
-                    $item = $this->substituteEnvPlaceholders($item);
-                    $arrayContent .= "\n\t\t<string>{$item}</string>";
-                }
-                $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
-            } else {
-                // Handle string values - substitute placeholders
-                $value = $this->substituteEnvPlaceholders($value);
-                $entry = "\n\t<key>{$key}</key>\n\t<string>{$value}</string>";
-            }
-
-            // Add before closing </dict>
-            $plist = preg_replace(
-                '/(\s*<\/dict>\s*<\/plist>)/s',
-                $entry.'$1',
-                $plist,
-                1
-            );
-        }
-
-        return $plist;
-    }
-
-    /**
-     * Update an existing string entry's value in the plist
-     */
-    protected function updateStringEntry(string $plist, string $key, string $value): string
-    {
-        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<string>)([^<]*)(<\/string>)/';
-
-        return preg_replace_callback($pattern, function ($matches) use ($value) {
-            return $matches[1].htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8').$matches[3];
-        }, $plist, 1);
-    }
-
-    /**
-     * Merge array values into an existing plist array entry
-     */
-    protected function mergeArrayEntry(string $plist, string $key, array $values): string
-    {
-        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<array>)(.*?)(<\/array>)/s';
-
-        return preg_replace_callback($pattern, function ($matches) use ($values) {
-            $existingContent = $matches[2];
-            $newItems = '';
-
-            foreach ($values as $item) {
-                $item = $this->substituteEnvPlaceholders($item);
-                // Only add if not already present
-                if (! str_contains($existingContent, "<string>{$item}</string>")) {
-                    $newItems .= "\n\t\t<string>{$item}</string>";
-                }
-            }
-
-            return $matches[1].$existingContent.$newItems.$matches[3];
-        }, $plist);
-    }
-
-    /**
      * Substitute ${ENV_VAR} placeholders with actual environment values
      */
     protected function substituteEnvPlaceholders(string $value): string
@@ -698,52 +687,6 @@ class IOSPluginCompiler
 
             return $envValue;
         }, $value);
-    }
-
-    /**
-     * Merge background modes from plugins into Info.plist UIBackgroundModes array
-     */
-    protected function mergeBackgroundModes(Collection $plugins): void
-    {
-        $backgroundModes = [];
-
-        foreach ($plugins as $plugin) {
-            $modes = $plugin->getIosBackgroundModes();
-            foreach ($modes as $mode) {
-                $backgroundModes[$mode] = true;
-            }
-        }
-
-        if (empty($backgroundModes)) {
-            return;
-        }
-
-        // Both device and simulator Info.plist files need background modes
-        $plistPaths = [
-            $this->iosProjectPath.'/NativePHP/Info.plist',
-            $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
-        ];
-
-        foreach ($plistPaths as $plistPath) {
-            if (! $this->files->exists($plistPath)) {
-                continue;
-            }
-
-            $plist = $this->files->get($plistPath);
-
-            // Check if UIBackgroundModes already exists
-            if (str_contains($plist, '<key>UIBackgroundModes</key>')) {
-                // Merge with existing array
-                $plist = $this->mergeArrayEntry($plist, 'UIBackgroundModes', array_keys($backgroundModes));
-            } else {
-                // Add new UIBackgroundModes array
-                $plist = $this->injectPlistEntries($plist, [
-                    'UIBackgroundModes' => array_keys($backgroundModes),
-                ]);
-            }
-
-            $this->files->put($plistPath, $plist);
-        }
     }
 
     /**

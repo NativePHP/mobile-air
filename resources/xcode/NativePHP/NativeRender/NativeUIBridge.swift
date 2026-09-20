@@ -11,7 +11,16 @@ final class NativeUIBridge: ObservableObject {
     @Published var currentTree: NativeUITree?
 
     /// Whether the native UI system is active
-    @Published var isActive: Bool = false
+    @Published var isActive: Bool = false {
+        didSet {
+            // A deep link that launched the app (cold start) can arrive
+            // before native-ui takes over; replay it once the runtime that
+            // handles __deeplink events is actually active.
+            if isActive && !oldValue {
+                DeepLinkRouter.shared.replayPendingDeepLink()
+            }
+        }
+    }
 
     /// True between the start of a hot-reload event and the next tree
     /// publish from the rebooted PHP runtime. Drives the small Liquid

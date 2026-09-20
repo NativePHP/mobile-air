@@ -258,7 +258,21 @@ struct NativeRootStackRenderer: View {
             // a container, the per-glass-effect animation isn't scoped
             // and the press transition renders as a visible flicker
             // behind the touched element. iOS 26+ only.
-            NodeView(node: node).withGlassContainer()
+            NodeView(node: node)
+                // Tapping outside a focused field dismisses the keyboard, the
+                // same as on a chrome-less screen. Attached per-screen because
+                // the NavigationStack root itself is deliberately left unwrapped
+                // (mobile-air #308).
+                .dismissesKeyboardOnTap()
+                .withGlassContainer()
+                // NavigationStack hosts screens on its own container
+                // background (systemBackground — white in light mode) and
+                // SwiftUI exposes no override hook for it, so a dark app
+                // gets a white band in the bottom safe-area inset. When
+                // PHP set a window background (`UI.SetBackground`), paint
+                // it behind the screen extended through the safe areas.
+                // No-op when unset, preserving the stock appearance.
+                .modifier(StackScreenBackgroundModifier())
         } else {
             Color.clear
         }
@@ -342,17 +356,32 @@ private struct StackBottomBarInsetModifier: ViewModifier {
             // the input floats mid-screen over a giant empty bar, and on the
             // `.safeAreaBar` path the bar's scroll-edge effect then dims the
             // whole content region behind it.
+            //
+            // The `#if` keeps `.safeAreaBar` out of the compilation entirely
+            // on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+            // `LiquidGlassAvailability.swift`.
+            #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 content.safeAreaBar(edge: .bottom) {
                     barContent(inner)
                 }
             } else {
-                content.safeAreaInset(edge: .bottom, spacing: 0) {
-                    barContent(inner)
-                }
+                fallback(content, inner)
             }
+            #else
+            fallback(content, inner)
+            #endif
         } else {
             content
+        }
+    }
+
+    /// Pre-26 placement: a plain bottom safe-area inset, no floating glass
+    /// bar primitive.
+    @ViewBuilder
+    private func fallback(_ content: Content, _ inner: NativeUINode) -> some View {
+        content.safeAreaInset(edge: .bottom, spacing: 0) {
+            barContent(inner)
         }
     }
 
@@ -399,9 +428,20 @@ private struct StackBarBackgroundModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if argb != 0 {
-            if #available(iOS 26.0, *) {
+            if #available(iOS 18.0, *) {
+                // `containerBackground(for: .navigation)` themes the WHOLE
+                // navigation surface — the scroll edge, the expanded
+                // large-title region, and the status-bar area — while bar
+                // visibility stays automatic. Without it the bar color only
+                // renders after scrolling (toolbarBackground alone does not
+                // paint at the scroll edge, exactly where a large title
+                // lives), and forcing `.visible` paints the band but
+                // suppresses the large title at the scroll edge under
+                // Liquid Glass. toolbarBackground still tints the collapsed
+                // bar after scrolling.
                 content
                     .toolbarBackground(Color(argb: argb), for: .navigationBar)
+                    .containerBackground(Color(argb: argb), for: .navigation)
             } else {
                 content
                     .toolbarBackground(Color(argb: argb), for: .navigationBar)
@@ -427,6 +467,12 @@ private struct NavigationSubtitleModifier: ViewModifier {
     let subtitle: String
     let showsAsPrincipal: Bool
 
+    /// The `#if` keeps `.navigationSubtitle` out of the compilation entirely
+    /// on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+    /// `LiquidGlassAvailability.swift`. It gates the whole `body` so the
+    /// Xcode 26 arm keeps the original `if / else if / else` chain — see the
+    /// note on `GlassModifier.body` for why the nesting matters.
+    #if compiler(>=6.2)
     func body(content: Content) -> some View {
         if subtitle.isEmpty || showsAsPrincipal {
             content
@@ -436,5 +482,28 @@ private struct NavigationSubtitleModifier: ViewModifier {
             content
         }
     }
+    #else
+    func body(content: Content) -> some View {
+        content
+    }
+    #endif
 }
 
+
+/// Backgrounds a stack-hosted screen with the PHP-set window background
+/// (`UI.SetBackground`), extended through the safe areas. NavigationStack
+/// draws its own `systemBackground` container behind screen content with
+/// no SwiftUI override hook — without this, a dark app shows a white band
+/// in the bottom safe-area inset on every stack screen. No-op when no
+/// override is set, preserving the stock appearance.
+private struct StackScreenBackgroundModifier: ViewModifier {
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
+
+    func body(content: Content) -> some View {
+        if let color = windowBackground.color {
+            content.background(color.ignoresSafeArea())
+        } else {
+            content
+        }
+    }
+}

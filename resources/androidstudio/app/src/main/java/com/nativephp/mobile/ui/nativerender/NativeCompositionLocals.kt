@@ -12,3 +12,11 @@ val LocalSafeAreaTop = compositionLocalOf { 0f }
 val LocalSafeAreaBottom = compositionLocalOf { 0f }
 val LocalAvailableWidth = compositionLocalOf { 390f }
 val LocalAvailableHeight = compositionLocalOf { 844f }
+
+/**
+ * True when a root host renders a persistent background layer beneath the
+ * content (e.g. mobile-ui's `background_layer` map). Chrome that normally
+ * paints an opaque canvas — the tabs Scaffold — goes transparent so the
+ * layer shows through.
+ */
+val LocalBackgroundLayerPresent = compositionLocalOf { false }

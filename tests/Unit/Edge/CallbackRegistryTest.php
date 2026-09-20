@@ -61,3 +61,12 @@ it('derives distinct ids for the same expression under different scopes', functi
         // Same scope reproduces the same id — determinism survives scoping.
         ->and((new CallbackRegistry('card|key:a'))->register('bump'))->toBe($ids[1]);
 });
+
+it('exposes stored navigation configs keyed by stable content-addressed keys', function () {
+    $r = new CallbackRegistry;
+    $key = $r->registerNavigation(['uri' => '/detail/7']);
+
+    expect($r->navigations())->toBe([$key => ['uri' => '/detail/7']])
+        // Same config re-registered anywhere reproduces the identical key.
+        ->and((new CallbackRegistry)->registerNavigation(['uri' => '/detail/7']))->toBe($key);
+});

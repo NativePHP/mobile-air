@@ -258,8 +258,16 @@ export const Share = {
 // SecureStorage Functions
 // ============================================================================
 
-export async function SecureStorageSet(key, value) {
-    return BridgeCall('SecureStorage.Set', { key, value });
+export async function SecureStorageSet(key, value, accessibility) {
+    const params = { key, value };
+
+    // Omitted unless asked for, so re-setting a key never silently tightens
+    // an accessibility it was deliberately stored with.
+    if (accessibility) {
+        params.accessibility = accessibility;
+    }
+
+    return BridgeCall('SecureStorage.Set', params);
 }
 
 export async function SecureStorageGet(key) {
