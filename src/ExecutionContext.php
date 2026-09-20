@@ -79,13 +79,17 @@ class ExecutionContext
 
         $decoded = json_decode(nativephp_call('System.GetExecutionContext', '{}') ?: '{}', true);
 
-        if (! is_array($decoded) || $decoded === []) {
+        if (! is_array($decoded)) {
             return self::DEFAULTS;
         }
 
-        // Union fills anything the native side didn't report, so a newer PHP
-        // package against an older native shell degrades key by key.
-        return $decoded + self::DEFAULTS;
+        // Keep only keys we actually define, then let the union fill the rest.
+        // A newer PHP package against an older native shell degrades key by
+        // key, and a response that isn't an execution context at all — the
+        // `{status: error, code: NO_DEVICE, …}` envelope Jump returns with no
+        // device attached — contributes nothing instead of leaking its fields
+        // into the documented shape.
+        return array_intersect_key($decoded, self::DEFAULTS) + self::DEFAULTS;
     }
 
     /**

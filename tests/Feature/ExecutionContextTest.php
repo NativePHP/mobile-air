@@ -105,6 +105,31 @@ it('reports an interactive process when the bridge has no answer', function () {
         ->and($context->launch())->toBe('foreground');
 });
 
+it('ignores a response that is not an execution context', function () {
+    // Off the device, Jump answers every bridge call with an error envelope
+    // when no phone is attached. It is an array, and it is not empty, so it
+    // has to be rejected on shape rather than on emptiness.
+    FakeBridge::enable()->respondTo('System.GetExecutionContext', [
+        'status' => 'error',
+        'code' => 'NO_DEVICE',
+        'message' => 'No device connected. Make sure Jump app is running and connected.',
+    ]);
+
+    $context = new ExecutionContext;
+
+    expect($context->all())->toBe([
+        'launch' => 'foreground',
+        'state' => 'active',
+        'foreground' => true,
+        'active' => true,
+        'has_become_active' => true,
+        'headless' => false,
+        'protected_data_available' => true,
+        'interactive_boot_started' => true,
+    ])
+        ->and($context->isHeadless())->toBeFalse();
+});
+
 it('fills keys the native side did not report', function () {
     FakeBridge::enable()->respondTo('System.GetExecutionContext', [
         'headless' => true,
