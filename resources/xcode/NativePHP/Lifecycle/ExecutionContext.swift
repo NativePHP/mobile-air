@@ -211,8 +211,13 @@ final class ExecutionContext: @unchecked Sendable {
     /// is actually opened — so a BGTaskScheduler wake never boots the
     /// interactive route.
     ///
-    /// Blocks run in registration order, always on a background queue; each is
-    /// responsible for hopping to main for anything UIKit or `@MainActor`.
+    /// When the app is already on screen the block runs INLINE, on the calling
+    /// thread. Callers are on the boot queue, and running there keeps the boot
+    /// steps in the order they were tuned in: the transport is decided before
+    /// the extra PHP runtimes start competing for CPU during first render.
+    /// A parked block instead runs later on a background queue, in
+    /// registration order. Either way it is the block's job to hop to main for
+    /// anything UIKit or `@MainActor`.
     func whenInteractive(_ block: @escaping () -> Void) {
         // Decide AND park under a single lock. Splitting them lets a
         // `didBecomeActive` land in between: it drains an empty queue, and the
@@ -238,7 +243,7 @@ final class ExecutionContext: @unchecked Sendable {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async(execute: block)
+        block()
     }
 
     /// Claim the one-shot interactive boot. Returns false if it already ran,
