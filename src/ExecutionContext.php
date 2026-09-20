@@ -30,7 +30,7 @@ namespace Native\Mobile;
  * user-unlocked state there. Off the device (desktop `php artisan`, tests, web
  * preview) every read reports an ordinary interactive process.
  *
- * @see \Native\Mobile\Facades\ExecutionContext
+ * @see Facades\ExecutionContext
  */
 class ExecutionContext
 {

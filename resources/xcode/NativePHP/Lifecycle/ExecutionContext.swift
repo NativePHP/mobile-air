@@ -128,19 +128,25 @@ final class ExecutionContext: @unchecked Sendable {
     /// before anything can boot off it. Idempotent.
     @MainActor
     func start(launchState: UIApplication.State) {
-        let alreadyStarted: Bool = lock.withLock {
-            defer { started = true }
-            return started
-        }
-        guard !alreadyStarted else { return }
-
         let run = RunState(launchState)
-        lock.withLock {
+        let protectedData = UIApplication.shared.isProtectedDataAvailable
+
+        // Claim and record together, so nothing can observe the defaults
+        // (`foreground` / `inactive`) after `start()` has begun. A reader that
+        // caught that window on a background launch would judge itself
+        // interactive and boot the UI — the exact thing this type exists to
+        // prevent.
+        let alreadyStarted: Bool = lock.withLock {
+            guard !started else { return true }
+            started = true
             _launch = run == .background ? .background : .foreground
             _state = run
             _hasBecomeActive = run == .active
-            _protectedDataAvailable = UIApplication.shared.isProtectedDataAvailable
+            _protectedDataAvailable = protectedData
+            return false
         }
+
+        guard !alreadyStarted else { return }
 
         NSLog("[ExecutionContext] launch=\(launch.rawValue) state=\(run.rawValue) protectedData=\(isProtectedDataAvailable)")
 
@@ -208,15 +214,26 @@ final class ExecutionContext: @unchecked Sendable {
     /// Blocks run in registration order, always on a background queue; each is
     /// responsible for hopping to main for anything UIKit or `@MainActor`.
     func whenInteractive(_ block: @escaping () -> Void) {
+        // Decide AND park under a single lock. Splitting them lets a
+        // `didBecomeActive` land in between: it drains an empty queue, and the
+        // block appended a moment later is then owned by nobody — the app sits
+        // on the splash for the rest of the process with no watchdog to save
+        // it (the first-content watchdog only arms inside the boot this gate
+        // is withholding).
         let runNow: Bool = lock.withLock {
-            guard _state != .background else { return false }
             // A foreground launch is on its way to `.active` by definition;
             // waiting for the notification would stall the normal boot.
-            return _launch == .foreground || _hasBecomeActive
+            let interactive = _state != .background
+                && (_launch == .foreground || _hasBecomeActive)
+
+            if !interactive {
+                pendingInteractive.append(block)
+            }
+
+            return interactive
         }
 
         guard runNow else {
-            lock.withLock { pendingInteractive.append(block) }
             NSLog("[ExecutionContext] deferring interactive work until the app becomes active")
             return
         }

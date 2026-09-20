@@ -105,8 +105,8 @@ object SystemFunctions {
             val active = info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
             val foreground = info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
 
-            val unlocked = context.getSystemService(Context.USER_SERVICE)
-                ?.let { (it as UserManager).isUserUnlocked }
+            val unlocked = context.getSystemService(UserManager::class.java)
+                ?.isUserUnlocked
                 ?: true
 
             return mapOf(
