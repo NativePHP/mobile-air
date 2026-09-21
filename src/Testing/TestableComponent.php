@@ -4,6 +4,7 @@ namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\ComponentMethodInvoker;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
@@ -34,7 +35,7 @@ use PHPUnit\Framework\TestCase;
  *
  * Interactions dispatch through the same code paths the on-device runloop
  * uses: taps resolve a callback id from the published tree and go through
- * NativeComponent::dispatch(); native events go through
+ * NativeComponent::dispatchUiEvent(); native events go through
  * dispatchNativeEvent(); after every interaction the component re-renders,
  * mirroring the render → wait → dispatch loop. Exceptions thrown by the
  * component bubble to the test instead of painting the error screen; a
@@ -86,7 +87,7 @@ class TestableComponent
     protected const EVENT_CALLBACK_KEYS = [
         self::EVENT_PRESS => ['on_press'],
         self::EVENT_LONG_PRESS => ['on_long_press'],
-        self::EVENT_TEXT_CHANGE => ['on_change', 'on_swipe'],
+        self::EVENT_TEXT_CHANGE => ['on_change', 'on_swipe', 'on_drag_end'],
         self::EVENT_TOGGLE_CHANGE => ['on_change'],
         self::EVENT_SUBMIT => ['on_submit'],
         self::EVENT_SLIDER_CHANGE => ['on_change', 'on_pinch_end'],
@@ -215,7 +216,8 @@ class TestableComponent
             // device; keep that behavior so the publish is observable.
             $component->publishPlaceholder();
 
-            $component->mount();
+            $component->mountComponent();
+            $component->flushDispatchedEvents();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
             // render, exactly like runLoop() honoring a pre-set intent.
@@ -238,9 +240,11 @@ class TestableComponent
     {
         $this->startInteraction();
 
+        $rootProperty = explode('.', $property, 2)[0];
+
         Assert::assertTrue(
-            property_exists($this->component, $property),
-            'Public property [$'.$property.'] does not exist on '.get_class($this->component).'.'
+            property_exists($this->component, $rootProperty),
+            'Public property [$'.$rootProperty.'] does not exist on '.get_class($this->component).'.'
         );
 
         $this->guard(fn () => $this->component->__syncProperty($property, $value));
@@ -253,12 +257,9 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        Assert::assertTrue(
-            method_exists($this->component, $method),
-            'Method ['.$method.'] does not exist on '.get_class($this->component).'.'
-        );
-
-        $this->guard(fn () => $this->component->{$method}(...$args));
+        // Same entry point the device runloop uses, so a template-callable
+        // method such as navigate() is callable from a test too.
+        $this->guard(fn () => $this->component->__invokeInteraction($method, $args));
 
         return $this->afterInteraction();
     }
@@ -430,6 +431,19 @@ class TestableComponent
         return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $scale]);
     }
 
+    /**
+     * Fire a gesture-area drag-end bound to `@dragEnd`, delivering the
+     * final pan translation as two floats — packed as "x,y" text, exactly
+     * as the device sends it.
+     */
+    public function dragEnd(string $target, float $x, float $y = 0.0): static
+    {
+        // Drag-end shares the TEXT_CHANGE wire type with @swipe, so a ref
+        // must resolve to `on_drag_end` specifically — an area with both
+        // handlers would otherwise hand the coordinates to its swipe one.
+        return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $x.','.$y], ['on_drag_end']);
+    }
+
     public function selectRadio(string $target, string $value): static
     {
         return $this->fireEvent($target, self::EVENT_RADIO_CHANGE, ['value' => $value]);
@@ -456,12 +470,12 @@ class TestableComponent
      * model-bound property name, or an element `ref`. This is the generic
      * primitive behind the input/toggle/slide/... sugar.
      */
-    public function fireEvent(string $target, int $type, array $fields = []): static
+    public function fireEvent(string $target, int $type, array $fields = [], ?array $refKeys = null): static
     {
         $this->startInteraction();
 
         $callbackId = $this->callbackIdFor($target)
-            ?? $this->callbackIdByRef($this->tree(), $target, $type);
+            ?? $this->callbackIdByRef($this->tree(), $target, $refKeys ?? self::EVENT_CALLBACK_KEYS[$type] ?? []);
 
         Assert::assertNotNull(
             $callbackId,
@@ -516,7 +530,7 @@ class TestableComponent
             /** @var NativeComponent $this */
             foreach ($this->pollDefinitions() as $def) {
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    $this->{$def['method']}();
+                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
                 }
             }
         }));
@@ -540,7 +554,7 @@ class TestableComponent
             "No #[Poll] method [{$method}] on ".get_class($this->component).'. Declared: '.(implode(', ', $defined) ?: '(none)')
         );
 
-        $this->guard(fn () => $this->component->{$method}());
+        $this->guard(fn () => ComponentMethodInvoker::invokeLifecycle($this->component, $method));
 
         return $this->afterInteraction();
     }
@@ -697,6 +711,7 @@ class TestableComponent
 
         $this->guard(function () {
             $this->component->onResume();
+            $this->component->flushDispatchedEvents();
             $this->renderFrame();
         });
     }
@@ -922,6 +937,64 @@ class TestableComponent
         );
 
         return $this;
+    }
+
+    // ── Component event assertions ──────────────────
+
+    public function assertDispatched(string $event, mixed ...$params): static
+    {
+        Assert::assertTrue(
+            $this->testDispatched($event, $params),
+            "Failed asserting that an event [{$event}] was dispatched."
+        );
+
+        return $this;
+    }
+
+    public function assertNotDispatched(string $event, mixed ...$params): static
+    {
+        Assert::assertFalse(
+            $this->testDispatched($event, $params),
+            "Failed asserting that an event [{$event}] was not dispatched."
+        );
+
+        return $this;
+    }
+
+    public function assertDispatchedTo(string $target, string $event, mixed ...$params): static
+    {
+        Assert::assertTrue(
+            $this->testDispatched($event, $params, $target),
+            "Failed asserting that event [{$event}] was dispatched to [{$target}]."
+        );
+
+        return $this;
+    }
+
+    private function testDispatched(string $event, array $params, ?string $target = null): bool
+    {
+        $events = collect($this->component->dispatchedEvents())
+            ->where('name', $event);
+
+        if ($target !== null) {
+            $events = $events->where('component', $target);
+        }
+
+        if ($params === []) {
+            return $events->isNotEmpty();
+        }
+
+        if (isset($params[0]) && is_callable($params[0]) && ! is_string($params[0])) {
+            return $events->contains(fn (array $dispatch) => (bool) $params[0]($event, $dispatch['params']));
+        }
+
+        return $events->contains(function (array $dispatch) use ($params) {
+            $common = array_intersect_key($dispatch['params'], $params);
+            ksort($common);
+            ksort($params);
+
+            return $common === $params;
+        });
     }
 
     // ── Chrome assertions ───────────────────────────
@@ -1305,7 +1378,7 @@ class TestableComponent
     /** Read a public or #[Computed] property. */
     public function get(string $property): mixed
     {
-        return $this->component->{$property};
+        return data_get($this->component, $property);
     }
 
     /** The most recently published wire tree. */
@@ -1425,12 +1498,12 @@ class TestableComponent
         $this->frameCount++;
     }
 
-    /** Dispatch a UI event through NativeComponent::dispatch(). */
+    /** Dispatch a UI event through NativeComponent::dispatchUiEvent(). */
     protected function dispatchUiEvent(array $event): static
     {
         $this->guard(fn () => $this->scoped(function () use ($event) {
             /** @var NativeComponent $this */
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }));
 
         return $this->afterInteraction();
@@ -1450,9 +1523,11 @@ class TestableComponent
      */
     protected function afterInteraction(): static
     {
+        $this->guard(fn () => $this->component->flushDispatchedEvents());
+
         if ($this->component->getNavigationIntent() === null && $this->isRunning()) {
             $this->guard(fn () => $this->renderFrame());
-        } else {
+        } elseif ($this->component->getNavigationIntent() !== null) {
             $this->lastTree = $this->bridge->lastPublish() ?? $this->lastTree;
         }
 
@@ -1540,7 +1615,7 @@ class TestableComponent
     /** Press callback id of the node with the given ref, if any. */
     protected function pressableIdByRef(array $node, string $ref): ?int
     {
-        return $this->callbackIdByRef($node, $ref, self::EVENT_PRESS);
+        return $this->callbackIdByRef($node, $ref, self::EVENT_CALLBACK_KEYS[self::EVENT_PRESS]);
     }
 
     /**
@@ -1570,10 +1645,13 @@ class TestableComponent
      * event type dispatches through — node-level (on_press/on_long_press)
      * or in the props map, wherever the element put it.
      */
-    protected function callbackIdByRef(array $node, string $ref, int $type): ?int
+    /**
+     * @param  array<int, string>  $keys  wire prop keys to try on the ref'd node, in order
+     */
+    protected function callbackIdByRef(array $node, string $ref, array $keys): ?int
     {
         if (($node['ref'] ?? null) === $ref) {
-            foreach (self::EVENT_CALLBACK_KEYS[$type] ?? [] as $key) {
+            foreach ($keys as $key) {
                 $id = $node[$key] ?? $node['props'][$key] ?? null;
                 if (is_int($id)) {
                     return $id;
@@ -1584,7 +1662,7 @@ class TestableComponent
         }
 
         foreach ($node['children'] ?? [] as $child) {
-            if (($id = $this->callbackIdByRef($child, $ref, $type)) !== null) {
+            if (($id = $this->callbackIdByRef($child, $ref, $keys)) !== null) {
                 return $id;
             }
         }

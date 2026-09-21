@@ -13,6 +13,8 @@ use function Laravel\Prompts\warning;
 
 trait RunsIos
 {
+    use LaunchesIosSimulator;
+    use ManagesIosHotReloadPort;
     use ValidatesAppConfig;
 
     protected string $iosLogPath = 'nativephp/ios-build.log';
@@ -252,19 +254,26 @@ trait RunsIos
                 });
         });
 
-        shell_exec('open -a Simulator');
+        $this->openSimulatorUi($target, false);
 
-        // Free the hot-reload port before (re)launching. Two stale holders can
-        // block the fresh app from binding 9999, which silently breaks hot
-        // reload (triggers land on the wrong listener):
-        //   1. A previous app instance still running in the simulator.
-        //   2. A leftover host `iproxy` from an earlier device run — the
-        //      simulator shares the host's localhost, so it collides too.
+        // Stop the previous instance so it lets go of its hot reload port.
         // simctl terminate errors if the app isn't running; that's expected.
         Process::path($basePath)
             ->run('xcrun simctl terminate '.$target.' '.config('nativephp.app_id'));
-        Process::path($basePath)
-            ->run('lsof -ti tcp:9999 | xargs kill -9 2>/dev/null');
+
+        // Every simulator app shares the Mac's network stack, so each target
+        // gets its own free port rather than killing whatever holds a fixed
+        // one, which could be another developer's app on another simulator.
+        // The app reads it from the launch environment; native:watch reads
+        // the record.
+        $takesPort = $this->iosAppTakesHotReloadPort();
+        $hotReloadPort = $takesPort ? $this->pickIosHotReloadPort($target) : self::IOS_DEFAULT_HOT_RELOAD_PORT;
+
+        $this->recordIosHotReloadPort($target, $hotReloadPort);
+
+        if (! $takesPort && $this->watching) {
+            note('This iOS project predates per-simulator hot reload ports, so it listens on port '.self::IOS_DEFAULT_HOT_RELOAD_PORT.'. Run `php artisan native:install ios` to update it.');
+        }
 
         $this->fixProductBundleName($basePath, 'build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app');
 
@@ -286,8 +295,9 @@ trait RunsIos
 
         $appId = config('nativephp.app_id');
 
-        $this->components->task('Launching app', function () use ($basePath, $target, $appId, $verbose) {
+        $this->components->task("Launching app (hot reload port {$hotReloadPort})", function () use ($basePath, $target, $appId, $verbose, $hotReloadPort) {
             Process::path($basePath)
+                ->env(['SIMCTL_CHILD_'.self::IOS_HOT_RELOAD_PORT_KEY => (string) $hotReloadPort])
                 ->tty($verbose && ! $this->option('no-tty'))
                 ->run("xcrun simctl launch {$target} {$appId}", function ($type, $output) use ($verbose) {
                     file_put_contents($this->iosLogPath, $output, FILE_APPEND);

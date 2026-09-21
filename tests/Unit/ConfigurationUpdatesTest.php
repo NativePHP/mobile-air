@@ -485,6 +485,8 @@ Java_com_nativephp_mobile_bridge_PHPBridge',
         }
     }
 
+    protected function updateReleaseAudience(): void {}
+
     protected function updatePermissions(): void
     {
         $manifestPath = $this->testProjectPath.'/nativephp/android/app/src/main/AndroidManifest.xml';

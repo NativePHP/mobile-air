@@ -9,7 +9,7 @@ use function Laravel\Prompts\outro;
 
 trait PackagesIos
 {
-    use ManagesIosSigning;
+    use DeclaresReleaseAudience, ManagesIosSigning;
 
     protected ?string $temporaryKeychainPath = null;
 
@@ -521,6 +521,15 @@ trait PackagesIos
             'teamID' => $teamId,
             'manageAppVersionAndBuildNumber' => false, // Prevent Xcode from making changes during export
         ];
+
+        // Anything built outside the production environment is a testing
+        // build, so the package is marked for TestFlight's internal testers
+        // only. Without this the same archive could be handed to external
+        // testers or submitted for App Store review.
+        if ($exportMethod === 'app-store' && $this->restrictToInternalTestFlight()) {
+            $exportOptions['testFlightInternalTestingOnly'] = true;
+            $this->components->twoColumnDetail('TestFlight', 'Internal testing only (APP_ENV='.config('app.env').')');
+        }
 
         // Use automatic for debugging only; manual for everything else (app-store, ad-hoc, enterprise, etc.)
         if ($exportMethod === 'debugging') {
