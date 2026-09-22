@@ -823,9 +823,8 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Persistent mode — dispatch through booted Laravel kernel
                 response = PersistentPHPRuntime.shared.dispatchData(request: request)
             } else {
-                // Fallback to legacy per-request mode. Classic mode is still
-                // text-only: its output arrives as NUL-terminated chunks.
-                response = Data((NativePHPApp.laravel(request: request) ?? "No response from Laravel").utf8)
+                // Classic per-request mode (configured, or persistent boot failed)
+                response = NativePHPApp.laravelData(request: request) ?? Data("No response from Laravel".utf8)
             }
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000

@@ -13,6 +13,20 @@ public func pipe_php_output(_ cString: UnsafePointer<CChar>?) {
     output += String(cString: cString)
 }
 
+/// Classic-mode response bytes, filled by `pipe_php_output_bytes` while
+/// `NativePHPApp.laravelData(request:)` runs. Classic requests run one at a
+/// time on the persistent runtime's serial queue.
+var classicOutput = Data()
+
+@_cdecl("pipe_php_output_bytes")
+public func pipe_php_output_bytes(_ bytes: UnsafePointer<CChar>?, _ length: Int) {
+    guard let bytes, length > 0 else { return }
+
+    bytes.withMemoryRebound(to: UInt8.self, capacity: length) {
+        classicOutput.append($0, count: length)
+    }
+}
+
 @main
 struct NativePHPApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -399,26 +413,34 @@ struct NativePHPApp: App {
         return output
     }
 
+    /// Classic mode: run one request in a fresh interpreter and return the
+    /// raw HTTP response as text. Kept for callers that parse text (the
+    /// app-intents plugin reads JSON from it); a binary body is decoded
+    /// lossily. Use `laravelData(request:)` for the exact bytes.
     static func laravel(request: RequestData) -> String? {
-        // Classic mode is text-only: the body is cut at its first NUL here and
-        // parsed with parse_str() for POST only (bootstrap/ios/native.php).
-        let postData = request.data ?? request.body.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        laravelData(request: request).map { String(decoding: $0, as: UTF8.self) }
+    }
 
-        // Convert Swift strings to C strings
-        let postDataC = strdup(postData)
+    /// Classic mode: run one request in a fresh interpreter
+    /// (bootstrap/ios/native.php) and return the raw HTTP response byte for
+    /// byte. The body goes into php://input as exact bytes for any method,
+    /// and its Content-Type reaches PHP as CONTENT_TYPE in the environment.
+    static func laravelData(request: RequestData) -> Data? {
+        let body = request.bodyBytes ?? Data()
+
+        // PHP keeps pointers to these in SG(request_info) until
+        // php_embed_shutdown(), so they are freed only after it.
         let methodC = strdup(request.method)
         let uriC = strdup(request.uri)
 
-        // Free the duplicated C strings
         defer {
-            free(postDataC)
             free(methodC)
             free(uriC)
         }
 
-        output = ""
+        classicOutput = Data()
 
-        override_embed_module_output(pipe_php_output)
+        override_embed_module_output_bytes(pipe_php_output_bytes)
 
         var argv: [UnsafeMutablePointer<CChar>?] = [
             strdup("php")
@@ -433,14 +455,15 @@ struct NativePHPApp: App {
         print("=== FORWARDING REQUEST TO LARAVEL ===")
         print()
 
+        let query = request.query ?? ""
         var uri = request.uri
-        if let query = request.query {
+        if !query.isEmpty {
             uri += "?" + query
         }
 
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
         setenv("REQUEST_URI", uri, 1)
-        setenv("QUERY_STRING", request.query, 1);
+        setenv("QUERY_STRING", query, 1)
         setenv("REQUEST_METHOD", request.method, 1)
         setenv("SCRIPT_FILENAME", phpFilePath, 1)
         setenv("PHP_SELF", "/native.php", 1)
@@ -468,11 +491,27 @@ struct NativePHPApp: App {
             envKeys.append(formattedKey)
         }
 
+        // The body's own Content-Type, boundary included. PHP's
+        // SG(request_info).content_type stays NULL (see PHP.h).
+        if let contentType = request.header("Content-Type"), !contentType.isEmpty {
+            setenv("CONTENT_TYPE", contentType, 1)
+        } else {
+            unsetenv("CONTENT_TYPE")
+        }
+        envKeys.append("CONTENT_TYPE")
+
         // Equivalent to PHP_EMBED_START_BLOCK
         argv.withUnsafeMutableBufferPointer { bufferPtr in
             php_embed_init(argc, bufferPtr.baseAddress)
 
-            initialize_php_with_request(postDataC, methodC, uriC)
+            body.withUnsafeBytes { bodyBuffer in
+                initialize_php_with_request_bytes(
+                    bodyBuffer.baseAddress?.assumingMemoryBound(to: CChar.self),
+                    bodyBuffer.count,
+                    methodC,
+                    uriC
+                )
+            }
 
             var fileHandle = zend_file_handle()
             zend_stream_init_filename(&fileHandle, phpFilePath)
@@ -489,6 +528,9 @@ struct NativePHPApp: App {
             envKeys.removeAll()
         }
 
+        // Stop forwarding output: nothing else reads it.
+        override_embed_module_output_bytes(nil)
+
         // Free argv strings
         argv.forEach { free($0) }
 
@@ -496,7 +538,9 @@ struct NativePHPApp: App {
         print("=== LARAVEL FINISHED ===")
         print()
 
-        return output
+        let response = classicOutput
+        classicOutput = Data()
+        return response
     }
 
     private func setupEnvironment() {

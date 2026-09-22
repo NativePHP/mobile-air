@@ -6,11 +6,34 @@
 
 typedef void (*phpOutputCallback)(const char *);
 
+// Classic (per-request php_embed_init) mode.
+
+// Text output: each chunk arrives NUL-terminated, so a chunk holding a NUL is
+// cut short. Kept for older callers; use override_embed_module_output_bytes.
 void override_embed_module_output(phpOutputCallback callback);
 
+// Text request body, POST only, cut at its first NUL. Kept for older callers;
+// use initialize_php_with_request_bytes.
 void initialize_php_with_request(const char *post_data,
                                  const char *method,
                                  const char *uri);
+
+// Binary-safe output: each chunk arrives as (bytes, len), NULs included.
+// Replaces any callback set with override_embed_module_output. NULL stops
+// forwarding output.
+typedef void (*phpOutputBytesCallback)(const char *bytes, size_t len);
+void override_embed_module_output_bytes(phpOutputBytesCallback callback);
+
+// Binary-safe request body, for any method. Call after php_embed_init() and
+// before running the script. `body` is `body_len` bytes (NULL when 0); it is
+// copied into php://input before this returns. SG(request_info).content_type
+// is left NULL, so PHP's own body parser never runs on the embed SAPI: put
+// the body's type in the environment as CONTENT_TYPE instead.
+// `method` and `uri` must stay valid until php_embed_shutdown().
+void initialize_php_with_request_bytes(const char *body,
+                                       size_t body_len,
+                                       const char *method,
+                                       const char *uri);
 
 // Persistent PHP Runtime
 int  persistent_php_boot(const char *bootstrapPath);

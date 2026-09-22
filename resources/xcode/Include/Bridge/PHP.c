@@ -11,6 +11,7 @@
 #include <zend_exceptions.h>
 
 static phpOutputCallback swiftOutputCallback = NULL;
+static phpOutputBytesCallback swiftOutputBytesCallback = NULL;
 
 // ── Thread-local output capture ─────────────────────
 // Each PHP thread (persistent, worker) gets its own output buffer via
@@ -264,8 +265,10 @@ static char *bridge_dispatch_code(const char *platform, const char *lane,
 size_t capture_php_output(const char *str, size_t str_length) {
     if (str_length == 0) return 0;
 
-    // Forward to Swift callback (legacy per-request mode)
-    if (swiftOutputCallback) {
+    // Forward to Swift (classic per-request mode)
+    if (swiftOutputBytesCallback) {
+        swiftOutputBytesCallback(str, str_length);
+    } else if (swiftOutputCallback) {
         char *buffer = malloc(str_length + 1);
         if (buffer) {
             memcpy(buffer, str, str_length);
@@ -283,22 +286,32 @@ size_t capture_php_output(const char *str, size_t str_length) {
 
 void override_embed_module_output(phpOutputCallback callback) {
     swiftOutputCallback = callback;
+    swiftOutputBytesCallback = NULL;
     php_embed_module.ub_write = capture_php_output;
 }
 
+void override_embed_module_output_bytes(phpOutputBytesCallback callback) {
+    swiftOutputBytesCallback = callback;
+    swiftOutputCallback = NULL;
+    php_embed_module.ub_write = capture_php_output;
+}
+
+void initialize_php_with_request_bytes(const char *body,
+                                       size_t body_len,
+                                       const char *method,
+                                       const char *uri) {
+    SG(request_info).request_method = method;
+    SG(request_info).request_uri = (char *)uri;
+    bridge_set_request_body(body, body ? body_len : 0);
+}
+
+// Kept for older callers: the body is POST-only text, cut at its first NUL.
+// It now also leaves SG(request_info).content_type NULL, like every lane.
 void initialize_php_with_request(const char *post_data,
                                  const char *method,
                                  const char *uri) {
-    if (strcmp(method, "POST") == 0) {
-        size_t post_data_length = strlen(post_data);
-
-        php_stream *mem_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
-        php_stream_write(mem_stream, post_data, post_data_length);
-
-        SG(request_info).request_body   = mem_stream;
-        SG(request_info).request_method = "POST";
-        SG(request_info).content_type   = "application/x-www-form-urlencoded";
-        SG(request_info).content_length = post_data_length;
+    if (method && strcmp(method, "POST") == 0) {
+        initialize_php_with_request_bytes(post_data, post_data ? strlen(post_data) : 0, method, uri);
     }
 }
 
