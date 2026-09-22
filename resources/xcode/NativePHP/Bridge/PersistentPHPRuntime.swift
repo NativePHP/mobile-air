@@ -5,15 +5,22 @@ import Foundation
 @_silgen_name("persistent_php_boot")
 private func _persistent_php_boot(_ bootstrapPath: UnsafePointer<CChar>?) -> Int32
 
-@_silgen_name("persistent_php_dispatch")
-private func _persistent_php_dispatch(
+// Binary-safe dispatch: the body and header block go in as (pointer, length),
+// and the raw HTTP response comes back as a malloc'd buffer plus its length
+// (size_t is Int on Apple's 64-bit platforms).
+@_silgen_name("persistent_php_dispatch_bytes")
+private func _persistent_php_dispatch_bytes(
     _ method: UnsafePointer<CChar>?,
     _ uri: UnsafePointer<CChar>?,
-    _ postData: UnsafePointer<CChar>?,
-    _ scriptPath: UnsafePointer<CChar>?,
+    _ body: UnsafeRawPointer?,
+    _ bodyLen: Int,
+    _ contentType: UnsafePointer<CChar>?,
     _ cookieHeader: UnsafePointer<CChar>?,
-    _ contentType: UnsafePointer<CChar>?
-) -> UnsafePointer<CChar>?
+    _ headers: UnsafeRawPointer?,
+    _ headersLen: Int,
+    _ scriptPath: UnsafePointer<CChar>?,
+    _ outLen: UnsafeMutablePointer<Int>
+) -> UnsafeMutablePointer<CChar>?
 
 @_silgen_name("persistent_php_artisan")
 private func _persistent_php_artisan(_ command: UnsafePointer<CChar>?) -> UnsafePointer<CChar>?
@@ -111,9 +118,17 @@ final class PersistentPHPRuntime {
 
 
     /// Dispatch a web request through the persistent runtime.
-    /// Returns the raw HTTP response (headers + body).
-    /// Blocks until the C worker thread completes the request.
+    /// Returns the raw HTTP response (headers + body) as text. Kept for
+    /// callers that only read the status line and headers; a binary body is
+    /// decoded lossily. Use `dispatchData(request:)` for the exact bytes.
     func dispatch(request: RequestData) -> String {
+        String(decoding: dispatchData(request: request), as: UTF8.self)
+    }
+
+    /// Dispatch a web request through the persistent runtime.
+    /// Returns the raw HTTP response (headers + body) byte for byte.
+    /// Blocks until the C worker thread completes the request.
+    func dispatchData(request: RequestData) -> Data {
         // Detect stale state: Swift thinks we're booted but C layer disagrees
         if isBooted && _persistent_php_is_booted() == 0 {
             print("PersistentPHPRuntime: stale isBooted detected, attempting re-boot")
@@ -121,12 +136,12 @@ final class PersistentPHPRuntime {
             let rebooted = boot()
             if !rebooted {
                 print("PersistentPHPRuntime: re-boot failed, falling back to error response")
-                return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime re-boot failed."
+                return Data("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime re-boot failed.".utf8)
             }
         }
 
         guard isBooted else {
-            return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not booted."
+            return Data("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not booted.".utf8)
         }
 
         var uri = request.uri
@@ -137,41 +152,41 @@ final class PersistentPHPRuntime {
         let appPath = AppUpdateManager.shared.getAppPath()
         let scriptPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
 
-        // Set HTTP headers as env vars (like Android does)
-        var envKeys: [String] = []
-        for (header, value) in request.headers {
-            let formattedKey = "HTTP_" + header
-                .replacingOccurrences(of: "-", with: "_")
-                .uppercased()
-            setenv(formattedKey, value, 1)
-            envKeys.append(formattedKey)
-        }
+        // Every request header reaches PHP through the header block.
+        // BridgeDispatcher::handle() no longer reads HTTP_* from the
+        // environment, so nothing is setenv()'d per request any more.
+        let cookieHeader = request.header("Cookie") ?? ""
+        let contentType = request.header("Content-Type") ?? ""
+        let headerBlock = request.headerBlock
+        let body = request.bodyBytes ?? Data()
 
-        let cookieHeader = request.headers["Cookie"] ?? ""
-        let contentType = request.headers["Content-Type"] ?? request.headers["content-type"] ?? ""
-
-        // This blocks until the C worker thread completes dispatch
-        let resultPtr = _persistent_php_dispatch(
-            request.method,
-            uri,
-            request.data,
-            scriptPath,
-            cookieHeader,
-            contentType
-        )
-
-        // Clean up HTTP header env vars
-        for key in envKeys {
-            unsetenv(key)
+        // This blocks until the C worker thread completes dispatch. The body
+        // and header pointers are only borrowed for the call: C copies the
+        // body into php://input before it returns.
+        var outLen = 0
+        let resultPtr = body.withUnsafeBytes { bodyBuffer in
+            headerBlock.withUnsafeBytes { headerBuffer in
+                _persistent_php_dispatch_bytes(
+                    request.method,
+                    uri,
+                    bodyBuffer.baseAddress,
+                    bodyBuffer.count,
+                    contentType,
+                    cookieHeader,
+                    headerBuffer.baseAddress,
+                    headerBuffer.count,
+                    scriptPath,
+                    &outLen
+                )
+            }
         }
 
         guard let resultPtr else {
-            return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nNull response from persistent dispatch."
+            return Data("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nNull response from persistent dispatch.".utf8)
         }
 
-        let result = String(cString: resultPtr)
-        free(UnsafeMutableRawPointer(mutating: resultPtr))
-        return result
+        // Take ownership of C's buffer without copying it.
+        return Data(bytesNoCopy: resultPtr, count: outLen, deallocator: .free)
     }
 
     /// Run an artisan command through the persistent runtime.

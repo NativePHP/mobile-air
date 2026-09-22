@@ -397,8 +397,12 @@ struct NativePHPApp: App {
     }
 
     static func laravel(request: RequestData) -> String? {
+        // Classic mode is text-only: the body is cut at its first NUL here and
+        // parsed with parse_str() for POST only (bootstrap/ios/native.php).
+        let postData = request.data ?? request.body.map { String(decoding: $0, as: UTF8.self) } ?? ""
+
         // Convert Swift strings to C strings
-        let postDataC = strdup(request.data ?? "")
+        let postDataC = strdup(postData)
         let methodC = strdup(request.method)
         let uriC = strdup(request.uri)
 

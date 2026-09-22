@@ -3,15 +3,21 @@ import Foundation
 @_silgen_name("webview_php_start")
 private func _webview_php_start(_ bootstrapPath: UnsafePointer<CChar>) -> Int32
 
-@_silgen_name("webview_php_request")
-private func _webview_php_request(
+// Binary-safe request: body and header block in as (pointer, length), the raw
+// HTTP response back as a malloc'd buffer plus its length.
+@_silgen_name("webview_php_request_bytes")
+private func _webview_php_request_bytes(
     _ handle: Int32,
     _ method: UnsafePointer<CChar>,
     _ uri: UnsafePointer<CChar>,
-    _ cookieHeader: UnsafePointer<CChar>,
-    _ postData: UnsafePointer<CChar>,
+    _ body: UnsafeRawPointer?,
+    _ bodyLen: Int,
     _ contentType: UnsafePointer<CChar>,
-    _ scriptPath: UnsafePointer<CChar>
+    _ cookieHeader: UnsafePointer<CChar>,
+    _ headers: UnsafeRawPointer?,
+    _ headersLen: Int,
+    _ scriptPath: UnsafePointer<CChar>,
+    _ outLen: UnsafeMutablePointer<Int>
 ) -> UnsafeMutablePointer<CChar>?
 
 @_silgen_name("webview_php_stop")
@@ -52,7 +58,7 @@ final class WebviewPHPRuntime {
     }
 
     private static let unavailableResponse =
-        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nWebview PHP runtime unavailable."
+        Data("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nWebview PHP runtime unavailable.".utf8)
 
     private let queue = DispatchQueue(label: "com.nativephp.webview-php", qos: .userInitiated)
     private let state = State()
@@ -64,9 +70,19 @@ final class WebviewPHPRuntime {
     }
 
     /// Dispatch a request on this webview's own PHP context. The completion
-    /// receives the raw HTTP response (headers + body), matching the format
-    /// `PHPSchemeHandler` already parses.
+    /// receives the raw HTTP response (headers + body) as text. Kept for
+    /// existing callers; a binary body is decoded lossily. Use
+    /// `dispatchData(request:completion:)` for the exact bytes.
     func dispatch(request: RequestData, completion: @escaping (String) -> Void) {
+        dispatchData(request: request) { data in
+            completion(String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    /// Dispatch a request on this webview's own PHP context. The completion
+    /// receives the raw HTTP response (headers + body) byte for byte, the
+    /// format `PHPSchemeHandler` parses.
+    func dispatchData(request: RequestData, completion: @escaping (Data) -> Void) {
         let state = self.state
         queue.async {
             if !state.released, state.needsBoot {
@@ -93,26 +109,37 @@ final class WebviewPHPRuntime {
 
             let appPath = AppUpdateManager.shared.getAppPath()
             let scriptPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
-            let cookieHeader = request.headers["Cookie"] ?? ""
-            let contentType = request.headers["Content-Type"] ?? request.headers["content-type"] ?? ""
+            let cookieHeader = request.header("Cookie") ?? ""
+            let contentType = request.header("Content-Type") ?? ""
+            let headerBlock = request.headerBlock
+            let body = request.bodyBytes ?? Data()
 
             let start = CFAbsoluteTimeGetCurrent()
             NSLog("%@", "[NativePHP] [WEBVIEW:\(state.handle)] --> \(request.method) \(uri)")
 
-            guard let resultPtr = _webview_php_request(
-                state.handle, request.method, uri, cookieHeader,
-                request.data ?? "", contentType, scriptPath
-            ) else {
-                completion("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nNull response from webview runtime.")
+            var outLen = 0
+            let resultPtr = body.withUnsafeBytes { bodyBuffer in
+                headerBlock.withUnsafeBytes { headerBuffer in
+                    _webview_php_request_bytes(
+                        state.handle, request.method, uri,
+                        bodyBuffer.baseAddress, bodyBuffer.count,
+                        contentType, cookieHeader,
+                        headerBuffer.baseAddress, headerBuffer.count,
+                        scriptPath, &outLen
+                    )
+                }
+            }
+
+            guard let resultPtr else {
+                completion(Data("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nNull response from webview runtime.".utf8))
                 return
             }
 
-            let response = String(cString: resultPtr)
-            free(UnsafeMutableRawPointer(mutating: resultPtr))
+            // Take ownership of C's buffer without copying it.
+            let response = Data(bytesNoCopy: resultPtr, count: outLen, deallocator: .free)
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            let statusLine = response.prefix(while: { $0 != "\r" && $0 != "\n" })
-            NSLog("%@", "[NativePHP] [WEBVIEW:\(state.handle)] <-- \(statusLine) (\(String(format: "%.1f", elapsed))ms)")
+            NSLog("%@", "[NativePHP] [WEBVIEW:\(state.handle)] <-- \(PHPRawResponse.statusLine(of: response)) (\(String(format: "%.1f", elapsed))ms)")
 
             completion(response)
         }
