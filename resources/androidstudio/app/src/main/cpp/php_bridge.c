@@ -145,15 +145,13 @@ static void setup_embed_module(void) {
     php_embed_module.ub_write = capture_php_output;
     php_embed_module.phpinfo_as_text = 1;
     php_embed_module.php_ini_ignore = 0;
-    // post_max_size and upload_max_filesize match the 16MB capture cap. The
-    // request body parser honours them, and PHP's defaults (8M, 2M) would
-    // turn away uploads the bridge itself can carry.
+    // Note: php_embed_init() replaces ini_entries with its own hardcoded
+    // list, so nothing set here takes effect. Settings that must apply (the
+    // upload limits, for one) go in the php.ini LaravelEnvironment writes.
     php_embed_module.ini_entries = "output_buffering=4096\n"
                                    "implicit_flush=0\n"
                                    "display_errors=1\n"
-                                   "error_reporting=E_ALL\n"
-                                   "post_max_size=16M\n"
-                                   "upload_max_filesize=16M\n";
+                                   "error_reporting=E_ALL\n";
     php_embed_module.header_handler = android_header_handler;
 
     // Extension functions are now statically linked via --enable-nativephp
