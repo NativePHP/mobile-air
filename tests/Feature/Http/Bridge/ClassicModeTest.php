@@ -100,14 +100,20 @@ describe('classicRequest()', function () {
  * request values in the environment, the body where php://input would be.
  *
  * @param  array<string, string>  $env
- * @return array{head: string, body: string, stderr: string}
+ * @param  string|null  $body  null when the test already wrote $tempDir/body
+ * @param  array<string, string>  $ini
+ * @return array{raw: string, head: string, body: string, stderr: string}
  */
-function runClassic(string $platform, array $env, string $body, string $tempDir): array
+function runClassic(string $platform, array $env, ?string $body, string $tempDir, array $ini = []): array
 {
     $root = dirname(__DIR__, 4);
     $work = $tempDir.'/run-'.bin2hex(random_bytes(3));
     mkdir($work);
-    file_put_contents($work.'/body', $body);
+    $bodyFile = $body === null ? $tempDir.'/body' : $work.'/body';
+
+    if ($body !== null) {
+        file_put_contents($bodyFile, $body);
+    }
 
     // Point handle()'s input at the body file, since the CLI has no request body.
     file_put_contents($work.'/prepend.php', '<?php require '.var_export($root.'/vendor/autoload.php', true).";\n"
@@ -136,17 +142,69 @@ function runClassic(string $platform, array $env, string $body, string $tempDir)
     }
 
     $process = new Process(
-        [PHP_BINARY, '-d', 'auto_prepend_file='.$work.'/prepend.php', $script],
+        [PHP_BINARY, ...iniFlags($ini), '-d', 'auto_prepend_file='.$work.'/prepend.php', $script],
         null,
-        $env + ['BRIDGE_TEST_BODY_FILE' => $work.'/body', 'NATIVEPHP_TEMPDIR' => $tempDir],
+        $env + ['BRIDGE_TEST_BODY_FILE' => $bodyFile, 'NATIVEPHP_TEMPDIR' => $tempDir],
     );
     $process->mustRun();
 
     (new Filesystem)->deleteDirectory($work);
 
-    [$head, $responseBody] = explode("\r\n\r\n", $process->getOutput(), 2) + [1 => ''];
+    return splitRawResponse($process->getOutput(), $process->getErrorOutput());
+}
 
-    return ['head' => $head, 'body' => $responseBody, 'stderr' => $process->getErrorOutput()];
+/**
+ * Serve one request through BridgeDispatcher::handle() in its own PHP process,
+ * with the fixture app booted as the persistent runtime.
+ *
+ * @param  array<string, string>  $ini
+ * @return array{raw: string, head: string, body: string, stderr: string}
+ */
+function runHandle(string $method, string $uri, string $contentType, string $bodyFile, array $ini = []): array
+{
+    $root = dirname(__DIR__, 4);
+    $script = 'require '.var_export($root.'/vendor/autoload.php', true).';'
+        .'$app = require '.var_export($root.'/tests/Fixtures/Bridge/classic-app/bootstrap/app.php', true).';'
+        .'Native\Mobile\Runtime::boot($app);'
+        .'Native\Mobile\Http\Bridge\BridgeDispatcher::$input = getenv("BRIDGE_TEST_BODY_FILE");'
+        .'Native\Mobile\Http\Bridge\BridgeDispatcher::handle("ios", "persistent", '
+        .var_export(base64_encode($method), true).', '.var_export(base64_encode($uri), true).', '
+        .var_export(base64_encode('/native.php'), true).", '', ".var_export(base64_encode($contentType), true).", '');";
+
+    $process = new Process([PHP_BINARY, ...iniFlags($ini), '-r', $script], null, ['BRIDGE_TEST_BODY_FILE' => $bodyFile]);
+    $process->mustRun();
+
+    return splitRawResponse($process->getOutput(), $process->getErrorOutput());
+}
+
+/** @return list<string> */
+function iniFlags(array $ini): array
+{
+    return array_merge(...array_map(fn ($key, $value) => ['-d', "{$key}={$value}"], array_keys($ini), $ini) ?: [[]]);
+}
+
+/** @return array{raw: string, head: string, body: string, stderr: string} */
+function splitRawResponse(string $raw, string $stderr): array
+{
+    [$head, $body] = explode("\r\n\r\n", $raw, 2) + [1 => ''];
+
+    return ['raw' => $raw, 'head' => $head, 'body' => $body, 'stderr' => $stderr];
+}
+
+/** Write a multipart body with one file of $size bytes, a megabyte at a time. */
+function writeLargeUpload(string $path, int $size): int
+{
+    $handle = fopen($path, 'wb');
+    fwrite($handle, '--'.Bridge::BOUNDARY."\r\nContent-Disposition: form-data; name=\"big\"; filename=\"big.bin\"\r\n\r\n");
+
+    for ($left = $size; $left > 0; $left -= 1 << 20) {
+        fwrite($handle, str_repeat('A', min($left, 1 << 20)));
+    }
+
+    fwrite($handle, "\r\n--".Bridge::BOUNDARY."--\r\n");
+    fclose($handle);
+
+    return filesize($path);
 }
 
 describe('bootstrap native.php', function () {
@@ -157,7 +215,8 @@ describe('bootstrap native.php', function () {
         $run = runClassic($platform, $env + ['REQUEST_METHOD' => 'POST', 'REQUEST_URI' => '/inspect?q=1', 'QUERY_STRING' => 'q=1'], $body, $this->tempDir);
         $json = json_decode($run['body'], true);
 
-        expect($run['head'])->toStartWith("HTTP/1.1 200 OK\r\nX-PHP-Timing: ")
+        expect($run['head'])->toStartWith('HTTP/1.1 200 OK')
+            ->and(strtolower($run['head']))->toContain("\r\nx-php-timing: ")
             ->and($json)->toBeArray($run['body'].$run['stderr'])
             ->and($json['method'])->toBe('POST')
             ->and($json['query'])->toBe(['q' => '1'])
@@ -203,4 +262,55 @@ describe('bootstrap native.php', function () {
         'android' => ['android', ['CONTENT_TYPE' => 'application/x-www-form-urlencoded'], Request::class, 'http://127.0.0.1'],
         'ios' => ['ios', ['HTTP_CONTENT_TYPE' => 'application/x-www-form-urlencoded'], IosRequest::class, 'php://127.0.0.1'],
     ]);
+
+    it('writes the iOS response as raw HTTP with the body byte for byte and an exact content-length', function () {
+        $run = runClassic('ios', ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/bytes', 'QUERY_STRING' => ''], '', $this->tempDir);
+        $response = Bridge::parse($run['raw']);
+
+        expect($response['status'])->toBe(200)
+            ->and($response['body'])->toBe("\0".Bridge::allBytes()."\r\n\r\n\0 end\n")
+            ->and($response['headers']['content-type'])->toBe(['application/octet-stream'])
+            ->and($response['headers'])->toHaveKey('x-php-timing');
+    });
+
+    it('writes the Android response body byte for byte', function () {
+        $run = runClassic('android', ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/bytes'], '', $this->tempDir);
+
+        expect($run['head'])->toStartWith('HTTP/1.1 200 OK')
+            ->and($run['body'])->toBe("\0".Bridge::allBytes()."\r\n\r\n\0 end\n");
+    });
+});
+
+/*
+ * PHP never reads a body over post_max_size: php://input, $_POST and $_FILES
+ * stay empty, and CONTENT_LENGTH makes Laravel's ValidatePostSize answer 413.
+ * The fixture's 413 reports what the request held and the peak memory, which
+ * stays below the body's size because the body is counted, not read.
+ */
+describe('a body over post_max_size', function () {
+    it('gets a 413 without the request holding the body', function (string $lane) {
+        $size = writeLargeUpload($this->tempDir.'/body', 64 << 20);
+        $ini = ['post_max_size' => '1M', 'memory_limit' => '-1'];
+
+        $run = match ($lane) {
+            'persistent' => runHandle('POST', '/inspect', Bridge::contentType(), $this->tempDir.'/body', $ini),
+            default => runClassic($lane, [
+                'REQUEST_METHOD' => 'POST',
+                'REQUEST_URI' => '/inspect',
+                'CONTENT_TYPE' => Bridge::contentType(),
+                'HTTP_CONTENT_TYPE' => Bridge::contentType(),
+            ], null, $this->tempDir, $ini),
+        };
+
+        $json = json_decode($run['body'], true);
+
+        expect($run['head'])->toStartWith('HTTP/1.1 413')
+            ->and($json)->toBeArray($run['raw'].$run['stderr'])
+            ->and($json['heldBytes'])->toBe(0)
+            ->and($json['contentLength'])->toBe((string) $size)
+            ->and($json['post'])->toBe([])
+            ->and($json['files'])->toBe([])
+            ->and($json['peakMemory'])->toBeLessThan($size)
+            ->and($run['stderr'])->toContain("PHP Warning:  POST Content-Length of {$size} bytes exceeds the limit of 1048576 bytes");
+    })->with(['persistent', 'ios', 'android']);
 });

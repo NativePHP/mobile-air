@@ -46,9 +46,23 @@ final class RequestBodyParser
      * application/x-www-form-urlencoded and multipart/form-data bodies sent
      * with one of METHODS become fields and files. Anything else gives an
      * empty ParsedBody and stays in the raw body for the app to read.
+     *
+     * $length is the body's real length when $body is not the whole of it,
+     * as when read() left out a body over post_max_size. A body over
+     * post_max_size gives an empty ParsedBody and PHP's warning.
      */
-    public function parse(string $method, ?string $contentType, string $body): ParsedBody
+    public function parse(string $method, ?string $contentType, string $body, ?int $length = null): ParsedBody
     {
+        $length ??= strlen($body);
+
+        if ($this->exceedsPostMaxSize($length)) {
+            return new ParsedBody([], [], warnings: [sprintf(
+                'POST Content-Length of %d bytes exceeds the limit of %d bytes',
+                $length,
+                $this->postMaxSize(),
+            )]);
+        }
+
         $mediaType = self::mediaType($contentType ?? '');
         $urlencoded = $mediaType === 'application/x-www-form-urlencoded';
 
@@ -57,19 +71,67 @@ final class RequestBodyParser
             return new ParsedBody([], []);
         }
 
-        $postMaxSize = $this->postMaxSize ?? self::iniBytes('post_max_size');
-
-        if ($postMaxSize > 0 && strlen($body) > $postMaxSize) {
-            return new ParsedBody([], [], warnings: [sprintf(
-                'POST Content-Length of %d bytes exceeds the limit of %d bytes',
-                strlen($body),
-                $postMaxSize,
-            )]);
-        }
-
         return $urlencoded
             ? $this->parseUrlencoded($body)
             : $this->parseMultipart((string) $contentType, $body);
+    }
+
+    /**
+     * Read a request body the way PHP does before a script runs: whole when it
+     * fits in post_max_size, not at all when it doesn't. PHP then leaves
+     * php://input, $_POST and $_FILES empty. A body over the limit is counted
+     * as it streams past and never held, so its real length still comes back
+     * for CONTENT_LENGTH, which is what Laravel's ValidatePostSize checks
+     * before it answers 413.
+     *
+     * @return array{string, int} the body ('' when over the limit) and its real length
+     */
+    public function read(string $stream = 'php://input'): array
+    {
+        $handle = @fopen($stream, 'rb');
+
+        if ($handle === false) {
+            return ['', 0];
+        }
+
+        $body = '';
+        $length = 0;
+
+        try {
+            while (! feof($handle)) {
+                $chunk = fread($handle, 1 << 20);
+
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+
+                $length += strlen($chunk);
+
+                // Once over the limit, stop keeping bytes and only count them.
+                if ($this->exceedsPostMaxSize($length)) {
+                    $body = '';
+                } else {
+                    $body .= $chunk;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return [$body, $length];
+    }
+
+    /** Whether PHP would refuse to read a body of $length bytes. post_max_size 0 means no limit. */
+    public function exceedsPostMaxSize(int $length): bool
+    {
+        $limit = $this->postMaxSize();
+
+        return $limit > 0 && $length > $limit;
+    }
+
+    private function postMaxSize(): int
+    {
+        return $this->postMaxSize ?? self::iniBytes('post_max_size');
     }
 
     /**

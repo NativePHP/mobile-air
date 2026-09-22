@@ -46,7 +46,8 @@ final class BridgeDispatcher
      * $platform and $lane are plain strings. Every other argument is base64 so
      * that nothing from the request is ever parsed as PHP. The body is not an
      * argument: it is read from php://input, which the C side filled with
-     * the exact bytes.
+     * the exact bytes. A body over post_max_size is not read at all, as under
+     * PHP-FPM, but CONTENT_LENGTH still shows its size, so Laravel answers 413.
      *
      * @param  string  $platform  'ios' or 'android'
      * @param  string  $lane  'persistent' or 'webview'
@@ -72,7 +73,8 @@ final class BridgeDispatcher
         }
 
         try {
-            $body = file_get_contents(self::$input);
+            // A body over post_max_size is counted, never held, as PHP does.
+            [$body, $length] = (new RequestBodyParser)->read(self::$input);
 
             [$head, $content] = self::serve(
                 $platform,
@@ -83,7 +85,8 @@ final class BridgeDispatcher
                 self::decode('cookie', $cookie),
                 self::decode('contentType', $contentType),
                 self::decode('headers', $headers),
-                $body === false ? '' : $body,
+                $body,
+                $length,
             );
         } catch (Throwable $e) {
             [$head, $content] = self::errorResponse($lane, $e);
@@ -120,6 +123,9 @@ final class BridgeDispatcher
     /**
      * Set up the superglobals for this request. Returns what was parsed out of
      * the body; the caller owns cleaning up its temp files.
+     *
+     * $length is the body's real length when $body is not all of it: a body
+     * over post_max_size arrives as '' with its length.
      */
     public static function prepareGlobals(
         string $platform,
@@ -131,7 +137,10 @@ final class BridgeDispatcher
         string $contentType,
         string $headers,
         string $body,
+        ?int $length = null,
     ): ParsedBody {
+        $length ??= strlen($body);
+
         if (! in_array($platform, self::PLATFORMS, true)) {
             throw new InvalidArgumentException("Unknown bridge platform [{$platform}].");
         }
@@ -193,8 +202,8 @@ final class BridgeDispatcher
 
         // The real length, so Laravel's ValidatePostSize sees what PHP-FPM
         // would show it.
-        if ($body !== '' || isset($_SERVER['HTTP_CONTENT_LENGTH'])) {
-            $_SERVER['CONTENT_LENGTH'] = (string) strlen($body);
+        if ($length > 0 || isset($_SERVER['HTTP_CONTENT_LENGTH'])) {
+            $_SERVER['CONTENT_LENGTH'] = (string) $length;
 
             if (isset($_SERVER['HTTP_CONTENT_LENGTH'])) {
                 $_SERVER['HTTP_CONTENT_LENGTH'] = $_SERVER['CONTENT_LENGTH'];
@@ -215,7 +224,7 @@ final class BridgeDispatcher
         $_GET = RequestFactory::query($_SERVER['QUERY_STRING'], $warnings);
 
         $parsed = (new RequestBodyParser(tempDir: self::tempDir()))
-            ->parse($method, $_SERVER['CONTENT_TYPE'] ?? null, $body);
+            ->parse($method, $_SERVER['CONTENT_TYPE'] ?? null, $body, $length);
 
         $_POST = $parsed->fields;
         $_FILES = $parsed->phpFiles;
@@ -243,7 +252,8 @@ final class BridgeDispatcher
      * which leaves $_FILES empty on the embed SAPI and on Symfony 8 calls
      * request_parse_body(). $_SERVER is left as the native side set it, apart
      * from CONTENT_TYPE when only HTTP_CONTENT_TYPE was set and CONTENT_LENGTH,
-     * which becomes the real length of the body.
+     * which becomes the real length of the body. A body over post_max_size is
+     * not read, as under PHP-FPM, so Laravel answers 413 without holding it.
      *
      * The caller calls cleanup() on the returned ParsedBody once the response
      * has been written, to delete upload temp files the app didn't move.
@@ -254,7 +264,19 @@ final class BridgeDispatcher
      */
     public static function classicRequest(string $requestClass = Request::class, ?string $body = null): array
     {
-        $body ??= (string) @file_get_contents(self::$input);
+        $reader = new RequestBodyParser;
+
+        // A body over post_max_size is counted, never held, as PHP does.
+        if ($body === null) {
+            [$body, $length] = $reader->read(self::$input);
+        } else {
+            $length = strlen($body);
+
+            if ($reader->exceedsPostMaxSize($length)) {
+                $body = '';
+            }
+        }
+
         $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
         $uri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
 
@@ -269,15 +291,15 @@ final class BridgeDispatcher
             $_SERVER['CONTENT_TYPE'] = $contentType;
         }
 
-        if ($body !== '') {
-            $_SERVER['CONTENT_LENGTH'] = (string) strlen($body);
+        if ($length > 0) {
+            $_SERVER['CONTENT_LENGTH'] = (string) $length;
         }
 
         $warnings = [];
         $_COOKIE = RequestFactory::cookies((string) ($_SERVER['HTTP_COOKIE'] ?? ''));
         $_GET = RequestFactory::query((string) $_SERVER['QUERY_STRING'], $warnings);
 
-        $parsed = (new RequestBodyParser(tempDir: self::tempDir()))->parse($method, $contentType, $body);
+        $parsed = (new RequestBodyParser(tempDir: self::tempDir()))->parse($method, $contentType, $body, $length);
 
         $_POST = $parsed->fields;
         $_FILES = $parsed->phpFiles;
@@ -309,11 +331,19 @@ final class BridgeDispatcher
         string $contentType,
         string $headers,
         string $body,
+        ?int $length = null,
     ): array {
         $parsed = null;
+        $length ??= strlen($body);
+
+        // PHP never reads a body over post_max_size: the app gets no bytes,
+        // only a CONTENT_LENGTH that makes ValidatePostSize answer 413.
+        if ((new RequestBodyParser)->exceedsPostMaxSize($length)) {
+            $body = '';
+        }
 
         try {
-            $parsed = self::prepareGlobals($platform, $lane, $method, $uri, $scriptPath, $cookie, $contentType, $headers, $body);
+            $parsed = self::prepareGlobals($platform, $lane, $method, $uri, $scriptPath, $cookie, $contentType, $headers, $body, $length);
 
             // Built from the superglobals just set, as Request::capture() did.
             $request = RequestFactory::make($_GET, $parsed, $_COOKIE, $_SERVER, $body);

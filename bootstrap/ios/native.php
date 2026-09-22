@@ -2,6 +2,8 @@
 
 use Illuminate\Contracts\Http\Kernel;
 use Native\Mobile\Http\Bridge\BridgeDispatcher;
+use Native\Mobile\Http\Bridge\OutputCapture;
+use Native\Mobile\Http\Bridge\RawHttpResponse;
 use Native\Mobile\Support\Ios\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -39,11 +41,13 @@ $kernel->bootstrap();
 // an earlier instance() call. This must come after to take precedence.
 $app->instance('originalRequest', $request);
 
+// Anything echoed outside the response (a stray echo, dump()) is kept for the
+// body instead of landing in front of the status line.
 /** @var Response $response */
-$response = $kernel->handle($request);
+$response = OutputCapture::run(fn () => $kernel->handle($request), $stray);
 $_timing['handle'] = microtime(true);
 
-$kernel->terminate($request, $response);
+OutputCapture::run(fn () => $kernel->terminate($request, $response), $late);
 $_timing['terminate'] = microtime(true);
 
 // Calculate timing breakdown (in ms)
@@ -58,10 +62,12 @@ $totalMs = round(($_timing['terminate'] - $_timing['start']) * 1000, 1);
 // Log timing (shows in Xcode console)
 error_log("PerfTiming: PHP autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
 
-$code = $response->getStatusCode();
-$status = Response::$statusTexts[$code] ?? ($code == 419 ? 'Page Expired' : 'Unknown');
-echo "HTTP/1.1 {$code} {$status}\r\n";
-echo "X-PHP-Timing: autoload={$autoloadMs}ms,bootstrap={$bootstrapMs}ms,handle={$handleMs}ms,total={$totalMs}ms\r\n";
-echo $response->headers."\r\n\r\n";
+// Raw HTTP/1.1, as the persistent and webview lanes write it: status line,
+// headers, a blank line, then the body byte for byte with an exact
+// content-length.
+$response->headers->set('X-PHP-Timing', "autoload={$autoloadMs}ms,bootstrap={$bootstrapMs}ms,handle={$handleMs}ms,total={$totalMs}ms");
 
-$response->sendContent();
+$content = $stray.RawHttpResponse::content($response).$late;
+
+echo RawHttpResponse::head($response, strlen($content));
+echo $content;

@@ -413,6 +413,52 @@ describe('limits', function () {
     });
 });
 
+describe('reading the body', function () {
+    it('reads a body within post_max_size whole', function () {
+        $body = Bridge::allBytes()."\0";
+
+        expect((new RequestBodyParser(postMaxSize: 257))->read('data://application/octet-stream;base64,'.base64_encode($body)))
+            ->toBe([$body, 257]);
+    });
+
+    it('counts a body over post_max_size without keeping it, as PHP never reads one', function () {
+        $path = $this->tempDir.'/big';
+        $handle = fopen($path, 'wb');
+
+        for ($i = 0; $i < 32; $i++) {
+            fwrite($handle, str_repeat('A', 1 << 20));
+        }
+
+        fclose($handle);
+        memory_reset_peak_usage();
+        $before = memory_get_usage();
+
+        [$body, $length] = (new RequestBodyParser(postMaxSize: 1024))->read($path);
+
+        expect($body)->toBe('')
+            ->and($length)->toBe(32 << 20)
+            ->and(memory_get_peak_usage() - $before)->toBeLessThan(4 << 20);
+    });
+
+    it('reads nothing from a stream that will not open', function () {
+        expect((new RequestBodyParser)->read($this->tempDir.'/missing'))->toBe(['', 0]);
+    });
+
+    it('treats a post_max_size of 0 as no limit', function () {
+        expect((new RequestBodyParser(postMaxSize: 0))->exceedsPostMaxSize(PHP_INT_MAX))->toBeFalse()
+            ->and((new RequestBodyParser(postMaxSize: 10))->exceedsPostMaxSize(10))->toBeFalse()
+            ->and((new RequestBodyParser(postMaxSize: 10))->exceedsPostMaxSize(11))->toBeTrue();
+    });
+
+    it('parses nothing and warns when the length it is told is over post_max_size', function (string $contentType) {
+        $parsed = (new RequestBodyParser(postMaxSize: 100))->parse('POST', $contentType, '', 5000);
+
+        expect($parsed->fields)->toBe([])
+            ->and($parsed->files)->toBe([])
+            ->and($parsed->warnings)->toBe(['POST Content-Length of 5000 bytes exceeds the limit of 100 bytes']);
+    })->with(['multipart' => [Bridge::contentType()], 'json' => ['application/json']]);
+});
+
 describe('temp files', function () {
     it('deletes them on cleanup', function () {
         $parsed = ($this->parse)([Bridge::file('a', 'a', 'A'), Bridge::file('b', 'b', 'B')]);
