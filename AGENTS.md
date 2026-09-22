@@ -45,6 +45,13 @@ How they are wired today:
 - The published PHP binaries don't support multiple windows yet. Until they do, install the
   macOS shell with `NATIVEPHP_BIN_BRANCH=feat/surfaces-phase1 php artisan native:install mac`.
 
+How changes land:
+
+- mobile-air's `refactor/extract-edge-to-core`: commit and push straight to the branch. Don't
+  open PRs into it, and don't make side branches for it. Merge, never rebase, and never
+  force-push. super-native builds from this branch.
+- desktop-air and core: a branch and a PR against `main`.
+
 ## What has moved to core so far
 
 This changes often. Check `src/` in core, and
@@ -148,25 +155,29 @@ sync", however many syncs there have been.
 - **Reverts.** Look at the final state, not each commit. Some PRs were reverted and landed
   again later (#333 was reverted and came back as #391).
 
-**4. Merge and open the PRs.**
+**4. Merge.**
 
-- In mobile-air, branch from the refactor branch (`sync/main-YYYY-MM-DD`) and
-  `git merge origin/main`. Merge, don't rebase: the branch is shared and super-native builds
-  from it. The merge commit message lists the PR numbers it covers and what was ported to
-  core.
-- Put the core half on its own branch in core and open a PR against core's `main`.
-- Open the mobile PR against `refactor/extract-edge-to-core`. Link the two PRs to each other.
-  Core's PR merges first.
+- In mobile-air, on `refactor/extract-edge-to-core` itself, run `git merge origin/main`. No
+  sync branch. Don't push yet.
+- Do the core half on its own branch in `../supanative-core`, so mobile runs against it.
 
 **5. Run the tests.**
 
 - mobile-air, with `../supanative-core` on the core branch: `composer test`.
 - mobile-air `main` in a separate clone or worktree with its own `composer install`:
-  `composer test`. A test that passes on `main` and fails on the sync branch is a regression
+  `composer test`. A test that passes on `main` and fails after the merge is a regression
   from the extraction. A test that fails on both is not the sync's to fix; mention it.
 - desktop-air against the same core: `composer test:php`.
 
-Put the results, with counts, in both PR descriptions.
+**6. Land it.**
+
+- Open a PR for the core half against core's `main`, with the test results and counts.
+- Once that PR is merged, push the mobile merge straight to `refactor/extract-edge-to-core`.
+  No PR. Pushing before core's PR is merged would leave the branch running against a core
+  without the ported fixes.
+- If nothing needed porting there is no core PR, so push the merge straight away.
+- The merge commit message lists the mobile PRs it covers, what was ported to core, the core
+  PR it needs, and the test results with counts.
 
 If `~/Projects/ideas` exists, log the sync on the board:
 `php ~/Projects/ideas/artisan idea:log nativephp-core "<what was synced>"`.
