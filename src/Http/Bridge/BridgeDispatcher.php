@@ -2,10 +2,8 @@
 
 namespace Native\Mobile\Http\Bridge;
 
-use Illuminate\Http\Request;
 use InvalidArgumentException;
 use Native\Mobile\Runtime;
-use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
 use Throwable;
 
 /**
@@ -173,7 +171,7 @@ final class BridgeDispatcher
         $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true);
         $_SERVER['REQUEST_TIME'] = (int) $_SERVER['REQUEST_TIME_FLOAT'];
 
-        foreach (self::parseHeaders($headers) as $key => $value) {
+        foreach (RequestFactory::headerVariables($headers) as $key => $value) {
             $_SERVER[$key] = $value;
         }
 
@@ -211,31 +209,9 @@ final class BridgeDispatcher
         $_FILES = [];
         $_REQUEST = [];
 
-        if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {
-            foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $pair) {
-                $parts = explode('=', $pair, 2);
-
-                if (count($parts) === 2) {
-                    $_COOKIE[$parts[0]] = urldecode($parts[1]);
-                }
-            }
-        }
-
         $warnings = [];
-
-        if ($_SERVER['QUERY_STRING'] !== '') {
-            set_error_handler(function (int $level, string $message) use (&$warnings): bool {
-                $warnings[] = $message;
-
-                return true;
-            });
-
-            try {
-                parse_str($_SERVER['QUERY_STRING'], $_GET);
-            } finally {
-                restore_error_handler();
-            }
-        }
+        $_COOKIE = RequestFactory::cookies($_SERVER['HTTP_COOKIE'] ?? '');
+        $_GET = RequestFactory::query($_SERVER['QUERY_STRING'], $warnings);
 
         $parsed = (new RequestBodyParser(tempDir: self::tempDir()))
             ->parse($method, $_SERVER['CONTENT_TYPE'] ?? null, $body);
@@ -257,48 +233,6 @@ final class BridgeDispatcher
     }
 
     /**
-     * Build the Request from the superglobals as Request::capture() does, but
-     * hand it the body and the uploads directly.
-     *
-     * Request::capture() would read php://input a second time, and on
-     * Symfony 8 it calls request_parse_body() for PUT, DELETE, PATCH and
-     * QUERY. On the embed SAPI that function either empties php://input
-     * (urlencoded) or calls a read_post handler the SAPI doesn't have
-     * (multipart). The uploads go in as Illuminate UploadedFile objects that
-     * know they didn't come through the SAPI, so isValid() and move() work.
-     */
-    public static function captureRequest(ParsedBody $parsed, string $body): Request
-    {
-        Request::enableHttpMethodParameterOverride();
-
-        return Request::createFromBase(
-            new SymfonyRequest($_GET, $_POST, [], $_COOKIE, self::withoutEmptyFiles($parsed->files), $_SERVER, $body)
-        );
-    }
-
-    /**
-     * An empty file input leaves no key behind, as Laravel's
-     * Request::filterFiles() does with what PHP-FPM gives it.
-     *
-     * @param  array<array-key, mixed>  $files
-     * @return array<array-key, mixed>
-     */
-    private static function withoutEmptyFiles(array $files): array
-    {
-        foreach ($files as $key => $file) {
-            if (is_array($file)) {
-                $files[$key] = self::withoutEmptyFiles($file);
-            }
-
-            if (empty($files[$key])) {
-                unset($files[$key]);
-            }
-        }
-
-        return $files;
-    }
-
-    /**
      * @return array{string, string} the head and the body
      */
     private static function serve(
@@ -316,19 +250,14 @@ final class BridgeDispatcher
 
         try {
             $parsed = self::prepareGlobals($platform, $lane, $method, $uri, $scriptPath, $cookie, $contentType, $headers, $body);
-            $request = self::captureRequest($parsed, $body);
+
+            // Built from the superglobals just set, as Request::capture() did.
+            $request = RequestFactory::make($_GET, $parsed, $_COOKIE, $_SERVER, $body);
 
             // Anything echoed outside the response (a stray echo, dump()) would
             // otherwise land in front of the status line. Keep it and put it at
             // the start of the body, where PHP-FPM would have sent it.
-            $level = ob_get_level();
-            ob_start();
-
-            try {
-                $response = Runtime::dispatch($request);
-            } finally {
-                $stray = self::endBuffers($level);
-            }
+            $response = OutputCapture::run(fn () => Runtime::dispatch($request), $stray);
 
             $content = $stray.RawHttpResponse::content($response);
 
@@ -336,15 +265,6 @@ final class BridgeDispatcher
         } finally {
             $parsed?->cleanup();
         }
-    }
-
-    private static function endBuffers(int $level): string
-    {
-        while (ob_get_level() > $level + 1) {
-            ob_end_flush();
-        }
-
-        return ob_get_level() > $level ? (string) ob_get_clean() : '';
     }
 
     /**
@@ -361,41 +281,6 @@ final class BridgeDispatcher
             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: ".strlen($content)."\r\n\r\n",
             $content,
         ];
-    }
-
-    /**
-     * "Name: value" lines joined by CRLF (a bare LF works too) as $_SERVER
-     * keys: HTTP_ plus the name upper-cased with dashes as underscores. A
-     * repeated header is joined with ", ", or "; " for Cookie.
-     *
-     * @return array<string, string>
-     */
-    public static function parseHeaders(string $block): array
-    {
-        $server = [];
-
-        foreach (preg_split('/\r?\n/', $block) ?: [] as $line) {
-            $colon = strpos($line, ':');
-
-            if ($colon === false) {
-                continue;
-            }
-
-            $name = trim(substr($line, 0, $colon));
-            $value = trim(substr($line, $colon + 1), " \t");
-
-            if ($name === '') {
-                continue;
-            }
-
-            $key = 'HTTP_'.strtoupper(str_replace('-', '_', $name));
-
-            $server[$key] = isset($server[$key])
-                ? $server[$key].($key === 'HTTP_COOKIE' ? '; ' : ', ').$value
-                : $value;
-        }
-
-        return $server;
     }
 
     private static function isHeaderKey(string $key): bool

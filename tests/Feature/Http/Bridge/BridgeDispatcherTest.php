@@ -318,7 +318,7 @@ describe('$_SERVER', function () {
             ->and($get)->toBe(['length' => null, 'header' => null]);
     });
 
-    it('parses cookies exactly as the old eval did', function () {
+    it('parses cookies as the old eval did for the Cookie headers WebKit and Android send', function () {
         Route::get('/cookies', fn (Request $request) => ['globals' => $_COOKIE, 'request' => $request->cookies->all()]);
 
         $json = bridgeJson(BridgeDispatcher::dispatch('ios', 'webview', 'GET', '/cookies', '/native.php', cookie: 'a=1; b=x%2By+z; flag; c==d'));
@@ -432,6 +432,21 @@ describe('responses', function () {
         });
 
         expect(Bridge::parse(BridgeDispatcher::dispatch('ios', 'persistent', 'GET', '/stray', '/native.php'))['body'])->toBe('stray body');
+    });
+
+    it('keeps output a route flushes out of the status line', function () {
+        Route::get('/flushed', function () {
+            echo 'flushed ';
+            ob_flush();
+            flush();
+
+            return 'body';
+        });
+
+        $raw = bridgeHandle('GET', '/flushed');
+
+        expect($raw)->toStartWith('HTTP/1.1 200 OK')
+            ->and(Bridge::parse($raw)['body'])->toBe('flushed body');
     });
 
     it('serves files and streamed responses byte for byte', function () {

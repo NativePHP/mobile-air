@@ -3,7 +3,6 @@
 namespace Native\Mobile\Http\Bridge;
 
 use Symfony\Component\HttpFoundation\Response;
-use Throwable;
 
 /**
  * Writes a Symfony or Laravel response as raw HTTP/1.1 bytes: a status line,
@@ -70,35 +69,12 @@ final class RawHttpResponse
      * Run sendContent() and return every byte it wrote, however it wrote them:
      * echo for a plain Response, a callback for a StreamedResponse, or
      * php://output for a BinaryFileResponse. The callback's ob_flush() and
-     * flush() calls stay inside this buffer, and buffers it left open are
+     * flush() calls stay inside the capture, and buffers it left open are
      * flushed into the body, as they would be at the end of a request.
      */
     public static function content(Response $response): string
     {
-        $body = '';
-        $level = ob_get_level();
-
-        ob_start(static function (string $buffer, int $phase) use (&$body): string {
-            if (($phase & PHP_OUTPUT_HANDLER_CLEAN) === 0) {
-                $body .= $buffer;
-            }
-
-            return '';
-        });
-
-        try {
-            $response->sendContent();
-        } catch (Throwable $e) {
-            while (ob_get_level() > $level) {
-                ob_end_clean();
-            }
-
-            throw $e;
-        }
-
-        while (ob_get_level() > $level) {
-            ob_end_flush();
-        }
+        OutputCapture::run(fn () => $response->sendContent(), $body);
 
         return $body;
     }
