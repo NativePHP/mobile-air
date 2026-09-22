@@ -333,9 +333,12 @@ struct NativePHPApp: App {
     private func createPhpIni() -> String {
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? "Path not found"
 
+        // Same file PersistentPHPRuntime.createPhpIni writes; keep the two in step.
         let phpIni = """
         curl.cainfo="\(caPath)"
         openssl.cafile="\(caPath)"
+        upload_max_filesize=16M
+        post_max_size=16M
         """
 
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
