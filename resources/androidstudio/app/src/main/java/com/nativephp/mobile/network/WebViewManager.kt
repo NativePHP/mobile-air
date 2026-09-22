@@ -318,7 +318,7 @@ class WebViewManager(
                         // Jump webview-forward session: assets live on the
                         // remote dev server, not in the local bundle.
                         if (JumpWebViewSession.isActive) {
-                            phpHandler.forwardToRemote(request, null)
+                            phpHandler.forwardToRemote(request, null as CapturedBody?)
                         } else {
                             Log.d(TAG, "🖼️ Handling asset request")
                             phpHandler.handleAssetRequest(url, request.requestHeaders)

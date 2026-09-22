@@ -22,6 +22,8 @@ class PHPWebViewClient(
 ) {
     companion object {
         private const val TAG = "PHPRequestHandler"
+        private const val CR: Byte = 13
+        private const val LF: Byte = 10
     }
 
     fun handleAssetRequest(url: String, requestHeaders: Map<String, String> = emptyMap()): WebResourceResponse {
@@ -124,21 +126,22 @@ class PHPWebViewClient(
                     queryString = Uri.parse(url).encodedQuery ?: ""
                 )
 
-                val response = phpBridge.handleLaravelRequest(phpRequest)
-                val (responseHeaders, body, statusCode) = parseResponse(response)
-                Log.d(TAG, "RESPONSE HEADERS: ${responseHeaders}")
+                val response = parseRawResponse(phpBridge.handleLaravelRequestBytes(phpRequest))
+                Log.d(TAG, "RESPONSE HEADERS: ${response.headers}")
 
-                if (statusCode == 200) {
-                    Log.d(TAG, "✅ Asset served via PHP: ${responseHeaders["Content-Type"]}")
+                if (response.status == 200) {
+                    val (mime, charset) = mimeAndCharset(response.headers["Content-Type"], guessMimeType(cleanPath))
+                    Log.d(TAG, "✅ Asset served via PHP: $mime (${response.bodyLength} bytes)")
                     WebResourceResponse(
-                        responseHeaders["Content-Type"] ?: guessMimeType(cleanPath),
-                        responseHeaders["Charset"] ?: "UTF-8",
-                        statusCode,
-                        "OK",
-                        responseHeaders,
-                        body.byteInputStream()
+                        mime,
+                        charset,
+                        response.status,
+                        response.reason,
+                        response.headersForWebView(),
+                        response.bodyStream()
                     )
                 } else {
+                    val statusCode = response.status
                     Log.d(TAG, "❌ Asset not found via PHP: $path (Status: $statusCode)")
                     errorResponse(404, "Asset not found: $path")
                 }
@@ -149,9 +152,25 @@ class PHPWebViewClient(
         }
     }
 
+    /** Text body wrapper kept for older callers. */
     fun handlePHPRequest(
         request: WebResourceRequest,
         postData: String?,
+        redirectCount: Int = 0
+    ): WebResourceResponse = handlePHPRequest(
+        request,
+        postData?.let { CapturedBody(it.toByteArray(Charsets.UTF_8)) },
+        redirectCount
+    )
+
+    /**
+     * Serve a 127.0.0.1 request from PHP. [body] is the request body exactly
+     * as the page sent it, with its content type; the response body goes back
+     * to the WebView as the bytes PHP wrote, not re-encoded or trimmed.
+     */
+    fun handlePHPRequest(
+        request: WebResourceRequest,
+        body: CapturedBody?,
         redirectCount: Int = 0
     ): WebResourceResponse {
         val requestStart = System.currentTimeMillis()
@@ -163,7 +182,7 @@ class PHPWebViewClient(
         }
 
         val headers = HashMap<String, String>(request.requestHeaders)
-        headers.remove("X-NativePHP-Req-Id")
+        headers.keys.removeAll { it.equals("X-NativePHP-Req-Id", ignoreCase = true) }
 
         // ✅ Apply CSRF token and cookies
         LaravelSecurity.applyToHeaders(headers)
@@ -178,23 +197,27 @@ class PHPWebViewClient(
         }
         val method = request.method.uppercase()
 
+        val hasBody = body != null && method != "GET" && method != "HEAD"
         val phpRequest = PHPRequest(
             url = normalizedPath,
             method = request.method,
-            body = if (method in listOf("POST", "PUT", "PATCH")) postData ?: "" else "",
+            body = "",
             headers = headers,
-            queryString = request.url.encodedQuery ?: ""
+            queryString = request.url.encodedQuery ?: "",
+            bodyBytes = if (hasBody) body!!.bytes else null,
+            bodyContentType = if (hasBody) body!!.contentType else null
         )
 
         val prepTime = System.currentTimeMillis() - requestStart
         val phpStart = System.currentTimeMillis()
 
-        val response = phpBridge.handleLaravelRequest(phpRequest)
+        val response = parseRawResponse(phpBridge.handleLaravelRequestBytes(phpRequest))
 
         val phpTime = System.currentTimeMillis() - phpStart
         val parseStart = System.currentTimeMillis()
 
-        val (responseHeaders, body, statusCode) = parseResponse(response)
+        val responseHeaders = response.headers
+        val statusCode = response.status
 
         val parseTime = System.currentTimeMillis() - parseStart
         Log.d("PerfTiming", "⏱️ WEBCLIENT [$path] prep=${prepTime}ms php=${phpTime}ms parse=${parseTime}ms")
@@ -212,7 +235,7 @@ class PHPWebViewClient(
 
         // ✅ Handle redirects
         if (statusCode in 300..399) {
-            val location = responseHeaders["Location"] ?: responseHeaders["location"]
+            val location = responseHeaders["Location"]
             if (!location.isNullOrEmpty()) {
                 // An absolute Location carries its query too, and Laravel writes
                 // absolute URLs by default. Taking the path alone drops every
@@ -243,82 +266,141 @@ class PHPWebViewClient(
                 val targetPath = redirectUri.path ?: "/"
 
                 Log.d(TAG, "🔄 Following redirect ${redirectCount + 1}/10 to $redirectUrl")
-                return handlePHPRequest(redirectRequest, null, redirectCount + 1)
+                return handlePHPRequest(redirectRequest, null as CapturedBody?, redirectCount + 1)
             }
         }
 
-        // ✅ Normal response
+        // ✅ Normal response: the body bytes exactly as PHP wrote them, with
+        // the mime type and charset PHP's content-type header gives.
+        val (mime, charset) = mimeAndCharset(responseHeaders["Content-Type"], "text/html")
         return WebResourceResponse(
-            responseHeaders["Content-Type"] ?: "text/html",
-            responseHeaders["Charset"] ?: "UTF-8",
+            mime,
+            charset,
             statusCode,
-            if (statusCode == 200) "OK" else "Error",
-            responseHeaders,
-            body.byteInputStream()
+            response.reason,
+            response.headersForWebView(),
+            response.bodyStream()
         )
     }
 
-   fun parseResponse(rawResponse: String): Triple<Map<String, String>, String, Int> {
-       val headers = mutableMapOf<String, String>()
-       var statusCode = 200
-       var body = ""
+    /**
+     * A raw HTTP response split at the first CRLF CRLF. [headers] looks names
+     * up case-insensitively (PHP sends them lower-case); repeated Set-Cookie
+     * values are joined with newlines. The body is never decoded.
+     */
+    class RawResponse(
+        private val raw: ByteArray,
+        val status: Int,
+        val reason: String,
+        val headers: Map<String, String>,
+        private val bodyOffset: Int
+    ) {
+        val bodyLength: Int
+            get() = raw.size - bodyOffset
 
-       val parts = rawResponse.split("\r\n\r\n", limit = 2)
-       if (parts.size < 2) {
-           Log.w(TAG, "⚠️ Could not split response into headers/body. Raw: ${rawResponse.take(200)}")
-           return Triple(headers, rawResponse.trim(), statusCode)
-       }
+        fun bodyStream(): java.io.InputStream = ByteArrayInputStream(raw, bodyOffset, bodyLength)
 
-       val headerLines = parts[0].split("\r\n")
-       body = parts[1]
+        fun bodyText(): String = String(raw, bodyOffset, bodyLength, Charsets.UTF_8)
 
-       val statusLine = headerLines.firstOrNull()
-       if (statusLine != null && statusLine.startsWith("HTTP/")) {
-           val statusParts = statusLine.split(" ")
-           if (statusParts.size >= 2) {
-               try {
-                   statusCode = statusParts[1].toInt()
-                   Log.d(TAG, "📋 Parsed status code: $statusCode")
-               } catch (e: Exception) {
-                   Log.w(TAG, "⚠️ Failed to parse status code from: $statusLine")
-               }
-           }
-       }
+        /**
+         * The headers to hand WebResourceResponse. Content-Type is left out:
+         * the WebView builds it from the mime type argument, and a second
+         * copy here would reach the page as "application/json, application/json".
+         */
+        fun headersForWebView(): Map<String, String> =
+            headers.filterKeys { !it.equals("Content-Type", ignoreCase = true) }
+    }
 
-       for (i in 1 until headerLines.size) {
-           val line = headerLines[i]
-           val colonIndex = line.indexOf(":")
-           if (colonIndex > 0) {
-               val key = line.substring(0, colonIndex).trim()
-               val value = line.substring(colonIndex + 1).trim()
-               if (key.equals("Set-Cookie", ignoreCase = true)) {
-                   headers.merge(key, value) { old, new -> "$old\n$new" }
-               } else {
-                   headers[key] = value
-               }
-           }
-       }
+    fun parseRawResponse(raw: ByteArray): RawResponse {
+        val headers = java.util.TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER)
 
-       // Log PHP timing header if present
-       headers["X-PHP-Timing"]?.let { timing ->
-           Log.d("PerfTiming", "⏱️ PHP_TIMING $timing")
-       }
+        var split = -1
+        var i = 0
+        while (i + 3 < raw.size) {
+            if (raw[i] == CR && raw[i + 1] == LF && raw[i + 2] == CR && raw[i + 3] == LF) {
+                split = i
+                break
+            }
+            i++
+        }
 
-       // Set cookies
-       headers.entries
-           .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
-           .flatMap { it.value.split("\n") }
-           .forEach { cookie ->
-               LaravelCookieStore.storeFromSetCookieHeader(cookie)
-               com.nativephp.mobile.security.WebCookieMirror.set(cookie)
-               Log.d(TAG, "🍪 Stored cookie from Set-Cookie header: $cookie")
-           }
+        if (split < 0) {
+            // PHPBridge already turns an incomplete response into a 500, so
+            // this only happens for a caller that skipped it.
+            Log.w(TAG, "⚠️ Could not split response into headers/body (${raw.size} bytes)")
+            return RawResponse(raw, 500, "Internal Server Error", headers, 0)
+        }
 
-       com.nativephp.mobile.security.WebCookieMirror.flush()
-       LaravelCookieStore.logAll()
+        val headerLines = String(raw, 0, split, Charsets.UTF_8).split("\r\n")
+        var statusCode = 200
+        var reason = "OK"
 
-       return Triple(headers, body.trim(), statusCode)
-   }
+        val statusLine = headerLines.firstOrNull()
+        if (statusLine != null && statusLine.startsWith("HTTP/")) {
+            val statusParts = statusLine.split(" ", limit = 3)
+            statusParts.getOrNull(1)?.toIntOrNull()?.let { statusCode = it }
+            reason = statusParts.getOrNull(2)
+                ?.filter { it.code in 0x20..0x7E }
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: if (statusCode in 200..299) "OK" else "Error"
+            Log.d(TAG, "📋 Parsed status code: $statusCode")
+        }
+
+        for (line in headerLines.drop(1)) {
+            val colonIndex = line.indexOf(":")
+            if (colonIndex > 0) {
+                val key = line.substring(0, colonIndex).trim()
+                val value = line.substring(colonIndex + 1).trim()
+                if (key.equals("Set-Cookie", ignoreCase = true)) {
+                    headers.merge(key, value) { old, new -> "$old\n$new" }
+                } else {
+                    headers[key] = value
+                }
+            }
+        }
+
+        headers["X-PHP-Timing"]?.let { timing ->
+            Log.d("PerfTiming", "⏱️ PHP_TIMING $timing")
+        }
+
+        return RawResponse(raw, statusCode, reason, headers, split + 4)
+    }
+
+    /**
+     * Mime type and charset from a Content-Type header value, for
+     * WebResourceResponse. Text types without a charset get UTF-8, as before;
+     * other types get none.
+     */
+    private fun mimeAndCharset(contentType: String?, fallbackMime: String): Pair<String, String?> {
+        if (contentType.isNullOrBlank()) {
+            return fallbackMime to (if (fallbackMime.startsWith("text/")) "UTF-8" else null)
+        }
+        val mime = contentType.substringBefore(';').trim().ifEmpty { fallbackMime }
+        val charset = Regex("charset\\s*=\\s*\"?([^\";]+)", RegexOption.IGNORE_CASE)
+            .find(contentType)?.groupValues?.get(1)?.trim()
+        return mime to (charset ?: if (mime.startsWith("text/")) "UTF-8" else null)
+    }
+
+    /**
+     * Text version kept for older callers. Same parse as [parseRawResponse],
+     * so the body is no longer trimmed; it also stores Set-Cookie values as
+     * before.
+     */
+    fun parseResponse(rawResponse: String): Triple<Map<String, String>, String, Int> {
+        val parsed = parseRawResponse(rawResponse.toByteArray(Charsets.UTF_8))
+
+        parsed.headers.entries
+            .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
+            .flatMap { it.value.split("\n") }
+            .forEach { cookie ->
+                LaravelCookieStore.storeFromSetCookieHeader(cookie)
+                com.nativephp.mobile.security.WebCookieMirror.set(cookie)
+            }
+        com.nativephp.mobile.security.WebCookieMirror.flush()
+
+        return Triple(parsed.headers, parsed.bodyText(), parsed.status)
+    }
 
 
 
@@ -334,7 +416,10 @@ class PHPWebViewClient(
      * survive across forwards. Redirects are followed manually (max 5) as
      * GETs because WebResourceResponse rejects 3xx status codes outright.
      */
-    fun forwardToRemote(request: WebResourceRequest, postData: String?): WebResourceResponse {
+    fun forwardToRemote(request: WebResourceRequest, postData: String?): WebResourceResponse =
+        forwardToRemote(request, postData?.let { CapturedBody(it.toByteArray(Charsets.UTF_8)) })
+
+    fun forwardToRemote(request: WebResourceRequest, captured: CapturedBody?): WebResourceResponse {
         val remoteHost = JumpWebViewSession.host
         val remotePort = JumpWebViewSession.port
         val path = request.url.encodedPath ?: "/"
@@ -342,7 +427,7 @@ class PHPWebViewClient(
         var urlString = "http://$remoteHost:$remotePort$path" +
             if (query.isNullOrEmpty()) "" else "?$query"
         var method = request.method.uppercase()
-        var body: String? = postData
+        var body: CapturedBody? = captured
 
         try {
             var redirects = 0
@@ -365,9 +450,15 @@ class PHPWebViewClient(
                 }
                 conn.setRequestProperty("Cookie", LaravelCookieStore.asCookieHeader())
 
-                if (method in listOf("POST", "PUT", "PATCH") && body != null) {
+                val sending = body
+                if (method in listOf("POST", "PUT", "PATCH", "DELETE") && sending != null) {
+                    // The captured bytes and the content type that describes
+                    // them (a multipart boundary included), exactly as sent.
+                    if (sending.contentType.isNotEmpty()) {
+                        conn.setRequestProperty("Content-Type", sending.contentType)
+                    }
                     conn.doOutput = true
-                    conn.outputStream.use { it.write(body!!.toByteArray()) }
+                    conn.outputStream.use { it.write(sending.bytes) }
                 }
 
                 val status = conn.responseCode
