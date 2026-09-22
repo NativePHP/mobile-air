@@ -4,6 +4,8 @@ import PHP
 import Bridge
 import UIKit
 
+/// Text output of the last `NativePHPApp.artisan(additionalArgs:)` call.
+/// Only filled while that call runs; responses never go through it.
 var output = ""
 
 @_cdecl("pipe_php_output")
@@ -404,13 +406,15 @@ struct NativePHPApp: App {
 
         setupEnvironment()
 
-        output = ""
-
-        override_embed_module_output(pipe_php_output)
+        // Point PHP's output at the capture handler, with nothing forwarded
+        // to Swift. Classic requests and artisan calls install their own
+        // capture for as long as they run; a callback left in place here
+        // would copy every persistent and webview response into `output`.
+        override_embed_module_output(nil)
 
         createDatabase()
 
-        return output
+        return ""
     }
 
     /// Classic mode: run one request in a fresh interpreter and return the
@@ -648,7 +652,9 @@ struct NativePHPApp: App {
 
         output = ""
 
+        // Capture this call's output only, and stop once it is done.
         override_embed_module_output(pipe_php_output)
+        defer { override_embed_module_output(nil) }
 
         var argv: [UnsafeMutablePointer<CChar>?] = [
             strdup("php")

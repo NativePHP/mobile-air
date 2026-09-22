@@ -10,8 +10,13 @@
 #include <time.h>
 #include <zend_exceptions.h>
 
+// Classic-mode output callbacks. Only output from the thread that installed
+// the callback reaches it: every PHP thread (persistent, webview, worker,
+// async) shares ub_write, and their responses must never land in a classic
+// capture.
 static phpOutputCallback swiftOutputCallback = NULL;
 static phpOutputBytesCallback swiftOutputBytesCallback = NULL;
+static pthread_t swiftOutputThread;
 
 // ── Thread-local output capture ─────────────────────
 // Each PHP thread (persistent, worker) gets its own output buffer via
@@ -265,15 +270,19 @@ static char *bridge_dispatch_code(const char *platform, const char *lane,
 size_t capture_php_output(const char *str, size_t str_length) {
     if (str_length == 0) return 0;
 
-    // Forward to Swift (classic per-request mode)
-    if (swiftOutputBytesCallback) {
-        swiftOutputBytesCallback(str, str_length);
-    } else if (swiftOutputCallback) {
+    // Forward to Swift (classic per-request mode), from the capturing thread only
+    phpOutputBytesCallback bytesCallback = swiftOutputBytesCallback;
+    phpOutputCallback textCallback = swiftOutputCallback;
+    int capturingThread = (bytesCallback || textCallback) && pthread_equal(pthread_self(), swiftOutputThread);
+
+    if (capturingThread && bytesCallback) {
+        bytesCallback(str, str_length);
+    } else if (capturingThread && textCallback) {
         char *buffer = malloc(str_length + 1);
         if (buffer) {
             memcpy(buffer, str, str_length);
             buffer[str_length] = '\0';
-            swiftOutputCallback(buffer);
+            textCallback(buffer);
             free(buffer);
         }
     }
@@ -285,14 +294,16 @@ size_t capture_php_output(const char *str, size_t str_length) {
 }
 
 void override_embed_module_output(phpOutputCallback callback) {
-    swiftOutputCallback = callback;
+    swiftOutputThread = pthread_self();
     swiftOutputBytesCallback = NULL;
+    swiftOutputCallback = callback;
     php_embed_module.ub_write = capture_php_output;
 }
 
 void override_embed_module_output_bytes(phpOutputBytesCallback callback) {
-    swiftOutputBytesCallback = callback;
+    swiftOutputThread = pthread_self();
     swiftOutputCallback = NULL;
+    swiftOutputBytesCallback = callback;
     php_embed_module.ub_write = capture_php_output;
 }
 

@@ -10,6 +10,8 @@ typedef void (*phpOutputCallback)(const char *);
 
 // Text output: each chunk arrives NUL-terminated, so a chunk holding a NUL is
 // cut short. Kept for older callers; use override_embed_module_output_bytes.
+// Only output produced on the calling thread reaches the callback. Pass NULL
+// once the capture is done so nothing else is forwarded.
 void override_embed_module_output(phpOutputCallback callback);
 
 // Text request body, POST only, cut at its first NUL. Kept for older callers;
@@ -19,8 +21,8 @@ void initialize_php_with_request(const char *post_data,
                                  const char *uri);
 
 // Binary-safe output: each chunk arrives as (bytes, len), NULs included.
-// Replaces any callback set with override_embed_module_output. NULL stops
-// forwarding output.
+// Replaces any callback set with override_embed_module_output. Only output
+// produced on the calling thread reaches it. NULL stops forwarding output.
 typedef void (*phpOutputBytesCallback)(const char *bytes, size_t len);
 void override_embed_module_output_bytes(phpOutputBytesCallback callback);
 
