@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Http\Bridge;
 
+use Illuminate\Http\Request;
 use InvalidArgumentException;
 use Native\Mobile\Runtime;
 use Throwable;
@@ -230,6 +231,69 @@ final class BridgeDispatcher
         }
 
         return $parsed;
+    }
+
+    /**
+     * Build the request for classic mode, where bootstrap/{ios,android}/native.php
+     * runs once per request in a fresh interpreter and $_SERVER already holds
+     * what the native side put in the environment.
+     *
+     * The body is read from php://input and parsed into $_POST, $_FILES and the
+     * request's uploads, as on the other lanes, instead of Request::capture(),
+     * which leaves $_FILES empty on the embed SAPI and on Symfony 8 calls
+     * request_parse_body(). $_SERVER is left as the native side set it, apart
+     * from CONTENT_TYPE when only HTTP_CONTENT_TYPE was set and CONTENT_LENGTH,
+     * which becomes the real length of the body.
+     *
+     * The caller calls cleanup() on the returned ParsedBody once the response
+     * has been written, to delete upload temp files the app didn't move.
+     *
+     * @param  class-string<Request>  $requestClass  iOS passes its own Request subclass.
+     * @param  string|null  $body  The body, when not read from php://input.
+     * @return array{Request, ParsedBody}
+     */
+    public static function classicRequest(string $requestClass = Request::class, ?string $body = null): array
+    {
+        $body ??= (string) @file_get_contents(self::$input);
+        $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        $uri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
+
+        if (! isset($_SERVER['QUERY_STRING'])) {
+            $queryAt = strpos($uri, '?');
+            $_SERVER['QUERY_STRING'] = $queryAt === false ? '' : substr($uri, $queryAt + 1);
+        }
+
+        $contentType = (string) ($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '');
+
+        if ($contentType !== '') {
+            $_SERVER['CONTENT_TYPE'] = $contentType;
+        }
+
+        if ($body !== '') {
+            $_SERVER['CONTENT_LENGTH'] = (string) strlen($body);
+        }
+
+        $warnings = [];
+        $_COOKIE = RequestFactory::cookies((string) ($_SERVER['HTTP_COOKIE'] ?? ''));
+        $_GET = RequestFactory::query((string) $_SERVER['QUERY_STRING'], $warnings);
+
+        $parsed = (new RequestBodyParser(tempDir: self::tempDir()))->parse($method, $contentType, $body);
+
+        $_POST = $parsed->fields;
+        $_FILES = $parsed->phpFiles;
+        $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);
+
+        foreach ([...$warnings, ...$parsed->warnings] as $warning) {
+            error_log('PHP Warning:  '.$warning);
+        }
+
+        $request = RequestFactory::make($_GET, $parsed, $_COOKIE, $_SERVER, $body);
+
+        if ($requestClass !== Request::class) {
+            $request = $requestClass::createFromBase($request);
+        }
+
+        return [$request, $parsed];
     }
 
     /**

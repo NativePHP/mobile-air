@@ -1,25 +1,11 @@
 <?php
 
 use Illuminate\Contracts\Http\Kernel;
+use Native\Mobile\Http\Bridge\BridgeDispatcher;
 use Native\Mobile\Support\Ios\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 $_timing = ['start' => microtime(true)];
-
-if (isset($_SERVER['HTTP_COOKIE'])) {
-    parse_str(str_replace('; ', '&', $_SERVER['HTTP_COOKIE']), $cookies);
-    $_COOKIE = $cookies;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    parse_str($_SERVER['QUERY_STRING'], $parsed);
-    $_GET = $parsed;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    parse_str(file_get_contents('php://input'), $parsed);
-    $_POST = $parsed;
-}
 
 define('LARAVEL_START', microtime(true));
 
@@ -34,7 +20,13 @@ $_timing['bootstrap'] = microtime(true);
 $kernel = $app->make(Kernel::class);
 $_timing['kernel'] = microtime(true);
 
-$request = Request::capture();
+// Query params, cookies, and the body from php://input parsed into $_POST,
+// $_FILES and $request->file(), the way PHP-FPM would. Not Request::capture():
+// on the embed SAPI it never fills $_FILES, and on Symfony 8 it calls
+// request_parse_body(). Upload temp files the app didn't move are deleted when
+// the request ends, as PHP does.
+[$request, $parsedBody] = BridgeDispatcher::classicRequest(Request::class);
+register_shutdown_function(fn () => $parsedBody->cleanup());
 $_timing['capture'] = microtime(true);
 
 // Bind request so service providers can resolve it during bootstrap
