@@ -58,6 +58,11 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
             switch result {
             case .success(let requestData):
+                if url.path == Self.formStashPath {
+                    self.stashFormBody(requestData, url: url, schemeTask: schemeTask)
+                    return
+                }
+
                 let pathComponents = url.pathComponents
 
                 if let assetsIndex = pathComponents.firstIndex(of: "_assets") {
@@ -346,7 +351,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         let method = request.httpMethod ?? "GET"
 
         // Extract Headers
-        let headers = request.allHTTPHeaderFields ?? [:]
+        var headers = request.allHTTPHeaderFields ?? [:]
 
         // A request body arrives either whole or as a stream. WKWebView streams it
         // whenever the sender watches upload progress, as every axios call does.
@@ -380,6 +385,23 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 if !bodyData.isEmpty {
                     body = bodyData
                 }
+            }
+
+            // WebKit drops the body of a multipart <form> navigation that
+            // carries a file (WebKit bug 197237). The page's shim posted the
+            // serialized form here just before submitting, so use that body
+            // and its Content-Type, whose boundary matches it.
+            if body == nil,
+               method.uppercased() == "POST",
+               let navigationType = headers.first(where: { $0.key.caseInsensitiveCompare("Content-Type") == .orderedSame })?.value,
+               navigationType.lowercased().hasPrefix("multipart/form-data"),
+               let url = request.url,
+               let stashed = takeStashedFormBody(for: url) {
+                body = stashed.body
+                for key in headers.keys where key.caseInsensitiveCompare("Content-Type") == .orderedSame {
+                    headers.removeValue(forKey: key)
+                }
+                headers["Content-Type"] = stashed.contentType
             }
         }
 
@@ -511,6 +533,78 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             NativeUIBridge.shared.isActive = false
             AppState.shared.markInitialized()
         }
+    }
+
+    // MARK: - Multipart form bodies (WebKit bug 197237)
+
+    /// Path the page shim (`ContentView.bodyShimScript`) posts a serialized
+    /// multipart form to, just before it submits the form for real. WebKit
+    /// drops the body of a multipart navigation that carries a file, so the
+    /// navigation that follows picks this body up again. Answered here; it
+    /// never reaches PHP.
+    static let formStashPath = "/_native/form-body"
+
+    private struct StashedFormBody {
+        let body: Data
+        let contentType: String
+        let storedAt: Date
+    }
+
+    private static let stashLifetime: TimeInterval = 30
+    private static let stashLimit = 8
+    private var stashedFormBodies: [String: StashedFormBody] = [:]
+    private let stashLock = NSLock()
+
+    private func stashFormBody(_ requestData: RequestData, url: URL, schemeTask: WKURLSchemeTask) {
+        var status = 400
+
+        // The custom header keeps other origins out: they can't send it
+        // without a CORS preflight, which this handler never grants.
+        if requestData.method.uppercased() == "POST",
+           requestData.header("X-NativePHP-Form-Stash") == "1",
+           let action = requestData.header("X-NativePHP-Form-Action"),
+           let actionURL = URL(string: action),
+           actionURL.host == domain,
+           let contentType = requestData.header("Content-Type"),
+           contentType.lowercased().hasPrefix("multipart/form-data"),
+           let body = requestData.body, !body.isEmpty {
+            let now = Date()
+            stashLock.lock()
+            stashedFormBodies = stashedFormBodies.filter { now.timeIntervalSince($0.value.storedAt) < Self.stashLifetime }
+            if stashedFormBodies.count >= Self.stashLimit,
+               let oldest = stashedFormBodies.min(by: { $0.value.storedAt < $1.value.storedAt })?.key {
+                stashedFormBodies.removeValue(forKey: oldest)
+            }
+            stashedFormBodies[Self.stashKey(for: actionURL)] = StashedFormBody(body: body, contentType: contentType, storedAt: now)
+            stashLock.unlock()
+            status = 204
+        }
+
+        guard isTaskActive(schemeTask),
+              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
+                                             headerFields: ["Content-Length": "0", "Cache-Control": "no-store"]) else {
+            return
+        }
+        schemeTask.didReceive(response)
+        schemeTask.didFinish()
+        removeTask(schemeTask)
+    }
+
+    private func takeStashedFormBody(for url: URL) -> StashedFormBody? {
+        stashLock.lock()
+        defer { stashLock.unlock() }
+
+        guard let entry = stashedFormBodies.removeValue(forKey: Self.stashKey(for: url)),
+              Date().timeIntervalSince(entry.storedAt) < Self.stashLifetime else {
+            return nil
+        }
+        return entry
+    }
+
+    private static func stashKey(for url: URL) -> String {
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.fragment = nil
+        return components?.string ?? url.absoluteString
     }
 
     private func error(code: Int, description: String) -> NSError

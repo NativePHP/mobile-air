@@ -689,6 +689,15 @@ struct WebView: UIViewRepresentable {
         )
         contentController.addUserScript(safeAreaScript)
 
+        // Blob, File and FormData request bodies, before any page script
+        // runs and in every frame. See bodyShimScript.
+        let bodyShim = WKUserScript(
+            source: Self.bodyShimScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        contentController.addUserScript(bodyShim)
+
         // Inject Native helper and other functionality at document end
         let helper = """
         const Native = {
@@ -729,6 +738,200 @@ struct WebView: UIViewRepresentable {
         )
         contentController.addUserScript(script)
     }
+
+    /// WebKit never hands a Blob, File or FormData request body to a custom
+    /// scheme handler (WebKit bug 197237): those requests reach
+    /// `PHPSchemeHandler` with no body at all, and so does a multipart
+    /// `<form>` navigation that carries a file. An ArrayBuffer body does
+    /// arrive. So for requests to the app itself (php:), this turns those
+    /// bodies into an ArrayBuffer plus an explicit Content-Type before they
+    /// are sent, using the browser's own encoder so the bytes and the
+    /// multipart boundary stay exact. No bridge call is involved.
+    ///
+    /// - fetch and XMLHttpRequest: the body is serialized, then sent as an
+    ///   ArrayBuffer. An author-set Content-Type is kept.
+    /// - multipart forms with a file: the serialized form is posted to
+    ///   `PHPSchemeHandler.formStashPath`, then the form is submitted for
+    ///   real. The navigation arrives without a body and the scheme handler
+    ///   uses the stashed one. Submit handlers that call preventDefault()
+    ///   (Livewire, Inertia) run first and win.
+    static let bodyShimScript = """
+    (function () {
+        if (window.__nativephpBodyShim) { return; }
+        window.__nativephpBodyShim = true;
+
+        var STASH_PATH = '/_native/form-body';
+        var originalFetch = window.fetch;
+
+        function isAppURL(url) {
+            try { return new URL(url, location.href).protocol === 'php:'; } catch (e) { return false; }
+        }
+
+        function needsSerializing(body) {
+            return body != null && (
+                (typeof Blob !== 'undefined' && body instanceof Blob) ||
+                (typeof FormData !== 'undefined' && body instanceof FormData));
+        }
+
+        // The browser's own encoder: the exact bytes, and for FormData a
+        // Content-Type whose boundary matches them.
+        function serialize(body) {
+            var response = new Response(body);
+            return response.arrayBuffer().then(function (buffer) {
+                return { type: response.headers.get('Content-Type') || '', buffer: buffer };
+            });
+        }
+
+        if (originalFetch) {
+            window.fetch = function (input, init) {
+                var args = arguments;
+                var self = this;
+                try {
+                    var isRequest = typeof Request !== 'undefined' && input instanceof Request;
+                    if (isAppURL(isRequest ? input.url : String(input))) {
+                        if (init && needsSerializing(init.body)) {
+                            return serialize(init.body).then(function (s) {
+                                var headers = new Headers(init.headers || (isRequest ? input.headers : undefined));
+                                if (s.type && !headers.has('Content-Type')) { headers.set('Content-Type', s.type); }
+                                return originalFetch.call(window, input, Object.assign({}, init, { body: s.buffer, headers: headers }));
+                            }, function () { return originalFetch.apply(self, args); });
+                        }
+                        if (isRequest && !(init && init.body != null) && input.method !== 'GET' && input.method !== 'HEAD' && !input.bodyUsed) {
+                            // A Request built around its own body.
+                            return input.clone().arrayBuffer().then(function (buffer) {
+                                return originalFetch.call(window, new Request(input, { body: buffer }), init);
+                            }, function () { return originalFetch.apply(self, args); });
+                        }
+                    }
+                } catch (e) {}
+                return originalFetch.apply(this, arguments);
+            };
+        }
+
+        var xhr = XMLHttpRequest.prototype;
+        var originalOpen = xhr.open;
+        var originalSend = xhr.send;
+        var originalSetRequestHeader = xhr.setRequestHeader;
+
+        xhr.open = function (method, url) {
+            this.__nativephp = {
+                url: url == null ? '' : String(url),
+                async: arguments.length < 3 || !!arguments[2],
+                contentType: false
+            };
+            return originalOpen.apply(this, arguments);
+        };
+
+        xhr.setRequestHeader = function (name, value) {
+            if (this.__nativephp && String(name).toLowerCase() === 'content-type') {
+                this.__nativephp.contentType = true;
+            }
+            return originalSetRequestHeader.apply(this, arguments);
+        };
+
+        xhr.send = function (body) {
+            var state = this.__nativephp;
+            if (state && needsSerializing(body) && isAppURL(state.url)) {
+                if (!state.async) {
+                    console.error('NativePHP: a synchronous XMLHttpRequest cannot send a Blob, File or FormData body to the app. Make the request asynchronous.');
+                    return originalSend.apply(this, arguments);
+                }
+                var request = this;
+                serialize(body).then(function (s) {
+                    if (s.type && !state.contentType) { originalSetRequestHeader.call(request, 'Content-Type', s.type); }
+                    originalSend.call(request, s.buffer);
+                }).catch(function () {
+                    try { originalSend.call(request, body); } catch (e) {}
+                });
+                return;
+            }
+            return originalSend.apply(this, arguments);
+        };
+
+        var originalSubmit = HTMLFormElement.prototype.submit;
+
+        // What a multipart POST of this form would send, or null when the
+        // form doesn't need help (WebKit sends it fine on its own).
+        function formPlan(form, submitter) {
+            function pick(attribute, property, fallback) {
+                return submitter && submitter.hasAttribute && submitter.hasAttribute(attribute) ? submitter[property] : fallback;
+            }
+            var method = String(pick('formmethod', 'formMethod', form.method)).toLowerCase();
+            var enctype = String(pick('formenctype', 'formEnctype', form.enctype)).toLowerCase();
+            var action = pick('formaction', 'formAction', form.action);
+            var target = pick('formtarget', 'formTarget', form.getAttribute('target') || '');
+            if (method !== 'post' || enctype !== 'multipart/form-data' || !isAppURL(action) || target === '_blank') {
+                return null;
+            }
+
+            var data;
+            try {
+                data = submitter ? new FormData(form, submitter) : new FormData(form);
+            } catch (e) {
+                data = new FormData(form);
+                if (submitter && submitter.name) { data.append(submitter.name, submitter.value); }
+            }
+
+            var hasFile = false;
+            data.forEach(function (value) {
+                if (typeof File !== 'undefined' && value instanceof File) { hasFile = true; }
+            });
+            if (!hasFile) { return null; }
+
+            var key = new URL(action, location.href);
+            key.hash = '';
+            return { data: data, action: action, target: target, key: key.href };
+        }
+
+        function stashThenSubmit(form, plan) {
+            serialize(plan.data).then(function (s) {
+                return originalFetch.call(window, STASH_PATH, {
+                    method: 'POST',
+                    body: s.buffer,
+                    headers: {
+                        'Content-Type': s.type,
+                        'X-NativePHP-Form-Stash': '1',
+                        'X-NativePHP-Form-Action': plan.key
+                    }
+                });
+            }).then(function (response) {
+                if (!response.ok) { throw new Error('stash answered ' + response.status); }
+            }).catch(function (e) {
+                console.error('NativePHP: could not prepare the form upload, submitting without it', e);
+            }).then(function () {
+                // Submit for real, as the submitter asked. The attributes are
+                // read when submit() is called, so restore them straight after.
+                var names = ['action', 'method', 'enctype', 'target'];
+                var saved = names.map(function (name) { return form.getAttribute(name); });
+                form.setAttribute('action', plan.action);
+                form.setAttribute('method', 'post');
+                form.setAttribute('enctype', 'multipart/form-data');
+                if (plan.target) { form.setAttribute('target', plan.target); } else { form.removeAttribute('target'); }
+                try {
+                    originalSubmit.call(form);
+                } finally {
+                    names.forEach(function (name, i) {
+                        if (saved[i] === null) { form.removeAttribute(name); } else { form.setAttribute(name, saved[i]); }
+                    });
+                }
+            });
+        }
+
+        window.addEventListener('submit', function (event) {
+            if (event.defaultPrevented || !(event.target instanceof HTMLFormElement)) { return; }
+            var plan = formPlan(event.target, event.submitter || null);
+            if (!plan) { return; }
+            event.preventDefault();
+            stashThenSubmit(event.target, plan);
+        });
+
+        HTMLFormElement.prototype.submit = function () {
+            var plan = formPlan(this, null);
+            if (!plan) { return originalSubmit.call(this); }
+            stashThenSubmit(this, plan);
+        };
+    })();
+    """
 
     func addSwipeGestureSupport(webView: WKWebView, context: Context) {
         webView.navigationDelegate = context.coordinator
