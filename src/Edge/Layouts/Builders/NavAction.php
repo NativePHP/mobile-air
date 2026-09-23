@@ -33,6 +33,8 @@ class NavAction
 
     private bool $destructive = false;
 
+    private bool $disabled = false;
+
     /**
      * Marks this action as a visual divider rather than a tappable row.
      * Use [divider] to construct one — when set, the renderer emits a
@@ -127,6 +129,19 @@ class NavAction
     }
 
     /**
+     * Grey the action out and ignore taps — for actions that are sometimes
+     * unavailable (undo with nothing to undo, save with no changes).
+     * Attributes are reactive, so `->disabled(! $this->canUndo)` updates
+     * live as the screen's state changes.
+     */
+    public function disabled(bool $value = true): self
+    {
+        $this->disabled = $value;
+
+        return $this;
+    }
+
+    /**
      * Attach sub-items so this action renders as a pull-down menu instead
      * of a plain button. Tapping the bar's icon reveals a SwiftUI `Menu`
      * (iOS) / Compose `DropdownMenu` (Android) of these items. Each
@@ -184,6 +199,9 @@ class NavAction
         }
         if ($this->destructive) {
             $attrs['destructive'] = true;
+        }
+        if ($this->disabled) {
+            $attrs['disabled'] = true;
         }
 
         $action->applyAttributes($attrs);
