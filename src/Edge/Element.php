@@ -191,6 +191,13 @@ abstract class Element
         // programmatically built elements silently dropped ALL dark-mode
         // styling (light hexes rendered in both modes).
         $this->mergeDarkProps(NativeElementCollector::buildDarkProps($attrs));
+        // Responsive variants — same JSON prop the collector emits for
+        // blade elements, so `->class('md:flex-row')` re-flows too. Built
+        // against this class string only: styling set fluently before the
+        // call isn't part of the base a breakpoint builds on.
+        foreach (NativeElementCollector::buildVariantProps($attrs, fn () => new static) as $key => $value) {
+            $this->setProp($key, $value);
+        }
 
         return $this;
     }

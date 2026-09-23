@@ -864,6 +864,10 @@ class LaravelEnvironment(private val context: Context) {
                 "CACHE_DRIVER" to "file",
                 "CACHE_STORE" to "file",
                 "QUEUE_CONNECTION" to "database",
+                // Set before any artisan runs, as on iOS. Otherwise the
+                // config:cache in runBaseArtisanCommands records running =>
+                // false and routes/mobile.php never loads on device.
+                "NATIVEPHP_RUNNING" to "true",
                 "NATIVEPHP_PLATFORM" to "android",
                 "NATIVEPHP_TEMPDIR" to context.cacheDir.absolutePath
             )

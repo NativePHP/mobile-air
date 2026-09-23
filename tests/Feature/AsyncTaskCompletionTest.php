@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Cache;
 use Native\Mobile\AsyncTask;
+use Native\Mobile\Attributes\On;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
@@ -24,6 +25,39 @@ class AsyncScreenDouble extends NativeComponent
     public function fireEvent(array $event): void
     {
         $this->dispatchNativeEvent($event);
+    }
+
+    /** Run the #[On] reflection scan the runloop normally performs on entry. */
+    public function bootListeners(): static
+    {
+        $scan = new ReflectionMethod(NativeComponent::class, 'registerNativeEventListeners');
+        $scan->setAccessible(true);
+        $scan->invoke($this);
+
+        return $this;
+    }
+}
+
+/**
+ * A shared() consumer written the way a real screen writes one: an #[On] method
+ * whose parameter names match the payload keys. The attribute path binds by
+ * name, unlike the ->on() closure path, which receives the whole payload as one
+ * object.
+ */
+class AsyncSharedListenerScreen extends AsyncScreenDouble
+{
+    public mixed $received = null;
+
+    public ?string $receivedStatus = null;
+
+    public ?string $receivedMessage = null;
+
+    #[On('report-ready')]
+    public function reportReady(mixed $result = null, string $status = 'finished', ?string $message = null): void
+    {
+        $this->received = $result;
+        $this->receivedStatus = $status;
+        $this->receivedMessage = $message;
     }
 }
 
@@ -139,6 +173,43 @@ it('delivers a shared() task as a named event regardless of active screen', func
 
     expect($current->sharedResult)->toBe('SHARED')
         ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
+it('delivers a shared() result to an #[On] listener by parameter name', function () {
+    $origin = new AsyncScreenDouble;
+    $screen = (new AsyncSharedListenerScreen)->bootListeners();
+
+    $id = 'a5';
+    AsyncTaskRegistry::register($id, $origin, 'report-ready');
+
+    setActiveComponent($screen);
+    $screen->fireEvent(finishedEvent($id, 'SHARED-ATTR'));
+
+    // Bound from the payload's `result` key and the injected `status` key.
+    expect($screen->received)->toBe('SHARED-ATTR')
+        ->and($screen->receivedStatus)->toBe('finished')
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
+it('delivers a shared() failure to an #[On] listener with the failure fields', function () {
+    $origin = new AsyncScreenDouble;
+    $screen = (new AsyncSharedListenerScreen)->bootListeners();
+
+    $id = 'a6';
+    AsyncTaskRegistry::register($id, $origin, 'report-ready');
+
+    setActiveComponent($screen);
+    $screen->fireEvent([
+        'type' => 20,
+        'event' => AsyncTaskFailed::class,
+        'payload' => ['id' => $id, 'exceptionClass' => 'RuntimeException', 'message' => 'kaboom', 'trace' => null],
+    ]);
+
+    // A failure payload has no `result` key, so the parameter's default is used.
+    // That is why every #[On] parameter needs one.
+    expect($screen->receivedStatus)->toBe('failed')
+        ->and($screen->receivedMessage)->toBe('kaboom')
+        ->and($screen->received)->toBeNull();
 });
 
 it('registers async callbacks in memory only, so a dispatch costs no cache write', function () {

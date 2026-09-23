@@ -42,6 +42,68 @@ class TailwindParser
      */
     private static $themeDarkResolver = null;
 
+    /**
+     * Responsive breakpoints — the `md:` / `lg:` class prefixes — as
+     * min-width thresholds in points (iOS) / dp (Android). Mobile-first
+     * like Tailwind: a prefixed class applies from that width UP, and a
+     * wider prefix wins over a narrower one. `medium` / `expanded` mirror
+     * Material's window size classes so both vocabularies work.
+     *
+     * Resolution happens on the native side against the live window
+     * width, so the same tree re-flows on rotation and Split View
+     * without a PHP round-trip. Override via `nativephp.breakpoints`.
+     */
+    public const DEFAULT_BREAKPOINTS = [
+        'sm' => 640,
+        'medium' => 600,
+        'md' => 768,
+        'expanded' => 840,
+        'lg' => 1024,
+        'xl' => 1280,
+        '2xl' => 1536,
+    ];
+
+    /** @var array<string, float|int>|null */
+    private static ?array $breakpoints = null;
+
+    /**
+     * Test seam / runtime override for the breakpoint table. Pass null to
+     * fall back to config (`nativephp.breakpoints`) and then the defaults.
+     *
+     * @param  array<string, float|int>|null  $breakpoints
+     */
+    public static function setBreakpoints(?array $breakpoints): void
+    {
+        static::$breakpoints = $breakpoints;
+        static::clearCache();
+    }
+
+    /** @return array<string, float|int> */
+    public static function breakpoints(): array
+    {
+        if (static::$breakpoints !== null) {
+            return static::$breakpoints;
+        }
+
+        $configured = null;
+        try {
+            if (function_exists('app') && app()->bound('config')) {
+                $configured = config('nativephp.breakpoints');
+            }
+        } catch (\Throwable) {
+            $configured = null;
+        }
+
+        return is_array($configured) && $configured !== [] ? $configured : self::DEFAULT_BREAKPOINTS;
+    }
+
+    public static function breakpointMinWidth(string $name): ?float
+    {
+        $table = static::breakpoints();
+
+        return isset($table[$name]) ? (float) $table[$name] : null;
+    }
+
     public static function setThemeResolver(?callable $resolver): void
     {
         static::$themeResolver = $resolver;
@@ -195,6 +257,7 @@ class TailwindParser
     private const FONT_SIZES = [
         'xs' => 12, 'sm' => 14, 'base' => 16, 'lg' => 18, 'xl' => 20,
         '2xl' => 24, '3xl' => 30, '4xl' => 36, '5xl' => 48, '6xl' => 60,
+        '7xl' => 72, '8xl' => 96, '9xl' => 128,
     ];
 
     private const FONT_WEIGHTS = [
@@ -322,26 +385,7 @@ class TailwindParser
 
                 continue;
             }
-            // Merge dark companion separately so a class that contributes BOTH
-            // a light key AND a dark key (e.g. `bg-theme-surface`) doesn't
-            // drop one side when another dark-bearing class is already merged.
-            if (isset($parsed['dark'])) {
-                $result['dark'] = isset($result['dark'])
-                    ? array_merge($result['dark'], $parsed['dark'])
-                    : $parsed['dark'];
-                unset($parsed['dark']);
-            }
-            // Same reason for gradients: direction and each colour stop arrive
-            // as separate classes contributing separate keys to one `gradient`
-            // array. A flat merge would let `to-transparent` clobber the
-            // direction and `from-` stop that came before it.
-            if (isset($parsed['gradient'])) {
-                $result['gradient'] = isset($result['gradient'])
-                    ? array_merge($result['gradient'], $parsed['gradient'])
-                    : $parsed['gradient'];
-                unset($parsed['gradient']);
-            }
-            $result = array_merge($result, $parsed);
+            $result = self::mergeAttributes($result, $parsed);
         }
 
         self::$cache[$classString] = $result;
@@ -349,6 +393,48 @@ class TailwindParser
         self::recordUnsupported(self::$unsupportedCache[$classString]);
 
         return $result;
+    }
+
+    /**
+     * Merge one class's parsed keys into the running result — and, in the
+     * collector, one breakpoint's keys over everything narrower. The `dark`,
+     * `gradient` and `variants` buckets merge by KEY rather than being
+     * replaced, so a class that contributes to an existing bucket adds to
+     * it instead of clobbering what came before:
+     *
+     *  - `bg-theme-surface` contributes both a light key and a `dark` key;
+     *    another dark-bearing class must not drop either side.
+     *  - Gradient direction and each colour stop arrive as separate classes
+     *    contributing separate keys to one `gradient` array.
+     *  - `md:p-4 md:flex-row` both land in the `md` variant bucket, and a
+     *    variant's own `dark` / `gradient` keys merge recursively the same
+     *    way (`md:dark:bg-x md:dark:text-y`).
+     */
+    public static function mergeAttributes(array $result, array $parsed): array
+    {
+        if (isset($parsed['dark'])) {
+            $result['dark'] = isset($result['dark'])
+                ? array_merge($result['dark'], $parsed['dark'])
+                : $parsed['dark'];
+            unset($parsed['dark']);
+        }
+        if (isset($parsed['gradient'])) {
+            $result['gradient'] = isset($result['gradient'])
+                ? array_merge($result['gradient'], $parsed['gradient'])
+                : $parsed['gradient'];
+            unset($parsed['gradient']);
+        }
+        if (isset($parsed['variants'])) {
+            foreach ($parsed['variants'] as $breakpoint => $inner) {
+                $result['variants'][$breakpoint] = self::mergeAttributes(
+                    $result['variants'][$breakpoint] ?? [],
+                    $inner,
+                );
+            }
+            unset($parsed['variants']);
+        }
+
+        return array_merge($result, $parsed);
     }
 
     public static function clearCache(): void
@@ -524,7 +610,52 @@ class TailwindParser
                 return null;
             }
 
+            // `dark:md:bg-x` — a breakpoint must stay the OUTER bucket, the
+            // way `md:dark:bg-x` parses: each breakpoint entry carries its own
+            // dark keys, and nothing reads a `variants` bucket under `dark`.
+            // Hoist it so both orders land in the same shape.
+            if (isset($inner['variants'])) {
+                $result = [];
+                foreach ($inner['variants'] as $breakpoint => $variant) {
+                    $result['variants'][$breakpoint] = ['dark' => $variant];
+                }
+                unset($inner['variants']);
+                if ($inner !== []) {
+                    $result['dark'] = $inner;
+                }
+
+                return $result;
+            }
+
             return ['dark' => $inner];
+        }
+
+        // Responsive variant: md:class-name (any name in the breakpoint
+        // table). Unlike `ios:` / `dark:` this can't be resolved here —
+        // PHP doesn't know the window width, and on iPad it changes under
+        // a running screen (rotation, Split View). The inner class parses
+        // normally and is bucketed under `variants[<name>]`; the collector
+        // ships each bucket as a per-breakpoint layout / style / prop
+        // delta that the native NodeView applies against the live width.
+        // Composes with the other prefixes in either order: `md:ios:x`
+        // lands here first and recurses; `ios:md:x` recurses here.
+        if (($colon = strpos($class, ':')) !== false) {
+            $prefix = substr($class, 0, $colon);
+            if (self::breakpointMinWidth($prefix) !== null) {
+                $inner = self::parseClass(substr($class, $colon + 1));
+                if ($inner === null) {
+                    return null;
+                }
+
+                return ['variants' => [$prefix => $inner]];
+            }
+        }
+
+        // Grid tracks: `grid-cols-N`. Rides attrs as `gridColumns` so the
+        // lazy grid picks it up as `columns`, and so `md:grid-cols-3` can
+        // re-track the grid per breakpoint like any other class.
+        if (preg_match('/^grid-cols-(\d+)$/', $class, $m)) {
+            return ['gridColumns' => max(1, (int) $m[1])];
         }
 
         // Negative utilities: `-mt-4`, `-right-8`, `-left-[12]`. Parsed by
@@ -666,6 +797,13 @@ class TailwindParser
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
+
+            // Display. `hidden` takes the node out of layout (Display.none);
+            // the Tailwind display utilities put it back, so the responsive
+            // `hidden md:flex` pattern works. Native has one flow model, so
+            // every visible display value means the same thing.
+            $class === 'hidden' => ['display' => 1],
+            in_array($class, ['flex', 'inline-flex', 'block', 'inline-block', 'grid'], true) => ['display' => 0],
 
             // Font family. Exact matches MUST precede the `font-` weight branch.
             // Sent as int: 0 = sans (default), 1 = serif, 2 = mono.

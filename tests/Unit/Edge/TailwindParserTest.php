@@ -782,7 +782,7 @@ it('composes platform variants in reverse order with dark', function () {
 // ── Edge Cases ──────────────────────────────────────
 
 it('ignores unknown classes silently', function () {
-    $result = TailwindParser::parse('hover:bg-blue-500 unknown-class grid-cols-3 animate-spin');
+    $result = TailwindParser::parse('hover:bg-blue-500 unknown-class columns-3 animate-spin');
     expect($result)->toBe([]);
 });
 
