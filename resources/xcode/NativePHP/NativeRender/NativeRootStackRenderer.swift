@@ -186,6 +186,13 @@ struct NativeRootStackRenderer: View {
                             Image(systemName: "chevron.backward")
                                 .font(.system(size: 17, weight: .semibold))
                                 .foregroundColor(textColor)
+                                // the tappable region
+                                // must cover the 44pt glass pill, not just the
+                                // glyph — edge taps otherwise only highlight.
+                                // 32pt wide keeps the pill a circle (it grows
+                                // with the label + 12pt); the inset covers the rest.
+                                .frame(minWidth: 32, minHeight: 44)
+                                .contentShape(Rectangle().inset(by: -6))
                         }
                     }
                 }
@@ -296,6 +303,10 @@ struct NativeRootStackRenderer: View {
                 Image(systemName: getIconForName(icon))
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    // same pill-sized hit region for
+                    // the trailing actions (plain Button and Menu labels alike).
+                    .frame(minWidth: 32, minHeight: 44)
+                    .contentShape(Rectangle().inset(by: -6))
             }
         } else {
             Menu {
@@ -331,6 +342,10 @@ struct NativeRootStackRenderer: View {
                 Image(systemName: getIconForName(icon))
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    // same pill-sized hit region for
+                    // the trailing actions (plain Button and Menu labels alike).
+                    .frame(minWidth: 32, minHeight: 44)
+                    .contentShape(Rectangle().inset(by: -6))
             }
         }
     }
