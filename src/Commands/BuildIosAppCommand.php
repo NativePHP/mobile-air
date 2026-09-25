@@ -28,13 +28,13 @@ class BuildIosAppCommand extends Command
 
     private string $appPath;
 
-    private string $basePath;
+    protected string $basePath;
 
     private string $containerPath;
 
     private string $logPath;
 
-    private ?string $target;
+    protected ?string $target;
 
     private string $xcodeProjectPath;
 
@@ -1003,48 +1003,13 @@ class BuildIosAppCommand extends Command
 
     private function build(): bool
     {
-        $simulated = $this->option('simulated');
-        $signingArgs = $this->getSigningArgs($simulated);
-
-        // No target-specific args needed - workspace builds don't support target specification
-        $targetSpecificArgs = [];
-
-        // Use CocoaPods workspace if it exists, otherwise fall back to internal workspace
-        $workspace = file_exists($this->basePath.'/NativePHP.xcworkspace')
-            ? 'NativePHP.xcworkspace'
-            : 'NativePHP.xcodeproj/project.xcworkspace';
-
-        // Build the complete command array for logging
-        $xcodebuildCommand = [
-            'xcodebuild',
-            '-scheme', 'NativePHP'.($simulated ? '-simulator' : ''),
-            '-workspace', $workspace,
-            '-sdk', ($simulated ? 'iphonesimulator' : 'iphoneos'),
-            ...($simulated ? [] : ['-configuration', $this->option('release') ? 'Release' : 'Debug']),
-            ...$signingArgs,
-            // Note: CODE_SIGN_STYLE is already included in $signingArgs, no need to duplicate
-            ...$targetSpecificArgs,
-            '-derivedDataPath', 'build',
-            // Skip Swift Package Manager plugin validation to avoid bundle signing issues
-            '-skipPackagePluginValidation',
-            // Add verbose output to help debug build failures
-            '-verbose',
-            ...($this->target ? [
-                '-destination', 'id='.$this->target.($simulated ? '' : ',platform=iOS'),
-                'build',
-            ] : [
-                '-archivePath', $this->basePath.'/build/NativePHP.xcarchive',
-                'archive',
-            ]),
-        ];
-
         $result = Process::path($this->basePath)
             ->forever()
             ->env([
                 'NATIVEPHP_CLI_BUILD' => true,
             ])
             ->tty($this->verbose && ! $this->option('no-tty'))
-            ->run($xcodebuildCommand, function ($type, $output) {
+            ->run($this->xcodebuildCommand(), function ($type, $output) {
                 file_put_contents($this->logPath, $output, FILE_APPEND);
 
                 if ($this->verbose) {
@@ -1157,10 +1122,77 @@ class BuildIosAppCommand extends Command
 
         \Laravel\Prompts\outro('App build succeeded!');
 
+        if ($this->option('simulated')) {
+            $this->line('<fg=yellow>Simulator app:</> '.$this->simulatorAppPath());
+        }
+
         // Run post-build hooks for all plugins
         $this->runPostBuildHooks();
 
         return true;
+    }
+
+    /**
+     * The xcodebuild invocation for this build.
+     *
+     * A simulated build with no target builds for any simulator rather than
+     * archiving, so CI and scripts can get a simulator .app without a device
+     * to point at. It lands at simulatorAppPath().
+     *
+     * @return array<int, string>
+     */
+    protected function xcodebuildCommand(): array
+    {
+        $simulated = (bool) $this->option('simulated');
+
+        // Use CocoaPods workspace if it exists, otherwise fall back to internal workspace
+        $workspace = file_exists($this->basePath.'/NativePHP.xcworkspace')
+            ? 'NativePHP.xcworkspace'
+            : 'NativePHP.xcodeproj/project.xcworkspace';
+
+        $action = match (true) {
+            (bool) $this->target => [
+                '-destination', 'id='.$this->target.($simulated ? '' : ',platform=iOS'),
+                'build',
+            ],
+            // A generic destination builds every simulator architecture. The
+            // app target already excludes x86_64 (the PHP simulator libraries
+            // are arm64 only), so stop the dependencies building it too.
+            $simulated => [
+                '-destination', 'generic/platform=iOS Simulator',
+                'ARCHS=arm64',
+                'build',
+            ],
+            default => [
+                '-archivePath', $this->basePath.'/build/NativePHP.xcarchive',
+                'archive',
+            ],
+        };
+
+        return [
+            'xcodebuild',
+            '-scheme', 'NativePHP'.($simulated ? '-simulator' : ''),
+            '-workspace', $workspace,
+            '-sdk', ($simulated ? 'iphonesimulator' : 'iphoneos'),
+            ...($simulated ? [] : ['-configuration', $this->option('release') ? 'Release' : 'Debug']),
+            // CODE_SIGN_STYLE is already included in the signing args when needed
+            ...$this->getSigningArgs($simulated),
+            '-derivedDataPath', 'build',
+            // Skip Swift Package Manager plugin validation to avoid bundle signing issues
+            '-skipPackagePluginValidation',
+            // Add verbose output to help debug build failures
+            '-verbose',
+            ...$action,
+        ];
+    }
+
+    /**
+     * Where a simulated build leaves the app. The simulator scheme builds its
+     * Debug configuration.
+     */
+    protected function simulatorAppPath(): string
+    {
+        return $this->basePath.'/build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app';
     }
 
     private function validateInfoPlistXml(string $filePath): void
