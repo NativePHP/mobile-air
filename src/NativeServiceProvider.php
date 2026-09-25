@@ -51,6 +51,7 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
+use Native\Mobile\Support\SqliteDefaults;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -112,6 +113,8 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
+        $this->applyOnDeviceSqliteDefaults();
+
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
@@ -128,6 +131,24 @@ class NativeServiceProvider extends PackageServiceProvider
                 ['JUMP_BRIDGE_PORT', 'JUMP_WS_PORT']
             )));
         }
+    }
+
+    /**
+     * Default the on-device SQLite connection to WAL + synchronous=NORMAL
+     * unless the app configured those keys itself. Runs during register, so
+     * it lands before anything opens a connection and before the device's
+     * config:cache snapshots the config. Host-side artisan, tests and Jump
+     * (no NATIVEPHP_RUNNING) are never touched.
+     */
+    protected function applyOnDeviceSqliteDefaults(): void
+    {
+        if (! config('nativephp-internal.running')) {
+            return;
+        }
+
+        $managed = env('DB_DATABASE');
+
+        SqliteDefaults::apply($this->app['config'], is_string($managed) ? $managed : null);
     }
 
     protected function publishPluginsServiceProvider(): void
