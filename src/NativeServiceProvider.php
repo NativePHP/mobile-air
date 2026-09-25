@@ -3,6 +3,7 @@
 namespace Native\Mobile;
 
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Database\Connection;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
@@ -37,6 +38,7 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
+use Native\Mobile\Database\SQLiteConnection;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\ElementRegistry;
@@ -114,6 +116,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
         $this->applyOnDeviceSqliteDefaults();
+        $this->registerWalSafeSqliteConnection();
 
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
@@ -149,6 +152,21 @@ class NativeServiceProvider extends PackageServiceProvider
         $managed = env('DB_DATABASE');
 
         SqliteDefaults::apply($this->app['config'], is_string($managed) ? $managed : null);
+    }
+
+    /**
+     * On device, resolve sqlite connections to core's subclass so db:wipe and
+     * migrate:fresh stay safe once the database is in WAL mode (see
+     * Database\SQLiteBuilder). A resolver the app or another package already
+     * registered for sqlite is left alone.
+     */
+    protected function registerWalSafeSqliteConnection(): void
+    {
+        if (! config('nativephp-internal.running') || Connection::getResolver('sqlite') !== null) {
+            return;
+        }
+
+        Connection::resolverFor('sqlite', fn ($pdo, $database, $prefix, $config) => new SQLiteConnection($pdo, $database, $prefix, $config));
     }
 
     protected function publishPluginsServiceProvider(): void
