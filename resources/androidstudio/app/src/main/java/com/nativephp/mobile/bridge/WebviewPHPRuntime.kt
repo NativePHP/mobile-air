@@ -159,13 +159,13 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
      * (shouldInterceptRequest needs a synchronous response); queues behind
      * the boot and any in-flight request.
      */
-    fun request(request: PHPRequest): String {
+    fun requestBytes(request: PHPRequest): ByteArray {
         if (released) {
-            return unavailable()
+            return unavailable().toByteArray(Charsets.UTF_8)
         }
 
         return try {
-            executor.submit<String> {
+            executor.submit<ByteArray> {
                 if (needsBoot) {
                     // No context right now — most likely a hot reload just
                     // suspended it. Hold the request until the persistent
@@ -180,35 +180,41 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
                 }
 
                 if (!booted) {
-                    return@submit unavailable()
+                    return@submit unavailable().toByteArray(Charsets.UTF_8)
                 }
 
                 val cookieHeader = LaravelCookieStore.asCookieHeader()
-                val contentType = request.headers["Content-Type"]
-                    ?: request.headers["content-type"]
-                    ?: ""
 
                 val start = System.currentTimeMillis()
                 Log.i(TAG, "--> ${request.method} ${request.uri}")
 
-                val output = bridge.nativeWebviewPhpRequest(
+                val output = bridge.nativeWebviewPhpRequestBytes(
                     request.method,
                     request.uri,
                     cookieHeader,
-                    request.body,
-                    contentType,
+                    request.bodyAsBytes(),
+                    request.effectiveContentType(),
+                    request.headerBlock(),
                     bridge.webviewNativeScript
-                )
+                ) ?: ByteArray(0)
 
-                val statusLine = output.lineSequence().firstOrNull() ?: ""
-                Log.i(TAG, "<-- $statusLine (${System.currentTimeMillis() - start}ms)")
+                val lineEnd = output.indexOf('\r'.code.toByte()).let { if (it < 0) minOf(output.size, 80) else minOf(it, 80) }
+                val statusLine = String(output, 0, lineEnd, Charsets.UTF_8)
+                Log.i(TAG, "<-- $statusLine (${output.size} bytes, ${System.currentTimeMillis() - start}ms)")
 
                 output
             }.get()
         } catch (e: Exception) {
             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nWebview runtime error: ${e.message}"
+                .toByteArray(Charsets.UTF_8)
         }
     }
+
+    /**
+     * The raw response as text, kept for older callers. Decoded leniently as
+     * UTF-8; use [requestBytes] for anything that carries a body.
+     */
+    fun request(request: PHPRequest): String = String(requestBytes(request), Charsets.UTF_8)
 
     /**
      * Stop this webview's PHP thread and free its context. Queued behind any

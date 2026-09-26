@@ -69,6 +69,32 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Deeplink Paths
+    |--------------------------------------------------------------------------
+    |
+    | Restrict which paths on the deeplink host open your app. By default the
+    | app claims the WHOLE domain, so every link to it — marketing pages, blog
+    | posts, anything you never routed — is taken away from the browser and
+    | dead-ends inside the app.
+    |
+    | List the path prefixes your app actually handles to claim only those:
+    |
+    |     'deeplink_paths' => ['/docs/', '/orders/'],
+    |
+    | On iOS this is already handled server-side by the `components` block of
+    | your apple-app-site-association file, so these values are Android-only:
+    | Android's assetlinks.json has no path component, which means the scoping
+    | has to live in the manifest instead. Keep the two lists in sync.
+    |
+    */
+
+    'deeplink_paths' => array_values(array_filter(
+        array_map('trim', explode(',', (string) env('NATIVEPHP_DEEPLINK_PATHS', ''))),
+        fn ($path) => $path !== '',
+    )),
+
+    /*
+    |--------------------------------------------------------------------------
     | Start URL
     |--------------------------------------------------------------------------
     |
@@ -423,6 +449,29 @@ return [
         'api_key_id' => env('APP_STORE_API_KEY_ID'),
         'api_issuer_id' => env('APP_STORE_API_ISSUER_ID'),
         'app_name' => env('APP_STORE_APP_NAME'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Responsive Breakpoints
+    |--------------------------------------------------------------------------
+    |
+    | Min-width thresholds (points on iOS, dp on Android) behind the `sm:`,
+    | `md:`, `lg:` class prefixes on native elements. Mobile-first like
+    | Tailwind: `md:flex-row` applies from 768 up. Resolved natively against
+    | the live window width, so screens re-flow on rotation and Split View.
+    | `medium` / `expanded` mirror Material's window size classes. Leave
+    | empty to use the defaults shown here.
+    |
+    */
+    'breakpoints' => [
+        'sm' => 640,
+        'medium' => 600,
+        'md' => 768,
+        'expanded' => 840,
+        'lg' => 1024,
+        'xl' => 1280,
+        '2xl' => 1536,
     ],
 
     /*

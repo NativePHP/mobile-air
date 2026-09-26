@@ -200,10 +200,86 @@ class CallbackRegistry
             return ['method' => $method, 'args' => []];
         }
 
-        // Convert single quotes to double for JSON compatibility
-        $json = '['.str_replace("'", '"', $argsString).']';
+        $json = '['.self::toJsonArgs($argsString).']';
         $args = json_decode($json, true);
 
-        return ['method' => $method, 'args' => $args ?? []];
+        if (! is_array($args)) {
+            // Still `[]`, because callers spread this (NativeComponent.php:3316, :3371)
+            // and a null would be a TypeError — changing the contract belongs in its own
+            // change, not a bug fix. But it is no longer *silent*: previously a handler
+            // was invoked with no arguments and nothing said so anywhere.
+            error_log("CallbackRegistry: could not parse arguments for '{$expression}' — calling {$method}() with none.");
+
+            return ['method' => $method, 'args' => []];
+        }
+
+        return ['method' => $method, 'args' => $args];
+    }
+
+    /**
+     * Convert PHP-style single-quoted argument literals to JSON.
+     *
+     * The previous `str_replace("'", '"')` rewrote every apostrophe in the string,
+     * whatever its role, which produced three distinct silent failures:
+     *
+     *   save("don't")        → args dropped entirely (invalid JSON)
+     *   setName('O'Brien')   → args dropped entirely
+     *   rename('it\'s fine') → args CORRUPTED to `it"s fine` — no error, wrong data
+     *
+     * The third is the dangerous one: the handler runs, with a value the author never
+     * wrote. So the conversion now tracks which quote actually opened the current
+     * string and leaves apostrophes inside double-quoted strings alone.
+     */
+    private static function toJsonArgs(string $args): string
+    {
+        $out = '';
+        $quote = null;
+        $length = strlen($args);
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = $args[$i];
+
+            if ($quote !== null && $char === '\\' && $i + 1 < $length) {
+                $next = $args[$i + 1];
+                // \' is only an escape inside a single-quoted literal, and JSON has no
+                // such escape — emit the bare apostrophe.
+                if ($quote === "'" && $next === "'") {
+                    $out .= "'";
+                } else {
+                    $out .= $char.$next;
+                }
+                $i++;
+
+                continue;
+            }
+
+            if ($quote === null && ($char === "'" || $char === '"')) {
+                $quote = $char;
+                $out .= '"';
+
+                continue;
+            }
+
+            if ($char === $quote) {
+                $quote = null;
+                $out .= '"';
+
+                continue;
+            }
+
+            // A double quote inside a single-quoted literal is data, not a delimiter, so
+            // it has to be escaped rather than rewritten. (The mirror case needs no
+            // branch: a double quote inside a double-quoted string closes it above,
+            // which is what PHP's own tokenizer does with an unescaped one.)
+            if ($quote === "'" && $char === '"') {
+                $out .= '\\"';
+
+                continue;
+            }
+
+            $out .= $char;
+        }
+
+        return $out;
     }
 }

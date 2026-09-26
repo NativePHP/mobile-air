@@ -877,7 +877,8 @@ final class NativeElementBridge {
 
             return NativeUINode(
                 id: id, type: type, layout: layout, style: style,
-                props: props, onPress: onPress, onLongPress: onLongPress, children: children
+                props: props, onPress: onPress, onLongPress: onLongPress, children: children,
+                variants: NodeVariant.parse(props: props, baseLayout: layout, baseStyle: style)
             )
         }
     }

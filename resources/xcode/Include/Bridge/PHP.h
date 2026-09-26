@@ -1,25 +1,71 @@
 #ifndef PHPBridge_h
 #define PHPBridge_h
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef void (*phpOutputCallback)(const char *);
 
+// Classic (per-request php_embed_init) mode.
+
+// Text output: each chunk arrives NUL-terminated, so a chunk holding a NUL is
+// cut short. Kept for older callers; use override_embed_module_output_bytes.
+// Only output produced on the calling thread reaches the callback. Pass NULL
+// once the capture is done so nothing else is forwarded.
 void override_embed_module_output(phpOutputCallback callback);
 
+// Text request body, POST only, cut at its first NUL. Kept for older callers;
+// use initialize_php_with_request_bytes.
 void initialize_php_with_request(const char *post_data,
                                  const char *method,
                                  const char *uri);
 
+// Binary-safe output: each chunk arrives as (bytes, len), NULs included.
+// Replaces any callback set with override_embed_module_output. Only output
+// produced on the calling thread reaches it. NULL stops forwarding output.
+typedef void (*phpOutputBytesCallback)(const char *bytes, size_t len);
+void override_embed_module_output_bytes(phpOutputBytesCallback callback);
+
+// Binary-safe request body, for any method. Call after php_embed_init() and
+// before running the script. `body` is `body_len` bytes (NULL when 0); it is
+// copied into php://input before this returns. SG(request_info).content_type
+// is left NULL, so PHP's own body parser never runs on the embed SAPI: put
+// the body's type in the environment as CONTENT_TYPE instead.
+// `method` and `uri` must stay valid until php_embed_shutdown().
+void initialize_php_with_request_bytes(const char *body,
+                                       size_t body_len,
+                                       const char *method,
+                                       const char *uri);
+
 // Persistent PHP Runtime
 int  persistent_php_boot(const char *bootstrapPath);
 const char *persistent_php_boot_error(void);
+// Text-only dispatch, kept for older callers: the body stops at its first
+// NUL and no request headers reach PHP. Use persistent_php_dispatch_bytes.
 const char *persistent_php_dispatch(const char *method,
                                     const char *uri,
                                     const char *postData,
                                     const char *scriptPath,
                                     const char *cookieHeader,
                                     const char *contentType);
+
+// Binary-safe dispatch. `body` is `body_len` bytes and may hold NULs; it may
+// be NULL only when body_len is 0. `content_type` is the Content-Type that
+// belongs to the body (multipart boundary included). `headers` is a block of
+// "Name: value" lines joined by CRLF, `headers_len` bytes, or NULL and 0.
+// Returns a malloc'd raw HTTP response (status line, headers, CRLF CRLF,
+// body) of *out_len bytes, followed by one uncounted NUL. The caller frees it
+// with free(). Returns NULL only when out of memory.
+char *persistent_php_dispatch_bytes(const char *method,
+                                    const char *uri,
+                                    const char *body,
+                                    size_t body_len,
+                                    const char *content_type,
+                                    const char *cookie_header,
+                                    const char *headers,
+                                    size_t headers_len,
+                                    const char *script_path,
+                                    size_t *out_len);
 const char *persistent_php_artisan(const char *command);
 void persistent_php_shutdown(void);
 int  persistent_php_is_booted(void);
@@ -39,14 +85,32 @@ const char *ephemeral_php_artisan(const char *command);
 void ephemeral_php_shutdown(void);
 int  ephemeral_php_is_booted(void);
 
+// Async Task Lane — a pool of TSRM contexts for immediate background work
+// (AsyncTask::dispatch()). Each slot is one worker thread with its own booted
+// context; Swift's AsyncTaskExecutor pins each slot handle to a serial queue.
+int  async_php_boot(const char *bootstrapPath);           // → slot handle ≥ 0, or negative error
+const char *async_php_run(int handle, const char *taskId); // run native:async:run --id=<taskId> on this slot
+void async_php_stop(int handle);
+
 // Webview PHP Runtimes — one dedicated thread + TSRM context per embedded
 // php-mode webview. The persistent lane is parked inside a native screen's
 // event-loop dispatch, so it can never answer php:// requests from an
 // embedded webview; these slots serve them concurrently instead.
 int  webview_php_start(const char *bootstrapPath);   // → handle ≥ 0, or negative error
+// Text-only request, kept for older callers: the body stops at its first NUL
+// and only Cookie and Content-Type reach PHP. Use webview_php_request_bytes.
 const char *webview_php_request(int handle, const char *method, const char *uri,
                                 const char *cookieHeader, const char *postData,
                                 const char *contentType, const char *scriptPath);
+// Binary-safe request, same arguments and result as
+// persistent_php_dispatch_bytes, on this webview's own context.
+char *webview_php_request_bytes(int handle, const char *method, const char *uri,
+                                const char *body, size_t body_len,
+                                const char *content_type,
+                                const char *cookie_header,
+                                const char *headers, size_t headers_len,
+                                const char *script_path,
+                                size_t *out_len);
 void webview_php_stop(int handle);
 
 // Phase 0 — Element runtime instrumentation. Exported from the PHP nativephp

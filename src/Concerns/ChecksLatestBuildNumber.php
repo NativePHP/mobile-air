@@ -105,14 +105,47 @@ trait ChecksLatestBuildNumber
 
     private function getApiKeyPath(): ?string
     {
-        // Check for API key file path - try flags first, then environment variables
-        $apiKeyPath = $this->option('api-key-path') ?? $this->option('api-key') ?? env('APP_STORE_API_KEY_PATH');
+        // Check for API key file path - try flags first, then environment variables,
+        // then the config that `app_store_connect` publishes (APP_STORE_API_KEY).
+        $apiKeyPath = $this->option('api-key-path')
+            ?: $this->option('api-key')
+            ?: env('APP_STORE_API_KEY_PATH')
+            ?: config('nativephp.app_store_connect.api_key');
 
         if ($apiKeyPath && file_exists($apiKeyPath)) {
             return $apiKeyPath;
         }
 
         return null;
+    }
+
+    /**
+     * Whether an App Store Connect lookup can even be attempted.
+     *
+     * Without this, a missing credential is indistinguishable from a version
+     * that genuinely has no builds yet - both end up as null.
+     */
+    protected function hasAppStoreConnectCredentials(): bool
+    {
+        return $this->getApiKeyPath() !== null
+            && $this->getApiKeyId() !== null
+            && $this->getApiIssuerId() !== null;
+    }
+
+    private function getApiKeyId(): ?string
+    {
+        return $this->option('api-key-id')
+            ?: env('APP_STORE_API_KEY_ID')
+            ?: config('nativephp.app_store_connect.api_key_id')
+            ?: null;
+    }
+
+    private function getApiIssuerId(): ?string
+    {
+        return $this->option('api-issuer-id')
+            ?: env('APP_STORE_API_ISSUER_ID')
+            ?: config('nativephp.app_store_connect.api_issuer_id')
+            ?: null;
     }
 
     public function updateBuildNumberFromStore(string $platform, int $jumpBy = 0): bool
@@ -153,8 +186,8 @@ trait ChecksLatestBuildNumber
     {
         try {
             $apiKeyPath = $this->getApiKeyPath();
-            $apiKeyId = $this->option('api-key-id') ?? env('APP_STORE_API_KEY_ID');
-            $apiIssuerId = $this->option('api-issuer-id') ?? env('APP_STORE_API_ISSUER_ID');
+            $apiKeyId = $this->getApiKeyId();
+            $apiIssuerId = $this->getApiIssuerId();
             $appId = config('nativephp.app_id');
 
             if (! $apiKeyPath || ! $apiKeyId || ! $apiIssuerId || ! $appId) {

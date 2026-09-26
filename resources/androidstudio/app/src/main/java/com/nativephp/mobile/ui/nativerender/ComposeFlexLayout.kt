@@ -130,6 +130,10 @@ fun FlexContainer(
             // bounds without letting it influence them — absolute children
             // never size the container (parity with iOS).
             childNodes.forEach { node ->
+                // Skipped like hidden flow children. Composed, a hidden
+                // absolute child still drew its `bg-*` at its fixed size,
+                // because nodeLayout's size(0) / alpha(0) sit inside nodeStyle.
+                if ((node.layout?.display ?: 0) == Display.NONE) return@forEach
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
                     AbsolutePositionedChild(node = node, modifier = Modifier.matchParentSize())
                 }

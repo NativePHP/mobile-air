@@ -420,6 +420,75 @@ it('parses shadow/elevation', function () {
     expect(TailwindParser::parse('shadow-none'))->toBe(['elevation' => 0]);
 });
 
+it('parses named glow utilities without touching elevation', function () {
+    expect(TailwindParser::parse('glow-emerald'))->toBe([
+        'glowColor' => '#10B981',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+    expect(TailwindParser::parse('glow-indigo'))->toBe([
+        'glowColor' => '#6366F1',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+    expect(TailwindParser::parse('glow-rose'))->toBe([
+        'glowColor' => '#F43F5E',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+
+    // Size suffixes are independent of elevation `shadow-*` scale.
+    expect(TailwindParser::parse('glow-emerald-sm'))->toMatchArray([
+        'glowColor' => '#10B981',
+        'glowRadius' => 8.0,
+    ]);
+    expect(TailwindParser::parse('glow-indigo-md'))->toMatchArray([
+        'glowColor' => '#6366F1',
+        'glowRadius' => 16.0,
+    ]);
+    expect(TailwindParser::parse('glow-rose-lg'))->toMatchArray([
+        'glowColor' => '#F43F5E',
+        'glowRadius' => 24.0,
+    ]);
+
+    // Unknown family / size → dropped (not elevation).
+    expect(TailwindParser::parse('glow-amber'))->toBe([]);
+    expect(TailwindParser::parse('glow-emerald-xl'))->toBe([]);
+
+    // `shadow-*` remains elevation-only; glow does not overload it.
+    expect(TailwindParser::parse('shadow-lg glow-emerald'))->toMatchArray([
+        'elevation' => 8,
+        'glowColor' => '#10B981',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+});
+
+it('parses blur utilities for page-bg orbs', function () {
+    expect(TailwindParser::parse('blur'))->toBe(['blur' => 8.0]);
+    expect(TailwindParser::parse('blur-none'))->toBe(['blur' => 0.0]);
+    expect(TailwindParser::parse('blur-sm'))->toBe(['blur' => 4.0]);
+    expect(TailwindParser::parse('blur-md'))->toBe(['blur' => 12.0]);
+    expect(TailwindParser::parse('blur-lg'))->toBe(['blur' => 16.0]);
+    expect(TailwindParser::parse('blur-xl'))->toBe(['blur' => 24.0]);
+    expect(TailwindParser::parse('blur-2xl'))->toBe(['blur' => 40.0]);
+    expect(TailwindParser::parse('blur-3xl'))->toBe(['blur' => 64.0]);
+
+    // Arbitrary radius (Stitch page orbs often use blur-[100px]).
+    expect(TailwindParser::parse('blur-[100px]'))->toBe(['blur' => 100.0]);
+    expect(TailwindParser::parse('blur-[64]'))->toBe(['blur' => 64.0]);
+
+    // Unknown size → dropped.
+    expect(TailwindParser::parse('blur-4xl'))->toBe([]);
+
+    // Coexists with elevation and glow; does not overload either.
+    expect(TailwindParser::parse('blur-3xl shadow-md glow-indigo'))->toMatchArray([
+        'blur' => 64.0,
+        'elevation' => 6,
+        'glowColor' => '#6366F1',
+    ]);
+});
+
 it('parses safe-area', function () {
     expect(TailwindParser::parse('safe-area'))->toBe(['safeArea' => true]);
 });
@@ -713,7 +782,7 @@ it('composes platform variants in reverse order with dark', function () {
 // ── Edge Cases ──────────────────────────────────────
 
 it('ignores unknown classes silently', function () {
-    $result = TailwindParser::parse('hover:bg-blue-500 unknown-class grid-cols-3 animate-spin');
+    $result = TailwindParser::parse('hover:bg-blue-500 unknown-class columns-3 animate-spin');
     expect($result)->toBe([]);
 });
 
