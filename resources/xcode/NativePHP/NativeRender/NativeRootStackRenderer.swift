@@ -51,7 +51,9 @@ struct NativeRootStackRenderer: View {
             destination(uri: rootUri, isRoot: true)
                 .navigationDestination(for: String.self) { uri in
                     destination(uri: uri, isRoot: false)
+                        .background(EdgeOnlySwipeBack())
                 }
+                .background(EdgeOnlySwipeBack())
         }
         .onChange(of: coordinator.path) { newPath in
             coordinator.onPathChange(newPath: newPath)
@@ -358,6 +360,47 @@ struct NativeRootStackRenderer: View {
                     .frame(minWidth: 32, minHeight: 44)
                     .contentShape(Rectangle().inset(by: -6))
             }
+        }
+    }
+}
+
+/// Keeps swipe-back on the left edge (mobile-air #470).
+///
+/// iOS 26 added a second pop gesture to `UINavigationController`,
+/// `interactiveContentPopGestureRecognizer`, which pops on a right swipe that
+/// starts anywhere in the content, and `NavigationStack` turns it on. That
+/// takes rightward swipes away from the screen (swipe-to-reply, a gesture
+/// area's `@swipe`) and doesn't match older iOS or Android. The edge swipe is
+/// the separate `interactivePopGestureRecognizer`, left untouched.
+///
+/// SwiftUI has no modifier for this, so a zero-size UIKit view inside the
+/// stack walks up to its navigation controller once it's in a window and
+/// switches the content gesture off. It goes on every level, root and
+/// pushed: a stack can open straight onto a pushed screen (a deep link),
+/// leaving the root out of the window. Switching it off again is harmless.
+///
+/// Shared with `NativeRootTabsRenderer` (file-internal by design, like
+/// `HideNavBarModifier`).
+struct EdgeOnlySwipeBack: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView { Probe() }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    private final class Probe: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            // The property only exists in the iOS 26 SDK, so pre-Xcode-26
+            // toolchains (Swift < 6.2) need the compile-time gate too.
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                var responder: UIResponder? = self
+                while let current = responder, !(current is UINavigationController) {
+                    responder = current.next
+                }
+                (responder as? UINavigationController)?
+                    .interactiveContentPopGestureRecognizer?.isEnabled = false
+            }
+            #endif
         }
     }
 }
