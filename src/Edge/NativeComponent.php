@@ -1696,12 +1696,35 @@ abstract class NativeComponent
      * The frame shown while a #[Lazy] component's mount() runs. Override
      * to provide a skeleton; the default is a centered activity indicator
      * wrapped in the screen's layout chrome.
+     *
+     * The default includes a bare `top_bar` (empty title, back chevron
+     * when pushed) so `wrapWithChrome` emits the SAME `native_root_stack`
+     * sentinel the real render will produce. Without it the placeholder
+     * publishes a chrome-less tree, which breaks native-chrome continuity
+     * on the device side: the NavigationStack cold-remounts, the
+     * NavigationCoordinator resets its path, and the eventual back()
+     * animates as a forward push instead of a pop.
      */
     protected function placeholder(): Element|View
     {
-        return $this->wrapWithChrome(
-            Column::make(ActivityIndicator::make())->fill()->center()
-        );
+        $content = Column::make(ActivityIndicator::make())->fill()->center();
+
+        if ($this->nativeRouter !== null) {
+            $bar = Elements\TopBar::make();
+            $bar->applyAttributes([
+                'title' => '',
+                'back' => ! $this->nativeRouter->isRootScreen(),
+            ]);
+
+            $shell = Column::make()->fill();
+            $shell->addChild($bar);
+            $content->flexGrow(1);
+            $shell->addChild($content);
+
+            return $this->wrapWithChrome($shell);
+        }
+
+        return $this->wrapWithChrome($content);
     }
 
     /**
@@ -1725,7 +1748,15 @@ abstract class NativeComponent
             $element = $result instanceof View
                 ? $this->fromView($result)
                 : $result;
-            nativephp_element_publish($this->memoizedToArray($element));
+            $tree = $this->memoizedToArray($element);
+            // The placeholder is the FIRST frame of the new screen, so the
+            // staged navigation transition must ride on it: flush before
+            // publishing so this frame is the nav-marked, animated swap and
+            // the later real render lands as a plain in-place update.
+            // Without this the placeholder cuts in instantly (non-nav) and
+            // the transition then animates skeleton → content instead.
+            $this->nativeRouter?->flushDeferredTransition();
+            nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             NativeRouter::debugLog('placeholder() FAILED in '.static::class.': '.$e->getMessage());
         }
