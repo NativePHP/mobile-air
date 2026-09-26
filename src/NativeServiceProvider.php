@@ -45,6 +45,7 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Events\System\AppearanceChanged;
+use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
@@ -155,6 +156,11 @@ class NativeServiceProvider extends PackageServiceProvider
         Event::listen(
             AppearanceChanged::class,
             fn (AppearanceChanged $e) => System::rememberAppearance($e->mode),
+        );
+
+        Event::listen(
+            OrientationChanged::class,
+            fn (OrientationChanged $e) => System::rememberOrientation($e->orientation),
         );
     }
 
