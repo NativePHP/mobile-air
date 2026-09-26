@@ -926,9 +926,16 @@ class LaravelEnvironment(private val context: Context) {
                 // streams on every cold boot.
                 copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode || forceCertRefresh)
 
+                // This php.ini (found through PHPRC) is where settings
+                // actually apply: php_embed_init() replaces the embed
+                // module's ini_entries with its own list. The upload limits
+                // match the bridge's 16MB capture cap; PHP's defaults (8M
+                // post, 2M per file) would reject uploads the bridge carries.
                 val phpIni = """
 curl.cainfo="${context.filesDir.absolutePath}/$CACERT_FILE"
 openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
+post_max_size=16M
+upload_max_filesize=16M
 """
                 File(context.filesDir, PHP_INI_FILE).writeText(phpIni)
                 Log.d(TAG, "✅ PHP ini configured with certificate path")

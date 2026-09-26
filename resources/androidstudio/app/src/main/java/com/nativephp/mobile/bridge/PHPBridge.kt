@@ -7,6 +7,7 @@ import android.util.Log
 import android.webkit.CookieManager
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import com.nativephp.mobile.network.CapturedBody
 import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
 import kotlin.concurrent.withLock
@@ -14,7 +15,13 @@ import kotlin.concurrent.withLock
 class PHPBridge(private val context: Context) {
     private var lastPostData: String? = null
     private val requestDataMap = ConcurrentHashMap<String, String>()
-    private val postDataByKey = ConcurrentHashMap<String, String>()
+
+    // Request bodies the page's JS handed over, waiting for the matching
+    // request in shouldInterceptRequest. Keyed by X-NativePHP-Req-Id, or by
+    // URL and path for form submits. Unclaimed bodies (an aborted fetch, a
+    // prevented submit) expire, and the total size is capped.
+    private class StoredBody(val body: CapturedBody, val storedAt: Long)
+    private val postDataByKey = ConcurrentHashMap<String, StoredBody>()
 
     private val nativePhpScript: String
         get() = "${getLaravelPath()}/vendor/nativephp/mobile/bootstrap/android/native.php"
@@ -103,6 +110,36 @@ class PHPBridge(private val context: Context) {
     ): String
     external fun nativeWebviewPhpShutdown()
 
+    // Binary-safe request entry points. Bodies and header blocks are byte[]
+    // and the raw HTTP response comes back as byte[], so no body ever
+    // crosses JNI as a Java string. Null means the native side ran out of
+    // memory (an OutOfMemoryError is pending).
+    external fun nativePersistentDispatchBytes(
+        method: String,
+        uri: String,
+        body: ByteArray?,
+        contentType: String,
+        cookie: String,
+        headers: ByteArray?,
+        scriptPath: String
+    ): ByteArray?
+    external fun nativeWebviewPhpRequestBytes(
+        method: String,
+        uri: String,
+        cookieHeader: String,
+        body: ByteArray?,
+        contentType: String,
+        headers: ByteArray?,
+        scriptPath: String
+    ): ByteArray?
+    external fun nativeHandleRequestBytes(
+        method: String,
+        uri: String,
+        body: ByteArray?,
+        contentType: String,
+        scriptPath: String
+    ): ByteArray?
+
     fun ensureRuntimeInitialized() {
         if (!runtimeInitialized) {
             nativeRuntimeInit()
@@ -114,6 +151,11 @@ class PHPBridge(private val context: Context) {
     companion object {
         private const val TAG = "PHPBridge"
         private const val MAX_REQUEST_AGE = 5 * 60 * 1000L
+
+        // Captured request bodies: how long an unclaimed one is kept, and the
+        // most kept at once across all keys.
+        private const val POST_BODY_TTL_MS = 30_000L
+        private const val POST_BODY_MAX_TOTAL_BYTES = 64L * 1024 * 1024
 
         // ── PROCESS-level runtime state ──────────────────────────────
         // MainActivity constructs a fresh PHPBridge per activity, but the
@@ -330,61 +372,76 @@ class PHPBridge(private val context: Context) {
 
     fun shutdownAsyncContext() = nativeAsyncThreadShutdown()
 
-    fun handleLaravelRequest(request: PHPRequest): String {
+    /**
+     * Serve one request and return the raw HTTP response as bytes, exactly
+     * as PHP wrote it. The body, its content type, the request headers and
+     * the cookie all travel as dispatch arguments; nothing is left in the
+     * process env for the next request to pick up.
+     */
+    fun handleLaravelRequestBytes(request: PHPRequest): ByteArray {
         // Embedded php-mode webview — its own context serves the request;
         // phpExecutor may be parked inside a native screen's event-loop
         // dispatch and would never answer.
         dedicatedWebviewRuntime?.let {
-            return processRawPHPResponse(it.request(request))
+            return processRawPHPResponse(it.requestBytes(request))
         }
 
         val requestStart = System.currentTimeMillis()
 
-        val future = phpExecutor.submit<String> {
+        val future = phpExecutor.submit<ByteArray> {
             val prepStart = System.currentTimeMillis()
 
-            // Clear Inertia-related env vars first - they persist between requests
-            // and cause Laravel to return JSON instead of HTML
-            val inertiaEnvVars = listOf(
-                "HTTP_X_INERTIA",
-                "HTTP_X_INERTIA_VERSION",
-                "HTTP_X_INERTIA_PARTIAL_DATA",
-                "HTTP_X_INERTIA_PARTIAL_COMPONENT",
-                "HTTP_X_INERTIA_PARTIAL_EXCEPT"
-            )
-            inertiaEnvVars.forEach { envVar ->
-                nativeSetEnv(envVar, "", 1)
-            }
-
-            request.headers.forEach { (key, value) ->
-                val envKey = "HTTP_" + key.replace("-", "_").uppercase()
-                nativeSetEnv(envKey, value, 1)
-            }
-
+            val body = request.bodyAsBytes()
+            val contentType = request.effectiveContentType()
             val cookieHeader = LaravelCookieStore.asCookieHeader()
-            nativeSetEnv("HTTP_COOKIE", cookieHeader, 1)
+            val usePersistent = persistentMode && persistentBooted
+
+            if (!usePersistent) {
+                // Classic mode still reads request headers from the env.
+                val inertiaEnvVars = listOf(
+                    "HTTP_X_INERTIA",
+                    "HTTP_X_INERTIA_VERSION",
+                    "HTTP_X_INERTIA_PARTIAL_DATA",
+                    "HTTP_X_INERTIA_PARTIAL_COMPONENT",
+                    "HTTP_X_INERTIA_PARTIAL_EXCEPT"
+                )
+                inertiaEnvVars.forEach { envVar ->
+                    nativeSetEnv(envVar, "", 1)
+                }
+
+                request.headers.forEach { (key, value) ->
+                    val envKey = "HTTP_" + key.replace("-", "_").uppercase()
+                    nativeSetEnv(envKey, value, 1)
+                }
+                nativeSetEnv("HTTP_COOKIE", cookieHeader, 1)
+                nativeSetEnv("HTTP_CONTENT_TYPE", contentType, 1)
+            }
 
             val prepTime = System.currentTimeMillis() - prepStart
             val jniStart = System.currentTimeMillis()
 
-            val output = if (persistentMode && persistentBooted) {
+            val output = if (usePersistent) {
                 // Persistent mode: dispatch through the already-running interpreter
-                nativePersistentDispatch(
+                nativePersistentDispatchBytes(
                     request.method,
                     request.uri,
-                    request.body,
+                    body,
+                    contentType,
+                    cookieHeader,
+                    request.headerBlock(),
                     nativePhpScript
                 )
             } else {
                 // Classic mode: full init/shutdown per request
                 ensureRuntimeInitialized()
-                nativeHandleRequest(
+                nativeHandleRequestBytes(
                     request.method,
                     request.uri,
-                    request.body,
+                    body,
+                    contentType,
                     nativePhpScript
                 )
-            }
+            } ?: ByteArray(0)
 
             val jniTime = System.currentTimeMillis() - jniStart
             val processStart = System.currentTimeMillis()
@@ -392,8 +449,8 @@ class PHPBridge(private val context: Context) {
             val processedOutput = processRawPHPResponse(output)
 
             val processTime = System.currentTimeMillis() - processStart
-            val mode = if (persistentMode && persistentBooted) "PERSISTENT" else "CLASSIC"
-            Log.d("PerfTiming", "BRIDGE[$mode] [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms")
+            val mode = if (usePersistent) "PERSISTENT" else "CLASSIC"
+            Log.d("PerfTiming", "BRIDGE[$mode] [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms bytes=${processedOutput.size}")
 
             processedOutput
         }
@@ -403,6 +460,14 @@ class PHPBridge(private val context: Context) {
         Log.d("PerfTiming", "BRIDGE_TOTAL [${request.uri}] ${totalTime}ms")
         return result
     }
+
+    /**
+     * The raw response as text, for callers that only need the head (native
+     * session exits, older plugins). Decoded leniently as UTF-8; use
+     * [handleLaravelRequestBytes] for anything that carries a body.
+     */
+    fun handleLaravelRequest(request: PHPRequest): String =
+        String(handleLaravelRequestBytes(request), Charsets.UTF_8)
 
     // New function to store request data with a key
     fun storeRequestData(key: String, data: String) {
@@ -445,34 +510,67 @@ class PHPBridge(private val context: Context) {
         }
     }
 
-    fun storePostData(key: String, data: String) {
-        postDataByKey[key] = data
-        Log.d(TAG, "Stored POST data for key=$key (length=${data.length})")
+    /** Keep a captured body until the request that carries it arrives. */
+    fun storePostBody(key: String, body: CapturedBody) {
+        val now = System.currentTimeMillis()
+        evictPostBodies(now)
+        postDataByKey[key] = StoredBody(body, now)
+        Log.d(TAG, "Stored POST body for key=$key (${body.size} bytes, type=${body.contentType.ifEmpty { "none" }})")
     }
 
-    fun consumePostData(key: String): String? {
-        // Try immediate lookup
-        var data = postDataByKey.remove(key)
+    /**
+     * Take the body stored under [key], waiting up to 50ms for the JS side to
+     * hand it over. Other keys holding the same body (a form stored by URL
+     * and by path) are dropped with it.
+     */
+    fun consumePostBody(key: String): CapturedBody? {
+        var stored = postDataByKey.remove(key)
 
         // If not found, the JS bridge may not have fired yet — wait briefly
-        if (data == null) {
+        if (stored == null) {
             for (i in 1..10) {
                 Thread.sleep(5)
-                data = postDataByKey.remove(key)
-                if (data != null) {
-                    Log.d(TAG, "POST data for key=$key arrived after ${i * 5}ms wait")
+                stored = postDataByKey.remove(key)
+                if (stored != null) {
+                    Log.d(TAG, "POST body for key=$key arrived after ${i * 5}ms wait")
                     break
                 }
             }
         }
 
-        if (data != null) {
-            Log.d(TAG, "Consumed POST data for key=$key (length=${data.length})")
-        } else {
-            Log.w(TAG, "No POST data for key=$key after 50ms — request may have no body")
+        if (stored == null) {
+            Log.w(TAG, "No POST body for key=$key after 50ms — request may have no body")
+            return null
         }
-        return data
+
+        postDataByKey.entries.removeIf { it.value === stored }
+        Log.d(TAG, "Consumed POST body for key=$key (${stored.body.size} bytes)")
+        return stored.body
     }
+
+    /** Drop expired bodies, then the oldest ones while over the size cap. */
+    private fun evictPostBodies(now: Long) {
+        postDataByKey.entries.removeIf { now - it.value.storedAt > POST_BODY_TTL_MS }
+
+        var total = postDataByKey.values.distinct().sumOf { it.body.size.toLong() }
+        if (total <= POST_BODY_MAX_TOTAL_BYTES) return
+
+        for (stored in postDataByKey.values.distinct().sortedBy { it.storedAt }) {
+            if (total <= POST_BODY_MAX_TOTAL_BYTES) break
+            postDataByKey.entries.removeIf { it.value === stored }
+            total -= stored.body.size
+            Log.w(TAG, "Dropped an unclaimed ${stored.body.size} byte POST body (over the size cap)")
+        }
+    }
+
+    /** Text wrapper kept for older callers: stores [data] as UTF-8. */
+    fun storePostData(key: String, data: String) {
+        storePostBody(key, CapturedBody(data.toByteArray(Charsets.UTF_8)))
+    }
+
+    /** Text wrapper kept for older callers. */
+    fun consumePostData(key: String): String? =
+        consumePostBody(key)?.let { String(it.bytes, Charsets.UTF_8) }
 
     /**
      * Re-execute a native route with a fresh PHP process.
@@ -482,7 +580,12 @@ class PHPBridge(private val context: Context) {
     fun executeNativeRoute(uri: String) {
         val future = phpExecutor.submit<Unit> {
             if (persistentMode && persistentBooted) {
-                nativePersistentDispatch("GET", uri, null, nativePhpScript)
+                nativePersistentDispatchBytes(
+                    "GET", uri, null, "",
+                    LaravelCookieStore.asCookieHeader(),
+                    "Accept: text/html".toByteArray(Charsets.UTF_8),
+                    nativePhpScript
+                )
             } else {
                 ensureRuntimeInitialized()
                 nativeHandleRequest("GET", uri, null, nativePhpScript)
@@ -498,6 +601,62 @@ class PHPBridge(private val context: Context) {
     fun getLaravelPath(): String {
         val storageDir = context.getDir("storage", Context.MODE_PRIVATE)
         return "${storageDir.absolutePath}/laravel"
+    }
+
+    /**
+     * Check a raw response from the bridge and store its cookies. PHP always
+     * writes one complete HTTP/1.1 response. Anything else means PHP stopped
+     * part-way (a fatal error, a timeout), so it becomes a 500 that shows
+     * what was captured. Only the head is ever decoded; the body is untouched.
+     */
+    fun processRawPHPResponse(response: ByteArray): ByteArray {
+        val split = indexOfHeadEnd(response)
+        val prefix = "HTTP/1.1 ".toByteArray(Charsets.US_ASCII)
+        val startsWithStatus = response.size >= prefix.size &&
+            prefix.indices.all { response[it] == prefix[it] }
+
+        if (!startsWithStatus || split < 0) {
+            Log.e(TAG, "Bridge returned an incomplete response (${response.size} bytes)")
+            val captured = String(response, 0, minOf(response.size, 64 * 1024), Charsets.UTF_8)
+            val body = ("The PHP bridge did not get a complete HTTP response back. " +
+                "PHP probably stopped part-way (a fatal error or a timeout). " +
+                "What it wrote (${response.size} bytes):\n\n$captured").toByteArray(Charsets.UTF_8)
+            val head = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+                "Content-Length: ${body.size}\r\n\r\n"
+            return head.toByteArray(Charsets.UTF_8) + body
+        }
+
+        val head = String(response, 0, split, Charsets.UTF_8)
+        val setCookies = head.split("\r\n")
+            .filter { it.startsWith("Set-Cookie:", ignoreCase = true) }
+            .map { it.substringAfter(":", "").trim() }
+            .filter { it.isNotEmpty() }
+
+        if (setCookies.isNotEmpty()) {
+            setCookies.forEach { cookieValue ->
+                // Store is the source of truth; the WebView jar is a gated
+                // mirror (no-op until a WebRenderer exists).
+                com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
+                com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
+                Log.d(TAG, "Stored cookie: $cookieValue")
+            }
+            com.nativephp.mobile.security.WebCookieMirror.flush()
+        }
+
+        return response
+    }
+
+    /** Offset of the first CRLF CRLF in [raw], or -1. */
+    private fun indexOfHeadEnd(raw: ByteArray): Int {
+        var i = 0
+        while (i + 3 < raw.size) {
+            if (raw[i] == '\r'.code.toByte() && raw[i + 1] == '\n'.code.toByte() &&
+                raw[i + 2] == '\r'.code.toByte() && raw[i + 3] == '\n'.code.toByte()) {
+                return i
+            }
+            i++
+        }
+        return -1
     }
 
     fun processRawPHPResponse(response: String): String {
