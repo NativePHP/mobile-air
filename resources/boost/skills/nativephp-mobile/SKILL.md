@@ -228,6 +228,13 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
 - **Platform icons**: `:ios-icon` / `:android-icon` take the typed enums (`:ios` / `:android` shorthand also
   works); a plain `icon` string is the cross-platform fallback. `AndroidOutlined` cases carry their variant
   automatically.
+- **Raised tab** (the centre "create" button): `Tab::link('Create', '/create', icon: 'add')->raised()` lifts that
+  tab into a disc rising out of the native tab bar; pass `RaisedTab::make()` to style it (`size`, `lift`,
+  `color`/`gradient`, `icon`, `ring`, `activeHalo`, `shadow`, `pressScale`, `dockWithKeyboard`). Inline:
+  `<native:bottom-nav-item … raised raised-color="teal-500" />` (unknown `raised-*` attributes throw). Colours use
+  the element grammar, so 8-digit hex is CSS `#RRGGBBAA`. It stays a real tab (label, badge, taps, screen
+  readers); native tab chrome only, never a search tab, and iOS draws no disc when the bar has more buttons than
+  fit (the "More" tab past five) or on the iPad top bar. Test with `assertTabRaised('Create')`.
 - `<native:fab>` floats above the content (give it `@tap` or `url`; `label` makes it an extended fab).
   `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
