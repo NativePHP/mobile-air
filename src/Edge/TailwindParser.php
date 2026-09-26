@@ -568,6 +568,18 @@ class TailwindParser
         return $hex;
     }
 
+    /**
+     * {@see resolveColorValue()} plus `theme-<token>`, resolved to the
+     * token's light value — the grammar a gradient stop accepts. Null when
+     * the value isn't a colour (or the token doesn't resolve).
+     */
+    public static function resolveColorOrThemeToken(string $value): ?string
+    {
+        return str_starts_with($value, 'theme-')
+            ? self::resolveThemeToken(substr($value, 6), false)
+            : self::resolveColorValue($value);
+    }
+
     private static function parseClass(string $class): ?array
     {
         // Pre-strip trailing `/N` opacity modifier (Tailwind v3+ syntax).
@@ -1263,9 +1275,7 @@ class TailwindParser
      */
     private static function parseGradientStop(string $position, string $value): ?array
     {
-        $hex = str_starts_with($value, 'theme-')
-            ? self::resolveThemeToken(substr($value, 6), false)
-            : self::resolveColorValue($value);
+        $hex = self::resolveColorOrThemeToken($value);
 
         if ($hex === null) {
             return null;
