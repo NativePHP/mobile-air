@@ -29,6 +29,7 @@ struct NativeRootStackRenderer: View {
 
     var body: some View {
         let currentUri = node.props.getString("current_uri", default: "")
+        let stackDepth = node.props.getInt("stack_depth", default: 0)
 
         // Write cache synchronously so destinations always render from
         // the freshest tree on this very render pass. The path mutation
@@ -37,7 +38,7 @@ struct NativeRootStackRenderer: View {
         if !currentUri.isEmpty {
             coordinator.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
-                coordinator.receive(uri: currentUri, rootNode: node)
+                coordinator.receive(uri: currentUri, depth: stackDepth, rootNode: node)
             }
         }
 
