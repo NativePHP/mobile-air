@@ -76,20 +76,37 @@ private struct ClickHandlerModifier: ViewModifier {
         }
 
         // Double-tap is carried in props (`on_double_tap`), not a dedicated
-        // node field. Attached before the single tap so the 2-count gesture
-        // gets first claim. Reuses the Press event type — the callback id
-        // routes to the @doubleTap handler.
+        // node field. Reuses the Press event type — the callback id routes
+        // to the @doubleTap handler.
+        //
+        // When a node has BOTH @tap and @doubleTap they are composed as one
+        // exclusive gesture, double first: the single tap then fires only
+        // once a double tap has failed (the system double-tap interval).
+        // Two separate `onTapGesture` modifiers fire the single tap on the
+        // first touch, and if that tap re-renders the screen (it usually
+        // does) the second touch lands on a new node — a human double tap
+        // then reads as two singles and the @doubleTap handler never runs.
+        // Android's `combinedClickable` already waits; this matches it.
         let doubleTapId = node.props.getInt("on_double_tap")
-        if doubleTapId != 0 {
+        if doubleTapId != 0, node.onPress != 0 {
+            let singleId = node.onPress
+            let nodeId = node.id
+            view = AnyView(
+                view.gesture(
+                    TapGesture(count: 2)
+                        .onEnded { NativeUIBridge.sendPressEvent(doubleTapId, nodeId: nodeId) }
+                        .exclusively(before: TapGesture(count: 1)
+                            .onEnded { NativeUIBridge.sendPressEvent(singleId, nodeId: nodeId) })
+                )
+            )
+        } else if doubleTapId != 0 {
             let nodeId = node.id
             view = AnyView(
                 view.onTapGesture(count: 2) {
                     NativeUIBridge.sendPressEvent(doubleTapId, nodeId: nodeId)
                 }
             )
-        }
-
-        if node.onPress != 0 {
+        } else if node.onPress != 0 {
             let cbId = node.onPress
             let nodeId = node.id
             view = AnyView(
