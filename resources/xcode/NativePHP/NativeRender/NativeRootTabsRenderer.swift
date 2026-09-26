@@ -188,6 +188,22 @@ struct NativeRootTabsRenderer: View {
             || !searchItemNodes.isEmpty
             || selection == searchTabIdString
 
+        // Raised tabs (`Tab::raised()`) — drawn as discs over their slots by
+        // `RaisedTabsOverlay`. Slots count the regular tabs in order, then
+        // the search tab, which is always declared last below.
+        let raisedEntries: [RaisedTabEntry] = regularTabEntries.enumerated().compactMap { slot, entry in
+            entry.tab.props.getBool("raised") ? RaisedTabEntry(id: entry.id, tab: entry.tab, slot: slot) : nil
+        }
+        // No disc where `HideTabBarOnPushModifier` hides the bar — only
+        // applied inside a tab's NavigationStack (`hasNavBar`): on a pushed
+        // level, or when the screen asked (`hide_tab_bar`). Nor while the
+        // search tab is selected, when iOS 26 reshapes the bar around it.
+        // The tracker also finds no visible UITabBar whenever it's hidden.
+        let owningTabUrl = owningIdx < tabs.count ? tabs[owningIdx].props.getString("url", default: "") : ""
+        let isPushedLevel = !currentUri.isEmpty && !owningTabUrl.isEmpty && currentUri != owningTabUrl
+        let raisedHidden = (hasNavBar && (isPushedLevel || node.props.getBool("hide_tab_bar")))
+            || (searchTabIdString != nil && selection == searchTabIdString)
+
         return TabView(selection: $selection) {
             // Regular (non-search) tabs via ForEach. Keyed off the
             // stable PHP-side id so SwiftUI preserves identity across
@@ -226,19 +242,35 @@ struct NativeRootTabsRenderer: View {
                         return rawLabel
                     }
                 }()
+                let content = PerTabContent(
+                    coordinator: coord,
+                    hasNavBar: hasNavBar,
+                    fallbackTitle: navTitleText,
+                    fallbackShowBack: navBack,
+                    fallbackTextArgb: navTextArgb,
+                    fallbackBgArgb: navBgArgb
+                )
 
-                Tab(label, systemImage: getIconForName(icon), value: tabId) {
-                    PerTabContent(
-                        coordinator: coord,
-                        hasNavBar: hasNavBar,
-                        fallbackTitle: navTitleText,
-                        fallbackShowBack: navBack,
-                        fallbackTextArgb: navTextArgb,
-                        fallbackBgArgb: navBgArgb
-                    )
-
+                if tab.props.getBool("raised") {
+                    // A raised tab's disc is drawn over its slot, so its own
+                    // image is a blank, icon-sized template image. It keeps
+                    // its badge for VoiceOver; the disc draws it visibly.
+                    Tab(value: tabId) {
+                        content
+                    } label: {
+                        Label {
+                            Text(label)
+                        } icon: {
+                            Image(uiImage: RaisedTabSlotImage.blank)
+                        }
+                    }
+                    .badge(badgeFor(tab))
+                } else {
+                    Tab(label, systemImage: getIconForName(icon), value: tabId) {
+                        content
+                    }
+                    .badge(badgeFor(tab))
                 }
-                .badge(badgeFor(tab))
             }
 
             // Conditional search tab — Apple's "if inside TabView" pattern.
@@ -270,6 +302,19 @@ struct NativeRootTabsRenderer: View {
         .preferredColorScheme(isDark ? .dark : nil)
         .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility, fontName: chromeFontName))
         .modifier(TabBarAccessoryModifier(accessory: accessory))
+        .overlay {
+            if !raisedEntries.isEmpty {
+                RaisedTabsOverlay(
+                    entries: raisedEntries,
+                    slotCount: regularTabEntries.count + (shouldShowSearchTab && searchTabIdx != nil ? 1 : 0),
+                    hasSearchSlot: shouldShowSearchTab && searchTabIdx != nil,
+                    hidden: raisedHidden,
+                    fallbackFill: activeColor,
+                    publish: ObjectIdentifier(node),
+                    selection: $selection
+                )
+            }
+        }
         .onAppear {
             selection = owningId
         }
