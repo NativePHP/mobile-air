@@ -956,6 +956,11 @@ class BuildIosAppCommand extends Command
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
             'entry_mode' => $entryMode,
             'native_routes' => $nativeRoutes,
+            // What this shell ships with, so a lane cannot offer it a release
+            // that predates its own code. Written here because .env is
+            // replaced wholesale by a payload and this has to outlive one.
+            'shell_built_at' => env('NATIVEPHP_OTA_SHELL_BUILT_AT'),
+            'shell_commit' => env('NATIVEPHP_OTA_SHELL_COMMIT'),
         ], JSON_PRETTY_PRINT);
 
         file_put_contents(dirname($zipPath).'/bundle_meta.json', $bundleMeta);
@@ -1253,8 +1258,14 @@ class BuildIosAppCommand extends Command
             $compiler->compile();
 
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("❌ Plugin compilation failed: {$e->getMessage()}");
+
+            // A hook that fataled carries the real error underneath. Without
+            // this the author sees the message and no idea where it came from.
+            if ($cause = $e->getPrevious()) {
+                $this->line("   at {$cause->getFile()}:{$cause->getLine()}");
+            }
 
             return false;
         }
