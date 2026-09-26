@@ -53,8 +53,8 @@ struct NodeLayoutModifier: ViewModifier {
             ))
             // Aspect ratio
             .modifier(AspectRatioModifier(ratio: layout?.aspectRatio))
-            // Hidden
-            .opacity(layout?.display == Display.none ? 0 : 1)
+            // Hidden (`display: none`) is applied by `ResolvedNodeView`,
+            // outside the style layer. See the note there.
     }
 
     /// For fill mode, set max=.infinity so the frame respects the parent's

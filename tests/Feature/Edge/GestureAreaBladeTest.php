@@ -78,3 +78,32 @@ it('renders a three-finger swipe handler from Blade', function () {
     expect($tree['props']['swipe-fingers'])->toBe(3);
     expect($registry->resolve($tree['props']['on_swipe']))->toBe(['method' => 'threeFingerSwiped', 'args' => []]);
 });
+
+it('renders a horizontal pan binding with a drag-end handler from Blade', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-pan-x.blade.php',
+        '<native:gesture-area :pan-x="$dx" @dragEnd="released" a11y-label="Drag the card">'
+        .'<native:column :translate-x="$dx" :rotate="$dx->interpolate([-300, 300], [-15, 15])"><native:text>card</native:text></native:column>'
+        .'</native:gesture-area>'
+    );
+
+    $dx = SharedValue::make();
+
+    NativeElementCollector::reset();
+    view('gesture-pan-x', ['dx' => $dx])->render();
+    $element = NativeElementCollector::collect();
+
+    $registry = new CallbackRegistry;
+    $tree = $element->toArray($registry);
+
+    expect($tree['type'])->toBe('gesture_area')
+        ->and($tree['props']['pan-x-id'])->toBe($dx->id)
+        ->and($tree['props']['pan-x-initial'])->toBe(0.0)
+        ->and($tree['props'])->not->toHaveKey('pan-y-id')
+        ->and($registry->resolve($tree['props']['on_drag_end']))->toBe(['method' => 'released', 'args' => []])
+        ->and($registry->kind($tree['props']['on_drag_end']))->toBe('drag_end');
+
+    $child = $tree['children'][0];
+    expect($child['props']['translate-x_sv'])->toBe("__sv:{$dx->id}")
+        ->and($child['props']['rotate_sv'])->toBe("__sv:{$dx->id}|interp:-300,300:-15,15");
+});

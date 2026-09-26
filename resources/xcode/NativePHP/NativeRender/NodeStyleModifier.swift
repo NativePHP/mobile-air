@@ -4,7 +4,7 @@ import UIKit
 // MARK: - Node Style Modifier
 
 /// Applies visual style properties from a NativeUINode to a SwiftUI view.
-/// Handles background color, corner radius, border, shadow, opacity,
+/// Handles background color, corner radius, border, shadow, glow, blur, opacity,
 /// and dark mode overrides from dark_* props.
 struct NodeStyleModifier: ViewModifier {
     let style: NodeStyle?
@@ -66,12 +66,22 @@ struct NodeStyleModifier: ViewModifier {
                 cornerRadii: radii
             ))
             .overlay(borderOverlay(dark: dark, radius: radius))
+            // Elevation `shadow-*` — black, y-offset cast (unchanged).
             .shadow(
                 color: shadowColor,
                 radius: shadowRadius,
                 x: 0,
                 y: shadowY
             )
+            // Colored `glow-*` — stacked zero-offset halos (Slice 1).
+            .modifier(GlowShadowModifier(
+                color: glowColor,
+                radius: glowRadius,
+                opacity: glowOpacity
+            ))
+            // Tailwind `blur-*` — Gaussian softens the node's own pixels
+            // (page-bg orbs). Props-bag radius in points; no-op at 0.
+            .modifier(BlurFilterModifier(radius: blurRadius))
             .opacity(opacity)
     }
 
@@ -82,12 +92,17 @@ struct NodeStyleModifier: ViewModifier {
     ///
     /// A gradient wins over `bg_color` — matching CSS, where `background-image`
     /// paints over `background-color`.
-    @ViewBuilder
-    private func backgroundFill(dark: Bool) -> some View {
+    ///
+    /// Returned as a ShapeStyle, not a View: `.background(_ style:)` fills
+    /// through the safe areas by default (`ignoresSafeAreaEdges: .all`), so a
+    /// full-screen `bg-*` reaches under the status bar and a floating tab bar.
+    /// The `.background(_ view:)` overload stops at the safe area, which left
+    /// the platform default (black in dark mode) showing in those insets.
+    private func backgroundFill(dark: Bool) -> AnyShapeStyle {
         if let gradient = linearGradient {
-            gradient
+            AnyShapeStyle(gradient)
         } else {
-            backgroundColor(dark: dark)
+            AnyShapeStyle(backgroundColor(dark: dark))
         }
     }
 
@@ -201,6 +216,32 @@ struct NodeStyleModifier: ViewModifier {
         return .black.opacity(0.25)
     }
 
+    // MARK: - Glow
+
+    /// Soft colored halo from `glow-*` utilities / `glowColor` EDGE props.
+    /// Distinct from elevation — zero offset, stacked twice for density.
+    private var glowColor: Color {
+        // default:0 → transparent sentinel; glow is opt-in.
+        let argb = props.getColor("glow_color", default: 0)
+        return colorFromARGB(argb)
+    }
+
+    private var glowRadius: CGFloat {
+        CGFloat(props.getFloat("glow_radius", default: 0))
+    }
+
+    private var glowOpacity: Double {
+        Double(props.getFloat("glow_opacity", default: 0))
+    }
+
+    // MARK: - Blur
+
+    /// Gaussian blur radius from `blur-*` / `blur-[Npx]` / `blur` EDGE prop.
+    /// Distinct from glow (halo) and elevation shadow (depth cast).
+    private var blurRadius: CGFloat {
+        CGFloat(props.getFloat("blur", default: 0))
+    }
+
     // MARK: - Opacity
 
     private func resolvedOpacity(dark: Bool) -> Double {
@@ -222,6 +263,45 @@ func colorFromARGB(_ argb: Int) -> Color {
     let g = Double((v >> 8) & 0xFF) / 255.0
     let b = Double(v & 0xFF) / 255.0
     return Color(.sRGB, red: r, green: g, blue: b, opacity: a)
+}
+
+/// Stacks two zero-offset colored shadows for a soft `glow-*` halo.
+/// Applied only when a glow color + positive radius are present; no-ops
+/// otherwise so elevation `shadow-*` stays the sole cast when unused.
+private struct GlowShadowModifier: ViewModifier {
+    let color: Color
+    let radius: CGFloat
+    let opacity: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if radius > 0, opacity > 0 {
+            // Two stacked zero-offset shadows: outer (full radius, softer)
+            // and inner (half radius, denser). Both x:0,y:0 so the halo sits
+            // centered on the view rather than casting like elevation.
+            content
+                .shadow(color: color.opacity(opacity * 0.55), radius: radius, x: 0, y: 0)
+                .shadow(color: color.opacity(opacity), radius: max(radius * 0.5, 1), x: 0, y: 0)
+        } else {
+            content
+        }
+    }
+}
+
+/// Applies SwiftUI `.blur(radius:)` when `blur-*` set a positive radius.
+/// Softens the node's own pixels (filled shapes become soft orbs); layout
+/// bounds are unchanged — bloom paints outside the frame like CSS filter.
+private struct BlurFilterModifier: ViewModifier {
+    let radius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if radius > 0 {
+            content.blur(radius: radius)
+        } else {
+            content
+        }
+    }
 }
 
 /// Only clips when corner radius > 0. A zero-radius clipShape clips to a sharp
@@ -273,6 +353,17 @@ private struct GlassModifier: ViewModifier {
     private var interactive: Bool  { (flags & 4) != 0 }
     private var clear: Bool        { (flags & 8) != 0 }
 
+    /// The `#if` keeps `.glassEffect` out of the compilation entirely on
+    /// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+    /// `LiquidGlassAvailability.swift`.
+    ///
+    /// It gates the whole `body` rather than sitting inside it so that the
+    /// Xcode 26 arm keeps the original `if / else if / else` chain verbatim.
+    /// A `#if` nested in the `else` arm re-nests what ViewBuilder emits —
+    /// `_ConditionalContent<_ConditionalContent<A, B>, C>` becomes
+    /// `_ConditionalContent<A, _ConditionalContent<B, C>>` — which changes
+    /// the view type on builds this fix is supposed to leave alone.
+    #if compiler(>=6.2)
     func body(content: Content) -> some View {
         if !enabled {
             content
@@ -283,14 +374,28 @@ private struct GlassModifier: ViewModifier {
                 content.glassEffect(.regular.interactive(interactive), in: glassShape)
             }
         } else {
-            // Older-iOS fallback can't simulate touch-highlight — drop the
-            // interactive flag silently. `.ultraThinMaterial` is the closest
-            // analogue for `.clear`; `.regularMaterial` for the default.
-            content.background(
-                clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial),
-                in: glassShape
-            )
+            fallback(content)
         }
+    }
+    #else
+    func body(content: Content) -> some View {
+        if !enabled {
+            content
+        } else {
+            fallback(content)
+        }
+    }
+    #endif
+
+    /// Older-iOS fallback can't simulate touch-highlight — drop the
+    /// interactive flag silently. `.ultraThinMaterial` is the closest
+    /// analogue for `.clear`; `.regularMaterial` for the default.
+    @ViewBuilder
+    private func fallback(_ content: Content) -> some View {
+        content.background(
+            clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial),
+            in: glassShape
+        )
     }
 
     /// Infer the glass shape from the element's borderRadius. The
@@ -345,13 +450,21 @@ extension UIColor {
 /// Apply this once at the screen root in each root renderer (Stack, Tabs,
 /// etc.) — the container's effects are scoped to the subtree it wraps, so
 /// one container per screen is the right granularity.
+///
+/// The `#if` keeps `GlassEffectContainer` out of the compilation entirely on
+/// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+/// `LiquidGlassAvailability.swift`.
 struct WithGlassContainer: ViewModifier {
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             GlassEffectContainer { content }
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 }
 

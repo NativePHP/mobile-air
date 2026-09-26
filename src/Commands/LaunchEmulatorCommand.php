@@ -4,10 +4,12 @@ namespace Native\Mobile\Commands;
 
 use Illuminate\Console\Command;
 use Native\Mobile\Concerns\LaunchesAndroidEmulator;
+use Native\Mobile\Concerns\LaunchesIosSimulator;
 
 class LaunchEmulatorCommand extends Command
 {
     use LaunchesAndroidEmulator;
+    use LaunchesIosSimulator;
 
     protected $signature = 'native:emulator {os : Platform to emulate (android/a or ios/i)}';
 
@@ -31,7 +33,7 @@ class LaunchEmulatorCommand extends Command
 
         match ($os) {
             'android' => $this->startAndroid(),
-            'ios' => $this->startAndroid(),
+            'ios' => $this->startIos(),
         };
     }
 }

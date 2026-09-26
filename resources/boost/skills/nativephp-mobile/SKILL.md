@@ -88,18 +88,24 @@ OS support: macOS builds iOS + Android; Windows/Linux build Android only; WSL un
 
 ## SuperNative Screens
 
-Scaffold with `php artisan native:make Counter` (remove with `native:rm`). Register in routes (a
-`routes/mobile.php` is a clean convention):
+Scaffold with `php artisan native:make Counter` (remove with `native:rm`). Register screens in
+`routes/mobile.php`. The package loads it automatically, but only in native contexts (on device, under Jump,
+in `native:*` commands and in tests), so a web deploy of the same app never exposes them:
 
 ```php
 Route::native('/', Home::class);
 Route::native('/item/{id}', ItemDetail::class);
 ```
 
+If the app already loads `routes/mobile.php` itself, the package leaves it alone and it isn't gated. Remove that
+registration to get the native-only behaviour.
+
 Inside a `NativeComponent`: `$this->param('id')`, `$this->data('key', 'default')`, `$this->navigate('/item/42')`,
 `$this->back()`, `$this->replace('/login')`, `$this->exitToWeb('/dashboard')`; chain
-`->transition(Transition::SlideFromBottom)` to customize animation. In Blade, `@navigate="/path"` works on any
-element (modifiers: `@navigate.back`, `@navigate.replace.fade`, `@navigate.slideFromBottom`).
+`->transition(Transition::SlideFromBottom)` to customize animation. In Blade, `@navigate='/path'` works on any
+element (modifiers: `@navigate.back`, `@navigate.replace.fade`, `@navigate.slideFromBottom`). Use single quotes
+for a plain route; double quotes hold a PHP expression, so `@navigate="/path"` fails to compile. Build dynamic
+routes in PHP: `@navigate="'/item/' . $item->id"`.
 
 Lifecycle hooks: `mount()` (first push only), `onResume()` (returning to the screen), `onBackPressed()`
 (Android back button), `unmount()`, and `updated{Property}()` when a bound property changes. Mark a component

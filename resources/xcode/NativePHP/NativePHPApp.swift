@@ -63,12 +63,9 @@ struct NativePHPApp: App {
             NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
 
             if booted {
-                // Only run artisan commands when app was extracted or updated
+                // Only run artisan commands when app was extracted or updated.
+                // Migrate already ran in ensureAppExists, once per extraction.
                 if didExtract {
-                    NSLog("[NativePHP] artisan migrate START (post-extraction)")
-                    _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
-                    NSLog("[NativePHP] artisan migrate DONE")
-
                     NSLog("[NativePHP] artisan storage:link START")
                     _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
                     NSLog("[NativePHP] artisan storage:link DONE")
@@ -124,27 +121,27 @@ struct NativePHPApp: App {
 
         // 6. Reload handling + hot reload server. The coordinator must be
         // registered before anything can post reloadWebViewNotification —
-        // HotReloadServer triggers (DEBUG) or AppUpdateManager after an OTA
-        // update (production) — and independently of the WebView, which a
-        // native-direct boot never mounts.
+        // HotReloadServer triggers (DEBUG) — and independently of the WebView,
+        // which a native-direct boot never mounts.
         HotReloadCoordinator.shared.activate()
         #if DEBUG
         HotReloadServer.shared.start()
         #endif
 
-        // 7. OTA check commented out — parity with Android, where the boot-time
-        // Bifrost request was disabled for its network latency on cold boot.
-        // TODO: Re-enable on BOTH platforms together when OTA is ready for
-        // production, as an async check after first content — never on the
-        // boot path.
-        // NSLog("[NativePHP] checkForUpdates START")
-        // AppUpdateManager.shared.checkForUpdates()
+        // 7. OTA check/download lives in the mobile-ota plugin. Core only
+        // applies pending zips from Documents/updates on boot (ensureAppExists
+        // → applyPendingUpdates). Do not re-enable a Bifrost client here.
 
         // 8. Defer queue worker boot — start AFTER critical path completes
         //    so it doesn't compete for CPU/memory during first page render
         if booted {
             NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
+
+            // Async task lane (AsyncTask::dispatch()) — pool boots on a
+            // background thread, so this returns immediately.
+            NSLog("[NativePHP] AsyncTaskExecutor.start() (deferred)")
+            AsyncTaskExecutor.shared.start()
         } else {
             NSLog("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
         }
@@ -508,6 +505,9 @@ struct NativePHPApp: App {
         // Get temporary directory
         let tempDir = FileManager.default.temporaryDirectory.path
 
+        // Before any PHP runs, so the migrate after extraction loads the
+        // package's migrations in both runtime modes.
+        setenv("NATIVEPHP_RUNNING", "true", 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("LARAVEL_STORAGE_PATH", storageDir, 1)

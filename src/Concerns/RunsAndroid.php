@@ -19,7 +19,7 @@ use function Laravel\Prompts\warning;
 
 trait RunsAndroid
 {
-    use PreparesBuild, WatchesAndroid;
+    use DeclaresReleaseAudience, PreparesBuild, WatchesAndroid;
 
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
@@ -256,6 +256,57 @@ trait RunsAndroid
                     }
                 }
             }
+        }
+
+        $normalizedContents = $this->normalizeLineEndings($contents);
+
+        if ($this->validateXml($normalizedContents)) {
+            File::put($manifestPath, $normalizedContents);
+        }
+    }
+
+    /**
+     * Declare to Google Play how far this build may travel. Anything built
+     * outside the production environment carries the NONPRODUCTION audience,
+     * which Play holds the artifact to: it cannot be promoted to the
+     * production track later. A production build carries no ceiling, so a
+     * declaration left behind by an earlier build is stripped.
+     *
+     * Play reads the audience from the meta-data name's suffix and requires an
+     * empty value; an audience placed in the value is silently ignored.
+     */
+    private function updateReleaseAudience(): void
+    {
+        $manifestPath = base_path('nativephp/android/app/src/main/AndroidManifest.xml');
+
+        if (! File::exists($manifestPath)) {
+            return;
+        }
+
+        $contents = File::get($manifestPath);
+
+        // Always drop our own previous declaration first: the native project is
+        // reused between builds, so a stale audience would otherwise survive a
+        // move back to production. Only the entry this tool writes is touched;
+        // a developer's own restriction is left alone, since Play applies the
+        // most restrictive one present.
+        $contents = preg_replace(
+            '/\s*<meta-data\s+android:name="'.preg_quote(self::LARGEST_RELEASE_AUDIENCE_KEY.'.NONPRODUCTION', '/').'"[^>]*\/>/s',
+            '',
+            $contents
+        );
+
+        $audience = $this->largestReleaseAudience();
+
+        if ($audience !== null) {
+            $entry = "\n        <meta-data\n            android:name=\"".self::LARGEST_RELEASE_AUDIENCE_KEY.".{$audience}\"\n            android:value=\"\" />";
+
+            $contents = preg_replace_callback(
+                '/<application[^>]*>/',
+                fn (array $matches): string => $matches[0].$entry,
+                $contents,
+                1
+            );
         }
 
         $normalizedContents = $this->normalizeLineEndings($contents);

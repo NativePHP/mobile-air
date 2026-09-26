@@ -191,6 +191,13 @@ abstract class Element
         // programmatically built elements silently dropped ALL dark-mode
         // styling (light hexes rendered in both modes).
         $this->mergeDarkProps(NativeElementCollector::buildDarkProps($attrs));
+        // Responsive variants — same JSON prop the collector emits for
+        // blade elements, so `->class('md:flex-row')` re-flows too. Built
+        // against this class string only: styling set fluently before the
+        // call isn't part of the base a breakpoint builds on.
+        foreach (NativeElementCollector::buildVariantProps($attrs, fn () => new static) as $key => $value) {
+            $this->setProp($key, $value);
+        }
 
         return $this;
     }
@@ -512,6 +519,53 @@ abstract class Element
     public function elevation(float $value): static
     {
         $this->style['elevation'] = $value;
+
+        return $this;
+    }
+
+    /**
+     * Colored zero-offset glow halo. Programmatic twin of `glow-*`
+     * utilities — rides the props bag (`glow_color` / `glow_radius` /
+     * `glow_opacity`), not the packed NodeStyle elevation slot.
+     */
+    public function glow(string $color, float $radius = 16.0, float $opacity = 0.55): static
+    {
+        $this->extraProps['glow_color'] = $color;
+        $this->extraProps['glow_radius'] = $radius;
+        $this->extraProps['glow_opacity'] = $opacity;
+
+        return $this;
+    }
+
+    public function glowColor(string $color): static
+    {
+        $this->extraProps['glow_color'] = $color;
+
+        return $this;
+    }
+
+    public function glowRadius(float $radius): static
+    {
+        $this->extraProps['glow_radius'] = $radius;
+
+        return $this;
+    }
+
+    public function glowOpacity(float $opacity): static
+    {
+        $this->extraProps['glow_opacity'] = $opacity;
+
+        return $this;
+    }
+
+    /**
+     * Gaussian blur filter. Programmatic twin of `blur-*` / `blur-[Npx]`
+     * — rides the props bag (`blur` radius in points), not NodeStyle.
+     * Softens the node's own pixels (page-bg orbs); distinct from glow/shadow.
+     */
+    public function blur(float $radius): static
+    {
+        $this->extraProps['blur'] = $radius;
 
         return $this;
     }

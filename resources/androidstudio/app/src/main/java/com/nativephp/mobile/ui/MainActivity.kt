@@ -2,6 +2,7 @@ package com.nativephp.mobile.ui
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.hardware.Sensor
@@ -89,6 +90,8 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     private var pendingDeepLink: String? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
+
+    private var asyncExecutor: com.nativephp.mobile.bridge.AsyncTaskExecutor? = null
     @Volatile private var nativeUIThread: Thread? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
@@ -243,6 +246,14 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         phpBridge.isPersistentMode() && queueWorker == null) {
                         Log.d("MainActivity", "▶️ Starting deferred background queue worker")
                         queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    }
+
+                    // Async task lane (AsyncTask::dispatch()). Pool threads boot
+                    // their PHP context lazily on first task, so starting the
+                    // executor now costs nothing until work is dispatched.
+                    if (!isFinishing && !isDestroyed &&
+                        phpBridge.isPersistentMode() && asyncExecutor == null) {
+                        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                     }
                 }, WORKER_START_DELAY_MS)
 
@@ -797,6 +808,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         // Stop background queue worker
         queueWorker?.stop()
+
+        // Stop async task lane
+        asyncExecutor?.stop()
     }
 
     override fun getWebView(): WebView {
@@ -863,6 +877,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     }
 
     private fun startHotReloadWatcher() {
+        // Debuggable builds only. native:watch delivers reloads through
+        // `adb shell run-as`, which can't reach a non-debuggable app, so a
+        // release build would poll the filesystem and disable WebView caching
+        // for nothing. Leaving hotReloadWatcherThread null also keeps
+        // onWebRendererCreated from applying LOAD_NO_CACHE.
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
+
         // Configure WebView for development - disable caching for hot reload.
         // On a native-first boot no renderer exists yet; onWebRendererCreated
         // applies the same mode when one appears.
@@ -954,11 +975,19 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                                 // those itself.
                                 queueWorker?.stop()
 
+                                // Blocks until the async pool has drained: the
+                                // shutdown below destroys Zend state its live
+                                // contexts reference.
+                                if (asyncExecutor?.stop() == false) {
+                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
+                                }
+
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
 
-                                // Restart queue worker with fresh runtime
+                                // Restart queue worker + async lane with fresh runtime
                                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                                 Log.d("HotReload", "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms")
                             }
 
@@ -1037,11 +1066,19 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                                 // if still active
                                 queueWorker?.stop()
 
+                                // Blocks until the async pool has drained: the
+                                // shutdown below destroys Zend state its live
+                                // contexts reference.
+                                if (asyncExecutor?.stop() == false) {
+                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
+                                }
+
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
 
-                                // Restart queue worker with fresh runtime
+                                // Restart queue worker + async lane with fresh runtime
                                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
 
                                 Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
                             }
