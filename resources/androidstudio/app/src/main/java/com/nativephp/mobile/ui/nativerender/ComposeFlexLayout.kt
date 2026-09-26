@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
@@ -35,6 +37,42 @@ object JustifyContent {
     const val SPACE_BETWEEN = 3
     const val SPACE_AROUND = 4
     const val SPACE_EVENLY = 5
+}
+
+/**
+ * local patch: true while the enclosing container's width is
+ * definite — it fills, grows or is sized — i.e. the CSS situation in which
+ * `align-items: stretch` (iOS's FlexContainer default) hands a column child
+ * the container's width. Under a CONTENT-SIZED row child (a chip's pressable
+ * in a flex-wrap row) Compose's fillMaxWidth would take the width available
+ * to that child rather than its content width, so no stretching happens
+ * there.
+ */
+val LocalDefiniteWidth = compositionLocalOf { true }
+
+/** local patch: does this column child take the column's width, as on iOS? */
+internal fun columnChildStretches(node: NativeUINode, align: Int): Boolean {
+    val layout = node.layout
+    val effectiveAlign = if ((layout?.alignSelf ?: 0) > 0) layout!!.alignSelf else align
+    if (effectiveAlign == AlignItems.CENTER || effectiveAlign == AlignItems.END) return false
+    if (layout != null && (layout.widthMode == SizeMode.FIXED || layout.widthMode == SizeMode.PERCENT) && layout.width > 0f) return false
+    if (layout?.widthMode == SizeMode.FILL || effectiveAlign == AlignItems.STRETCH) return true
+    return when (node.type) {
+        // Centred / right-aligned text needs the width for the alignment to
+        // mean anything; left text is identical filled or content-sized.
+        "text" -> node.props.getInt("text_align").let { it == 1 || it == 2 }
+        // Containers stretch unless they opt out with an explicit `self-start`.
+        "row", "column", "pressable" -> (layout?.alignSelf ?: AlignItems.UNSET) != AlignItems.START
+        else -> false
+    }
+}
+
+/** local patch: a row child's width is definite when it grows, fills or is sized. */
+internal fun rowChildDefinite(node: NativeUINode): Boolean {
+    val layout = node.layout ?: return false
+    return layout.flexGrow > 0f ||
+        layout.widthMode == SizeMode.FILL ||
+        ((layout.widthMode == SizeMode.FIXED || layout.widthMode == SizeMode.PERCENT) && layout.width > 0f)
 }
 
 object AlignItems {
@@ -194,7 +232,13 @@ private fun FlexColumn(
             if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEachIndexed
 
             val childMod = buildChildModifier(node, isRow = false, align = align, scope = this)
-            NodeView(node = node, overrideModifier = childMod)
+            // a child that takes this column's width has
+            // a definite width of its own only if this column's is definite.
+            val childDefinite = (LocalDefiniteWidth.current && columnChildStretches(node, align)) ||
+                ((node.layout?.widthMode == SizeMode.FIXED || node.layout?.widthMode == SizeMode.PERCENT) && (node.layout?.width ?: 0f) > 0f)
+            CompositionLocalProvider(LocalDefiniteWidth provides childDefinite) {
+                NodeView(node = node, overrideModifier = childMod)
+            }
         }
     }
 }
@@ -237,7 +281,11 @@ private fun FlexRow(
                 if ((node.layout?.display ?: 0) == Display.NONE) return@forEach
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEach
                 val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
-                NodeView(node = node, overrideModifier = childMod)
+                // same definite-width gate for flex-wrap children —
+                // the chips in a wrapping row are exactly the content-sized case.
+                CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                    NodeView(node = node, overrideModifier = childMod)
+                }
             }
         }
         return
@@ -253,7 +301,10 @@ private fun FlexRow(
             if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEachIndexed
 
             val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
-            NodeView(node = node, overrideModifier = childMod)
+            // a row child's width is definite only when it grows or is sized.
+            CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                NodeView(node = node, overrideModifier = childMod)
+            }
         }
     }
 }
@@ -434,22 +485,11 @@ private fun buildChildModifier(
         //             row). A default/justify-start row content-sizes — e.g. a
         //             chip pill — so it doesn't swallow the whole width.
         //   - other → content-sizes; columns/cards opt into full width with w-full.
-        val justify = layout?.justifyContent ?: JustifyContent.START
-        val stretchesWidth = (effectiveAlign != AlignItems.CENTER && effectiveAlign != AlignItems.END) &&
-            when (node.type) {
-                // Text fills the column width ONLY when it's center/right-aligned —
-                // that's when the alignment needs a wider box to take effect (e.g.
-                // a centered value pill). Left/default text is identical filled or
-                // content-sized, so we leave it content-sized; that way a content-
-                // sized column wrapping just a label (a chip/Subscribe button) keeps
-                // hugging its text instead of stretching to the full row width.
-                "text" -> node.props.getInt("text_align").let { it == 1 || it == 2 }
-                // A row fills only when it must distribute its children.
-                "row" -> justify == JustifyContent.SPACE_BETWEEN ||
-                    justify == JustifyContent.SPACE_AROUND ||
-                    justify == JustifyContent.SPACE_EVENLY
-                else -> false
-            }
+        // iOS's FlexContainer stretches every column
+        // child (the CSS default) — mirrored by columnChildStretches, but only
+        // while the enclosing width is definite (LocalDefiniteWidth): under a
+        // content-sized row child, fillMaxWidth would take the whole line.
+        val stretchesWidth = LocalDefiniteWidth.current && columnChildStretches(node, align)
         when {
             layout?.widthMode == SizeMode.FIXED && (layout.width) > 0f -> mod = mod.width(layout.width.dp)
             layout?.widthMode == SizeMode.PERCENT && (layout.width) > 0f ->
