@@ -41,7 +41,7 @@ class IosBuildCopyTest extends TestCase
             $this->assertContains($pattern, $paths);
         }
 
-        foreach (['/database/database.sqlite', '/*.js', '/*.md'] as $pattern) {
+        foreach (['/database/database.sqlite', '/database/database.sqlite-wal', '/database/database.sqlite-shm', '/database/database.sqlite-journal', '/*.js', '/*.md'] as $pattern) {
             $this->assertContains($pattern, $paths);
         }
 
@@ -325,11 +325,15 @@ class IosBuildCopyTest extends TestCase
             '.gitignore' => '/vendor',
             '.editorconfig' => 'root = true',
             '.DS_Store' => 'binary',
-            'database' => ['database.sqlite' => ''],
+            'database' => ['database.sqlite' => '', 'database.sqlite-wal' => '', 'database.sqlite-shm' => '', 'database.sqlite-journal' => ''],
             'app' => ['bootstrap.php' => '<?php'],
         ]);
 
         BundleFileManager::removeUnnecessaryFiles($appPath);
+
+        foreach (['', '-wal', '-shm', '-journal'] as $suffix) {
+            $this->assertFileDoesNotExist($appPath.'database/database.sqlite'.$suffix);
+        }
 
         $this->assertFileDoesNotExist($appPath.'artisan');
         $this->assertFileDoesNotExist($appPath.'.gitignore');
