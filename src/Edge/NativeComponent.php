@@ -2697,22 +2697,26 @@ abstract class NativeComponent
 
             if (! $this->nativeHasError) {
                 try {
-                    $t0 = microtime(true);
+                    // Resolved once per tick: when the edge-nav log is off, the
+                    // PERF sprintf() is skipped along with the write.
+                    $perf = NativeRouter::debugLoggingEnabled();
+                    $t0 = $perf ? microtime(true) : 0.0;
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
                         $this->nativeRouter?->flushDeferredTransition();
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] streaming total=%.1fms',
-                            static::class, ($t3 - $t0) * 1000
-                        ));
+                        if ($perf) {
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] streaming total=%.1fms',
+                                static::class, (microtime(true) - $t0) * 1000
+                            ));
+                        }
                     } else {
                         $element = $this->renderToElement();
 
-                        $t1 = microtime(true);
+                        $t1 = $perf ? microtime(true) : 0.0;
                         $tree = $this->memoizedToArray($element);
-                        $t2 = microtime(true);
+                        $t2 = $perf ? microtime(true) : 0.0;
 
                         $this->nativeRouter?->flushDeferredTransition();
 
@@ -2721,12 +2725,14 @@ abstract class NativeComponent
                             $tree, $this->nativeRouter?->currentUri() ?? '/'
                         );
 
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
-                            static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                            ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
-                        ));
+                        if ($perf) {
+                            $t3 = microtime(true);
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
+                                static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
+                                ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
+                            ));
+                        }
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
