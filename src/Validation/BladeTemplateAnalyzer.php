@@ -2,28 +2,19 @@
 
 namespace Native\Mobile\Validation;
 
+use Native\Mobile\Edge\ComponentRegistry;
+use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Plugins\PluginRegistry;
+
 class BladeTemplateAnalyzer
 {
     /**
-     * Element types recognized by NativeElementCollector::createElement().
+     * Types NativeElementCollector builds itself, without looking them up
+     * in the ElementRegistry (see NativeElementCollector::makeElement()).
      */
-    protected const KNOWN_ELEMENTS = [
-        'column', 'row', 'stack', 'scroll_view',
-        'text', 'button', 'text_input', 'toggle', 'checkbox',
-        'image', 'spacer', 'divider', 'progress_bar',
-        'radio_group', 'radio', 'activity_indicator',
-        'top_bar', 'top_bar_action', 'bottom_nav', 'bottom_nav_item',
-        'fab', 'horizontal_divider',
-        'side_nav', 'side_nav_item', 'side_nav_group', 'side_nav_header',
-    ];
-
-    /**
-     * Elements that have Blade components but are NOT in createElement().
-     * These will render via NativeBladeComponent but throw RuntimeException
-     * if they somehow reach the collector's createElement match statement.
-     */
-    protected const BLADE_ONLY_ELEMENTS = [
-        'slider', 'icon', 'select', 'badge',
+    protected const BUILTIN_TYPES = [
+        'column', 'row', 'stack', 'scroll_view', 'spacer', 'divider',
+        'pressable', 'canvas', 'bottom_bar',
     ];
 
     /**
@@ -35,14 +26,31 @@ class BladeTemplateAnalyzer
     ];
 
     /**
-     * Elements that support @change callback.
+     * Element type => Element class, as registered by core and by every
+     * registered plugin. Null until first needed, so the registry is read
+     * after the app has booted.
+     *
+     * @var array<string, string>|null
      */
-    protected const SUPPORTS_CHANGE = ['text_input', 'toggle'];
+    protected ?array $elements;
 
     /**
-     * Elements that support @submit callback.
+     * Element type => package name, for components declared by plugins that
+     * are installed but not listed in NativeServiceProvider::plugins().
+     *
+     * @var array<string, string>|null
      */
-    protected const SUPPORTS_SUBMIT = ['text_input'];
+    protected ?array $unregisteredPluginTypes;
+
+    /**
+     * @param  array<string, string>|null  $elements  Defaults to ElementRegistry::all().
+     * @param  array<string, string>|null  $unregisteredPluginTypes  Defaults to the plugin registry.
+     */
+    public function __construct(?array $elements = null, ?array $unregisteredPluginTypes = null)
+    {
+        $this->elements = $elements;
+        $this->unregisteredPluginTypes = $unregisteredPluginTypes;
+    }
 
     public function analyze(string $filePath, string $content, ValidationResult $result): void
     {
@@ -90,24 +98,29 @@ class BladeTemplateAnalyzer
 
             $isSelfClosing = str_ends_with(trim($fullMatch), '/>');
 
-            // Check for unknown element type
-            $allKnown = array_merge(self::KNOWN_ELEMENTS, self::BLADE_ONLY_ELEMENTS);
-            if (! in_array($elementType, $allKnown)) {
-                $result->error($filePath, "Unknown native element type: '{$tagName}'", $line);
+            // Check for unknown element type. Child components are
+            // resolved at runtime and take arbitrary attributes, so they
+            // skip the element checks below.
+            if (ComponentRegistry::has($elementType)) {
+                continue;
+            }
+
+            if (! $this->isKnownElement($elementType)) {
+                $result->error($filePath, $this->unknownElementMessage($tagName, $elementType), $line);
 
                 continue;
             }
 
             // Check @change on unsupported element
             if (preg_match('/_change\s*=/', $attrs) || preg_match('/@change\s*=/', $attrs)) {
-                if (! in_array($elementType, self::SUPPORTS_CHANGE)) {
+                if (! $this->elementHasMethod($elementType, 'onChange')) {
                     $result->error($filePath, "@change not supported on <native:{$tagName}>", $line);
                 }
             }
 
             // Check @submit on unsupported element
             if (preg_match('/_submit\s*=/', $attrs) || preg_match('/@submit\s*=/', $attrs)) {
-                if (! in_array($elementType, self::SUPPORTS_SUBMIT)) {
+                if (! $this->elementHasMethod($elementType, 'onSubmit')) {
                     $result->error($filePath, "@submit not supported on <native:{$tagName}>", $line);
                 }
             }
@@ -117,8 +130,9 @@ class BladeTemplateAnalyzer
                 $result->warning($filePath, "Container <native:{$tagName} /> is self-closing (renders empty)", $line);
             }
 
-            // Warn: button without label
-            if ($elementType === 'button' && ! preg_match('/\blabel\s*=/', $attrs)) {
+            // Warn: self-closing button with nothing to show. A paired tag
+            // takes its label from the slot, and an icon-only button is fine.
+            if ($elementType === 'button' && $isSelfClosing && ! preg_match('/(?<![\w-])(label|icon)\s*=/', $attrs)) {
                 $result->warning($filePath, "<native:button> without 'label' attribute", $line);
             }
 
@@ -127,6 +141,67 @@ class BladeTemplateAnalyzer
                 $result->warning($filePath, "<native:image> without 'src' attribute", $line);
             }
         }
+    }
+
+    /**
+     * Whether the collector can build this type: one of its builtins, or a
+     * type registered in the ElementRegistry by core or a registered plugin.
+     */
+    protected function isKnownElement(string $type): bool
+    {
+        return in_array($type, self::BUILTIN_TYPES, true)
+            || array_key_exists($type, $this->elements());
+    }
+
+    protected function elementHasMethod(string $type, string $method): bool
+    {
+        $class = $this->elements()[$type] ?? null;
+
+        return $class !== null && method_exists($class, $method);
+    }
+
+    protected function unknownElementMessage(string $tagName, string $type): string
+    {
+        $message = "Unknown native element type: '{$tagName}'";
+
+        $package = $this->unregisteredPluginTypes()[$type] ?? null;
+
+        if ($package !== null) {
+            $message .= ". It comes from {$package}, which is installed but not registered."
+                ." Run `php artisan native:plugin:register {$package}`";
+        }
+
+        return $message;
+    }
+
+    /** @return array<string, string> */
+    protected function elements(): array
+    {
+        return $this->elements ??= ElementRegistry::all();
+    }
+
+    /** @return array<string, string> */
+    protected function unregisteredPluginTypes(): array
+    {
+        if ($this->unregisteredPluginTypes !== null) {
+            return $this->unregisteredPluginTypes;
+        }
+
+        $types = [];
+
+        try {
+            foreach (app(PluginRegistry::class)->unregistered() as $plugin) {
+                foreach ($plugin->getComponents() as $component) {
+                    if (isset($component['type'])) {
+                        $types[$component['type']] ??= $plugin->name;
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            // Plugin discovery is a nicety here; never fail validation on it.
+        }
+
+        return $this->unregisteredPluginTypes = $types;
     }
 
     /**
@@ -161,6 +236,9 @@ class BladeTemplateAnalyzer
                 if (str_contains($method, '$') || str_contains($method, '{{')) {
                     continue;
                 }
+
+                // `delete(1)` calls delete() with a literal argument.
+                $method = trim(preg_replace('/\(.*\)$/s', '', $method));
 
                 $callbacks[] = [
                     'method' => $method,
