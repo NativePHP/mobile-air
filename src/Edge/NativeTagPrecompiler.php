@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Edge;
 
+use Native\Mobile\Edge\Exceptions\UnknownElementException;
+
 /**
  * Compiles <native:*> tags directly into NativeElementCollector calls,
  * bypassing the Blade component lifecycle (IoC, class instantiation,
@@ -167,6 +169,10 @@ class NativeTagPrecompiler
         if (! self::$active) {
             return $value;
         }
+
+        // A bare tag no registered element claims is left as markup, and a
+        // native render drops markup on the floor. Say so before that happens.
+        $this->reportUnknownBareTags($value);
 
         // Stamp the compiled output as natively-compiled (see COMPILED_MARKER).
         // No trailing newline — line numbers in compile errors stay unchanged.
@@ -345,6 +351,66 @@ class NativeTagPrecompiler
         }
 
         return $value;
+    }
+
+    /**
+     * Find bare tags in a native view that will not compile to an element,
+     * and report the ones that were clearly meant as one: a first-party
+     * plugin element that isn't registered, a child component written
+     * without the `native:` prefix, or any hyphenated custom-element name.
+     * Single-word unknown tags are left alone, since those could be stray
+     * HTML inside a text slot.
+     *
+     * With app.debug on this throws, so the compile fails with the tag named
+     * in the error screen and in render tests. With it off the tag is
+     * reported to the log and the screen renders without it, as before.
+     * A release build should not lose a whole screen to a missing element.
+     */
+    private function reportUnknownBareTags(string $value): void
+    {
+        // A webview slot is an HTML document; its tags are not elements.
+        $scan = preg_replace('/<\s*(?:native\s*:\s*)?webview\b.*?<\/\s*(?:native\s*:\s*)?webview\s*>/s', '', $value) ?? $value;
+
+        if (! preg_match_all('/<([a-zA-Z][a-zA-Z0-9]*(?:[-_][a-zA-Z0-9]+)*)(?=[\s\/>])/', $scan, $matches)) {
+            return;
+        }
+
+        $known = array_flip($this->shortFormTags);
+
+        $unknown = array_values(array_filter(
+            array_unique($matches[1]),
+            fn (string $tag) => ! isset($known[$tag]) && $this->looksLikeElement($tag),
+        ));
+
+        if ($unknown === []) {
+            return;
+        }
+
+        $exception = UnknownElementException::forBareTags($unknown, $this->currentViewPath());
+
+        if (config('app.debug', false)) {
+            throw $exception;
+        }
+
+        report($exception);
+    }
+
+    private function looksLikeElement(string $tag): bool
+    {
+        if (str_contains($tag, '-')) {
+            return true;
+        }
+
+        return UnknownElementHint::for($this->tagToType($tag)) !== null;
+    }
+
+    private function currentViewPath(): ?string
+    {
+        try {
+            return app('blade.compiler')->getPath() ?: null;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function tagToType(string $tag): string
