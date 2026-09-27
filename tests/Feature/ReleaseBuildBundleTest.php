@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Concerns\PreparesBuild;
 use Native\Mobile\Support\BundleFileManager;
 use Tests\TestCase;
@@ -116,6 +117,63 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertNotFalse($zip->statName('storage/framework/views/'));
 
         $zip->close();
+    }
+
+    public function test_android_bundle_meta_carries_a_build_id_that_changes_on_every_build(): void
+    {
+        Process::fake([
+            'composer install*' => Process::result(),
+            'composer dump-autoload*' => Process::result(),
+        ]);
+
+        // A fixed version is the case that went stale on device: the version
+        // identity is identical across builds, so only the build id differs.
+        config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
+
+        $this->createAndroidProjectFixture();
+
+        $metaPath = $this->testProjectPath.'/nativephp/android/app/src/main/assets/bundle_meta.json';
+
+        (new ReleaseBuildTester)->testPrepareLaravelBundle();
+        $first = json_decode(File::get($metaPath), true);
+
+        (new ReleaseBuildTester)->testPrepareLaravelBundle();
+        $second = json_decode(File::get($metaPath), true);
+
+        $this->assertSame('1.0.0', $first['version']);
+        $this->assertSame($first['version'], $second['version']);
+        $this->assertSame($first['version_code'], $second['version_code']);
+
+        // .env hands the code over as a string. It is written as a number,
+        // which is what the iOS reader expects.
+        $this->assertSame(1, $first['version_code']);
+
+        $this->assertIsString($first['build_id']);
+        $this->assertNotSame('', $first['build_id']);
+        $this->assertNotSame($first['build_id'], $second['build_id']);
+    }
+
+    public function test_ios_bundle_meta_carries_a_build_id_that_changes_on_every_build(): void
+    {
+        config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
+
+        $zipPath = $this->testProjectPath.'/nativephp/ios/NativePHP/app.zip';
+        File::ensureDirectoryExists(dirname($zipPath));
+
+        $command = app(BuildIosAppCommand::class);
+        $write = new \ReflectionMethod($command, 'createBundledVersionFile');
+
+        $write->invoke($command, $zipPath);
+        $first = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        $write->invoke($command, $zipPath);
+        $second = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        $this->assertSame('1.0.0b1', trim(File::get(dirname($zipPath).'/bundled.version')));
+        $this->assertSame(1, $first['version_code']);
+        $this->assertIsString($first['build_id']);
+        $this->assertNotSame('', $first['build_id']);
+        $this->assertNotSame($first['build_id'], $second['build_id']);
     }
 
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void

@@ -31,7 +31,10 @@ class LaravelEnvironment(private val context: Context) {
         // What this shell ships with, so a lane cannot offer it a release that
         // predates its own code.
         val shellBuiltAt: String? = null,
-        val shellCommit: String? = null
+        val shellCommit: String? = null,
+        // Changes on every build (bundle_meta.json "build_id"), so a rebuild
+        // with the same version is still recognised as a new bundle.
+        val buildId: String? = null
     )
 
     companion object {
@@ -68,6 +71,10 @@ class LaravelEnvironment(private val context: Context) {
         private const val BUNDLE_META = "bundle_meta.json"
         private const val OTA_MARKER = ".ota_applied"
         private const val VERSION_FILE = ".version"
+        // Build id of the bundle last extracted. Kept beside the laravel dir,
+        // not in it, because an OTA payload replaces that dir and must not
+        // read as a new build on the next launch.
+        private const val BUILD_ID_FILE = ".bundle_build_id"
         private const val ENV_FILE = ".env"
         private const val CACERT_FILE = "cacert.pem"
         private const val PHP_INI_FILE = "php.ini"
@@ -285,12 +292,20 @@ class LaravelEnvironment(private val context: Context) {
 
         Log.d(TAG, "🔍 DEBUG: currentId = '${currentId ?: "none"}'")
 
-        // If DEBUG mode, ALWAYS extract. Otherwise, only extract if composites don't match.
+        // Same version and code but a different build: a rebuild installed over
+        // the top without a version bump. Comparing versions alone kept running
+        // the previously extracted code and compiled views until a reinstall.
+        val buildIdFile = File(appStorageDir, BUILD_ID_FILE)
+        val embeddedBuildId = bundleMeta.buildId
+        val extractedBuildId = if (buildIdFile.isFile) buildIdFile.readText().trim().ifEmpty { null } else null
+        val isSameBuild = embeddedBuildId == null || embeddedBuildId == extractedBuildId
+
+        // If DEBUG mode, ALWAYS extract. Otherwise, only extract if composites or builds don't match.
         val isDebug = embeddedId.equals(VERSION_DEBUG, ignoreCase = true)
-        val isUpToDate = currentId == embeddedId
+        val isUpToDate = currentId == embeddedId && isSameBuild
         val shouldExtract = isDebug || !isUpToDate
 
-        Log.d(TAG, "🔍 DEBUG: isUpToDate = $isUpToDate, isDebug = $isDebug, shouldExtract = $shouldExtract")
+        Log.d(TAG, "🔍 DEBUG: isUpToDate = $isUpToDate (build ${embeddedBuildId ?: "none"} vs ${extractedBuildId ?: "none"}), isDebug = $isDebug, shouldExtract = $shouldExtract")
 
         if (!shouldExtract) {
             Log.d(TAG, "✅ Laravel already up to date (id $embeddedId)")
@@ -340,6 +355,11 @@ class LaravelEnvironment(private val context: Context) {
             // staleness check compared against "…b1" — a permanent
             // re-extraction loop.
             File(laravelDir, VERSION_FILE).writeText(embeddedId)
+            if (embeddedBuildId != null) {
+                buildIdFile.writeText(embeddedBuildId)
+            } else {
+                buildIdFile.delete()
+            }
             clearCompiledCaches()
             Log.d(TAG, "✅ Updated .version file to: $embeddedId")
 
@@ -383,8 +403,9 @@ class LaravelEnvironment(private val context: Context) {
             val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
             val shellBuiltAt = if (obj.has("shell_built_at") && !obj.isNull("shell_built_at")) obj.getString("shell_built_at") else null
             val shellCommit = if (obj.has("shell_commit") && !obj.isNull("shell_commit")) obj.getString("shell_commit") else null
+            val buildId = if (obj.has("build_id") && !obj.isNull("build_id")) obj.getString("build_id").ifEmpty { null } else null
             Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, version_code=$versionCode, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
-            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit)
+            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit, buildId)
             bundleMetadataCache = metadata
             return metadata
         } catch (e: Exception) {
