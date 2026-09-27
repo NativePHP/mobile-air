@@ -102,8 +102,10 @@ registration to get the native-only behaviour.
 
 Inside a `NativeComponent`: `$this->param('id')`, `$this->data('key', 'default')`, `$this->navigate('/item/42')`,
 `$this->back()`, `$this->replace('/login')`, `$this->exitToWeb('/dashboard')`; chain
-`->transition(Transition::SlideFromBottom)` to customize animation. In Blade, `@navigate="/path"` works on any
-element (modifiers: `@navigate.back`, `@navigate.replace.fade`, `@navigate.slideFromBottom`).
+`->transition(Transition::SlideFromBottom)` to customize animation. In Blade, `@navigate='/path'` works on any
+element (modifiers: `@navigate.back`, `@navigate.replace.fade`, `@navigate.slideFromBottom`). Use single quotes
+for a plain route; double quotes hold a PHP expression, so `@navigate="/path"` fails to compile. Build dynamic
+routes in PHP: `@navigate="'/item/' . $item->id"`.
 
 Lifecycle hooks: `mount()` (first push only), `onResume()` (returning to the screen), `onBackPressed()`
 (Android back button), `unmount()`, and `updated{Property}()` when a bound property changes. Mark a component
