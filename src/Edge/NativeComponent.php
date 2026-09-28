@@ -1649,7 +1649,25 @@ abstract class NativeComponent
             return -1;
         }
 
-        return max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
+        $soonest = min($deadlines);
+        $now = microtime(true) * 1000;
+
+        // Already due: run it now rather than sleeping first. The 1ms floor was
+        // applied even to a deadline that had already passed — so a screen whose
+        // frame costs 5ms and asked for a 1ms poll, already 4ms behind before it
+        // starts, got another millisecond of sleep in front of the work it was
+        // late for. Only screens polling faster than they can render were ever
+        // affected; a 1-second poll on a 4ms frame is never late.
+        //
+        // This cannot spin without doing work: every pass renders and publishes,
+        // and runDuePolls() advances both the #[Poll] deadlines and the Blade
+        // native:poll ones past `now` on the same pass, using this same
+        // comparison — so a deadline reported due here is one that pass services.
+        if ($soonest <= $now) {
+            return 0;
+        }
+
+        return max(1, (int) ceil($soonest - $now));
     }
 
     /**

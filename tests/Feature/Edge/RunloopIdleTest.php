@@ -39,8 +39,8 @@ it('blocks instead of waking while the error screen is up', function () {
     }
     idleSetProperty($screen, 'pollDefinitions', $defs);
 
-    // Without the error screen this is the ordinary overdue case: wake soon.
-    expect(idleTimeout($screen))->toBe(1);
+    // Without the error screen this is the ordinary overdue case: don't sleep.
+    expect(idleTimeout($screen))->toBe(0);
 
     idleSetProperty($screen, 'nativeHasError', true);
 
@@ -77,4 +77,41 @@ it('leaves a screen with no polls blocking, as it always did', function () {
     };
 
     expect(idleTimeout($screen))->toBe(-1);
+});
+
+// ── An overdue poll ──────────────────────────────────────────────
+
+it('does not sleep in front of a poll it is already late for', function () {
+    $screen = new PollScreen;
+    idleTimeout($screen);
+
+    $defs = idleProperty($screen, 'pollDefinitions');
+    $defs[0]['next'] = microtime(true) * 1000 - 4;      // 4ms late already
+    idleSetProperty($screen, 'pollDefinitions', $defs);
+
+    // The 1ms floor used to apply here too, adding a millisecond of sleep in
+    // front of work the loop was already behind on.
+    expect(idleTimeout($screen))->toBe(0);
+});
+
+it('still waits out the remaining interval for a poll that is not due', function () {
+    $screen = new PollScreen;
+
+    // Freshly primed: the soonest is the 1s tick, so the wait reflects that.
+    expect(idleTimeout($screen))->toBeGreaterThan(900)->toBeLessThanOrEqual(1000);
+});
+
+it('rounds up rather than down for a deadline under a millisecond away', function () {
+    $screen = new PollScreen;
+    idleTimeout($screen);
+
+    $defs = idleProperty($screen, 'pollDefinitions');
+    foreach ($defs as $i => $def) {
+        $defs[$i]['next'] = microtime(true) * 1000 + 0.4;
+    }
+    idleSetProperty($screen, 'pollDefinitions', $defs);
+
+    // A 0 here would be a pass that runDuePolls() declines to service, since
+    // the deadline has not actually arrived — a busy loop with nothing to do.
+    expect(idleTimeout($screen))->toBe(1);
 });
