@@ -1916,8 +1916,22 @@ abstract class NativeComponent
         }
 
         if (is_array($payload)) {
+            $reflected = (new \ReflectionMethod($this, $method))->getParameters();
+
+            // A lone `array $payload` that names no payload key wants the
+            // whole payload. Named binding would find nothing for it and the
+            // container cannot resolve a bare array.
+            if (count($reflected) === 1
+                && $reflected[0]->getType() instanceof \ReflectionNamedType
+                && $reflected[0]->getType()->getName() === 'array'
+                && ! array_key_exists($reflected[0]->getName(), $payload)) {
+                ComponentMethodInvoker::invoke($this, $method, [$reflected[0]->getName() => $payload]);
+
+                return;
+            }
+
             $parameters = [];
-            foreach ((new \ReflectionMethod($this, $method))->getParameters() as $parameter) {
+            foreach ($reflected as $parameter) {
                 if (array_key_exists($parameter->getName(), $payload)) {
                     $parameters[$parameter->getName()] = $this->coerceNativePayloadValue(
                         $parameter,
