@@ -60,13 +60,26 @@ it('leaves values the developer configured alone', function () {
         ->toMatchArray(['journal_mode' => 'delete', 'synchronous' => 'full', 'busy_timeout' => 1000]);
 });
 
-it('fills only the key the developer left unset', function () {
+it('leaves synchronous alone when the developer chose a rollback journal', function () {
     $config = sqliteDefaultsConfig(['sqlite' => sqliteDefaultsConnection(['journal_mode' => 'truncate'])]);
 
     SqliteDefaults::apply($config, SQLITE_DEFAULTS_MANAGED_DB);
 
-    expect($config->get('database.connections.sqlite'))
-        ->toMatchArray(['journal_mode' => 'truncate', 'synchronous' => 'normal']);
+    // TRUNCATE is a rollback journal, where synchronous=NORMAL is corruption-
+    // capable rather than merely lossy. The two defaults are not independent:
+    // filling one in because the other was set is how you hand somebody a
+    // combination neither of you chose.
+    expect($config->get('database.connections.sqlite'))->toMatchArray(['journal_mode' => 'truncate'])
+        ->and($config->get('database.connections.sqlite.synchronous'))->toBeNull();
+});
+
+it('fills synchronous when the developer explicitly chose WAL', function () {
+    $config = sqliteDefaultsConfig(['sqlite' => sqliteDefaultsConnection(['journal_mode' => 'WAL'])]);
+
+    SqliteDefaults::apply($config, SQLITE_DEFAULTS_MANAGED_DB);
+
+    // Case-insensitively: 'WAL' is as much WAL as 'wal'.
+    expect($config->get('database.connections.sqlite.synchronous'))->toBe('normal');
 });
 
 it('treats the same pragma in the connection\'s pragmas array as configured', function () {
@@ -74,8 +87,10 @@ it('treats the same pragma in the connection\'s pragmas array as configured', fu
 
     SqliteDefaults::apply($config, SQLITE_DEFAULTS_MANAGED_DB);
 
+    // Configured through `pragmas`, so journal_mode stays untouched — and the
+    // mode it names is DELETE, so synchronous must be left alone too.
     expect($config->get('database.connections.sqlite.journal_mode'))->toBeNull()
-        ->and($config->get('database.connections.sqlite.synchronous'))->toBe('normal');
+        ->and($config->get('database.connections.sqlite.synchronous'))->toBeNull();
 });
 
 it('only touches connections pointing at the database the shell manages', function () {

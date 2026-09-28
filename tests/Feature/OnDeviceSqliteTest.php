@@ -102,13 +102,37 @@ it('defaults the managed connection to WAL on device and resolves core\'s connec
         ->and(DB::connection('sqlite'))->toBeInstanceOf(SQLiteConnection::class);
 });
 
-it('keeps the developer\'s journal mode on device', function () {
+it('keeps the developer\'s journal mode on device, and does not make it unsafe', function () {
     config(['nativephp-internal.running' => true, 'database.connections.sqlite.journal_mode' => 'delete']);
 
     runOnDeviceSqliteWiring($this->app);
 
+    // synchronous=NORMAL is only crash-safe under WAL. On the rollback journal
+    // it lets a power cut mid-commit corrupt the file, so a developer who chose
+    // DELETE must keep SQLite's FULL default rather than get our NORMAL applied
+    // on top of it — a combination neither of us chose.
     expect(config('database.connections.sqlite.journal_mode'))->toBe('delete')
-        ->and(config('database.connections.sqlite.synchronous'))->toBe('normal');
+        ->and(config('database.connections.sqlite.synchronous'))->toBeNull();
+});
+
+it('leaves synchronous alone when the journal mode is set through pragmas', function () {
+    config([
+        'nativephp-internal.running' => true,
+        'database.connections.sqlite.pragmas' => ['journal_mode' => 'delete'],
+    ]);
+
+    runOnDeviceSqliteWiring($this->app);
+
+    expect(config('database.connections.sqlite.synchronous'))->toBeNull()
+        ->and(config('database.connections.sqlite.journal_mode'))->toBeNull();
+});
+
+it('still applies synchronous when the developer asked for WAL themselves', function () {
+    config(['nativephp-internal.running' => true, 'database.connections.sqlite.journal_mode' => 'wal']);
+
+    runOnDeviceSqliteWiring($this->app);
+
+    expect(config('database.connections.sqlite.synchronous'))->toBe('normal');
 });
 
 it('does not replace a sqlite resolver someone else registered', function () {
@@ -172,6 +196,33 @@ it('wipes a WAL database in place, consistently for other open connections', fun
     $fresh = new PDO('sqlite:'.$this->db);
     expect($fresh->query('pragma integrity_check')->fetchColumn())->toBe('ok')
         ->and((int) $fresh->query('select count(*) from notes')->fetchColumn())->toBe(1);
+});
+
+it('drops views as well as tables when it wipes a WAL database in place', function () {
+    config(['nativephp-internal.running' => true]);
+    runOnDeviceSqliteWiring($this->app);
+
+    $db = DB::connection('sqlite');
+    $db->statement('pragma journal_mode = wal');
+
+    Schema::connection('sqlite')->create('notes', fn ($t) => $t->id());
+    $db->statement('create view recent_notes as select * from notes');
+
+    Schema::connection('sqlite')->dropAllTables();
+
+    // The truncate-to-zero-bytes behaviour this replaces removed views too, so
+    // leaving them behind is a regression: the view outlives the table it
+    // selects from, and recreating it on the next migrate:fresh throws
+    // "view recent_notes already exists" with no way to clear it.
+    $views = $db->select("select name from sqlite_master where type = 'view'");
+
+    expect($views)->toBe([]);
+
+    // Proves the point: the same migration can run again.
+    Schema::connection('sqlite')->create('notes', fn ($t) => $t->id());
+    $db->statement('create view recent_notes as select * from notes');
+
+    expect(sqlitePragma($db, 'integrity_check'))->toBe('ok');
 });
 
 it('keeps Laravel\'s truncate for databases that are not in WAL mode', function () {

@@ -48,7 +48,17 @@ class SQLiteBuilder extends BaseSQLiteBuilder
     protected function wipeInPlace(): void
     {
         $this->connection->statement('pragma writable_schema = 1');
-        $this->connection->statement($this->grammar->compileDropAllTables());
+
+        // Not compileDropAllTables(): that statement covers table/index/trigger
+        // and leaves views standing. The behaviour this replaces truncated the
+        // file to zero bytes, which took views with it — so stopping short of
+        // them would make migrate:fresh leave a database holding views bound to
+        // tables that no longer exist. The next run then fails with "view
+        // already exists", and nothing the developer can run clears it.
+        $this->connection->statement(
+            "delete from sqlite_master where type in ('table', 'index', 'trigger', 'view')"
+        );
+
         $this->connection->statement('pragma writable_schema = 0');
         $this->connection->statement($this->grammar->compileRebuild());
     }

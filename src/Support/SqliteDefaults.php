@@ -20,6 +20,16 @@ use Illuminate\Contracts\Config\Repository;
  * 'journal_mode' => 'delete' — always wins. Laravel 10 ignores the keys, so
  * there this is a no-op.
  *
+ * The two defaults are NOT independent, which is why they are not applied in a
+ * loop. synchronous=NORMAL is only crash-safe under WAL: WAL commits still sync
+ * the write-ahead log, so the worst case is losing the last few transactions.
+ * Under the rollback journal the same setting lets the journal be recycled
+ * before the database pages it protects have reached the platter, so a power
+ * cut mid-commit can leave the file corrupt. A developer who has deliberately
+ * set 'journal_mode' => 'delete' must therefore keep SQLite's FULL default —
+ * applying our NORMAL on top of their DELETE would hand them a combination
+ * neither of us chose.
+ *
  * busy_timeout is deliberately left alone: pdo_sqlite already opens every
  * connection with a 60s busy timeout (PDO::ATTR_TIMEOUT), and any value we
  * picked would only shorten it.
@@ -59,12 +69,15 @@ class SqliteDefaults
 
             $changed = false;
 
-            foreach (static::DEFAULTS as $key => $value) {
-                if (static::isConfigured($connection, $key)) {
-                    continue;
-                }
+            // journal_mode first: whether this connection ends up on WAL is
+            // what decides if synchronous=NORMAL is safe to add below.
+            if (! static::isConfigured($connection, 'journal_mode')) {
+                $connection['journal_mode'] = static::DEFAULTS['journal_mode'];
+                $changed = true;
+            }
 
-                $connection[$key] = $value;
+            if (! static::isConfigured($connection, 'synchronous') && static::usesWal($connection)) {
+                $connection['synchronous'] = static::DEFAULTS['synchronous'];
                 $changed = true;
             }
 
@@ -136,22 +149,42 @@ class SqliteDefaults
      */
     protected static function isConfigured(array $connection, string $key): bool
     {
+        return static::configuredValue($connection, $key) !== null;
+    }
+
+    /**
+     * The value the developer configured for a key, from either the connection
+     * key or Laravel's `pragmas` array, or null when they left it alone.
+     */
+    protected static function configuredValue(array $connection, string $key): mixed
+    {
         if (array_key_exists($key, $connection) && $connection[$key] !== null) {
-            return true;
+            return $connection[$key];
         }
 
         $pragmas = $connection['pragmas'] ?? null;
 
         if (! is_array($pragmas)) {
-            return false;
+            return null;
         }
 
         foreach ($pragmas as $pragma => $value) {
             if (is_string($pragma) && strcasecmp($pragma, $key) === 0 && $value !== null) {
-                return true;
+                return $value;
             }
         }
 
-        return false;
+        return null;
+    }
+
+    /**
+     * Will this connection actually run on WAL — either because the developer
+     * asked for it, or because we just filled it in?
+     */
+    protected static function usesWal(array $connection): bool
+    {
+        $journal = static::configuredValue($connection, 'journal_mode');
+
+        return is_string($journal) && strcasecmp($journal, 'wal') === 0;
     }
 }
