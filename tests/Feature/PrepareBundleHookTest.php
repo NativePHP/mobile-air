@@ -23,9 +23,8 @@ use ZipArchive;
 /**
  * Covers the prepare_bundle lifecycle hook: it fires exactly once per
  * platform per build, after the staging tree is fully prepared and before
- * version files are written or the archive is created, and — unlike the
- * other four lifecycle hooks — a failure aborts the build instead of only
- * warning.
+ * version files are written or the archive is created, and a failure
+ * aborts the build.
  */
 class PrepareBundleHookTest extends TestCase
 {
@@ -48,12 +47,8 @@ class PrepareBundleHookTest extends TestCase
         $kernel->registerCommand(new MarkerPrepareBundleHookCommand);
         $kernel->registerCommand(new NonZeroExitPrepareBundleHookCommand);
         $kernel->registerCommand(new ThrowingPrepareBundleHookCommand);
-        $kernel->registerCommand(new NonZeroExitLegacyHookCommand);
-        $kernel->registerCommand(new ThrowingLegacyHookCommand);
 
         MarkerPrepareBundleHookCommand::reset();
-        NonZeroExitLegacyHookCommand::reset();
-        ThrowingLegacyHookCommand::reset();
     }
 
     protected function tearDown(): void
@@ -126,27 +121,6 @@ class PrepareBundleHookTest extends TestCase
         $this->expectExceptionMessage('prepare_bundle hook exploded');
 
         $runner->runPrepareBundleHooks($bundlePath);
-    }
-
-    public function test_existing_hooks_still_only_warn_on_nonzero_exit_code(): void
-    {
-        $plugin = $this->pluginWithHook('post_compile', 'test:legacy-hook-nonzero-exit');
-        $runner = new PluginHookRunner('android', $this->testProjectPath.'/nativephp/android', 'com.test.app', [], collect([$plugin]));
-
-        // No exception propagates — the legacy hook path only warns on failure.
-        $runner->runPostCompileHooks();
-
-        $this->assertSame(1, NonZeroExitLegacyHookCommand::$callCount);
-    }
-
-    public function test_existing_hooks_still_only_warn_on_thrown_exception(): void
-    {
-        $plugin = $this->pluginWithHook('post_compile', 'test:legacy-hook-throws');
-        $runner = new PluginHookRunner('android', $this->testProjectPath.'/nativephp/android', 'com.test.app', [], collect([$plugin]));
-
-        $runner->runPostCompileHooks();
-
-        $this->assertSame(1, ThrowingLegacyHookCommand::$callCount);
     }
 
     // -------------------------------------------------------------------
@@ -614,43 +588,5 @@ class ThrowingPrepareBundleHookCommand extends NativePluginHookCommand
     public function handle(): int
     {
         throw new RuntimeException('prepare_bundle hook exploded');
-    }
-}
-
-class NonZeroExitLegacyHookCommand extends NativePluginHookCommand
-{
-    protected $signature = 'test:legacy-hook-nonzero-exit';
-
-    public static int $callCount = 0;
-
-    public static function reset(): void
-    {
-        self::$callCount = 0;
-    }
-
-    public function handle(): int
-    {
-        self::$callCount++;
-
-        return 3;
-    }
-}
-
-class ThrowingLegacyHookCommand extends NativePluginHookCommand
-{
-    protected $signature = 'test:legacy-hook-throws';
-
-    public static int $callCount = 0;
-
-    public static function reset(): void
-    {
-        self::$callCount = 0;
-    }
-
-    public function handle(): int
-    {
-        self::$callCount++;
-
-        throw new RuntimeException('legacy hook exploded');
     }
 }
