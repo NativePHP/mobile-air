@@ -1619,7 +1619,14 @@ abstract class NativeComponent
      */
     private function nextEventTimeout(): int
     {
-        $deadlines = array_map(fn ($def) => $def['next'], $this->pollDefinitions());
+        // Nested components have no runloop of their own, so the host waits
+        // on the earliest #[Poll] deadline anywhere in its component tree.
+        $deadlines = [];
+        foreach ($this->componentTree() as $component) {
+            foreach ($component->pollDefinitions() as $def) {
+                $deadlines[] = $def['next'];
+            }
+        }
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
         }
@@ -1642,20 +1649,8 @@ abstract class NativeComponent
     {
         $now = microtime(true) * 1000;
 
-        if (! empty($this->pollDefinitions)) {
-            foreach ($this->pollDefinitions as $i => $def) {
-                if ($now < $def['next']) {
-                    continue;
-                }
-
-                // Reschedule before user code runs so a failing callback is
-                // contained by the error screen without becoming a hot-loop.
-                $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
-
-                if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
-                }
-            }
+        foreach ($this->componentTree() as $component) {
+            $component->runDuePollMethods($now);
         }
 
         foreach ($this->bladePollDeadlines as $ms => $next) {
@@ -1665,6 +1660,27 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
+    }
+
+    private function runDuePollMethods(float $now): void
+    {
+        if (empty($this->pollDefinitions)) {
+            return;
+        }
+
+        foreach ($this->pollDefinitions as $i => $def) {
+            if ($now < $def['next']) {
+                continue;
+            }
+
+            // Reschedule before user code runs so a failing callback is
+            // contained by the error screen without becoming a hot-loop.
+            $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
+
+            if ($def['method'] !== null && method_exists($this, $def['method'])) {
+                ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
+            }
+        }
     }
 
     /** Keep callback failures inside the component's error-screen lifecycle. */
@@ -1907,6 +1923,15 @@ abstract class NativeComponent
         // listener for the event.
         $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
 
+        // #[On] listeners on nested components hear native events too. The
+        // global dispatch above stays outside the loop so it fires once.
+        foreach ($this->componentTree() as $component) {
+            $component->invokeNativeEventListener($eventName, $payload);
+        }
+    }
+
+    private function invokeNativeEventListener(string $eventName, mixed $payload): void
+    {
         $method = $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
             ?? null;
