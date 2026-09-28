@@ -115,3 +115,24 @@ it('rounds up rather than down for a deadline under a millisecond away', functio
     // the deadline has not actually arrived — a busy loop with nothing to do.
     expect(idleTimeout($screen))->toBe(1);
 });
+
+// ── The dispatched-event log ─────────────────────────────────────
+
+it('keeps the dispatched-event log bounded on a long-lived screen', function () {
+    $screen = new PollScreen;
+    $cap = (new ReflectionClassConstant(NativeComponent::class, 'MAX_RECORDED_DISPATCHES'))->getValue();
+    $flush = new ReflectionMethod(NativeComponent::class, 'flushDispatchedEvents');
+
+    // Stand in for a screen that has been open a long time.
+    idleSetProperty($screen, 'nativeDispatchedComponentEvents', array_fill(0, $cap, ['name' => 'old', 'params' => []]));
+
+    $screen->dispatch('fresh', ['n' => 1]);
+    $flush->invoke($screen);
+
+    $log = idleProperty($screen, 'nativeDispatchedComponentEvents');
+
+    // Bounded, and it is the OLDEST that goes: assertions look for a recent
+    // dispatch, never the whole history.
+    expect($log)->toHaveCount($cap)
+        ->and(end($log)['name'])->toBe('fresh');
+});

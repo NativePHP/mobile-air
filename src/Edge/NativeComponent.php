@@ -127,6 +127,13 @@ abstract class NativeComponent
     private array $nativePendingComponentEvents = [];
 
     /** @var list<array{name: string, params: array, self?: bool, component?: string}> */
+    /**
+     * How many dispatched events are kept for test assertions. The list is
+     * only ever read by TestableComponent's assertDispatched(), which looks for
+     * one specific dispatch — never the whole history — so a window is enough.
+     */
+    private const MAX_RECORDED_DISPATCHES = 500;
+
     private array $nativeDispatchedComponentEvents = [];
 
     private bool $nativeFlushingComponentEvents = false;
@@ -3832,6 +3839,16 @@ abstract class NativeComponent
                 $event = $queued['event'];
 
                 $this->nativeDispatchedComponentEvents[] = $event->serialize();
+
+                // Nothing ever cleared this, and a native screen holds one PHP
+                // request open for its whole life — so on a screen somebody
+                // leaves open it is every payload ever delivered, held for
+                // hours. A #[Poll(1)] dispatching once a tick reaches it in
+                // minutes. Keep a bounded window instead.
+                if (count($this->nativeDispatchedComponentEvents) > self::MAX_RECORDED_DISPATCHES) {
+                    array_shift($this->nativeDispatchedComponentEvents);
+                }
+
                 $this->deliverComponentEvent($source, $event);
             }
         } finally {
