@@ -6,7 +6,9 @@ use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
+use Laravel\Prompts\Prompt;
 use Native\Mobile\Plugins\Exceptions\PluginHookFailedException;
+use Symfony\Component\Console\Output\OutputInterface;
 
 class PluginHookRunner
 {
@@ -71,6 +73,13 @@ class PluginHookRunner
 
         $this->twoColumnDetail("<fg=blue>Running {$hookName} hook</>", $plugin->name);
 
+        // Every Laravel command points Prompts' shared output at its own
+        // output when it starts, and Artisan::call() never points it back
+        // ($this->call() on a Command does). Without restoring it, every
+        // note(), error() and outro() the build prints after a hook lands
+        // wherever the hook wrote, which for 4.5.x was a throwaway buffer.
+        $promptsOutput = self::promptsOutput();
+
         try {
             // Without an output to write to, Artisan buffers the hook's own
             // output and nobody ever reads it back — a hook explaining why it
@@ -91,7 +100,18 @@ class PluginHookRunner
             throw $e;
         } catch (\Throwable $e) {
             throw new PluginHookFailedException($plugin->name, $hookName, 1, $e);
+        } finally {
+            Prompt::setOutput($promptsOutput);
         }
+    }
+
+    /**
+     * The output Laravel Prompts is currently writing to. Prompts only
+     * exposes a setter, so read it from inside the class.
+     */
+    private static function promptsOutput(): OutputInterface
+    {
+        return \Closure::bind(static fn () => static::output(), null, Prompt::class)();
     }
 
     /**
