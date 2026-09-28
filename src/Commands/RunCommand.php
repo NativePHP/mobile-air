@@ -8,6 +8,7 @@ use Native\Mobile\Concerns\ManagesViteDevServer;
 use Native\Mobile\Concerns\ManagesWatchman;
 use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Concerns\RunsAndroid;
+use Native\Mobile\Concerns\RunsBothPlatforms;
 use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
 
@@ -20,12 +21,15 @@ use function Laravel\Prompts\warning;
 
 class RunCommand extends Command
 {
-    use DisplaysMarketingBanners, ManagesViteDevServer, ManagesWatchman, PlatformFileOperations, RunsAndroid, RunsIos;
+    use DisplaysMarketingBanners, ManagesViteDevServer, ManagesWatchman, PlatformFileOperations, RunsAndroid, RunsBothPlatforms, RunsIos;
 
     protected $signature = 'native:run
-        {os? : Platform to run (android/a or ios/i)}
+        {os? : Platform to run (android/a, ios/i, or both/b to build both at once on macOS)}
         {udid?}
         {--build=debug : debug|release|bundle|profileable}
+        {--ios-device= : iOS device or simulator UDID when running both}
+        {--android-device= : Android device or emulator serial when running both}
+        {--staged-bundle= : Internal: use this already-staged Laravel app instead of staging one (set by native:run both)}
         {--W|watch : Enable hot reloading during development}
         {--vite : Start the Vite dev server (opt-in; off by default)}
         {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
@@ -62,11 +66,20 @@ class RunCommand extends Command
 
         // Get platform from argument (android/a, ios/i)
         $os = $this->argument('os');
-        if ($os && in_array(strtolower($os), ['a', 'i', 'android', 'ios'])) {
+        if ($os && in_array(strtolower($os), ['a', 'i', 'b', 'android', 'ios', 'both'])) {
             $os = match (strtolower($os)) {
                 'android', 'a' => 'android',
                 'ios', 'i' => 'ios',
+                'both', 'b' => 'both',
             };
+        }
+
+        if ($os === 'both') {
+            $exitCode = $this->runBoth();
+
+            $this->showBifrostBanner();
+
+            return $exitCode;
         }
 
         // iOS builds depend on the Xcode toolchain (xcrun, xcodebuild), which only
@@ -137,14 +150,22 @@ class RunCommand extends Command
 
         intro('Running NativePHP for '.$osName);
 
-        $this->checkForUnregisteredPlugins();
+        // A build started by native:run both shares its terminal with the
+        // other platform, which has already had these said once.
+        $partOfBoth = (bool) $this->option('staged-bundle');
+
+        if (! $partOfBoth) {
+            $this->checkForUnregisteredPlugins();
+        }
 
         $succeeded = match ($os) {
             'android' => $this->runAndroid(),
             'ios' => $this->runIos(),
         };
 
-        $this->showBifrostBanner();
+        if (! $partOfBoth) {
+            $this->showBifrostBanner();
+        }
 
         // A build that stopped early has already said why. Carrying that out
         // as the exit code is what lets CI notice it at all.
