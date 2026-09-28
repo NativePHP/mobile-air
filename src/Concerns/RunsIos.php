@@ -15,6 +15,7 @@ trait RunsIos
 {
     use LaunchesIosSimulator;
     use ManagesIosHotReloadPort;
+    use UsesStagedBundle;
     use ValidatesAppConfig;
 
     protected string $iosLogPath = 'nativephp/ios-build.log';
@@ -222,6 +223,7 @@ trait RunsIos
             '--simulated' => $this->simulated,
             '--target' => $target,
             '--no-tty' => $this->option('no-tty'),
+            ...(($staged = $this->stagedBundleOption()) ? ['--staged-bundle' => $staged] : []),
         ]);
 
         if ($result > 0) {

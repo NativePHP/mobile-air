@@ -19,7 +19,7 @@ use function Laravel\Prompts\warning;
 
 trait RunsAndroid
 {
-    use DeclaresReleaseAudience, PreparesBuild, WatchesAndroid;
+    use DeclaresReleaseAudience, PreparesBuild, UsesStagedBundle, WatchesAndroid;
 
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
@@ -119,7 +119,7 @@ trait RunsAndroid
         $cleanCache = $this->buildType !== 'debug';
         $excludeDevDependencies = $this->buildType !== 'debug';
 
-        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies);
+        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies, $this->stagedBundleOption());
 
         if (! $this->compileAndroidPlugins()) {
             return false;

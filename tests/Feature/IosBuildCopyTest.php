@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Process;
 use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
+use Native\Mobile\Support\LaravelBundleStager;
 use Tests\TestCase;
 
 class IosBuildCopyTest extends TestCase
@@ -567,8 +568,16 @@ class IosBuildCopyTest extends TestCase
             (new \ReflectionClass(BuildIosAppCommand::class))->getFileName()
         );
 
-        $this->assertStringContainsString('BundleFileManager::copy(', $source);
-        $this->assertStringContainsString('BundleFileManager::removeUnnecessaryFiles(', $source);
+        // The copy and cleanup now live in the stager both platforms share.
+        $this->assertStringContainsString('new LaravelBundleStager(', $source);
+        $this->assertStringContainsString("config('nativephp.cleanup_exclude_files'", $source);
         $this->assertStringNotContainsString('RecursiveDirectoryIterator', $source);
+
+        $stager = file_get_contents(
+            (new \ReflectionClass(LaravelBundleStager::class))->getFileName()
+        );
+
+        $this->assertStringContainsString('BundleFileManager::copy(', $stager);
+        $this->assertStringContainsString('BundleFileManager::removeUnnecessaryFiles(', $stager);
     }
 }

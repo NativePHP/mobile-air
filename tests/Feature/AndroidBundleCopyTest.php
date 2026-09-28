@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Native\Mobile\Concerns\PreparesBuild;
 use Native\Mobile\Support\BundleFileManager;
+use Native\Mobile\Support\LaravelBundleStager;
 use Tests\TestCase;
 
 class AndroidBundleCopyTest extends TestCase
@@ -39,9 +40,17 @@ class AndroidBundleCopyTest extends TestCase
             (new \ReflectionClass(PreparesBuild::class))->getFileName()
         );
 
-        $this->assertStringContainsString('BundleFileManager::copy(', $source);
-        $this->assertStringContainsString('BundleFileManager::removeUnnecessaryFiles(', $source);
+        // The copy and cleanup now live in the stager both platforms share.
+        $this->assertStringContainsString('new LaravelBundleStager(', $source);
+        $this->assertStringContainsString("config('nativephp.cleanup_exclude_files'", $source);
         $this->assertStringNotContainsString('platformOptimizedCopy', $source);
+
+        $stager = file_get_contents(
+            (new \ReflectionClass(LaravelBundleStager::class))->getFileName()
+        );
+
+        $this->assertStringContainsString('BundleFileManager::copy(', $stager);
+        $this->assertStringContainsString('BundleFileManager::removeUnnecessaryFiles(', $stager);
     }
 
     public function test_robocopy_registers_bare_patterns_as_any_depth_dir_and_file(): void

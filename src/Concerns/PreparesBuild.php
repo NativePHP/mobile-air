@@ -6,13 +6,14 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Exceptions\BundleStagingFailed;
 use Native\Mobile\Support\BundleExclusions;
-use Native\Mobile\Support\BundleFileManager;
+use Native\Mobile\Support\LaravelBundleStager;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
 {
-    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
+    use DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
 
     /**
      * Validate required environment variables for building
@@ -55,7 +56,7 @@ trait PreparesBuild
     /**
      * Prepare Android build environment
      */
-    protected function prepareAndroidBuild(bool $cleanCache = true, bool $excludeDevDependencies = true): void
+    protected function prepareAndroidBuild(bool $cleanCache = true, bool $excludeDevDependencies = true, ?string $stagedBundle = null): void
     {
         $this->logToFile('--- Preparing Android Build ---');
 
@@ -68,7 +69,7 @@ trait PreparesBuild
         $this->updateAndroidConfiguration();
         $this->installAndroidIcon();
         $this->installAndroidSplashScreen();
-        $this->prepareLaravelBundle($excludeDevDependencies);
+        $this->prepareLaravelBundle($excludeDevDependencies, $stagedBundle);
         $this->logToFile('--- Android Build Preparation Complete ---');
     }
 
@@ -199,41 +200,37 @@ trait PreparesBuild
     }
 
     /**
-     * Prepare Laravel bundle
+     * Stage the Laravel app (unless a staged tree is handed in) and archive
+     * it into the Android project's laravel_bundle.zip.
+     *
+     * A staged tree passed in belongs to the caller (native:run both feeds
+     * the same tree to the iOS build at the same time), so it is only read.
+     * Android's own files (.version, artisan.php) go into the archive, not
+     * the tree.
      */
-    protected function prepareLaravelBundle(bool $excludeDevDependencies = true): void
+    protected function prepareLaravelBundle(bool $excludeDevDependencies = true, ?string $stagedPath = null): void
     {
         $this->logToFile('Preparing Laravel bundle...');
 
         $source = realpath(base_path());
         $destinationZip = base_path('nativephp/android/app/src/main/assets/laravel_bundle.zip');
+        $configExcludes = config('nativephp.cleanup_exclude_files', []);
 
         $this->logToFile("  Source: $source");
         $this->logToFile("  Destination: $destinationZip");
 
-        if (PHP_OS_FAMILY === 'Windows') {
-            // Derive the drive from the environment rather than assuming C:, and
-            // probe writability up front — File::ensureDirectoryExists() below
-            // throws (rather than returning false) when the drive root's ACL is
-            // locked down, so a fallback after the fact would never fire.
-            $tempBase = (getenv('SystemDrive') ?: 'C:').'\\temp';
-            if (! is_dir($tempBase) && ! @mkdir($tempBase, 0755, true)) {
-                // Root ACL locked down or drive missing — use the user's temp dir
-                // instead (still short enough to avoid MAX_PATH in practice)
-                $tempBase = rtrim(sys_get_temp_dir(), '\\/').DIRECTORY_SEPARATOR.'nativephp';
-            }
-            $tempDir = $tempBase.DIRECTORY_SEPARATOR.time();
+        $ownsStage = $stagedPath === null;
+
+        if ($ownsStage) {
+            $stagedPath = $this->androidStagingDirectory();
+        } elseif (! is_file(rtrim($stagedPath, '/').'/vendor/autoload.php')) {
+            $this->logToFile("ERROR: No staged Laravel bundle at $stagedPath");
+            \Laravel\Prompts\error("No staged Laravel bundle at [{$stagedPath}].");
+            exit(1);
         } else {
-            $tempDir = base_path('nativephp/android/laravel');
+            $this->logToFile("  Using staged bundle: $stagedPath");
+            $this->components->twoColumnDetail('Laravel app', 'Using staged bundle');
         }
-
-        $this->logToFile("  Temp directory: $tempDir");
-
-        if (is_dir($tempDir)) {
-            $this->logToFile('  Removing existing temp directory...');
-            $this->removeDirectory($tempDir);
-        }
-        File::ensureDirectoryExists($tempDir);
 
         try {
             if (file_exists($destinationZip)) {
@@ -241,88 +238,42 @@ trait PreparesBuild
                 unlink($destinationZip);
             }
 
-            $configExcludes = config('nativephp.cleanup_exclude_files', []);
+            if ($ownsStage) {
+                $this->logToFile('  Config excludes: '.(implode(', ', $configExcludes) ?: '(none)').' — bundled defaults in BundleExclusions');
+                $this->logToFile('  Staging Laravel app'.($excludeDevDependencies ? ' (--no-dev)' : '').'...');
 
-            $this->logToFile('  Config excludes: '.(implode(', ', $configExcludes) ?: '(none)').' — bundled defaults in BundleExclusions');
+                $stager = new LaravelBundleStager(
+                    source: $source,
+                    path: $stagedPath,
+                    includeDevDependencies: ! $excludeDevDependencies,
+                    excludes: $configExcludes,
+                    task: fn (string $title, callable $callback) => $this->components->task($title, $callback),
+                    log: fn (string $message) => $this->logToFile($message),
+                );
 
-            $srcDir = base_path('vendor/nativephp/mobile/bootstrap/android');
-
-            $this->logToFile('  Copying Laravel source...');
-            // The copy restores BundleExclusions::REQUIRED_DIRECTORIES on the
-            // way out, so the tree composer install boots into below already
-            // has the directories Laravel needs.
-            $this->components->task('Copying Laravel source', fn () => BundleFileManager::copy($source, $tempDir, $configExcludes));
-
-            $composerArgs = $excludeDevDependencies ? '--no-dev --no-interaction' : '--no-interaction';
-
-            $this->logToFile('  Installing Composer dependencies'.($excludeDevDependencies ? ' (--no-dev)' : '').'...');
-            $this->components->task('Installing Composer dependencies', function () use ($tempDir, $composerArgs) {
-                $result = Process::path($tempDir)
-                    ->timeout(300)
-                    ->run("composer install {$composerArgs}");
-
-                $this->logToFile($result->output());
-                if ($result->errorOutput()) {
-                    $this->logToFile($result->errorOutput());
-                }
-
-                if (! $result->successful()) {
-                    \Laravel\Prompts\error('Composer install failed. Check your dependencies and try again.');
-                    $this->logToFile('ERROR: composer install failed with exit code '.$result->exitCode());
+                try {
+                    $stager->stage();
+                } catch (BundleStagingFailed $e) {
+                    \Laravel\Prompts\error($e->getMessage());
                     exit(1);
                 }
-
-                return true;
-            });
-
-            $this->logToFile('  Optimizing autoloader...');
-            $this->components->task('Optimizing autoloader', function () use ($tempDir) {
-                $result = Process::path($tempDir)
-                    ->timeout(60)
-                    ->run('composer dump-autoload --optimize --classmap-authoritative');
-
-                $this->logToFile($result->output());
-                if ($result->errorOutput()) {
-                    $this->logToFile($result->errorOutput());
-                }
-
-                if (! $result->successful()) {
-                    \Laravel\Prompts\error('Autoloader optimization failed.');
-                    $this->logToFile('ERROR: composer dump-autoload failed with exit code '.$result->exitCode());
-                    exit(1);
-                }
-
-                return true;
-            });
-
-            $this->logToFile('  Removing non-runtime files...');
-            $this->components->task('Removing non-runtime files', function () use ($tempDir, $configExcludes) {
-                BundleFileManager::removeUnnecessaryFiles($tempDir, $configExcludes);
-
-                return true;
-            });
+            }
 
             $version = config('nativephp.version', now()->format('Ymd-His'));
             $versionCode = config('nativephp.version_code', 1);
             $bundleVersionId = $version === 'DEBUG' ? 'DEBUG' : "{$version}b{$versionCode}";
-            $this->logToFile("  Writing version file: $bundleVersionId");
-            file_put_contents($tempDir.DIRECTORY_SEPARATOR.'.version', $bundleVersionId.PHP_EOL);
+            $this->logToFile("  Version file: $bundleVersionId");
 
-            if (file_exists($source.DIRECTORY_SEPARATOR.'.env')) {
-                $this->logToFile('  Copying and cleaning .env file...');
-                $envPath = $tempDir.DIRECTORY_SEPARATOR.'.env';
-                copy($source.DIRECTORY_SEPARATOR.'.env', $envPath);
-                $this->cleanEnvFile($envPath);
-            }
+            $overlays = ['.version' => $bundleVersionId.PHP_EOL];
 
-            $artisanPhp = "{$srcDir}/artisan.php";
+            $artisanPhp = base_path('vendor/nativephp/mobile/bootstrap/android/artisan.php');
             if (file_exists($artisanPhp)) {
-                $this->logToFile('  Copying artisan.php bootstrap...');
-                File::copy($artisanPhp, "{$tempDir}/artisan.php");
+                $this->logToFile('  Adding artisan.php bootstrap...');
+                $overlays['artisan.php'] = file_get_contents($artisanPhp);
             }
 
             $this->logToFile('  Creating bundle archive...');
-            $this->components->task('Creating bundle archive', fn () => $this->createZipBundle($tempDir, $destinationZip, $configExcludes));
+            $this->components->task('Creating bundle archive', fn () => $this->createZipBundle($stagedPath, $destinationZip, $configExcludes, $overlays));
 
             if (! file_exists($destinationZip) || filesize($destinationZip) <= 1000) {
                 $this->logToFile('ERROR: Failed to create valid zip file');
@@ -369,17 +320,63 @@ trait PreparesBuild
             $this->logToFile("  Bundle size: {$sizeMB} MB");
             $this->components->twoColumnDetail('Bundle size', "{$sizeMB} MB");
         } finally {
-            $this->logToFile('  Cleaning up temp directory...');
+            if ($ownsStage) {
+                $this->logToFile('  Cleaning up temp directory...');
+                $this->removeDirectory($stagedPath);
+            }
+        }
+    }
+
+    /**
+     * Where a single-platform Android build stages the app. Each platform
+     * keeps its own directory so two single-platform runs at once never
+     * share a tree.
+     */
+    protected function androidStagingDirectory(): string
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            // Derive the drive from the environment rather than assuming C:, and
+            // probe writability up front — File::ensureDirectoryExists() below
+            // throws (rather than returning false) when the drive root's ACL is
+            // locked down, so a fallback after the fact would never fire.
+            $tempBase = (getenv('SystemDrive') ?: 'C:').'\\temp';
+            if (! is_dir($tempBase) && ! @mkdir($tempBase, 0755, true)) {
+                // Root ACL locked down or drive missing — use the user's temp dir
+                // instead (still short enough to avoid MAX_PATH in practice)
+                $tempBase = rtrim(sys_get_temp_dir(), '\\/').DIRECTORY_SEPARATOR.'nativephp';
+            }
+            $tempDir = $tempBase.DIRECTORY_SEPARATOR.time();
+        } else {
+            $tempDir = base_path('nativephp/android/laravel');
+        }
+
+        $this->logToFile("  Temp directory: $tempDir");
+
+        if (is_dir($tempDir)) {
+            $this->logToFile('  Removing existing temp directory...');
             $this->removeDirectory($tempDir);
         }
+        File::ensureDirectoryExists($tempDir);
+
+        return $tempDir;
     }
 
     /**
      * Create ZIP bundle with cross-platform support
      */
-    protected function createZipBundle(string $source, string $destination, array $configExcludes = []): void
+    /**
+     * @param  array<string, string>  $overlays  Extra files for the archive root, path => contents
+     */
+    protected function createZipBundle(string $source, string $destination, array $configExcludes = [], array $overlays = []): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
+            // 7-Zip only archives what is on disk. native:run both, the only
+            // caller that shares a staged tree, is macOS-only, so on Windows
+            // the tree is always this build's own and can take the files.
+            foreach ($overlays as $path => $contents) {
+                file_put_contents($source.DIRECTORY_SEPARATOR.$path, $contents);
+            }
+
             $sevenZip = config('nativephp.android.7zip-location');
             if (! file_exists($sevenZip)) {
                 \Laravel\Prompts\error("7-Zip not found at: $sevenZip");
@@ -446,6 +443,10 @@ trait PreparesBuild
         }
 
         $this->addDirectoryToZip($zip, $source, '', $configExcludes);
+
+        foreach ($overlays as $path => $contents) {
+            $zip->addFromString($path, $contents);
+        }
 
         // The cleanup pass strips these before the archive is built, so they
         // are re-added as empty entries to match the copy's carve-out.
