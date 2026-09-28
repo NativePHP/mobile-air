@@ -164,7 +164,9 @@ its filename without extension: `font="Inter-Bold"` on `native:text`, `native:bu
 - `#[Poll(5000)]` on a method runs it on an interval then re-renders; on a class it just re-renders. In Blade:
   `native:poll="1s"` on an element.
 - `#[On(EventClass::class)]` listens for native events (push taps, websocket messages via the Vibe plugin,
-  bridge completions); parameters bind by name to event properties; listeners auto-teardown on unmount. Use
+  bridge completions); parameters bind by name to event properties, except a parameter typed with a class that
+  implements `Native\Mobile\Contracts\NativeEventPayload`, which is built from the whole payload via
+  `fromNativePayload()`; listeners auto-teardown on unmount. Use
   `$this->on(Event::class, $closure)` for dynamic registration. (`#[OnNative]` is the legacy webview/Livewire
   equivalent — do not use it in NativeComponents.)
 

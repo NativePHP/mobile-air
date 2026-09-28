@@ -19,6 +19,7 @@ use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Browser;
+use Native\Mobile\Contracts\NativeEventPayload;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -1918,6 +1919,12 @@ abstract class NativeComponent
         if (is_array($payload)) {
             $parameters = [];
             foreach ((new \ReflectionMethod($this, $method))->getParameters() as $parameter) {
+                if (($class = $this->nativeEventPayloadClass($parameter)) !== null) {
+                    $parameters[$parameter->getName()] = $class::fromNativePayload($payload);
+
+                    continue;
+                }
+
                 if (array_key_exists($parameter->getName(), $payload)) {
                     $parameters[$parameter->getName()] = $this->coerceNativePayloadValue(
                         $parameter,
@@ -1932,6 +1939,24 @@ abstract class NativeComponent
         }
 
         ComponentMethodInvoker::invoke($this, $method, [$payload]);
+    }
+
+    /**
+     * The NativeEventPayload class a listener parameter asks for, if any.
+     * Opt-in by interface so other class-typed parameters keep resolving
+     * from the container.
+     *
+     * @return class-string<NativeEventPayload>|null
+     */
+    private function nativeEventPayloadClass(\ReflectionParameter $parameter): ?string
+    {
+        $type = $parameter->getType();
+
+        if (! $type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return null;
+        }
+
+        return is_a($type->getName(), NativeEventPayload::class, true) ? $type->getName() : null;
     }
 
     private function coerceNativePayloadValue(\ReflectionParameter $parameter, mixed $value): mixed
