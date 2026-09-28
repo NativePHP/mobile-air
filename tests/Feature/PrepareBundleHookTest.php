@@ -109,7 +109,7 @@ class PrepareBundleHookTest extends TestCase
         $runner = new PluginHookRunner('android', $this->testProjectPath.'/nativephp/android', 'com.test.app', [], collect([$plugin]));
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('non-zero exit code: 7');
+        $this->expectExceptionMessage('exit code 7');
 
         $runner->runPrepareBundleHooks($bundlePath);
     }
