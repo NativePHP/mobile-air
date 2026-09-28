@@ -29,6 +29,9 @@ trait RunsBothPlatforms
 {
     protected ?PlatformBuildPool $platformBuildPool = null;
 
+    /** When this run started, so build output left by an earlier run is not mistaken for this one's. */
+    protected float $bothStartedAt = 0;
+
     protected function runBoth(): int
     {
         if (! $this->canBuildBothHere()) {
@@ -82,6 +85,9 @@ trait RunsBothPlatforms
         if ($this->buildType === 'debug' && ! $androidTarget) {
             return self::FAILURE;
         }
+
+        // Whole seconds, because filesystem mtimes are.
+        $this->bothStartedAt = (float) floor(microtime(true));
 
         $staged = $this->stageForBoth();
 
@@ -263,7 +269,7 @@ trait RunsBothPlatforms
                 $this->components->twoColumnDetail($name, "<fg=red>failed</> (exit {$result->exitCode}) after {$seconds}");
             } elseif ($artifact === null) {
                 $allGood = false;
-                $this->components->twoColumnDetail($name, "<fg=red>finished but no build output was found</> after {$seconds}");
+                $this->components->twoColumnDetail($name, "<fg=red>finished but left no new build output</> after {$seconds}");
             } else {
                 $this->components->twoColumnDetail($name, "<fg=green>succeeded</> in {$seconds}");
                 $this->components->twoColumnDetail('  Artifact', $artifact);
@@ -294,17 +300,42 @@ trait RunsBothPlatforms
             ? base_path('nativephp/ios/build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app')
             : base_path("nativephp/ios/build/Build/Products/{$configuration}-iphoneos/NativePHP.app");
 
-        return file_exists($path) ? $path : null;
+        return $this->freshArtifact($path);
     }
 
     protected function androidArtifactPath(): ?string
     {
         if ($this->buildType === 'release') {
-            return $this->findReleaseApk();
+            $apk = glob(base_path('nativephp/android/app/build/outputs/apk/release').'/*.apk') ?: [];
+
+            return $this->freshArtifact($apk[0] ?? null);
         }
 
-        $path = base_path('nativephp/android/app/build/outputs/apk/debug/app-debug.apk');
+        return $this->freshArtifact(base_path('nativephp/android/app/build/outputs/apk/debug/app-debug.apk'));
+    }
 
-        return file_exists($path) ? $path : null;
+    /**
+     * The artifact, if this run wrote it. A child that exited 0 before
+     * building would otherwise pass on an .app or .apk from an earlier run.
+     * For an .app bundle the newest of the directory and its top-level
+     * entries counts, since an incremental build rewrites files inside it.
+     */
+    protected function freshArtifact(?string $path): ?string
+    {
+        if ($path === null || ! file_exists($path)) {
+            return null;
+        }
+
+        clearstatcache();
+
+        $modified = filemtime($path) ?: 0;
+
+        if (is_dir($path)) {
+            foreach (glob($path.'/*') ?: [] as $entry) {
+                $modified = max($modified, filemtime($entry) ?: 0);
+            }
+        }
+
+        return $modified >= $this->bothStartedAt ? $path : null;
     }
 }

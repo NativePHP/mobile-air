@@ -114,7 +114,30 @@ class RunBothPlatformsTest extends TestCase
             '--ios-device' => self::SIMULATOR,
             '--android-device' => 'emulator-5556',
         ])
-            ->expectsOutputToContain('no build output was found')
+            ->expectsOutputToContain('left no new build output')
+            ->assertFailed();
+    }
+
+    public function test_output_left_by_an_earlier_build_does_not_count(): void
+    {
+        $this->fakeProcesses(iosExit: 0, androidExit: 0);
+        $this->createArtifacts();
+
+        // Both children "succeed" without building anything; what is on disk
+        // is from an hour ago.
+        $anHourAgo = time() - 3600;
+        $app = $this->root.'/nativephp/ios/build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app';
+        File::put($app.'/Info.plist', '<plist/>');
+        touch($app.'/Info.plist', $anHourAgo);
+        touch($app, $anHourAgo);
+        touch($this->root.'/nativephp/android/app/build/outputs/apk/debug/app-debug.apk', $anHourAgo);
+
+        $this->artisan('native:run', [
+            'os' => 'both',
+            '--ios-device' => self::SIMULATOR,
+            '--android-device' => 'emulator-5556',
+        ])
+            ->expectsOutputToContain('left no new build output')
             ->assertFailed();
     }
 
