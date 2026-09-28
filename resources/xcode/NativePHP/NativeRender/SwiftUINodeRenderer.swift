@@ -15,6 +15,12 @@ private struct AvailableWidthKey: EnvironmentKey {
 private struct AvailableHeightKey: EnvironmentKey {
     static let defaultValue: CGFloat = 844
 }
+/// Width of the app's window (not the screen — a Split View pane is a
+/// window), published from the tree root so every `NodeView` can resolve
+/// responsive variants against it. 0 until the first layout pass.
+private struct WindowWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
 
 extension EnvironmentValues {
     var nativeSafeAreaTop: CGFloat {
@@ -33,6 +39,10 @@ extension EnvironmentValues {
         get { self[AvailableHeightKey.self] }
         set { self[AvailableHeightKey.self] = newValue }
     }
+    var windowWidth: CGFloat {
+        get { self[WindowWidthKey.self] }
+        set { self[WindowWidthKey.self] = newValue }
+    }
 }
 
 // MARK: - Root Renderer
@@ -41,7 +51,26 @@ extension EnvironmentValues {
 struct NativeTreeRenderer: View {
     let tree: NativeUITree
 
+    /// Live window width for responsive (`md:` / `lg:`) variants. Tracked
+    /// here — the one ancestor every root shape shares — rather than in
+    /// the per-root GeometryReader so native-chrome roots (tabs / stack)
+    /// re-flow on rotation and Split View too.
+    @State private var windowWidth: CGFloat = 0
+
     var body: some View {
+        rootWithHosts
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                // Flex measurements cached at the old width would place
+                // children at stale sizes — see `measurementGeneration`.
+                if windowWidth > 0 && width != windowWidth {
+                    FlexContainer.measurementGeneration &+= 1
+                }
+                windowWidth = width
+            }
+            .environment(\.windowWidth, windowWidth)
+    }
+
+    private var rootWithHosts: some View {
         // Fold any plugin-registered root hosts (side drawers, global overlays,
         // …) around the rendered tree. A host pulls its own sentinel child out
         // of `tree.root` and renders nothing when absent. When no hosts are
@@ -141,7 +170,29 @@ extension View {
 
 /// Renders a single NativeUINode and its children recursively.
 /// Conforms to Equatable so SwiftUI skips re-rendering unchanged subtrees.
+/// Public entry point every container and plugin renderer uses for a
+/// child. Resolves the node's responsive variants against the live window
+/// width, then hands the winning alternative to `ResolvedNodeView`, so no
+/// renderer has to know breakpoints exist. Equatable on node identity:
+/// SwiftUI still re-evaluates the body when the environment width changes,
+/// and `resolved(forWidth:)` returns a cached node per winning variant so
+/// the inner view's identity check keeps short-circuiting between resizes.
 struct NodeView: View, Equatable {
+    let node: NativeUINode
+
+    @Environment(\.windowWidth) private var windowWidth
+    @Environment(\.availableWidth) private var availableWidth
+
+    static func == (lhs: NodeView, rhs: NodeView) -> Bool {
+        lhs.node === rhs.node
+    }
+
+    var body: some View {
+        ResolvedNodeView(node: node.resolved(forWidth: windowWidth > 0 ? windowWidth : availableWidth))
+    }
+}
+
+struct ResolvedNodeView: View, Equatable {
     let node: NativeUINode
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.nativeSafeAreaTop) private var safeAreaTop
@@ -149,7 +200,7 @@ struct NodeView: View, Equatable {
     @Environment(\.availableWidth) private var availableWidth
     @Environment(\.availableHeight) private var availableHeight
 
-    static func == (lhs: NodeView, rhs: NodeView) -> Bool {
+    static func == (lhs: ResolvedNodeView, rhs: ResolvedNodeView) -> Bool {
         // Reference identity. Between PHP publishes, `node` refs are stable
         // across SwiftUI body re-evaluations (scroll, focus, env changes) —
         // so `===` short-circuits reliably during steady-state, keeping scroll
@@ -194,6 +245,12 @@ struct NodeView: View, Equatable {
             // the tap and runs alongside it for press-in/press-out
             // tracking. No-op when no `press-*` prop is set.
             .modifier(NodePressFeedbackModifier(props: node.props))
+            // Hidden (`display: none`) outside everything above, so the
+            // background and border go with the content. FlexContainer never
+            // places a hidden child and SwiftUI centres it at the container's
+            // size, so hiding only the content painted its `bg-*` over its
+            // siblings (`xl:hidden` in a row showed an empty bar).
+            .opacity(node.layout?.display == Display.none ? 0 : 1)
     }
 
     // MARK: - Content Dispatch (via plugin registry)

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.exclude
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -98,6 +100,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val title = activeNode.props.getString("title", "")
     val subtitle = activeNode.props.getString("subtitle", "")
     val showBack = activeNode.props.getBool("back")
+    val reservesNavigationBarSlot = NativeRootHostRegistry.reservesNavigationBarSlot(activeNode)
     val bgArgb = activeNode.props.getColor("background_color", 0)
     val textArgb = activeNode.props.getColor("text_color", 0)
     val hasExplicitBg = bgArgb != 0
@@ -237,6 +240,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     modifier = if (rtl) Modifier.scale(scaleX = -1f, scaleY = 1f) else Modifier
                 )
             }
+        } else if (reservesNavigationBarSlot) {
+            Spacer(modifier = Modifier.width(48.dp))
         }
     }
     val barColors = if (hasExplicitBg) {

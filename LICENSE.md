@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Livewire-derived component code
+
+Portions of ComponentMethodInvoker, ComponentState, ComponentEvent, and
+DirectlyCallingLifecycleHooksNotAllowedException are derived from Livewire.
+Those portions are Copyright (c) Caleb Porzio and are distributed under the
+MIT License reproduced above. See the source file headers for upstream class
+references.
