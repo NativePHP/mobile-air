@@ -1616,10 +1616,31 @@ abstract class NativeComponent
      * (block indefinitely) when there are no polls (class #[Poll] or Blade
      * native:poll); otherwise the time until the soonest-due timer,
      * floored at 1ms.
+     *
+     * One exception comes first. While the error screen is up, runDuePolls()
+     * is deliberately skipped (see the runloop) so a throwing callback cannot
+     * repaint the overlay on every tick. Nothing then advances the poll
+     * deadlines, so they all sit permanently in the past — and the floor below
+     * hands back 1ms, forever. On any screen with a poll that was ~1000
+     * wake-ups a second, for as long as the overlay showed, to do nothing at
+     * all. Block instead: everything the overlay needs — its own controls, hot
+     * reload, shutdown — arrives as an event, which is already how a screen
+     * with no polls at all behaves.
      */
     private function nextEventTimeout(): int
     {
-        $deadlines = array_map(fn ($def) => $def['next'], $this->pollDefinitions());
+        // Prime the timers before the early exit: a screen whose mount() or
+        // first render failed enters the loop with nativeHasError already set,
+        // and returning without priming would stamp the deadlines only once the
+        // user dismisses the overlay — so a #[Poll(30000)] that IS that
+        // screen's refresh would idle another 30s after recovery.
+        $definitions = $this->pollDefinitions();
+
+        if ($this->nativeHasError) {
+            return -1;
+        }
+
+        $deadlines = array_map(fn ($def) => $def['next'], $definitions);
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
         }
