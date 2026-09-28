@@ -6,6 +6,7 @@ import com.nativephp.mobile.bridge.functions.AsyncFunctions
 import com.nativephp.mobile.bridge.functions.DeviceFunctions
 import com.nativephp.mobile.bridge.functions.DialogFunctions
 import com.nativephp.mobile.bridge.functions.FileFunctions
+import com.nativephp.mobile.bridge.functions.NetworkFunctions
 import com.nativephp.mobile.bridge.functions.PerfFunctions
 import com.nativephp.mobile.bridge.functions.SystemFunctions
 import com.nativephp.mobile.bridge.functions.UIFunctions
@@ -30,6 +31,10 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     registry.register("Device.GetId", DeviceFunctions.GetId(context))
     registry.register("Device.GetInfo", DeviceFunctions.GetInfo(context))
     registry.register("Device.GetBatteryInfo", DeviceFunctions.GetBatteryInfo(context))
+
+    // Network.* — core built-in, the native half of Network::status().
+    // iOS twin: Bridge/Functions/NetworkFunctions.swift.
+    registry.register("Network.Status", NetworkFunctions.Status(context))
 
     // System.* — core built-in (migrated from the nativephp/mobile-system
     // plugin). iOS twin: Bridge/Functions/SystemFunctions.swift.

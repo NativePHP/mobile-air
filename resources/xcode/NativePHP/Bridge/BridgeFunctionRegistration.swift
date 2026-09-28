@@ -19,6 +19,10 @@ func registerBridgeFunctions() {
     registry.register("Device.GetInfo",         function: DeviceFunctions.GetInfo())
     registry.register("Device.GetBatteryInfo",  function: DeviceFunctions.GetBatteryInfo())
 
+    // Network.* — core built-in, the native half of Network::status().
+    // Android twin: bridge/functions/NetworkFunctions.kt.
+    registry.register("Network.Status", function: NetworkFunctions.Status())
+
     // System.* — core built-in (migrated from the nativephp/mobile-system
     // plugin). Android twin: bridge/functions/SystemFunctions.kt.
     registry.register("System.OpenAppSettings", function: SystemFunctions.OpenAppSettings())

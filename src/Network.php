@@ -9,8 +9,8 @@ class Network
      * Returns an object with:
      * - connected: bool - Whether device is connected to network
      * - type: string - Connection type (wifi, cellular, ethernet, unknown)
-     * - isExpensive: bool - Whether connection is metered/cellular (iOS only)
-     * - isConstrained: bool - Whether Low Data Mode is enabled (iOS only)
+     * - isExpensive: bool - Whether connection is metered/cellular
+     * - isConstrained: bool - Whether Low Data Mode (iOS) or Data Saver (Android) is on
      */
     public function status(): ?object
     {
