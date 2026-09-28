@@ -16,6 +16,8 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
+use Native\Mobile\Support\BuildFingerprint;
+use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleFileManager;
 
 use function Laravel\Prompts\error;
@@ -40,7 +42,10 @@ class BuildIosAppCommand extends Command
 
     private int|string $buildNumber;
 
+    private ?BuildState $buildState = null;
+
     protected $signature = 'native:build {--target=} {--release} {--simulated} {--no-tty} {--cleanup-provisioning-profile : Clean up CI provisioning profile settings}
+        {--fresh : Run every build step, even ones whose inputs are unchanged since the last build}
         {--upload-to-app-store : Upload iOS app to App Store Connect after packaging}
         {--jump-by= : Add extra number to the suggested version (e.g. --jump-by=10 to skip ahead)}
         {--api-key= : Path to App Store Connect API key file (iOS)}
@@ -117,50 +122,140 @@ class BuildIosAppCommand extends Command
     {
         @mkdir($this->appPath, 0755, true);
 
-        $this->components->task('Copying Laravel app', fn () => BundleFileManager::copy(
-            base_path(),
-            $this->appPath,
-            config('nativephp.cleanup_exclude_files', [])
-        ));
+        $configExcludes = config('nativephp.cleanup_exclude_files', []);
+        $release = (bool) $this->option('release');
+        $state = $this->buildState();
+
+        // The staged copy of the app in nativephp/ios/laravel is kept between
+        // builds. It can be brought up to date in place when it was made with
+        // the same exclusions; otherwise start from an empty directory.
+        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::excludes($configExcludes, base_path()));
+        $incremental = $state->matches('staging', $stagingFingerprint) && is_dir($this->appPath.'vendor');
+
+        // Its vendor/ can be kept too when nothing composer install depends
+        // on has changed since the last successful install.
+        $composerFingerprint = BuildFingerprint::composer(base_path(), $release ? ['--no-dev'] : []);
+        $reuseVendor = $incremental
+            && $state->matches('composer', $composerFingerprint)
+            && is_file($this->appPath.'vendor/autoload.php');
+        $autoloadWasCurrent = $reuseVendor && $state->matches('autoload', $composerFingerprint);
+
+        // Whatever happens next changes the staged tree, so nothing about it
+        // can be trusted until each step has finished again.
+        $state->forget('staging', 'autoload', ...($reuseVendor ? [] : ['composer']));
+
+        $changes = null;
+
+        $this->components->task(
+            $incremental ? 'Copying Laravel app (changed files only)' : 'Copying Laravel app',
+            function () use ($incremental, $reuseVendor, $configExcludes, &$changes) {
+                if (! $incremental) {
+                    BundleFileManager::copy(base_path(), $this->appPath, $configExcludes);
+
+                    return;
+                }
+
+                // Written by this command further down, so always start from
+                // the project's own copy.
+                @unlink($this->appPath.'.env');
+
+                $changes = BundleFileManager::sync(
+                    base_path(),
+                    $this->appPath,
+                    $configExcludes,
+                    $reuseVendor ? ['/vendor'] : [],
+                );
+            }
+        );
+
+        $state->record('staging', $stagingFingerprint);
 
         // Set ASSET_URL in .env
         file_put_contents($this->appPath.'.env', PHP_EOL.'ASSET_URL="/_assets"'.PHP_EOL, FILE_APPEND);
 
-        $this->components->task('Installing Composer dependencies', function () {
-            $result = Process::path($this->appPath)
-                ->forever()
-                ->run([
-                    'composer',
-                    'install',
-                    ...($this->option('release') ? ['--no-dev'] : []),
-                ], function ($type, $output) {
-                    file_put_contents($this->logPath, $output, FILE_APPEND);
+        if ($reuseVendor) {
+            $this->skippedTask('Installing Composer dependencies');
 
-                    if ($this->verbose) {
-                        $this->output->write($output);
-                    }
-                });
+            // vendor/ is unchanged, but the app's own classes may not be.
+            // Regenerate the autoloader if anything it's built from moved.
+            $composerJson = json_decode((string) file_get_contents(base_path('composer.json')), true);
+            $autoloadPaths = is_array($composerJson) ? BuildFingerprint::autoloadPaths($composerJson, ! $release) : [''];
 
-            if (! $result->successful()) {
-                $errorOutput = $result->errorOutput();
-                if ($errorOutput) {
-                    file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
-                }
-
-                error('Composer install failed. Check your dependencies and try again.');
-                file_put_contents($this->logPath, 'ERROR: composer install failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
-                exit(1);
+            if ($autoloadWasCurrent && ! BuildFingerprint::touches($changes, $autoloadPaths)) {
+                $this->skippedTask('Updating Composer autoloader');
+            } else {
+                $this->components->task('Updating Composer autoloader', fn () => $this->runComposer([
+                    'dump-autoload',
+                    '--no-scripts',
+                    ...($release ? ['--no-dev'] : []),
+                ]));
             }
+        } else {
+            $this->components->task('Installing Composer dependencies', fn () => $this->runComposer([
+                'install',
+                ...($release ? ['--no-dev'] : []),
+            ]));
 
-            return true;
-        });
+            $state->record('composer', $composerFingerprint);
+        }
+
+        $state->record('autoload', $composerFingerprint);
 
         $this->components->task('Removing unnecessary files', fn () => BundleFileManager::removeUnnecessaryFiles(
             $this->appPath,
-            config('nativephp.cleanup_exclude_files', [])
+            $configExcludes
         ));
         $this->cleanEnvFile($this->appPath.'.env');
         $this->createAppZip();
+    }
+
+    /**
+     * Run a composer command in the staged app, exiting the build if it fails.
+     *
+     * @param  array<int, string>  $arguments
+     */
+    private function runComposer(array $arguments): bool
+    {
+        $result = Process::path($this->appPath)
+            ->forever()
+            ->run(['composer', ...$arguments], function ($type, $output) {
+                file_put_contents($this->logPath, $output, FILE_APPEND);
+
+                if ($this->verbose) {
+                    $this->output->write($output);
+                }
+            });
+
+        if (! $result->successful()) {
+            $errorOutput = $result->errorOutput();
+            if ($errorOutput) {
+                file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
+            }
+
+            error('Composer '.$arguments[0].' failed. Check your dependencies and try again.');
+            file_put_contents($this->logPath, 'ERROR: composer '.$arguments[0].' failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
+            exit(1);
+        }
+
+        return true;
+    }
+
+    /**
+     * What this build remembers about the previous one. Builds started by
+     * Xcode, and any build run with --fresh, start from nothing.
+     */
+    protected function buildState(): BuildState
+    {
+        return $this->buildState ??= BuildState::for(
+            $this->basePath,
+            $this->option('release') ? 'release' : 'debug',
+            (bool) $this->option('fresh') || (bool) getenv('NATIVEPHP_XCODE_BUILD'),
+        );
+    }
+
+    private function skippedTask(string $description): void
+    {
+        $this->components->twoColumnDetail($description, '<fg=gray>skipped (unchanged)</>');
     }
 
     private function configureXcodeProject(): bool
@@ -919,7 +1014,8 @@ class BuildIosAppCommand extends Command
 
         $this->createBundledVersionFile($zipPath);
 
-        Process::run("rm -rf {$escapedAppPath}");
+        // The staged app stays in place so the next build only has to copy
+        // what changed. See bundleLaravelApp().
     }
 
     private function createBundledVersionFile(string $zipPath): void
@@ -1332,6 +1428,9 @@ class BuildIosAppCommand extends Command
 
     /**
      * Install CocoaPods dependencies if Podfile exists.
+     *
+     * Skipped when the Podfile, lockfile, Pods sandbox and Xcode project are
+     * exactly as the last successful `pod install` left them.
      */
     private function installCocoaPods(): void
     {
@@ -1340,6 +1439,16 @@ class BuildIosAppCommand extends Command
         if (! file_exists($podfilePath)) {
             return;
         }
+
+        $state = $this->buildState();
+
+        if ($state->matches('cocoapods', BuildFingerprint::cocoaPods($this->basePath))) {
+            $this->skippedTask('Installing CocoaPods dependencies');
+
+            return;
+        }
+
+        $state->forget('cocoapods');
 
         $this->components->task('Installing CocoaPods dependencies', function () {
             $result = Process::path($this->basePath)
@@ -1359,6 +1468,9 @@ class BuildIosAppCommand extends Command
 
             return true;
         });
+
+        // Taken after the install, since pod install rewrites the project.
+        $state->record('cocoapods', BuildFingerprint::cocoaPods($this->basePath));
     }
 
     /**
@@ -1381,7 +1493,19 @@ class BuildIosAppCommand extends Command
             return;
         }
 
-        $this->components->task('Resolving Swift Package dependencies', function () {
+        $state = $this->buildState();
+
+        if ($state->matches('swift-packages', BuildFingerprint::swiftPackages($this->basePath))) {
+            $this->skippedTask('Resolving Swift Package dependencies');
+
+            return;
+        }
+
+        $state->forget('swift-packages');
+
+        $resolved = false;
+
+        $this->components->task('Resolving Swift Package dependencies', function () use (&$resolved) {
             $result = Process::path($this->basePath)
                 ->timeout(300)
                 ->run([
@@ -1396,7 +1520,11 @@ class BuildIosAppCommand extends Command
                     }
                 });
 
-            return $result->successful();
+            return $resolved = $result->successful();
         });
+
+        if ($resolved) {
+            $state->record('swift-packages', BuildFingerprint::swiftPackages($this->basePath));
+        }
     }
 }
