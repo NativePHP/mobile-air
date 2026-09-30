@@ -1,6 +1,6 @@
 ---
 name: nativephp-mobile
-description: "Builds fully native iOS and Android apps with PHP & Laravel. Activate when working with SuperNative screens (NativeComponent, Route::native, native:make), nested child components (component tags, props, key, emit, @event bindings), EDGE components (native:column, native:button, native:list, and 40+ more), composable chrome elements (top-bar, bottom-nav, fab, side-nav, bottom-bar) or NativeLayout chrome, native:model data binding, #[Computed]/#[Poll]/#[On] attributes, Native::test() component tests, native device APIs (camera, dialog, biometrics, scanner, geolocation, push notifications), NativePHP Artisan commands (native:run, native:install, native:watch, native:jump), deep links, secure storage, or mobile app deployment."
+description: "Builds fully native iOS and Android apps with PHP & Laravel. Activate when working with SuperNative screens (NativeComponent, Route::native, native:make), nested child components (component tags, props, key, emit, @event bindings), EDGE components (native:column, native:button, native:list, and 40+ more), composable chrome elements (top-bar, bottom-nav, fab, side-nav, bottom-bar) or NativeLayout chrome, native:model data binding, #[Computed]/#[Poll]/#[On] attributes, Native::test() component tests, native device APIs (camera, dialog, biometrics, scanner, geolocation, push notifications), NativePHP Artisan commands (native:run, native:install, native:watch, native:jump), build output paths (.app/.apk) and build traps, deep links, secure storage, or mobile app deployment."
 ---
 
 # NativePHP Mobile v4
@@ -73,16 +73,43 @@ is only needed for apps that still ship web-view assets.
 
 ## Getting Started
 
-New apps: `laravel new my-app --using=nativephp/mobile-starter`, or `composer require nativephp/mobile` in an
-existing app. Set env vars **before** `php artisan native:install`:
+New app from the starter kit:
+
+```bash
+laravel new my-app --using=nativephp/mobile-starter --no-node
+```
+
+The starter already has `nativephp/mobile-ui` installed and registered in `app/Providers/NativeServiceProvider.php`,
+a `routes/mobile.php`, an example `app/NativeComponents/Home.php` with `tests/Feature/NativeHomeTest.php`, Pest,
+and it has run `native:install` for you. When you replace the Home screen, delete or rewrite that test (it asserts
+the welcome text). The starter may pin an older `mobile-ui`; `composer require nativephp/mobile-ui` updates it.
+
+Existing Laravel app:
+
+```bash
+composer require nativephp/mobile nativephp/mobile-ui
+php artisan vendor:publish --tag=nativephp-plugins-provider   # creates app/Providers/NativeServiceProvider.php
+php artisan native:plugin:register nativephp/mobile-ui
+php artisan native:plugin:list                                # must show mobile-ui as registered
+php artisan native:install both                               # after setting the .env keys below
+```
+
+Then create `routes/mobile.php` (it is loaded automatically). `mobile-ui` is not optional: core has no renderers,
+so every element, even `column` and `text`, comes from it.
+
+Set env vars **before** `php artisan native:install`:
 
 ```dotenv
+APP_NAME="My App"                     # the display name on both platforms
 NATIVEPHP_APP_ID=com.yourcompany.yourapp
 NATIVEPHP_APP_VERSION="DEBUG"
 NATIVEPHP_APP_VERSION_CODE="1"
 # Optional for iOS:
 NATIVEPHP_DEVELOPMENT_TEAM=XXXXXXXXXX
 ```
+
+The name, app ID and version are applied again on every build, so they can be changed later. Keep
+`NATIVEPHP_APP_VERSION=DEBUG` while developing (see Building and Running below).
 
 OS support: macOS builds iOS + Android; Windows/Linux build Android only; WSL unsupported.
 
@@ -110,6 +137,71 @@ routes in PHP: `@navigate="'/item/' . $item->id"`.
 Lifecycle hooks: `mount()` (first push only), `onResume()` (returning to the screen), `onBackPressed()`
 (Android back button), `unmount()`, and `updated{Property}()` when a bound property changes. Mark a component
 `#[Lazy]` to paint a placeholder instantly while a slow `mount()` runs in the background.
+
+### A complete screen
+
+`php artisan native:make Notes` writes the class and `resources/views/native/notes.blade.php`. Public properties
+are view variables and `native:model` targets. `render()` runs again after every handler call.
+
+```php
+namespace App\NativeComponents;
+
+use App\Models\Note;
+use Illuminate\View\View;
+use Native\Mobile\Edge\NativeComponent;
+
+class Notes extends NativeComponent
+{
+    public string $title = '';
+
+    // @submit passes the field's text as the last argument, so a stale bound value can't lose input.
+    public function save(?string $submitted = null): void
+    {
+        $title = trim($submitted ?? $this->title);
+        if ($title === '') {
+            return;
+        }
+        Note::create(['title' => $title]);
+        $this->title = '';   // clears the bound field on the next render
+    }
+
+    public function pin(int $id, bool $checked): void { Note::whereKey($id)->update(['pinned' => $checked]); }
+
+    public function remove(int $id): void { Note::whereKey($id)->delete(); }
+
+    public function render(): View
+    {
+        return view('native.notes', ['notes' => Note::orderBy('id')->get()]);
+    }
+}
+```
+
+```blade
+<native:top-bar title="Notes" />
+
+<native:column class="w-full h-full bg-theme-background">
+    <native:row class="w-full items-center gap-2 px-4 py-2">
+        <native:outlined-text-input class="flex-1" placeholder="New note" ref="title-input"
+            native:model.debounce.300ms="title" @submit="save" />
+        <native:button @press="save">Add</native:button>
+    </native:row>
+
+    <native:list class="w-full flex-1" separator>
+        @foreach ($notes as $note)
+            <native:list-item native:key="note-{{ $note->id }}"
+                :headline="$note->title"
+                :leadingCheckbox="$note->pinned" on-leading-change="pin({{ $note->id }})"
+                :trailing-actions="[['method' => 'remove('.$note->id.')', 'label' => 'Delete', 'icon' => 'trash', 'role' => 'destructive']]" />
+        @endforeach
+    </native:list>
+</native:column>
+```
+
+Handler values are a method name or `method(arg, ...)`. Arguments are parsed as JSON, so quote strings:
+`select('abc')`, `remove({{ $id }})`. The event's own value is appended after your arguments: the text for
+`@submit`/`@change` on text inputs, a bool for checkbox and switch changes. Any element takes `@press`, including
+rows and columns. For element props (list items, swipe actions, text inputs, buttons) activate the
+`nativephp-mobile-ui` skill, which ships with `nativephp/mobile-ui`.
 
 ## EDGE Elements
 
@@ -159,6 +251,10 @@ its filename without extension: `font="Inter-Bold"` on `native:text`, `native:bu
 
 - `native:model="property"` two-way binds any input-style element to a public property (the native `wire:model`).
   Modifiers: `.blur`/`.lazy`, `.debounce.300ms`. `updated{Property}()` fires on change.
+- On text inputs use `native:model.debounce.300ms` (`.debounce` alone is 300ms). The default live mode syncs every
+  keystroke and the re-render echoes the value back into the field, which can drop or reorder characters when
+  typing is fast (automation, `adb shell input text`). A button tapped inside the debounce window can read a
+  stale property, so also take the text from `@submit`, as `save()` does above.
 - `#[Computed]` methods are read as properties (`$this->total`), memoized per frame, invalidated on state change;
   `#[Computed(persist: true)]` survives re-renders until state changes.
 - `#[Poll(5000)]` on a method runs it on an interval then re-renders; on a class it just re-renders. In Blade:
@@ -321,6 +417,76 @@ Native::test(Counter::class)
 `Native::visit('/profile/5')` mounts by route; `Native::fakeBridge()` scripts native responses;
 `emitNative(Event::class, [...])` delivers device events in tests.
 
+Check behaviour here, not by building and tapping on a device. A test for the Notes screen above:
+
+```php
+use App\Models\Note;
+use App\NativeComponents\Notes;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Native\Mobile\Testing\Native;   // not Native\Mobile\Facades\Native
+
+uses(RefreshDatabase::class);
+
+it('adds, pins and removes notes', function () {
+    $screen = Native::test(Notes::class)
+        ->input('title', 'Ada')          // target: model property, method, expression or ref
+        ->tap('Add')                     // tap by ref or by visible text
+        ->assertSet('title', '')
+        ->assertSee('Ada');              // visible text includes list-item headlines and swipe labels
+
+    $id = Note::first()->id;
+
+    $screen->check("pin({$id})")         // fires the callback registered for that expression
+        ->assertElement('list_item', fn (array $node) => $node['props']['leading_checked'] === true)
+        ->press("remove({$id})")         // swipe action, row press, trailing button...
+        ->assertDontSee('Ada');
+
+    Native::test(Notes::class)->input('title-input', 'Bob')->submit('save', 'Bob')->assertSee('Bob');
+});
+```
+
+Other helpers: `toggle()`, `select()`, `longPress()`, `swipe()`, `pressBack()`, `get('prop')`,
+`assertNavigatedTo()`, `assertNavTitle()`, `assertMissingElement()`, `assertAccessible()`, `tree()` (the wire tree
+as an array; node types are snake_case, like `list_item` and `outlined_text_input`) and `dumpTree()`. Run with
+`php artisan test`. `native:validate` warns "Could not determine view name" for components that
+`return view('native.x')`, so rely on tests instead.
+
+## Building and Running
+
+Follow "Build Commands — Tell the User, Don't Run" above. When the user has asked you to build and launch the
+app yourself, run from the Laravel root, name the device, and disable prompts:
+
+```bash
+php artisan native:run ios <SIMULATOR_UDID> --no-tty -n    # xcrun simctl list devices booted
+php artisan native:run android <SERIAL> --no-tty -n        # adb devices
+```
+
+Run it in the foreground and wait: it returns once the app is installed and launched. Build logs are
+`nativephp/ios-build.log` and `nativephp/android-build.log`; the Android log ends with
+`=== NativePHP Android Build Completed ===` on success.
+
+| Output | Path |
+|---|---|
+| iOS simulator app | `nativephp/ios/build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app` (always this name) |
+| Android debug APK | `nativephp/android/app/build/outputs/apk/debug/app-debug.apk` |
+
+Both contain the Laravel app and PHP, so no dev server is needed. To install and launch by hand:
+
+```bash
+xcrun simctl install <UDID> <path>.app && xcrun simctl launch <UDID> <APP_ID>
+adb -s <SERIAL> install -r -d app-debug.apk && adb -s <SERIAL> shell am start -n <APP_ID>/com.nativephp.mobile.ui.MainActivity
+```
+
+Traps:
+
+- The app re-extracts its bundled Laravel copy only when `NATIVEPHP_APP_VERSION` or `_VERSION_CODE` changes.
+  `DEBUG` re-extracts on every launch. With a fixed version like `1.0.0`, a rebuild installed over the old one
+  keeps showing the old screens: keep `DEBUG`, bump the version, or uninstall first.
+- `native:run android` gives Gradle 600 seconds. A cold first build, especially next to an iOS build, can run
+  over and fail. The bundle is ready by then, so finish with `cd nativephp/android && ./gradlew assembleDebug`
+  and install the APK as above.
+- On Android the first launch shows "Loading..." for 20 to 30 seconds while it unpacks. It isn't hung.
+
 ## Legacy Web-View Apps (Maintenance Only)
 
 Some existing apps still render in the web view (Livewire or Inertia). When maintaining them: the `#nativephp`
@@ -333,6 +499,10 @@ rest with the `nativephp-webview-to-native` skill.
 ## Common Pitfalls
 
 - Building a screen in the web view when native UI can do it — always default to EDGE + NativeComponent
+- `nativephp/mobile-ui` installed but not in `plugins()`: bare tags like `<button>` silently disappear and
+  `<native:*>` tags throw "Unknown native element type". Register it and check `native:plugin:list`
+- A misspelled event attribute (`@presss`) is dropped without an error, so the element does nothing
+- Using `Native\Mobile\Facades\Native` in tests instead of `Native\Mobile\Testing\Native`
 - Inline `style="..."` or styling props on EDGE elements — Tailwind classes only
 - Emoji characters as icons in labels/buttons/text — use `native:icon` unless the user explicitly asks for emojis
 - Using Livewire patterns (`wire:model`, Livewire's `#[On]`) in NativeComponents — use `native:model` and

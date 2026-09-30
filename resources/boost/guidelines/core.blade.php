@@ -5,6 +5,11 @@ rendered as real SwiftUI (iOS) and Jetpack Compose (Android) UI — driven entir
 and EDGE Blade elements. A full PHP runtime runs directly on the device with SQLite — no web server required.
 - Documentation: `https://nativephp.com/docs/mobile/4/**`
 - IMPORTANT: Always activate the `nativephp-mobile` skill every time you work on any NativePHP functionality.
+- New app: `laravel new my-app --using=nativephp/mobile-starter --no-node`. A screen is a `NativeComponent` class,
+  a Blade view in `resources/views/native/` (`php artisan native:make Name` creates both) and a `Route::native()`
+  line in `routes/mobile.php`.
+- Check behaviour with Pest and `Native\Mobile\Testing\Native::test()`. It needs no device and takes seconds, where a
+  device build takes minutes. The skill has a worked screen, its test, and where builds put the .app and .apk.
 
 ### Native UI First — Always
 
