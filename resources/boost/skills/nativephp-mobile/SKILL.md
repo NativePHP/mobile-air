@@ -54,18 +54,24 @@ Before implementing any feature, fetch the relevant docs using `WebFetch`. Find 
 WebFetch("https://nativephp.com/docs/mobile/4/the-basics/routing", "Explain Route::native, navigation methods, and transitions")
 ```
 
-## Build Commands — Tell the User, Don't Run
+## Build Commands — Run Them Yourself
 
-Never auto-run these commands. Always tell the user to run them manually, and always ask which platform
-(iOS or Android) first — never assume:
+Check behaviour with `Native::test()` first (see Testing). When a change needs a build to take effect or to be
+checked, run `native:run` yourself against a booted simulator or running emulator. The details, output paths and
+traps are under Building and Running below. If no simulator or emulator is available, say so and give the user
+the command.
 
 ```bash
-php artisan native:run ios          # or android; compile and launch
-php artisan native:run ios --watch  # build, deploy, hot reload in one
-php artisan native:watch            # hot reload only
-php artisan native:jump             # device dev loop via the Jump app (QR code)
-./native run                        # shortcut wrapper installed by native:install
+php artisan native:run ios <UDID> --no-tty -n    # or android <SERIAL>; build, install, launch, then exit
+php artisan native:run ios --watch               # build, deploy, hot reload: never exits
+php artisan native:watch                         # hot reload only: never exits
+php artisan native:jump                          # device dev loop via the Jump app (QR code)
+./native run                                     # shortcut wrapper installed by native:install
 ```
+
+Ask first, or leave to the user: `--watch` and `native:watch` never exit, so don't block on them (start one in the
+background only when the user wants hot reload). Release builds, signing, `native:package` and store uploads are
+the user's call.
 
 The Vite dev server is **opt-in** in v4: add `--vite` to `native:run`/`native:watch` only when the app uses
 JS/CSS HMR (web-view assets). Native UI screens hot-reload without Vite. `npm run build -- --mode=ios|android`
@@ -228,7 +234,7 @@ render time.
 ## Custom Fonts
 
 Drop `.ttf`/`.otf`/`.ttc` files into `resources/fonts/` — the build bundles them into the native project
-automatically (a rebuild via `native:run` is needed for newly added files; tell the user). Reference a font by
+automatically (newly added files need a rebuild with `native:run`). Reference a font by
 its filename without extension: `font="Inter-Bold"` on `native:text`, `native:button`, and the text inputs
 (fluent: `->font('Inter-Bold')`).
 
@@ -363,7 +369,7 @@ php artisan native:plugin:register vendor/plugin-name          # adds it to Nati
 php artisan native:plugin:list                                 # verify it shows as registered
 ```
 
-Then tell the user to rebuild with `native:run` (don't run it yourself). If `native:run` warns "The following
+Then rebuild with `native:run` (see Building and Running). If `native:run` warns "The following
 plugins are installed but not registered", the register step was missed.
 
 Async calls dispatch events (`Camera::getPhoto()` → `PhotoTaken`); handle with `#[On(PhotoTaken::class)]` in a
@@ -453,8 +459,8 @@ as an array; node types are snake_case, like `list_item` and `outlined_text_inpu
 
 ## Building and Running
 
-Follow "Build Commands — Tell the User, Don't Run" above. When the user has asked you to build and launch the
-app yourself, run from the Laravel root, name the device, and disable prompts:
+Run builds from the Laravel root, name the device, and disable prompts. Pick a booted simulator or running
+emulator; use the platform the user named, otherwise whichever device is running:
 
 ```bash
 php artisan native:run ios <SIMULATOR_UDID> --no-tty -n    # xcrun simctl list devices booted
