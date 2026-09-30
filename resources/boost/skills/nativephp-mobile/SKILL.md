@@ -88,7 +88,7 @@ laravel new my-app --using=nativephp/mobile-starter --no-node
 The starter already has `nativephp/mobile-ui` installed and registered in `app/Providers/NativeServiceProvider.php`,
 a `routes/mobile.php`, an example `app/NativeComponents/Home.php` with `tests/Feature/NativeHomeTest.php`, Pest,
 and it has run `native:install` for you. When you replace the Home screen, delete or rewrite that test (it asserts
-the welcome text). The starter may pin an older `mobile-ui`; `composer require nativephp/mobile-ui` updates it.
+the welcome text).
 
 Existing Laravel app:
 
