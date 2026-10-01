@@ -2,6 +2,7 @@
 
 namespace Native\Mobile;
 
+use Illuminate\Console\Events\CommandFinished;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
@@ -51,6 +52,7 @@ use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
@@ -113,6 +115,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
+        $this->useDeviceAppKey();
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
@@ -129,6 +132,26 @@ class NativeServiceProvider extends PackageServiceProvider
                 ['JUMP_BRIDGE_PORT', 'JUMP_WS_PORT']
             )));
         }
+    }
+
+    /**
+     * On a device the encryption keys come from the native shell's secure
+     * storage via the environment. Android caches config on the device, so
+     * the keys are stripped from that file once it is written.
+     */
+    protected function useDeviceAppKey(): void
+    {
+        if (! config('nativephp-internal.running')) {
+            return;
+        }
+
+        DeviceAppKey::apply($this->app['config']);
+
+        $this->app['events']->listen(CommandFinished::class, function (CommandFinished $event) {
+            if ($event->command === 'config:cache' && $event->exitCode === 0) {
+                DeviceAppKey::scrubCachedConfig($this->app->getCachedConfigPath());
+            }
+        });
     }
 
     protected function publishPluginsServiceProvider(): void
