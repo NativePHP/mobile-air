@@ -366,6 +366,10 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Route::macro('native', function (string $uri, string $componentClass) {
+            // Counted so we can tell below whether this route took over a
+            // URI that was already in use.
+            $routesBefore = count(Route::getRoutes());
+
             $route = Route::get($uri, function () use ($componentClass) {
                 // A lane other than the main one asked for a native screen,
                 // most often a link or redirect in a php web view inside a
@@ -479,7 +483,15 @@ class NativeServiceProvider extends PackageServiceProvider
             // Register the route itself so native navigation shares its
             // constraints and binders. Its URI includes any group prefix, and
             // is also the key ->layout() looks up.
-            NativeRouter::register($route, $componentClass);
+            //
+            // Laravel keeps one route per method and URI, so a route count
+            // that did not grow means this one replaced another. ->children()
+            // needs to know that about a child written with a relative path.
+            NativeRouter::register(
+                $route,
+                $componentClass,
+                replacedAnotherRoute: count(Route::getRoutes()) === $routesBefore,
+            );
 
             return $route;
         });
@@ -502,6 +514,26 @@ class NativeServiceProvider extends PackageServiceProvider
         //         ->layout(StackLayout::class);
         \Illuminate\Routing\Route::macro('layout', function (string $layoutClass) {
             NativeRouter::setLayout($this->uri, $layoutClass);
+
+            return $this;
+        });
+
+        // Fluent ->children() chaining on the Route returned by Route::native().
+        // Marks the given native routes as screens you reach from this one.
+        // By default their top bar shows a back button and their tab bar
+        // hides (a bar's own `back` / `hidden` wins), this route's tab
+        // stays highlighted, and they inherit its layout unless they set
+        // their own.
+        // A child's path is relative to this route, like a route inside a
+        // group prefix. Children can have children of their own.
+        // Example:
+        //     Route::native('/chats', Chats::class)
+        //         ->name('chats')
+        //         ->children(
+        //             Route::native('{id}', ChatDetail::class)->name('chats.show'), // /chats/{id}
+        //         );
+        \Illuminate\Routing\Route::macro('children', function (\Illuminate\Routing\Route ...$children) {
+            NativeRouter::attachChildren($this, ...$children);
 
             return $this;
         });

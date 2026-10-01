@@ -3,7 +3,7 @@
 /**
  * IDE helper for the routing macros NativeServiceProvider registers at boot.
  *
- * Route::native() / Route::nativeGroup() / ->layout() are runtime macros, so
+ * Route::native() / Route::nativeGroup() / ->layout() / ->children() are runtime macros, so
  * static analysis ("Method 'native' not found in Illuminate\Routing\Router")
  * can't see them. This file re-declares the host classes with the macro
  * signatures in their docblocks; IDEs merge the declarations and resolve the
@@ -29,6 +29,7 @@ namespace Illuminate\Routing {
 
     /**
      * @method $this layout(string $layoutClass) Set the navigation layout (StackLayout, TabsLayout, …) for this native route
+     * @method $this children(\Illuminate\Routing\Route ...$children) Make the given native routes child screens of this one: their paths are relative to this route, their bars default to a back button and no tab bar, and this route's tab stays highlighted
      */
     class Route {}
 }
