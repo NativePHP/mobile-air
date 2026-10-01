@@ -200,6 +200,38 @@ enum KeyboardFocusPolicy {
             for: nil
         )
     }
+
+    /// Whether `point`, in window coordinates, lands on the view that
+    /// currently holds first responder. False when nothing is focused
+    /// or the first responder is not a view.
+    static func firstResponderContains(_ point: CGPoint) -> Bool {
+        guard let view = UIResponder.currentFirstResponder() as? UIView else {
+            return false
+        }
+
+        return view.convert(view.bounds, to: nil).contains(point)
+    }
+}
+
+private extension UIResponder {
+    private weak static var capturedFirstResponder: UIResponder?
+
+    /// UIKit has no public accessor for the first responder. An action
+    /// sent to a nil target is delivered to it, so it records itself.
+    static func currentFirstResponder() -> UIResponder? {
+        capturedFirstResponder = nil
+        UIApplication.shared.sendAction(
+            #selector(nativePHPCaptureFirstResponder(_:)),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+        return capturedFirstResponder
+    }
+
+    @objc func nativePHPCaptureFirstResponder(_ sender: Any?) {
+        UIResponder.capturedFirstResponder = self
+    }
 }
 
 extension View {
@@ -219,17 +251,36 @@ extension View {
     /// also the correct scope — a tap on the tab bar or a toolbar button is
     /// that control's business, not a dismiss.
     ///
-    /// A regular gesture rather than `simultaneousGesture`, so a child's own
-    /// tap wins and this only fires for taps nothing else claimed: the
-    /// plain-area tap-away path. Interactive elements dismiss through
-    /// `KeyboardFocusPolicy.dismissForInteractiveTap()` in their own
-    /// handlers, which is what lets `keep-focus-on-submit` exempt
-    /// them (mobile-air #335). The `contentShape` keeps empty
-    /// regions of the screen hit-testable for the gesture.
+    /// Two gestures, because a tap means different things depending on
+    /// whether a child claimed it (mobile-air #335):
+    ///
+    /// - The regular gesture loses to a child's own tap, so it only fires
+    ///   for taps nothing else claimed. That is the plain-area tap-away
+    ///   path and it always dismisses, even when the focused field opted
+    ///   into `keep-focus-on-submit`.
+    /// - The simultaneous gesture fires for every tap, including ones a
+    ///   child `Button`, chip, checkbox or plugin control claimed. It
+    ///   dismisses unless the focused field asked to keep focus. Those
+    ///   controls never go through `KeyboardFocusPolicy.dispatchPress`,
+    ///   so without this they would leave the keyboard up, where before
+    ///   #335 a tap on them dropped it. It skips a tap on the focused
+    ///   field itself, so tapping to move the caret keeps the keyboard.
+    ///
+    /// `@press` handlers still dismiss through
+    /// `KeyboardFocusPolicy.dispatchPress` themselves, under the same
+    /// keep-focus rule. The `contentShape` keeps empty regions of the
+    /// screen hit-testable for the gestures.
     func dismissesKeyboardOnTap() -> some View {
         contentShape(Rectangle())
             .gesture(
                 TapGesture().onEnded {
+                    KeyboardFocusPolicy.resignKeyboard()
+                }
+            )
+            .simultaneousGesture(
+                SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+                    guard !KeyboardFocusPolicy.focusedFieldKeepsFocus,
+                          !KeyboardFocusPolicy.firstResponderContains(tap.location) else { return }
                     KeyboardFocusPolicy.resignKeyboard()
                 }
             )
