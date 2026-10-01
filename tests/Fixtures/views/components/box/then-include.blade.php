@@ -1,0 +1,2 @@
+{{ $slot }}
+@include('marker-partial')
