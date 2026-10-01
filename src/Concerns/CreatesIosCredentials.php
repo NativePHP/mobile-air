@@ -3,6 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Support\EnvValue;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\password;
@@ -276,7 +277,7 @@ trait CreatesIosCredentials
             return;
         }
 
-        if (preg_match('/[#\s"\'\\\\$!`]/', $p12Password)) {
+        if (EnvValue::needsQuoting($p12Password)) {
             $this->newLine();
             $this->warn('⚠️  That password contains characters that need quoting.');
             $this->line('   It will be written to .env double quoted, which is safe, but if you');
@@ -427,7 +428,7 @@ trait CreatesIosCredentials
                 if (empty($addedVars)) {
                     $envContent .= PHP_EOL.'# iOS Certificate Configuration (File Path)'.PHP_EOL;
                 }
-                $envContent .= "{$key}={$this->quoteEnvValue($value)}".PHP_EOL;
+                $envContent .= "{$key}=".EnvValue::quote($value).PHP_EOL;
                 $addedVars[] = $key;
             }
         }
@@ -461,17 +462,5 @@ trait CreatesIosCredentials
                 $this->line('   truncates the password, which fails the keychain import at build time.');
             }
         }
-    }
-
-    /**
-     * Quote a value for safe storage in .env.
-     *
-     * Unquoted values break on '#' (treated as a comment) and on whitespace
-     * (parse error), so every value is double quoted with the characters that
-     * are special inside a double-quoted dotenv string escaped.
-     */
-    private function quoteEnvValue(string $value): string
-    {
-        return '"'.str_replace(['\\', '"', '$'], ['\\\\', '\\"', '\\$'], $value).'"';
     }
 }

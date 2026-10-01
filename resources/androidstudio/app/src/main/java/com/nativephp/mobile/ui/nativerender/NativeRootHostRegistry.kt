@@ -21,7 +21,11 @@ import androidx.compose.runtime.Composable
  *
  * Example (in a plugin's init function):
  * ```
- * NativeRootHostRegistry.register("native-ui.drawer", consumes = "native_drawer") { root, content ->
+ * NativeRootHostRegistry.register(
+ *     "native-ui.drawer",
+ *     consumes = "native_drawer",
+ *     reservesNavigationBarSlot = true,
+ * ) { root, content ->
  *     val node = root.children.firstOrNull { it.type == "native_drawer" }
  *     NativeLayoutDrawerHost(drawerNode = node, content = content)
  * }
@@ -38,25 +42,40 @@ object NativeRootHostRegistry {
 
     private val entries = mutableListOf<Entry>()
     private val consumedTypes = mutableSetOf<String>()
+    private val navigationBarSlotTypes = mutableSetOf<String?>()
 
     /**
      * Register a root host. [consumes] is the sentinel element type this host
      * pulls out of the tree (if any), so the root renderers exclude it from
-     * screen content. Hosts apply in registration order — the first registered
-     * ends up innermost (closest to the content).
+     * screen content. [reservesNavigationBarSlot] tells the root renderers to
+     * leave room for navigation chrome drawn by the host. For hosts that
+     * consume a sentinel, the slot is reserved only while that sentinel is
+     * present in the current root. Hosts apply in registration order — the
+     * first registered ends up innermost (closest to the content).
      */
     fun register(
         name: String,
         consumes: String? = null,
+        reservesNavigationBarSlot: Boolean = false,
         host: @Composable (root: NativeUINode, content: @Composable () -> Unit) -> Unit,
     ) {
         if (consumes != null) consumedTypes.add(consumes)
+        if (reservesNavigationBarSlot) navigationBarSlotTypes.add(consumes)
         entries.add(Entry(name, host))
     }
 
     /** Whether some registered host consumes this element type (so the root
      *  renderers should keep it out of the visible screen content). */
     fun consumes(type: String): Boolean = consumedTypes.contains(type)
+
+    /**
+     * Whether an active host draws chrome over the navigation-bar slot.
+     * Sentinel-backed hosts are active only when their sentinel is present in
+     * [root]; hosts without a sentinel are considered active globally.
+     */
+    fun reservesNavigationBarSlot(root: NativeUINode): Boolean = navigationBarSlotTypes.any { type ->
+        type == null || root.children.any { it.type == type }
+    }
 
     /**
      * Fold every registered host around [content]. A transparent pass-through

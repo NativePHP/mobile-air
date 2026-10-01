@@ -4,6 +4,10 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "php_embed.h"
 #include "PHP.h"
 #include <zend_exceptions.h>
@@ -85,7 +89,15 @@ typedef struct {
     char *output;
     size_t length;
     size_t capacity;
+    // Set when a chunk had to be dropped: the capture is incomplete and must
+    // never be handed on as a response. OUTPUT_OVERFLOW_LIMIT means it went
+    // past MAX_BUFFER_SIZE, OUTPUT_OVERFLOW_NOMEM that realloc failed.
+    int overflowed;
+    size_t dropped;
 } php_output_buffer_t;
+
+#define OUTPUT_OVERFLOW_LIMIT 1
+#define OUTPUT_OVERFLOW_NOMEM 2
 
 static pthread_key_t g_output_buffer_key;
 static pthread_once_t g_output_key_once = PTHREAD_ONCE_INIT;
@@ -133,6 +145,9 @@ static void setup_embed_module(void) {
     php_embed_module.ub_write = capture_php_output;
     php_embed_module.phpinfo_as_text = 1;
     php_embed_module.php_ini_ignore = 0;
+    // Note: php_embed_init() replaces ini_entries with its own hardcoded
+    // list, so nothing set here takes effect. Settings that must apply (the
+    // upload limits, for one) go in the php.ini LaravelEnvironment writes.
     php_embed_module.ini_entries = "output_buffering=4096\n"
                                    "implicit_flush=0\n"
                                    "display_errors=1\n"
@@ -163,6 +178,8 @@ void clear_collected_output() {
 
     buf->capacity = BUFFER_CHUNK_SIZE;
     buf->length = 0;
+    buf->overflowed = 0;
+    buf->dropped = 0;
     buf->output = (char *) malloc(buf->capacity);
     if (buf->output) {
         buf->output[0] = '\0';
@@ -174,46 +191,66 @@ static char *get_collected_output(void) {
     return buf ? buf->output : NULL;
 }
 
-void pipe_php_output(const char *str) {
+/**
+ * Append len bytes of PHP output to this thread's capture buffer. Binary-safe:
+ * NULs are kept, and the buffer stays NUL-terminated after `length` only so
+ * text consumers (artisan, boot logs) keep working.
+ *
+ * A chunk that would take the capture past MAX_BUFFER_SIZE is dropped and the
+ * buffer is marked overflowed, so the dispatch lanes answer with a 500 that
+ * names the limit instead of a body with bytes missing from the middle.
+ */
+void append_output(const char *str, size_t length) {
     php_output_buffer_t *buf = get_thread_output_buffer();
-    if (!buf) return;
+    if (!buf || length == 0) return;
 
-    // Safety check
     if (!buf->output) {
         clear_collected_output();
-        return;  // Failed to allocate
+        if (!buf->output) return;  // Failed to allocate
     }
 
-    size_t length = strlen(str);
+    if (buf->overflowed) {
+        buf->dropped += length;
+        return;
+    }
 
-    // Check if we need more space
     if (buf->length + length + 1 > buf->capacity) {
-        // Calculate new size in chunks
         size_t needed_capacity = buf->capacity;
         while (needed_capacity < buf->length + length + 1) {
             needed_capacity += BUFFER_CHUNK_SIZE;
         }
 
-        // Enforce maximum size limit
         if (needed_capacity > MAX_BUFFER_SIZE) {
-            LOGE("Output buffer exceeded maximum size of %d MB", MAX_BUFFER_SIZE / (1024 * 1024));
+            LOGE("Output exceeded the %d MB capture limit; the response will be a 500", MAX_BUFFER_SIZE / (1024 * 1024));
+            buf->overflowed = OUTPUT_OVERFLOW_LIMIT;
+            buf->dropped += length;
             return;
         }
 
-        // Reallocate with the new size
         char *new_buffer = (char *) realloc(buf->output, needed_capacity);
-        if (new_buffer) {
-            buf->output = new_buffer;
-            buf->capacity = needed_capacity;
-        } else {
+        if (!new_buffer) {
             LOGE("Failed to reallocate output buffer to %zu bytes", needed_capacity);
+            buf->overflowed = OUTPUT_OVERFLOW_NOMEM;
+            buf->dropped += length;
             return;
         }
+        buf->output = new_buffer;
+        buf->capacity = needed_capacity;
     }
 
-    // Append the string
-    strcpy(buf->output + buf->length, str);
+    memcpy(buf->output + buf->length, str, length);
     buf->length += length;
+    buf->output[buf->length] = '\0';
+}
+
+/** Text-only wrapper kept for PHP.c and older callers. */
+void pipe_php_output(const char *str) {
+    if (str) append_output(str, strlen(str));
+}
+
+size_t get_collected_output_len(void) {
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    return buf ? buf->length : 0;
 }
 
 void cleanup_output_buffer() {
@@ -225,20 +262,7 @@ void cleanup_output_buffer() {
 }
 
 size_t capture_php_output(const char *str, size_t str_length) {
-    if (str_length == 0) {
-        LOGI("Empty output received");
-        return 0;
-    }
-
-    char *buffer = malloc(str_length + 1);
-    if (buffer) {
-        memcpy(buffer, str, str_length);
-        buffer[str_length] = '\0';
-
-        pipe_php_output(buffer);
-        free(buffer);
-    }
-
+    append_output(str, str_length);
     return str_length;
 }
 
@@ -266,12 +290,232 @@ int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum 
     return 0;
 }
 
+// ============================================================================
+// Binary-safe request and response plumbing for the dispatch lanes
+// ============================================================================
+// Bodies cross JNI as byte[] and never as Java strings, in both directions.
+// PHP gets the body in php://input with its exact length, and the response
+// goes back as the capture buffer's bytes and length. See
+// docs/bridge-dispatcher-contract.md for what PHP expects.
+
+// The one line of PHP each lane evals. Arguments, in order: platform, lane,
+// then base64 of method, uri, script path, cookie, content type, headers.
+#define BRIDGE_DISPATCH_EVAL \
+    "if (class_exists('Native\\\\Mobile\\\\Http\\\\Bridge\\\\BridgeDispatcher')) {" \
+    " \\Native\\Mobile\\Http\\Bridge\\BridgeDispatcher::handle('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s');" \
+    " } else {" \
+    " echo \"HTTP/1.1 500 Internal Server Error\\r\\nContent-Type: text/plain\\r\\nContent-Length: 66\\r\\n\\r\\n" \
+    "BridgeDispatcher missing: run composer install and native:install.\";" \
+    " }"
+
+// Standard base64 (RFC 4648, with padding, no line breaks) of len bytes.
+// in may be NULL when len is 0. Returns a malloc'd NUL-terminated string,
+// or NULL if out of memory.
+static char *bridge_base64(const char *in, size_t len) {
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char *out = malloc(4 * ((len + 2) / 3) + 1);
+    if (!out) return NULL;
+    const unsigned char *src = (const unsigned char *)in;
+    size_t i = 0, j = 0;
+    for (; i + 2 < len; i += 3) {
+        uint32_t n = ((uint32_t)src[i] << 16) | ((uint32_t)src[i + 1] << 8) | src[i + 2];
+        out[j++] = table[(n >> 18) & 63];
+        out[j++] = table[(n >> 12) & 63];
+        out[j++] = table[(n >> 6) & 63];
+        out[j++] = table[n & 63];
+    }
+    if (i < len) {
+        uint32_t n = (uint32_t)src[i] << 16;
+        if (i + 1 < len) n |= (uint32_t)src[i + 1] << 8;
+        out[j++] = table[(n >> 18) & 63];
+        out[j++] = table[(n >> 12) & 63];
+        out[j++] = (i + 1 < len) ? table[(n >> 6) & 63] : '=';
+        out[j++] = '=';
+    }
+    out[j] = '\0';
+    return out;
+}
+
+// Build the eval string for one request. Any string argument may be NULL,
+// which is sent as ''. Returns a malloc'd string for zend_eval_string(), or
+// NULL if out of memory. The caller frees it.
+static char *bridge_dispatch_code(const char *platform, const char *lane,
+                                  const char *method, const char *uri,
+                                  const char *script_path, const char *cookie,
+                                  const char *content_type,
+                                  const char *headers, size_t headers_len) {
+    const char *values[6] = { method, uri, script_path, cookie, content_type, headers };
+    size_t lengths[6];
+    char *b64[6] = { NULL };
+    char *code = NULL;
+
+    for (int k = 0; k < 6; k++) {
+        lengths[k] = values[k] ? (k == 5 ? headers_len : strlen(values[k])) : 0;
+    }
+
+    int ok = 1;
+    for (int k = 0; k < 6; k++) {
+        b64[k] = bridge_base64(values[k], lengths[k]);
+        if (!b64[k]) ok = 0;
+    }
+
+    if (ok && asprintf(&code, BRIDGE_DISPATCH_EVAL, platform, lane,
+                       b64[0], b64[1], b64[2], b64[3], b64[4], b64[5]) < 0) {
+        code = NULL;
+    }
+
+    for (int k = 0; k < 6; k++) free(b64[k]);
+    return code;
+}
+
+// Reset the SAPI response state for a new request on this thread's context.
+static void bridge_reset_sapi(const char *method, const char *uri) {
+    SG(headers_sent) = 0;
+    SG(post_read) = 0;
+    SG(read_post_bytes) = 0;
+    SG(request_info).request_method = method;
+    SG(request_info).request_uri = (char *)uri;
+    SG(request_info).proto_num = 1001; // HTTP/1.1
+
+    memset(&SG(sapi_headers), 0, sizeof(sapi_headers_struct));
+    SG(sapi_headers).http_response_code = 200;
+    zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
+}
+
+// Put exactly len body bytes, NULs included, into php://input.
+//
+// SG(request_info).content_type stays NULL on purpose. PHP's own body parser
+// (request_parse_body(), which Symfony 8 calls for PUT, DELETE and PATCH)
+// reads it: with a multipart type it calls the embed SAPI's read_post, which
+// is NULL, and with the urlencoded type it swaps php://input for an empty
+// stream. The body's content type reaches PHP as a dispatch argument instead.
+static void bridge_set_request_body(const char *body, size_t len) {
+    if (SG(request_info).request_body) {
+        php_stream_close(SG(request_info).request_body);
+        SG(request_info).request_body = NULL;
+    }
+    SG(request_info).content_type = NULL;
+    SG(request_info).content_length = 0;
+
+    if (!body || len == 0) return;
+
+    php_stream *stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
+    if (!stream) {
+        LOGE("bridge: could not create the php://input stream (%zu bytes)", len);
+        return;
+    }
+    php_stream_write(stream, body, len);
+    php_stream_seek(stream, 0, SEEK_SET);
+    SG(request_info).request_body = stream;
+    SG(request_info).content_length = (zend_long) len;
+}
+
+// A Java byte[] holding len bytes, or NULL with an OutOfMemoryError pending.
+static jbyteArray bridge_new_byte_array(JNIEnv *env, const char *bytes, size_t len) {
+    jbyteArray array = (*env)->NewByteArray(env, (jsize) len);
+    if (!array) return NULL;
+    if (len > 0) {
+        (*env)->SetByteArrayRegion(env, array, 0, (jsize) len, (const jbyte *) bytes);
+    }
+    return array;
+}
+
+static jbyteArray bridge_text_response(JNIEnv *env, const char *text) {
+    return bridge_new_byte_array(env, text, strlen(text));
+}
+
+// This thread's capture as a Java byte[]: exactly the bytes PHP wrote. An
+// overflowed capture is replaced by a 500 that says which limit was hit.
+static jbyteArray bridge_take_response(JNIEnv *env) {
+    php_output_buffer_t *buf = get_thread_output_buffer();
+
+    if (buf && buf->overflowed) {
+        char *body = NULL;
+        char *response = NULL;
+        if (buf->overflowed == OUTPUT_OVERFLOW_LIMIT) {
+            asprintf(&body,
+                     "Response too large for the PHP bridge: it is over the %d MB capture limit "
+                     "(MAX_BUFFER_SIZE, %d bytes, in php_bridge.c). %zu bytes were captured and at least "
+                     "%zu more were dropped, so nothing was sent rather than a body with bytes missing.\n",
+                     MAX_BUFFER_SIZE / (1024 * 1024), MAX_BUFFER_SIZE, buf->length, buf->dropped);
+        } else {
+            asprintf(&body,
+                     "The PHP bridge ran out of memory capturing the response (%zu bytes captured, "
+                     "%zu dropped), so nothing was sent rather than a body with bytes missing.\n",
+                     buf->length, buf->dropped);
+        }
+        jbyteArray result = NULL;
+        if (body && asprintf(&response,
+                             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                             "Content-Length: %zu\r\n\r\n%s", strlen(body), body) >= 0) {
+            result = bridge_text_response(env, response);
+        } else {
+            result = bridge_text_response(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nResponse too large for the PHP bridge.");
+        }
+        free(body);
+        free(response);
+        return result;
+    }
+
+    if (!buf || !buf->output) {
+        return bridge_new_byte_array(env, "", 0);
+    }
+    return bridge_new_byte_array(env, buf->output, buf->length);
+}
+
+// Copy a Java byte[] into a malloc'd buffer. NULL or empty gives NULL, 0.
+static char *bridge_copy_bytes(JNIEnv *env, jbyteArray array, size_t *out_len) {
+    *out_len = 0;
+    if (!array) return NULL;
+    jsize n = (*env)->GetArrayLength(env, array);
+    if (n <= 0) return NULL;
+    char *copy = malloc((size_t) n + 1);
+    if (!copy) {
+        LOGE("bridge: out of memory copying a %d byte body", (int) n);
+        return NULL;
+    }
+    (*env)->GetByteArrayRegion(env, array, 0, n, (jbyte *) copy);
+    copy[n] = '\0';
+    *out_len = (size_t) n;
+    return copy;
+}
+
+static const char *bridge_utf(JNIEnv *env, jstring s) {
+    return s ? (*env)->GetStringUTFChars(env, s, NULL) : NULL;
+}
+
+static void bridge_release_utf(JNIEnv *env, jstring s, const char *chars) {
+    if (s && chars) (*env)->ReleaseStringUTFChars(env, s, chars);
+}
+
+// For the older String-returning entry points: decode the response bytes as
+// UTF-8 in Java (lenient, invalid bytes become U+FFFD). Never NewStringUTF,
+// which aborts the app under CheckJNI on the first byte that isn't Modified
+// UTF-8.
+static jstring bridge_bytes_to_jstring(JNIEnv *env, jbyteArray bytes) {
+    if (!bytes) return NULL;
+    jclass stringClass = (*env)->FindClass(env, "java/lang/String");
+    jmethodID ctor = (*env)->GetMethodID(env, stringClass, "<init>", "([BLjava/lang/String;)V");
+    jstring charset = (*env)->NewStringUTF(env, "UTF-8");
+    jstring result = (jstring) (*env)->NewObject(env, stringClass, ctor, bytes, charset);
+    (*env)->DeleteLocalRef(env, charset);
+    (*env)->DeleteLocalRef(env, stringClass);
+    (*env)->DeleteLocalRef(env, bytes);
+    return result;
+}
+
 /**
- * Handle a single PHP request.
+ * Handle a single PHP request in classic mode.
  * Full php_embed_init()/php_embed_shutdown() per request — required for ZTS
  * because each thread needs its own interpreter context with function tables.
+ *
+ * The body is body_len bytes (NULs allowed). Returns a malloc'd copy of the
+ * captured response and its length in *out_len. A capture that overflowed is
+ * replaced by a 500 naming the limit, as on the persistent lanes.
  */
-char* run_php_request(const char* scriptPath, const char* method, const char* uri, const char* postData) {
+char* run_php_request_len(const char* scriptPath, const char* method, const char* uri,
+                          const char* body, size_t body_len, const char* contentType,
+                          size_t *out_len) {
     LOGI("run_php_request: waiting for mutex (uri=%s)", uri);
     pthread_mutex_lock(&g_php_request_mutex);
     LOGI("run_php_request: mutex acquired (uri=%s)", uri);
@@ -288,6 +532,13 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
     setenv("NATIVEPHP_RUNNING", "true", 1);
 
+    // The body's own content type, never a stale one from an earlier request.
+    if (contentType && contentType[0]) {
+        setenv("CONTENT_TYPE", contentType, 1);
+    } else {
+        unsetenv("CONTENT_TYPE");
+    }
+
     // Set QUERY_STRING
     const char* query_string = "";
     const char* query_start = strchr(uri, '?');
@@ -303,7 +554,9 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
     if (php_embed_init(0, NULL) != SUCCESS) {
         LOGE("run_php_request: php_embed_init() FAILED");
         pthread_mutex_unlock(&g_php_request_mutex);
-        return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPHP init failed.");
+        static const char init_failed[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPHP init failed.";
+        *out_len = sizeof(init_failed) - 1;
+        return strdup(init_failed);
     }
     sapi_module.header_handler = android_header_handler;
     // nativephp extension self-registers via static linking
@@ -320,7 +573,7 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
                 }
 
                 // Set up POST data and request info
-                initialize_php_with_request(postData ?: "", method, uri);
+                initialize_php_with_request_bytes(body, body_len, contentType, method, uri);
 
                 // Execute the PHP script
                 zend_file_handle fileHandle;
@@ -335,9 +588,36 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
 
             } zend_end_try();
 
-    // Copy output before shutdown
-    char *collected = get_collected_output();
-    char *response = collected ? strdup(collected) : strdup("");
+    // Copy output before shutdown, by length
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    char *response = NULL;
+    size_t response_len = 0;
+    if (buf && buf->overflowed) {
+        char *text = NULL;
+        asprintf(&text,
+                 "Response too large for the PHP bridge: it is over the %d MB capture limit "
+                 "(MAX_BUFFER_SIZE in php_bridge.c), so nothing was sent rather than a body with bytes missing.\n",
+                 MAX_BUFFER_SIZE / (1024 * 1024));
+        if (text && asprintf(&response,
+                             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                             "Content-Length: %zu\r\n\r\n%s", strlen(text), text) >= 0) {
+            response_len = strlen(response);
+        } else {
+            response = NULL;
+        }
+        free(text);
+    } else if (buf && buf->output) {
+        response = malloc(buf->length + 1);
+        if (response) {
+            memcpy(response, buf->output, buf->length);
+            response[buf->length] = '\0';
+            response_len = buf->length;
+        }
+    }
+    if (!response) {
+        response = strdup("");
+        response_len = 0;
+    }
 
     safe_php_embed_shutdown();
     php_initialized = 0;
@@ -345,7 +625,16 @@ char* run_php_request(const char* scriptPath, const char* method, const char* ur
     LOGI("run_php_request: releasing mutex (uri=%s)", uri);
     pthread_mutex_unlock(&g_php_request_mutex);
 
+    *out_len = response_len;
     return response;
+}
+
+/** Text body wrapper kept for older callers. The result is NUL-terminated. */
+char* run_php_request(const char* scriptPath, const char* method, const char* uri, const char* postData) {
+    size_t len = 0;
+    const char *contentType = getenv("HTTP_CONTENT_TYPE");
+    return run_php_request_len(scriptPath, method, uri, postData, postData ? strlen(postData) : 0,
+                               contentType, &len);
 }
 
 // Legacy wrapper for compatibility
@@ -456,30 +745,34 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
 
 /**
  * Dispatch a request through the persistent interpreter.
- * Sets env vars, calls Runtime::dispatch() via zend_eval_string, captures output.
+ *
+ * The body goes into php://input as exactly body_len bytes. PHP evals one
+ * line, BridgeDispatcher::handle(), with the method, URI, script path,
+ * cookie, content type and header block passed as base64 arguments rather
+ * than spliced into the eval'd code. The response comes back as the capture
+ * buffer's bytes and length.
  */
-JNIEXPORT jstring JNICALL native_persistent_dispatch(
-        JNIEnv *env, jobject thiz,
-        jstring jMethod, jstring jUri, jstring jPostData, jstring jScriptPath) {
+static jbyteArray persistent_dispatch_core(JNIEnv *env,
+        const char *method, const char *uri, const char *path,
+        const char *body, size_t body_len,
+        const char *content_type, const char *cookie,
+        const char *headers, size_t headers_len) {
 
     pthread_mutex_lock(&g_php_request_mutex);
 
     if (!persistent_initialized) {
         LOGE("persistent_dispatch: runtime not initialized!");
         pthread_mutex_unlock(&g_php_request_mutex);
-        return (*env)->NewStringUTF(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.");
+        return bridge_text_response(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.");
     }
 
-    const char *method = (*env)->GetStringUTFChars(env, jMethod, NULL);
-    const char *uri = (*env)->GetStringUTFChars(env, jUri, NULL);
-    const char *post = jPostData ? (*env)->GetStringUTFChars(env, jPostData, NULL) : "";
-    const char *path = (*env)->GetStringUTFChars(env, jScriptPath, NULL);
-
-    LOGI("persistent_dispatch: %s %s", method, uri);
+    LOGI("persistent_dispatch: %s %s (body %zu bytes)", method, uri, body_len);
 
     clear_collected_output();
 
-    // Set env vars for this request
+    // Process env for this request. BridgeDispatcher copies the non-header
+    // env into $_SERVER on this lane; request values themselves come from the
+    // dispatch arguments, which win.
     setenv("REQUEST_URI", uri, 1);
     setenv("REQUEST_METHOD", method, 1);
     setenv("SCRIPT_FILENAME", path, 1);
@@ -489,183 +782,99 @@ JNIEXPORT jstring JNICALL native_persistent_dispatch(
     setenv("ASSET_URL", "http://127.0.0.1/_assets/", 1);
     setenv("NATIVEPHP_RUNNING", "true", 1);
 
-    // Set QUERY_STRING
-    const char* query_string = "";
     const char* query_start = strchr(uri, '?');
     if (query_start && strlen(query_start + 1) > 0) {
-        query_string = query_start + 1;
-        setenv("QUERY_STRING", query_string, 1);
+        setenv("QUERY_STRING", query_start + 1, 1);
     } else {
         unsetenv("QUERY_STRING");
     }
 
-    // Reset SAPI state from previous dispatch.
-    SG(headers_sent) = 0;
-    SG(post_read) = 0;
-    SG(read_post_bytes) = 0;
-    SG(request_info).request_method = method;
-    SG(request_info).request_uri = (char *)uri;
-    SG(request_info).proto_num = 1001; // HTTP/1.1
+    bridge_reset_sapi(method, uri);
+    bridge_set_request_body(body, body_len);
 
-    // Reset SAPI headers for fresh response
-    memset(&SG(sapi_headers), 0, sizeof(sapi_headers_struct));
-    SG(sapi_headers).http_response_code = 200;
-    zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
-
-    if (post && strlen(post) > 0) {
-        // Create a memory stream with the POST data for php://input
-        php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
-        if (post_stream) {
-            php_stream_write(post_stream, post, strlen(post));
-            php_stream_seek(post_stream, 0, SEEK_SET);
-
-            if (SG(request_info).request_body) {
-                php_stream_close(SG(request_info).request_body);
-            }
-            SG(request_info).request_body = post_stream;
-            SG(request_info).content_length = strlen(post);
-
-
-            const char *content_type = getenv("CONTENT_TYPE");
-            if (!content_type) content_type = getenv("HTTP_CONTENT_TYPE");
-            if (content_type && strstr(content_type, "json")) {
-                SG(request_info).content_type = "application/json";
-            } else {
-                SG(request_info).content_type = "application/x-www-form-urlencoded";
-            }
-        }
+    jbyteArray result;
+    char *code = bridge_dispatch_code("android", "persistent",
+                                      method, uri, path,
+                                      cookie, content_type,
+                                      headers, headers_len);
+    if (code) {
+        zend_first_try {
+            zend_eval_string(code, NULL, "persistent_dispatch");
+        } zend_end_try();
+        free(code);
+        result = bridge_take_response(env);
     } else {
-        if (SG(request_info).request_body) {
-            php_stream_close(SG(request_info).request_body);
-            SG(request_info).request_body = NULL;
-        }
-        SG(request_info).content_length = 0;
+        result = bridge_text_response(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build persistent dispatch.");
     }
-
-    // Build the dispatch call — Runtime::dispatch() handles everything
-
-    char eval_code[8192];
-    snprintf(eval_code, sizeof(eval_code),
-        "try {\n"
-        "    // Clean PHP output buffers from previous dispatch\n"
-        "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
-        "\n"
-        "    // Drop stale HTTP_* / CONTENT_* keys from previous request before re-populating.\n"
-        "    // $_SERVER persists across dispatches in the persistent runtime; without this,\n"
-        "    // headers like X-Inertia leak into subsequent requests and trigger JSON responses.\n"
-        "    foreach ($_SERVER as $__k => $__v) {\n"
-        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
-        "            unset($_SERVER[$__k]);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    // Sync $_SERVER from current env (setenv in C doesn't update PHP $_SERVER)\n"
-        "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
-        "    $_SERVER['REQUEST_URI'] = '%s';\n"
-        "    $_SERVER['SCRIPT_FILENAME'] = '%s';\n"
-        "    $_SERVER['PHP_SELF'] = '/native.php';\n"
-        "    $_SERVER['HTTP_HOST'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_NAME'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_PORT'] = '80';\n"
-        "    $_SERVER['APP_URL'] = 'http://127.0.0.1';\n"
-        "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
-        "\n"
-        "    // Sync ALL env vars into $_SERVER (C setenv() doesn't update PHP $_SERVER)\n"
-
-        "    foreach (getenv() as $__k => $__v) {\n"
-        "        $_SERVER[$__k] = $__v;\n"
-        "    }\n"
-        "\n"
-        "    // Ensure CONTENT_TYPE is set without HTTP_ prefix (CGI convention)\n"
-
-        "    if (isset($_SERVER['HTTP_CONTENT_TYPE'])) {\n"
-        "        $_SERVER['CONTENT_TYPE'] = $_SERVER['HTTP_CONTENT_TYPE'];\n"
-        "    }\n"
-        "    if (isset($_SERVER['HTTP_CONTENT_LENGTH'])) {\n"
-        "        $_SERVER['CONTENT_LENGTH'] = $_SERVER['HTTP_CONTENT_LENGTH'];\n"
-        "    }\n"
-        "\n"
-        "    // Set QUERY_STRING from the URI\n"
-        "    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');\n"
-        "    if ($__qpos !== false) {\n"
-        "        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);\n"
-        "    } else {\n"
-        "        $_SERVER['QUERY_STRING'] = '';\n"
-        "    }\n"
-        "\n"
-        "    // Reset superglobals for this request\n"
-        "    $_GET = [];\n"
-        "    $_POST = [];\n"
-        "    $_COOKIE = [];\n"
-        "    $_FILES = [];\n"
-        "    $_REQUEST = [];\n"
-        "\n"
-        "    // Parse cookies\n"
-        "    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {\n"
-        "        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {\n"
-        "            $__parts = explode('=', $__pair, 2);\n"
-        "            if (count($__parts) === 2) {\n"
-        "                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    // Parse query string\n"
-        "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
-        "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
-        "    }\n"
-        "\n"
-        "    // Parse POST body into $_POST for form-urlencoded requests\n"
-        "    // php://input is set up by the C layer but $_POST was cleared above\n"
-        "    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {\n"
-        "        $__rawInput = file_get_contents('php://input');\n"
-        "        if ($__rawInput !== false && $__rawInput !== '') {\n"
-        "            $__ct = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';\n"
-        "            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {\n"
-        "                parse_str($__rawInput, $_POST);\n"
-        "            }\n"
-        "            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
-        "        \\Illuminate\\Http\\Request::capture()\n"
-        "    );\n"
-        "    $__code = $__response->getStatusCode();\n"
-        "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
-        "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
-        "    foreach ($__response->headers->all() as $__name => $__values) {\n"
-        "        foreach ($__values as $__value) {\n"
-        "            echo \"{$__name}: {$__value}\\r\\n\";\n"
-        "        }\n"
-        "    }\n"
-        "    echo \"\\r\\n\";\n"
-        "    $__response->sendContent();\n"
-        "} catch (\\Throwable $e) {\n"
-        "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
-        "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
-        "    echo 'Persistent dispatch error: ' . $e->getMessage() . \"\\n\";\n"
-        "    echo $e->getTraceAsString();\n"
-        "}\n",
-        method, uri, path);
-
-    zend_first_try {
-        zend_eval_string(eval_code, NULL, "persistent_dispatch");
-    } zend_end_try();
-
-    char *dispatch_output = get_collected_output();
-    char *response = dispatch_output ? strdup(dispatch_output) : strdup("");
-
-    (*env)->ReleaseStringUTFChars(env, jMethod, method);
-    (*env)->ReleaseStringUTFChars(env, jUri, uri);
-    if (jPostData) (*env)->ReleaseStringUTFChars(env, jPostData, post);
-    (*env)->ReleaseStringUTFChars(env, jScriptPath, path);
-
-    jstring result = (*env)->NewStringUTF(env, response);
-    free(response);
 
     pthread_mutex_unlock(&g_php_request_mutex);
     return result;
+}
+
+/**
+ * nativePersistentDispatchBytes: the binary-safe persistent lane.
+ * body and headers are byte[] (headers: UTF-8 "Name: value" lines joined by
+ * CRLF); either may be null. Returns the raw HTTP response as byte[].
+ */
+JNIEXPORT jbyteArray JNICALL native_persistent_dispatch_bytes(
+        JNIEnv *env, jobject thiz,
+        jstring jMethod, jstring jUri, jbyteArray jBody, jstring jContentType,
+        jstring jCookie, jbyteArray jHeaders, jstring jScriptPath) {
+
+    const char *method = bridge_utf(env, jMethod);
+    const char *uri = bridge_utf(env, jUri);
+    const char *content_type = bridge_utf(env, jContentType);
+    const char *cookie = bridge_utf(env, jCookie);
+    const char *path = bridge_utf(env, jScriptPath);
+
+    size_t body_len = 0, headers_len = 0;
+    char *body = bridge_copy_bytes(env, jBody, &body_len);
+    char *headers = bridge_copy_bytes(env, jHeaders, &headers_len);
+
+    jbyteArray result = persistent_dispatch_core(env,
+            method ? method : "GET", uri ? uri : "/", path ? path : "",
+            body, body_len, content_type, cookie, headers, headers_len);
+
+    free(body);
+    free(headers);
+    bridge_release_utf(env, jMethod, method);
+    bridge_release_utf(env, jUri, uri);
+    bridge_release_utf(env, jContentType, content_type);
+    bridge_release_utf(env, jCookie, cookie);
+    bridge_release_utf(env, jScriptPath, path);
+
+    return result;
+}
+
+/**
+ * nativePersistentDispatch: the older String entry point, kept for callers
+ * that still use it. The body is taken as text, the cookie and content type
+ * from the env Kotlin set, and no header block is passed. The response is
+ * decoded leniently in Java, so it can't abort the app under CheckJNI.
+ */
+JNIEXPORT jstring JNICALL native_persistent_dispatch(
+        JNIEnv *env, jobject thiz,
+        jstring jMethod, jstring jUri, jstring jPostData, jstring jScriptPath) {
+
+    const char *method = bridge_utf(env, jMethod);
+    const char *uri = bridge_utf(env, jUri);
+    const char *post = bridge_utf(env, jPostData);
+    const char *path = bridge_utf(env, jScriptPath);
+
+    const char *content_type = getenv("CONTENT_TYPE");
+    if (!content_type) content_type = getenv("HTTP_CONTENT_TYPE");
+
+    jbyteArray bytes = persistent_dispatch_core(env,
+            method ? method : "GET", uri ? uri : "/", path ? path : "",
+            post, post ? strlen(post) : 0,
+            content_type, getenv("HTTP_COOKIE"), NULL, 0);
+
+    bridge_release_utf(env, jMethod, method);
+    bridge_release_utf(env, jUri, uri);
+    bridge_release_utf(env, jPostData, post);
+    bridge_release_utf(env, jScriptPath, path);
+
+    return bridge_bytes_to_jstring(env, bytes);
 }
 
 /**
@@ -800,20 +1009,67 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     jstring jLaravelPath = (jstring)(*env)->CallObjectMethod(env, thiz, method);
     const char *cLaravelPath = (*env)->GetStringUTFChars(env, jLaravelPath, NULL);
 
-    // Full init per artisan command
-    setup_embed_module();
-    php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
-    if (php_embed_init(0, NULL) != SUCCESS) {
-        LOGE("Failed to initialize PHP for artisan");
+    // PHP startup must respect any already-initialized TSRM context. When the
+    // persistent runtime (or the queue worker) is alive — e.g. a WorkManager
+    // scheduler job firing while the app process is still up — php_embed_init()
+    // has already run tsrm_startup() process-wide. Calling it again re-runs
+    // php_tsrm_startup_ex → zend_ini_refresh_caches → OnUpdateBool against
+    // half-initialized globals and SIGSEGVs. g_ephemeral_mutex does not help:
+    // native_persistent_boot takes g_php_request_mutex instead. Mirror
+    // ephemeral_embed_init(): hot path attaches to the existing TSRM, cold
+    // path does a full embed init.
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("runArtisanCommand: timed out waiting for persistent boot to settle");
         pthread_mutex_unlock(&g_ephemeral_mutex);
         (*env)->ReleaseStringUTFChars(env, jcommand, command);
         (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
         (*env)->DeleteLocalRef(env, jLaravelPath);
         return (*env)->NewStringUTF(env, "");
     }
-    sapi_module.header_handler = android_header_handler;
-    // nativephp extension self-registers via static linking
-    php_initialized = 1;
+
+    int artisan_hot_path = php_initialized;
+    if (artisan_hot_path) {
+        // Hot path: a PHP runtime is already live on another thread. Allocate a
+        // thread-local TSRM context instead of re-running global startup.
+        LOGI("runArtisanCommand: hot path — attaching to existing TSRM");
+        ts_resource(0);
+        setup_embed_module();
+        if (php_embed_module.startup(&php_embed_module) == FAILURE) {
+            LOGE("runArtisanCommand: hot-path module startup failed");
+            pthread_mutex_unlock(&g_ephemeral_mutex);
+            (*env)->ReleaseStringUTFChars(env, jcommand, command);
+            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+            (*env)->DeleteLocalRef(env, jLaravelPath);
+            return (*env)->NewStringUTF(env, "");
+        }
+        if (php_request_startup() == FAILURE) {
+            LOGE("runArtisanCommand: hot-path request startup failed");
+            php_request_shutdown(NULL);
+            ts_free_thread();
+            pthread_mutex_unlock(&g_ephemeral_mutex);
+            (*env)->ReleaseStringUTFChars(env, jcommand, command);
+            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+            (*env)->DeleteLocalRef(env, jLaravelPath);
+            return (*env)->NewStringUTF(env, "");
+        }
+        sapi_module.header_handler = android_header_handler;
+    } else {
+        // Cold path: no live runtime (e.g. install-time setup, or a WorkManager
+        // cold start after the app was killed) — full embed init is safe.
+        setup_embed_module();
+        php_embed_module.ini_entries = "display_errors=1\nimplicit_flush=1\noutput_buffering=0\n";
+        if (php_embed_init(0, NULL) != SUCCESS) {
+            LOGE("Failed to initialize PHP for artisan");
+            pthread_mutex_unlock(&g_ephemeral_mutex);
+            (*env)->ReleaseStringUTFChars(env, jcommand, command);
+            (*env)->ReleaseStringUTFChars(env, jLaravelPath, cLaravelPath);
+            (*env)->DeleteLocalRef(env, jLaravelPath);
+            return (*env)->NewStringUTF(env, "");
+        }
+        sapi_module.header_handler = android_header_handler;
+        // nativephp extension self-registers via static linking
+        php_initialized = 1;
+    }
 
     char artisanPath[1024];
     snprintf(artisanPath, sizeof(artisanPath), "%s/../artisan.php", cLaravelPath);
@@ -861,8 +1117,15 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     zend_stream_init_filename(&file_handle, artisanPath);
     php_execute_script(&file_handle);
 
-    safe_php_embed_shutdown();
-    php_initialized = 0;
+    if (artisan_hot_path) {
+        // Tear down only this thread's context — leave the live runtime's
+        // global TSRM (and php_initialized) intact.
+        php_request_shutdown(NULL);
+        ts_free_thread();
+    } else {
+        safe_php_embed_shutdown();
+        php_initialized = 0;
+    }
 
     pthread_mutex_unlock(&g_ephemeral_mutex);
 
@@ -908,27 +1171,64 @@ JNIEXPORT jstring JNICALL native_get_laravel_root_path(JNIEnv *env, jobject thiz
     return (*env)->NewStringUTF(env, fullPath);
 }
 
+/**
+ * nativeHandleRequestBytes: classic mode (full init/shutdown per request),
+ * binary-safe. body may be null. Returns the raw response as byte[].
+ */
+JNIEXPORT jbyteArray JNICALL native_handle_request_bytes(
+        JNIEnv *env, jobject thiz,
+        jstring jMethod, jstring jUri, jbyteArray jBody, jstring jContentType, jstring jScriptPath) {
+
+    const char *method = bridge_utf(env, jMethod);
+    const char *uri = bridge_utf(env, jUri);
+    const char *content_type = bridge_utf(env, jContentType);
+    const char *path = bridge_utf(env, jScriptPath);
+
+    size_t body_len = 0, out_len = 0;
+    char *body = bridge_copy_bytes(env, jBody, &body_len);
+
+    char *output = run_php_request_len(path ? path : "", method ? method : "GET", uri ? uri : "/",
+                                       body, body_len, content_type, &out_len);
+
+    jbyteArray result = bridge_new_byte_array(env, output ? output : "", output ? out_len : 0);
+
+    free(output);
+    free(body);
+    bridge_release_utf(env, jMethod, method);
+    bridge_release_utf(env, jUri, uri);
+    bridge_release_utf(env, jContentType, content_type);
+    bridge_release_utf(env, jScriptPath, path);
+
+    return result;
+}
+
+/**
+ * nativeHandleRequest: the older String entry point for classic mode. The
+ * response is decoded leniently in Java rather than with NewStringUTF.
+ */
 JNIEXPORT jstring JNICALL native_handle_request(
         JNIEnv *env, jobject thiz,
         jstring jMethod, jstring jUri, jstring jPostData, jstring jScriptPath) {
 
-    const char *method = (*env)->GetStringUTFChars(env, jMethod, NULL);
-    const char *uri = (*env)->GetStringUTFChars(env, jUri, NULL);
-    const char *post = jPostData ? (*env)->GetStringUTFChars(env, jPostData, NULL) : "";
-    const char *path = (*env)->GetStringUTFChars(env, jScriptPath, NULL);
+    const char *method = bridge_utf(env, jMethod);
+    const char *uri = bridge_utf(env, jUri);
+    const char *post = bridge_utf(env, jPostData);
+    const char *path = bridge_utf(env, jScriptPath);
 
-    char *output = run_php_request(path, method, uri, post);
+    size_t out_len = 0;
+    char *output = run_php_request_len(path ? path : "", method ? method : "GET", uri ? uri : "/",
+                                       post, post ? strlen(post) : 0,
+                                       getenv("HTTP_CONTENT_TYPE"), &out_len);
 
-    jstring result = (*env)->NewStringUTF(env, output ? output : "");
+    jbyteArray bytes = bridge_new_byte_array(env, output ? output : "", output ? out_len : 0);
 
-    // Clean up
     free(output);
-    (*env)->ReleaseStringUTFChars(env, jMethod, method);
-    (*env)->ReleaseStringUTFChars(env, jUri, uri);
-    (*env)->ReleaseStringUTFChars(env, jScriptPath, path);
-    if (jPostData) (*env)->ReleaseStringUTFChars(env, jPostData, post);
+    bridge_release_utf(env, jMethod, method);
+    bridge_release_utf(env, jUri, uri);
+    bridge_release_utf(env, jPostData, post);
+    bridge_release_utf(env, jScriptPath, path);
 
-    return result;
+    return bridge_bytes_to_jstring(env, bytes);
 }
 
 // JNI entry points for runtime lifecycle
@@ -1371,6 +1671,159 @@ JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_unlock(&g_ephemeral_mutex);
 }
 
+// ============================================================================
+// Async Task Lane — pool of TSRM contexts for immediate background PHP work
+// ============================================================================
+// Each pool thread (managed by Kotlin's AsyncTaskExecutor) boots its OWN PHP
+// interpreter context once, then runs `native:async:run --id=<id>` for tasks
+// handed to it. Unlike the single queue worker this lane is CONCURRENT (N
+// threads); unlike ephemeral it is reused across tasks, not torn down each time.
+// It never touches a database or the standard queue — task ids arrive from Kotlin,
+// and the task payload/result travel via the PHP-side temp-file transport plus
+// the AsyncTask.Complete bridge function (which wakes the UI runloop).
+//
+// "Booted?" is tracked per-thread via a pthread key, so one set of entrypoints
+// serves every pool thread with no shared bookkeeping. Boots are serialized
+// (g_async_boot_mutex) to avoid concurrent module-startup races (as the webview
+// lane does); runs proceed concurrently, each on its own TSRM context.
+
+static pthread_key_t g_async_booted_key;
+static pthread_once_t g_async_key_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t g_async_boot_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void make_async_booted_key(void) {
+    pthread_key_create(&g_async_booted_key, NULL);
+}
+
+static int async_thread_booted(void) {
+    pthread_once(&g_async_key_once, make_async_booted_key);
+    return pthread_getspecific(g_async_booted_key) != NULL;
+}
+
+static void set_async_thread_booted(int booted) {
+    pthread_once(&g_async_key_once, make_async_booted_key);
+    pthread_setspecific(g_async_booted_key, booted ? (void *) 1 : NULL);
+}
+
+// Allocate + initialize a PHP context for THIS async pool thread. Same shape as
+// worker_embed_init — TSRM is already started by the persistent runtime.
+static int async_embed_init(void) {
+    ts_resource(0);
+    setup_embed_module();
+    if (php_embed_module.startup(&php_embed_module) == FAILURE) {
+        LOGE("async_embed_init: module startup failed");
+        return FAILURE;
+    }
+    if (php_request_startup() == FAILURE) {
+        LOGE("async_embed_init: request startup failed");
+        return FAILURE;
+    }
+    return SUCCESS;
+}
+
+static void async_embed_shutdown(void) {
+    php_request_shutdown(NULL);
+    ts_free_thread();
+}
+
+JNIEXPORT jint JNICALL native_async_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
+    if (async_thread_booted()) {
+        return 0; // this pool thread already owns a context
+    }
+    if (wait_for_persistent_boot_settled(10) != 0) {
+        LOGE("async_boot: timed out waiting for persistent boot to settle");
+        return -1;
+    }
+
+    const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
+    LOGI("async_boot: booting context on async pool thread");
+
+    // Serialize boots across pool threads — module startup isn't reentrant.
+    pthread_mutex_lock(&g_async_boot_mutex);
+    clear_collected_output();
+
+    if (async_embed_init() != SUCCESS) {
+        LOGE("async_boot: async_embed_init() FAILED");
+        pthread_mutex_unlock(&g_async_boot_mutex);
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        return -1;
+    }
+
+    zend_first_try {
+        zend_activate_modules();
+
+        // Console-shaped environment for the bootstrap, set through the
+        // superglobal rather than setenv(). This lane is CONCURRENT: several
+        // pool threads boot and run at once, and setenv()/getenv() are neither
+        // thread-safe nor per-thread — the value one thread sets is the value
+        // every other thread (and the UI lane) sees. $_SERVER is per-thread, so
+        // each context gets its own copy, and Laravel's Env repository reads it.
+        zend_eval_string(
+            "$_SERVER['PHP_SELF'] = 'artisan.php';\n"
+            "$_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n",
+            NULL, "async_env");
+
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, bootstrapPath);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    set_async_thread_booted(1);
+    pthread_mutex_unlock(&g_async_boot_mutex);
+
+    (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+    LOGI("async_boot: context ready");
+    return 0;
+}
+
+JNIEXPORT jstring JNICALL native_async_run(JNIEnv *env, jobject thiz, jstring jTaskId) {
+    if (!async_thread_booted()) {
+        LOGE("async_run: context not booted on this thread");
+        return (*env)->NewStringUTF(env, "async context not booted");
+    }
+
+    // taskId is a framework-generated UUID (Str::uuid()), so it's safe to embed
+    // in the eval below; no user input reaches this string.
+    const char *taskId = (*env)->GetStringUTFChars(env, jTaskId, NULL);
+    LOGI("async_run: task %s", taskId);
+
+    clear_collected_output();
+
+    // No setenv() here — see async_boot. The eval sets the per-thread $_SERVER
+    // values this lane needs, which is what Laravel reads anyway.
+    char eval_code[1024];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    $_SERVER['PHP_SELF'] = 'artisan.php';\n"
+        "    $_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n"
+        "    \\Native\\Mobile\\Runtime::artisan('native:async:run --id=%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    error_log('async run error: ' . $e->getMessage());\n"
+        "}\n",
+        taskId);
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "async_run");
+    } zend_end_try();
+
+    (*env)->ReleaseStringUTFChars(env, jTaskId, taskId);
+
+    char *out = get_collected_output();
+    return (*env)->NewStringUTF(env, out ? out : "");
+}
+
+JNIEXPORT void JNICALL native_async_thread_shutdown(JNIEnv *env, jobject thiz) {
+    if (!async_thread_booted()) {
+        return;
+    }
+    zend_first_try {
+        zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "async_shutdown");
+    } zend_end_try();
+    async_embed_shutdown();
+    set_async_thread_booted(0);
+    LOGI("async_thread_shutdown: done");
+}
+
 
 // ── Webview PHP Runtimes ────────────────────────────
 // One dedicated PHP context per embedded php-mode <webview> element. The
@@ -1387,28 +1840,6 @@ JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
 // persistent lane's env churn without racing it.
 
 static pthread_mutex_t g_webview_boot_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-/* Escape a string for inclusion inside a single-quoted PHP string literal. */
-static char *webview_escape_php(const char *s) {
-    if (!s) {
-        return strdup("");
-    }
-    size_t len = strlen(s);
-    char *out = malloc(len * 2 + 1);
-    if (!out) {
-        return strdup("");
-    }
-    char *p = out;
-    for (size_t i = 0; i < len; i++) {
-        char c = s[i];
-        if (c == '\\' || c == '\'') {
-            *p++ = '\\';
-        }
-        *p++ = c;
-    }
-    *p = '\0';
-    return out;
-}
 
 JNIEXPORT jint JNICALL native_webview_php_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
     pthread_mutex_lock(&g_webview_boot_mutex);
@@ -1443,175 +1874,101 @@ JNIEXPORT jint JNICALL native_webview_php_boot(JNIEnv *env, jobject thiz, jstrin
     return 0;
 }
 
-JNIEXPORT jstring JNICALL native_webview_php_request(JNIEnv *env, jobject thiz,
-                                                     jstring jMethod, jstring jUri,
-                                                     jstring jCookie, jstring jBody,
-                                                     jstring jContentType, jstring jScriptPath) {
-    const char *method = (*env)->GetStringUTFChars(env, jMethod, NULL);
-    const char *uri = (*env)->GetStringUTFChars(env, jUri, NULL);
-    const char *cookieHeader = (*env)->GetStringUTFChars(env, jCookie, NULL);
-    const char *postData = (*env)->GetStringUTFChars(env, jBody, NULL);
-    const char *contentType = (*env)->GetStringUTFChars(env, jContentType, NULL);
-    const char *scriptPath = (*env)->GetStringUTFChars(env, jScriptPath, NULL);
+/**
+ * Serve one request on this thread's dedicated webview context. Same shape
+ * as persistent_dispatch_core: body into php://input by length, one
+ * BridgeDispatcher::handle() line with base64 arguments, bytes back.
+ * Runs on the webview's own executor thread, so no global mutex.
+ */
+static jbyteArray webview_request_core(JNIEnv *env,
+        const char *method, const char *uri, const char *script_path,
+        const char *cookie, const char *body, size_t body_len,
+        const char *content_type, const char *headers, size_t headers_len) {
 
     clear_collected_output();
 
     // Per-thread SAPI request state (TSRM-local — safe alongside other lanes)
-    SG(headers_sent) = 0;
-    SG(post_read) = 0;
-    SG(read_post_bytes) = 0;
-    SG(request_info).request_method = method;
-    SG(request_info).request_uri = (char *)uri;
-    SG(request_info).proto_num = 1001;
+    bridge_reset_sapi(method, uri);
+    bridge_set_request_body(body, body_len);
 
-    memset(&SG(sapi_headers), 0, sizeof(sapi_headers_struct));
-    SG(sapi_headers).http_response_code = 200;
-    zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
-
-    // POST data → php://input
-    if (postData && strlen(postData) > 0) {
-        php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
-        if (post_stream) {
-            php_stream_write(post_stream, postData, strlen(postData));
-            php_stream_seek(post_stream, 0, SEEK_SET);
-
-            if (SG(request_info).request_body) {
-                php_stream_close(SG(request_info).request_body);
-            }
-            SG(request_info).request_body = post_stream;
-            SG(request_info).content_length = strlen(postData);
-
-            if (contentType && strstr(contentType, "json")) {
-                SG(request_info).content_type = "application/json";
-            } else {
-                SG(request_info).content_type = "application/x-www-form-urlencoded";
-            }
-        }
-    } else {
-        if (SG(request_info).request_body) {
-            php_stream_close(SG(request_info).request_body);
-            SG(request_info).request_body = NULL;
-        }
-        SG(request_info).content_length = 0;
+    char *code = bridge_dispatch_code("android", "webview",
+                                      method, uri, script_path,
+                                      cookie, content_type,
+                                      headers, headers_len);
+    if (!code) {
+        return bridge_text_response(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build webview dispatch.");
     }
 
-    char *esc_method = webview_escape_php(method);
-    char *esc_uri = webview_escape_php(uri);
-    char *esc_cookie = webview_escape_php(cookieHeader);
-    char *esc_ct = webview_escape_php(contentType);
-    char *esc_script = webview_escape_php(scriptPath);
+    zend_first_try {
+        zend_eval_string(code, NULL, "webview_dispatch");
+    } zend_end_try();
+    free(code);
 
-    char *eval_code = NULL;
-    asprintf(&eval_code,
-        "try {\n"
-        "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
-        "\n"
-        "    foreach ($_SERVER as $__k => $__v) {\n"
-        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
-        "            unset($_SERVER[$__k]);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
-        "    $_SERVER['REQUEST_URI'] = '%s';\n"
-        "    $_SERVER['SCRIPT_FILENAME'] = '%s';\n"
-        "    $_SERVER['PHP_SELF'] = '/native.php';\n"
-        "    $_SERVER['HTTP_HOST'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_NAME'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_PORT'] = '80';\n"
-        "    $_SERVER['APP_URL'] = 'http://127.0.0.1';\n"
-        "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
-        "    $_SERVER['NATIVEPHP_PLATFORM'] = 'android';\n"
-        "    if ('%s' !== '') { $_SERVER['HTTP_COOKIE'] = '%s'; }\n"
-        "    if ('%s' !== '') { $_SERVER['CONTENT_TYPE'] = '%s'; $_SERVER['HTTP_CONTENT_TYPE'] = '%s'; }\n"
-        "\n"
-        "    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');\n"
-        "    if ($__qpos !== false) {\n"
-        "        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);\n"
-        "    } else {\n"
-        "        $_SERVER['QUERY_STRING'] = '';\n"
-        "    }\n"
-        "\n"
-        "    $_GET = [];\n"
-        "    $_POST = [];\n"
-        "    $_COOKIE = [];\n"
-        "    $_FILES = [];\n"
-        "    $_REQUEST = [];\n"
-        "\n"
-        "    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {\n"
-        "        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {\n"
-        "            $__parts = explode('=', $__pair, 2);\n"
-        "            if (count($__parts) === 2) {\n"
-        "                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
-        "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
-        "    }\n"
-        "\n"
-        "    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {\n"
-        "        $__rawInput = file_get_contents('php://input');\n"
-        "        if ($__rawInput !== false && $__rawInput !== '') {\n"
-        "            $__ct = $_SERVER['CONTENT_TYPE'] ?? '';\n"
-        "            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {\n"
-        "                parse_str($__rawInput, $_POST);\n"
-        "            }\n"
-        "            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
-        "        \\Illuminate\\Http\\Request::capture()\n"
-        "    );\n"
-        "    $__code = $__response->getStatusCode();\n"
-        "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
-        "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
-        "    foreach ($__response->headers->all() as $__name => $__values) {\n"
-        "        foreach ($__values as $__value) {\n"
-        "            echo \"{$__name}: {$__value}\\r\\n\";\n"
-        "        }\n"
-        "    }\n"
-        "    echo \"\\r\\n\";\n"
-        "    $__response->sendContent();\n"
-        "} catch (\\Throwable $e) {\n"
-        "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
-        "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
-        "    echo 'Webview dispatch error: ' . $e->getMessage() . \"\\n\";\n"
-        "    echo $e->getTraceAsString();\n"
-        "}\n",
-        esc_method, esc_uri, esc_script,
-        esc_cookie, esc_cookie,
-        esc_ct, esc_ct, esc_ct);
+    return bridge_take_response(env);
+}
 
-    free(esc_method);
-    free(esc_uri);
-    free(esc_cookie);
-    free(esc_ct);
-    free(esc_script);
+/**
+ * nativeWebviewPhpRequestBytes: the binary-safe embedded-webview lane.
+ * body and headers are byte[] and may be null. Returns byte[].
+ */
+JNIEXPORT jbyteArray JNICALL native_webview_php_request_bytes(JNIEnv *env, jobject thiz,
+                                                              jstring jMethod, jstring jUri,
+                                                              jstring jCookie, jbyteArray jBody,
+                                                              jstring jContentType, jbyteArray jHeaders,
+                                                              jstring jScriptPath) {
+    const char *method = bridge_utf(env, jMethod);
+    const char *uri = bridge_utf(env, jUri);
+    const char *cookie = bridge_utf(env, jCookie);
+    const char *content_type = bridge_utf(env, jContentType);
+    const char *script_path = bridge_utf(env, jScriptPath);
 
-    jstring result;
-    if (!eval_code) {
-        result = (*env)->NewStringUTF(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build webview dispatch.");
-    } else {
-        zend_first_try {
-            zend_eval_string(eval_code, NULL, "webview_dispatch");
-        } zend_end_try();
-        free(eval_code);
+    size_t body_len = 0, headers_len = 0;
+    char *body = bridge_copy_bytes(env, jBody, &body_len);
+    char *headers = bridge_copy_bytes(env, jHeaders, &headers_len);
 
-        char *out = get_collected_output();
-        result = (*env)->NewStringUTF(env, out ? out : "");
-    }
+    jbyteArray result = webview_request_core(env,
+            method ? method : "GET", uri ? uri : "/", script_path ? script_path : "",
+            cookie, body, body_len, content_type, headers, headers_len);
 
-    (*env)->ReleaseStringUTFChars(env, jMethod, method);
-    (*env)->ReleaseStringUTFChars(env, jUri, uri);
-    (*env)->ReleaseStringUTFChars(env, jCookie, cookieHeader);
-    (*env)->ReleaseStringUTFChars(env, jBody, postData);
-    (*env)->ReleaseStringUTFChars(env, jContentType, contentType);
-    (*env)->ReleaseStringUTFChars(env, jScriptPath, scriptPath);
+    free(body);
+    free(headers);
+    bridge_release_utf(env, jMethod, method);
+    bridge_release_utf(env, jUri, uri);
+    bridge_release_utf(env, jCookie, cookie);
+    bridge_release_utf(env, jContentType, content_type);
+    bridge_release_utf(env, jScriptPath, script_path);
 
     return result;
+}
+
+/**
+ * nativeWebviewPhpRequest: the older String entry point, kept for callers
+ * that still use it. The body is taken as text and no header block is
+ * passed; the response is decoded leniently in Java.
+ */
+JNIEXPORT jstring JNICALL native_webview_php_request(JNIEnv *env, jobject thiz,
+                                                     jstring jMethod, jstring jUri,
+                                                     jstring jCookie, jstring jBody,
+                                                     jstring jContentType, jstring jScriptPath) {
+    const char *method = bridge_utf(env, jMethod);
+    const char *uri = bridge_utf(env, jUri);
+    const char *cookie = bridge_utf(env, jCookie);
+    const char *post = bridge_utf(env, jBody);
+    const char *content_type = bridge_utf(env, jContentType);
+    const char *script_path = bridge_utf(env, jScriptPath);
+
+    jbyteArray bytes = webview_request_core(env,
+            method ? method : "GET", uri ? uri : "/", script_path ? script_path : "",
+            cookie, post, post ? strlen(post) : 0, content_type, NULL, 0);
+
+    bridge_release_utf(env, jMethod, method);
+    bridge_release_utf(env, jUri, uri);
+    bridge_release_utf(env, jCookie, cookie);
+    bridge_release_utf(env, jBody, post);
+    bridge_release_utf(env, jContentType, content_type);
+    bridge_release_utf(env, jScriptPath, script_path);
+
+    return bridge_bytes_to_jstring(env, bytes);
 }
 
 JNIEXPORT void JNICALL native_webview_php_shutdown(JNIEnv *env, jobject thiz) {
@@ -1649,10 +2006,14 @@ static JNINativeMethod gMethods[] = {
         {"nativeHandleRequest","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request},
         // Legacy name for compat
         {"nativeHandleRequestOnce","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_handle_request},
+        // Binary-safe classic mode: byte[] body in, byte[] response out
+        {"nativeHandleRequestBytes","(Ljava/lang/String;Ljava/lang/String;[BLjava/lang/String;Ljava/lang/String;)[B",(void *) native_handle_request_bytes},
 
         // Persistent runtime methods
         {"nativePersistentBoot","(Ljava/lang/String;)I",(void *) native_persistent_boot},
         {"nativePersistentDispatch","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_dispatch},
+        // method, uri, body, contentType, cookie, headers, scriptPath
+        {"nativePersistentDispatchBytes","(Ljava/lang/String;Ljava/lang/String;[BLjava/lang/String;Ljava/lang/String;[BLjava/lang/String;)[B",(void *) native_persistent_dispatch_bytes},
         {"nativePersistentArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_persistent_artisan},
         {"nativePersistentShutdown","()V",(void *) native_persistent_shutdown},
 
@@ -1666,9 +2027,16 @@ static JNINativeMethod gMethods[] = {
         {"nativeEphemeralArtisan","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_ephemeral_artisan},
         {"nativeEphemeralShutdown","()V",(void *) native_ephemeral_shutdown},
 
+        // Async task lane (immediate concurrent background PHP work)
+        {"nativeAsyncBoot","(Ljava/lang/String;)I",(void *) native_async_boot},
+        {"nativeAsyncRun","(Ljava/lang/String;)Ljava/lang/String;",(void *) native_async_run},
+        {"nativeAsyncThreadShutdown","()V",(void *) native_async_thread_shutdown},
+
         // Webview runtime (dedicated context per embedded php-mode webview)
         {"nativeWebviewPhpBoot","(Ljava/lang/String;)I",(void *) native_webview_php_boot},
         {"nativeWebviewPhpRequest","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",(void *) native_webview_php_request},
+        // method, uri, cookie, body, contentType, headers, scriptPath
+        {"nativeWebviewPhpRequestBytes","(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[BLjava/lang/String;[BLjava/lang/String;)[B",(void *) native_webview_php_request_bytes},
         {"nativeWebviewPhpShutdown","()V",(void *) native_webview_php_shutdown},
 };
 

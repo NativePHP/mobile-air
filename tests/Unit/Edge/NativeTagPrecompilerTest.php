@@ -205,6 +205,15 @@ it('handles text-input hyphenated name', function () {
     expect($result)->toContain("::leaf('text_input', ['placeholder' => 'Search...'])");
 });
 
+it('compiles dotted native model paths through view data', function () {
+    $result = ($this->precompiler)('<native:text-input native:model="profile.name" />');
+
+    expect($result)
+        ->toContain("'value' => (data_get(get_defined_vars(), 'profile.name'))")
+        ->toContain("'_change' => '__syncProperty(\\'profile.name\\')'")
+        ->toContain("'sync-mode' => 'live'");
+});
+
 it('preserves Blade directives like @foreach', function () {
     $input = '@foreach($items as $item) <native:text>{{ $item }}</native:text> @endforeach';
     $result = ($this->precompiler)($input);

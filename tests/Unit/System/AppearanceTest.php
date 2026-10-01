@@ -33,6 +33,14 @@ it('ignores a bogus appearance value', function () {
     expect((new System)->appearance())->toBe('dark');
 });
 
+it('updates the appearance cache through the service provider listener', function () {
+    System::rememberAppearance('light');
+
+    AppearanceChanged::dispatch('dark');
+
+    expect((new System)->appearance())->toBe('dark');
+});
+
 it('rebuilds a marked event from its native payload', function () {
     $comp = new class extends NativeComponent {};
     $build = new ReflectionMethod(NativeComponent::class, 'buildEventInstance');

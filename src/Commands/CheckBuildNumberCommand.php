@@ -19,6 +19,9 @@ class CheckBuildNumberCommand extends Command
         {platform : The platform to check (android/a, ios/i, or both)}
         {--google-service-key= : Path to Google Service Account JSON key file (Android)}
         {--api-key= : Path to App Store Connect API key file (iOS)}
+        {--api-key-path= : Path to App Store Connect API key file (.p8) - same as --api-key}
+        {--api-key-id= : App Store Connect API key ID}
+        {--api-issuer-id= : App Store Connect API issuer ID}
         {--update : Update local build number to store latest + 1}
         {--jump-by= : Add extra number to the suggested version (e.g. --jump-by=10 to skip ahead)}';
 
@@ -98,8 +101,21 @@ class CheckBuildNumberCommand extends Command
     {
         $this->info('🍎 Checking iOS (App Store Connect)...');
 
-        $latestBuildNumber = $this->getLatestBuildNumberFromStore('ios');
         $currentLocal = env('NATIVEPHP_APP_VERSION_CODE');
+
+        // Suggesting a number without having reached Apple is worse than not
+        // answering: "1" looks like a fresh app rather than a failed lookup.
+        if (! $this->hasAppStoreConnectCredentials()) {
+            $this->line('📱 App Store: not checked - no API credentials');
+            $this->line('💻 Local current: '.($currentLocal ?: 'not set'));
+            $this->line('🔑 Provide --api-key-path, --api-key-id and --api-issuer-id, or set');
+            $this->line('   APP_STORE_API_KEY, APP_STORE_API_KEY_ID and APP_STORE_API_ISSUER_ID');
+            $this->newLine();
+
+            return;
+        }
+
+        $latestBuildNumber = $this->getLatestBuildNumberFromStore('ios');
 
         if ($latestBuildNumber !== null) {
             $this->line("📱 App Store latest: {$latestBuildNumber}");
@@ -113,7 +129,10 @@ class CheckBuildNumberCommand extends Command
                 $this->line('🔧 To update: add --update flag');
             }
         } else {
-            $this->line('📱 App Store: No releases found or check not implemented');
+            // Reached Apple, found nothing. Build numbers only have to be unique
+            // within one version string, so a new version really does start at 1.
+            $version = config('nativephp.version');
+            $this->line("📱 App Store: no builds yet for version {$version}");
             $this->line('💻 Local current: '.($currentLocal ?: 'not set'));
             $this->line('💡 Suggested next: 1');
         }

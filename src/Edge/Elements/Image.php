@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge\Elements;
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\ImageSource;
 
 class Image extends Element
 {
@@ -15,7 +16,7 @@ class Image extends Element
     {
         $el = new static;
         if ($src !== '') {
-            $el->imageProps['src'] = $src;
+            $el->imageProps['src'] = ImageSource::forDevice($src);
         }
 
         return $el;
@@ -24,7 +25,7 @@ class Image extends Element
     public function applyAttributes(array $attrs): void
     {
         if (isset($attrs['src'])) {
-            $this->imageProps['src'] = $attrs['src'];
+            $this->imageProps['src'] = ImageSource::forDevice($attrs['src']);
         }
         if (isset($attrs['fit'])) {
             $this->fit((int) $attrs['fit']);

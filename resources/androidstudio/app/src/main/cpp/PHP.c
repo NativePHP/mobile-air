@@ -7,11 +7,17 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 static php_stream *g_stdout_stream = NULL;
-extern void pipe_php_output(const char* str);
+extern void append_output(const char* str, size_t length);
 
 void initialize_php_with_request(const char *post_data, const char *method, const char *uri) {
+    initialize_php_with_request_bytes(post_data, post_data ? strlen(post_data) : 0,
+                                      getenv("CONTENT_TYPE"), method, uri);
+}
+
+void initialize_php_with_request_bytes(const char *body, size_t body_len, const char *content_type,
+                                       const char *method, const char *uri) {
     LOGI("🛠️ Starting PHP request startup");
-    LOGI("🐛 initialize_php_with_request called with method=%s uri=%s body=%s", method, uri, post_data);
+    LOGI("🐛 initialize_php_with_request called with method=%s uri=%s body=%zu bytes", method, uri, body_len);
 
     // Step 1: Bootstrap PHP internals (superglobals, session, etc)
     if (php_request_startup() == FAILURE) {
@@ -38,6 +44,12 @@ void initialize_php_with_request(const char *post_data, const char *method, cons
     add_assoc_string(&server_array, "HTTPS", "off");
     add_assoc_string(&server_array, "HTTP_USER_AGENT", "PHPNative/1.0");
     add_assoc_long(&server_array, "REQUEST_TIME", time(NULL));
+    if (content_type && content_type[0]) {
+        add_assoc_string(&server_array, "CONTENT_TYPE", (char*)content_type);
+    }
+    if (body_len > 0) {
+        add_assoc_long(&server_array, "CONTENT_LENGTH", (zend_long) body_len);
+    }
 
     zend_hash_str_update(&EG(symbol_table), "_SERVER", sizeof("_SERVER") - 1, &server_array);
     LOGI("✅ $_SERVER populated");
@@ -91,28 +103,19 @@ void initialize_php_with_request(const char *post_data, const char *method, cons
 
     php_output_activate();
 
-    // Step 5: Setup POST/PATCH/PUT body if needed
-    if (post_data) {
-        size_t post_data_length = strlen(post_data);
-
-        LOGI("📮 Detected POST request");
-        LOGI("📦 POST body length: %zu", post_data_length);
-        LOGI("📦 POST body preview (first 200 chars): %.200s", post_data);
+    // Step 5: Put the exact body bytes into php://input. The content type is
+    // left NULL in SAPI so PHP's own body parser never runs on this SAPI (it
+    // has no read_post); $_SERVER['CONTENT_TYPE'] carries the real one.
+    SG(request_info).content_type = NULL;
+    if (body && body_len > 0) {
+        LOGI("📮 Request body: %zu bytes, type %s", body_len, content_type ? content_type : "(none)");
 
         php_stream *mem_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
-        php_stream_write(mem_stream, post_data, post_data_length);
+        php_stream_write(mem_stream, body, body_len);
+        php_stream_seek(mem_stream, 0, SEEK_SET);
 
         SG(request_info).request_body = mem_stream;
-        SG(request_info).content_length = post_data_length;
-
-        const char *content_type = getenv("CONTENT_TYPE");
-        if (content_type && strstr(content_type, "json")) {
-            SG(request_info).content_type = "application/json";
-            LOGI("📄 Set PHP content type to application/json (from CONTENT_TYPE=%s)", content_type);
-        } else {
-            SG(request_info).content_type = "application/x-www-form-urlencoded";
-            LOGI("📄 Set PHP content type to application/x-www-form-urlencoded (CONTENT_TYPE=%s)", content_type ? content_type : "null");
-        }
+        SG(request_info).content_length = (zend_long) body_len;
     }
 
 
@@ -152,8 +155,8 @@ void capture_php_stdout_output() {
 
             LOGI("Captured %zu bytes from stdout stream", bytes_read);
 
-            // Send to our output collector
-            pipe_php_output(buffer);
+            // Send to our output collector, by length
+            append_output(buffer, bytes_read);
 
             free(buffer);
         }

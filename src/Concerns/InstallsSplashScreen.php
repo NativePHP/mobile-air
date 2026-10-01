@@ -50,13 +50,20 @@ trait InstallsSplashScreen
             }
         }
 
+        $launchImageDir = base_path('nativephp/ios/NativePHP/Assets.xcassets/LaunchImage.imageset');
+
         if (empty($foundVariants)) {
+            $this->restoreDefaultIosLaunchImageSet($launchImageDir);
+
             return;
         }
 
-        // Ensure the LaunchImage asset catalog exists
-        $launchImageDir = base_path('nativephp/ios/NativePHP/Assets.xcassets/LaunchImage.imageset');
-        File::ensureDirectoryExists($launchImageDir);
+        // Emitted whole: anything an earlier build left behind — a variant the
+        // app has since dropped, or a file a plugin wrote — would otherwise
+        // survive into a set whose Contents.json no longer lists it: dead
+        // weight at best, and at worst the mixed bitmap/"Any" scale failure
+        // described above.
+        $this->resetIosLaunchImageSet($launchImageDir);
 
         // Create Contents.json for LaunchImage with all variants
         $contentsJson = [
@@ -75,6 +82,38 @@ trait InstallsSplashScreen
         foreach ($foundVariants as $filename => $sourcePath) {
             @copy($sourcePath, $launchImageDir.'/'.$filename);
         }
+    }
+
+    /**
+     * An app with no splash artwork of its own gets the set a fresh install
+     * ships, not whatever the last build with artwork left behind.
+     */
+    private function restoreDefaultIosLaunchImageSet(string $launchImageDir): void
+    {
+        $default = __DIR__.'/../../resources/xcode/NativePHP/Assets.xcassets/LaunchImage.imageset';
+
+        if (! File::isDirectory($default)) {
+            return;
+        }
+
+        $this->resetIosLaunchImageSet($launchImageDir);
+
+        File::copyDirectory($default, $launchImageDir);
+    }
+
+    /**
+     * A symlinked set is unlinked rather than recursed into: deleting a
+     * directory through the link would erase the link target's contents.
+     */
+    private function resetIosLaunchImageSet(string $launchImageDir): void
+    {
+        if (is_link($launchImageDir)) {
+            File::delete($launchImageDir);
+        } else {
+            File::deleteDirectory($launchImageDir);
+        }
+
+        File::ensureDirectoryExists($launchImageDir);
     }
 
     private function validateIosSplashScreen(string $splashPath, string $filename = 'splash.png'): bool
