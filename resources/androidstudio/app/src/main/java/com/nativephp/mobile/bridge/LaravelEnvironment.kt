@@ -9,8 +9,6 @@ import java.io.FileInputStream
 import java.io.BufferedInputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import org.json.JSONObject
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -29,7 +27,11 @@ class LaravelEnvironment(private val context: Context) {
         val version: String?,
         val versionCode: String?,
         val bifrostAppId: String?,
-        val runtimeMode: String?
+        val runtimeMode: String?,
+        // What this shell ships with, so a lane cannot offer it a release that
+        // predates its own code.
+        val shellBuiltAt: String? = null,
+        val shellCommit: String? = null
     )
 
     companion object {
@@ -73,6 +75,10 @@ class LaravelEnvironment(private val context: Context) {
 
         // Directory paths
         private const val DIR_LARAVEL = "laravel"
+        private const val DIR_UPDATES = "updates"
+        private const val PENDING_ZIP = "pending.zip"
+        private const val PENDING_MANIFEST = "pending.json"
+        private const val OTA_MANIFEST = "ota.json"
         private const val DIR_PERSISTED = "persisted_data"
         private const val DIR_STORAGE = "persisted_data/storage"
         private const val DIR_FRAMEWORK = "persisted_data/storage/framework"
@@ -85,12 +91,8 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_DATABASE = "persisted_data/database/"
         private const val DIR_PHP_SESSIONS = "php_sessions"
 
-        // API URLs
-        private const val BIFROST_API_BASE = "https://bifrost.nativephp.com/api/apps"
-
         // Version constants
         private const val VERSION_DEBUG = "DEBUG"
-        private const val VERSION_DEFAULT = "0.0.0"
 
         // Environment variable regex patterns
         private const val REGEX_APP_VERSION = "(?m)^NATIVEPHP_APP_VERSION=(.+)$"
@@ -189,14 +191,8 @@ class LaravelEnvironment(private val context: Context) {
 
             setupDirectories()
 
-            // OTA check commented out — adds ~300ms network latency on every cold boot
-            // TODO: Re-enable when OTA is ready for production
-            // val didExtract = if (checkAndApplyOTAUpdate()) {
-            //     Log.d(TAG, "✅ OTA update applied successfully")
-            //     true
-            // } else {
-            //     extractLaravelBundle()
-            // }
+            // OTA check/download lives in the mobile-ota plugin. Core only
+            // applies pending zips from {appStorageDir}/updates on boot.
 
             // Hold the lock across extraction AND the post-extraction steps
             // (.env writes + classic artisan). A second activity's init thread
@@ -205,7 +201,9 @@ class LaravelEnvironment(private val context: Context) {
             // while THIS thread is still cycling classic embeds — see the
             // extractionLock comment for the failure that causes.
             extractionLock.withLock {
-                val didExtract = extractLaravelBundleUnlocked()
+                val didBundle = extractLaravelBundleUnlocked()
+                val didPending = applyPendingUpdatesUnlocked()
+                val didExtract = didBundle || didPending
 
                 setupEnvironment(didExtract)
 
@@ -230,33 +228,26 @@ class LaravelEnvironment(private val context: Context) {
      * either path; the isUpToDate check inside short-circuits repeat callers.
      */
     private fun extractLaravelBundle(): Boolean = extractionLock.withLock {
-        extractLaravelBundleUnlocked()
+        val didBundle = extractLaravelBundleUnlocked()
+        val didPending = applyPendingUpdatesUnlocked()
+        didBundle || didPending
     }
 
     private fun extractLaravelBundleUnlocked(): Boolean {
         val laravelDir = File(appStorageDir, DIR_LARAVEL)
         val otaMarkerFile = File(laravelDir, OTA_MARKER)
 
-        // Check if OTA is configured in both bundled and extracted versions
-        val bundledBifrostId = getBifrostAppId()
-        val extractedBifrostId = getBifrostAppIdFromExtracted()
-        val isBundledOtaConfigured = !bundledBifrostId.isNullOrEmpty()
-        val isExtractedOtaConfigured = !extractedBifrostId.isNullOrEmpty()
-
-        // If OTA marker exists but bundled version no longer has OTA configured, remove marker and force extraction
-        if (otaMarkerFile.exists() && !isBundledOtaConfigured) {
-            val otaVersion = otaMarkerFile.readText().trim()
-            Log.d(TAG, "🔄 OTA removed from bundled version, rolling back from OTA version $otaVersion to bundled version")
-            Log.d(TAG, "🔍 Bundled BIFROST_APP_ID: '$bundledBifrostId', Extracted BIFROST_APP_ID: '$extractedBifrostId'")
-            otaMarkerFile.delete()
-            // Continue with extraction to rollback to bundled version
-        }
-        // If OTA marker exists and bundled version still has OTA configured, skip extraction
-        else if (otaMarkerFile.exists() && isBundledOtaConfigured) {
-            val otaVersion = otaMarkerFile.readText().trim()
-            Log.d(TAG, "✅ OTA update version $otaVersion is active, skipping bundle extraction")
-            return false
-        }
+        // Two questions, in this order, and neither may answer the other:
+        //
+        //   1. Which shell am I? The baked bundle against .version. A store
+        //      update means new native code, so its payload must win — an OTA
+        //      applied to the previous shell belongs to a fingerprint that no
+        //      longer describes this app.
+        //   2. Which release am I? A payload queued by the OTA client, which
+        //      applies on top of the shell it was fetched for.
+        //
+        // The OTA marker used to short-circuit step 1 entirely, so a store
+        // update silently kept running OTA'd code from the shell before it.
 
         // Build composite "version+b+versionCode" identity from bundle metadata.
         // This is what we compare against the extracted .env so a build-number-only
@@ -303,6 +294,8 @@ class LaravelEnvironment(private val context: Context) {
 
         if (!shouldExtract) {
             Log.d(TAG, "✅ Laravel already up to date (id $embeddedId)")
+
+            // A queued payload is the caller's second question, not this one's.
             return false
         }
 
@@ -333,10 +326,13 @@ class LaravelEnvironment(private val context: Context) {
             val zipStream = context.assets.open(BUNDLE_ZIP)
             unzip(zipStream, laravelDir)
 
-            // Remove OTA marker if it exists (we're back to bundled version)
+            // Back to the bundled shell: the marker and any queued payload
+            // describe the previous one, and a payload built against a
+            // fingerprint this shell no longer has must never be applied.
             if (otaMarkerFile.exists()) {
                 otaMarkerFile.delete()
             }
+            File(File(appStorageDir, DIR_UPDATES), PENDING_ZIP).delete()
 
             // Record WHAT WAS JUST EXTRACTED: the embedded composite, verbatim.
             // Recomputing from the extracted .env loses the version code (no
@@ -344,6 +340,7 @@ class LaravelEnvironment(private val context: Context) {
             // staleness check compared against "…b1" — a permanent
             // re-extraction loop.
             File(laravelDir, VERSION_FILE).writeText(embeddedId)
+            clearCompiledCaches()
             Log.d(TAG, "✅ Updated .version file to: $embeddedId")
 
             Log.d(TAG, "✅ Extraction complete to ${laravelDir.absolutePath}")
@@ -384,8 +381,10 @@ class LaravelEnvironment(private val context: Context) {
             }
             val bifrostAppId = if (obj.has("bifrost_app_id") && !obj.isNull("bifrost_app_id")) obj.getString("bifrost_app_id") else null
             val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
+            val shellBuiltAt = if (obj.has("shell_built_at") && !obj.isNull("shell_built_at")) obj.getString("shell_built_at") else null
+            val shellCommit = if (obj.has("shell_commit") && !obj.isNull("shell_commit")) obj.getString("shell_commit") else null
             Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, version_code=$versionCode, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
-            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode)
+            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit)
             bundleMetadataCache = metadata
             return metadata
         } catch (e: Exception) {
@@ -450,59 +449,6 @@ class LaravelEnvironment(private val context: Context) {
         return Pair(id.substring(0, sepIndex), id.substring(sepIndex + 1))
     }
 
-    private fun checkAndApplyOTAUpdate(): Boolean {
-        // Check if BIFROST_APP_ID exists in environment or app metadata
-        val bifrostAppId = getBifrostAppId()
-        if (bifrostAppId.isNullOrEmpty()) {
-            Log.d(TAG, "ℹ️ No BIFROST_APP_ID found, skipping OTA check")
-            return false
-        }
-
-        val laravelDir = File(appStorageDir, DIR_LARAVEL)
-
-        // Get current version from existing .env if available, otherwise from bundled .env
-        val currentVersion = if (laravelDir.exists()) {
-            val envFile = File(laravelDir, ENV_FILE)
-            if (envFile.exists()) {
-                getVersionFromEnvFile(envFile)
-            } else {
-                getVersionFromBundledEnv()
-            }
-        } else {
-            getVersionFromBundledEnv()
-        } ?: VERSION_DEFAULT
-
-        // Special case: DEBUG version means skip OTA
-        if (currentVersion == VERSION_DEBUG) {
-            Log.d(TAG, "ℹ️ DEBUG version detected, skipping OTA update")
-            return false
-        }
-        
-        Log.d(TAG, "🔄 Checking for OTA updates...")
-        Log.d(TAG, "📱 Current version: $currentVersion")
-        Log.d(TAG, "🆔 Bifrost App ID: $bifrostAppId")
-        
-        return try {
-            val updateInfo = checkForUpdate(bifrostAppId, currentVersion)
-            if (updateInfo != null && !updateInfo.optBoolean("upToDate", true)) {
-                val newVersion = updateInfo.optString("current_version", "")
-                val downloadUrl = updateInfo.optString("download_url", "")
-                
-                Log.d(TAG, "📥 Update available: $currentVersion → $newVersion")
-                
-                if (downloadUrl.isNotEmpty() && newVersion != currentVersion) {
-                    return downloadAndApplyUpdate(downloadUrl, newVersion)
-                }
-            } else {
-                Log.d(TAG, "✅ App is up to date")
-            }
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ OTA update check failed", e)
-            false
-        }
-    }
-    
     private fun getVersionFromEnvFile(envFile: File): String? {
         return try {
             val envContent = envFile.readText()
@@ -523,162 +469,231 @@ class LaravelEnvironment(private val context: Context) {
         }
     }
 
-    private fun getVersionFromBundledEnv(): String? {
-        // Use cached metadata instead of reading ZIP again
-        return readBundleMetadata().version
+    /** The native:run payload identifies itself as DEBUG rather than as a version. */
+    private fun isDebugBundle(): Boolean {
+        val embeddedId = buildVersionId(
+            readBundleMetadata().version,
+            readBundleMetadata().versionCode
+        )
+        return embeddedId?.equals(VERSION_DEBUG, ignoreCase = true) == true
     }
-    
-    private fun getBifrostAppId(): String? {
-        // Use cached metadata instead of reading ZIP again
-        val bifrostId = readBundleMetadata().bifrostAppId
 
-        if (!bifrostId.isNullOrEmpty()) {
-            Log.d(TAG, "Found BIFROST_APP_ID in bundled .env: $bifrostId")
-        } else {
-            Log.d(TAG, "No BIFROST_APP_ID found in bundled .env")
+    private fun applyPendingUpdatesUnlocked(): Boolean {
+        // DEBUG is the native:run payload. Always extract it (extractLaravelBundleUnlocked)
+        // and do not apply a leftover pending OTA on top — otherwise developers
+        // never see the PHP they just shipped. Versioned builds still apply pending.
+        if (isDebugBundle()) {
+            Log.d(TAG, "🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
+            return false
         }
 
-        return bifrostId
-    }
-    
-    private fun getBifrostAppIdFromExtracted(): String? {
-        // Read from extracted .env file
         val laravelDir = File(appStorageDir, DIR_LARAVEL)
+
+        return applyPendingUpdate(laravelDir, File(laravelDir, OTA_MARKER))
+    }
+
+    /**
+     * A payload ships the whole Laravel .env, and it deliberately carries no
+     * app version: which shell this is belongs to the shell. The values are
+     * written back from bundle_meta.json so the running app reports the version
+     * it was installed as, and so the identity check keeps matching.
+     *
+     * Dotenv is immutable — the first definition of a key wins — so existing
+     * lines are removed rather than appended after.
+     *
+     * When the metadata cannot be read, nothing is written: the app then has no
+     * version, which reads as DEBUG and re-extracts the bundle every launch. A
+     * slow boot beats running a payload we cannot identify.
+     */
+    private fun restoreShellVersion(laravelDir: File) {
+        val meta = readBundleMetadata()
+        val version = meta.version
+
+        if (version.isNullOrEmpty()) {
+            Log.w(TAG, "⚠️ No bundle metadata — leaving the payload without a version")
+            return
+        }
+
         val envFile = File(laravelDir, ENV_FILE)
 
-        if (!envFile.exists()) {
-            return null
+        if (!envFile.isFile) {
+            Log.w(TAG, "⚠️ No .env in the payload to restore the version into")
+            return
+        }
+
+        val kept = envFile.readLines().filterNot {
+            it.startsWith("NATIVEPHP_APP_VERSION=") ||
+                it.startsWith("NATIVEPHP_APP_VERSION_CODE=") ||
+                it.startsWith("NATIVEPHP_OTA_SHELL_BUILT_AT=") ||
+                it.startsWith("NATIVEPHP_OTA_SHELL_COMMIT=")
+        }
+
+        val restored = mutableListOf(
+            "NATIVEPHP_APP_VERSION=\"$version\"",
+            "NATIVEPHP_APP_VERSION_CODE=${meta.versionCode ?: "0"}",
+        )
+
+        // The shell's baseline travels with the shell, not with the payload.
+        meta.shellBuiltAt?.takeIf { it.isNotEmpty() }?.let {
+            restored += "NATIVEPHP_OTA_SHELL_BUILT_AT=\"$it\""
+        }
+        meta.shellCommit?.takeIf { it.isNotEmpty() }?.let {
+            restored += "NATIVEPHP_OTA_SHELL_COMMIT=\"$it\""
+        }
+
+        envFile.writeText((kept + restored).joinToString("\n", postfix = "\n"))
+
+        Log.d(TAG, "📝 Restored shell version ${version}b${meta.versionCode ?: "0"} into the payload's .env")
+    }
+
+    /**
+     * What the server said about the release, written beside the download by the
+     * OTA client and moved in here so the installed payload carries the checksum
+     * and publish time alongside what the build already described.
+     */
+    private fun mergePendingManifest(laravelDir: File) {
+        val pendingManifest = File(File(appStorageDir, DIR_UPDATES), PENDING_MANIFEST)
+
+        if (!pendingManifest.isFile) {
+            return
         }
 
         try {
-            val envContent = envFile.readText()
-            val bifrostIdMatch = Regex(REGEX_BIFROST_ID).find(envContent)
-            val bifrostId = bifrostIdMatch?.groupValues?.get(1)?.trim()
-
-            if (!bifrostId.isNullOrEmpty()) {
-                Log.d(TAG, "Found BIFROST_APP_ID in extracted .env: $bifrostId")
-                return bifrostId
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to read BIFROST_APP_ID from extracted .env", e)
-        }
-
-        Log.d(TAG, "No BIFROST_APP_ID found in extracted .env")
-        return null
-    }
-    
-    private fun checkForUpdate(appId: String, currentVersion: String): JSONObject? {
-        return try {
-            val url = URL("$BIFROST_API_BASE/$appId/ota?installed=$currentVersion")
-            val connection = url.openConnection() as HttpURLConnection
-            
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "NativePHP-Android/${android.os.Build.VERSION.RELEASE}")
-            
-            val responseCode = connection.responseCode
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val response = connection.inputStream.bufferedReader().use { it.readText() }
-                JSONObject(response)
+            val server = org.json.JSONObject(pendingManifest.readText())
+            val manifestFile = File(laravelDir, OTA_MANIFEST)
+            val merged = if (manifestFile.isFile) {
+                org.json.JSONObject(manifestFile.readText())
             } else {
-                Log.e(TAG, "OTA check failed with status: $responseCode")
-                null
+                org.json.JSONObject()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to check for updates", e)
-            null
-        }
-    }
-    
-    private fun downloadAndApplyUpdate(downloadUrl: String, newVersion: String): Boolean {
-        val tempFile = File(context.cacheDir, "ota_update_$newVersion.zip")
-        
-        return try {
-            // Download the update
-            Log.d(TAG, "📥 Downloading update from: $downloadUrl")
-            val url = URL(downloadUrl)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 30000
-            connection.readTimeout = 30000
-            
-            connection.inputStream.use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    var totalBytes = 0L
-                    
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        totalBytes += bytesRead
-                        
-                        // Log progress every 1MB
-                        if (totalBytes % (1024 * 1024) == 0L) {
-                            Log.d(TAG, "📥 Downloaded ${totalBytes / (1024 * 1024)}MB...")
-                        }
-                    }
-                    
-                    Log.d(TAG, "✅ Download complete: ${totalBytes / 1024}KB")
+
+            for (key in server.keys()) {
+                if (key != "download_url") {
+                    merged.put(key, server.get(key))
                 }
             }
-            
-            // Apply the update
-            val laravelDir = File(appStorageDir, DIR_LARAVEL)
 
-            // Delete entire laravel directory - persisted_data is separate and safe
-            if (laravelDir.exists()) {
-                Log.d(TAG, "🗑️ Removing old Laravel directory for OTA update (persisted_data is safe)")
-                laravelDir.deleteRecursively()
+            manifestFile.writeText(merged.toString(2))
+            Log.d(TAG, "📌 Recorded release ${merged.optString("release_uuid", "?")} from the server's answer")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not merge the server's release manifest: ${e.message}")
+        } finally {
+            pendingManifest.delete()
+        }
+    }
+
+    /**
+     * Compiled Blade views and the framework cache live under persisted_data,
+     * which deliberately survives the laravel directory being replaced — that
+     * is where the database lives. They describe the code that was there
+     * before, though, so after any extraction they are stale: a template the
+     * update changed keeps rendering from its old compiled copy.
+     *
+     * Cleared from Kotlin rather than through `artisan view:clear`, because
+     * extraction happens before PHP is available.
+     */
+    private fun clearCompiledCaches() {
+        val stale = listOf(
+            File(appStorageDir, DIR_VIEWS),
+            File(appStorageDir, "$DIR_CACHE/data"),
+            File(File(appStorageDir, DIR_LARAVEL), "bootstrap/cache"),
+        )
+
+        var removed = 0
+        for (dir in stale) {
+            dir.listFiles()?.forEach { entry ->
+                if (entry.isFile && entry.delete()) {
+                    removed++
+                } else if (entry.isDirectory) {
+                    entry.deleteRecursively()
+                    removed++
+                }
+            }
+        }
+
+        Log.d(TAG, "🧹 Cleared $removed compiled cache entries after extraction")
+    }
+
+    /**
+     * Apply a payload the OTA client queued at app_storage/updates/pending.zip,
+     * on top of the shell this boot already established. Returns true when one
+     * was applied, so callers can run the post-extraction artisan commands.
+     *
+     * Exactly one name is read. Scanning the directory for any zip would let a
+     * leftover download — fetched for a shell that has since been replaced —
+     * install itself over the app.
+     */
+    private fun applyPendingUpdate(laravelDir: File, otaMarkerFile: File): Boolean {
+        val pendingZip = File(File(appStorageDir, DIR_UPDATES), PENDING_ZIP)
+
+        if (!pendingZip.isFile) {
+            return false
+        }
+
+        Log.d(TAG, "📦 Applying queued OTA payload (${pendingZip.length()} bytes)")
+
+        val envFile = File(laravelDir, ENV_FILE)
+        val stashFile = File(File(appStorageDir, DIR_UPDATES), ".env.stash")
+        var hadEnv = false
+
+        return try {
+            // The environment belongs to the installed app, not to the payload.
+            if (envFile.isFile) {
+                envFile.copyTo(stashFile, overwrite = true)
+                hadEnv = true
+                Log.d(TAG, "📦 Stashed existing .env before the pending update")
             }
 
+            // The payload replaces the app tree; persisted_data is a sibling
+            // and is never touched, so databases and storage survive.
+            if (laravelDir.exists()) {
+                Runtime.getRuntime().exec(arrayOf("rm", "-rf", laravelDir.absolutePath)).waitFor()
+            }
             laravelDir.mkdirs()
 
-            // Extract the update
-            Log.d(TAG, "📦 Extracting OTA update...")
-            FileInputStream(tempFile).use { fileInput ->
-                unzip(fileInput, laravelDir)
+            pendingZip.inputStream().use { unzip(it, laravelDir) }
+
+            if (hadEnv && stashFile.isFile) {
+                stashFile.copyTo(envFile, overwrite = true)
+                stashFile.delete()
+                Log.d(TAG, "📦 Restored stashed .env over extracted payload")
             }
 
-            // Update the NATIVEPHP_APP_VERSION in .env file
-            val envFile = File(laravelDir, ENV_FILE)
-            if (envFile.exists()) {
-                var envContent = envFile.readText()
-                
-                // Update or add NATIVEPHP_APP_VERSION
-                if (envContent.contains(Regex("NATIVEPHP_APP_VERSION=.*"))) {
-                    envContent = envContent.replace(
-                        Regex("NATIVEPHP_APP_VERSION=.*"),
-                        "NATIVEPHP_APP_VERSION=$newVersion"
-                    )
-                } else {
-                    // Add it if not present
-                    envContent += "\nNATIVEPHP_APP_VERSION=$newVersion"
-                }
-                
-                envFile.writeText(envContent)
-                Log.d(TAG, "✅ Updated NATIVEPHP_APP_VERSION to $newVersion in .env")
+            // The payload says which release it is; record it so the client can
+            // report what the device holds without unpacking anything.
+            restoreShellVersion(laravelDir)
+            mergePendingManifest(laravelDir)
+
+            val release = readReleaseUuid(File(laravelDir, OTA_MANIFEST))
+            if (release != null) {
+                otaMarkerFile.writeText(release)
             }
-            
-            // Write version marker file to prevent re-extraction of old bundle
-            val otaMarkerFile = File(laravelDir, OTA_MARKER)
-            otaMarkerFile.writeText(newVersion)
-            
-            // Clean up
-            tempFile.delete()
-            
-            Log.d(TAG, "✅ OTA update applied successfully to version $newVersion")
+
+            pendingZip.delete()
+            clearCompiledCaches()
+            Log.d(TAG, "✅ OTA payload applied${release?.let { " (release $it)" } ?: ""}")
             true
-            
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to download or apply OTA update", e)
-            
-            // Clean up on failure
-            if (tempFile.exists()) {
-                tempFile.delete()
-            }
-            
+            Log.e(TAG, "❌ Failed to apply queued OTA payload", e)
+            stashFile.delete()
+            // Leave the zip alone: a half-written app is worse than a retry, and
+            // the next boot re-extracts the bundled shell if this one is broken.
             false
+        }
+    }
+
+    /** release_uuid out of the payload's ota.json, or null when it carries none. */
+    private fun readReleaseUuid(manifest: File): String? {
+        if (!manifest.isFile) {
+            return null
+        }
+
+        return try {
+            val uuid = org.json.JSONObject(manifest.readText()).optString("release_uuid")
+            uuid.ifEmpty { null }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read ${manifest.name}: ${e.message}")
+            null
         }
     }
 
@@ -849,6 +864,10 @@ class LaravelEnvironment(private val context: Context) {
                 "CACHE_DRIVER" to "file",
                 "CACHE_STORE" to "file",
                 "QUEUE_CONNECTION" to "database",
+                // Set before any artisan runs, as on iOS. Otherwise the
+                // config:cache in runBaseArtisanCommands records running =>
+                // false and routes/mobile.php never loads on device.
+                "NATIVEPHP_RUNNING" to "true",
                 "NATIVEPHP_PLATFORM" to "android",
                 "NATIVEPHP_TEMPDIR" to context.cacheDir.absolutePath
             )
@@ -907,9 +926,16 @@ class LaravelEnvironment(private val context: Context) {
                 // streams on every cold boot.
                 copyAssetToInternalStorage(CACERT_FILE, CACERT_FILE, forceUpdate = isDebugMode || forceCertRefresh)
 
+                // This php.ini (found through PHPRC) is where settings
+                // actually apply: php_embed_init() replaces the embed
+                // module's ini_entries with its own list. The upload limits
+                // match the bridge's 16MB capture cap; PHP's defaults (8M
+                // post, 2M per file) would reject uploads the bridge carries.
                 val phpIni = """
 curl.cainfo="${context.filesDir.absolutePath}/$CACERT_FILE"
 openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
+post_max_size=16M
+upload_max_filesize=16M
 """
                 File(context.filesDir, PHP_INI_FILE).writeText(phpIni)
                 Log.d(TAG, "✅ PHP ini configured with certificate path")
@@ -992,14 +1018,24 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
             setupDirectories()
             // Run extraction too. If MainActivity already extracted, the isUpToDate
             // check returns false (no work). If MainActivity is mid-extract, the
-            // lock inside extractLaravelBundle() blocks us here until it finishes.
-            // If we arrived first (WorkManager cold start after an app update), we
-            // do the extraction ourselves before the ephemeral runtime touches vendor/.
-            val didExtract = extractLaravelBundle()
-            setupEnvironment(didExtract)
-            if (didExtract) {
-                Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
-                runBaseArtisanCommands()
+            // lock blocks us here until it finishes. If we arrived first
+            // (WorkManager cold start after an app update), we do the extraction
+            // ourselves before the ephemeral runtime touches vendor/.
+            //
+            // The lock spans the artisan commands as well, exactly as initialize()
+            // holds it: bootPersistentRuntime() takes the same lock, and a classic
+            // embed cycle running beside a persistent boot is what the extractionLock
+            // comment above describes. Releasing after extraction alone would let
+            // MainActivity boot straight into that overlap.
+            extractionLock.withLock {
+                val didExtract = extractLaravelBundleUnlocked()
+
+                setupEnvironment(didExtract)
+
+                if (didExtract) {
+                    Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
+                    runBaseArtisanCommands()
+                }
             }
             Log.d(TAG, "Background environment initialized")
         } catch (e: Exception) {

@@ -4,6 +4,10 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
+/**
+ * Dated 9999 so it runs after every app migration. The app's own queue
+ * tables are created first and this only adds the ones still missing.
+ */
 return new class extends Migration
 {
     public function up(): void

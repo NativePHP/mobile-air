@@ -104,7 +104,25 @@ struct FlexContainer: Layout {
         /// measurement. Returning the cached size leaves whatever idealSize
         /// the most recent actual measurement set.
         var sizeCache: [ProposalKey: CGSize] = [:]
+        /// The `measurementGeneration` `sizeCache` was filled under.
+        var generation = FlexContainer.measurementGeneration
+        /// The proposal the children's `idealSize`s were last measured for.
+        /// `placeSubviews` reuses those sizes, so it needs to know they match
+        /// the proposal it's placing for (see there).
+        var measuredKey: ProposalKey?
     }
+
+    /// Bumped when the window width changes (rotation, Split View, Stage
+    /// Manager). `sizeCache` outlives a layout pass — SwiftUI only calls
+    /// `updateCache` when the container or its subviews change, and a resize
+    /// changes neither — while a cache hit leaves `idealSize` at whatever the
+    /// last real measurement set. After a resize that pairing goes stale: a
+    /// row whose text wrapped under a narrow window measures `.unspecified`
+    /// again, hits, and `placeSubviews` lays the text out at the old wrapped
+    /// width in a window that now has room for one line. Emptying the cache
+    /// on the first call of a new generation re-measures once per resize.
+    /// Main thread only, like the rest of layout.
+    static var measurementGeneration = 0
 
     /// Quantized proposal hash. CGFloat sizes can drift sub-pixel between
     /// SwiftUI calls; rounding to 1/1000 pt absorbs the noise.
@@ -266,6 +284,10 @@ struct FlexContainer: Layout {
 
         // Memoization: SwiftUI calls sizeThatFits multiple times per layout
         // pass with the same proposal. Skip the full subview walk on repeats.
+        if cache.generation != Self.measurementGeneration {
+            cache.sizeCache.removeAll(keepingCapacity: true)
+            cache.generation = Self.measurementGeneration
+        }
         let key = ProposalKey(proposal)
         if let cached = cache.sizeCache[key] {
             return cached
@@ -455,6 +477,7 @@ struct FlexContainer: Layout {
 
         let result = makeSize(main: finalMain, cross: finalCross)
         cache.sizeCache[key] = result
+        cache.measuredKey = key
         return result
     }
 
@@ -468,6 +491,21 @@ struct FlexContainer: Layout {
     ) {
         let flowCount = cache.flowIndices.count
         guard flowCount > 0 || !cache.absoluteIndices.isEmpty else { return }
+
+        // Phase 1 below reuses each child's `idealSize` from the last full
+        // `sizeThatFits` walk, which is only right if that walk was for THIS
+        // proposal. SwiftUI probes other sizes between measuring and placing
+        // (0 wide, unbounded, …), and a later measure of the real size can be
+        // answered from `sizeCache` without walking the children again. The
+        // ideal sizes left over from the probe then drive placement: after a
+        // 0-wide probe, flex-shrink has zeroed them, and a text is placed 0pt
+        // wide inside a correctly sized row — the label simply disappears.
+        // Re-measure for this proposal (bypassing the memo) when they differ.
+        let placementKey = ProposalKey(proposal)
+        if cache.measuredKey != placementKey {
+            cache.sizeCache[placementKey] = nil
+            _ = sizeThatFits(proposal: proposal, subviews: subviews, cache: &cache)
+        }
 
         let containerMain = mainSize(bounds.size)
         let containerCross = crossSize(bounds.size)

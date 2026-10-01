@@ -79,8 +79,10 @@ Produce three docs (parallel agents if orchestrating):
 ## Phase 2 — Scaffold (foundation before fan-out)
 
 Order: publish native-ui config → fill theme+fonts → `native-ui:generate-icons` → write `NativeLayout`
-classes (tabs / stack / form-stack / guest; `theme()` for all chrome colors, no hex) → rewrite
-`routes/web.php` with `Route::native()`/`Route::nativeGroup()` preserving every URI and route name →
+classes (tabs / stack / form-stack / guest; `theme()` for all chrome colors, no hex) → move the screens
+into `routes/mobile.php` as `Route::native()`/`Route::nativeGroup()` preserving every URI and route name,
+and delete the Livewire routes from `routes/web.php` (the package loads `routes/mobile.php` itself, only in
+native contexts) →
 generate ONE component with `native:make` to prove path conventions → write a `conventions.md`
 contract doc (namespaces, paths, layout assignments, theme tokens, gotchas) that all converters read.
 
@@ -175,7 +177,7 @@ These cost the most time. All verified from renderer source.
    the image overflows every sibling below it. Put `aspect-[3/4]` on the stack and give the image
    `w-full h-full`.
 5. **Unsupported Tailwind classes are dropped in silence.** Verify before assuming:
-   `TailwindParser::parse('the-class')` returning `[]` means unsupported. Known gaps: `blur-*`,
+   `TailwindParser::parse('the-class')` returning `[]` means unsupported. Known gaps:
    `scale-*`, per-corner radii (`rounded-t-xl` — only uniform keys parse), `max-w-*` / `min-w-*`.
    Gradients (`bg-gradient-to-*` / `bg-linear-to-*` with `from`/`via`/`to`) and `inset-*` ARE
    supported as of 2026-07.

@@ -199,6 +199,29 @@ class PluginTest extends TestCase
         $this->assertSame([], $this->plugin->getAndroidProguardRules());
     }
 
+    /** @test */
+    public function it_returns_platform_project_files(): void
+    {
+        $manifest = new PluginManifest([
+            'namespace' => 'FilesPlugin',
+            'android' => [
+                'project_files' => [
+                    ['sources' => ['service.json'], 'destination' => 'app/service.json'],
+                ],
+            ],
+            'ios' => [
+                'project_files' => [
+                    ['sources' => ['Service.plist'], 'destination' => 'NativePHP/Service.plist'],
+                ],
+            ],
+        ]);
+        $plugin = new Plugin('vendor/files-plugin', '1.0.0', $this->validPluginPath, $manifest);
+
+        $this->assertSame($manifest->android['project_files'], $plugin->getProjectFiles('android'));
+        $this->assertSame($manifest->ios['project_files'], $plugin->getProjectFiles('ios'));
+        $this->assertSame([], $plugin->getProjectFiles('windows'));
+    }
+
     /**
      * @test
      *

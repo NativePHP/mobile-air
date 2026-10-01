@@ -4,6 +4,8 @@ import PHP
 import Bridge
 import UIKit
 
+/// Text output of the last `NativePHPApp.artisan(additionalArgs:)` call.
+/// Only filled while that call runs; responses never go through it.
 var output = ""
 
 @_cdecl("pipe_php_output")
@@ -11,6 +13,20 @@ public func pipe_php_output(_ cString: UnsafePointer<CChar>?) {
     guard let cString = cString else { return }
 
     output += String(cString: cString)
+}
+
+/// Classic-mode response bytes, filled by `pipe_php_output_bytes` while
+/// `NativePHPApp.laravelData(request:)` runs. Classic requests run one at a
+/// time on the persistent runtime's serial queue.
+var classicOutput = Data()
+
+@_cdecl("pipe_php_output_bytes")
+public func pipe_php_output_bytes(_ bytes: UnsafePointer<CChar>?, _ length: Int) {
+    guard let bytes, length > 0 else { return }
+
+    bytes.withMemoryRebound(to: UInt8.self, capacity: length) {
+        classicOutput.append($0, count: length)
+    }
 }
 
 @main
@@ -63,12 +79,9 @@ struct NativePHPApp: App {
             NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
 
             if booted {
-                // Only run artisan commands when app was extracted or updated
+                // Only run artisan commands when app was extracted or updated.
+                // Migrate already ran in ensureAppExists, once per extraction.
                 if didExtract {
-                    NSLog("[NativePHP] artisan migrate START (post-extraction)")
-                    _ = PersistentPHPRuntime.shared.artisan(command: "migrate --force")
-                    NSLog("[NativePHP] artisan migrate DONE")
-
                     NSLog("[NativePHP] artisan storage:link START")
                     _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
                     NSLog("[NativePHP] artisan storage:link DONE")
@@ -124,27 +137,27 @@ struct NativePHPApp: App {
 
         // 6. Reload handling + hot reload server. The coordinator must be
         // registered before anything can post reloadWebViewNotification —
-        // HotReloadServer triggers (DEBUG) or AppUpdateManager after an OTA
-        // update (production) — and independently of the WebView, which a
-        // native-direct boot never mounts.
+        // HotReloadServer triggers (DEBUG) — and independently of the WebView,
+        // which a native-direct boot never mounts.
         HotReloadCoordinator.shared.activate()
         #if DEBUG
         HotReloadServer.shared.start()
         #endif
 
-        // 7. OTA check commented out — parity with Android, where the boot-time
-        // Bifrost request was disabled for its network latency on cold boot.
-        // TODO: Re-enable on BOTH platforms together when OTA is ready for
-        // production, as an async check after first content — never on the
-        // boot path.
-        // NSLog("[NativePHP] checkForUpdates START")
-        // AppUpdateManager.shared.checkForUpdates()
+        // 7. OTA check/download lives in the mobile-ota plugin. Core only
+        // applies pending zips from Documents/updates on boot (ensureAppExists
+        // → applyPendingUpdates). Do not re-enable a Bifrost client here.
 
         // 8. Defer queue worker boot — start AFTER critical path completes
         //    so it doesn't compete for CPU/memory during first page render
         if booted {
             NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
+
+            // Async task lane (AsyncTask::dispatch()) — pool boots on a
+            // background thread, so this returns immediately.
+            NSLog("[NativePHP] AsyncTaskExecutor.start() (deferred)")
+            AsyncTaskExecutor.shared.start()
         } else {
             NSLog("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
         }
@@ -336,9 +349,12 @@ struct NativePHPApp: App {
     private func createPhpIni() -> String {
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? "Path not found"
 
+        // Same file PersistentPHPRuntime.createPhpIni writes; keep the two in step.
         let phpIni = """
         curl.cainfo="\(caPath)"
         openssl.cafile="\(caPath)"
+        upload_max_filesize=16M
+        post_max_size=16M
         """
 
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -390,31 +406,45 @@ struct NativePHPApp: App {
 
         setupEnvironment()
 
-        output = ""
-
-        override_embed_module_output(pipe_php_output)
+        // Point PHP's output at the capture handler, with nothing forwarded
+        // to Swift. Classic requests and artisan calls install their own
+        // capture for as long as they run; a callback left in place here
+        // would copy every persistent and webview response into `output`.
+        override_embed_module_output(nil)
 
         createDatabase()
 
-        return output
+        return ""
     }
 
+    /// Classic mode: run one request in a fresh interpreter and return the
+    /// raw HTTP response as text. Kept for callers that parse text (the
+    /// app-intents plugin reads JSON from it); a binary body is decoded
+    /// lossily. Use `laravelData(request:)` for the exact bytes.
     static func laravel(request: RequestData) -> String? {
-        // Convert Swift strings to C strings
-        let postDataC = strdup(request.data ?? "")
+        laravelData(request: request).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Classic mode: run one request in a fresh interpreter
+    /// (bootstrap/ios/native.php) and return the raw HTTP response byte for
+    /// byte. The body goes into php://input as exact bytes for any method,
+    /// and its Content-Type reaches PHP as CONTENT_TYPE in the environment.
+    static func laravelData(request: RequestData) -> Data? {
+        let body = request.bodyBytes ?? Data()
+
+        // PHP keeps pointers to these in SG(request_info) until
+        // php_embed_shutdown(), so they are freed only after it.
         let methodC = strdup(request.method)
         let uriC = strdup(request.uri)
 
-        // Free the duplicated C strings
         defer {
-            free(postDataC)
             free(methodC)
             free(uriC)
         }
 
-        output = ""
+        classicOutput = Data()
 
-        override_embed_module_output(pipe_php_output)
+        override_embed_module_output_bytes(pipe_php_output_bytes)
 
         var argv: [UnsafeMutablePointer<CChar>?] = [
             strdup("php")
@@ -429,14 +459,15 @@ struct NativePHPApp: App {
         print("=== FORWARDING REQUEST TO LARAVEL ===")
         print()
 
+        let query = request.query ?? ""
         var uri = request.uri
-        if let query = request.query {
+        if !query.isEmpty {
             uri += "?" + query
         }
 
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
         setenv("REQUEST_URI", uri, 1)
-        setenv("QUERY_STRING", request.query, 1);
+        setenv("QUERY_STRING", query, 1)
         setenv("REQUEST_METHOD", request.method, 1)
         setenv("SCRIPT_FILENAME", phpFilePath, 1)
         setenv("PHP_SELF", "/native.php", 1)
@@ -464,11 +495,27 @@ struct NativePHPApp: App {
             envKeys.append(formattedKey)
         }
 
+        // The body's own Content-Type, boundary included. PHP's
+        // SG(request_info).content_type stays NULL (see PHP.h).
+        if let contentType = request.header("Content-Type"), !contentType.isEmpty {
+            setenv("CONTENT_TYPE", contentType, 1)
+        } else {
+            unsetenv("CONTENT_TYPE")
+        }
+        envKeys.append("CONTENT_TYPE")
+
         // Equivalent to PHP_EMBED_START_BLOCK
         argv.withUnsafeMutableBufferPointer { bufferPtr in
             php_embed_init(argc, bufferPtr.baseAddress)
 
-            initialize_php_with_request(postDataC, methodC, uriC)
+            body.withUnsafeBytes { bodyBuffer in
+                initialize_php_with_request_bytes(
+                    bodyBuffer.baseAddress?.assumingMemoryBound(to: CChar.self),
+                    bodyBuffer.count,
+                    methodC,
+                    uriC
+                )
+            }
 
             var fileHandle = zend_file_handle()
             zend_stream_init_filename(&fileHandle, phpFilePath)
@@ -485,6 +532,9 @@ struct NativePHPApp: App {
             envKeys.removeAll()
         }
 
+        // Stop forwarding output: nothing else reads it.
+        override_embed_module_output_bytes(nil)
+
         // Free argv strings
         argv.forEach { free($0) }
 
@@ -492,7 +542,9 @@ struct NativePHPApp: App {
         print("=== LARAVEL FINISHED ===")
         print()
 
-        return output
+        let response = classicOutput
+        classicOutput = Data()
+        return response
     }
 
     private func setupEnvironment() {
@@ -508,6 +560,9 @@ struct NativePHPApp: App {
         // Get temporary directory
         let tempDir = FileManager.default.temporaryDirectory.path
 
+        // Before any PHP runs, so the migrate after extraction loads the
+        // package's migrations in both runtime modes.
+        setenv("NATIVEPHP_RUNNING", "true", 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("LARAVEL_STORAGE_PATH", storageDir, 1)
@@ -597,7 +652,9 @@ struct NativePHPApp: App {
 
         output = ""
 
+        // Capture this call's output only, and stop once it is done.
         override_embed_module_output(pipe_php_output)
+        defer { override_embed_module_output(nil) }
 
         var argv: [UnsafeMutablePointer<CChar>?] = [
             strdup("php")

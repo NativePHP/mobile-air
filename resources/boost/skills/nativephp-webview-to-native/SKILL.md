@@ -32,8 +32,9 @@ The web view remains available during migration, so you never need a big-bang re
 1. Scaffold: `php artisan native:make ScreenName` → `app/NativeComponents/ScreenName.php`.
 2. Move state: public properties transfer as-is from the Livewire component (or from Inertia page props into
    properties loaded in `mount()`).
-3. Register the route: `Route::native('/items/{id}', ItemDetail::class)` (a `routes/mobile.php` file is a clean
-   convention). Read params with `$this->param('id')`.
+3. Register the route in `routes/mobile.php`: `Route::native('/items/{id}', ItemDetail::class)`. The package
+   loads that file automatically, only in native contexts, and it wins over a route with the same URI in
+   `routes/web.php`. Read params with `$this->param('id')`.
 4. Convert the template using the mapping tables below. Style with Tailwind utility classes via `class="..."`
    only — never inline `style="..."`.
 5. Convert chrome: nav bars, tab bars, and fabs become the composable chrome elements (`<native:top-bar>`,

@@ -30,6 +30,7 @@ use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
+use Native\Mobile\Commands\RunAsyncTaskCommand;
 use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\SimCommand;
 use Native\Mobile\Commands\TailCommand;
@@ -40,6 +41,7 @@ use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\Elements as ChromeElements;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\System\AppearanceChanged;
+use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
@@ -50,17 +52,23 @@ use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use SupaNative\Core\Edge\EdgeLog;
 use SupaNative\Core\Edge\ElementRegistry;
+use SupaNative\Core\Edge\ImageSource;
 use SupaNative\Core\Edge\ScreenRoutes;
 use SupaNative\Core\Edge\TailwindParser;
 
 class NativeServiceProvider extends PackageServiceProvider
 {
+    /**
+     * Real path of the routes/mobile.php this provider loaded. Tells our own
+     * include on an earlier boot apart from the app's (see appLoadsMobileRoutes).
+     */
+    protected static ?string $loadedMobileRoutes = null;
+
     public function configurePackage(Package $package): void
     {
         $package
             ->name('nativephp-mobile')
             ->hasConfigFile('nativephp')
-            ->hasViews()
             ->hasRoute('api')
             ->hasCommands([
                 PackageCommand::class,
@@ -70,6 +78,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 DebugCommand::class,
                 InstallCommand::class,
                 RunCommand::class,
+                RunAsyncTaskCommand::class,
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
                 SimCommand::class,
@@ -150,6 +159,11 @@ class NativeServiceProvider extends PackageServiceProvider
             AppearanceChanged::class,
             fn (AppearanceChanged $e) => System::rememberAppearance($e->mode),
         );
+
+        Event::listen(
+            OrientationChanged::class,
+            fn (OrientationChanged $e) => System::rememberOrientation($e->orientation),
+        );
     }
 
     protected function registerCoreFacades(): void
@@ -196,8 +210,10 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         parent::boot();
 
+        // Only src/resources/views is registered. The package root
+        // resources/ dir never ships in the app bundle, and the
+        // device's view:cache throws on any missing path.
         $this->loadViewsFrom(__DIR__.'/resources/views', 'nativephp-mobile');
-        $this->loadViewsFrom(__DIR__.'/../resources/jump/views', 'jump');
 
         // Register `resources/views/native` as a primary view-finder
         // location (mirrors Livewire's `resources/views/livewire`
@@ -245,6 +261,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->feedPlatformToTailwindParser();
+        $this->resolveImageSourcesUnderJump();
         $this->registerChromeElements();
         $this->registerUiPluginComponents();
         $this->registerFilesystems();
@@ -280,9 +297,7 @@ class NativeServiceProvider extends PackageServiceProvider
         // The Route this returns is the same object the macro used to return, so
         // ->name() and ->layout() chain exactly as before.
         ScreenRoutes::servedBy(function (string $uri, string $componentClass) {
-            NativeRouter::register($uri, $componentClass);
-
-            return Route::get($uri, function () use ($componentClass) {
+            $route = Route::get($uri, function () use ($componentClass) {
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these
@@ -366,6 +381,13 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+
+            // Register the route itself so native navigation shares its
+            // constraints and binders. Its URI includes any group prefix, and
+            // is also the key ->layout() looks up.
+            NativeRouter::register($route, $componentClass);
+
+            return $route;
         });
 
         // Route::nativeGroup(layout: TabsLayout::class, function () { ... })
@@ -389,6 +411,79 @@ class NativeServiceProvider extends PackageServiceProvider
 
             return $this;
         });
+
+        $this->loadMobileRoutes();
+    }
+
+    /**
+     * Load the app's native screens from `routes/mobile.php`.
+     *
+     * Deferred to booted() so it registers after the app's own route files,
+     * which load while the app's route provider boots. A later route with the
+     * same method and URI replaces the earlier one, so a native screen at `/`
+     * takes over from a website's `/` in web.php.
+     */
+    protected function loadMobileRoutes(): void
+    {
+        $this->app->booted(function () {
+            $path = realpath(base_path('routes/mobile.php'));
+
+            if ($path === false || ! $this->shouldLoadMobileRoutes() || $this->app->routesAreCached()) {
+                return;
+            }
+
+            if ($this->appLoadsMobileRoutes($path)) {
+                return;
+            }
+
+            static::$loadedMobileRoutes = $path;
+            Route::middleware('web')->group($path);
+
+            // Route::native(...)->name(...) names a route after it has been
+            // added, so rebuild the lookups like the app's route provider does.
+            $routes = $this->app['router']->getRoutes();
+            $routes->refreshNameLookups();
+            $routes->refreshActionLookups();
+        });
+    }
+
+    /**
+     * An app that already loads routes/mobile.php itself (withRouting, a
+     * `then:` callback, a require from web.php) keeps its own middleware and
+     * prefix, and we stay out of the way. Included files last for the whole
+     * process, and a test suite boots many apps in one, so the file only
+     * counts as the app's if we didn't include it on an earlier boot. Not
+     * handled: an app that loads it itself on some boots but not others.
+     */
+    protected function appLoadsMobileRoutes(string $path): bool
+    {
+        if (static::$loadedMobileRoutes === $path) {
+            return false;
+        }
+
+        foreach (get_included_files() as $file) {
+            if (str_ends_with($file, 'mobile.php') && realpath($file) === $path) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Native routes are only registered where something native will use them,
+     * because the same app can also be deployed as a plain website. That means
+     * on device, in tests, in a Jump session (the device boots from this
+     * machine's server) and in native:* commands (builds bake the routes into
+     * bundle_meta.json, native:watch lists them). Not any console command:
+     * `route:cache` on a web server would bake them into its route cache.
+     */
+    protected function shouldLoadMobileRoutes(): bool
+    {
+        return (bool) config('nativephp-internal.running')
+            || $this->app->runningUnitTests()
+            || getenv('JUMP_BRIDGE_PORT') !== false
+            || ($this->app->runningInConsole() && str_starts_with($_SERVER['argv'][1] ?? '', 'native:'));
     }
 
     protected function registerBladeDirectives(): void
@@ -413,11 +508,13 @@ class NativeServiceProvider extends PackageServiceProvider
             return "<?php
                 \$__nativeErrorArgs = [{$expression}];
                 \$__nativeErrorField = \$__nativeErrorArgs[0];
-                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? '#FF0000';
+                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? config('native-ui.theme.light.destructive', '#FF0000');
+                \$__nativeErrorDarkColor = isset(\$__nativeErrorArgs[1]) ? null : config('native-ui.theme.dark.destructive');
                 if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
                     \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
                         'text' => \$errors[\$__nativeErrorField],
                         'color' => \$__nativeErrorColor,
+                        'dark' => ['color' => \$__nativeErrorDarkColor],
                         'fontSize' => 12,
                     ]);
                 }
@@ -697,6 +794,18 @@ class NativeServiceProvider extends PackageServiceProvider
     protected function feedPlatformToTailwindParser(): void
     {
         TailwindParser::setPlatform(Platform::current());
+    }
+
+    /**
+     * Turn a relative image src into a URL the phone can fetch under Jump.
+     * On device the renderer shares PHP's files, so the path is enough,
+     * but under native:jump, public/ reaches the phone only by HTTP.
+     */
+    protected function resolveImageSourcesUnderJump(): void
+    {
+        ImageSource::resolveRelativeUsing(static fn (string $src): string => System::runningInJump()
+            ? asset(str_starts_with($src, './') ? substr($src, 2) : $src)
+            : $src);
     }
 
     /**

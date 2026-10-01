@@ -2,10 +2,13 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Http\Request;
+use Illuminate\Routing\Route as IlluminateRoute;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
 use SupaNative\Core\Edge\CallbackRegistry;
+use SupaNative\Core\Edge\ComponentRouteBinder;
 use SupaNative\Core\Edge\Contracts\NavigationHost;
 use SupaNative\Core\Edge\NativeDumpException;
 use SupaNative\Core\Edge\ScreenRegistry;
@@ -103,11 +106,14 @@ class NativeRouter implements NavigationHost
      * drift. Layouts stay behind because they are mobile's own concept: a stack
      * with a back chevron, a tab bar — nothing a desktop window has.
      *
+     * Each entry also retains the actual Illuminate route so native navigation
+     * and HTTP routing share matching, constraints, decoding, and route binders.
+     *
      * Keyed by pattern so it still answers "which routes did *mobile* declare",
      * which the route manifest and the app-wide test sweeps depend on; the
      * shared registry also holds screens declared by other surfaces.
      *
-     * @var array<string, array{layout: ?string}>
+     * @var array<string, array{layout: ?string, route: IlluminateRoute}>
      */
     protected static array $routes = [];
 
@@ -161,22 +167,34 @@ class NativeRouter implements NavigationHost
      * this through core's macro, and registering the same pattern again replaces
      * it, as it always has.
      */
-    public static function register(string $uri, string $class, ?string $layout = null): void
+    public static function register(string|IlluminateRoute $uri, string $class, ?string $layout = null): void
     {
-        $pattern = '/'.ltrim($uri, '/');
+        if ($uri instanceof IlluminateRoute) {
+            $route = $uri;
+            $pattern = '/'.ltrim($route->uri(), '/');
+        } else {
+            $pattern = '/'.ltrim($uri, '/');
+            $route = new IlluminateRoute(['GET'], ltrim($pattern, '/'), fn () => null);
+
+            if (function_exists('app') && app()->bound('router')) {
+                $route->setRouter(app('router'));
+                $route->setContainer(app());
+            }
+        }
 
         ScreenRegistry::register($pattern, $class);
 
         static::$routes[$pattern] = [
             'layout' => $layout ?? static::$currentGroupLayout,
+            'route' => $route,
         ];
     }
 
     /**
      * Every registered native route, keyed by URI pattern — each value a
-     * ['class' => ..., 'layout' => ...] pair. Powers app-wide test sweeps
-     * (smoke tests, accessibility audits) that should cover new screens
-     * automatically as they are registered.
+     * ['class' => ..., 'layout' => ..., 'route' => ...] entry. Powers app-wide
+     * test sweeps (smoke tests, accessibility audits) that should cover new
+     * screens automatically as they are registered.
      *
      * The class half comes back out of the shared registry, so this reads the
      * same as it did when both halves were stored here.
@@ -189,6 +207,7 @@ class NativeRouter implements NavigationHost
             $routes[$pattern] = [
                 'class' => ScreenRegistry::classFor($pattern),
                 'layout' => $entry['layout'] ?? null,
+                'route' => $entry['route'],
             ];
         }
 
@@ -228,31 +247,74 @@ class NativeRouter implements NavigationHost
      */
     public static function resolve(string $uri): ?array
     {
-        $uri = '/'.ltrim($uri, '/');
+        $match = static::matchRoute($uri);
 
-        // Exact match first
-        if (isset(static::$routes[$uri])) {
-            return [
-                'class' => ScreenRegistry::classFor($uri),
-                'layout' => static::$routes[$uri]['layout'] ?? null,
-                'params' => [],
-            ];
+        if ($match === null) {
+            return null;
         }
 
-        // Pattern match with route parameters
+        $entry = $match['entry'];
+        $class = ScreenRegistry::classFor($entry['pattern']);
+        $route = clone $match['route'];
+        $route->bind($match['request']);
+
+        if (function_exists('app') && app()->bound('router')) {
+            $router = app('router');
+            $router->substituteBindings($route);
+            ComponentRouteBinder::resolve($route, $class);
+        }
+
+        return [
+            'class' => $class,
+            'layout' => $entry['layout'] ?? null,
+            'params' => $route->parametersWithoutNulls(),
+            'route' => $route,
+        ];
+    }
+
+    /**
+     * Match a registered route without binding its parameters.
+     *
+     * @return array{entry: array, route: IlluminateRoute, request: Request}|null
+     */
+    private static function matchRoute(string $uri): ?array
+    {
+        $request = Request::create('/'.ltrim($uri, '/'), 'GET');
+
+        $literalRoutes = [];
+        $parameterizedRoutes = [];
+
         foreach (static::$routes as $pattern => $entry) {
-            $regex = preg_replace('/\{(\w+)\}/', '(?P<$1>[^/]+)', $pattern);
-            $regex = '#^'.$regex.'$#';
+            $entry['pattern'] = $pattern;
 
-            if (preg_match($regex, $uri, $matches)) {
-                $params = array_filter($matches, fn ($key) => is_string($key), ARRAY_FILTER_USE_KEY);
-
-                return [
-                    'class' => ScreenRegistry::classFor($pattern),
-                    'layout' => $entry['layout'] ?? null,
-                    'params' => $params,
-                ];
+            if ($entry['route']->parameterNames() === []) {
+                $literalRoutes[] = $entry;
+            } else {
+                $parameterizedRoutes[] = $entry;
             }
+        }
+
+        foreach ([...$literalRoutes, ...$parameterizedRoutes] as $entry) {
+            $registeredRoute = $entry['route'];
+
+            if (function_exists('app') && app()->bound('router')) {
+                $registeredRoute->setRouter(app('router'));
+                $registeredRoute->setContainer(app());
+            }
+
+            // Match the registered route so its compiled pattern is retained
+            // across this long-lived process. Binding happens only in
+            // resolve(); predicates such as isNativeRoute() stay side-effect
+            // free and cannot trigger model lookups.
+            if (! $registeredRoute->matches($request)) {
+                continue;
+            }
+
+            return [
+                'entry' => $entry,
+                'route' => $registeredRoute,
+                'request' => $request,
+            ];
         }
 
         return null;
@@ -260,7 +322,11 @@ class NativeRouter implements NavigationHost
 
     public static function isNativeRoute(string $uri): bool
     {
-        return static::resolve($uri) !== null;
+        try {
+            return static::matchRoute($uri) !== null;
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -387,12 +453,12 @@ class NativeRouter implements NavigationHost
                 continue;
             }
 
-            $resolved = static::resolve($uri);
-            if ($resolved === null) {
-                continue;
-            }
-
             try {
+                $resolved = static::resolve($uri);
+                if ($resolved === null) {
+                    continue;
+                }
+
                 $component = $this->createComponent(
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
@@ -400,7 +466,7 @@ class NativeRouter implements NavigationHost
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
                 }
-                $component->mount();
+                $component->mountComponent();
             } catch (\Throwable $e) {
                 static::debugLog("preloadStack: skipped $uri — ".$e->getMessage());
 
@@ -463,6 +529,7 @@ class NativeRouter implements NavigationHost
     protected function loop(): ?string
     {
         $freshPush = true;
+        $reenterCurrentScreen = false;
 
         while (! empty($this->stack)) {
             $entry = &$this->stack[count($this->stack) - 1];
@@ -470,15 +537,23 @@ class NativeRouter implements NavigationHost
 
             static::debugLog('loop: top, component='.get_class($component).' freshPush='.($freshPush ? 'Y' : 'N').' stack='.count($this->stack));
 
+            // This component is what's driving the screen from here until its
+            // runLoop() returns — including mount()/onResume(), which run before
+            // runLoop() gets to mark itself. "Start loading when the screen
+            // opens" is the canonical async dispatch and it lives in mount(), so
+            // without this the task would scope to the screen being replaced and
+            // its completion (and its timeout) would be dropped as off-screen.
+            $previousActiveComponent = NativeComponent::markActive($component);
+
             try {
                 if ($freshPush) {
                     // For #[Lazy] screens, paint the placeholder before the
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
-                    $component->mount();
+                    $component->mountComponent();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
-                } else {
+                } elseif (! $reenterCurrentScreen) {
                     static::debugLog('loop: calling onResume() on '.get_class($component));
                     $component->onResume();
                     $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
@@ -490,9 +565,13 @@ class NativeRouter implements NavigationHost
                 $component->renderErrorScreen($e);
             }
 
+            $reenterCurrentScreen = false;
+
             static::debugLog('loop: entering runLoop() on '.get_class($component));
             $component->runLoop();
             static::debugLog('loop: runLoop() returned on '.get_class($component));
+
+            NativeComponent::restoreActive($previousActiveComponent);
 
             $intent = $component->getNavigationIntent();
 
@@ -520,7 +599,16 @@ class NativeRouter implements NavigationHost
             switch ($intent->type) {
                 case NavigationIntent::NAVIGATE:
                     static::debugLog("NAVIGATE: resolving uri={$intent->uri}");
-                    $resolved = static::resolve($intent->uri);
+                    try {
+                        $resolved = static::resolve($intent->uri);
+                    } catch (\Throwable $e) {
+                        static::debugLog('NAVIGATE binding FAILED: '.$e->getMessage()."\n".$e->getTraceAsString());
+                        $component->renderErrorScreen($e);
+                        $freshPush = false;
+                        $reenterCurrentScreen = true;
+
+                        break;
+                    }
 
                     if ($resolved === null) {
                         static::debugLog('NAVIGATE: unresolved, exiting to web');
@@ -571,7 +659,16 @@ class NativeRouter implements NavigationHost
 
                 case NavigationIntent::REPLACE:
                     static::debugLog("REPLACE: resolving uri={$intent->uri}");
-                    $resolved = static::resolve($intent->uri);
+                    try {
+                        $resolved = static::resolve($intent->uri);
+                    } catch (\Throwable $e) {
+                        static::debugLog('REPLACE binding FAILED: '.$e->getMessage()."\n".$e->getTraceAsString());
+                        $component->renderErrorScreen($e);
+                        $freshPush = false;
+                        $reenterCurrentScreen = true;
+
+                        break;
+                    }
 
                     if ($resolved === null) {
                         static::debugLog('REPLACE: unresolved, exiting to web');

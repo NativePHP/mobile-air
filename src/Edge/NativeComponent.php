@@ -7,6 +7,7 @@ use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Edge\Concerns\ClaimsJumpSession;
 use Native\Mobile\Edge\Concerns\InteractsWithAppShell;
 use Native\Mobile\Edge\Concerns\RestartsOnHotReload;
+use Native\Mobile\Edge\Concerns\RunsAsyncTasks;
 use Native\Mobile\Edge\Concerns\WrapsScreensInNativeChrome;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\Platform;
@@ -25,7 +26,7 @@ use SupaNative\Core\Edge\TreeObservers;
  * `SupaNative\Core\Edge\NativeComponent`: the render pass, the `#[Computed]` /
  * `#[Poll]` / `#[Lazy]` / `#[On]` machinery, event dispatch, nested child
  * components, the failure and `dd()` overlays. What stayed is what only makes
- * sense on a phone, gathered into four traits by concern, plus the
+ * sense on a phone, gathered into five traits by concern, plus the
  * router-driven `runLoop()` and the handful of overrides below that answer
  * core's seams with mobile's answers.
  *
@@ -40,6 +41,7 @@ abstract class NativeComponent extends CoreNativeComponent
     use ClaimsJumpSession;
     use InteractsWithAppShell;
     use RestartsOnHotReload;
+    use RunsAsyncTasks;
     use WrapsScreensInNativeChrome;
 
     // The two shell event types live here rather than in the traits that
@@ -166,6 +168,45 @@ abstract class NativeComponent extends CoreNativeComponent
     }
 
     /**
+     * The native events the shell owns, claimed before any listener sees
+     * them: a deep link arriving warm, then an async task completing.
+     * First to claim the event returns true, and core stops there.
+     */
+    protected function handlePlatformNativeEvent(string $eventName, mixed $payload): bool
+    {
+        return $this->handleDeepLinkEvent($eventName, $payload)
+            || $this->handleAsyncCompletionEvent($eventName, $payload);
+    }
+
+    /**
+     * This class and its traits are framework API as well, so their
+     * public methods stay out of reach of templates and devices,
+     * exactly as core does for its own. See ensureCallable().
+     *
+     * @return list<class-string>
+     */
+    public static function nativeFrameworkClasses(): array
+    {
+        return [...parent::nativeFrameworkClasses(), self::class];
+    }
+
+    /**
+     * Core's standalone loop, with this screen marked active first,
+     * so any task dispatched from mount() scopes to this screen.
+     * The router's runLoop() below marks itself the same way.
+     */
+    public function run(): void
+    {
+        $previousActiveComponent = self::markActive($this);
+
+        try {
+            parent::run();
+        } finally {
+            self::restoreActive($previousActiveComponent);
+        }
+    }
+
+    /**
      * Mint intents as THIS package's [NavigationIntent] rather than core's
      * base class, so `navigate()` / `back()` / `replace()` keep handing back
      * the type every screen, plugin and test in the ecosystem already names —
@@ -248,6 +289,8 @@ abstract class NativeComponent extends CoreNativeComponent
             $this->registerNativeEventListeners();
         }
 
+        $previousActiveComponent = self::markActive($this);
+
         while ($this->nativeRunning) {
             // Superseded by a newer Jump native session — this runloop is an
             // orphan (its WebView is gone) and must unwind without touching
@@ -257,6 +300,11 @@ abstract class NativeComponent extends CoreNativeComponent
                 break;
             }
 
+            self::markActive($this);
+            $this->runGuardedInteraction(
+                'flushDispatchedEvents()',
+                fn () => $this->flushDispatchedEvents(),
+            );
             $this->nativeCallbacks->reset();
             $this->resetComputedCache();
             $this->syncTailwindPlatform();
@@ -306,8 +354,15 @@ abstract class NativeComponent extends CoreNativeComponent
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
-                // fire any due polls, then loop back to re-render.
-                $this->runDuePolls();
+                // fire any due polls, then loop back to re-render. Polls stay
+                // parked while the error screen is up, so a throwing callback
+                // cannot repaint the overlay on every tick.
+                if (! $this->nativeHasError) {
+                    $this->runGuardedInteraction(
+                        'runDuePolls()',
+                        fn () => $this->runDuePolls(),
+                    );
+                }
 
                 continue;
             }
@@ -331,6 +386,7 @@ abstract class NativeComponent extends CoreNativeComponent
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
                     $this->dispatchNativeEvent($event);
+                    $this->flushDispatchedEvents();
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -345,16 +401,20 @@ abstract class NativeComponent extends CoreNativeComponent
             // (except overlay controls like font size buttons)
             if (! $this->nativeHasError) {
                 try {
-                    $this->dispatch($event);
+                    $this->dispatchUiEvent($event);
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
-                    NativeRouter::debugLog('dispatch() FAILED in '.static::class.': '.$e->getMessage());
+                    NativeRouter::debugLog('dispatchUiEvent() FAILED in '.static::class.': '.$e->getMessage());
                     $this->renderErrorScreen($e);
                 }
             } elseif (in_array($event['callback_id'] ?? 0, $this->overlayCallbackIds)) {
-                $this->dispatch($event);
+                $this->dispatchUiEvent($event);
             }
         }
+
+        // Hand the baton back to whatever was driving before this hot-swapped
+        // loop took over, so a later dispatch scopes to the right screen.
+        self::restoreActive($previousActiveComponent);
     }
 }

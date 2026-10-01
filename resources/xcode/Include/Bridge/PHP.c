@@ -10,7 +10,13 @@
 #include <time.h>
 #include <zend_exceptions.h>
 
+// Classic-mode output callbacks. Only output from the thread that installed
+// the callback reaches it: every PHP thread (persistent, webview, worker,
+// async) shares ub_write, and their responses must never land in a classic
+// capture.
 static phpOutputCallback swiftOutputCallback = NULL;
+static phpOutputBytesCallback swiftOutputBytesCallback = NULL;
+static pthread_t swiftOutputThread;
 
 // ── Thread-local output capture ─────────────────────
 // Each PHP thread (persistent, worker) gets its own output buffer via
@@ -23,6 +29,7 @@ typedef struct {
     char  *output;
     size_t length;
     size_t capacity;
+    int    overflowed;   // output passed MAX_BUFFER_SIZE; everything after it was dropped
 } php_output_buffer_t;
 
 static pthread_key_t  g_output_key;
@@ -58,9 +65,10 @@ static void clear_output_buffer(void) {
     php_output_buffer_t *buf = get_thread_output_buffer();
     if (!buf) return;
     free(buf->output);
-    buf->capacity = BUFFER_CHUNK_SIZE;
-    buf->length   = 0;
-    buf->output   = (char *)malloc(buf->capacity);
+    buf->capacity   = BUFFER_CHUNK_SIZE;
+    buf->length     = 0;
+    buf->overflowed = 0;
+    buf->output     = (char *)malloc(buf->capacity);
     if (buf->output) buf->output[0] = '\0';
 }
 
@@ -77,15 +85,25 @@ static void append_output(const char *str, size_t len) {
         if (!buf || !buf->output) return;
     }
 
+    // Once a chunk has been dropped, drop the rest too, so the caller sees
+    // the overflow instead of a body with a hole in it.
+    if (buf->overflowed) return;
+
     if (buf->length + len + 1 > buf->capacity) {
         size_t needed = buf->capacity;
         while (needed < buf->length + len + 1) {
             needed += BUFFER_CHUNK_SIZE;
         }
-        if (needed > MAX_BUFFER_SIZE) return;
+        if (needed > MAX_BUFFER_SIZE) {
+            buf->overflowed = 1;
+            return;
+        }
 
         char *new_buf = (char *)realloc(buf->output, needed);
-        if (!new_buf) return;
+        if (!new_buf) {
+            buf->overflowed = 1;
+            return;
+        }
         buf->output   = new_buf;
         buf->capacity = needed;
     }
@@ -95,16 +113,176 @@ static void append_output(const char *str, size_t len) {
     buf->output[buf->length] = '\0';
 }
 
+// ── Bridge dispatch helpers ─────────────────────────
+// Shared by the persistent and webview lanes. Request bodies and responses
+// are (pointer, length) all the way through: nothing here uses strlen() on a
+// body.
+
+// A malloc'd copy of a fixed text response, with its length.
+static char *bridge_text_response(const char *text, size_t *out_len) {
+    char *out = strdup(text);
+    *out_len = out ? strlen(out) : 0;
+    return out;
+}
+
+// Hand this thread's capture buffer to the caller: *out_len bytes plus one
+// uncounted NUL, freed by the caller with free(). The next clear allocates a
+// fresh buffer, so the response is never copied.
+static char *take_collected_output(size_t *out_len) {
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    if (!buf || !buf->output) {
+        return bridge_text_response("", out_len);
+    }
+    char *out = buf->output;
+    *out_len = buf->length;
+    buf->output   = NULL;
+    buf->length   = 0;
+    buf->capacity = 0;
+    return out;
+}
+
+// After a dispatch eval: the captured response, or a 500 that names the
+// limit if the capture overflowed. Never a body with holes in it.
+static char *bridge_collect_response(const char *lane, size_t *out_len) {
+    php_output_buffer_t *buf = get_thread_output_buffer();
+    if (buf && buf->overflowed) {
+        fprintf(stderr, "%s: response passed the %dMB bridge limit, answering 500\n",
+                lane, MAX_BUFFER_SIZE / (1024 * 1024));
+        fflush(stderr);
+        clear_output_buffer();
+
+        char body[96];
+        int body_len = snprintf(body, sizeof(body), "Response larger than the %dMB bridge limit.",
+                                MAX_BUFFER_SIZE / (1024 * 1024));
+        char *out = NULL;
+        int n = asprintf(&out,
+                         "HTTP/1.1 500 Internal Server Error\r\n"
+                         "Content-Type: text/plain; charset=utf-8\r\n"
+                         "Content-Length: %d\r\n\r\n%s",
+                         body_len, body);
+        if (n < 0) {
+            *out_len = 0;
+            return NULL;
+        }
+        *out_len = (size_t)n;
+        return out;
+    }
+    return take_collected_output(out_len);
+}
+
+// Put the exact body bytes in php://input. SG(request_info).content_type is
+// left NULL on purpose: PHP's own body parser must never run on this SAPI
+// (request_parse_body() with a multipart type calls the embed SAPI's NULL
+// read_post, and with a urlencoded type it empties the body). The content
+// type reaches PHP as an argument to BridgeDispatcher::handle() instead.
+static void bridge_set_request_body(const char *body, size_t len) {
+    if (SG(request_info).request_body) {
+        php_stream_close(SG(request_info).request_body);
+        SG(request_info).request_body = NULL;
+    }
+    SG(post_read) = 1;          // the body is already in request_body; never ask read_post
+    SG(read_post_bytes) = 0;
+    SG(request_info).content_type = NULL;
+    SG(request_info).content_length = 0;
+
+    if (!body || len == 0) return;
+
+    php_stream *stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
+    if (!stream) return;
+    php_stream_write(stream, body, len);
+    php_stream_seek(stream, 0, SEEK_SET);
+    SG(request_info).request_body = stream;
+    SG(request_info).content_length = (zend_long)len;
+}
+
+// The one line of PHP each lane evals. Arguments, in order: platform, lane,
+// then base64 of method, uri, script path, cookie, content type, headers.
+// Passing them as base64 arguments instead of splicing them into the code
+// means no request value is ever parsed as PHP.
+#define BRIDGE_DISPATCH_EVAL \
+    "if (class_exists('Native\\\\Mobile\\\\Http\\\\Bridge\\\\BridgeDispatcher')) {" \
+    " \\Native\\Mobile\\Http\\Bridge\\BridgeDispatcher::handle('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s');" \
+    " } else {" \
+    " echo \"HTTP/1.1 500 Internal Server Error\\r\\nContent-Type: text/plain\\r\\nContent-Length: 66\\r\\n\\r\\n" \
+    "BridgeDispatcher missing: run composer install and native:install.\";" \
+    " }"
+
+// Standard base64 (RFC 4648, with padding, no line breaks) of len bytes.
+// in may be NULL when len is 0. Returns a malloc'd NUL-terminated string,
+// or NULL if out of memory.
+static char *bridge_base64(const char *in, size_t len) {
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char *out = malloc(4 * ((len + 2) / 3) + 1);
+    if (!out) return NULL;
+    const unsigned char *src = (const unsigned char *)in;
+    size_t i = 0, j = 0;
+    for (; i + 2 < len; i += 3) {
+        uint32_t n = ((uint32_t)src[i] << 16) | ((uint32_t)src[i + 1] << 8) | src[i + 2];
+        out[j++] = table[(n >> 18) & 63];
+        out[j++] = table[(n >> 12) & 63];
+        out[j++] = table[(n >> 6) & 63];
+        out[j++] = table[n & 63];
+    }
+    if (i < len) {
+        uint32_t n = (uint32_t)src[i] << 16;
+        if (i + 1 < len) n |= (uint32_t)src[i + 1] << 8;
+        out[j++] = table[(n >> 18) & 63];
+        out[j++] = table[(n >> 12) & 63];
+        out[j++] = (i + 1 < len) ? table[(n >> 6) & 63] : '=';
+        out[j++] = '=';
+    }
+    out[j] = '\0';
+    return out;
+}
+
+// Build the eval string for one request. Any string argument may be NULL,
+// which is sent as ''. Returns a malloc'd string for zend_eval_string(), or
+// NULL if out of memory. The caller frees it.
+static char *bridge_dispatch_code(const char *platform, const char *lane,
+                                  const char *method, const char *uri,
+                                  const char *script_path, const char *cookie,
+                                  const char *content_type,
+                                  const char *headers, size_t headers_len) {
+    const char *values[6] = { method, uri, script_path, cookie, content_type, headers };
+    size_t lengths[6];
+    char *b64[6] = { NULL };
+    char *code = NULL;
+
+    for (int k = 0; k < 6; k++) {
+        lengths[k] = values[k] ? (k == 5 ? headers_len : strlen(values[k])) : 0;
+    }
+
+    int ok = 1;
+    for (int k = 0; k < 6; k++) {
+        b64[k] = bridge_base64(values[k], lengths[k]);
+        if (!b64[k]) ok = 0;
+    }
+
+    if (ok && asprintf(&code, BRIDGE_DISPATCH_EVAL, platform, lane,
+                       b64[0], b64[1], b64[2], b64[3], b64[4], b64[5]) < 0) {
+        code = NULL;
+    }
+
+    for (int k = 0; k < 6; k++) free(b64[k]);
+    return code;
+}
+
 size_t capture_php_output(const char *str, size_t str_length) {
     if (str_length == 0) return 0;
 
-    // Forward to Swift callback (legacy per-request mode)
-    if (swiftOutputCallback) {
+    // Forward to Swift (classic per-request mode), from the capturing thread only
+    phpOutputBytesCallback bytesCallback = swiftOutputBytesCallback;
+    phpOutputCallback textCallback = swiftOutputCallback;
+    int capturingThread = (bytesCallback || textCallback) && pthread_equal(pthread_self(), swiftOutputThread);
+
+    if (capturingThread && bytesCallback) {
+        bytesCallback(str, str_length);
+    } else if (capturingThread && textCallback) {
         char *buffer = malloc(str_length + 1);
         if (buffer) {
             memcpy(buffer, str, str_length);
             buffer[str_length] = '\0';
-            swiftOutputCallback(buffer);
+            textCallback(buffer);
             free(buffer);
         }
     }
@@ -116,23 +294,35 @@ size_t capture_php_output(const char *str, size_t str_length) {
 }
 
 void override_embed_module_output(phpOutputCallback callback) {
+    swiftOutputThread = pthread_self();
+    swiftOutputBytesCallback = NULL;
     swiftOutputCallback = callback;
     php_embed_module.ub_write = capture_php_output;
 }
 
+void override_embed_module_output_bytes(phpOutputBytesCallback callback) {
+    swiftOutputThread = pthread_self();
+    swiftOutputCallback = NULL;
+    swiftOutputBytesCallback = callback;
+    php_embed_module.ub_write = capture_php_output;
+}
+
+void initialize_php_with_request_bytes(const char *body,
+                                       size_t body_len,
+                                       const char *method,
+                                       const char *uri) {
+    SG(request_info).request_method = method;
+    SG(request_info).request_uri = (char *)uri;
+    bridge_set_request_body(body, body ? body_len : 0);
+}
+
+// Kept for older callers: the body is POST-only text, cut at its first NUL.
+// It now also leaves SG(request_info).content_type NULL, like every lane.
 void initialize_php_with_request(const char *post_data,
                                  const char *method,
                                  const char *uri) {
-    if (strcmp(method, "POST") == 0) {
-        size_t post_data_length = strlen(post_data);
-
-        php_stream *mem_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
-        php_stream_write(mem_stream, post_data, post_data_length);
-
-        SG(request_info).request_body   = mem_stream;
-        SG(request_info).request_method = "POST";
-        SG(request_info).content_type   = "application/x-www-form-urlencoded";
-        SG(request_info).content_length = post_data_length;
+    if (method && strcmp(method, "POST") == 0) {
+        initialize_php_with_request_bytes(post_data, post_data ? strlen(post_data) : 0, method, uri);
     }
 }
 
@@ -165,10 +355,13 @@ static int ios_header_handler(sapi_header_struct *sapi_header,
 typedef struct {
     const char *method;
     const char *uri;
-    const char *postData;
+    const char *body;         // bodyLen bytes, may hold NULs; borrowed for the call
+    size_t      bodyLen;
     const char *scriptPath;
     const char *cookieHeader;
     const char *contentType;
+    const char *headers;      // "Name: value" lines joined by CRLF, headersLen bytes
+    size_t      headersLen;
 } dispatch_params_t;
 
 // Work item types
@@ -187,6 +380,7 @@ static const char          *php_work_str_arg    = NULL;
 static dispatch_params_t    php_work_dispatch_params;
 static int                  php_work_int_result  = 0;
 static char                *php_work_str_result  = NULL;
+static size_t               php_work_result_len  = 0;
 
 static int persistent_initialized = 0;
 static int worker_thread_alive = 0;
@@ -385,42 +579,22 @@ static void *php_worker_main(void *arg) {
 
 static void do_dispatch(const dispatch_params_t *params) {
     if (!persistent_initialized) {
-        php_work_str_result = strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.");
+        php_work_str_result = bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.", &php_work_result_len);
         return;
     }
 
     clear_output_buffer();
 
-    // Set env vars for this request
-    setenv("REQUEST_URI", params->uri, 1);
-    setenv("REQUEST_METHOD", params->method, 1);
-    setenv("SCRIPT_FILENAME", params->scriptPath, 1);
-    setenv("PHP_SELF", "/native.php", 1);
-    setenv("HTTP_HOST", "127.0.0.1", 1);
+    // App-wide values the app reads from the environment. Request values no
+    // longer go through setenv(): BridgeDispatcher::handle() takes them as
+    // arguments, so this lane no longer churns process-wide env per request.
     setenv("APP_URL", "php://127.0.0.1", 1);
     setenv("ASSET_URL", "php://127.0.0.1/_assets/", 1);
     setenv("NATIVEPHP_RUNNING", "true", 1);
     setenv("NATIVEPHP_PLATFORM", "ios", 1);
 
-    // Query string
-    const char *query_start = strchr(params->uri, '?');
-    if (query_start && strlen(query_start + 1) > 0) {
-        setenv("QUERY_STRING", query_start + 1, 1);
-    } else {
-        unsetenv("QUERY_STRING");
-    }
-
-    // Cookie header
-    if (params->cookieHeader && strlen(params->cookieHeader) > 0) {
-        setenv("HTTP_COOKIE", params->cookieHeader, 1);
-    } else {
-        unsetenv("HTTP_COOKIE");
-    }
-
     // Reset SAPI state — safe because we're on the PHP thread with valid TSRM
     SG(headers_sent) = 0;
-    SG(post_read) = 0;
-    SG(read_post_bytes) = 0;
     SG(request_info).request_method = params->method;
     SG(request_info).request_uri = (char *)params->uri;
     SG(request_info).proto_num = 1001;
@@ -429,133 +603,24 @@ static void do_dispatch(const dispatch_params_t *params) {
     SG(sapi_headers).http_response_code = 200;
     zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
 
-    // POST data → php://input
-    if (params->postData && strlen(params->postData) > 0) {
-        php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
-        if (post_stream) {
-            php_stream_write(post_stream, params->postData, strlen(params->postData));
-            php_stream_seek(post_stream, 0, SEEK_SET);
+    bridge_set_request_body(params->body, params->bodyLen);
 
-            if (SG(request_info).request_body) {
-                php_stream_close(SG(request_info).request_body);
-            }
-            SG(request_info).request_body = post_stream;
-            SG(request_info).content_length = strlen(params->postData);
-
-            if (params->contentType && strstr(params->contentType, "json")) {
-                SG(request_info).content_type = "application/json";
-            } else {
-                SG(request_info).content_type = "application/x-www-form-urlencoded";
-            }
-        }
-    } else {
-        if (SG(request_info).request_body) {
-            php_stream_close(SG(request_info).request_body);
-            SG(request_info).request_body = NULL;
-        }
-        SG(request_info).content_length = 0;
+    char *code = bridge_dispatch_code("ios", "persistent",
+                                      params->method, params->uri, params->scriptPath,
+                                      params->cookieHeader, params->contentType,
+                                      params->headers, params->headersLen);
+    if (!code) {
+        php_work_str_result = bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build persistent dispatch.", &php_work_result_len);
+        return;
     }
 
-    // Build dispatch eval code — same pattern as Android
-    static char eval_code[8192];
-    snprintf(eval_code, sizeof(eval_code),
-        "try {\n"
-        "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
-        "\n"
-        "    foreach ($_SERVER as $__k => $__v) {\n"
-        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
-        "            unset($_SERVER[$__k]);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
-        "    $_SERVER['REQUEST_URI'] = '%s';\n"
-        "    $_SERVER['SCRIPT_FILENAME'] = '%s';\n"
-        "    $_SERVER['PHP_SELF'] = '/native.php';\n"
-        "    $_SERVER['HTTP_HOST'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_NAME'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_PORT'] = '80';\n"
-        "    $_SERVER['APP_URL'] = 'php://127.0.0.1';\n"
-        "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
-        "    $_SERVER['NATIVEPHP_PLATFORM'] = 'ios';\n"
-        "\n"
-        "    foreach (getenv() as $__k => $__v) {\n"
-        "        $_SERVER[$__k] = $__v;\n"
-        "    }\n"
-        "\n"
-        "    if (isset($_SERVER['HTTP_CONTENT_TYPE'])) {\n"
-        "        $_SERVER['CONTENT_TYPE'] = $_SERVER['HTTP_CONTENT_TYPE'];\n"
-        "    }\n"
-        "    if (isset($_SERVER['HTTP_CONTENT_LENGTH'])) {\n"
-        "        $_SERVER['CONTENT_LENGTH'] = $_SERVER['HTTP_CONTENT_LENGTH'];\n"
-        "    }\n"
-        "\n"
-        "    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');\n"
-        "    if ($__qpos !== false) {\n"
-        "        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);\n"
-        "    } else {\n"
-        "        $_SERVER['QUERY_STRING'] = '';\n"
-        "    }\n"
-        "\n"
-        "    $_GET = [];\n"
-        "    $_POST = [];\n"
-        "    $_COOKIE = [];\n"
-        "    $_FILES = [];\n"
-        "    $_REQUEST = [];\n"
-        "\n"
-        "    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {\n"
-        "        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {\n"
-        "            $__parts = explode('=', $__pair, 2);\n"
-        "            if (count($__parts) === 2) {\n"
-        "                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
-        "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
-        "    }\n"
-        "\n"
-        "    // Parse POST body into $_POST for form-urlencoded requests.\n"
-        "    // php://input is set up by the C layer but $_POST was cleared above.\n"
-        "    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {\n"
-        "        $__rawInput = file_get_contents('php://input');\n"
-        "        if ($__rawInput !== false && $__rawInput !== '') {\n"
-        "            $__ct = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';\n"
-        "            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {\n"
-        "                parse_str($__rawInput, $_POST);\n"
-        "            }\n"
-        "            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
-        "        \\Illuminate\\Http\\Request::capture()\n"
-        "    );\n"
-        "    $__code = $__response->getStatusCode();\n"
-        "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
-        "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
-        "    foreach ($__response->headers->all() as $__name => $__values) {\n"
-        "        foreach ($__values as $__value) {\n"
-        "            echo \"{$__name}: {$__value}\\r\\n\";\n"
-        "        }\n"
-        "    }\n"
-        "    echo \"\\r\\n\";\n"
-        "    $__response->sendContent();\n"
-        "} catch (\\Throwable $e) {\n"
-        "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
-        "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
-        "    echo 'Persistent dispatch error: ' . $e->getMessage() . \"\\n\";\n"
-        "    echo $e->getTraceAsString();\n"
-        "}\n",
-        params->method, params->uri, params->scriptPath);
-
     zend_first_try {
-        zend_eval_string(eval_code, NULL, "persistent_dispatch");
+        zend_eval_string(code, NULL, "persistent_dispatch");
     } zend_end_try();
 
-    char *out = get_collected_output();
-    php_work_str_result = out ? strdup(out) : strdup("");
+    free(code);
+
+    php_work_str_result = bridge_collect_response("persistent_dispatch", &php_work_result_len);
 }
 
 static void do_artisan(const char *command) {
@@ -673,29 +738,58 @@ int persistent_php_boot(const char *bootstrapPath) {
     return php_work_int_result;
 }
 
-const char *persistent_php_dispatch(const char *method,
+char *persistent_php_dispatch_bytes(const char *method,
                                     const char *uri,
-                                    const char *postData,
-                                    const char *scriptPath,
-                                    const char *cookieHeader,
-                                    const char *contentType) {
+                                    const char *body,
+                                    size_t body_len,
+                                    const char *content_type,
+                                    const char *cookie_header,
+                                    const char *headers,
+                                    size_t headers_len,
+                                    const char *script_path,
+                                    size_t *out_len) {
+    size_t unused_len;
+    if (!out_len) out_len = &unused_len;
+
     if (!persistent_initialized) {
-        return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nNot booted.");
+        return bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nNot booted.", out_len);
     }
 
     php_work_type = PHP_WORK_DISPATCH;
     php_work_dispatch_params = (dispatch_params_t){
         .method = method,
         .uri = uri,
-        .postData = postData,
-        .scriptPath = scriptPath,
-        .cookieHeader = cookieHeader,
-        .contentType = contentType
+        .body = body,
+        .bodyLen = body ? body_len : 0,
+        .scriptPath = script_path,
+        .cookieHeader = cookie_header,
+        .contentType = content_type,
+        .headers = headers,
+        .headersLen = headers ? headers_len : 0
     };
     php_work_str_result = NULL;
+    php_work_result_len = 0;
 
     submit_and_wait(PHP_WORK_DISPATCH);
+
+    *out_len = php_work_result_len;
     return php_work_str_result;
+}
+
+// Kept for older callers. The body stops at its first NUL and no request
+// headers reach PHP; the result is still NUL-terminated.
+const char *persistent_php_dispatch(const char *method,
+                                    const char *uri,
+                                    const char *postData,
+                                    const char *scriptPath,
+                                    const char *cookieHeader,
+                                    const char *contentType) {
+    size_t len = 0;
+    return persistent_php_dispatch_bytes(method, uri,
+                                         postData, postData ? strlen(postData) : 0,
+                                         contentType, cookieHeader,
+                                         NULL, 0,
+                                         scriptPath, &len);
 }
 
 const char *persistent_php_artisan(const char *command) {
@@ -1223,6 +1317,254 @@ int ephemeral_php_is_booted(void) {
     return ephemeral_initialized;
 }
 
+// ============================================================================
+// Async Task Lane — pool of TSRM contexts for immediate background PHP work
+// ============================================================================
+// Backs AsyncTask::dispatch(). A fixed pool of worker threads, each with its
+// own TSRM context booted once, running `native:async:run --id=<id>` for tasks
+// assigned to it. Concurrent (one in-flight task per slot) and reused across
+// tasks — unlike the single queue worker and the boot-per-invocation ephemeral
+// lane. Never touches a database or the standard queue; the task payload/result
+// travel via the PHP temp-file transport + the AsyncTask.Complete bridge
+// function (which wakes the UI runloop). Android twin: the async lane in
+// php_bridge.c + AsyncTaskExecutor.kt.
+//
+// Swift's AsyncTaskExecutor pins each slot to one serial queue, so a slot is
+// only ever touched by its own thread — the TSRM context stays thread-local.
+
+#define ASYNC_PHP_MAX_SLOTS 4
+
+typedef enum {
+    ASYNC_WORK_RUN = 1,
+    ASYNC_WORK_SHUTDOWN = 2,
+} async_work_type_t;
+
+typedef struct {
+    int in_use;        // slot allocated (guarded by async_pool_mutex)
+    int initialized;   // context booted on its thread
+    int boot_result;
+    dispatch_semaphore_t work_sem;
+    dispatch_semaphore_t done_sem;
+    async_work_type_t work_type;
+    const char *task_id;  // borrowed for the duration of one run
+    char *result;         // strdup'd task output, ownership passes to caller
+    char bootstrap_path[1024];
+} async_php_slot_t;
+
+static async_php_slot_t async_slots[ASYNC_PHP_MAX_SLOTS];
+static pthread_mutex_t async_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void do_async_run(async_php_slot_t *slot) {
+    clear_output_buffer();
+
+    // No setenv() here. This lane is CONCURRENT: several slots run at once, and
+    // setenv()/getenv() are neither thread-safe nor per-thread — the value one
+    // slot sets is the value every other slot (and the UI lane) sees. The eval
+    // below sets the per-thread $_SERVER values instead, which is what Laravel
+    // reads anyway.
+    //
+    // task_id is a framework-generated UUID (Str::uuid()), so it's safe to
+    // embed directly; no user input reaches this string.
+    char eval_code[1024];
+    snprintf(eval_code, sizeof(eval_code),
+        "try {\n"
+        "    $_SERVER['PHP_SELF'] = 'artisan.php';\n"
+        "    $_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n"
+        "    \\Native\\Mobile\\Runtime::artisan('native:async:run --id=%s');\n"
+        "} catch (\\Throwable $e) {\n"
+        "    error_log('async run error: ' . $e->getMessage());\n"
+        "}\n",
+        slot->task_id ? slot->task_id : "");
+
+    zend_first_try {
+        zend_eval_string(eval_code, NULL, "async_run");
+    } zend_end_try();
+
+    char *out = get_collected_output();
+    slot->result = out ? strdup(out) : strdup("");
+}
+
+static void *async_thread_main(void *arg) {
+    async_php_slot_t *slot = (async_php_slot_t *)arg;
+
+    fprintf(stderr, "ASYNC-PHP: thread started tid=%p\n", (void *)pthread_self());
+    fflush(stderr);
+
+    clear_output_buffer();
+
+    // Same per-thread TSRM init the webview lane uses.
+    if (ephemeral_embed_init() != SUCCESS) {
+        fprintf(stderr, "ASYNC-PHP: embed init FAILED\n");
+        fflush(stderr);
+        slot->boot_result = -1;
+        dispatch_semaphore_signal(slot->done_sem);
+        return NULL;
+    }
+
+    zend_first_try {
+        zend_activate_modules();
+
+        // Console-shaped environment for the bootstrap, per-thread via the
+        // superglobal rather than a process-wide setenv() (see do_async_run).
+        zend_eval_string(
+            "$_SERVER['PHP_SELF'] = 'artisan.php';\n"
+            "$_SERVER['APP_RUNNING_IN_CONSOLE'] = 'true';\n",
+            NULL, "async_env");
+
+        zend_file_handle fileHandle;
+        zend_stream_init_filename(&fileHandle, slot->bootstrap_path);
+        php_execute_script(&fileHandle);
+    } zend_end_try();
+
+    char *boot_output = get_collected_output();
+    if (boot_output && strstr(boot_output, "FATAL") != NULL) {
+        fprintf(stderr, "ASYNC-PHP: bootstrap errors: %.200s\n", boot_output);
+        fflush(stderr);
+    }
+
+    slot->initialized = 1;
+    slot->boot_result = 0;
+
+    dispatch_semaphore_signal(slot->done_sem);
+
+    while (1) {
+        dispatch_semaphore_wait(slot->work_sem, DISPATCH_TIME_FOREVER);
+
+        switch (slot->work_type) {
+            case ASYNC_WORK_RUN:
+                do_async_run(slot);
+                break;
+            case ASYNC_WORK_SHUTDOWN:
+                zend_first_try {
+                    zend_eval_string(
+                        "\\Native\\Mobile\\Runtime::shutdown();",
+                        NULL, "async_shutdown");
+                } zend_end_try();
+                ephemeral_embed_shutdown();
+                slot->initialized = 0;
+                dispatch_semaphore_signal(slot->done_sem);
+                return NULL;
+        }
+
+        dispatch_semaphore_signal(slot->done_sem);
+    }
+
+    return NULL;
+}
+
+// Boot one async slot and return its handle (≥ 0), or negative on error.
+// Swift calls this once per pool thread.
+int async_php_boot(const char *bootstrapPath) {
+    int gate = wait_for_persistent_boot(10);
+    if (gate != 0) {
+        fprintf(stderr, "async_php_boot: persistent runtime not ready (gate=%d)\n", gate);
+        fflush(stderr);
+        return -4;
+    }
+
+    pthread_mutex_lock(&async_pool_mutex);
+    int handle = -1;
+    for (int i = 0; i < ASYNC_PHP_MAX_SLOTS; i++) {
+        if (!async_slots[i].in_use) {
+            handle = i;
+            async_slots[i].in_use = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&async_pool_mutex);
+
+    if (handle < 0) {
+        fprintf(stderr, "async_php_boot: no free slots (max %d)\n", ASYNC_PHP_MAX_SLOTS);
+        fflush(stderr);
+        return -2;
+    }
+
+    async_php_slot_t *slot = &async_slots[handle];
+    slot->initialized = 0;
+    slot->boot_result = -1;
+    slot->result = NULL;
+    slot->task_id = NULL;
+    slot->work_sem = dispatch_semaphore_create(0);
+    slot->done_sem = dispatch_semaphore_create(0);
+    snprintf(slot->bootstrap_path, sizeof(slot->bootstrap_path), "%s", bootstrapPath);
+
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_UTILITY, 0);
+
+    int rc = pthread_create(&thread, &attr, async_thread_main, slot);
+    pthread_attr_destroy(&attr);
+
+    if (rc != 0) {
+        fprintf(stderr, "async_php_boot: pthread_create FAILED: %d\n", rc);
+        fflush(stderr);
+        pthread_mutex_lock(&async_pool_mutex);
+        slot->in_use = 0;
+        pthread_mutex_unlock(&async_pool_mutex);
+        return -1;
+    }
+
+    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+
+    if (slot->boot_result != 0) {
+        pthread_mutex_lock(&async_pool_mutex);
+        slot->in_use = 0;
+        pthread_mutex_unlock(&async_pool_mutex);
+        return -3;
+    }
+
+    fprintf(stderr, "async_php_boot: slot %d ready\n", handle);
+    fflush(stderr);
+    return handle;
+}
+
+// Run one task on a specific slot. Blocks until the task completes. Call only
+// from that slot's dedicated Swift serial queue (keeps the context thread-local).
+const char *async_php_run(int handle, const char *taskId) {
+    if (handle < 0 || handle >= ASYNC_PHP_MAX_SLOTS) {
+        return strdup("");
+    }
+
+    async_php_slot_t *slot = &async_slots[handle];
+    if (!slot->in_use || !slot->initialized) {
+        return strdup("");
+    }
+
+    slot->task_id = taskId;
+    slot->result = NULL;
+    slot->work_type = ASYNC_WORK_RUN;
+
+    dispatch_semaphore_signal(slot->work_sem);
+    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+
+    slot->task_id = NULL;
+    return slot->result ? slot->result : strdup("");
+}
+
+void async_php_stop(int handle) {
+    if (handle < 0 || handle >= ASYNC_PHP_MAX_SLOTS) {
+        return;
+    }
+
+    async_php_slot_t *slot = &async_slots[handle];
+    if (!slot->in_use) {
+        return;
+    }
+
+    if (slot->initialized) {
+        slot->work_type = ASYNC_WORK_SHUTDOWN;
+        dispatch_semaphore_signal(slot->work_sem);
+        dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+    }
+
+    pthread_mutex_lock(&async_pool_mutex);
+    slot->in_use = 0;
+    pthread_mutex_unlock(&async_pool_mutex);
+}
+
 // ── Webview PHP Runtimes ────────────────────────────
 // One dedicated PHP context per embedded php-mode <webview> element. The
 // persistent runtime's serial queue is parked inside a native screen's
@@ -1231,9 +1573,9 @@ int ephemeral_php_is_booted(void) {
 // own thread + TSRM context instead, started when the webview mounts and
 // stopped when it leaves the view hierarchy.
 //
-// Request state is passed by inlining into the eval and via per-thread
-// SAPI globals — never via setenv() — so slots can run concurrently with
-// the persistent lane's env churn without racing it.
+// Request state is passed as arguments to BridgeDispatcher::handle() and via
+// per-thread SAPI globals — never via setenv() — so slots can run
+// concurrently with the persistent lane without racing it.
 
 #define WEBVIEW_PHP_MAX_SLOTS 4
 
@@ -1246,8 +1588,11 @@ typedef struct {
     const char *method;
     const char *uri;
     const char *cookieHeader;
-    const char *postData;
+    const char *body;         // bodyLen bytes, may hold NULs; borrowed for the call
+    size_t      bodyLen;
     const char *contentType;
+    const char *headers;      // "Name: value" lines joined by CRLF, headersLen bytes
+    size_t      headersLen;
     const char *scriptPath;
 } webview_request_params_t;
 
@@ -1259,34 +1604,13 @@ typedef struct {
     dispatch_semaphore_t done_sem;
     webview_work_type_t work_type;
     webview_request_params_t params;
-    char *result;      // strdup'd raw HTTP response, ownership passes to caller
+    char *result;      // malloc'd raw HTTP response, ownership passes to caller
+    size_t result_len; // bytes in result, not counting its trailing NUL
     char bootstrap_path[1024];
 } webview_php_slot_t;
 
 static webview_php_slot_t webview_slots[WEBVIEW_PHP_MAX_SLOTS];
 static pthread_mutex_t webview_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-/* Escape a string for inclusion inside a single-quoted PHP string literal. */
-static char *webview_escape_php(const char *s) {
-    if (!s) {
-        return strdup("");
-    }
-    size_t len = strlen(s);
-    char *out = malloc(len * 2 + 1);
-    if (!out) {
-        return strdup("");
-    }
-    char *p = out;
-    for (size_t i = 0; i < len; i++) {
-        char c = s[i];
-        if (c == '\\' || c == '\'') {
-            *p++ = '\\';
-        }
-        *p++ = c;
-    }
-    *p = '\0';
-    return out;
-}
 
 static void do_webview_dispatch(webview_php_slot_t *slot) {
     clear_output_buffer();
@@ -1295,8 +1619,6 @@ static void do_webview_dispatch(webview_php_slot_t *slot) {
 
     // Per-thread SAPI request state (TSRM-local — safe alongside other lanes)
     SG(headers_sent) = 0;
-    SG(post_read) = 0;
-    SG(read_post_bytes) = 0;
     SG(request_info).request_method = params->method;
     SG(request_info).request_uri = (char *)params->uri;
     SG(request_info).proto_num = 1001;
@@ -1305,145 +1627,26 @@ static void do_webview_dispatch(webview_php_slot_t *slot) {
     SG(sapi_headers).http_response_code = 200;
     zend_llist_init(&SG(sapi_headers).headers, sizeof(sapi_header_struct), NULL, 0);
 
-    // POST data → php://input
-    if (params->postData && strlen(params->postData) > 0) {
-        php_stream *post_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
-        if (post_stream) {
-            php_stream_write(post_stream, params->postData, strlen(params->postData));
-            php_stream_seek(post_stream, 0, SEEK_SET);
+    bridge_set_request_body(params->body, params->bodyLen);
 
-            if (SG(request_info).request_body) {
-                php_stream_close(SG(request_info).request_body);
-            }
-            SG(request_info).request_body = post_stream;
-            SG(request_info).content_length = strlen(params->postData);
-
-            if (params->contentType && strstr(params->contentType, "json")) {
-                SG(request_info).content_type = "application/json";
-            } else {
-                SG(request_info).content_type = "application/x-www-form-urlencoded";
-            }
-        }
-    } else {
-        if (SG(request_info).request_body) {
-            php_stream_close(SG(request_info).request_body);
-            SG(request_info).request_body = NULL;
-        }
-        SG(request_info).content_length = 0;
-    }
-
-    char *esc_method = webview_escape_php(params->method);
-    char *esc_uri = webview_escape_php(params->uri);
-    char *esc_cookie = webview_escape_php(params->cookieHeader);
-    char *esc_ct = webview_escape_php(params->contentType);
-    char *esc_script = webview_escape_php(params->scriptPath);
-
-    // Same dispatch shape as the persistent lane, but every request value is
-    // inlined — no getenv() merge, so the persistent lane's transient
-    // request env vars can never bleed into (or race) this context.
-    char *eval_code = NULL;
-    asprintf(&eval_code,
-        "try {\n"
-        "    while (ob_get_level() > 0) { ob_end_clean(); }\n"
-        "\n"
-        "    foreach ($_SERVER as $__k => $__v) {\n"
-        "        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {\n"
-        "            unset($_SERVER[$__k]);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    $_SERVER['REQUEST_METHOD'] = '%s';\n"
-        "    $_SERVER['REQUEST_URI'] = '%s';\n"
-        "    $_SERVER['SCRIPT_FILENAME'] = '%s';\n"
-        "    $_SERVER['PHP_SELF'] = '/native.php';\n"
-        "    $_SERVER['HTTP_HOST'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_NAME'] = '127.0.0.1';\n"
-        "    $_SERVER['SERVER_PORT'] = '80';\n"
-        "    $_SERVER['APP_URL'] = 'php://127.0.0.1';\n"
-        "    $_SERVER['NATIVEPHP_RUNNING'] = 'true';\n"
-        "    $_SERVER['NATIVEPHP_PLATFORM'] = 'ios';\n"
-        "    if ('%s' !== '') { $_SERVER['HTTP_COOKIE'] = '%s'; }\n"
-        "    if ('%s' !== '') { $_SERVER['CONTENT_TYPE'] = '%s'; $_SERVER['HTTP_CONTENT_TYPE'] = '%s'; }\n"
-        "\n"
-        "    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');\n"
-        "    if ($__qpos !== false) {\n"
-        "        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);\n"
-        "    } else {\n"
-        "        $_SERVER['QUERY_STRING'] = '';\n"
-        "    }\n"
-        "\n"
-        "    $_GET = [];\n"
-        "    $_POST = [];\n"
-        "    $_COOKIE = [];\n"
-        "    $_FILES = [];\n"
-        "    $_REQUEST = [];\n"
-        "\n"
-        "    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {\n"
-        "        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {\n"
-        "            $__parts = explode('=', $__pair, 2);\n"
-        "            if (count($__parts) === 2) {\n"
-        "                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    if ($_SERVER['QUERY_STRING'] !== '') {\n"
-        "        parse_str($_SERVER['QUERY_STRING'], $_GET);\n"
-        "    }\n"
-        "\n"
-        "    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {\n"
-        "        $__rawInput = file_get_contents('php://input');\n"
-        "        if ($__rawInput !== false && $__rawInput !== '') {\n"
-        "            $__ct = $_SERVER['CONTENT_TYPE'] ?? '';\n"
-        "            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {\n"
-        "                parse_str($__rawInput, $_POST);\n"
-        "            }\n"
-        "            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);\n"
-        "        }\n"
-        "    }\n"
-        "\n"
-        "    $__response = \\Native\\Mobile\\Runtime::dispatch(\n"
-        "        \\Illuminate\\Http\\Request::capture()\n"
-        "    );\n"
-        "    $__code = $__response->getStatusCode();\n"
-        "    $__status = \\Symfony\\Component\\HttpFoundation\\Response::$statusTexts[$__code] ?? 'OK';\n"
-        "    echo \"HTTP/1.1 {$__code} {$__status}\\r\\n\";\n"
-        "    foreach ($__response->headers->all() as $__name => $__values) {\n"
-        "        foreach ($__values as $__value) {\n"
-        "            echo \"{$__name}: {$__value}\\r\\n\";\n"
-        "        }\n"
-        "    }\n"
-        "    echo \"\\r\\n\";\n"
-        "    $__response->sendContent();\n"
-        "} catch (\\Throwable $e) {\n"
-        "    echo \"HTTP/1.1 500 Internal Server Error\\r\\n\";\n"
-        "    echo \"Content-Type: text/plain\\r\\n\\r\\n\";\n"
-        "    echo 'Webview dispatch error: ' . $e->getMessage() . \"\\n\";\n"
-        "    echo $e->getTraceAsString();\n"
-        "}\n",
-        esc_method, esc_uri, esc_script,
-        esc_cookie, esc_cookie,
-        esc_ct, esc_ct, esc_ct);
-
-    free(esc_method);
-    free(esc_uri);
-    free(esc_cookie);
-    free(esc_ct);
-    free(esc_script);
-
-    if (!eval_code) {
-        slot->result = strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build webview dispatch.");
+    // Same dispatch as the persistent lane. The webview lane never merges
+    // getenv(), so the persistent lane's environment can't bleed into it.
+    char *code = bridge_dispatch_code("ios", "webview",
+                                      params->method, params->uri, params->scriptPath,
+                                      params->cookieHeader, params->contentType,
+                                      params->headers, params->headersLen);
+    if (!code) {
+        slot->result = bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build webview dispatch.", &slot->result_len);
         return;
     }
 
     zend_first_try {
-        zend_eval_string(eval_code, NULL, "webview_dispatch");
+        zend_eval_string(code, NULL, "webview_dispatch");
     } zend_end_try();
 
-    free(eval_code);
+    free(code);
 
-    char *out = get_collected_output();
-    slot->result = out ? strdup(out) : strdup("");
+    slot->result = bridge_collect_response("webview_dispatch", &slot->result_len);
 }
 
 static void *webview_thread_main(void *arg) {
@@ -1578,6 +1781,51 @@ int webview_php_start(const char *bootstrapPath) {
     return handle;
 }
 
+char *webview_php_request_bytes(int handle,
+                                const char *method,
+                                const char *uri,
+                                const char *body,
+                                size_t body_len,
+                                const char *content_type,
+                                const char *cookie_header,
+                                const char *headers,
+                                size_t headers_len,
+                                const char *script_path,
+                                size_t *out_len) {
+    size_t unused_len;
+    if (!out_len) out_len = &unused_len;
+
+    if (handle < 0 || handle >= WEBVIEW_PHP_MAX_SLOTS) {
+        return bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nInvalid webview runtime handle.", out_len);
+    }
+
+    webview_php_slot_t *slot = &webview_slots[handle];
+    if (!slot->in_use || !slot->initialized) {
+        return bridge_text_response("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nWebview runtime not booted.", out_len);
+    }
+
+    slot->params.method = method;
+    slot->params.uri = uri;
+    slot->params.cookieHeader = cookie_header;
+    slot->params.body = body;
+    slot->params.bodyLen = body ? body_len : 0;
+    slot->params.contentType = content_type;
+    slot->params.headers = headers;
+    slot->params.headersLen = headers ? headers_len : 0;
+    slot->params.scriptPath = script_path;
+    slot->result = NULL;
+    slot->result_len = 0;
+    slot->work_type = WEBVIEW_WORK_REQUEST;
+
+    dispatch_semaphore_signal(slot->work_sem);
+    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
+
+    *out_len = slot->result_len;
+    return slot->result ? slot->result : bridge_text_response("", out_len);
+}
+
+// Kept for older callers. The body stops at its first NUL and only Cookie
+// and Content-Type reach PHP; the result is still NUL-terminated.
 const char *webview_php_request(int handle,
                                 const char *method,
                                 const char *uri,
@@ -1585,28 +1833,12 @@ const char *webview_php_request(int handle,
                                 const char *postData,
                                 const char *contentType,
                                 const char *scriptPath) {
-    if (handle < 0 || handle >= WEBVIEW_PHP_MAX_SLOTS) {
-        return strdup("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nInvalid webview runtime handle.");
-    }
-
-    webview_php_slot_t *slot = &webview_slots[handle];
-    if (!slot->in_use || !slot->initialized) {
-        return strdup("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nWebview runtime not booted.");
-    }
-
-    slot->params.method = method;
-    slot->params.uri = uri;
-    slot->params.cookieHeader = cookieHeader;
-    slot->params.postData = postData;
-    slot->params.contentType = contentType;
-    slot->params.scriptPath = scriptPath;
-    slot->result = NULL;
-    slot->work_type = WEBVIEW_WORK_REQUEST;
-
-    dispatch_semaphore_signal(slot->work_sem);
-    dispatch_semaphore_wait(slot->done_sem, DISPATCH_TIME_FOREVER);
-
-    return slot->result ? slot->result : strdup("");
+    size_t len = 0;
+    return webview_php_request_bytes(handle, method, uri,
+                                     postData, postData ? strlen(postData) : 0,
+                                     contentType, cookieHeader,
+                                     NULL, 0,
+                                     scriptPath, &len);
 }
 
 void webview_php_stop(int handle) {

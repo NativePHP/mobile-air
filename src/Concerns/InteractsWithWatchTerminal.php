@@ -31,6 +31,16 @@ trait InteractsWithWatchTerminal
         return $this->output;
     }
 
+    /**
+     * Plain lines go through the command's own line(), so a watcher
+     * without a footer prints like the rest of the command does.
+     * Core's watchTerminalLine() has the default it replaces.
+     */
+    protected function watchTerminalLine(string $line): void
+    {
+        $this->line($line);
+    }
+
     protected function watchTerminalIsInteractive(): bool
     {
         return $this->input->isInteractive();

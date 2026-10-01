@@ -46,6 +46,28 @@ it('applies the opacity modifier to the dark companion too', function () {
         ->and($parsed['dark']['bg'])->toBe('#80FFA85C');
 });
 
+it('lets an explicit border width beat the one a theme border implies', function () {
+    // A theme border needs *a* width to be visible at all, but asserting one made the
+    // outcome depend on class order: `border-2 border-theme-primary` rendered 1px while
+    // `border-theme-primary border-2` rendered 2px, with nothing on screen to explain it.
+    expect(TailwindParser::parse('border-2 border-theme-primary'))
+        ->toMatchArray(['borderColor' => '#FF6B00', 'borderWidth' => 2])
+        ->and(TailwindParser::parse('border-theme-primary border-2'))
+        ->toMatchArray(['borderColor' => '#FF6B00', 'borderWidth' => 2]);
+});
+
+it('still gives a bare theme border a width of its own', function () {
+    expect(TailwindParser::parse('border-theme-success'))
+        ->toBe(['borderColor' => '#00E475', 'borderWidth' => 1]);
+});
+
+it('never leaks the internal default-width key into the parsed output', function () {
+    // parse() resolves it at the end; the renderers read this array directly, so a
+    // leftover key would reach the wire as an unknown style prop.
+    expect(TailwindParser::parse('border-theme-primary'))->not->toHaveKey('borderWidthDefault')
+        ->and(TailwindParser::parse('border-4 border-theme-primary'))->not->toHaveKey('borderWidthDefault');
+});
+
 it('leaves unknown theme tokens unresolved rather than guessing', function () {
     expect(TailwindParser::parse('bg-theme-nonexistent'))->toBe([]);
 });

@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Concerns;
 
 use Native\Mobile\JumpBridge;
+use Native\Mobile\System;
 
 /**
  * Making sure exactly one runloop drives the device under `native:jump`.
@@ -27,14 +28,12 @@ trait ClaimsJumpSession
      * Claim this runloop as the current native session, when there is a Jump
      * session to claim; null otherwise (device, tests, plain web).
      *
-     * Gated on JUMP_BRIDGE_PORT (set only by `native:jump`). NOT on
-     * `function_exists('nativephp_call')` — in Jump mode the PHP fallback
-     * DEFINES that function, so it exists on both device and dev server and
-     * would gate this off everywhere.
+     * Gated on System::runningInJump(), which says why that check cannot be
+     * `function_exists('nativephp_call')`.
      */
     protected function claimJumpSessionIfUnderJump(): ?string
     {
-        if (getenv('JUMP_BRIDGE_PORT') === false) {
+        if (! System::runningInJump()) {
             return null;
         }
 

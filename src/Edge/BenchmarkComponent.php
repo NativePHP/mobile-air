@@ -417,7 +417,7 @@ class BenchmarkComponent extends NativeComponent
                 $this->nativeRunning = false;
                 break;
             }
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
 
             // If dispatch set up a scenario queue, break out to run it
             if (! empty($this->scenarioQueue)) {
@@ -446,7 +446,7 @@ class BenchmarkComponent extends NativeComponent
                 $this->backToMenu();
                 break;
             }
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }
     }
 
@@ -614,7 +614,7 @@ class BenchmarkComponent extends NativeComponent
                 $this->nativeRunning = false;
                 break;
             }
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }
 
         $exportResult = nativephp_call('Perf.Export', '{}');
@@ -703,7 +703,7 @@ class BenchmarkComponent extends NativeComponent
                 $this->nativeRunning = false;
                 break;
             }
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }
 
         $exportResult = nativephp_call('Perf.Export', '{}');
@@ -779,7 +779,7 @@ class BenchmarkComponent extends NativeComponent
                 $this->nativeRunning = false;
                 break;
             }
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }
 
         $exportResult = nativephp_call('Perf.Export', '{}');
@@ -1285,7 +1285,7 @@ class BenchmarkComponent extends NativeComponent
                 $this->nativeRunning = false;
                 break;
             }
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }
 
         $exportResult = nativephp_call('Perf.Export', '{}');

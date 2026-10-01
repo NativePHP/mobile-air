@@ -2,6 +2,7 @@ package com.nativephp.mobile.ui
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.hardware.Sensor
@@ -62,7 +63,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : FragmentActivity(), WebViewProvider {
+class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.WebEventSink {
     // Native-first boot: no WebView exists until a web response actually
     // needs painting. Compose state so MainScreen recomposes and attaches
     // the WebView the moment a renderer is lazily created.
@@ -89,12 +90,15 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     private var pendingDeepLink: String? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
+
+    private var asyncExecutor: com.nativephp.mobile.bridge.AsyncTaskExecutor? = null
     @Volatile private var nativeUIThread: Thread? = null
     private var shouldStopWatcher = false
     private var pendingInsets: Insets? = null
     // Last appearance pushed to PHP, so onConfigurationChanged (which also fires
     // on rotation) only emits AppearanceChanged when the theme actually flips.
     private var lastAppearance: String? = null
+
     private var showSplash by mutableStateOf(true)
     // Gates composition of the heavy MainScreen tree (Scaffold + WebView)
     // until the runtime is booted and the WebView is ready. Until then the first
@@ -114,6 +118,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         var instance: MainActivity? = null
             private set
 
+        // Survives activity recreation so a multi-window resize that Android
+        // does not route through onConfigurationChanged can still refresh PHP's
+        // process cache from the new activity's window configuration.
+        private var lastOrientation: String? = null
+
         // Delay before the background queue worker boots. The worker spins up a
         // second full Laravel runtime; deferring it keeps that off the cold-start
         // critical path so it doesn't steal CPU from the first paint.
@@ -124,10 +133,24 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         super.onCreate(savedInstanceState)
         instance = this
 
+        // Claim the web delivery arm for device events (see onNativeEvent).
+        NativeElementBridge.installWebEventSink(this)
+
         // Seed the appearance tracker so a later config change (e.g. rotation)
         // only emits AppearanceChanged when the theme genuinely differs.
         lastAppearance = if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
+
+        // Compare before reseeding: some multi-window changes recreate the
+        // activity rather than calling onConfigurationChanged. The companion
+        // tracker survives that recreation, so PHP still receives the change.
+        val currentOrientation = if (resources.configuration.orientation ==
+                Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
+        val previousOrientation = lastOrientation
+        lastOrientation = currentOrientation
+        if (previousOrientation != null && previousOrientation != currentOrientation) {
+            sendOrientationChanged(currentOrientation)
+        }
 
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -240,6 +263,14 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         phpBridge.isPersistentMode() && queueWorker == null) {
                         Log.d("MainActivity", "▶️ Starting deferred background queue worker")
                         queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    }
+
+                    // Async task lane (AsyncTask::dispatch()). Pool threads boot
+                    // their PHP context lazily on first task, so starting the
+                    // executor now costs nothing until work is dispatched.
+                    if (!isFinishing && !isDestroyed &&
+                        phpBridge.isPersistentMode() && asyncExecutor == null) {
+                        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                     }
                 }, WORKER_START_DELAY_MS)
 
@@ -461,6 +492,24 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 org.json.JSONObject().put("mode", mode).toString()
             )
         }
+
+        // Push when the app window's orientation changes. In multi-window mode
+        // this can differ from the physical device's orientation.
+        // Same guard as above: only emit when the orientation actually changed.
+        // Drives reactive System::orientation() / #[On(OrientationChanged)].
+        val orientation = if (newConfig.orientation ==
+                Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
+        if (orientation != lastOrientation) {
+            lastOrientation = orientation
+            sendOrientationChanged(orientation)
+        }
+    }
+
+    private fun sendOrientationChanged(orientation: String) {
+        NativeElementBridge.sendNativeEvent(
+            "Native\\Mobile\\Events\\System\\OrientationChanged",
+            org.json.JSONObject().put("orientation", orientation).toString()
+        )
     }
 
     @Suppress("DEPRECATION")
@@ -622,11 +671,18 @@ class MainActivity : FragmentActivity(), WebViewProvider {
      * and NativeRouter pushes the screen (same path as an in-app @tap navigate).
      * WebView/Inertia apps keep the direct loadUrl().
      */
-    private fun navigateWarm(route: String) {
+    private fun navigateWarm(route: String, externalUrl: String? = null) {
         if (NativeUIBridge.isActive.value) {
             val escaped = route.replace("\\", "\\\\").replace("\"", "\\\"")
+            // Carry the original https URL too. If PHP finds no route for the
+            // path it hands this straight back to the browser rather than
+            // dropping the user on a local 404.
+            val url = externalUrl
+                ?.replace("\\", "\\\\")?.replace("\"", "\\\"")
+                ?.let { ",\"url\":\"$it\"" }
+                ?: ""
             Log.d("DeepLink", "🚀 native-ui: dispatching __deeplink event: $route")
-            NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"}")
+            NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"$url}")
         } else {
             val fullUrl = "http://127.0.0.1$route"
             Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
@@ -713,11 +769,15 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
         }
 
+        // Only a real web URL can be handed back to the browser; a custom-scheme
+        // link (jump://…) has nowhere else to go.
+        val externalUrl = if (uri.scheme == "https" || uri.scheme == "http") uri.toString() else null
+
         Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
         pendingDeepLink = laravelUrl
         if (::laravelEnv.isInitialized && bootReady) {
             // Only navigate immediately once the boot pipeline is ready
-            navigateWarm(laravelUrl)
+            navigateWarm(laravelUrl, externalUrl)
         } else {
             Log.d("DeepLink", "⏳ Deep link saved, waiting for app initialization to complete")
         }
@@ -783,6 +843,9 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         // Stop background queue worker
         queueWorker?.stop()
+
+        // Stop async task lane
+        asyncExecutor?.stop()
     }
 
     override fun getWebView(): WebView {
@@ -792,6 +855,22 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     override fun getWebViewOrNull(): WebView? = webRenderer?.webView
+
+    /**
+     * Web delivery arm for device events (NativeElementBridge.WebEventSink).
+     * While an EDGE screen owns the UI its runloop already drains the queue,
+     * and injecting into the page behind it would deliver the same event a
+     * second time when that page returns. Skips when no WebView exists yet.
+     */
+    override fun onNativeEvent(eventName: String, payloadJson: String) {
+        runOnUiThread {
+            if (NativeUIBridge.isActive.value) return@runOnUiThread
+
+            webRenderer?.webView?.let {
+                NativeActionCoordinator.dispatchToWebView(it, eventName, payloadJson)
+            }
+        }
+    }
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -833,6 +912,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     private fun startHotReloadWatcher() {
+        // Debuggable builds only. native:watch delivers reloads through
+        // `adb shell run-as`, which can't reach a non-debuggable app, so a
+        // release build would poll the filesystem and disable WebView caching
+        // for nothing. Leaving hotReloadWatcherThread null also keeps
+        // onWebRendererCreated from applying LOAD_NO_CACHE.
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
+
         // Configure WebView for development - disable caching for hot reload.
         // On a native-first boot no renderer exists yet; onWebRendererCreated
         // applies the same mode when one appears.
@@ -924,11 +1010,19 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 // those itself.
                                 queueWorker?.stop()
 
+                                // Blocks until the async pool has drained: the
+                                // shutdown below destroys Zend state its live
+                                // contexts reference.
+                                if (asyncExecutor?.stop() == false) {
+                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
+                                }
+
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
 
-                                // Restart queue worker with fresh runtime
+                                // Restart queue worker + async lane with fresh runtime
                                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                                 Log.d("HotReload", "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms")
                             }
 
@@ -1007,11 +1101,19 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                 // if still active
                                 queueWorker?.stop()
 
+                                // Blocks until the async pool has drained: the
+                                // shutdown below destroys Zend state its live
+                                // contexts reference.
+                                if (asyncExecutor?.stop() == false) {
+                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
+                                }
+
                                 phpBridge.shutdownPersistentRuntime()
                                 phpBridge.bootPersistentRuntime()
 
-                                // Restart queue worker with fresh runtime
+                                // Restart queue worker + async lane with fresh runtime
                                 queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
 
                                 Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
                             }
