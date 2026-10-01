@@ -137,16 +137,41 @@ struct NativeTreeRenderer: View {
 /// the gesture layer, which decides whether a tap on an interactive
 /// element should also dismiss the keyboard (mobile-air #335).
 enum KeyboardFocusPolicy {
-    /// Set by the input renderers on every focus change, cleared on blur.
-    static var focusedFieldKeepsFocus = false
-
-    /// True while any text field holds focus, so press dispatch knows
-    /// a pending autocorrection or debounced change might be in play.
-    static var focusedFieldActive = false
+    /// Token for the field that owns the state below, nil when no field
+    /// is focused. When focus moves between two fields the old field's
+    /// blur can arrive after the new field's focus, so a blur only
+    /// clears the state when it comes from the current owner.
+    private static var focusedField: AnyHashable?
 
     /// Registered by the focused input; flushes its undispatched text
     /// change so PHP sees the field's latest value before a press.
-    static var flushFocusedField: (() -> Void)?
+    private static var flushFocusedField: (() -> Void)?
+
+    /// Whether the focused field opted into `keep-focus-on-submit`.
+    private(set) static var focusedFieldKeepsFocus = false
+
+    /// True while any text field holds focus, so press dispatch knows
+    /// a pending autocorrection or debounced change might be in play.
+    static var focusedFieldActive: Bool { focusedField != nil }
+
+    /// Called by an input when it gains focus. `field` identifies the
+    /// input and must be the same value it later passes to `fieldBlurred`.
+    static func fieldFocused(_ field: AnyHashable, keepsFocus: Bool, flush: @escaping () -> Void) {
+        focusedField = field
+        focusedFieldKeepsFocus = keepsFocus
+        flushFocusedField = flush
+    }
+
+    /// Called by an input when it blurs or leaves the screen. Ignored
+    /// unless `field` is the current owner, so a late blur from the
+    /// previous field cannot clear the state of the one that took over.
+    static func fieldBlurred(_ field: AnyHashable) {
+        guard focusedField == field else { return }
+
+        focusedField = nil
+        focusedFieldKeepsFocus = false
+        flushFocusedField = nil
+    }
 
     /// Dispatch a press event with focus handling around it: flush the
     /// focused field's pending change, resign unless the field keeps
