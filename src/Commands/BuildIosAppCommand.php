@@ -6,23 +6,23 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Native\Mobile\Concerns\ChecksLatestBuildNumber;
-use Native\Mobile\Concerns\CleansEnvFile;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAppIcon;
 use Native\Mobile\Concerns\InstallsSplashScreen;
 use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Exceptions\BundleStagingFailed;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
-use Native\Mobile\Support\BundleFileManager;
+use Native\Mobile\Support\LaravelBundleStager;
 
 use function Laravel\Prompts\error;
 
 class BuildIosAppCommand extends Command
 {
-    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
+    use ChecksLatestBuildNumber, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
 
     private bool $verbose;
 
@@ -41,6 +41,7 @@ class BuildIosAppCommand extends Command
     private int|string $buildNumber;
 
     protected $signature = 'native:build {--target=} {--release} {--simulated} {--no-tty} {--cleanup-provisioning-profile : Clean up CI provisioning profile settings}
+        {--staged-bundle= : Internal: archive this already-staged Laravel app instead of staging one (used by native:run both)}
         {--upload-to-app-store : Upload iOS app to App Store Connect after packaging}
         {--jump-by= : Add extra number to the suggested version (e.g. --jump-by=10 to skip ahead)}
         {--api-key= : Path to App Store Connect API key file (iOS)}
@@ -115,52 +116,54 @@ class BuildIosAppCommand extends Command
 
     protected function bundleLaravelApp(): void
     {
-        @mkdir($this->appPath, 0755, true);
-
-        $this->components->task('Copying Laravel app', fn () => BundleFileManager::copy(
-            base_path(),
-            $this->appPath,
-            config('nativephp.cleanup_exclude_files', [])
-        ));
-
-        // Set ASSET_URL in .env
-        file_put_contents($this->appPath.'.env', PHP_EOL.'ASSET_URL="/_assets"'.PHP_EOL, FILE_APPEND);
-
-        $this->components->task('Installing Composer dependencies', function () {
-            $result = Process::path($this->appPath)
-                ->forever()
-                ->run([
-                    'composer',
-                    'install',
-                    ...($this->option('release') ? ['--no-dev'] : []),
-                ], function ($type, $output) {
-                    file_put_contents($this->logPath, $output, FILE_APPEND);
-
-                    if ($this->verbose) {
-                        $this->output->write($output);
-                    }
-                });
-
-            if (! $result->successful()) {
-                $errorOutput = $result->errorOutput();
-                if ($errorOutput) {
-                    file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
-                }
-
-                error('Composer install failed. Check your dependencies and try again.');
-                file_put_contents($this->logPath, 'ERROR: composer install failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
+        // native:run both stages the app once and hands the same tree to the
+        // iOS and Android builds. It belongs to that run, so only read it.
+        if ($staged = $this->option('staged-bundle')) {
+            if (! is_file(rtrim($staged, '/').'/vendor/autoload.php')) {
+                error("No staged Laravel bundle at [{$staged}].");
                 exit(1);
             }
 
-            return true;
-        });
+            $this->components->twoColumnDetail('Laravel app', 'Using staged bundle');
+            $this->createAppZip($staged);
 
-        $this->components->task('Removing unnecessary files', fn () => BundleFileManager::removeUnnecessaryFiles(
-            $this->appPath,
-            config('nativephp.cleanup_exclude_files', [])
-        ));
-        $this->cleanEnvFile($this->appPath.'.env');
-        $this->createAppZip();
+            return;
+        }
+
+        $stager = new LaravelBundleStager(
+            source: base_path(),
+            path: $this->appPath,
+            includeDevDependencies: ! $this->option('release'),
+            excludes: config('nativephp.cleanup_exclude_files', []),
+            task: fn (string $title, callable $callback) => $this->components->task($title, $callback),
+            log: fn (string $output) => $this->logOutput($output),
+        );
+
+        try {
+            $stager->stage();
+        } catch (BundleStagingFailed $e) {
+            error($e->getMessage());
+            exit(1);
+        }
+
+        try {
+            $this->createAppZip($this->appPath);
+        } finally {
+            File::deleteDirectory($this->appPath);
+        }
+    }
+
+    private function logOutput(string $output): void
+    {
+        if ($output === '') {
+            return;
+        }
+
+        file_put_contents($this->logPath, rtrim($output, "\n").PHP_EOL, FILE_APPEND);
+
+        if ($this->verbose) {
+            $this->output->writeln(rtrim($output, "\n"));
+        }
     }
 
     private function configureXcodeProject(): bool
@@ -878,7 +881,14 @@ class BuildIosAppCommand extends Command
         return 'development';
     }
 
-    private function createAppZip(): void
+    /**
+     * Archive a staged Laravel app into the Xcode project's app.zip.
+     *
+     * The staged tree is never modified: native:run both archives the same
+     * tree for Android at the same time. iOS's own addition to .env
+     * (ASSET_URL) is added to the archive instead of the tree.
+     */
+    protected function createAppZip(string $stagedPath): void
     {
         $zipPath = $this->containerPath.'app.zip';
 
@@ -887,8 +897,7 @@ class BuildIosAppCommand extends Command
             unlink($zipPath);
         }
 
-        // Create ZIP from the prepared app directory
-        $escapedAppPath = escapeshellarg($this->appPath);
+        $escapedAppPath = escapeshellarg(rtrim($stagedPath, '/'));
         $escapedZipPath = escapeshellarg($zipPath);
 
         // Build-time-only artifacts that don't belong in the runtime bundle —
@@ -898,7 +907,8 @@ class BuildIosAppCommand extends Command
         // reads. The `vendor/*/vendor/...` glob also drops nested duplicates
         // that slip in when a plugin ships its own vendor/ dir. In `zip`'s
         // matcher `*` spans `/`, so each prefix excludes the whole subtree.
-        $excludes = "-x '*.DS_Store' '*/.*'"
+        // The root .env is left out here and added below with ASSET_URL.
+        $excludes = "-x '*.DS_Store' '*/.*' '.env'"
             ." 'vendor/nativephp/mobile/resources/*'"
             ." 'vendor/*/vendor/nativephp/mobile/resources/*'"
             ." 'vendor/nativephp/mobile/vendor/*'"
@@ -907,8 +917,37 @@ class BuildIosAppCommand extends Command
         // -9 max compression for release; -0 (stored) in debug for faster
         // build + boot at the cost of on-disk size.
         $level = $this->option('release') ? '-9' : '-0';
-        $command = "cd {$escapedAppPath} && zip {$level} -r {$escapedZipPath} . {$excludes}";
 
+        $this->runZip("cd {$escapedAppPath} && zip {$level} -r {$escapedZipPath} . {$excludes}");
+
+        // -g appends to the archive in place rather than rewriting it.
+        $overlay = sys_get_temp_dir().'/nativephp-ios-env-'.uniqid();
+        File::ensureDirectoryExists($overlay);
+
+        try {
+            file_put_contents($overlay.'/.env', $this->iosEnvContents($stagedPath));
+
+            $this->runZip('cd '.escapeshellarg($overlay)." && zip -g {$level} {$escapedZipPath} .env");
+        } finally {
+            File::deleteDirectory($overlay);
+        }
+
+        $this->createBundledVersionFile($zipPath);
+    }
+
+    /**
+     * The staged .env with iOS's ASSET_URL added.
+     */
+    protected function iosEnvContents(string $stagedPath): string
+    {
+        $env = rtrim($stagedPath, '/').'/.env';
+        $contents = file_exists($env) ? rtrim(file_get_contents($env)) : '';
+
+        return ltrim($contents."\n".'ASSET_URL="/_assets"', "\n");
+    }
+
+    private function runZip(string $command): void
+    {
         $result = Process::run($command);
 
         if (! $result->successful()) {
@@ -916,10 +955,6 @@ class BuildIosAppCommand extends Command
 
             throw new \Exception('Failed to create ZIP file: '.($error ?: 'exit code '.$result->exitCode()));
         }
-
-        $this->createBundledVersionFile($zipPath);
-
-        Process::run("rm -rf {$escapedAppPath}");
     }
 
     private function createBundledVersionFile(string $zipPath): void
