@@ -513,6 +513,19 @@ it('parses arbitrary gap and dimensions', function () {
     expect(TailwindParser::parse('h-[100]'))->toBe(['height' => 100.0]);
 });
 
+it('parses arbitrary percent width and height like fractions', function () {
+    expect(TailwindParser::parse('w-[92%]'))->toBe(['width' => '92%']);
+    expect(TailwindParser::parse('h-[50%]'))->toBe(['height' => '50%']);
+    expect(TailwindParser::parse('w-[33.5%]'))->toBe(['width' => '33.5%']);
+});
+
+it('drops arbitrary percent min/max sizes instead of reading them as points', function () {
+    expect(TailwindParser::parse('max-w-[92%]'))->toBe([]);
+    expect(TailwindParser::parse('min-w-[10%]'))->toBe([]);
+    expect(TailwindParser::parse('max-h-[50%]'))->toBe([]);
+    expect(TailwindParser::parse('min-h-[20%]'))->toBe([]);
+});
+
 it('parses arbitrary colors', function () {
     expect(TailwindParser::parse('bg-[#FF5733]'))->toBe(['bg' => '#FF5733']);
     expect(TailwindParser::parse('text-[#333]'))->toBe(['color' => '#333333']);
