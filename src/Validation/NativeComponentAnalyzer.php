@@ -213,6 +213,12 @@ class NativeComponentAnalyzer
             if (preg_match('/\$this\s*->\s*view\s*\(\s*[\'"]([^\'"]+)[\'"]/', $methodBody, $matches)) {
                 return $matches[1];
             }
+
+            // Match the view('native.name') helper, which the starter kit
+            // and native:make use. Names are kept relative to native/.
+            if (preg_match('/(?<![\w>:])view\s*\(\s*[\'"]native\.([^\'"]+)[\'"]/', $methodBody, $matches)) {
+                return $matches[1];
+            }
         } catch (\ReflectionException $e) {
             // Fall through
         }
