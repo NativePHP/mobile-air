@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge\Layouts\Builders;
 
+use InvalidArgumentException;
 use Native\Mobile\Concerns\HasPlatformIcon;
 use Native\Mobile\Edge\Elements\BottomNavItem;
 use Native\Mobile\Icon\AndroidSymbol;
@@ -32,6 +33,7 @@ use Native\Mobile\Icon\IosSymbol;
  *   Tab::link('Messages', '/syncup-native',
  *       ios: Ios::BubbleLeft, android: Android::ChatBubble)
  *   Tab::search('Search', icon: 'search', placeholder: '…')
+ *   Tab::link('Create', '/create', icon: 'add')->raised()
  *
  * All three icon slots are nullable so each call site picks the
  * combination it needs. The string `icon:` is the cross-platform
@@ -67,6 +69,8 @@ class Tab
     private ?array $searchItems = null;
 
     private ?string $pressMethod = null;
+
+    private ?RaisedTab $raised = null;
 
     private function __construct(string $id, string $label, string $url)
     {
@@ -191,6 +195,42 @@ class Tab
         return $this;
     }
 
+    /**
+     * Raise this tab out of the bar as a floating disc — the centre
+     * "create" button pattern. The tab stays a real tab (label, badge,
+     * selection, tap handling); the disc draws its icon and taps through
+     * to it. Pass a {@see RaisedTab} to style the disc, or `false` to
+     * lower a tab raised earlier in the chain.
+     *
+     *   Tab::link('Create', '/create', icon: 'add')->raised()
+     *   Tab::link('Create', '/create', icon: 'add')->raised(
+     *       RaisedTab::make()->size(56)->gradient('#3FBFA0', '#17977F')
+     *   )
+     *
+     * Drawn by the native tab chrome (`usesNativeChrome()` layouts and
+     * inline `<native:bottom-nav>`). A search tab can't be raised: iOS 26
+     * moves it into its own capsule, away from the bar.
+     */
+    public function raised(RaisedTab|bool $raised = true): self
+    {
+        if ($raised !== false && $this->search) {
+            throw new InvalidArgumentException("Tab [{$this->id}] is a search tab, which can't be raised.");
+        }
+
+        $this->raised = match (true) {
+            $raised === true => RaisedTab::make(),
+            $raised === false => null,
+            default => $raised,
+        };
+
+        return $this;
+    }
+
+    public function isRaised(): bool
+    {
+        return $this->raised !== null;
+    }
+
     public function getUrl(): string
     {
         return $this->url;
@@ -282,6 +322,10 @@ class Tab
         // is already attached, so this cleanly overrides the default.
         if ($this->pressMethod !== null) {
             $item->onPress($this->pressMethod);
+        }
+
+        if ($this->raised !== null) {
+            $item->setRaised($this->raised);
         }
 
         return $item;

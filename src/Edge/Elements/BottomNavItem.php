@@ -2,8 +2,10 @@
 
 namespace Native\Mobile\Edge\Elements;
 
+use InvalidArgumentException;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\Layouts\Builders\RaisedTab;
 use Native\Mobile\Icon\AndroidSymbol;
 use Native\Mobile\Icon\IconResolver;
 use Native\Mobile\Icon\IosSymbol;
@@ -37,6 +39,13 @@ class BottomNavItem extends Element
      * @var list<mixed>|null
      */
     private ?array $rawSearchItems = null;
+
+    /**
+     * Disc style when this tab is raised out of the bar (`Tab::raised()`,
+     * or `raised` / `raised-*` attributes on `<native:bottom-nav-item>`).
+     * Merged into the props as `raised` + `raised_*` at serialization.
+     */
+    private ?RaisedTab $raised = null;
 
     public static function make(): static
     {
@@ -95,6 +104,37 @@ class BottomNavItem extends Element
         if (isset($attrs['search_debounce_ms'])) {
             $this->props['search_debounce_ms'] = (int) $attrs['search_debounce_ms'];
         }
+
+        // Raised tab: a bare `raised` (or `:raised="$cond"`) and/or any
+        // `raised-*` style attribute. Style attributes imply `raised`
+        // unless it's explicitly false. Parsed through the builder so the
+        // blade path gets the same validation as `Tab::raised()`.
+        $raisedFlag = $attrs['raised'] ?? null;
+        $hasRaisedStyle = RaisedTab::hasStyleAttributes($attrs);
+        if ($raisedFlag !== null || $hasRaisedStyle) {
+            $isRaised = $raisedFlag === null || filter_var($raisedFlag, FILTER_VALIDATE_BOOLEAN);
+            $this->setRaised($isRaised ? RaisedTab::fromAttributes($attrs) : null);
+        }
+    }
+
+    /**
+     * Raise this tab out of the bar as a disc, or lower it with null.
+     * Search tabs can't be raised.
+     */
+    public function setRaised(?RaisedTab $raised): static
+    {
+        if ($raised !== null && $this->isSearchTab()) {
+            throw new InvalidArgumentException('A search tab ['.($this->props['id'] ?? '').'] can\'t be raised.');
+        }
+
+        $this->raised = $raised;
+
+        return $this;
+    }
+
+    public function isRaised(): bool
+    {
+        return $this->raised !== null;
     }
 
     public function isSearchTab(): bool
@@ -194,6 +234,12 @@ class BottomNavItem extends Element
                 'data' => [],
                 'transition' => 'none',
             ]);
+        }
+
+        // Raised tab style (`raised` + `raised_*`), merged on the way out
+        // rather than into $this->props so re-serializing stays idempotent.
+        if ($this->raised !== null && ! $this->isSearchTab()) {
+            return [...$this->props, ...$this->raised->toProps()];
         }
 
         return $this->props;
