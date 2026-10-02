@@ -119,7 +119,10 @@ trait RunsAndroid
         $cleanCache = $this->buildType !== 'debug';
         $excludeDevDependencies = $this->buildType !== 'debug';
 
-        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies);
+        // Reuse the staged app and skip unchanged steps unless asked not to
+        $reuseUnchanged = ! ($this->hasOption('fresh') && $this->input->getOption('fresh'));
+
+        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies, $reuseUnchanged);
 
         if (! $this->compileAndroidPlugins()) {
             return false;
