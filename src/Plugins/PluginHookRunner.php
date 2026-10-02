@@ -18,6 +18,8 @@ class PluginHookRunner
 
     public const HOOK_POST_BUILD = 'post_build';
 
+    public const HOOK_PREPARE_BUNDLE = 'prepare_bundle';
+
     protected string $platform;
 
     protected string $buildPath;
@@ -58,8 +60,10 @@ class PluginHookRunner
 
     /**
      * Run a specific hook for a single plugin
+     *
+     * @param  array<string, string>  $extraOptions  Additional options passed to the hook command
      */
-    public function runPluginHook(Plugin $plugin, string $hookName): void
+    public function runPluginHook(Plugin $plugin, string $hookName, array $extraOptions = []): void
     {
         $hooks = $plugin->getHooks();
 
@@ -78,6 +82,7 @@ class PluginHookRunner
             $exitCode = Artisan::call($command, [
                 '--platform' => $this->platform,
                 '--build-path' => $this->buildPath,
+                ...$extraOptions,
                 '--plugin-path' => $plugin->path,
                 '--app-id' => $this->appId,
                 '--config' => json_encode($this->config),
@@ -132,6 +137,19 @@ class PluginHookRunner
             } catch (\Throwable $e) {
                 $this->warn("⚠️  {$e->getMessage()}");
             }
+        }
+    }
+
+    /**
+     * Run prepare-bundle hooks for all plugins.
+     *
+     * A plugin may use this hook to modify the Laravel staging tree in place
+     * before it is archived, so it also receives the staging tree's path.
+     */
+    public function runPrepareBundleHooks(string $bundlePath): void
+    {
+        foreach ($this->plugins as $plugin) {
+            $this->runPluginHook($plugin, self::HOOK_PREPARE_BUNDLE, ['--bundle-path' => $bundlePath]);
         }
     }
 
