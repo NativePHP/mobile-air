@@ -44,6 +44,12 @@ object NavigationCoordinator {
     private var lastProcessedNode: NativeUINode? = null
 
     /**
+     * PHP router stack depth when this stack session's root was seeded.
+     * Absolute depth from PHP maps to a path length as `depth - rootDepth`.
+     */
+    private var rootDepth: Int = 1
+
+    /**
      * Update the per-URI cache only. Safe to call from inside a Compose
      * composition since `rootNodeCache` is observable but writing it
      * during composition (when the value didn't change) is a no-op
@@ -58,7 +64,7 @@ object NavigationCoordinator {
      * Called whenever PHP publishes a new `native_root_stack` tree.
      * Reconciles the stack with the published URI (push / pop / no-op).
      */
-    fun receive(uri: String, rootNode: NativeUINode) {
+    fun receive(uri: String, depth: Int = 0, rootNode: NativeUINode) {
         if (uri.isEmpty()) return
 
         // Always cache the latest content for this URI.
@@ -77,9 +83,20 @@ object NavigationCoordinator {
         // Seed: very first publish for this stack — establish the root.
         if (rootUri.value == null) {
             rootUri.value = uri
+            rootDepth = if (depth > 0) depth else 1
             phpSnapshot = emptyList()
             return
         }
+
+        // Depth-authoritative reconciliation — distinguishes pushing a NEW
+        // level whose URI already exists lower on the stack (a revisit)
+        // from popping back to it; URI membership alone cannot.
+        if (depth > 0) {
+            receiveByDepth(uri, depth)
+            return
+        }
+
+        // ── Legacy URI-based reconciliation (no stack_depth prop) ──
 
         // Re-render of root (PHP popped all the way back, or pure state
         // change at root). Clear any pushed levels.
@@ -112,6 +129,59 @@ object NavigationCoordinator {
         // New URI — push.
         phpSnapshot = path.toList() + uri
         path.add(uri)
+        evictStaleCacheEntries()
+    }
+
+    /**
+     * Depth-authoritative reconciliation. `target` is the number of
+     * pushed levels this publish implies above the stack session's root.
+     * Mirrors the iOS NavigationCoordinator.receiveByDepth.
+     */
+    private fun receiveByDepth(uri: String, depth: Int) {
+        val target = depth - rootDepth
+
+        // At (or somehow below) the session root — re-root and clear.
+        if (target <= 0) {
+            rootUri.value = uri
+            rootDepth = depth
+            if (path.isNotEmpty()) {
+                path.clear()
+            }
+            phpSnapshot = path.toList()
+            evictStaleCacheEntries()
+            return
+        }
+
+        // State-change republish of the current top — no path mutation.
+        if (path.size == target && path.lastOrNull() == uri) {
+            phpSnapshot = path.toList()
+            return
+        }
+
+        val next = path.toMutableList()
+        if (next.size > target) {
+            // Popped one or more levels.
+            while (next.size > target) {
+                next.removeAt(next.lastIndex)
+            }
+            if (next.lastOrNull() != uri) {
+                // replace() landed at this level with a different URI.
+                next[target - 1] = uri
+            }
+        } else if (next.size == target) {
+            // Same level, different URI — replace() semantics.
+            next[target - 1] = uri
+        } else {
+            // Pushed. Normally one level; backfill defensively if PHP
+            // skipped levels.
+            while (next.size < target - 1) {
+                next.add(uri)
+            }
+            next.add(uri)
+        }
+        phpSnapshot = next.toList()
+        path.clear()
+        path.addAll(next)
         evictStaleCacheEntries()
     }
 
@@ -161,6 +231,7 @@ object NavigationCoordinator {
      */
     fun reset() {
         rootUri.value = null
+        rootDepth = 1
         path.clear()
         phpSnapshot = emptyList()
         rootNodeCache.clear()

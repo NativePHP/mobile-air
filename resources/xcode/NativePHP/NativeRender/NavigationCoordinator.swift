@@ -32,6 +32,13 @@ final class NavigationCoordinator: ObservableObject {
     /// renderer detects a fresh stack (different layout / cold remount).
     private(set) var rootUri: String?
 
+    /// PHP router stack depth at the moment this stack session's root was
+    /// seeded. A stack session can start on an already-pushed PHP level
+    /// (e.g. a detail screen pushed from a tabs layout cold-mounts its own
+    /// NavigationStack), so absolute depth from PHP is translated to a
+    /// path length as `depth - rootDepth`.
+    private var rootDepth: Int = 1
+
     /// Most-recent rendered tree per URI (root and pushed levels). Used
     /// by the renderer's destination resolver so each stack level can
     /// render its actual content during transitions.
@@ -62,7 +69,16 @@ final class NavigationCoordinator: ObservableObject {
     /// `native_root_stack` tree. Reconciles the stack with the published
     /// URI (push / pop / no-op). Cache is updated separately via
     /// `cache(uri:node:)` synchronously in body.
-    func receive(uri: String, rootNode: NativeUINode) {
+    ///
+    /// `depth` is the PHP router's stack depth for this publish
+    /// (`stack_depth` prop; 0 when the runtime predates it). Depth-based
+    /// reconciliation is authoritative: it distinguishes "PHP pushed a
+    /// NEW level whose URI already exists lower in the stack" (a revisit
+    /// like A → B → A) from "PHP popped back to
+    /// that level" — URI membership alone cannot, and misreading a
+    /// revisit as a pop trims the path and animates a back-slide while
+    /// PHP's stack keeps growing, desyncing the two stacks entirely.
+    func receive(uri: String, depth: Int = 0, rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
         // Always cache the latest content for this URI.
@@ -93,9 +109,17 @@ final class NavigationCoordinator: ObservableObject {
         // Seed: very first publish for this stack — establish the root.
         if rootUri == nil {
             rootUri = uri
+            rootDepth = depth > 0 ? depth : 1
             phpSnapshot = []
             return
         }
+
+        if depth > 0 {
+            receiveByDepth(uri: uri, depth: depth)
+            return
+        }
+
+        // ── Legacy URI-based reconciliation (no stack_depth prop) ──
 
         // Re-render of root (PHP popped all the way back, or pure state
         // change at root). Clear any pushed levels.
@@ -127,6 +151,54 @@ final class NavigationCoordinator: ObservableObject {
         let nextPath = path + [uri]
         phpSnapshot = nextPath
         path = nextPath
+        scheduleEviction()
+    }
+
+    /// Depth-authoritative reconciliation. `target` is the number of
+    /// pushed levels this publish implies above the stack session's root.
+    private func receiveByDepth(uri: String, depth: Int) {
+        let target = depth - rootDepth
+
+        // At (or somehow below) the session root — re-root and clear.
+        if target <= 0 {
+            rootUri = uri
+            rootDepth = depth
+            if !path.isEmpty {
+                path = []
+            }
+            phpSnapshot = path
+            scheduleEviction()
+            return
+        }
+
+        // State-change republish of the current top — no path mutation.
+        if path.count == target, path.last == uri {
+            phpSnapshot = path
+            return
+        }
+
+        var next = path
+        if next.count > target {
+            // Popped one or more levels.
+            next = Array(next.prefix(target))
+            if next.last != uri {
+                // replace() landed at this level with a different URI.
+                next[target - 1] = uri
+            }
+        } else if next.count == target {
+            // Same level, different URI — replace() semantics.
+            next[target - 1] = uri
+        } else {
+            // Pushed. Normally one level; backfill defensively if PHP
+            // skipped levels (each backfilled entry renders from the same
+            // cached URI until its own publish lands).
+            while next.count < target - 1 {
+                next.append(uri)
+            }
+            next.append(uri)
+        }
+        phpSnapshot = next
+        path = next
         scheduleEviction()
     }
 
@@ -187,6 +259,7 @@ final class NavigationCoordinator: ObservableObject {
     /// first URI as a push on top of the previous session's stale root.
     func reset() {
         rootUri = nil
+        rootDepth = 1
         path = []
         phpSnapshot = []
         rootNodeCache = [:]
