@@ -96,7 +96,14 @@ struct NodeAnimationModifier: ViewModifier {
             .rotationEffect(.degrees(appliedRotate))
             .offset(x: appliedTx, y: appliedTy)
             .animation(animate ? anim : nil, value: snapshot)
-            .onAppear { if loop && !loopActive { loopActive = true } }
+            .onAppear {
+                // start the loop outside the insertion
+                // transaction, with the loop animation made explicit.
+                guard loop, !loopActive else { return }
+                DispatchQueue.main.async {
+                    withAnimation(anim) { loopActive = true }
+                }
+            }
 
         return AnyView(view)
     }
