@@ -21,12 +21,30 @@ final class PerTabNavigationCoordinator: ObservableObject {
     @Published var path: [String] = []
 
     /// Most-recent rendered tree per URI for this tab (root + pushed).
-    /// `@Published` so `PerTabContent` recomposes when the cache fills
-    /// in for an inactive tab — without it, sibling tabs stay at their
-    /// `Color.clear` cache-miss fallback even after their own content
-    /// has been published, since `path` (the only other observable)
-    /// hasn't changed for the cache-only update.
-    @Published var rootNodeCache: [String: NativeUINode] = [:]
+    /// Plain storage, NOT `@Published`. The tabs
+    /// renderer fills it from inside `body` (`cache(uri:node:)`), and a
+    /// published write there is "Publishing changes from within view
+    /// updates" — undefined behaviour that SwiftUI logged as a fault on
+    /// every tab-root publish. Observers still recompose when the cache fills
+    /// in for an inactive tab (sibling tabs would otherwise stay at their
+    /// `Color.clear` cache-miss fallback): every write bumps
+    /// `cacheGeneration` on the next main-queue turn, outside the update.
+    private var nodeCache: [String: NativeUINode] = [:]
+
+    @Published private(set) var cacheGeneration: Int = 0
+
+    var rootNodeCache: [String: NativeUINode] { nodeCache }
+
+    private func storeNode(_ node: NativeUINode?, for uri: String) {
+        if let node {
+            nodeCache[uri] = node
+        } else {
+            nodeCache.removeValue(forKey: uri)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.cacheGeneration &+= 1
+        }
+    }
 
     /// Snapshot of `path` immediately after each PHP-driven mutation.
     /// `onPathChange` compares against this to differentiate PHP changes
@@ -43,10 +61,11 @@ final class PerTabNavigationCoordinator: ObservableObject {
     }
 
     /// Synchronously update the cache for this URI. Safe to call during
-    /// a SwiftUI `body` evaluation since the cache isn't @Published.
+    /// a SwiftUI `body` evaluation: the store is plain and the
+    /// recompose trigger is deferred.
     func cache(uri: String, node: NativeUINode) {
         guard !uri.isEmpty else { return }
-        rootNodeCache[uri] = node
+        storeNode(node, for: uri)
     }
 
     /// Reconcile this tab's path with a PHP publish whose `currentUri`
@@ -54,7 +73,7 @@ final class PerTabNavigationCoordinator: ObservableObject {
     func receive(uri: String, rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
-        rootNodeCache[uri] = rootNode
+        storeNode(rootNode, for: uri)
 
         if lastProcessedNode === rootNode {
             return
@@ -128,8 +147,8 @@ final class PerTabNavigationCoordinator: ObservableObject {
     private func evictStaleCacheEntries() {
         var live = Set(path)
         live.insert(rootUri)
-        for uri in rootNodeCache.keys where !live.contains(uri) {
-            rootNodeCache.removeValue(forKey: uri)
+        for uri in nodeCache.keys where !live.contains(uri) {
+            storeNode(nil, for: uri)
         }
     }
 }
