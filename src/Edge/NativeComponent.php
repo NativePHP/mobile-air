@@ -127,6 +127,13 @@ abstract class NativeComponent
     private array $nativePendingComponentEvents = [];
 
     /** @var list<array{name: string, params: array, self?: bool, component?: string}> */
+    /**
+     * How many dispatched events are kept for test assertions. The list is
+     * only ever read by TestableComponent's assertDispatched(), which looks for
+     * one specific dispatch — never the whole history — so a window is enough.
+     */
+    private const MAX_RECORDED_DISPATCHES = 500;
+
     private array $nativeDispatchedComponentEvents = [];
 
     private bool $nativeFlushingComponentEvents = false;
@@ -1616,10 +1623,31 @@ abstract class NativeComponent
      * (block indefinitely) when there are no polls (class #[Poll] or Blade
      * native:poll); otherwise the time until the soonest-due timer,
      * floored at 1ms.
+     *
+     * One exception comes first. While the error screen is up, runDuePolls()
+     * is deliberately skipped (see the runloop) so a throwing callback cannot
+     * repaint the overlay on every tick. Nothing then advances the poll
+     * deadlines, so they all sit permanently in the past — and the floor below
+     * hands back 1ms, forever. On any screen with a poll that was ~1000
+     * wake-ups a second, for as long as the overlay showed, to do nothing at
+     * all. Block instead: everything the overlay needs — its own controls, hot
+     * reload, shutdown — arrives as an event, which is already how a screen
+     * with no polls at all behaves.
      */
     private function nextEventTimeout(): int
     {
-        $deadlines = array_map(fn ($def) => $def['next'], $this->pollDefinitions());
+        // Prime the timers before the early exit: a screen whose mount() or
+        // first render failed enters the loop with nativeHasError already set,
+        // and returning without priming would stamp the deadlines only once the
+        // user dismisses the overlay — so a #[Poll(30000)] that IS that
+        // screen's refresh would idle another 30s after recovery.
+        $definitions = $this->pollDefinitions();
+
+        if ($this->nativeHasError) {
+            return -1;
+        }
+
+        $deadlines = array_map(fn ($def) => $def['next'], $definitions);
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
         }
@@ -1628,7 +1656,25 @@ abstract class NativeComponent
             return -1;
         }
 
-        return max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
+        $soonest = min($deadlines);
+        $now = microtime(true) * 1000;
+
+        // Already due: run it now rather than sleeping first. The 1ms floor was
+        // applied even to a deadline that had already passed — so a screen whose
+        // frame costs 5ms and asked for a 1ms poll, already 4ms behind before it
+        // starts, got another millisecond of sleep in front of the work it was
+        // late for. Only screens polling faster than they can render were ever
+        // affected; a 1-second poll on a 4ms frame is never late.
+        //
+        // This cannot spin without doing work: every pass renders and publishes,
+        // and runDuePolls() advances both the #[Poll] deadlines and the Blade
+        // native:poll ones past `now` on the same pass, using this same
+        // comparison — so a deadline reported due here is one that pass services.
+        if ($soonest <= $now) {
+            return 0;
+        }
+
+        return max(1, (int) ceil($soonest - $now));
     }
 
     /**
@@ -2697,22 +2743,26 @@ abstract class NativeComponent
 
             if (! $this->nativeHasError) {
                 try {
-                    $t0 = microtime(true);
+                    // Resolved once per tick: when the edge-nav log is off, the
+                    // PERF sprintf() is skipped along with the write.
+                    $perf = NativeRouter::debugLoggingEnabled();
+                    $t0 = $perf ? microtime(true) : 0.0;
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
                         $this->nativeRouter?->flushDeferredTransition();
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] streaming total=%.1fms',
-                            static::class, ($t3 - $t0) * 1000
-                        ));
+                        if ($perf) {
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] streaming total=%.1fms',
+                                static::class, (microtime(true) - $t0) * 1000
+                            ));
+                        }
                     } else {
                         $element = $this->renderToElement();
 
-                        $t1 = microtime(true);
+                        $t1 = $perf ? microtime(true) : 0.0;
                         $tree = $this->memoizedToArray($element);
-                        $t2 = microtime(true);
+                        $t2 = $perf ? microtime(true) : 0.0;
 
                         $this->nativeRouter?->flushDeferredTransition();
 
@@ -2721,12 +2771,14 @@ abstract class NativeComponent
                             $tree, $this->nativeRouter?->currentUri() ?? '/'
                         );
 
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
-                            static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                            ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
-                        ));
+                        if ($perf) {
+                            $t3 = microtime(true);
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
+                                static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
+                                ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
+                            ));
+                        }
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
@@ -3787,6 +3839,16 @@ abstract class NativeComponent
                 $event = $queued['event'];
 
                 $this->nativeDispatchedComponentEvents[] = $event->serialize();
+
+                // Nothing ever cleared this, and a native screen holds one PHP
+                // request open for its whole life — so on a screen somebody
+                // leaves open it is every payload ever delivered, held for
+                // hours. A #[Poll(1)] dispatching once a tick reaches it in
+                // minutes. Keep a bounded window instead.
+                if (count($this->nativeDispatchedComponentEvents) > self::MAX_RECORDED_DISPATCHES) {
+                    array_shift($this->nativeDispatchedComponentEvents);
+                }
+
                 $this->deliverComponentEvent($source, $event);
             }
         } finally {
