@@ -33,6 +33,7 @@ use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunAsyncTaskCommand;
 use Native\Mobile\Commands\RunCommand;
+use Native\Mobile\Commands\ScreenshotCommand;
 use Native\Mobile\Commands\SimCommand;
 use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
@@ -84,6 +85,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
                 SimCommand::class,
+                ScreenshotCommand::class,
                 ReleaseCommand::class,
                 JumpCommand::class,
                 WatchCommand::class,
