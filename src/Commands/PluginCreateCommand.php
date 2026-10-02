@@ -1226,6 +1226,7 @@ PHP;
                     'android_renderer' => $kotlinPackage.'.ui.'.$namespace.'Renderer',
                     'ios_renderer' => $namespace.'Renderer',
                     'self_closing' => true,
+                    'element_events' => [],
                 ],
             ],
 

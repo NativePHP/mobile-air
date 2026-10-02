@@ -272,6 +272,22 @@ class PluginManifest implements JsonSerializable
                     "Component '{$component['type']}' missing platform renderer (android_renderer or ios_renderer)"
                 );
             }
+
+            if (isset($component['element_events'])) {
+                if (! is_array($component['element_events'])) {
+                    throw new InvalidArgumentException(
+                        "Component '{$component['type']}' field 'element_events' must be an array of strings"
+                    );
+                }
+
+                foreach ($component['element_events'] as $event) {
+                    if (! is_string($event) || ! preg_match('/^[a-zA-Z][a-zA-Z0-9_-]*$/', $event)) {
+                        throw new InvalidArgumentException(
+                            "Component '{$component['type']}' has invalid element_events name"
+                        );
+                    }
+                }
+            }
         }
     }
 
