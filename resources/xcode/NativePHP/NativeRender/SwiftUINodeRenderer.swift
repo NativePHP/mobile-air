@@ -15,6 +15,12 @@ private struct AvailableWidthKey: EnvironmentKey {
 private struct AvailableHeightKey: EnvironmentKey {
     static let defaultValue: CGFloat = 844
 }
+/// Width of the app's window (not the screen — a Split View pane is a
+/// window), published from the tree root so every `NodeView` can resolve
+/// responsive variants against it. 0 until the first layout pass.
+private struct WindowWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
 
 extension EnvironmentValues {
     var nativeSafeAreaTop: CGFloat {
@@ -33,6 +39,10 @@ extension EnvironmentValues {
         get { self[AvailableHeightKey.self] }
         set { self[AvailableHeightKey.self] = newValue }
     }
+    var windowWidth: CGFloat {
+        get { self[WindowWidthKey.self] }
+        set { self[WindowWidthKey.self] = newValue }
+    }
 }
 
 // MARK: - Root Renderer
@@ -41,7 +51,26 @@ extension EnvironmentValues {
 struct NativeTreeRenderer: View {
     let tree: NativeUITree
 
+    /// Live window width for responsive (`md:` / `lg:`) variants. Tracked
+    /// here — the one ancestor every root shape shares — rather than in
+    /// the per-root GeometryReader so native-chrome roots (tabs / stack)
+    /// re-flow on rotation and Split View too.
+    @State private var windowWidth: CGFloat = 0
+
     var body: some View {
+        rootWithHosts
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                // Flex measurements cached at the old width would place
+                // children at stale sizes — see `measurementGeneration`.
+                if windowWidth > 0 && width != windowWidth {
+                    FlexContainer.measurementGeneration &+= 1
+                }
+                windowWidth = width
+            }
+            .environment(\.windowWidth, windowWidth)
+    }
+
+    private var rootWithHosts: some View {
         // Fold any plugin-registered root hosts (side drawers, global overlays,
         // …) around the rendered tree. A host pulls its own sentinel child out
         // of `tree.root` and renders nothing when absent. When no hosts are
@@ -103,6 +132,108 @@ struct NativeTreeRenderer: View {
 
 // MARK: - Tap-to-dismiss Keyboard
 
+/// Focus policy shared between the text-input renderers, which know
+/// whether the focused field opted into `keep-focus-on-submit`, and
+/// the gesture layer, which decides whether a tap on an interactive
+/// element should also dismiss the keyboard (mobile-air #335).
+enum KeyboardFocusPolicy {
+    /// Token for the field that owns the state below, nil when no field
+    /// is focused. When focus moves between two fields the old field's
+    /// blur can arrive after the new field's focus, so a blur only
+    /// clears the state when it comes from the current owner.
+    private static var focusedField: AnyHashable?
+
+    /// Registered by the focused input; flushes its undispatched text
+    /// change so PHP sees the field's latest value before a press.
+    private static var flushFocusedField: (() -> Void)?
+
+    /// Whether the focused field opted into `keep-focus-on-submit`.
+    private(set) static var focusedFieldKeepsFocus = false
+
+    /// True while any text field holds focus, so press dispatch knows
+    /// a pending autocorrection or debounced change might be in play.
+    static var focusedFieldActive: Bool { focusedField != nil }
+
+    /// Called by an input when it gains focus. `field` identifies the
+    /// input and must be the same value it later passes to `fieldBlurred`.
+    static func fieldFocused(_ field: AnyHashable, keepsFocus: Bool, flush: @escaping () -> Void) {
+        focusedField = field
+        focusedFieldKeepsFocus = keepsFocus
+        flushFocusedField = flush
+    }
+
+    /// Called by an input when it blurs or leaves the screen. Ignored
+    /// unless `field` is the current owner, so a late blur from the
+    /// previous field cannot clear the state of the one that took over.
+    static func fieldBlurred(_ field: AnyHashable) {
+        guard focusedField == field else { return }
+
+        focusedField = nil
+        focusedFieldKeepsFocus = false
+        flushFocusedField = nil
+    }
+
+    /// Dispatch a press event with focus handling around it: flush the
+    /// focused field's pending change, resign unless the field keeps
+    /// focus, and defer the press one runloop turn while focused so
+    /// a tap-committed autocorrection's change event lands in PHP
+    /// before the press does (mobile-air #335).
+    static func dispatchPress(_ send: @escaping () -> Void) {
+        flushFocusedField?()
+
+        if !focusedFieldKeepsFocus {
+            resignKeyboard()
+        }
+
+        if focusedFieldActive {
+            DispatchQueue.main.async(execute: send)
+        } else {
+            send()
+        }
+    }
+
+    static func resignKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+    }
+
+    /// Whether `point`, in window coordinates, lands on the view that
+    /// currently holds first responder. False when nothing is focused
+    /// or the first responder is not a view.
+    static func firstResponderContains(_ point: CGPoint) -> Bool {
+        guard let view = UIResponder.currentFirstResponder() as? UIView else {
+            return false
+        }
+
+        return view.convert(view.bounds, to: nil).contains(point)
+    }
+}
+
+private extension UIResponder {
+    private weak static var capturedFirstResponder: UIResponder?
+
+    /// UIKit has no public accessor for the first responder. An action
+    /// sent to a nil target is delivered to it, so it records itself.
+    static func currentFirstResponder() -> UIResponder? {
+        capturedFirstResponder = nil
+        UIApplication.shared.sendAction(
+            #selector(nativePHPCaptureFirstResponder(_:)),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+        return capturedFirstResponder
+    }
+
+    @objc func nativePHPCaptureFirstResponder(_ sender: Any?) {
+        UIResponder.capturedFirstResponder = self
+    }
+}
+
 extension View {
     /// Dismiss the keyboard when the user taps anywhere in this subtree.
     ///
@@ -120,20 +251,39 @@ extension View {
     /// also the correct scope — a tap on the tab bar or a toolbar button is
     /// that control's business, not a dismiss.
     ///
-    /// `simultaneousGesture` rather than `onTapGesture` so it runs ALONGSIDE
-    /// whatever it lands on: buttons, pressables and list rows underneath keep
-    /// receiving their own taps instead of having them swallowed.
+    /// Two gestures, because a tap means different things depending on
+    /// whether a child claimed it (mobile-air #335):
+    ///
+    /// - The regular gesture loses to a child's own tap, so it only fires
+    ///   for taps nothing else claimed. That is the plain-area tap-away
+    ///   path and it always dismisses, even when the focused field opted
+    ///   into `keep-focus-on-submit`.
+    /// - The simultaneous gesture fires for every tap, including ones a
+    ///   child `Button`, chip, checkbox or plugin control claimed. It
+    ///   dismisses unless the focused field asked to keep focus. Those
+    ///   controls never go through `KeyboardFocusPolicy.dispatchPress`,
+    ///   so without this they would leave the keyboard up, where before
+    ///   #335 a tap on them dropped it. It skips a tap on the focused
+    ///   field itself, so tapping to move the caret keeps the keyboard.
+    ///
+    /// `@press` handlers still dismiss through
+    /// `KeyboardFocusPolicy.dispatchPress` themselves, under the same
+    /// keep-focus rule. The `contentShape` keeps empty regions of the
+    /// screen hit-testable for the gestures.
     func dismissesKeyboardOnTap() -> some View {
-        simultaneousGesture(
-            TapGesture().onEnded {
-                UIApplication.shared.sendAction(
-                    #selector(UIResponder.resignFirstResponder),
-                    to: nil,
-                    from: nil,
-                    for: nil
-                )
-            }
-        )
+        contentShape(Rectangle())
+            .gesture(
+                TapGesture().onEnded {
+                    KeyboardFocusPolicy.resignKeyboard()
+                }
+            )
+            .simultaneousGesture(
+                SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+                    guard !KeyboardFocusPolicy.focusedFieldKeepsFocus,
+                          !KeyboardFocusPolicy.firstResponderContains(tap.location) else { return }
+                    KeyboardFocusPolicy.resignKeyboard()
+                }
+            )
     }
 }
 
@@ -141,7 +291,29 @@ extension View {
 
 /// Renders a single NativeUINode and its children recursively.
 /// Conforms to Equatable so SwiftUI skips re-rendering unchanged subtrees.
+/// Public entry point every container and plugin renderer uses for a
+/// child. Resolves the node's responsive variants against the live window
+/// width, then hands the winning alternative to `ResolvedNodeView`, so no
+/// renderer has to know breakpoints exist. Equatable on node identity:
+/// SwiftUI still re-evaluates the body when the environment width changes,
+/// and `resolved(forWidth:)` returns a cached node per winning variant so
+/// the inner view's identity check keeps short-circuiting between resizes.
 struct NodeView: View, Equatable {
+    let node: NativeUINode
+
+    @Environment(\.windowWidth) private var windowWidth
+    @Environment(\.availableWidth) private var availableWidth
+
+    static func == (lhs: NodeView, rhs: NodeView) -> Bool {
+        lhs.node === rhs.node
+    }
+
+    var body: some View {
+        ResolvedNodeView(node: node.resolved(forWidth: windowWidth > 0 ? windowWidth : availableWidth))
+    }
+}
+
+struct ResolvedNodeView: View, Equatable {
     let node: NativeUINode
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.nativeSafeAreaTop) private var safeAreaTop
@@ -149,7 +321,7 @@ struct NodeView: View, Equatable {
     @Environment(\.availableWidth) private var availableWidth
     @Environment(\.availableHeight) private var availableHeight
 
-    static func == (lhs: NodeView, rhs: NodeView) -> Bool {
+    static func == (lhs: ResolvedNodeView, rhs: ResolvedNodeView) -> Bool {
         // Reference identity. Between PHP publishes, `node` refs are stable
         // across SwiftUI body re-evaluations (scroll, focus, env changes) —
         // so `===` short-circuits reliably during steady-state, keeping scroll
@@ -194,6 +366,12 @@ struct NodeView: View, Equatable {
             // the tap and runs alongside it for press-in/press-out
             // tracking. No-op when no `press-*` prop is set.
             .modifier(NodePressFeedbackModifier(props: node.props))
+            // Hidden (`display: none`) outside everything above, so the
+            // background and border go with the content. FlexContainer never
+            // places a hidden child and SwiftUI centres it at the container's
+            // size, so hiding only the content painted its `bg-*` over its
+            // siblings (`xl:hidden` in a row showed an empty bar).
+            .opacity(node.layout?.display == Display.none ? 0 : 1)
     }
 
     // MARK: - Content Dispatch (via plugin registry)
@@ -325,7 +503,9 @@ private struct DoubleTapModifier: ViewModifier {
             content.onTapGesture(count: 2) {
                 // Reuses the Press event type — the callback id alone routes
                 // to the @doubleTap handler, and Press dispatch passes no args.
-                NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content
@@ -340,7 +520,9 @@ private struct TapModifier: ViewModifier {
     func body(content: Content) -> some View {
         if callbackId != 0 {
             content.onTapGesture {
-                NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content
@@ -355,7 +537,9 @@ private struct LongPressModifier: ViewModifier {
     func body(content: Content) -> some View {
         if callbackId != 0 {
             content.onLongPressGesture(minimumDuration: 0.5) {
-                NativeElementBridge.sendLongPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendLongPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content

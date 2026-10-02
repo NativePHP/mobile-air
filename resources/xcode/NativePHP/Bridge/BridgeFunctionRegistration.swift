@@ -6,6 +6,11 @@ import SwiftUI
 func registerBridgeFunctions() {
     let registry = BridgeFunctionRegistry.shared
 
+    // AsyncTask.* — background PHP work with UI completion callbacks
+    // (AsyncTask::dispatch()). Android twin: bridge/functions/AsyncFunctions.kt.
+    registry.register("AsyncTask.Dispatch", function: AsyncFunctions.Dispatch())
+    registry.register("AsyncTask.Complete", function: AsyncFunctions.Complete())
+
     // Device.* — core built-in (migrated from the nativephp/mobile-device
     // plugin). Android twin: bridge/functions/DeviceFunctions.kt.
     registry.register("Device.Vibrate",         function: DeviceFunctions.Vibrate())
@@ -13,11 +18,13 @@ func registerBridgeFunctions() {
     registry.register("Device.GetId",           function: DeviceFunctions.GetId())
     registry.register("Device.GetInfo",         function: DeviceFunctions.GetInfo())
     registry.register("Device.GetBatteryInfo",  function: DeviceFunctions.GetBatteryInfo())
+    registry.register("Device.GetThermalState", function: DeviceFunctions.GetThermalState())
 
     // System.* — core built-in (migrated from the nativephp/mobile-system
     // plugin). Android twin: bridge/functions/SystemFunctions.kt.
     registry.register("System.OpenAppSettings", function: SystemFunctions.OpenAppSettings())
     registry.register("System.GetAppearance", function: SystemFunctions.GetAppearance())
+    registry.register("System.GetOrientation", function: SystemFunctions.GetOrientation())
 
     // UI.* — core built-in. Android twin: bridge/functions/UIFunctions.kt
     // (which also registers UI.SetTransition; iOS transitions ride the

@@ -2009,7 +2009,6 @@
 				DEVELOPMENT_ASSET_PATHS = "\"NativePHP/Preview Content\"";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
-				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				EXCLUDED_RECURSIVE_SEARCH_PATH_SUBDIRECTORIES = "*.nib *.lproj *.framework *.gch *.xcode* *.xcassets (*) .DS_Store CVS .svn .git .hg *.pbproj *.pbxproj node_modules";
 				EXCLUDED_SOURCE_FILE_NAMES = (
 					.editorconfig,
@@ -2061,7 +2060,6 @@
 				DEVELOPMENT_ASSET_PATHS = "\"NativePHP/Preview Content\"";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
-				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				EXCLUDED_RECURSIVE_SEARCH_PATH_SUBDIRECTORIES = "*.nib *.lproj *.framework *.gch *.xcode* *.xcassets (*) .DS_Store CVS .svn .git .hg *.pbproj *.pbxproj node_modules";
 				EXCLUDED_SOURCE_FILE_NAMES = (
 					.editorconfig,

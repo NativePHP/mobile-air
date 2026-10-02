@@ -58,6 +58,11 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
             switch result {
             case .success(let requestData):
+                if url.path == Self.formStashPath {
+                    self.stashFormBody(requestData, url: url, schemeTask: schemeTask)
+                    return
+                }
+
                 let pathComponents = url.pathComponents
 
                 if let assetsIndex = pathComponents.firstIndex(of: "_assets") {
@@ -346,15 +351,16 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         let method = request.httpMethod ?? "GET"
 
         // Extract Headers
-        let headers = request.allHTTPHeaderFields ?? [:]
+        var headers = request.allHTTPHeaderFields ?? [:]
 
         // A request body arrives either whole or as a stream. WKWebView streams it
         // whenever the sender watches upload progress, as every axios call does.
-        // Reading the stream back is the only way those bodies reach PHP.
-        var data: String?
-        if ["POST", "PUT", "PATCH"].contains(method.uppercased()) {
+        // Reading the stream back is the only way those bodies reach PHP. The
+        // body stays bytes from here to php://input: never decoded as text.
+        var body: Data?
+        if !["GET", "HEAD"].contains(method.uppercased()) {
             if let httpBody = request.httpBody {
-                data = String(data: httpBody, encoding: .utf8)
+                body = httpBody
             } else if let stream = request.httpBodyStream {
                 stream.open()
                 defer { stream.close() }
@@ -366,7 +372,9 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
                 defer { buffer.deallocate() }
 
-                while stream.hasBytesAvailable {
+                // Read until the stream reports its end (0) or an error (< 0).
+                // hasBytesAvailable can be false before the end is reached.
+                while true {
                     let bytesRead = stream.read(buffer, maxLength: bufferSize)
                     if bytesRead <= 0 {
                         break
@@ -375,8 +383,25 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
 
                 if !bodyData.isEmpty {
-                    data = String(data: bodyData, encoding: .utf8)
+                    body = bodyData
                 }
+            }
+
+            // WebKit drops the body of a multipart <form> navigation that
+            // carries a file (WebKit bug 197237). The page's shim posted the
+            // serialized form here just before submitting, so use that body
+            // and its Content-Type, whose boundary matches it.
+            if body == nil,
+               method.uppercased() == "POST",
+               let navigationType = headers.first(where: { $0.key.caseInsensitiveCompare("Content-Type") == .orderedSame })?.value,
+               navigationType.lowercased().hasPrefix("multipart/form-data"),
+               let url = request.url,
+               let stashed = takeStashedFormBody(for: url) {
+                body = stashed.body
+                for key in headers.keys where key.caseInsensitiveCompare("Content-Type") == .orderedSame {
+                    headers.removeValue(forKey: key)
+                }
+                headers["Content-Type"] = stashed.contentType
             }
         }
 
@@ -384,9 +409,10 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         let requestData = RequestData(
             method: method,
             uri: uri,
-            data: data,
+            data: nil,
             query: query ?? "",
-            headers: headers
+            headers: headers,
+            body: body
         )
 
         // Pass the extracted data back via completion
@@ -509,6 +535,78 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
+    // MARK: - Multipart form bodies (WebKit bug 197237)
+
+    /// Path the page shim (`ContentView.bodyShimScript`) posts a serialized
+    /// multipart form to, just before it submits the form for real. WebKit
+    /// drops the body of a multipart navigation that carries a file, so the
+    /// navigation that follows picks this body up again. Answered here; it
+    /// never reaches PHP.
+    static let formStashPath = "/_native/form-body"
+
+    private struct StashedFormBody {
+        let body: Data
+        let contentType: String
+        let storedAt: Date
+    }
+
+    private static let stashLifetime: TimeInterval = 30
+    private static let stashLimit = 8
+    private var stashedFormBodies: [String: StashedFormBody] = [:]
+    private let stashLock = NSLock()
+
+    private func stashFormBody(_ requestData: RequestData, url: URL, schemeTask: WKURLSchemeTask) {
+        var status = 400
+
+        // The custom header keeps other origins out: they can't send it
+        // without a CORS preflight, which this handler never grants.
+        if requestData.method.uppercased() == "POST",
+           requestData.header("X-NativePHP-Form-Stash") == "1",
+           let action = requestData.header("X-NativePHP-Form-Action"),
+           let actionURL = URL(string: action),
+           actionURL.host == domain,
+           let contentType = requestData.header("Content-Type"),
+           contentType.lowercased().hasPrefix("multipart/form-data"),
+           let body = requestData.body, !body.isEmpty {
+            let now = Date()
+            stashLock.lock()
+            stashedFormBodies = stashedFormBodies.filter { now.timeIntervalSince($0.value.storedAt) < Self.stashLifetime }
+            if stashedFormBodies.count >= Self.stashLimit,
+               let oldest = stashedFormBodies.min(by: { $0.value.storedAt < $1.value.storedAt })?.key {
+                stashedFormBodies.removeValue(forKey: oldest)
+            }
+            stashedFormBodies[Self.stashKey(for: actionURL)] = StashedFormBody(body: body, contentType: contentType, storedAt: now)
+            stashLock.unlock()
+            status = 204
+        }
+
+        guard isTaskActive(schemeTask),
+              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
+                                             headerFields: ["Content-Length": "0", "Cache-Control": "no-store"]) else {
+            return
+        }
+        schemeTask.didReceive(response)
+        schemeTask.didFinish()
+        removeTask(schemeTask)
+    }
+
+    private func takeStashedFormBody(for url: URL) -> StashedFormBody? {
+        stashLock.lock()
+        defer { stashLock.unlock() }
+
+        guard let entry = stashedFormBodies.removeValue(forKey: Self.stashKey(for: url)),
+              Date().timeIntervalSince(entry.storedAt) < Self.stashLifetime else {
+            return nil
+        }
+        return entry
+    }
+
+    private static func stashKey(for url: URL) -> String {
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.fragment = nil
+        return components?.string ?? url.absoluteString
+    }
+
     private func error(code: Int, description: String) -> NSError
     {
         print("ERROR: \(description)")
@@ -541,50 +639,39 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 // an EXIT_WEB anyway or the user is stranded on a frozen
                 // native screen with a runloop that no longer exists.
                 if case .success(let data) = result,
-                   let raw = String(data: data, encoding: .utf8) {
-                    self.handleOrphanedNativeExit(raw)
+                   let parsed = PHPRawResponse(data) {
+                    self.handleOrphanedNativeExit(parsed.head)
                 }
                 return
             }
 
             switch result {
             case .success(let responseData):
-                // Parse the response data into headers and body
-                guard let responseString = String(data: responseData, encoding: .utf8) else {
-                    let error = self.error(code: 500, description: "Failed to decode response")
-                    if self.isTaskActive(schemeTask) {
-                        schemeTask.didFailWithError(error)
-                    }
-                    return
-                }
-
-                // Split headers and body
-                print("Processing response...")
-                let components = responseString.components(separatedBy: "\r\n\r\n")
-                guard components.count >= 2 else {
-                    // Send the error as a response to the WebView
-                    guard let httpResponse = HTTPURLResponse(url: URL(string: requestData.uri)!,
+                // Split once, at the first blank line, on bytes. The head is
+                // text; the body stays exactly the bytes PHP echoed.
+                guard let parsed = PHPRawResponse(responseData) else {
+                    // Not a raw HTTP response: a PHP fatal error, or a bridge
+                    // failure before PHP answered. Show it as a 500.
+                    print("Invalid PHP response format (\(responseData.count) bytes)")
+                    let url = schemeTask.request.url ?? URL(string: "php://\(self.domain)/")!
+                    guard let httpResponse = HTTPURLResponse(url: url,
                                                              statusCode: 500,
                                                              httpVersion: "HTTP/1.1",
                                                              headerFields: [
-                                                                "Content-Type": "text/html",
-                                                                "Content-Length": "\(components[0].lengthOfBytes(using: .utf8))"
+                                                                "Content-Type": "text/plain; charset=utf-8",
+                                                                "Content-Length": "\(responseData.count)"
                                                              ]) else {
                         let error = self.error(code: 500, description: "Failed to create HTTP response")
                         if self.isTaskActive(schemeTask) {
                             schemeTask.didFailWithError(error)
+                            self.removeTask(schemeTask)
                         }
                         return
                     }
 
                     if self.isTaskActive(schemeTask) {
                         schemeTask.didReceive(httpResponse)
-
-                        if let data = components[0].data(using: .utf8) {
-                            schemeTask.didReceive(data)
-                        }
-
-                        _ = self.error(code: 500, description: "Invalid PHP Response Format")
+                        schemeTask.didReceive(responseData)
                         schemeTask.didFinish()
                         self.removeTask(schemeTask)
                     }
@@ -592,37 +679,18 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     return
                 }
 
-                let headerString = components[0]
-                let bodyString = components[1]
-
-                // Parse headers into a dictionary (case-insensitive keys)
-                var headers: [String: String] = [:]
-                let headerLines = headerString.components(separatedBy: "\r\n")
-
-                // First, parse status code
-                var statusCode = 200
-                if let statusLine = headerLines.first,
-                   let codeString = statusLine.components(separatedBy: " ").dropFirst(1).first,
-                   let code = Int(codeString) {
-                    statusCode = code
-                }
-
-                for (index, line) in headerLines.enumerated() {
-                    // First one is status, which we already parsed
-                    if index == 0 {
-                        continue
-                    }
-                    let headerComponents = line.components(separatedBy: ": ")
-                    if headerComponents.count == 2 {
-                        // Store with lowercase key for case-insensitive lookup
-                        headers[headerComponents[0].lowercased()] = headerComponents[1]
-                    }
-                }
+                let headers = parsed.headers
+                let statusCode = parsed.statusCode
 
                 var request = requestData
                 if let location = headers["location"] {
                     let trimmedLocation = location.trimmingCharacters(in: .whitespaces)
+                    // Follow as a GET, without the original request's body.
                     request.method = "GET"
+                    request.data = nil
+                    request.body = nil
+                    request.removeHeader("Content-Type")
+                    request.removeHeader("Content-Length")
 
                     // Anything not aimed back at our own host is a navigation the
                     // webview owns, so hand it over rather than asking PHP to
@@ -685,14 +753,8 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 if self.isTaskActive(schemeTask) {
                     schemeTask.didReceive(httpResponse)
 
-                    // Send the body data
-                    if let bodyData = bodyString.data(using: .utf8) {
-                        schemeTask.didReceive(bodyData)
-                    } else {
-                        let error = self.error(code: 500, description: "Failed to encode body data")
-                        schemeTask.didFailWithError(error)
-                        return
-                    }
+                    // Send the body bytes exactly as PHP produced them
+                    schemeTask.didReceive(parsed.body)
 
                     // Indicate that the task has finished
                     schemeTask.didFinish()
@@ -711,20 +773,14 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     /// Push a raw response's Set-Cookie headers into the shared WebView
-    /// cookie store (same rebinding the persistent path does inline).
-    private func storeSetCookies(from rawResponse: String) {
-        let components = rawResponse.components(separatedBy: "\r\n\r\n")
-        let headersList = components[0].components(separatedBy: "\n").filter { !$0.isEmpty }
-        let setCookieHeaders = headersList.filter { $0.hasPrefix("Set-Cookie:") || $0.hasPrefix("set-cookie:") }
-        guard !setCookieHeaders.isEmpty else { return }
+    /// cookie store. Only the head is read; the body is never decoded.
+    /// Calls `then` on the main queue once the cookies have been handed over.
+    private func storeSetCookies(from rawResponse: Data, then: (() -> Void)? = nil) {
+        let setCookieHeaders = PHPRawResponse(rawResponse)?.setCookies ?? []
 
         DispatchQueue.main.async {
             for header in setCookieHeaders {
-                var cookieString = header
-                if let range = cookieString.range(of: "Set-Cookie: ", options: .caseInsensitive) {
-                    cookieString = String(cookieString[range.upperBound...])
-                }
-                cookieString = cookieString
+                let cookieString = header
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .replacingOccurrences(of: ";\\s+", with: ";", options: .regularExpression)
 
@@ -732,6 +788,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     WebView.dataStore.httpCookieStore.setCookie(cookie)
                 }
             }
+            then?()
         }
     }
 
@@ -739,14 +796,10 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                               completion: @escaping (Result<Data, Error>) -> Void) {
         // Embedded php-mode webview — serve on its own dedicated PHP context.
         if let dedicated = dedicatedRuntime {
-            dedicated.dispatch(request: request) { [weak self] response in
+            dedicated.dispatchData(request: request) { [weak self] response in
                 guard let self else { return }
                 self.storeSetCookies(from: response)
-                if let responseData = response.data(using: .utf8) {
-                    completion(.success(responseData))
-                } else {
-                    completion(.failure(self.error(code: 500, description: "Failed to encode PHP response")))
-                }
+                completion(.success(response))
             }
             return
         }
@@ -765,53 +818,20 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             let start = CFAbsoluteTimeGetCurrent()
             NSLog("%@", "[NativePHP] [\(mode)] --> \(request.method) \(request.uri)")
 
-            let response: String
+            let response: Data
             if PersistentPHPRuntime.shared.isBooted {
                 // Persistent mode — dispatch through booted Laravel kernel
-                response = PersistentPHPRuntime.shared.dispatch(request: request)
+                response = PersistentPHPRuntime.shared.dispatchData(request: request)
             } else {
-                // Fallback to legacy per-request mode
-                response = NativePHPApp.laravel(request: request) ?? "No response from Laravel"
+                // Classic per-request mode (configured, or persistent boot failed)
+                response = NativePHPApp.laravelData(request: request) ?? Data("No response from Laravel".utf8)
             }
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            // Extract status code from first line (e.g. "HTTP/1.1 200 OK")
-            let statusLine = response.prefix(while: { $0 != "\r" && $0 != "\n" })
-            NSLog("%@", "[NativePHP] [\(mode)] <-- \(statusLine) (\(String(format: "%.1f", elapsed))ms)")
+            NSLog("%@", "[NativePHP] [\(mode)] <-- \(PHPRawResponse.statusLine(of: response)) (\(String(format: "%.1f", elapsed))ms)")
 
-            // Extract cookie headers
-            let components = response.components(separatedBy: "\r\n\r\n")
-            let headers = components[0]
-
-            let headersList = headers.components(separatedBy: "\n").filter { !$0.isEmpty }
-
-            let setCookieHeaders = headersList.filter { $0.hasPrefix("Set-Cookie:") || $0.hasPrefix("set-cookie:") }
-
-            DispatchQueue.main.async {
-                for header in setCookieHeaders {
-                    // Remove "Set-Cookie: " prefix (case-insensitive)
-                    var cookieString = header
-                    if let range = cookieString.range(of: "Set-Cookie: ", options: .caseInsensitive) {
-                        cookieString = String(cookieString[range.upperBound...])
-                    }
-                    cookieString = cookieString
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                        .replacingOccurrences(of: ";\\s+", with: ";", options: .regularExpression)
-
-                    // Create HTTPCookie from the cookieString
-                    if let cookie = HTTPCookie(properties: self.parseSetCookieHeader(cookieString: cookieString)) {
-                        // Set the cookie in WKHTTPCookieStore
-                        WebView.dataStore.httpCookieStore.setCookie(cookie)
-                    }
-                }
-
-                // Convert the response to Data
-                if let responseData = response.data(using: .utf8) {
-                    completion(.success(responseData))
-                } else {
-                    let encodingError = self.error(code: 500, description: "Failed to encode PHP response")
-                    completion(.failure(encodingError))
-                }
+            self.storeSetCookies(from: response) {
+                completion(.success(response))
             }
         }
     }
@@ -847,8 +867,8 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             if lk == "host" || lk == "content-length" { continue }
             req.setValue(value, forHTTPHeaderField: key)
         }
-        if let body = request.data, !body.isEmpty {
-            req.httpBody = body.data(using: .utf8)
+        if let body = request.bodyBytes, !body.isEmpty {
+            req.httpBody = body
         }
 
         NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] --> \(request.method) \(urlString)")
@@ -922,7 +942,100 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 struct RequestData {
     var method: String
     var uri: String
+    /// Text body, for requests built by plugins. The scheme handler leaves
+    /// it nil and fills `body` instead.
     var data: String?
     var query: String?
     var headers: [String: String]
+    /// Request body, byte for byte. Takes precedence over `data`.
+    var body: Data? = nil
+
+    /// The body to send to PHP: `body`, or `data` as UTF-8 for requests that
+    /// only set the text form.
+    var bodyBytes: Data? {
+        body ?? data.map { Data($0.utf8) }
+    }
+
+    /// Header value, looked up without regard to case.
+    func header(_ name: String) -> String? {
+        if let exact = headers[name] { return exact }
+        return headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
+
+    /// Remove a header, whatever its case.
+    mutating func removeHeader(_ name: String) {
+        for key in headers.keys where key.caseInsensitiveCompare(name) == .orderedSame {
+            headers.removeValue(forKey: key)
+        }
+    }
+
+    /// Request headers as the block BridgeDispatcher::handle() takes:
+    /// "Name: value" lines joined by CRLF, UTF-8. A header whose name or
+    /// value holds a CR or LF would break the framing and is left out.
+    var headerBlock: Data {
+        let lines = headers.compactMap { name, value -> String? in
+            if name.isEmpty || name.contains(where: { $0 == "\r" || $0 == "\n" || $0 == ":" })
+                || value.contains(where: { $0 == "\r" || $0 == "\n" }) {
+                return nil
+            }
+            return "\(name): \(value)"
+        }
+        return Data(lines.joined(separator: "\r\n").utf8)
+    }
+}
+
+/// A raw HTTP/1.1 response as the PHP bridge returns it: status line, header
+/// lines, a blank line, then the body. Split once, at the first CRLF CRLF,
+/// on bytes: the head is decoded as text (lossily, so it never fails) and
+/// the body stays exactly the bytes PHP echoed, NULs and blank lines included.
+struct PHPRawResponse {
+    let statusCode: Int
+    /// Status line and header lines, without the terminating blank line.
+    let head: String
+    /// Header fields keyed by lower-cased name. A repeated header keeps its
+    /// last value.
+    let headers: [String: String]
+    /// Every Set-Cookie value, in order.
+    let setCookies: [String]
+    let body: Data
+
+    private static let headTerminator = Data("\r\n\r\n".utf8)
+
+    /// Nil when the bytes aren't a raw HTTP response (no status line, or no
+    /// blank line after the headers), e.g. a PHP fatal error.
+    init?(_ data: Data) {
+        guard data.starts(with: Data("HTTP/".utf8)),
+              let split = data.range(of: Self.headTerminator) else {
+            return nil
+        }
+
+        head = String(decoding: data[data.startIndex..<split.lowerBound], as: UTF8.self)
+        body = Data(data[split.upperBound...])
+
+        let lines = head.components(separatedBy: "\r\n")
+        let statusParts = (lines.first ?? "").split(separator: " ")
+        statusCode = statusParts.count > 1 ? (Int(statusParts[1]) ?? 200) : 200
+
+        var headers: [String: String] = [:]
+        var setCookies: [String] = []
+        for line in lines.dropFirst() {
+            // Split at the first colon only: values may hold ": " themselves.
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { continue }
+            headers[name] = value
+            if name == "set-cookie" {
+                setCookies.append(value)
+            }
+        }
+        self.headers = headers
+        self.setCookies = setCookies
+    }
+
+    /// The first line of a raw response, for logs. Never decodes the body.
+    static func statusLine(of data: Data) -> String {
+        let end = data.firstIndex(where: { $0 == 0x0D || $0 == 0x0A }) ?? data.endIndex
+        return String(decoding: data[data.startIndex..<min(end, data.startIndex + 200)], as: UTF8.self)
+    }
 }

@@ -19,7 +19,7 @@ use function Laravel\Prompts\warning;
 
 trait RunsAndroid
 {
-    use PreparesBuild, WatchesAndroid;
+    use DeclaresReleaseAudience, PreparesBuild, WatchesAndroid;
 
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
@@ -39,7 +39,7 @@ trait RunsAndroid
     /**
      * @throws \Exception
      */
-    public function runAndroid(): void
+    public function runAndroid(): bool
     {
         $this->androidLogPath = base_path($this->androidLogPath);
 
@@ -63,13 +63,13 @@ trait RunsAndroid
             error('No Android project found at [nativephp/android].');
             note('Run `php artisan native:install` or ensure you have the correct folder structure.');
 
-            return;
+            return false;
         }
 
         $this->logToFile('Android project path: '.$androidPath);
 
         if (! $this->validateBuildEnvironment()) {
-            return;
+            return false;
         }
 
         $minSdk = (int) config('nativephp.android.min_sdk', 26);
@@ -78,7 +78,7 @@ trait RunsAndroid
             error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
             note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
 
-            return;
+            return false;
         }
 
         $plugins = app(PluginRegistry::class)->all();
@@ -89,7 +89,7 @@ trait RunsAndroid
                 error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
                 note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
 
-                return;
+                return false;
             }
         }
 
@@ -106,7 +106,7 @@ trait RunsAndroid
                 $this->logToFile('ERROR: ADB is not installed or not in PATH');
                 error('ADB is not installed or not in your PATH.');
 
-                return;
+                return false;
             }
             $this->logToFile('ADB is available');
 
@@ -122,11 +122,11 @@ trait RunsAndroid
         $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies);
 
         if (! $this->compileAndroidPlugins()) {
-            return;
+            return false;
         }
 
         if (! $this->runTheAndroidBuild($target)) {
-            return;
+            return false;
         }
 
         if ($this->option('watch')) {
@@ -135,6 +135,8 @@ trait RunsAndroid
         }
 
         $this->logToFile('=== NativePHP Android Build Completed ===');
+
+        return true;
     }
 
     private function detectCurrentAppId(): ?string
@@ -254,6 +256,57 @@ trait RunsAndroid
                     }
                 }
             }
+        }
+
+        $normalizedContents = $this->normalizeLineEndings($contents);
+
+        if ($this->validateXml($normalizedContents)) {
+            File::put($manifestPath, $normalizedContents);
+        }
+    }
+
+    /**
+     * Declare to Google Play how far this build may travel. Anything built
+     * outside the production environment carries the NONPRODUCTION audience,
+     * which Play holds the artifact to: it cannot be promoted to the
+     * production track later. A production build carries no ceiling, so a
+     * declaration left behind by an earlier build is stripped.
+     *
+     * Play reads the audience from the meta-data name's suffix and requires an
+     * empty value; an audience placed in the value is silently ignored.
+     */
+    private function updateReleaseAudience(): void
+    {
+        $manifestPath = base_path('nativephp/android/app/src/main/AndroidManifest.xml');
+
+        if (! File::exists($manifestPath)) {
+            return;
+        }
+
+        $contents = File::get($manifestPath);
+
+        // Always drop our own previous declaration first: the native project is
+        // reused between builds, so a stale audience would otherwise survive a
+        // move back to production. Only the entry this tool writes is touched;
+        // a developer's own restriction is left alone, since Play applies the
+        // most restrictive one present.
+        $contents = preg_replace(
+            '/\s*<meta-data\s+android:name="'.preg_quote(self::LARGEST_RELEASE_AUDIENCE_KEY.'.NONPRODUCTION', '/').'"[^>]*\/>/s',
+            '',
+            $contents
+        );
+
+        $audience = $this->largestReleaseAudience();
+
+        if ($audience !== null) {
+            $entry = "\n        <meta-data\n            android:name=\"".self::LARGEST_RELEASE_AUDIENCE_KEY.".{$audience}\"\n            android:value=\"\" />";
+
+            $contents = preg_replace_callback(
+                '/<application[^>]*>/',
+                fn (array $matches): string => $matches[0].$entry,
+                $contents,
+                1
+            );
         }
 
         $normalizedContents = $this->normalizeLineEndings($contents);
@@ -1094,8 +1147,14 @@ XML;
             $compiler->compile();
 
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("❌ Plugin compilation failed: {$e->getMessage()}");
+
+            // A hook that fataled carries the real error underneath. Without
+            // this the author sees the message and no idea where it came from.
+            if ($cause = $e->getPrevious()) {
+                $this->line("   at {$cause->getFile()}:{$cause->getLine()}");
+            }
 
             return false;
         }

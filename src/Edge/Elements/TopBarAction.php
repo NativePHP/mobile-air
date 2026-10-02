@@ -45,6 +45,9 @@ class TopBarAction extends Element
         if (isset($attrs['destructive'])) {
             $this->props['destructive'] = (bool) $attrs['destructive'];
         }
+        if (isset($attrs['disabled'])) {
+            $this->props['disabled'] = (bool) $attrs['disabled'];
+        }
         if (isset($attrs['divider'])) {
             $this->props['divider'] = (bool) $attrs['divider'];
         }

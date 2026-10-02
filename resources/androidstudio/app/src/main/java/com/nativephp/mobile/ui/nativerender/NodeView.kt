@@ -44,6 +44,16 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
+    // Resolve responsive (`md:` / `lg:`) variants against the live window
+    // width — LocalAvailableWidth is the root BoxWithConstraints' maxWidth —
+    // so no renderer has to know breakpoints exist. resolved() returns a
+    // cached node per winning variant, so identity stays stable between
+    // resizes and key(node.id) below keeps its state.
+    ResolvedNodeView(node.resolved(LocalAvailableWidth.current), overrideModifier)
+}
+
+@Composable
+private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
     key(node.id) {
         val renderer = NativeRendererRegistry.get(node.type)
         val isDarkMode = isSystemInDarkTheme()

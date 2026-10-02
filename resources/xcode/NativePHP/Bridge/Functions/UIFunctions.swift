@@ -11,14 +11,20 @@ import UIKit
 
 /// App-wide window background override set from PHP via `UI.SetBackground`.
 ///
-/// Three surfaces read it (falling back to `systemBackground` when unset):
+/// Four surfaces read it (falling back to `systemBackground` when unset):
 ///   1. `ContentView` — the base layer each native screen renders over,
 ///      visible during screen transitions and before first content.
 ///   2. `NativeRootStackRenderer` — NavigationStack hosts its screens on
 ///      its own container background (systemBackground, no SwiftUI
 ///      override hook), so each stack screen backgrounds itself with
 ///      this color instead.
-///   3. The UIKit windows, so overscroll and inset regions match.
+///   3. `NativeRootTabsRenderer` — TabView has the same opaque container,
+///      so every tab level backgrounds itself the same way, plus the
+///      search tab (a sibling of the tab `ForEach`, so it bypasses the
+///      per-tab path). Both renderers share `WindowBackgroundModifier`,
+///      and both apply it to their not-yet-published placeholders too, so
+///      a screen's first frame doesn't flash the container through.
+///   4. The UIKit windows, so overscroll and inset regions match.
 ///
 /// `color` is only mutated on the main queue (see `SetBackground`).
 final class WindowBackgroundState: ObservableObject {

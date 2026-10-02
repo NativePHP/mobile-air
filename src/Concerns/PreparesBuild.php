@@ -12,7 +12,7 @@ use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
 {
-    use CleansEnvFile, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
+    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
 
     /**
      * Validate required environment variables for building
@@ -130,6 +130,10 @@ trait PreparesBuild
 
             $this->logToFile('  Updating permissions...');
             $this->updatePermissions();
+
+            $audience = $this->largestReleaseAudience();
+            $this->logToFile('  Updating release audience: '.($audience ?? 'unrestricted (production)'));
+            $this->updateReleaseAudience();
 
             $this->logToFile('  Updating orientation configuration...');
             $this->updateOrientationConfiguration();
@@ -351,6 +355,11 @@ trait PreparesBuild
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
                 'entry_mode' => $entryMode,
                 'native_routes' => $nativeRoutes,
+                // What this shell ships with, so a lane cannot offer it a release
+                // that predates its own code. Written here because .env is
+                // replaced wholesale by a payload and this has to outlive one.
+                'shell_built_at' => env('NATIVEPHP_OTA_SHELL_BUILT_AT'),
+                'shell_commit' => env('NATIVEPHP_OTA_SHELL_COMMIT'),
             ], JSON_PRETTY_PRINT);
             file_put_contents($assetsDir.DIRECTORY_SEPARATOR.'bundle_meta.json', $bundleMeta);
             $runtimeMode = config('nativephp.runtime.mode', 'persistent');
@@ -970,6 +979,8 @@ trait PreparesBuild
     abstract protected function updateDeepLinkConfiguration(): void;
 
     abstract protected function updatePermissions(): void;
+
+    abstract protected function updateReleaseAudience(): void;
 
     abstract protected function updateIcuConfiguration(): void;
 

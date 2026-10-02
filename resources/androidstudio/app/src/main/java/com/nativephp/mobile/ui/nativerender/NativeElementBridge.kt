@@ -664,7 +664,10 @@ class NativeElementBridge private constructor() {
                 children.add(child)
             }
 
-            return NativeUINode(id, type, layout, style, props, onPress, onLongPress, children)
+            return NativeUINode(
+                id, type, layout, style, props, onPress, onLongPress, children,
+                NodeVariant.parse(props, layout, style)
+            )
         }
 
         /* ── Props Reader ── */
