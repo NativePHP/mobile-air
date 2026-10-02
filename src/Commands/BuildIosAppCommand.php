@@ -1342,8 +1342,10 @@ class BuildIosAppCommand extends Command
         }
 
         $this->components->task('Installing CocoaPods dependencies', function () {
+            // No limit: a first install downloads every pod, which can take
+            // longer than any fixed timeout on a slow connection.
             $result = Process::path($this->basePath)
-                ->timeout(300)
+                ->forever()
                 ->run(['pod', 'install'], function ($type, $output) {
                     file_put_contents($this->logPath, $output, FILE_APPEND);
 
@@ -1382,8 +1384,9 @@ class BuildIosAppCommand extends Command
         }
 
         $this->components->task('Resolving Swift Package dependencies', function () {
+            // No limit, for the same reason as pod install above.
             $result = Process::path($this->basePath)
-                ->timeout(300)
+                ->forever()
                 ->run([
                     'xcodebuild',
                     '-resolvePackageDependencies',
