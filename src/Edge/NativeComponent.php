@@ -48,6 +48,9 @@ use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
 {
+    /** The system back button, back chevron or edge-swipe pop. */
+    const EVENT_SYSTEM_BACK = 8;
+
     const EVENT_HOT_RELOAD = 15;
 
     /**
@@ -112,6 +115,9 @@ abstract class NativeComponent
     protected CallbackRegistry $nativeCallbacks;
 
     protected bool $nativeHasError = false;
+
+    /** The last frame was held back because the user had already left this screen. */
+    protected bool $nativeFrameWithheld = false;
 
     protected bool $nativeRunning = true;
 
@@ -2716,10 +2722,18 @@ abstract class NativeComponent
 
                         $this->nativeRouter?->flushDeferredTransition();
 
-                        nativephp_element_publish($tree);
-                        TreeObservers::tree(
-                            $tree, $this->nativeRouter?->currentUri() ?? '/'
-                        );
+                        // A system back that was queued while this screen
+                        // mounted means the user has already left it, and
+                        // publishing it now would push it straight back
+                        // on. Hold the frame; the back is handled below.
+                        $this->nativeFrameWithheld = $this->nativeRouter?->holdsSystemBack() ?? false;
+
+                        if (! $this->nativeFrameWithheld) {
+                            nativephp_element_publish($tree);
+                            TreeObservers::tree(
+                                $tree, $this->nativeRouter?->currentUri() ?? '/'
+                            );
+                        }
 
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
@@ -2736,7 +2750,9 @@ abstract class NativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event($this->nextEventTimeout());
+            // Events held over from the screen swap come first.
+            $event = $this->nativeRouter?->takeHeldEvent()
+                ?? nativephp_element_wait_event($this->nextEventTimeout());
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
@@ -3015,7 +3031,9 @@ abstract class NativeComponent
      */
     protected function publishFinalState(): void
     {
-        if ($this->nativeHasError) {
+        // Nothing to refresh when the frame was withheld: the user already
+        // left this screen, and a farewell frame would push it back on.
+        if ($this->nativeHasError || $this->nativeFrameWithheld) {
             return;
         }
         try {
