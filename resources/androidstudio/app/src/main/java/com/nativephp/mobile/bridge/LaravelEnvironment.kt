@@ -3,6 +3,7 @@ package com.nativephp.mobile.bridge
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import com.nativephp.mobile.security.AppKeyStore
 import java.io.File
 import java.io.FileOutputStream
 import java.io.FileInputStream
@@ -71,7 +72,8 @@ class LaravelEnvironment(private val context: Context) {
         private const val ENV_FILE = ".env"
         private const val CACERT_FILE = "cacert.pem"
         private const val PHP_INI_FILE = "php.ini"
-        private const val APP_KEY_FILE = "persisted_data/appkey.txt"
+        // Plain-text APP_KEY written by earlier versions; AppKeyStore migrates it.
+        private const val LEGACY_APP_KEY_FILE = "persisted_data/appkey.txt"
 
         // Directory paths
         private const val DIR_LARAVEL = "laravel"
@@ -825,24 +827,22 @@ class LaravelEnvironment(private val context: Context) {
 
     private fun setupEnvironment(forceCertRefresh: Boolean = false) {
         try {
-            val appKeyFile = File(appStorageDir, APP_KEY_FILE)
-            val appKey: String = if (appKeyFile.exists()) {
-                val contents = appKeyFile.readText().trim()
-                if (contents.startsWith("base64:")) {
-                    Log.d(TAG, "✅ Found valid APP_KEY in file")
-                    contents
-                } else {
-                    Log.w(TAG, "⚠️ Found invalid APP_KEY in file, regenerating...")
-                    appKeyFile.delete()
-                    generateAndSaveAppKey(appKeyFile)
-                }
-            } else {
-                generateAndSaveAppKey(appKeyFile)
+            val appKeys = AppKeyStore(context).load(File(appStorageDir, LEGACY_APP_KEY_FILE)) {
+                laravelSupportsPreviousKeys()
+            }
+
+            if (appKeys.migrated) {
+                // A config cache built before the migration holds the legacy
+                // key in plain text and would keep it in use. Without the
+                // cache Laravel reads the keys from the environment set below.
+                File(appStorageDir, "$DIR_LARAVEL/bootstrap/cache/config.php").delete()
             }
 
             // Set all environment variables in batches for better performance
             setEnvironmentVariables(
-                "APP_KEY" to appKey,
+                "APP_KEY" to appKeys.keys.current,
+                // Always set, so a value in the bundled .env can never apply.
+                "APP_PREVIOUS_KEYS" to appKeys.keys.previous.joinToString(","),
                 // Core Laravel paths
                 "DOCUMENT_ROOT" to "${appStorageDir.absolutePath}/laravel",
                 "LARAVEL_BASE_PATH" to "${appStorageDir.absolutePath}/laravel",
@@ -949,18 +949,18 @@ upload_max_filesize=16M
         }
     }
 
-    // APP_KEY is just 32 random bytes, base64-encoded — generate it locally
-    // instead of booting PHP just to run key:generate (matches iOS).
-    private fun generateAndSaveAppKey(file: File): String {
-        val keyBytes = ByteArray(32)
-        java.security.SecureRandom().nextBytes(keyBytes)
-        val generatedKey = "base64:" + android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP)
-
-        file.parentFile?.mkdirs()
-        file.writeText(generatedKey)
-
-        Log.d(TAG, "🔐 Generated and stored new APP_KEY locally (no PHP boot)")
-        return generatedKey
+    // APP_PREVIOUS_KEYS arrived in Laravel 11. On anything older a rotated
+    // key would leave existing encrypted data unreadable.
+    private fun laravelSupportsPreviousKeys(): Boolean {
+        val encrypter = File(
+            appStorageDir,
+            "$DIR_LARAVEL/vendor/laravel/framework/src/Illuminate/Encryption/Encrypter.php"
+        )
+        return try {
+            encrypter.exists() && encrypter.readText().contains("previousKeys")
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun setEnvironmentVariable(name: String, value: String) {
