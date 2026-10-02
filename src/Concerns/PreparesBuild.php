@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Support\BundleBuildId;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
 use Symfony\Component\Process\Process as SymfonyProcess;
@@ -350,7 +351,10 @@ trait PreparesBuild
 
             $bundleMeta = json_encode([
                 'version' => $version,
-                'version_code' => $versionCode,
+                'version_code' => (int) $versionCode,
+                // Changes on every build, so a rebuild installed over an app with
+                // the same version still re-extracts once on the next launch.
+                'build_id' => BundleBuildId::generate(),
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
                 'entry_mode' => $entryMode,

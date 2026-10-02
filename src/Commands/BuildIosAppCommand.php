@@ -16,6 +16,7 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
+use Native\Mobile\Support\BundleBuildId;
 use Native\Mobile\Support\BundleFileManager;
 
 use function Laravel\Prompts\error;
@@ -951,7 +952,10 @@ class BuildIosAppCommand extends Command
 
         $bundleMeta = json_encode([
             'version' => $appVersion,
-            'version_code' => $versionCode,
+            'version_code' => (int) $versionCode,
+            // Changes on every build, so a rebuild installed over an app with
+            // the same version still re-extracts once on the next launch.
+            'build_id' => BundleBuildId::generate(),
             'bifrost_app_id' => $bifrostAppId,
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
             'entry_mode' => $entryMode,
