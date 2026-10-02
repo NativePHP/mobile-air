@@ -17,6 +17,9 @@ elements (`native:column`, `native:text`, `native:button`, …).** This is the w
   explain why; only fall back to the web view if they explicitly insist.
 - If the app contains legacy webview screens, proactively suggest converting them to native UI (see the
   `nativephp-webview-to-native` skill).
+- EDGE elements are rendered by the `nativephp/mobile-ui` plugin, even `column` and `text`. It must be installed
+  and registered (`php artisan native:plugin:register nativephp/mobile-ui`) or elements disappear from the screen.
+  Text fields are `outlined-text-input`, `filled-text-input` and `bare-text-input`; there is no `text-input`.
 - Style EDGE elements with Tailwind utility classes via `class="..."` / `:class="..."` only — never inline
   CSS `style="..."` attributes or ad-hoc styling props.
 - Compose screens from **nested child components**: any `NativeComponent` under `app/NativeComponents` mounts
