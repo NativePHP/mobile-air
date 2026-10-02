@@ -516,6 +516,8 @@ Organize by feature:
 ```
 Device.GetId
 Device.GetInfo
+Device.GetBatteryInfo
+Device.GetThermalState
 Device.Vibrate
 Device.ToggleFlashlight
 
