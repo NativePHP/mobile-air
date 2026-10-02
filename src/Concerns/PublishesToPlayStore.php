@@ -7,11 +7,23 @@ use Illuminate\Support\Facades\Http;
 
 trait PublishesToPlayStore
 {
+    use DeclaresReleaseAudience;
+
     protected function publishToPlayStore(array $config): bool
     {
         $this->info('🚀 Starting Play Store upload...');
 
         if (! $this->validatePlayStoreConfig($config)) {
+            return false;
+        }
+
+        // The manifest of a non-production build declares a NONPRODUCTION
+        // release audience, so Play would reject the production track anyway.
+        // Refuse it here, where the reason can still be explained.
+        if (($config['track'] ?? null) === 'production' && ! $this->buildsForProduction()) {
+            $this->error('❌ Refusing to publish to the production track: this app was built with APP_ENV='.config('app.env').'.');
+            $this->line('   Build with APP_ENV=production to make a production release.');
+
             return false;
         }
 
@@ -270,8 +282,17 @@ trait PublishesToPlayStore
     {
         $this->info('✅ Committing edit...');
 
-        $response = Http::withToken($accessToken)
-            ->post("https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{$config['package_name']}/edits/{$editId}:commit");
+        $commitUrl = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{$config['package_name']}/edits/{$editId}:commit";
+
+        $response = Http::withToken($accessToken)->post($commitUrl);
+
+        if (! $response->successful() && $this->shouldRetryPlayStoreCommitWithoutReview($response)) {
+            $this->warn('⚠️ Google Play cannot send these changes for review automatically; retrying commit with changesNotSentForReview=true...');
+
+            $response = Http::withToken($accessToken)
+                ->withQueryParameters(['changesNotSentForReview' => 'true'])
+                ->post($commitUrl);
+        }
 
         if (! $response->successful()) {
             $this->error('❌ Failed to commit edit: '.$response->body());
@@ -282,6 +303,33 @@ trait PublishesToPlayStore
         $this->info('✅ Edit committed successfully!');
 
         return true;
+    }
+
+    /**
+     * Detect the Google Play 400 that requires committing without auto-submitting for review.
+     *
+     * Do not always pass changesNotSentForReview — Google returns a different 400 when the
+     * flag is set but not needed. Only retry once when this specific error is returned.
+     */
+    protected function shouldRetryPlayStoreCommitWithoutReview($response): bool
+    {
+        if ($response->status() !== 400) {
+            return false;
+        }
+
+        $payload = $response->json() ?? [];
+        $status = $payload['error']['status'] ?? $payload['status'] ?? null;
+        $message = (string) ($payload['error']['message'] ?? $payload['message'] ?? $response->body());
+
+        $mentionsFlag = str_contains($message, 'changesNotSentForReview');
+        $cannotAutoReview = str_contains($message, 'cannot be sent for review automatically');
+
+        if (! $mentionsFlag && ! $cannotAutoReview) {
+            return false;
+        }
+
+        // Prefer INVALID_ARGUMENT, but accept the distinctive message on any 400 shape.
+        return $status === 'INVALID_ARGUMENT' || ($mentionsFlag && $cannotAutoReview);
     }
 
     public function getLatestPlayStoreVersionCode(array $config): ?int

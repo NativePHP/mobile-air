@@ -9,27 +9,27 @@ use function Laravel\Prompts\outro;
 
 trait PackagesIos
 {
-    use ManagesIosSigning;
+    use DeclaresReleaseAudience, ManagesIosSigning;
 
     protected ?string $temporaryKeychainPath = null;
 
     protected const NFC_ENTITLEMENTS_KEY = 'com.apple.developer.nfc.readersession.formats';
 
-    protected function buildIos(?array $iosSigningConfig = null): void
+    protected function buildIos(?array $iosSigningConfig = null): bool
     {
         // Guard first: every iOS packaging path (test-upload, validate-only, full build)
         // relies on macOS-only tooling (xcrun, xcodebuild, codesign), so fail fast off-macOS
         if (PHP_OS_FAMILY !== 'Darwin') {
             \Laravel\Prompts\error('iOS packaging (including App Store uploads) is only supported on macOS.');
 
-            return;
+            return false;
         }
 
         // If test-upload flag is set, just test upload without building
         if ($this->option('test-upload')) {
             $this->testAppStoreUpload();
 
-            return;
+            return true;
         }
 
         $iosPath = base_path('nativephp/ios');
@@ -38,7 +38,7 @@ trait PackagesIos
             \Laravel\Prompts\error('No iOS project found at [nativephp/ios].');
             \Laravel\Prompts\note('Run `php artisan native:install` first.');
 
-            return;
+            return false;
         }
 
         // Validate version for release builds
@@ -46,21 +46,21 @@ trait PackagesIos
 
         // Check for required tools
         if (! $this->checkIosTools()) {
-            return;
+            return false;
         }
 
         // Validate Team ID is provided (required for CI)
         try {
             $this->getTeamId($iosSigningConfig);
         } catch (\Exception $e) {
-            return;
+            return false;
         }
 
         $exportMethod = $this->option('export-method') ?: 'app-store';
         if (! $this->setupSigningCredentials($exportMethod, $iosSigningConfig)) {
             \Laravel\Prompts\error('Failed to setup signing credentials');
 
-            return;
+            return false;
         }
 
         $archivePath = base_path('nativephp/ios/build/NativePHP.xcarchive');
@@ -71,7 +71,7 @@ trait PackagesIos
 
         if (! file_exists($archivePath)) {
             if (! $this->buildArchive()) {
-                return;
+                return false;
             }
         } else {
             $this->components->twoColumnDetail('Archive', 'Using existing');
@@ -84,19 +84,19 @@ trait PackagesIos
         // Export IPA first (needed for validation)
         $ipaPath = $this->exportArchive($archivePath);
         if (! $ipaPath) {
-            return;
+            return false;
         }
 
         // Validate IPA if requested (using exported IPA, not archive)
         if ($this->option('validate-only')) {
             $this->validateIpa($ipaPath);
 
-            return;
+            return true;
         }
 
         // NEW: Verify NFC entitlements are ["TAG"] only before any upload
         if (! $this->verifyIpaNfcEntitlements($ipaPath)) {
-            return;
+            return false;
         }
 
         // Upload to App Store Connect if requested
@@ -110,6 +110,8 @@ trait PackagesIos
         $this->call('native:build', ['--cleanup-provisioning-profile' => true]);
 
         outro('iOS app packaged successfully');
+
+        return true;
     }
 
     protected function buildArchive(): bool
@@ -521,6 +523,15 @@ trait PackagesIos
             'teamID' => $teamId,
             'manageAppVersionAndBuildNumber' => false, // Prevent Xcode from making changes during export
         ];
+
+        // Anything built outside the production environment is a testing
+        // build, so the package is marked for TestFlight's internal testers
+        // only. Without this the same archive could be handed to external
+        // testers or submitted for App Store review.
+        if ($exportMethod === 'app-store' && $this->restrictToInternalTestFlight()) {
+            $exportOptions['testFlightInternalTestingOnly'] = true;
+            $this->components->twoColumnDetail('TestFlight', 'Internal testing only (APP_ENV='.config('app.env').')');
+        }
 
         // Use automatic for debugging only; manual for everything else (app-store, ad-hoc, enterprise, etc.)
         if ($exportMethod === 'debugging') {
@@ -1296,7 +1307,7 @@ trait PackagesIos
     }
 
     /**
-     * Configure app settings in the archive's Info.plist (export compliance and Firebase)
+     * Configure app settings in the archive's Info.plist.
      */
     protected function configureAppSettings(string $archivePath): bool
     {

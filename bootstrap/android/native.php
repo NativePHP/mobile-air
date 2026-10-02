@@ -1,7 +1,7 @@
 <?php
 
 use Illuminate\Contracts\Http\Kernel;
-use Illuminate\Http\Request;
+use Native\Mobile\Http\Bridge\BridgeDispatcher;
 use Symfony\Component\HttpFoundation\Response;
 
 $_timing = ['start' => microtime(true)];
@@ -30,40 +30,6 @@ $_timing['bootstrap'] = microtime(true);
 
 /*
 |--------------------------------------------------------------------------
-| Normalize incoming environment
-|--------------------------------------------------------------------------
-| We want to make sure Laravel sees:
-| - full query params (even for POSTs)
-| - real cookies (without mangling)
-| - raw input untouched (for JSON & file uploads)
-|--------------------------------------------------------------------------
-*/
-
-// ✅ Preserve cookies as-is
-if (isset($_SERVER['HTTP_COOKIE'])) {
-    $cookiePairs = explode('; ', $_SERVER['HTTP_COOKIE']);
-    $cookies = [];
-    foreach ($cookiePairs as $pair) {
-        $parts = explode('=', $pair, 2);
-        if (count($parts) === 2) {
-            $cookies[$parts[0]] = urldecode($parts[1]);
-        }
-    }
-    $_COOKIE = $cookies;
-}
-
-// ✅ Preserve query params for ALL request methods
-if (isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING'] !== '') {
-    parse_str($_SERVER['QUERY_STRING'], $_GET);
-}
-
-// ✅ Let Laravel handle POST parsing itself (important for multipart/form-data)
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Don't manually parse php://input — Laravel will handle JSON/form-data properly
-}
-
-/*
-|--------------------------------------------------------------------------
 | Handle Laravel request
 |--------------------------------------------------------------------------
 */
@@ -72,7 +38,13 @@ $kernel = $app->make(Kernel::class);
 $_timing['kernel'] = microtime(true);
 
 try {
-    $request = Request::capture();
+    // Query params for every method, cookies as sent, and the body from
+    // php://input parsed into $_POST, $_FILES and $request->file(), the way
+    // PHP-FPM would. Not Request::capture(): on the embed SAPI it never fills
+    // $_FILES, and on Symfony 8 it calls request_parse_body(). Upload temp
+    // files the app didn't move are deleted when the request ends, as PHP does.
+    [$request, $parsedBody] = BridgeDispatcher::classicRequest();
+    register_shutdown_function(fn () => $parsedBody->cleanup());
     $_timing['capture'] = microtime(true);
 
     // Bind request so service providers can resolve it during bootstrap

@@ -170,12 +170,17 @@ export async function GetBatteryInfo() {
     return BridgeCall('Device.GetBatteryInfo', {});
 }
 
+export async function GetThermalState() {
+    return BridgeCall('Device.GetThermalState', {});
+}
+
 export const Device = {
     vibrate: DeviceVibrate,
     flashlight: Flashlight,
     getId: GetId,
     getInfo: GetInfo,
-    getBatteryInfo: GetBatteryInfo
+    getBatteryInfo: GetBatteryInfo,
+    thermalState: GetThermalState
 };
 
 // ============================================================================
@@ -1002,6 +1007,9 @@ export const Events = {
         PaymentCompleted: 'Native\\Mobile\\Events\\Wallet\\PaymentCompleted',
         PaymentFailed: 'Native\\Mobile\\Events\\Wallet\\PaymentFailed',
         PaymentCancelled: 'Native\\Mobile\\Events\\Wallet\\PaymentCancelled',
+    },
+    Device: {
+        ThermalStateChanged: 'Native\\Mobile\\Events\\Device\\ThermalStateChanged',
     },
 };
 

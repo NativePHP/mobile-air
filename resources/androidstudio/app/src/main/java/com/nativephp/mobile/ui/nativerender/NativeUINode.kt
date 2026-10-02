@@ -223,6 +223,9 @@ object ColorParser {
  */
 class GenericProps(private val map: Map<String, Any> = emptyMap()) {
 
+    /** Backing map — used to fold a responsive variant's prop delta over the base. */
+    val raw: Map<String, Any> get() = map
+
     fun getString(key: String, default: String = ""): String =
         (map[key] as? String) ?: default
 
@@ -304,10 +307,202 @@ data class NativeUINode(
     val props: GenericProps,
     val onPress: Int,
     val onLongPress: Int,
-    val children: List<NativeUINode>
+    val children: List<NativeUINode>,
+    /**
+     * Responsive alternatives (`md:` / `lg:` classes), sorted by min width,
+     * each already folded over the base — see [NodeVariant]. Empty for the
+     * vast majority of nodes.
+     */
+    val variants: List<NodeVariant> = emptyList()
 ) {
     override fun equals(other: Any?): Boolean = this === other
     override fun hashCode(): Int = System.identityHashCode(this)
+
+    /**
+     * True when any DIRECT child carries variants. Containers (FlexContainer
+     * and the plugin column / row renderers) read `children[i].layout` to
+     * build flex modifiers before each child's own NodeView runs, so
+     * [resolved] resolves one level of children too — this flag keeps that a
+     * single branch for the common variant-free subtree.
+     */
+    @Transient val hasResponsiveChildren: Boolean = children.any { it.variants.isNotEmpty() }
+
+    // Main-thread cache of resolved() results keyed by which variant won for
+    // this node and for each responsive child, so node identity stays stable
+    // across recompositions between resizes.
+    @Transient private val resolvedCache = HashMap<String, NativeUINode>()
+
+    /**
+     * The node as it should render at [width] dp of window: the widest
+     * variant whose min fits (or `this` when none does), with each
+     * responsive DIRECT child resolved the same way. Nodes with no variants
+     * anywhere in reach — the common case — return `this` after one branch.
+     * Variants are cumulative (mobile-first), so the winner already carries
+     * every narrower breakpoint's overrides.
+     */
+    fun resolved(width: Float): NativeUINode {
+        if (variants.isEmpty() && !hasResponsiveChildren) return this
+
+        val winner = winningVariant(width)
+        val key = StringBuilder().append(winner)
+        var resolvedChildren = children
+        var childrenChanged = false
+        if (hasResponsiveChildren) {
+            val copy = ArrayList(children)
+            children.forEachIndexed { index, child ->
+                if (child.variants.isNotEmpty()) {
+                    key.append(',').append(child.winningVariant(width))
+                    val resolvedChild = child.resolved(width)
+                    if (resolvedChild !== child) {
+                        copy[index] = resolvedChild
+                        childrenChanged = true
+                    }
+                }
+            }
+            if (childrenChanged) resolvedChildren = copy
+        }
+        if (winner < 0 && !childrenChanged) return this
+        val cacheKey = key.toString()
+        resolvedCache[cacheKey]?.let { return it }
+
+        val v = if (winner >= 0) variants[winner] else null
+        val node = NativeUINode(
+            id, type, v?.layout ?: layout, v?.style ?: style, v?.props ?: props,
+            onPress, onLongPress, resolvedChildren
+        )
+        resolvedCache[cacheKey] = node
+        return node
+    }
+
+    /** Index of the widest variant whose min fits [width], or -1. */
+    fun winningVariant(width: Float): Int {
+        var winner = -1
+        variants.forEachIndexed { index, v -> if (width >= v.minWidth) winner = index }
+        return winner
+    }
+}
+
+/**
+ * One breakpoint alternative for a node, already folded over the base node
+ * and every narrower breakpoint. Built once at decode time from the
+ * `_variants` prop PHP emits (a JSON list of `{min, layout?, style?, props?}`
+ * deltas keyed by the same wire names the packed node uses), so
+ * [NativeUINode.resolved] is a comparison, not a merge.
+ */
+data class NodeVariant(
+    val minWidth: Float,
+    val layout: NodeLayout?,
+    val style: NodeStyle?,
+    val props: GenericProps
+) {
+    companion object {
+        fun parse(props: GenericProps, baseLayout: NodeLayout?, baseStyle: NodeStyle?): List<NodeVariant> {
+            if (!props.has("_variants")) return emptyList()
+            val entries = try {
+                org.json.JSONArray(props.getString("_variants"))
+            } catch (_: Exception) {
+                return emptyList()
+            }
+            val out = ArrayList<NodeVariant>(entries.length())
+            var layout = baseLayout
+            var style = baseStyle
+            val propMap = HashMap(props.raw)
+            for (i in 0 until entries.length()) {
+                val entry = entries.optJSONObject(i) ?: continue
+                if (!entry.has("min")) continue
+                entry.optJSONObject("layout")?.let { layout = (layout ?: NodeLayout.EMPTY).applying(it) }
+                entry.optJSONObject("style")?.let { style = (style ?: NodeStyle.EMPTY).applying(it) }
+                entry.optJSONObject("props")?.let { delta ->
+                    for (key in delta.keys()) {
+                        val value = delta.get(key)
+                        if (value != org.json.JSONObject.NULL) propMap[key] = value
+                    }
+                }
+                out.add(NodeVariant(entry.getDouble("min").toFloat(), layout, style, GenericProps(HashMap(propMap))))
+            }
+            out.sortBy { it.minWidth }
+            return out
+        }
+    }
+}
+
+/**
+ * A copy with a PHP layout-array delta applied. Keys and value encodings
+ * mirror `NativeElementCollector::buildLayoutArray`, which is also what the
+ * packed node was built from: sizes are a number (fixed), `"fill"`, `"wrap"`
+ * or `"N%"`; padding / margin / position are a number or a
+ * `[top, right, bottom, left]` list.
+ */
+fun NodeLayout.applying(d: org.json.JSONObject): NodeLayout {
+    fun f(key: String, current: Float): Float = if (d.has(key) && d.opt(key) is Number) (d.get(key) as Number).toFloat() else current
+    fun i(key: String, current: Int): Int = if (d.has(key) && d.opt(key) is Number) (d.get(key) as Number).toInt() else current
+    fun size(key: String, value: Float, mode: Int): Pair<Float, Int> {
+        if (!d.has(key)) return value to mode
+        val raw = d.get(key)
+        if (raw is Number) return raw.toFloat() to SizeMode.FIXED
+        val s = raw as? String ?: return value to mode
+        return when {
+            s == "fill" -> 0f to SizeMode.FILL
+            s == "wrap" -> 0f to SizeMode.WRAP
+            s.endsWith("%") -> (s.dropLast(1).toFloatOrNull() ?: return value to mode) to SizeMode.PERCENT
+            else -> (s.toFloatOrNull() ?: return value to mode) to SizeMode.FIXED
+        }
+    }
+    fun edges(key: String, t: Float, r: Float, b: Float, l: Float): FloatArray {
+        if (!d.has(key)) return floatArrayOf(t, r, b, l)
+        val raw = d.get(key)
+        if (raw is Number) { val v = raw.toFloat(); return floatArrayOf(v, v, v, v) }
+        val list = raw as? org.json.JSONArray ?: return floatArrayOf(t, r, b, l)
+        if (list.length() != 4) return floatArrayOf(t, r, b, l)
+        return FloatArray(4) { list.optDouble(it, 0.0).toFloat() }
+    }
+
+    val (w, wm) = size("width", width, widthMode)
+    val (h, hm) = size("height", height, heightMode)
+    val p = edges("padding", paddingTop, paddingRight, paddingBottom, paddingLeft)
+    val m = edges("margin", marginTop, marginRight, marginBottom, marginLeft)
+    val pos = edges("position", positionTop, positionRight, positionBottom, positionLeft)
+
+    return copy(
+        width = w, widthMode = wm, height = h, heightMode = hm,
+        paddingTop = p[0], paddingRight = p[1], paddingBottom = p[2], paddingLeft = p[3],
+        marginTop = m[0], marginRight = m[1], marginBottom = m[2], marginLeft = m[3],
+        flexGrow = f("flex_grow", flexGrow), flexShrink = f("flex_shrink", flexShrink),
+        alignSelf = i("align_self", alignSelf), alignItems = i("align_items", alignItems),
+        justifyContent = i("justify_content", justifyContent), gap = f("gap", gap),
+        safeArea = i("safe_area", safeArea),
+        minWidth = f("min_width", minWidth), minHeight = f("min_height", minHeight),
+        maxWidth = f("max_width", maxWidth), maxHeight = f("max_height", maxHeight),
+        flexBasis = f("flex_basis", flexBasis),
+        flexBasisMode = if (d.has("flex_basis")) SizeMode.FIXED else flexBasisMode,
+        flexWrap = i("flex_wrap", flexWrap), flexDirection = i("flex_direction", flexDirection),
+        positionType = i("position_type", positionType),
+        positionTop = pos[0], positionRight = pos[1], positionBottom = pos[2], positionLeft = pos[3],
+        display = i("display", display), overflow = i("overflow", overflow),
+        alignContent = i("align_content", alignContent), direction = i("direction", direction),
+        aspectRatio = f("aspect_ratio", aspectRatio), rowGap = f("row_gap", rowGap)
+    )
+}
+
+/** A copy with a PHP style-array delta applied (colours arrive as hex strings). */
+fun NodeStyle.applying(d: org.json.JSONObject): NodeStyle {
+    fun f(key: String, current: Float): Float = if (d.has(key) && d.opt(key) is Number) (d.get(key) as Number).toFloat() else current
+    fun color(key: String, current: Int): Int {
+        if (!d.has(key)) return current
+        return when (val raw = d.get(key)) {
+            is Number -> raw.toInt()
+            is String -> ColorParser.parse(raw, current)
+            else -> current
+        }
+    }
+    return copy(
+        bgColor = color("bg_color", bgColor),
+        borderRadius = f("border_radius", borderRadius),
+        borderWidth = f("border_width", borderWidth),
+        borderColor = color("border_color", borderColor),
+        opacity = f("opacity", opacity),
+        elevation = f("elevation", elevation)
+    )
 }
 
 /**
@@ -353,7 +548,16 @@ data class NodeLayout(
     val direction: Int = 0,
     val aspectRatio: Float = 0f,
     val rowGap: Float = 0f
-)
+) {
+    companion object {
+        val EMPTY = NodeLayout(
+            width = 0f, widthMode = SizeMode.WRAP, height = 0f, heightMode = SizeMode.WRAP,
+            paddingTop = 0f, paddingRight = 0f, paddingBottom = 0f, paddingLeft = 0f,
+            marginTop = 0f, marginRight = 0f, marginBottom = 0f, marginLeft = 0f,
+            flexGrow = 0f, flexShrink = 0f, alignSelf = 0, alignItems = 0, justifyContent = 0, gap = 0f
+        )
+    }
+}
 
 /**
  * Visual style properties for a node.
@@ -365,4 +569,8 @@ data class NodeStyle(
     val borderColor: Int,
     val opacity: Float,
     val elevation: Float
-)
+) {
+    companion object {
+        val EMPTY = NodeStyle(0, 0f, 0f, 0, 1f, 0f)
+    }
+}

@@ -139,10 +139,17 @@ class RunCommand extends Command
 
         $this->checkForUnregisteredPlugins();
 
-        match ($os) {
+        $succeeded = match ($os) {
             'android' => $this->runAndroid(),
             'ios' => $this->runIos(),
         };
+
+        // A build that stopped early has already said why. Carrying that out
+        // as the exit code is what lets CI notice it at all, and skipping the
+        // banner keeps that error from being buried under it.
+        if (! $succeeded) {
+            return self::FAILURE;
+        }
 
         $this->showBifrostBanner();
 

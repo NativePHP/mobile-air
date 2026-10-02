@@ -4,12 +4,17 @@ namespace Native\Mobile\Plugins\Compilers;
 
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
+use InvalidArgumentException;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\LegacyFirebaseConfig;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Plugins\ProjectFileManager;
 use Native\Mobile\Plugins\SwiftSourceFilter;
+use Native\Mobile\Support\PlistDocument;
 use Native\Mobile\Support\Stub;
+use Native\Mobile\Support\SupportedLocales;
 
 class IOSPluginCompiler
 {
@@ -112,6 +117,17 @@ class IOSPluginCompiler
         $this->clean();
         $this->files->ensureDirectoryExists($this->generatedPath);
 
+        // Copy app-owned files declared by plugins into the iOS project.
+        (new ProjectFileManager($this->files, $this->basePath, 'ios'))->sync($allPlugins);
+
+        // Back-compat: install GoogleService-Info.plist on behalf of a plugin
+        // that predates project_files. Does nothing once the plugin owns it.
+        $legacyFirebase = (new LegacyFirebaseConfig($this->files, $this->basePath))->sync($allPlugins, 'ios');
+
+        if ($legacyFirebase !== null) {
+            $this->warn(LegacyFirebaseConfig::deprecationNotice($legacyFirebase, 'ios'));
+        }
+
         // Get plugins with iOS code (for copying files)
         $pluginsWithCode = $allPlugins->filter(fn (Plugin $p) => $p->hasIosCode());
 
@@ -143,10 +159,12 @@ class IOSPluginCompiler
             return false;
         });
 
-        // The app may declare per-locale permission strings without depending on
-        // any plugin shipping iOS data — keep going past the early return below
-        // so writeInfoPlistLocalizations() can run on app config alone.
-        $hasAppLocalizations = ! empty($this->getAppInfoPlistLocalizations());
+        // Which languages the app ships is its own declaration, true whatever
+        // plugins are installed — including none, hence running before the
+        // early return below. Dropping a language has to un-ship it, and an
+        // early return would quietly leave the last build's languages on an
+        // app that no longer claims them.
+        $this->writeSupportedLocales($allPlugins);
 
         // If no plugins have any iOS-related data, generate empty registrations
         if (
@@ -154,7 +172,6 @@ class IOSPluginCompiler
             && $pluginsWithFunctions->isEmpty()
             && $pluginsWithIosData->isEmpty()
             && $pluginsWithRenderers->isEmpty()
-            && ! $hasAppLocalizations
         ) {
             $this->generateEmptyRegistration();
             $this->generateEmptyRendererRegistration();
@@ -173,12 +190,6 @@ class IOSPluginCompiler
 
         // Merge Info.plist entries (for any plugins with iOS permissions)
         $this->mergeInfoPlistEntries($allPlugins);
-
-        // Write per-locale InfoPlist.strings for any localized permission entries
-        $this->writeInfoPlistLocalizations($allPlugins);
-
-        // Merge background modes into Info.plist
-        $this->mergeBackgroundModes($allPlugins);
 
         // Merge entitlements from plugins
         $this->mergeEntitlements($allPlugins);
@@ -281,8 +292,21 @@ class IOSPluginCompiler
      */
     protected function warn(string $message): void
     {
-        if ($this->output !== null && method_exists($this->output, 'warn')) {
+        if ($this->output === null) {
+            return;
+        }
+
+        // A Command has warn(); Illuminate\Console\OutputStyle — which is what
+        // the build commands actually pass — does not, so calling it blindly
+        // fataled the build and guarding on it swallowed the message entirely.
+        if (method_exists($this->output, 'warn')) {
             $this->output->warn($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<comment>{$message}</comment>");
         }
     }
 
@@ -413,48 +437,83 @@ class IOSPluginCompiler
     }
 
     /**
-     * Merge plugin Info.plist entries into main plist and simulator plist
+     * Merge every plugin's Info.plist contributions into the device and
+     * simulator plists: a resources/ios/Info.plist file, the manifest's
+     * info_plist entries and its background modes, with app-level
+     * overrides applied last so they always win over plugins.
      */
     protected function mergeInfoPlistEntries(Collection $plugins): void
     {
-        // Both device and simulator Info.plist files need plugin entries
         $plistPaths = [
             $this->iosProjectPath.'/NativePHP/Info.plist',
             $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
         ];
-
-        $appOverrides = $this->getAppInfoPlistOverrides();
 
         foreach ($plistPaths as $plistPath) {
             if (! $this->files->exists($plistPath)) {
                 continue;
             }
 
-            $plist = $this->files->get($plistPath);
+            $plist = $this->openPlist($plistPath);
 
             foreach ($plugins as $plugin) {
-                // First check for Info.plist file
                 $pluginPlistPath = $plugin->path.'/resources/ios/Info.plist';
 
                 if ($this->files->exists($pluginPlistPath)) {
-                    $pluginPlist = $this->files->get($pluginPlistPath);
-                    $plist = $this->mergePlists($plist, $pluginPlist);
+                    $this->mergeIntoPlist($plist, $this->pluginPlistEntries($this->openPlist($pluginPlistPath)->all()));
                 }
 
-                // Also merge info_plist entries from nativephp.json
-                $infoPlistEntries = $plugin->getIosInfoPlist();
-                if (! empty($infoPlistEntries)) {
-                    $plist = $this->injectPlistEntries($plist, $infoPlistEntries);
+                $this->mergeIntoPlist($plist, $this->pluginPlistEntries($plugin->getIosInfoPlist()));
+
+                if ($modes = $plugin->getIosBackgroundModes()) {
+                    $this->mergeIntoPlist($plist, ['UIBackgroundModes' => $modes]);
                 }
             }
 
-            // Apply app-level overrides last so they always win over plugins.
-            if (! empty($appOverrides)) {
-                $plist = $this->injectPlistEntries($plist, $appOverrides);
-            }
+            $this->mergeIntoPlist($plist, $this->getAppInfoPlistOverrides());
 
-            $this->files->put($plistPath, $plist);
+            $this->files->put($plistPath, $plist->toXml());
         }
+    }
+
+    /**
+     * A plugin's plist contributions, minus the keys only the app decides.
+     *
+     * Entries merge, and lists union by content — so a plugin declaring
+     * CFBundleLocalizations would put languages back in the app's mouth by
+     * the side door that writeSupportedLocales() exists to close.
+     */
+    protected function pluginPlistEntries(array $entries): array
+    {
+        unset($entries['CFBundleLocalizations']);
+
+        return $entries;
+    }
+
+    /**
+     * Open a plist, naming the file when it does not parse.
+     */
+    protected function openPlist(string $path): PlistDocument
+    {
+        try {
+            return PlistDocument::fromXml($this->files->get($path));
+        } catch (InvalidArgumentException $e) {
+            throw new InvalidArgumentException("{$path}: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Merge entries into a plist, resolving ${ENV_VAR} placeholders on the way in.
+     */
+    protected function mergeIntoPlist(PlistDocument $plist, array $entries): void
+    {
+        array_walk_recursive($entries, function (&$value) {
+            if (is_string($value)) {
+                $value = $this->substituteEnvPlaceholders($value);
+            }
+        });
+
+        $plist->merge($entries);
     }
 
     /**
@@ -479,38 +538,95 @@ class IOSPluginCompiler
     }
 
     /**
-     * Write {locale}.lproj/InfoPlist.strings files for each locale that has
-     * per-locale permission strings, and register the locales with the Xcode
-     * project so they ship with the app bundle.
+     * Declare the languages this app supports, and translate the permission
+     * strings for them.
+     *
+     * Two jobs that used to be one. The set of languages is scope, owned by
+     * the app through config('nativephp.supported_locales'); the per-locale
+     * permission strings are content, which plugins may ship. Deriving the
+     * first from the second meant a plugin translating its camera explainer
+     * into ten languages had the App Store advertise ten languages for an
+     * English-only app, since the store reads that list off the binary.
+     */
+    protected function writeSupportedLocales(Collection $plugins): void
+    {
+        $locales = SupportedLocales::fromConfig();
+
+        foreach ($locales->warnings(lang_path()) as $warning) {
+            $this->warn($warning);
+        }
+
+        $this->declareBundleLocalizations($locales);
+        $this->writeInfoPlistLocalizations($plugins, $locales);
+    }
+
+    /**
+     * Record the supported languages as CFBundleLocalizations.
+     *
+     * A NativePHP app translates in PHP, against Laravel's lang files, so it
+     * has no .lproj resources to infer languages from the way a native app
+     * does. CFBundleLocalizations is Apple's answer for exactly that case: it
+     * is what makes the app offer a language in Settings and what the App
+     * Store lists on the product page.
+     *
+     * Set rather than merged — merging unions lists by content, which would
+     * make a removed language impossible to un-ship.
+     */
+    protected function declareBundleLocalizations(SupportedLocales $locales): void
+    {
+        $plistPaths = [
+            $this->iosProjectPath.'/NativePHP/Info.plist',
+            $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
+        ];
+
+        foreach ($plistPaths as $plistPath) {
+            if (! $this->files->exists($plistPath)) {
+                continue;
+            }
+
+            $plist = $this->openPlist($plistPath);
+
+            if ($plist->get('CFBundleLocalizations') === $locales->all()) {
+                continue;
+            }
+
+            $plist->set('CFBundleLocalizations', $locales->all());
+
+            $this->files->put($plistPath, $plist->toXml());
+        }
+    }
+
+    /**
+     * Write {locale}.lproj/InfoPlist.strings for each supported locale that
+     * has per-locale permission strings, and register those locales with the
+     * Xcode project so they ship with the app bundle.
      *
      * Plugin manifests contribute via `ios.info_plist_localizations`; the app
      * config wins on key collisions, mirroring how flat entries are merged.
+     * A plugin's locale the app does not support is dropped: a plugin brings
+     * translations, never languages.
      */
-    protected function writeInfoPlistLocalizations(Collection $plugins): void
+    protected function writeInfoPlistLocalizations(Collection $plugins, SupportedLocales $locales): void
     {
         // [locale => [key => value]]
         $merged = [];
 
         foreach ($plugins as $plugin) {
             foreach ($plugin->getIosInfoPlistLocalizations() as $locale => $entries) {
-                if (! is_array($entries)) {
+                if (! is_array($entries) || ! $locales->allows((string) $locale)) {
                     continue;
                 }
-                $locale = $this->normalizeLocale($locale);
+                $locale = SupportedLocales::normalize((string) $locale);
                 $merged[$locale] = array_merge($merged[$locale] ?? [], $entries);
             }
         }
 
         foreach ($this->getAppInfoPlistLocalizations() as $locale => $entries) {
-            if (! is_array($entries)) {
+            if (! is_array($entries) || ! $locales->allows((string) $locale)) {
                 continue;
             }
-            $locale = $this->normalizeLocale($locale);
+            $locale = SupportedLocales::normalize((string) $locale);
             $merged[$locale] = array_merge($merged[$locale] ?? [], $entries);
-        }
-
-        if (empty($merged)) {
-            return;
         }
 
         // Write one .lproj folder per locale inside the synced NativePHP group;
@@ -528,6 +644,57 @@ class IOSPluginCompiler
         }
 
         $this->registerKnownRegions(array_keys($merged));
+
+        // Runs on every compile, not just when something was written: a
+        // language the app stopped supporting has to stop shipping.
+        $this->pruneLocalizations($resourcesRoot, array_keys($merged), $locales);
+    }
+
+    /**
+     * Drop the .lproj folders, and the knownRegions entries, of locales the
+     * app no longer writes strings for.
+     *
+     * Only folders holding nothing but the InfoPlist.strings we generate are
+     * removed — a developer keeping their own localized resources next to
+     * ours owns that folder, and losing it to a config edit would be a much
+     * worse bug than a stale language.
+     *
+     * @param  list<string>  $written  Locales this compile wrote
+     */
+    protected function pruneLocalizations(string $resourcesRoot, array $written, SupportedLocales $locales): void
+    {
+        if (! $this->files->isDirectory($resourcesRoot)) {
+            return;
+        }
+
+        $stale = [];
+
+        foreach ($this->files->directories($resourcesRoot) as $directory) {
+            $name = basename($directory);
+
+            if (! str_ends_with($name, '.lproj')) {
+                continue;
+            }
+
+            $locale = substr($name, 0, -strlen('.lproj'));
+
+            if (in_array($locale, $written, true)) {
+                continue;
+            }
+
+            $contents = array_map(fn ($file) => $file->getFilename(), $this->files->files($directory));
+
+            if ($contents !== ['InfoPlist.strings'] || ! empty($this->files->directories($directory))) {
+                continue;
+            }
+
+            $this->files->deleteDirectory($directory);
+            $stale[] = $locale;
+        }
+
+        if (! empty($stale)) {
+            $this->pruneKnownRegions($stale, $locales);
+        }
     }
 
     /**
@@ -566,16 +733,6 @@ class IOSPluginCompiler
             "\r" => '\\r',
             "\t" => '\\t',
         ]);
-    }
-
-    /**
-     * Apple uses BCP 47 / POSIX style locale identifiers in .lproj names
-     * (e.g. `en`, `nl`, `zh-Hans`, `pt-BR`). Normalize PHP/Laravel-style
-     * `nl_NL` to `nl-NL` so it lands in the right bundle folder.
-     */
-    protected function normalizeLocale(string $locale): string
-    {
-        return str_replace('_', '-', trim($locale));
     }
 
     /**
@@ -626,97 +783,54 @@ class IOSPluginCompiler
     }
 
     /**
-     * Merge two plist files
+     * Remove locales from `knownRegions` once their .lproj folders are gone.
+     *
+     * The sibling above only ever adds, which is why a language could be
+     * shipped but never un-shipped. Only locales this compiler wrote are
+     * removed: `Base`, the development region and the app's own language stay
+     * whatever the project says they are.
+     *
+     * @param  list<string>  $locales
      */
-    protected function mergePlists(string $main, string $plugin): string
+    protected function pruneKnownRegions(array $locales, SupportedLocales $supported): void
     {
-        // Extract key-value pairs from plugin plist
-        preg_match_all('/<key>([^<]+)<\/key>\s*<string>([^<]+)<\/string>/s', $plugin, $matches, PREG_SET_ORDER);
+        $projectPath = $this->iosProjectPath.'/NativePHP.xcodeproj/project.pbxproj';
 
-        $entries = [];
-        foreach ($matches as $match) {
-            $entries[$match[1]] = $match[2];
+        if (! $this->files->exists($projectPath)) {
+            return;
         }
 
-        return $this->injectPlistEntries($main, $entries);
-    }
+        $pbxproj = $this->files->get($projectPath);
 
-    /**
-     * Inject entries into plist
-     */
-    protected function injectPlistEntries(string $plist, array $entries): string
-    {
-        foreach ($entries as $key => $value) {
-            // Check if key already exists
-            if (str_contains($plist, "<key>{$key}</key>")) {
-                if (is_array($value)) {
-                    $plist = $this->mergeArrayEntry($plist, $key, $value);
-                } elseif (is_string($value)) {
-                    $plist = $this->updateStringEntry($plist, $key, $this->substituteEnvPlaceholders($value));
-                }
+        $removable = array_filter(
+            $locales,
+            fn (string $locale) => $locale !== 'Base' && strcasecmp($locale, $supported->base()) !== 0
+        );
 
-                continue;
-            }
-
-            // Handle array values
-            if (is_array($value)) {
-                $arrayContent = '';
-                foreach ($value as $item) {
-                    $item = $this->substituteEnvPlaceholders($item);
-                    $arrayContent .= "\n\t\t<string>{$item}</string>";
-                }
-                $entry = "\n\t<key>{$key}</key>\n\t<array>{$arrayContent}\n\t</array>";
-            } else {
-                // Handle string values - substitute placeholders
-                $value = $this->substituteEnvPlaceholders($value);
-                $entry = "\n\t<key>{$key}</key>\n\t<string>{$value}</string>";
-            }
-
-            // Add before closing </dict>
-            $plist = preg_replace(
-                '/(\s*<\/dict>\s*<\/plist>)/s',
-                $entry.'$1',
-                $plist,
-                1
-            );
+        if (empty($removable)) {
+            return;
         }
 
-        return $plist;
-    }
+        $updated = preg_replace_callback('/(knownRegions\s*=\s*\()([^)]*)(\s*\))/s', function ($matches) use ($removable) {
+            $existing = $matches[2];
 
-    /**
-     * Update an existing string entry's value in the plist
-     */
-    protected function updateStringEntry(string $plist, string $key, string $value): string
-    {
-        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<string>)([^<]*)(<\/string>)/';
-
-        return preg_replace_callback($pattern, function ($matches) use ($value) {
-            return $matches[1].htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8').$matches[3];
-        }, $plist, 1);
-    }
-
-    /**
-     * Merge array values into an existing plist array entry
-     */
-    protected function mergeArrayEntry(string $plist, string $key, array $values): string
-    {
-        $pattern = '/(<key>'.preg_quote($key, '/').'<\/key>\s*<array>)(.*?)(<\/array>)/s';
-
-        return preg_replace_callback($pattern, function ($matches) use ($values) {
-            $existingContent = $matches[2];
-            $newItems = '';
-
-            foreach ($values as $item) {
-                $item = $this->substituteEnvPlaceholders($item);
-                // Only add if not already present
-                if (! str_contains($existingContent, "<string>{$item}</string>")) {
-                    $newItems .= "\n\t\t<string>{$item}</string>";
-                }
+            foreach ($removable as $locale) {
+                // Delimited both ways: `en` must not take `en-GB` with it, and
+                // `Hans` must not eat the tail of `zh-Hans`.
+                $existing = preg_replace(
+                    '/(^|,)\s*'.preg_quote($locale, '/').'\s*,/',
+                    '$1',
+                    $existing,
+                    1
+                );
             }
 
-            return $matches[1].$existingContent.$newItems.$matches[3];
-        }, $plist);
+            return $matches[1].$existing.$matches[3];
+        }, $pbxproj, 1);
+
+        if ($updated !== null && $updated !== $pbxproj) {
+            $this->files->put($projectPath, $updated);
+        }
     }
 
     /**
@@ -735,52 +849,6 @@ class IOSPluginCompiler
 
             return $envValue;
         }, $value);
-    }
-
-    /**
-     * Merge background modes from plugins into Info.plist UIBackgroundModes array
-     */
-    protected function mergeBackgroundModes(Collection $plugins): void
-    {
-        $backgroundModes = [];
-
-        foreach ($plugins as $plugin) {
-            $modes = $plugin->getIosBackgroundModes();
-            foreach ($modes as $mode) {
-                $backgroundModes[$mode] = true;
-            }
-        }
-
-        if (empty($backgroundModes)) {
-            return;
-        }
-
-        // Both device and simulator Info.plist files need background modes
-        $plistPaths = [
-            $this->iosProjectPath.'/NativePHP/Info.plist',
-            $this->iosProjectPath.'/NativePHP-simulator-Info.plist',
-        ];
-
-        foreach ($plistPaths as $plistPath) {
-            if (! $this->files->exists($plistPath)) {
-                continue;
-            }
-
-            $plist = $this->files->get($plistPath);
-
-            // Check if UIBackgroundModes already exists
-            if (str_contains($plist, '<key>UIBackgroundModes</key>')) {
-                // Merge with existing array
-                $plist = $this->mergeArrayEntry($plist, 'UIBackgroundModes', array_keys($backgroundModes));
-            } else {
-                // Add new UIBackgroundModes array
-                $plist = $this->injectPlistEntries($plist, [
-                    'UIBackgroundModes' => array_keys($backgroundModes),
-                ]);
-            }
-
-            $this->files->put($plistPath, $plist);
-        }
     }
 
     /**

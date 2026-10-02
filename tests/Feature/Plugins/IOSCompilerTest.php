@@ -8,6 +8,7 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginManifest;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\PlistDocument;
 use Tests\TestCase;
 
 /**
@@ -92,6 +93,7 @@ let package = Package(
         // into later tests in the same process.
         config()->set('nativephp.permissions', []);
         config()->set('nativephp.permission_localizations', []);
+        config()->set('nativephp.supported_locales', []);
 
         $this->files->deleteDirectory($this->testBasePath);
         Mockery::close();
@@ -339,6 +341,125 @@ class NestedClass {}');
         $this->assertStringContainsString('This app uses camera', $content);
         $this->assertStringContainsString('NSMicrophoneUsageDescription', $content);
         $this->assertStringContainsString('This app uses microphone', $content);
+    }
+
+    /**
+     * @test
+     *
+     * A manifest boolean must land as <true/> / <false/>. Written as a
+     * <string> it renders as "" for false, which Firebase and friends read
+     * as unset — the declared setting is silently ignored.
+     */
+    public function it_writes_manifest_booleans_as_plist_booleans(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [
+                    'FirebaseAppDelegateProxyEnabled' => false,
+                    'UIFileSharingEnabled' => true,
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+
+        $this->assertMatchesRegularExpression(
+            '/<key>FirebaseAppDelegateProxyEnabled<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertMatchesRegularExpression(
+            '/<key>UIFileSharingEnabled<\/key>\s*<true\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString(
+            '<key>FirebaseAppDelegateProxyEnabled</key>',
+            str_replace('<key>FirebaseAppDelegateProxyEnabled</key>', '', $content)
+        );
+    }
+
+    /**
+     * @test
+     *
+     * An earlier build wrote booleans as <string/>. Recompiling has to
+     * replace that self-closing element, not skip it as unmatched.
+     */
+    public function it_repairs_a_boolean_previously_written_as_an_empty_string(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, str_replace(
+            '</dict>',
+            "\t<key>FirebaseAppDelegateProxyEnabled</key>\n\t<string/>\n</dict>",
+            $this->files->get($plistPath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['FirebaseAppDelegateProxyEnabled' => false]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($plistPath);
+
+        $this->assertMatchesRegularExpression(
+            '/<key>FirebaseAppDelegateProxyEnabled<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString('<string/>', $content);
+    }
+
+    /** @test */
+    public function it_writes_manifest_integers_as_plist_integers(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['SomeNumericSetting' => 42]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist');
+
+        $this->assertMatchesRegularExpression(
+            '/<key>SomeNumericSetting<\/key>\s*<integer>42<\/integer>/',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Declaring a boolean for a key that already holds a <string> has to
+     * change the element type, not just its contents.
+     */
+    public function it_replaces_an_existing_string_entry_with_a_boolean(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Camera access']],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->assertStringContainsString('<string>Camera access</string>', $this->files->get($plistPath));
+
+        config()->set('nativephp.permissions', ['NSCameraUsageDescription' => false]);
+        $this->compiler->compile();
+
+        $content = $this->files->get($plistPath);
+
+        $this->assertMatchesRegularExpression(
+            '/<key>NSCameraUsageDescription<\/key>\s*<false\s*\/>/',
+            $content
+        );
+        $this->assertStringNotContainsString('<string>Camera access</string>', $content);
     }
 
     /**
@@ -712,6 +833,7 @@ class NestedClass {}');
      */
     public function it_writes_app_level_info_plist_localizations(): void
     {
+        config()->set('nativephp.supported_locales', ['nl', 'fr']);
         config()->set('nativephp.permission_localizations', [
             'nl' => [
                 'NSCameraUsageDescription' => 'Camera-toegang nodig.',
@@ -742,6 +864,7 @@ class NestedClass {}');
         $this->assertStringContainsString('"NSCameraUsageDescription" = "Accès caméra requis.";', $fr);
 
         config()->set('nativephp.permission_localizations', []);
+        config()->set('nativephp.supported_locales', []);
     }
 
     /**
@@ -752,6 +875,7 @@ class NestedClass {}');
      */
     public function it_merges_plugin_localizations_with_app_overrides(): void
     {
+        config()->set('nativephp.supported_locales', ['nl']);
         config()->set('nativephp.permission_localizations', [
             'nl' => [
                 'NSCameraUsageDescription' => 'App-level NL string.',
@@ -786,6 +910,7 @@ class NestedClass {}');
         $this->assertStringContainsString('"NSMicrophoneUsageDescription" = "Plugin NL microfoon.";', $nl);
 
         config()->set('nativephp.permission_localizations', []);
+        config()->set('nativephp.supported_locales', []);
     }
 
     /**
@@ -814,6 +939,7 @@ class NestedClass {}');
      */
     public function it_escapes_special_characters_in_localized_strings(): void
     {
+        config()->set('nativephp.supported_locales', ['nl']);
         config()->set('nativephp.permission_localizations', [
             'nl' => [
                 'NSCameraUsageDescription' => "Camera \"toegang\" \\nodig\nop regel 2",
@@ -834,6 +960,7 @@ class NestedClass {}');
         );
 
         config()->set('nativephp.permission_localizations', []);
+        config()->set('nativephp.supported_locales', []);
     }
 
     /**
@@ -850,6 +977,7 @@ class NestedClass {}');
         $this->files->ensureDirectoryExists(dirname($pbxprojPath));
         $this->files->put($pbxprojPath, "// !\$*UTF8\$*!\n{\n\tobjects = {\n\t\t95BD5DBB /* Project object */ = {\n\t\t\tisa = PBXProject;\n\t\t\tdevelopmentRegion = en;\n\t\t\tknownRegions = (\n\t\t\t\ten,\n\t\t\t\tBase,\n\t\t\t);\n\t\t};\n\t};\n}\n");
 
+        config()->set('nativephp.supported_locales', ['nl', 'fr', 'en']);
         config()->set('nativephp.permission_localizations', [
             'nl' => ['NSCameraUsageDescription' => 'NL'],
             'fr' => ['NSCameraUsageDescription' => 'FR'],
@@ -871,6 +999,7 @@ class NestedClass {}');
         $this->assertEquals(1, substr_count($pbxproj, "\ten,"));
 
         config()->set('nativephp.permission_localizations', []);
+        config()->set('nativephp.supported_locales', []);
     }
 
     /**
@@ -885,6 +1014,7 @@ class NestedClass {}');
         $this->files->ensureDirectoryExists(dirname($pbxprojPath));
         $this->files->put($pbxprojPath, "// !\$*UTF8\$*!\n{\n\tknownRegions = (\n\t\ten,\n\t\tBase,\n\t);\n}\n");
 
+        config()->set('nativephp.supported_locales', ['nl']);
         config()->set('nativephp.permission_localizations', [
             'nl' => ['NSCameraUsageDescription' => 'NL'],
         ]);
@@ -903,6 +1033,7 @@ class NestedClass {}');
         $this->assertEquals(1, substr_count($pbxproj, "\tnl,"));
 
         config()->set('nativephp.permission_localizations', []);
+        config()->set('nativephp.supported_locales', []);
     }
 
     /**
@@ -1075,8 +1206,434 @@ class NestedClass {}');
     }
 
     /**
+     * @test
+     *
+     * Apple keys such as SKAdNetworkItems are arrays of dicts. They must
+     * land with their structure intact, and a rebuild must not duplicate.
+     */
+    public function it_merges_arrays_of_dicts_into_info_plist(): void
+    {
+        $items = [
+            ['SKAdNetworkIdentifier' => 'cstr6suwn9.skadnetwork'],
+            ['SKAdNetworkIdentifier' => '4fzdc2evr5.skadnetwork'],
+        ];
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['SKAdNetworkItems' => $items]],
+        ]);
+
+        $this->files->copy(
+            $this->testBasePath.'/ios/NativePHP/Info.plist',
+            $this->testBasePath.'/ios/NativePHP-simulator-Info.plist'
+        );
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $this->assertSame($items, $this->readPlist()->get('SKAdNetworkItems'));
+        $this->assertSame($items, $this->readPlist('NativePHP-simulator-Info.plist')->get('SKAdNetworkItems'));
+        $this->assertNull($this->readPlist('NativePHP-simulator-Info.plist')->get('UIBackgroundModes'));
+    }
+
+    /**
+     * @test
+     *
+     * Bools and integers keep their plist type, and a value the old text
+     * merge wrote with the wrong type is corrected on the next build.
+     */
+    public function it_writes_typed_plist_values(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, str_replace(
+            '<dict>',
+            "<dict>\n\t<key>FirebaseAppDelegateProxyEnabled</key>\n\t<string></string>",
+            $this->files->get($plistPath)
+        ));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => [
+                'FirebaseAppDelegateProxyEnabled' => false,
+                'UIFileSharingEnabled' => true,
+                'ITSAppUsesNonExemptEncryption' => 0,
+            ]],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $plist = $this->readPlist();
+
+        $this->assertFalse($plist->get('FirebaseAppDelegateProxyEnabled'));
+        $this->assertTrue($plist->get('UIFileSharingEnabled'));
+        $this->assertSame(0, $plist->get('ITSAppUsesNonExemptEncryption'));
+        $this->assertStringNotContainsString('<string></string>', $this->files->get($plistPath));
+    }
+
+    /**
+     * @test
+     *
+     * A plugin's resources/ios/Info.plist is merged with every value type,
+     * and keys nested inside it never surface at the top level.
+     */
+    public function it_merges_plugin_info_plist_files_structurally(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $this->files->ensureDirectoryExists($pluginPath.'/resources/ios');
+        $this->files->put($pluginPath.'/resources/ios/Info.plist', '<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Any file</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>');
+
+        $plugin = $this->createTestPlugin([
+            'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Camera access']],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $plist = $this->readPlist();
+
+        $this->assertTrue($plist->get('UIFileSharingEnabled'));
+        $this->assertSame([[
+            'CFBundleTypeName' => 'Any file',
+            'LSItemContentTypes' => ['public.data'],
+        ]], $plist->get('CFBundleDocumentTypes'));
+        $this->assertNull($plist->get('CFBundleTypeName'));
+    }
+
+    /**
+     * @test
+     *
+     * ${ENV_VAR} placeholders resolve inside nested values too.
+     */
+    public function it_substitutes_placeholders_inside_nested_values(): void
+    {
+        putenv('NATIVEPHP_TEST_SKAN=4fzdc2evr5.skadnetwork');
+        $_ENV['NATIVEPHP_TEST_SKAN'] = '4fzdc2evr5.skadnetwork';
+
+        try {
+            $plugin = $this->createTestPlugin([
+                'ios' => ['info_plist' => [
+                    'SKAdNetworkItems' => [['SKAdNetworkIdentifier' => '${NATIVEPHP_TEST_SKAN}']],
+                ]],
+            ]);
+
+            $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+            $this->compiler->compile();
+
+            $this->assertSame('4fzdc2evr5.skadnetwork', $this->readPlist()->get('SKAdNetworkItems')[0]['SKAdNetworkIdentifier']);
+        } finally {
+            putenv('NATIVEPHP_TEST_SKAN');
+            unset($_ENV['NATIVEPHP_TEST_SKAN']);
+        }
+    }
+
+    /**
+     * @test
+     *
+     * Background modes share the plist merge, so they union with what
+     * the base plist already declares and never duplicate on rebuild.
+     */
+    public function it_unions_background_modes_with_the_base_plist(): void
+    {
+        $plistPath = $this->testBasePath.'/ios/NativePHP/Info.plist';
+        $this->files->put($plistPath, $this->files->get(__DIR__.'/../../../resources/xcode/NativePHP/Info.plist'));
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => ['NSLocationWhenInUseUsageDescription' => 'Location access'],
+                'background_modes' => ['remote-notification', 'location'],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $plist = $this->readPlist();
+
+        $this->assertSame(['remote-notification', 'location'], $plist->get('UIBackgroundModes'));
+    }
+
+    private function readPlist(string $file = 'NativePHP/Info.plist'): PlistDocument
+    {
+        return PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/'.$file));
+    }
+
+    /**
      * Helper method to create a test Plugin instance.
      */
+    /**
+     * @test
+     *
+     * A NativePHP app translates in PHP and has no .lproj resources of its
+     * own to infer languages from, so CFBundleLocalizations is what tells iOS
+     * — and the App Store product page — which languages it supports.
+     */
+    public function it_declares_the_supported_locales_in_the_bundle(): void
+    {
+        config()->set('nativephp.supported_locales', ['fr', 'nl']);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+
+        $this->assertSame(['en', 'fr', 'nl'], $plist->get('CFBundleLocalizations'));
+
+        // Entries nobody touched survive.
+        $this->assertSame('NativePHP', $plist->get('CFBundleName'));
+    }
+
+    /**
+     * @test
+     *
+     * Set, not merged: a merge unions lists by content, which would make a
+     * language impossible to un-ship once it had been declared once.
+     */
+    public function it_replaces_bundle_localizations_when_a_language_is_dropped(): void
+    {
+        config()->set('nativephp.supported_locales', ['fr', 'nl']);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        config()->set('nativephp.supported_locales', ['fr']);
+
+        $this->compiler->compile();
+
+        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+
+        $this->assertSame(['en', 'fr'], $plist->get('CFBundleLocalizations'));
+    }
+
+    /**
+     * @test
+     *
+     * A plugin translating its permission explainer into a language the app
+     * does not support must not get that language into the bundle — that is
+     * what had the App Store advertising languages apps did not speak.
+     */
+    public function it_ignores_plugin_localizations_for_unsupported_languages(): void
+    {
+        config()->set('nativephp.supported_locales', ['fr']);
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [],
+                'info_plist_localizations' => [
+                    'fr' => ['NSCameraUsageDescription' => 'Photo de profil.'],
+                    'nl' => ['NSCameraUsageDescription' => 'Profielfoto.'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/ios/NativePHP/fr.lproj/InfoPlist.strings');
+        $this->assertFileDoesNotExist($this->testBasePath.'/ios/NativePHP/nl.lproj/InfoPlist.strings');
+
+        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+        $this->assertSame(['en', 'fr'], $plist->get('CFBundleLocalizations'));
+    }
+
+    /**
+     * @test
+     *
+     * Info.plist entries merge and lists union by content, so a plugin
+     * declaring CFBundleLocalizations would be deciding the app's languages
+     * through the side door.
+     */
+    public function it_does_not_let_a_plugin_declare_bundle_localizations(): void
+    {
+        config()->set('nativephp.supported_locales', ['fr']);
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [
+                    'CFBundleLocalizations' => ['de', 'ja'],
+                    'NSCameraUsageDescription' => 'Plugin camera string.',
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+
+        $this->assertSame(['en', 'fr'], $plist->get('CFBundleLocalizations'));
+
+        // Everything else the plugin declares still lands.
+        $this->assertSame('Plugin camera string.', $plist->get('NSCameraUsageDescription'));
+    }
+
+    /**
+     * @test
+     *
+     * Dropping a language removes the folder it shipped in and the
+     * knownRegions entry that bundled it. Adding without ever removing is how
+     * an app ends up shipping a language it stopped supporting.
+     */
+    public function it_removes_the_lproj_of_a_dropped_language(): void
+    {
+        $pbxprojPath = $this->testBasePath.'/ios/NativePHP.xcodeproj/project.pbxproj';
+        $this->files->ensureDirectoryExists(dirname($pbxprojPath));
+        $this->files->put($pbxprojPath, "// !\$*UTF8\$*!\n{\n\tknownRegions = (\n\t\ten,\n\t\tBase,\n\t);\n}\n");
+
+        config()->set('nativephp.supported_locales', ['nl']);
+        config()->set('nativephp.permission_localizations', [
+            'nl' => ['NSCameraUsageDescription' => 'NL'],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$this->createTestPlugin()]));
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryExists($this->testBasePath.'/ios/NativePHP/nl.lproj');
+        $this->assertStringContainsString("\tnl,", $this->files->get($pbxprojPath));
+
+        config()->set('nativephp.supported_locales', []);
+        config()->set('nativephp.permission_localizations', []);
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryDoesNotExist($this->testBasePath.'/ios/NativePHP/nl.lproj');
+
+        $pbxproj = $this->files->get($pbxprojPath);
+        $this->assertStringNotContainsString("\tnl,", $pbxproj);
+
+        // The regions we never wrote are none of our business.
+        $this->assertStringContainsString("\ten,", $pbxproj);
+        $this->assertStringContainsString("\tBase,", $pbxproj);
+    }
+
+    /**
+     * @test
+     *
+     * knownRegions is a flat comma-separated list, so removing an entry by
+     * name has to be delimited on both sides: dropping `nl` must not touch
+     * `nl-NL`, and dropping a stale `Hans` must not eat the tail of
+     * `zh-Hans` and leave a corrupt project file behind.
+     */
+    public function it_only_removes_whole_known_regions(): void
+    {
+        $pbxprojPath = $this->testBasePath.'/ios/NativePHP.xcodeproj/project.pbxproj';
+        $this->files->ensureDirectoryExists(dirname($pbxprojPath));
+        $this->files->put(
+            $pbxprojPath,
+            "// !\$*UTF8\$*!\n{\n\tknownRegions = (\n\t\ten,\n\t\tBase,\n\t\tnl,\n\t\tnl-NL,\n\t\tzh-Hans,\n\t\tHans,\n\t);\n}\n"
+        );
+
+        // Folders an earlier build left behind, for languages no longer declared.
+        foreach (['nl', 'Hans'] as $stale) {
+            $lproj = $this->testBasePath.'/ios/NativePHP/'.$stale.'.lproj';
+            $this->files->ensureDirectoryExists($lproj);
+            $this->files->put($lproj.'/InfoPlist.strings', '"NSCameraUsageDescription" = "x";');
+        }
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $pbxproj = $this->files->get($pbxprojPath);
+
+        $this->assertStringNotContainsString("\tnl,", $pbxproj);
+        $this->assertStringNotContainsString("\tHans,", $pbxproj);
+
+        // The longer identifiers that merely contain those names survive whole.
+        $this->assertStringContainsString('nl-NL,', $pbxproj);
+        $this->assertStringContainsString('zh-Hans,', $pbxproj);
+        $this->assertStringContainsString("\ten,", $pbxproj);
+        $this->assertStringContainsString("\tBase,", $pbxproj);
+    }
+
+    /**
+     * @test
+     *
+     * A developer keeping their own localized resources next to ours owns
+     * that folder. Losing it to a config edit would be a far worse bug than
+     * a stale language, so only folders holding nothing but the strings file
+     * this compiler generates are removed.
+     */
+    public function it_keeps_an_lproj_that_holds_other_resources(): void
+    {
+        config()->set('nativephp.supported_locales', ['nl']);
+        config()->set('nativephp.permission_localizations', [
+            'nl' => ['NSCameraUsageDescription' => 'NL'],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$this->createTestPlugin()]));
+
+        $this->compiler->compile();
+
+        $lproj = $this->testBasePath.'/ios/NativePHP/nl.lproj';
+        $this->files->put($lproj.'/Localizable.strings', '"greeting" = "Hallo";');
+
+        config()->set('nativephp.supported_locales', []);
+        config()->set('nativephp.permission_localizations', []);
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryExists($lproj);
+        $this->assertFileExists($lproj.'/Localizable.strings');
+    }
+
+    /**
+     * @test
+     *
+     * The compiler returns early when no plugin ships anything for iOS, which
+     * is exactly the shape of "the developer removed everything". The locale
+     * work has to happen before that return or the removal never lands.
+     */
+    public function it_prunes_even_when_no_plugins_are_installed(): void
+    {
+        config()->set('nativephp.supported_locales', ['nl']);
+        config()->set('nativephp.permission_localizations', [
+            'nl' => ['NSCameraUsageDescription' => 'NL'],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryExists($this->testBasePath.'/ios/NativePHP/nl.lproj');
+
+        config()->set('nativephp.supported_locales', []);
+        config()->set('nativephp.permission_localizations', []);
+
+        $this->compiler->compile();
+
+        $this->assertDirectoryDoesNotExist($this->testBasePath.'/ios/NativePHP/nl.lproj');
+
+        $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
+        $this->assertSame(['en'], $plist->get('CFBundleLocalizations'));
+    }
+
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin
     {
         $defaultData = [

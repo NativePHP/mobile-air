@@ -1580,6 +1580,155 @@ object TestFunctions {
         );
     }
 
+    /** @test */
+    public function it_applies_declared_gradle_plugins_to_the_app_module(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    [
+                        'id' => 'com.example.application-plugin',
+                        'version' => '1.2.3',
+                        'apply_to' => 'app',
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $root = $this->files->get($this->testBasePath.'/android/build.gradle.kts');
+        $app = $this->files->get($this->testBasePath.'/android/app/build.gradle.kts');
+
+        $this->assertStringContainsString(
+            'id("com.example.application-plugin") version "1.2.3" apply false',
+            $root
+        );
+        $this->assertStringContainsString('// BEGIN nativephp-plugin-app-gradle-plugins', $app);
+        $this->assertStringContainsString('id("com.example.application-plugin")', $app);
+    }
+
+    /**
+     * @test
+     *
+     * The back-compat shim applies Google Services to the app module the way
+     * core's old build.gradle.kts conditional did, for a plugin that declares
+     * the Gradle plugin but not `apply_to`.
+     */
+    public function it_applies_extra_gradle_plugin_ids_supplied_by_the_legacy_shim(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3'],
+                ],
+            ],
+        ]);
+
+        $block = $this->compiler->buildAppGradlePluginsBlock(
+            collect([$plugin]),
+            '',
+            ['com.google.gms.google-services']
+        );
+
+        $this->assertStringContainsString('id("com.google.gms.google-services")', $block);
+    }
+
+    /**
+     * @test
+     *
+     * A plugin declaring `apply_to: app` already lands the id, so the shim
+     * passing the same one must not produce a duplicate.
+     */
+    public function it_does_not_duplicate_a_shim_id_the_manifest_already_applies(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.google.gms.google-services', 'version' => '4.4.3', 'apply_to' => 'app'],
+                ],
+            ],
+        ]);
+
+        $block = $this->compiler->buildAppGradlePluginsBlock(
+            collect([$plugin]),
+            '',
+            ['com.google.gms.google-services']
+        );
+
+        $this->assertSame(1, substr_count($block, 'id("com.google.gms.google-services")'));
+    }
+
+    /** @test */
+    public function it_skips_a_shim_id_already_declared_outside_the_markers(): void
+    {
+        $existing = 'plugins {'.PHP_EOL
+            .'    id("com.android.application")'.PHP_EOL
+            .'    id("com.google.gms.google-services")'.PHP_EOL
+            .'}'.PHP_EOL;
+
+        $block = $this->compiler->buildAppGradlePluginsBlock(
+            collect([]),
+            $existing,
+            ['com.google.gms.google-services']
+        );
+
+        $this->assertSame('', $block);
+    }
+
+    /** @test */
+    public function it_clears_app_gradle_plugins_when_the_plugin_is_removed(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.example.application-plugin', 'version' => '1.2.3', 'apply_to' => 'app'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        $emptyRegistry = Mockery::mock(PluginRegistry::class);
+        $emptyRegistry->shouldReceive('detectConflicts')->andReturn([]);
+        $emptyRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        (new AndroidPluginCompiler($this->files, $emptyRegistry, $this->testBasePath))->compile();
+
+        $app = $this->files->get($this->testBasePath.'/android/app/build.gradle.kts');
+
+        $this->assertStringNotContainsString('com.example.application-plugin', $app);
+        $this->assertStringNotContainsString('nativephp-plugin-app-gradle-plugins', $app);
+    }
+
+    /** @test */
+    public function it_does_not_duplicate_a_manually_applied_app_gradle_plugin(): void
+    {
+        $appPath = $this->testBasePath.'/android/app/build.gradle.kts';
+        $this->files->put($appPath, 'plugins {'.PHP_EOL
+            .'    id("com.android.application")'.PHP_EOL
+            .'    id("com.example.application-plugin")'.PHP_EOL
+            .'}'.PHP_EOL);
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'gradle_plugins' => [
+                    ['id' => 'com.example.application-plugin', 'version' => '1.2.3', 'apply_to' => 'app'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+        $this->compiler->compile();
+
+        $app = $this->files->get($appPath);
+
+        $this->assertSame(1, substr_count($app, 'id("com.example.application-plugin")'));
+    }
+
     /**
      * @test
      *
@@ -1698,6 +1847,165 @@ object TestFunctions {
         $this->assertStringNotContainsString('missing-version', $content);
         $this->assertStringNotContainsString('System.exit', $content);
         $this->assertStringContainsString('id("com.example.valid") version "2.0.0" apply true', $content);
+    }
+
+    /**
+     * @test
+     *
+     * The languages the app declares become the locale-config Android reads,
+     * base language first, and the manifest points at it — which is the only
+     * thing that gets an app listed in Settings' per-app language picker.
+     */
+    public function it_writes_locales_config_from_the_declared_locales(): void
+    {
+        config(['nativephp.supported_locales' => ['fr', 'nl']]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $xmlPath = $this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml';
+        $this->assertFileExists($xmlPath);
+
+        $xml = $this->files->get($xmlPath);
+        $this->assertStringContainsString('<locale android:name="en" />', $xml);
+        $this->assertStringContainsString('<locale android:name="fr" />', $xml);
+        $this->assertStringContainsString('<locale android:name="nl" />', $xml);
+
+        // app.locale leads, so the user can always switch back to it.
+        $this->assertLessThan(strpos($xml, '"fr"'), strpos($xml, '"en"'));
+
+        $manifest = $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml');
+        $this->assertStringContainsString('android:localeConfig="@xml/locales_config"', $manifest);
+    }
+
+    /**
+     * @test
+     *
+     * A plugin shipping its permission explainer in another language must not
+     * make the app offer that language. Plugins contribute translations; the
+     * app decides which languages it supports.
+     */
+    public function it_does_not_let_plugins_add_languages(): void
+    {
+        config(['nativephp.supported_locales' => ['fr']]);
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [],
+                'dependencies' => [],
+                'info_plist_localizations' => ['nl' => ['NSCameraUsageDescription' => 'Profielfoto.']],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $xml = $this->files->get($this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml');
+        $this->assertStringContainsString('<locale android:name="fr" />', $xml);
+        $this->assertStringNotContainsString('nl', $xml);
+    }
+
+    /**
+     * @test
+     *
+     * An app that declares nothing supports one language, and a picker with a
+     * single entry is worse than none — leave the project untouched.
+     */
+    public function it_leaves_apps_that_declare_no_locales_untouched(): void
+    {
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml');
+        $this->assertStringNotContainsString(
+            'android:localeConfig',
+            $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml')
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Dropping the last extra language has to un-ship the picker: `nativephp/`
+     * is gitignored, so a long-lived scaffold would otherwise keep offering
+     * languages the app no longer claims until someone ran native:install.
+     */
+    public function it_clears_the_locale_config_when_the_locales_are_removed(): void
+    {
+        config(['nativephp.supported_locales' => ['fr', 'nl']]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $xmlPath = $this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml';
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $this->assertFileExists($xmlPath);
+
+        config(['nativephp.supported_locales' => []]);
+
+        $this->compiler->compile();
+
+        $this->assertFileDoesNotExist($xmlPath);
+        $this->assertStringNotContainsString('android:localeConfig', $this->files->get($manifestPath));
+        // The rest of the <application> tag survives the surgery.
+        $this->assertStringContainsString('<application', $this->files->get($manifestPath));
+    }
+
+    /**
+     * @test
+     *
+     * Recompiling must not stack a second attribute onto <application>.
+     */
+    public function it_stays_idempotent_across_recompiles(): void
+    {
+        config(['nativephp.supported_locales' => ['fr']]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+        $this->compiler->compile();
+
+        $manifest = $this->files->get($this->testBasePath.'/android/app/src/main/AndroidManifest.xml');
+        $this->assertSame(1, substr_count($manifest, 'android:localeConfig'));
+    }
+
+    /**
+     * @test
+     *
+     * These values are interpolated straight into an XML attribute, so a typo
+     * is dropped and named rather than written out.
+     */
+    public function it_ignores_invalid_locale_declarations(): void
+    {
+        config(['nativephp.supported_locales' => ['fr', 'not a locale']]);
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $xml = $this->files->get($this->testBasePath.'/android/app/src/main/res/xml/locales_config.xml');
+        $this->assertStringContainsString('<locale android:name="fr" />', $xml);
+        $this->assertStringNotContainsString('not a locale', $xml);
+
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn (string $warning) => str_contains($warning, "Ignoring invalid locale 'not a locale'")
+        ));
     }
 
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin

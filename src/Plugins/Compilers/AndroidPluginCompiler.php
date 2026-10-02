@@ -5,10 +5,13 @@ namespace Native\Mobile\Plugins\Compilers;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\LegacyFirebaseConfig;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Plugins\ProjectFileManager;
 use Native\Mobile\Support\Stub;
+use Native\Mobile\Support\SupportedLocales;
 
 class AndroidPluginCompiler
 {
@@ -78,8 +81,21 @@ class AndroidPluginCompiler
      */
     protected function warn(string $message): void
     {
-        if ($this->output) {
+        if ($this->output === null) {
+            return;
+        }
+
+        // A Command has warn(); Illuminate\Console\OutputStyle — which is what
+        // the build commands actually pass — does not, so calling it blindly
+        // fataled the build and guarding on it swallowed the message entirely.
+        if (method_exists($this->output, 'warn')) {
             $this->output->warn($message);
+
+            return;
+        }
+
+        if (method_exists($this->output, 'writeln')) {
+            $this->output->writeln("<comment>{$message}</comment>");
         }
     }
 
@@ -183,9 +199,35 @@ class AndroidPluginCompiler
         // list is empty so a removed plugin's stale rules are cleared).
         $this->injectPluginProguardRules($allPlugins);
 
+        // Copy app-owned files declared by plugins into the Android project.
+        (new ProjectFileManager($this->files, $this->basePath, 'android'))->sync($allPlugins);
+
+        // Back-compat: install Firebase config on behalf of a plugin that
+        // predates project_files, so bumping core alone cannot silently stop
+        // push from working. Does nothing once the plugin owns its config.
+        $legacyFirebase = (new LegacyFirebaseConfig($this->files, $this->basePath))->sync($allPlugins, 'android');
+
+        if ($legacyFirebase !== null) {
+            $this->warn(LegacyFirebaseConfig::deprecationNotice($legacyFirebase, 'android'));
+        }
+
+        // Declare the languages the app supports so Android 13+ offers the
+        // per-app language picker (runs even when the list is empty so a
+        // dropped language stops being offered).
+        $this->writeLocalesConfig();
+
         // Declare plugin-required Gradle plugins in the root build file (runs
         // even when the list is empty so a removed plugin's declaration is cleared).
         $this->injectGradlePlugins($allPlugins);
+
+        // Apply plugin-required Gradle plugins to the app module when the
+        // manifest explicitly targets it. The marker is also cleared when a
+        // plugin is removed. The shim applies Google Services the same way
+        // core's old build.gradle.kts conditional did.
+        $this->injectAppGradlePlugins(
+            $allPlugins,
+            $legacyFirebase !== null ? [LegacyFirebaseConfig::GRADLE_PLUGIN_ID] : []
+        );
 
         if ($allPlugins->isEmpty()) {
             $this->generateEmptyRegistration();
@@ -294,9 +336,8 @@ class AndroidPluginCompiler
      * rebuilt on every compile (idempotent; a removed plugin's declaration
      * is dropped). Declared from `android.gradle_plugins` in nativephp.json.
      *
-     * Entries default to `apply false`: the plugin lands on the build
-     * classpath only, and the app module decides whether to apply it (e.g.
-     * google-services is applied only when a google-services.json exists).
+     * Entries default to `apply false`. Entries with `apply_to: "app"` are
+     * declared here with `apply false` and separately applied to the app.
      */
     protected function injectGradlePlugins(Collection $plugins): void
     {
@@ -383,7 +424,9 @@ class AndroidPluginCompiler
                     }
                 }
 
-                $apply = $gradlePlugin['apply'] ?? false;
+                $apply = ($gradlePlugin['apply_to'] ?? null) === 'app'
+                    ? false
+                    : ($gradlePlugin['apply'] ?? false);
                 $entries[$id] = "    id(\"{$id}\") version \"{$version}\" apply ".($apply ? 'true' : 'false');
             }
         }
@@ -396,6 +439,96 @@ class AndroidPluginCompiler
             ."    // Auto-generated on every build from installed plugins — do not edit.\n"
             .implode("\n", $entries)."\n"
             ."    // END nativephp-plugin-gradle-plugins\n";
+    }
+
+    /**
+     * Apply manifest-declared Gradle plugins to the app module.
+     */
+    protected function injectAppGradlePlugins(Collection $plugins, array $extraIds = []): void
+    {
+        $appGradlePath = $this->androidProjectPath.'/app/build.gradle.kts';
+
+        if (! $this->files->exists($appGradlePath)) {
+            return;
+        }
+
+        $content = $this->files->get($appGradlePath);
+        $begin = '// BEGIN nativephp-plugin-app-gradle-plugins';
+        $end = '// END nativephp-plugin-app-gradle-plugins';
+        $block = $this->buildAppGradlePluginsBlock($plugins, $content, $extraIds);
+
+        if (str_contains($content, $begin) && str_contains($content, $end)) {
+            $content = preg_replace(
+                '/[ \t]*'.preg_quote($begin, '/').'.*?'.preg_quote($end, '/').'\n?/s',
+                $block,
+                $content,
+                1
+            );
+        } elseif ($block !== '') {
+            $content = preg_replace(
+                '/(plugins\s*\{.*?)(\n\})/s',
+                '$1'."\n".rtrim($block).'$2',
+                $content,
+                1
+            );
+        } else {
+            return;
+        }
+
+        $this->files->put($appGradlePath, $content);
+    }
+
+    public function buildAppGradlePluginsBlock(Collection $plugins, string $existingContent = '', array $extraIds = []): string
+    {
+        $entries = [];
+        $withoutBlock = preg_replace(
+            '/\/\/ BEGIN nativephp-plugin-app-gradle-plugins.*?\/\/ END nativephp-plugin-app-gradle-plugins/s',
+            '',
+            $existingContent
+        ) ?? $existingContent;
+
+        foreach ($plugins as $plugin) {
+            foreach ($plugin->getAndroidGradlePlugins() as $gradlePlugin) {
+                if (($gradlePlugin['apply_to'] ?? null) !== 'app') {
+                    continue;
+                }
+
+                $id = $gradlePlugin['id'] ?? null;
+
+                if (! is_string($id) || ! preg_match('/^[A-Za-z0-9._-]+$/', $id)) {
+                    $this->warn("Plugin '{$plugin->name}' declares an invalid app gradle plugin id — skipping");
+
+                    continue;
+                }
+
+                if (isset($entries[$id]) || str_contains($withoutBlock, "id(\"{$id}\")")) {
+                    continue;
+                }
+
+                $entries[$id] = "    id(\"{$id}\")";
+            }
+        }
+
+        foreach ($extraIds as $id) {
+            if (! is_string($id) || ! preg_match('/^[A-Za-z0-9._-]+$/', $id)) {
+                continue;
+            }
+
+            if (isset($entries[$id]) || str_contains($withoutBlock, "id(\"{$id}\")")) {
+                continue;
+            }
+
+            $entries[$id] = "    id(\"{$id}\")";
+        }
+
+        if ($entries === []) {
+            return '';
+        }
+
+        return "    // BEGIN nativephp-plugin-app-gradle-plugins\n"
+            ."    // Auto-generated on every build from installed plugins — do not edit.\n"
+            .implode("\n", $entries)."\n"
+            ."    // END nativephp-plugin-app-gradle-plugins\n";
     }
 
     /**
@@ -846,6 +979,95 @@ class AndroidPluginCompiler
         $path = $this->registrationPath.'/PluginRendererRegistration.kt';
         $this->files->put($path, $content);
         $this->generatedFiles[] = $path;
+    }
+
+    /**
+     * Declare the languages the app supports to Android.
+     *
+     * Android 13+ only lists an app in Settings' per-app language picker when
+     * its manifest points at a locale-config resource, so the declarations in
+     * config('nativephp.supported_locales') have to be written out as one.
+     *
+     * Runs on every compile, including when nothing is declared, so dropping a
+     * language also drops the picker entry offering it — the same contract
+     * injectGradlePlugins and injectPluginProguardRules keep for their blocks.
+     * Without it the only thing that clears a stale manifest is a fresh
+     * native:install, and `nativephp/` is gitignored.
+     */
+    protected function writeLocalesConfig(): void
+    {
+        $locales = SupportedLocales::fromConfig();
+
+        foreach ($locales->warnings(lang_path()) as $warning) {
+            $this->warn($warning);
+        }
+
+        $xmlPath = $this->androidProjectPath.'/app/src/main/res/xml/locales_config.xml';
+        $manifestPath = $this->androidProjectPath.'/app/src/main/AndroidManifest.xml';
+
+        // One supported language is the default, and a picker listing a single
+        // entry is worse than no picker: leave (or put back) the untouched app.
+        if (! $locales->offersChoice()) {
+            $this->clearLocalesConfig($xmlPath, $manifestPath);
+
+            return;
+        }
+
+        $entries = implode("\n", array_map(
+            fn (string $locale) => '    <locale android:name="'.$locale.'" />',
+            $locales->all()
+        ));
+
+        $xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            ."<locale-config xmlns:android=\"http://schemas.android.com/apk/res/android\">\n"
+            .$entries."\n"
+            ."</locale-config>\n";
+
+        // Only touch the file when it actually changes — rewriting a resource
+        // on every compile invalidates Gradle's incremental resource task.
+        if (! $this->files->exists($xmlPath) || $this->files->get($xmlPath) !== $xml) {
+            $this->files->ensureDirectoryExists(dirname($xmlPath));
+            $this->files->put($xmlPath, $xml);
+        }
+
+        if (! $this->files->exists($manifestPath)) {
+            return;
+        }
+
+        $manifest = $this->files->get($manifestPath);
+
+        if (str_contains($manifest, 'android:localeConfig')) {
+            return;
+        }
+
+        $this->files->put($manifestPath, preg_replace(
+            '/<application\b/',
+            "<application\n        android:localeConfig=\"@xml/locales_config\"",
+            $manifest,
+            1
+        ));
+    }
+
+    /**
+     * Undo writeLocalesConfig(): the app declares nothing to choose between,
+     * so it must not keep advertising languages a previous build wrote.
+     */
+    protected function clearLocalesConfig(string $xmlPath, string $manifestPath): void
+    {
+        if ($this->files->exists($xmlPath)) {
+            $this->files->delete($xmlPath);
+        }
+
+        if (! $this->files->exists($manifestPath)) {
+            return;
+        }
+
+        $manifest = $this->files->get($manifestPath);
+        $stripped = preg_replace('/\s*android:localeConfig="@xml\/locales_config"/', '', $manifest, 1);
+
+        if ($stripped !== null && $stripped !== $manifest) {
+            $this->files->put($manifestPath, $stripped);
+        }
     }
 
     /**
