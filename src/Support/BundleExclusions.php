@@ -31,6 +31,11 @@ class BundleExclusions
         'storage/app/native-build',
         'public/storage',
         'database/database.sqlite',
+        // A dev database in WAL mode keeps recent commits in these sidecar
+        // files; they belong to the host database and must never ship.
+        'database/database.sqlite-wal',
+        'database/database.sqlite-shm',
+        'database/database.sqlite-journal',
         '*.js',
         '*.md',
         '*.xml',
