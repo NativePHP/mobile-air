@@ -3128,6 +3128,17 @@ abstract class NativeComponent
         // fragment, a database detail.
         $showDetail = (bool) config('app.debug', false);
 
+        // Every path here has caught the exception without rethrowing, so hand
+        // it to Laravel's reporter before drawing over it. The identity check
+        // stops a font-size re-render from reporting it twice, and a reporter
+        // that throws must not cost the user the error screen.
+        if ($this->errorException !== $e) {
+            try {
+                report($e);
+            } catch (\Throwable) {
+            }
+        }
+
         $this->nativeHasError = true;
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;
