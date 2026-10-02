@@ -422,7 +422,9 @@ private struct PerTabContent: View {
                 levelView(uri: coordinator.rootUri, isRoot: true)
                     .navigationDestination(for: String.self) { uri in
                         levelView(uri: uri, isRoot: false)
+                            .background(EdgeOnlySwipeBack())
                     }
+                    .background(EdgeOnlySwipeBack())
             }
             .id(coordinator.rootUri)
             .onChange(of: coordinator.path) { newPath in
