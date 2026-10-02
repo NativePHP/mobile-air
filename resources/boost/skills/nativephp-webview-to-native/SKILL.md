@@ -44,8 +44,9 @@ The web view remains available during migration, so you never need a big-bang re
    classes to screens that have chrome.
 6. Replace JS device calls (`#nativephp` imports) with PHP facades + `#[On]` event listeners.
 7. Write a test: `php artisan native:make-test ScreenName`, assert with `Native::test()` / `Native::visit()`.
-8. Tell the user to run `php artisan native:run <platform> --watch` to verify — never run it yourself, and ask
-   which platform first.
+8. Once the tests pass, build and launch it yourself as the final check:
+   `php artisan native:run <ios|android> <device> --no-tty -n` on a booted simulator or running emulator. If
+   none is available, give the user the command.
 
 ## Livewire → SuperNative Mapping
 
@@ -129,4 +130,4 @@ Listeners auto-teardown on unmount — no `off()` bookkeeping.
 - After installing any plugin, complete the full flow — `composer require` alone does nothing:
   `php artisan vendor:publish --tag=nativephp-plugins-provider` (once), then
   `php artisan native:plugin:register vendor/plugin-name`, verify with `php artisan native:plugin:list`, and
-  tell the user to rebuild with `native:run`.
+  rebuild with `native:run`.
