@@ -5,6 +5,7 @@ namespace Native\Mobile\Edge\Elements;
 use Native\Mobile\Icon\AndroidSymbol;
 use Native\Mobile\Icon\IconResolver;
 use Native\Mobile\Icon\IosSymbol;
+use Native\Mobile\Icon\WindowsSymbol;
 use SupaNative\Core\Edge\CallbackRegistry;
 use SupaNative\Core\Edge\Element;
 
@@ -20,14 +21,17 @@ class Icon extends Element
 
     private AndroidSymbol|string|null $androidOverride = null;
 
+    private WindowsSymbol|string|null $windowsOverride = null;
+
     public static function make(
         ?string $name = null,
         IosSymbol|string|null $ios = null,
         AndroidSymbol|string|null $android = null,
+        WindowsSymbol|string|null $windows = null,
     ): static {
         $el = new static;
 
-        return $el->name($name, $ios, $android);
+        return $el->name($name, $ios, $android, $windows);
     }
 
     public function applyAttributes(array $attrs): void
@@ -40,6 +44,10 @@ class Icon extends Element
         }
         if (isset($attrs['ios'])) {
             $this->name(ios: $attrs['ios']);
+        }
+        // `win` is the short form the tag is usually written with.
+        if (isset($attrs['win']) || isset($attrs['windows'])) {
+            $this->name(windows: $attrs['win'] ?? $attrs['windows']);
         }
         if (isset($attrs['android'])) {
             $this->name(android: $attrs['android']);
@@ -64,6 +72,7 @@ class Icon extends Element
      *   Icon::make('home')                              // shared name
      *   Icon::make(ios: Ios::House, android: Android::Home)
      *   Icon::make('share', ios: Ios::SquareAndArrowUp) // shared + iOS override
+     *   Icon::make(ios: Ios::Plus, windows: Windows::Add)
      *
      * The `android` slot accepts either an `Android` (filled) or
      * `AndroidOutlined` enum case — the variant is forwarded to the
@@ -73,12 +82,16 @@ class Icon extends Element
         ?string $name = null,
         IosSymbol|string|null $ios = null,
         AndroidSymbol|string|null $android = null,
+        WindowsSymbol|string|null $windows = null,
     ): static {
         if ($name !== null) {
             $this->shared = $name;
         }
         if ($ios !== null) {
             $this->iosOverride = $ios;
+        }
+        if ($windows !== null) {
+            $this->windowsOverride = $windows;
         }
         if ($android !== null) {
             $this->androidOverride = $android;
@@ -112,7 +125,7 @@ class Icon extends Element
     {
         $props = $this->iconProps;
 
-        $resolved = IconResolver::resolve($this->shared, $this->iosOverride, $this->androidOverride);
+        $resolved = IconResolver::resolve($this->shared, $this->iosOverride, $this->androidOverride, $this->windowsOverride);
         if ($resolved['icon'] !== null) {
             $props['name'] = $resolved['icon'];
             if ($resolved['variant'] !== null) {
