@@ -394,12 +394,12 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 levelPaddings[uri] ?: padding
             }
-            Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
-                val levelNode = coordinator.rootNodeCache[uri]
-                val levelContent = levelNode?.children?.firstOrNull {
-                    it.type != "top_bar_action" && it.type != "top_bar_title" &&
-                        it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
-                }
+            val levelNode = coordinator.rootNodeCache[uri]
+            val levelContent = levelNode?.children?.firstOrNull {
+                it.type != "top_bar_action" && it.type != "top_bar_title" &&
+                    it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
+            }
+            Box(modifier = scrollModifier.fillMaxSize().screenBackground(levelContent).padding(levelPadding)) {
                 if (levelContent != null) {
                     NodeView(node = levelContent)
                 } else if (uri == currentUri && screenContent != null) {
@@ -487,4 +487,19 @@ internal fun TopBarActionView(action: NativeUINode) {
             }
         }
     }
+}
+
+/**
+ * Paints a screen's flat background (`bg-*`, or its dark variant) on the
+ * box that the root renderers inset by the Scaffold padding. Without it the
+ * safe-area strips — beside the camera cutout and behind the navigation bar
+ * in landscape — showed the Scaffold colour instead of the screen's own,
+ * where iOS fills them with the screen background.
+ */
+@Composable
+internal fun Modifier.screenBackground(screen: NativeUINode?): Modifier {
+    val darkBg = if (isSystemInDarkTheme()) screen?.props?.getColor("dark_bg_color", 0) ?: 0 else 0
+    val bg = if (darkBg != 0) darkBg else (screen?.style?.bgColor ?: 0)
+
+    return if (bg != 0) this.background(argbToComposeColor(bg)) else this
 }
