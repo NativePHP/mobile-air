@@ -870,7 +870,17 @@ class NativeElementBridge private constructor() {
             buf.put(nameBytes)
             buf.putInt(payloadBytes.size)
             buf.put(payloadBytes)
-            nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+
+            // The JNI library loads lazily with the PHP runtime, so a config
+            // change in the first moments of launch (rotation, dark mode) can
+            // arrive before nativeElementWriteEvent is registered. Drop the
+            // event: PHP reads orientation and appearance fresh when it boots.
+            try {
+                nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+            } catch (e: UnsatisfiedLinkError) {
+                Log.w(TAG, "Dropped $eventName: the PHP runtime is not loaded yet")
+                return
+            }
 
             if (!eventName.startsWith("__")) {
                 webEventSink?.get()?.onNativeEvent(eventName, payloadJson)
