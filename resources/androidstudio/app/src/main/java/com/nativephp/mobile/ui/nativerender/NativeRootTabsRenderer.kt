@@ -497,7 +497,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 paneNodes[key] ?: Pair(screenContent, bottomBarNode)
             }
-            Box(modifier = Modifier.fillMaxSize().padding(screenPadding)) {
+            Box(modifier = Modifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
                 if (paneBottomBar != null) {
                     // Screen content fills the space above the pinned bar; the
                     // bar sits at the bottom. Root `imePadding` shrinks this
