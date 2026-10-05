@@ -24,6 +24,10 @@ extension Notification.Name {
     /// Posted when app becomes active
     static let didBecomeActive = Notification.Name("NativePHP.didBecomeActive")
 
+    /// Posted when a Home Screen quick action is chosen (cold launch or while running)
+    /// userInfo: ["shortcutItem": UIApplicationShortcutItem]
+    static let didReceiveShortcutItem = Notification.Name("NativePHP.didReceiveShortcutItem")
+
     /// Posted when app enters background
     static let didEnterBackground = Notification.Name("NativePHP.didEnterBackground")
 }
@@ -54,6 +58,17 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         }
 
         return true
+    }
+
+    // The SwiftUI WindowGroup's scene gets NativePHPSceneDelegate, so quick actions reach the app.
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = NativePHPSceneDelegate.self
+        return configuration
     }
 
     // Called for Universal Links
@@ -120,5 +135,25 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             userInfo: ["payload": userInfo]
         )
         completionHandler(.newData)
+    }
+}
+
+/// Home Screen quick actions. The app is a SwiftUI App, so it runs with
+/// scenes: iOS hands a quick action to the scene (connectionOptions on a cold
+/// launch, windowScene(_:performActionFor:) while running), never to
+/// launchOptions or application(_:performActionFor:). Posted as
+/// NativePHP.didReceiveShortcutItem for plugins to handle.
+class NativePHPSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        if let shortcutItem = connectionOptions.shortcutItem {
+            DebugLogger.shared.log("📱 SceneDelegate: cold launch with quick action \(shortcutItem.type)")
+            NotificationCenter.default.post(name: .didReceiveShortcutItem, object: nil, userInfo: ["shortcutItem": shortcutItem])
+        }
+    }
+
+    func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
+        DebugLogger.shared.log("📱 SceneDelegate: quick action \(shortcutItem.type)")
+        NotificationCenter.default.post(name: .didReceiveShortcutItem, object: nil, userInfo: ["shortcutItem": shortcutItem])
+        completionHandler(true)
     }
 }
