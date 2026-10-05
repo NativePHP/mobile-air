@@ -2,6 +2,7 @@
 
 namespace Native\Mobile;
 
+use Illuminate\Console\Events\CommandFinished;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
@@ -40,6 +41,7 @@ use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\Elements as ChromeElements;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Events\Device\ThermalStateChanged;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
@@ -47,12 +49,14 @@ use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use SupaNative\Core\Edge\EdgeLog;
 use SupaNative\Core\Edge\ElementRegistry;
 use SupaNative\Core\Edge\ImageSource;
+use SupaNative\Core\Edge\NativeTagPrecompiler;
 use SupaNative\Core\Edge\ScreenRoutes;
 use SupaNative\Core\Edge\TailwindParser;
 
@@ -115,6 +119,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
         $this->pointEdgeLogAtDebugLog();
+        $this->useDeviceAppKey();
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
@@ -131,6 +136,26 @@ class NativeServiceProvider extends PackageServiceProvider
                 ['JUMP_BRIDGE_PORT', 'JUMP_WS_PORT']
             )));
         }
+    }
+
+    /**
+     * On a device the encryption keys come from the native shell's secure
+     * storage via the environment. Android caches config on the device, so
+     * the keys are stripped from that file once it is written.
+     */
+    protected function useDeviceAppKey(): void
+    {
+        if (! config('nativephp-internal.running')) {
+            return;
+        }
+
+        DeviceAppKey::apply($this->app['config']);
+
+        $this->app['events']->listen(CommandFinished::class, function (CommandFinished $event) {
+            if ($event->command === 'config:cache' && $event->exitCode === 0) {
+                DeviceAppKey::scrubCachedConfig($this->app->getCachedConfigPath());
+            }
+        });
     }
 
     protected function publishPluginsServiceProvider(): void
@@ -151,7 +176,9 @@ class NativeServiceProvider extends PackageServiceProvider
      * Keep query-side caches in sync with their push events. When the OS flips
      * the theme, AppearanceChanged fires (and auto-dispatches globally); this
      * listener updates System's cached appearance so `System::appearance()` /
-     * `isDark()` stay fresh without re-probing the bridge.
+     * `isDark()` stay fresh without re-probing the bridge. OrientationChanged
+     * does the same for System::orientation(), and ThermalStateChanged does
+     * the same for Device::thermalState().
      */
     protected function registerSystemEventListeners(): void
     {
@@ -163,6 +190,10 @@ class NativeServiceProvider extends PackageServiceProvider
         Event::listen(
             OrientationChanged::class,
             fn (OrientationChanged $e) => System::rememberOrientation($e->orientation),
+        );
+        Event::listen(
+            ThermalStateChanged::class,
+            fn (ThermalStateChanged $e) => Device::rememberThermalState($e->state),
         );
     }
 
@@ -759,6 +790,10 @@ class NativeServiceProvider extends PackageServiceProvider
             // Skip types already registered as core elements
             if (class_exists($elementClass) && ! ElementRegistry::has($type)) {
                 ElementRegistry::register($type, $elementClass);
+            }
+
+            if (isset($component['element_events']) && is_array($component['element_events'])) {
+                NativeTagPrecompiler::registerElementEvents($component['element_events']);
             }
 
             // Convert type to kebab Blade tag name:

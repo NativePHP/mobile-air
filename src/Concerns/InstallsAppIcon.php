@@ -85,6 +85,7 @@ trait InstallsAppIcon
         $this->logToFile("  Source icon: $iconPath");
 
         $resDir = base_path('nativephp/android/app/src/main/res/');
+        $format = $this->androidImageFormat();
 
         $sizes = [
             'mipmap-mdpi' => 48,
@@ -103,9 +104,9 @@ trait InstallsAppIcon
         ];
 
         $targets = [
-            'ic_launcher.png',
-            'ic_launcher_round.png',
-            'ic_launcher_foreground.png',
+            'ic_launcher',
+            'ic_launcher_round',
+            'ic_launcher_foreground',
         ];
 
         $this->logToFile('  Generating icon sizes: '.implode(', ', array_keys($sizes)));
@@ -114,26 +115,46 @@ trait InstallsAppIcon
             $dstDir = $resDir.$folder;
             File::ensureDirectoryExists($dstDir);
 
-            foreach ($targets as $filename) {
-                $dstPath = $dstDir.'/'.$filename;
+            foreach ($targets as $basename) {
+                $dstPath = $dstDir.'/'.$basename.'.'.$format;
 
-                $webpPath = str_replace('.png', '.webp', $dstPath);
-                if (File::exists($webpPath)) {
-                    File::delete($webpPath);
+                // Drop any stale resource of the opposite extension so AAPT does
+                // not see two entries for the same resource name.
+                $stalePath = $dstDir.'/'.$basename.'.'.($format === 'png' ? 'webp' : 'png');
+                if (File::exists($stalePath)) {
+                    File::delete($stalePath);
                 }
 
-                $targetSize = ($filename === 'ic_launcher_foreground.png') ? $adaptiveSizes[$folder] : $size;
+                $targetSize = ($basename === 'ic_launcher_foreground') ? $adaptiveSizes[$folder] : $size;
 
-                $this->resizePng($iconPath, $dstPath, $targetSize, $targetSize);
+                $this->resizeImage($iconPath, $dstPath, $targetSize, $targetSize, $format);
             }
         }
 
         $this->logToFile('  Android icon installed');
     }
 
-    private function resizePng(string $src, string $dst, int $width, int $height): void
+    /**
+     * Output format for Android resource bitmaps (icons + splash).
+     * WebP is significantly smaller than PNG at equivalent quality and is
+     * supported natively by AAPT / Android since API 14 (lossless: API 18).
+     */
+    protected function androidImageFormat(): string
     {
-        $srcImage = imagecreatefrompng($src);
+        $format = strtolower((string) config('nativephp.android.image_format', 'png'));
+
+        if ($format === 'webp' && ! function_exists('imagewebp')) {
+            // GD compiled without WebP support: fall back to PNG rather than crash.
+            return 'png';
+        }
+
+        return $format === 'webp' ? 'webp' : 'png';
+    }
+
+    private function resizeImage(string $src, string $dst, int $width, int $height, string $format = 'png'): void
+    {
+        // Accept either PNG or WebP source images so users can supply either.
+        $srcImage = $this->readImage($src);
         $srcWidth = imagesx($srcImage);
         $srcHeight = imagesy($srcImage);
 
@@ -169,8 +190,31 @@ trait InstallsAppIcon
             $srcWidth, $srcHeight
         );
 
-        imagepng($resized, $dst, 0);
+        if ($format === 'webp') {
+            // Lossless WebP: preserves alpha and stays visually identical to the
+            // source. Roughly 60-90% smaller than an uncompressed PNG.
+            imagewebp($resized, $dst, IMG_WEBP_LOSSLESS);
+        } else {
+            // Level 9 = max PNG compression. The previous value (0) wrote
+            // uncompressed PNGs and made bundles 5-10x larger than needed.
+            imagepng($resized, $dst, 9);
+        }
+
         imagedestroy($resized);
         imagedestroy($srcImage);
+    }
+
+    /**
+     * Load a PNG or WebP source image with GD.
+     */
+    private function readImage(string $path)
+    {
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+
+        if ($ext === 'webp' && function_exists('imagecreatefromwebp')) {
+            return imagecreatefromwebp($path);
+        }
+
+        return imagecreatefrompng($path);
     }
 }

@@ -669,6 +669,7 @@ private struct TabsActionView: View {
 
     var body: some View {
         let icon = action.props.getString("icon", default: "ellipsis")
+        let disabled = action.props.getBool("disabled")
         let subItems = action.children.filter { $0.type == "top_bar_action" }
 
         if subItems.isEmpty {
@@ -680,11 +681,15 @@ private struct TabsActionView: View {
                 Image(systemName: getIconForName(icon))
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    // Explicit dim: the hard-set foregroundColor above keeps
+                    // SwiftUI's automatic disabled greying from showing.
+                    .opacity(disabled ? 0.4 : 1)
                     // same pill-sized hit region for
                     // the trailing actions (plain Button and Menu labels alike).
                     .frame(minWidth: 32, minHeight: 44)
                     .contentShape(Rectangle().inset(by: -6))
             }
+            .disabled(disabled)
         } else {
             Menu {
                 ForEach(subItems) { item in
@@ -705,6 +710,7 @@ private struct TabsActionView: View {
                                 Text(itemLabel)
                             }
                         }
+                        .disabled(item.props.getBool("disabled"))
                         // See NativeRootStackRenderer.swift for the rationale —
                         // .tint on the Button is what SwiftUI's Menu actually
                         // routes to the Label's systemImage in destructive rows.
@@ -715,11 +721,13 @@ private struct TabsActionView: View {
                 Image(systemName: getIconForName(icon))
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    .opacity(disabled ? 0.4 : 1)
                     // same pill-sized hit region for
                     // the trailing actions (plain Button and Menu labels alike).
                     .frame(minWidth: 32, minHeight: 44)
                     .contentShape(Rectangle().inset(by: -6))
             }
+            .disabled(disabled)
         }
     }
 }
