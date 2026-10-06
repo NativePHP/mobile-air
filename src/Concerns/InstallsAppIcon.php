@@ -195,8 +195,9 @@ trait InstallsAppIcon
             // source. Roughly 60-90% smaller than an uncompressed PNG.
             imagewebp($resized, $dst, IMG_WEBP_LOSSLESS);
         } else {
-            // Level 9 = max PNG compression. The previous value (0) wrote
-            // uncompressed PNGs and made bundles 5-10x larger than needed.
+            // Level 6 = zlib's default. Level 9 is only ~2% smaller but takes
+            // ~20x longer on large splashes; level 0 wrote uncompressed PNGs
+            // 5x larger. Lossless either way.
             imagepng($resized, $dst, 6);
         }
 
