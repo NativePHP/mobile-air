@@ -197,7 +197,7 @@ trait InstallsAppIcon
         } else {
             // Level 9 = max PNG compression. The previous value (0) wrote
             // uncompressed PNGs and made bundles 5-10x larger than needed.
-            imagepng($resized, $dst, 9);
+            imagepng($resized, $dst, 6);
         }
 
         imagedestroy($resized);
