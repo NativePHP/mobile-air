@@ -27,6 +27,8 @@ class NavAction
 
     private ?string $url = null;
 
+    private ?string $image = null;
+
     private ?string $event = null;
 
     private ?string $press = null;
@@ -74,6 +76,19 @@ class NavAction
         $div->isDivider = true;
 
         return $div;
+    }
+
+    /**
+     * Show a remote image (e.g. the signed-in user's avatar) in a small
+     * circle instead of the icon. The icon still shows while the image
+     * loads and if it fails, so set one too. Empty strings are ignored, so
+     * `->image($user->avatarUrl ?? '')` falls back to the icon cleanly.
+     */
+    public function image(?string $url): self
+    {
+        $this->image = ($url === null || trim($url) === '') ? null : $url;
+
+        return $this;
     }
 
     public function label(string $label): self
@@ -193,6 +208,9 @@ class NavAction
         }
         if ($this->url !== null) {
             $attrs['url'] = $this->url;
+        }
+        if ($this->image !== null) {
+            $attrs['image'] = $this->image;
         }
         if ($this->event !== null) {
             $attrs['event'] = $this->event;
