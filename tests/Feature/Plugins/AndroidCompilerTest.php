@@ -2029,4 +2029,387 @@ object TestFunctions {
             manifest: $manifest
         );
     }
+
+    /**
+     * @test
+     *
+     * When manages_native_sources is absent or false, behavior is unchanged:
+     * all Kotlin files in the plugin's Android source directory are copied.
+     */
+    public function it_copies_all_sources_when_flag_is_absent(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
+        $this->files->put($kotlinPath.'/File2.kt', "package com.test\n\nclass File2 {}");
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File1.kt');
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File2.kt');
+    }
+
+    /**
+     * @test
+     *
+     * When manages_native_sources is true and the hook returns a valid list,
+     * only the listed files are copied.
+     */
+    public function it_copies_only_listed_files_when_hook_succeeds(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/filtered-plugin';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/Used.kt', "package com.test\n\nclass Used {}");
+        $this->files->put($kotlinPath.'/Unused.kt', "package com.test\n\nclass Unused {}");
+
+        // Create a mock command that returns the filtered list
+        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
+            ->once()
+            ->with(
+                'test:filter-sources',
+                \Mockery::on(function ($args) {
+                    return $args['--platform'] === 'android';
+                }),
+                \Mockery::any()
+            )
+            ->andReturnUsing(function ($command, $args, $output) {
+                $output->write(json_encode(['Used.kt']));
+
+                return 0;
+            });
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'manages_native_sources' => true,
+                'permissions' => [],
+                'dependencies' => [],
+            ],
+            'hooks' => [
+                'native_sources' => 'test:filter-sources',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/Used.kt');
+        $this->assertFileDoesNotExist($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/Unused.kt');
+    }
+
+    /**
+     * @test
+     *
+     * When the hook fails (non-zero exit), fall back to copying all sources
+     * with a clear warning.
+     */
+    public function it_falls_back_to_all_sources_when_hook_fails(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/failing-hook';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
+
+        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
+            ->once()
+            ->andReturn(1);
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'manages_native_sources' => true,
+                'permissions' => [],
+            ],
+            'hooks' => [
+                'native_sources' => 'test:failing-hook',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File1.kt');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'native_sources hook exited') && str_contains($w, 'falling back')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns an empty list, fall back to copying all sources.
+     */
+    public function it_falls_back_when_hook_returns_empty_list(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/empty-hook';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
+
+        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
+            ->once()
+            ->andReturnUsing(function ($command, $args, $output) {
+                $output->write('[]');
+
+                return 0;
+            });
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'manages_native_sources' => true,
+            ],
+            'hooks' => [
+                'native_sources' => 'test:empty-hook',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File1.kt');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'returned an empty list')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns invalid JSON, fall back to copying all sources.
+     */
+    public function it_falls_back_when_hook_returns_invalid_json(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/invalid-json-hook';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
+
+        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
+            ->once()
+            ->andReturnUsing(function ($command, $args, $output) {
+                $output->write('not valid json');
+
+                return 0;
+            });
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'manages_native_sources' => true,
+            ],
+            'hooks' => [
+                'native_sources' => 'test:invalid-json',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File1.kt');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'invalid JSON')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns a path with "..", reject it and fall back.
+     */
+    public function it_rejects_path_traversal_attempts(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/traversal-hook';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
+
+        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
+            ->once()
+            ->andReturnUsing(function ($command, $args, $output) {
+                $output->write(json_encode(['../../../etc/passwd']));
+
+                return 0;
+            });
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'manages_native_sources' => true,
+            ],
+            'hooks' => [
+                'native_sources' => 'test:traversal',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File1.kt');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, "'..'") && str_contains($w, 'path traversal')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook references a file that doesn't exist, fall back.
+     */
+    public function it_falls_back_when_hook_references_nonexistent_file(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/missing-file-hook';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
+
+        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
+            ->once()
+            ->andReturnUsing(function ($command, $args, $output) {
+                $output->write(json_encode(['DoesNotExist.kt']));
+
+                return 0;
+            });
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'manages_native_sources' => true,
+            ],
+            'hooks' => [
+                'native_sources' => 'test:missing-file',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File1.kt');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'non-existent file')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns a directory path, all Kotlin files in that
+     * directory are copied.
+     */
+    public function it_copies_directory_contents_when_hook_returns_directory(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/dir-hook';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath.'/subdir');
+        $this->files->put($kotlinPath.'/subdir/File1.kt', "package com.test\n\nclass File1 {}");
+        $this->files->put($kotlinPath.'/subdir/File2.kt', "package com.test\n\nclass File2 {}");
+        $this->files->put($kotlinPath.'/Unused.kt', "package com.test\n\nclass Unused {}");
+
+        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
+            ->once()
+            ->andReturnUsing(function ($command, $args, $output) {
+                $output->write(json_encode(['subdir']));
+
+                return 0;
+            });
+
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'manages_native_sources' => true,
+            ],
+            'hooks' => [
+                'native_sources' => 'test:dir-filter',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File1.kt');
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File2.kt');
+        $this->assertFileDoesNotExist($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/Unused.kt');
+    }
 }

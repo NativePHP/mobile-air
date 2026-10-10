@@ -620,6 +620,13 @@ class AndroidPluginCompiler
             return;
         }
 
+        // Check if plugin manages its own native sources via a hook
+        if ($plugin->managesAndroidNativeSources()) {
+            $this->copyFilteredPluginSources($plugin, $sourcePath);
+
+            return;
+        }
+
         // Copy all Kotlin files
         $files = $this->files->allFiles($sourcePath);
 
@@ -652,6 +659,137 @@ class AndroidPluginCompiler
             $this->files->ensureDirectoryExists(dirname($destination));
             $this->files->put($destination, $content);
             $this->generatedFiles[] = $destination;
+        }
+    }
+
+    /**
+     * Copy only the source files returned by the plugin's native_sources hook.
+     * Falls back to copying all sources if the hook fails, times out, returns
+     * invalid JSON, returns an empty list, or references files that don't exist.
+     */
+    protected function copyFilteredPluginSources(Plugin $plugin, string $sourcePath): void
+    {
+        $filteredSources = $this->getHookRunner()->getNativeSourcesFromHook($plugin);
+
+        if ($filteredSources === null) {
+            // Hook failed; fall back to copying all sources
+            $this->warn(
+                "Plugin '{$plugin->name}': native_sources hook failed — ".
+                'copying all sources as fallback'
+            );
+
+            // Re-invoke the standard copy logic by clearing the flag temporarily
+            $this->copyPluginSourcesWithoutFilter($plugin, $sourcePath);
+
+            return;
+        }
+
+        // Validate that all listed files exist and copy them
+        $copiedAny = false;
+
+        foreach ($filteredSources as $relativePath) {
+            $absolutePath = $sourcePath.'/'.$relativePath;
+
+            // Validate path is within the plugin's source directory
+            $realSource = realpath($sourcePath);
+            $realAbsolute = realpath($absolutePath);
+
+            if ($realAbsolute === false) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced non-existent file '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copyPluginSourcesWithoutFilter($plugin, $sourcePath);
+
+                return;
+            }
+
+            if (! str_starts_with($realAbsolute, $realSource.'/')) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced file outside plugin directory '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copyPluginSourcesWithoutFilter($plugin, $sourcePath);
+
+                return;
+            }
+
+            if (! $this->files->exists($absolutePath)) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced non-existent file '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copyPluginSourcesWithoutFilter($plugin, $sourcePath);
+
+                return;
+            }
+
+            // If it's a directory, recursively copy all .kt files
+            if ($this->files->isDirectory($absolutePath)) {
+                foreach ($this->files->allFiles($absolutePath) as $file) {
+                    if ($file->getExtension() === 'kt') {
+                        $this->copySingleKotlinFile($file->getPathname(), $plugin);
+                        $copiedAny = true;
+                    }
+                }
+            } elseif (pathinfo($absolutePath, PATHINFO_EXTENSION) === 'kt') {
+                $this->copySingleKotlinFile($absolutePath, $plugin);
+                $copiedAny = true;
+            }
+        }
+
+        if (! $copiedAny) {
+            $this->warn(
+                "Plugin '{$plugin->name}': native_sources hook resulted in no Kotlin files being copied — ".
+                'falling back to copying all sources'
+            );
+
+            $this->copyPluginSourcesWithoutFilter($plugin, $sourcePath);
+        }
+    }
+
+    /**
+     * Copy a single Kotlin file to the generated path based on its package declaration.
+     */
+    protected function copySingleKotlinFile(string $filePath, Plugin $plugin): void
+    {
+        $content = $this->files->get($filePath);
+        $package = $this->extractPackageFromContent($content);
+
+        if ($package === null) {
+            $this->warn(
+                "Plugin '{$plugin->name}': ".basename($filePath)." has no package declaration. ".
+                "Plugins should declare packages like 'package com.yourvendor.pluginname'"
+            );
+            $safeNamespace = $this->sanitizeKotlinName($plugin->getNamespace());
+            $destination = $this->generatedPath.'/'.$safeNamespace.'/'.basename($filePath);
+        } else {
+            $packagePath = str_replace('.', '/', $package);
+            $destination = $this->generatedPath.'/'.$packagePath.'/'.basename($filePath);
+        }
+
+        $this->files->ensureDirectoryExists(dirname($destination));
+        $this->files->put($destination, $content);
+        $this->generatedFiles[] = $destination;
+    }
+
+    /**
+     * Copy all plugin sources without checking the manages_native_sources flag.
+     * Used as the fallback when the hook fails.
+     */
+    protected function copyPluginSourcesWithoutFilter(Plugin $plugin, string $sourcePath): void
+    {
+        $files = $this->files->allFiles($sourcePath);
+
+        foreach ($files as $file) {
+            if ($file->getExtension() !== 'kt') {
+                continue;
+            }
+
+            $this->copySingleKotlinFile($file->getPathname(), $plugin);
         }
     }
 

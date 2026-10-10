@@ -228,6 +228,7 @@ class IOSPluginCompiler
         $pluginDir = $this->generatedPath.'/'.$plugin->getNamespace();
         $this->files->ensureDirectoryExists($pluginDir);
 
+        // Check if plugin has explicit ios.sources list
         $explicit = $plugin->getIosSources();
 
         if ($explicit !== []) {
@@ -236,7 +237,105 @@ class IOSPluginCompiler
             return;
         }
 
+        // Check if plugin manages its own native sources via a hook
+        if ($plugin->managesIosNativeSources()) {
+            $this->copyFilteredPluginSources($plugin, $sourcePath, $pluginDir);
+
+            return;
+        }
+
         $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+    }
+
+    /**
+     * Copy only the source files returned by the plugin's native_sources hook.
+     * Falls back to copying all sources if the hook fails, times out, returns
+     * invalid JSON, returns an empty list, or references files that don't exist.
+     */
+    protected function copyFilteredPluginSources(Plugin $plugin, string $sourcePath, string $pluginDir): void
+    {
+        $filteredSources = $this->getHookRunner()->getNativeSourcesFromHook($plugin);
+
+        if ($filteredSources === null) {
+            // Hook failed; fall back to copying all sources
+            $this->warn(
+                "Plugin '{$plugin->name}': native_sources hook failed — ".
+                'copying all sources as fallback'
+            );
+
+            $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+            return;
+        }
+
+        // Validate that all listed files exist and copy them
+        $copiedAny = false;
+
+        foreach ($filteredSources as $relativePath) {
+            $absolutePath = $sourcePath.'/'.$relativePath;
+
+            // Validate path is within the plugin's source directory
+            $realSource = realpath($sourcePath);
+            $realAbsolute = realpath($absolutePath);
+
+            if ($realAbsolute === false) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced non-existent file '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+                return;
+            }
+
+            if (! str_starts_with($realAbsolute, $realSource.'/')) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced file outside plugin directory '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+                return;
+            }
+
+            if (! $this->files->exists($absolutePath)) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced non-existent file '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+                return;
+            }
+
+            // If it's a directory, recursively copy matching files
+            if ($this->files->isDirectory($absolutePath)) {
+                foreach (SwiftSourceFilter::collect($absolutePath) as $swiftRelative) {
+                    $destPath = $pluginDir.'/'.$relativePath.'/'.$swiftRelative;
+                    $this->files->ensureDirectoryExists(dirname($destPath));
+                    $this->files->copy($absolutePath.'/'.$swiftRelative, $destPath);
+                    $copiedAny = true;
+                }
+            } else {
+                // Single file
+                $destPath = $pluginDir.'/'.$relativePath;
+                $this->files->ensureDirectoryExists(dirname($destPath));
+                $this->files->copy($absolutePath, $destPath);
+                $copiedAny = true;
+            }
+        }
+
+        if (! $copiedAny) {
+            $this->warn(
+                "Plugin '{$plugin->name}': native_sources hook resulted in no Swift files being copied — ".
+                'falling back to copying all sources'
+            );
+
+            $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+        }
     }
 
     /**

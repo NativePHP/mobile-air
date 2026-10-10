@@ -323,6 +323,31 @@ class Plugin
         ));
     }
 
+    /**
+     * Whether this plugin manages its own native source file list via a hook.
+     */
+    public function managesNativeSources(): bool
+    {
+        return ($this->manifest->android['manages_native_sources'] ?? false)
+            || ($this->manifest->ios['manages_native_sources'] ?? false);
+    }
+
+    /**
+     * Whether this plugin manages its Android native source file list via a hook.
+     */
+    public function managesAndroidNativeSources(): bool
+    {
+        return ($this->manifest->android['manages_native_sources'] ?? false) === true;
+    }
+
+    /**
+     * Whether this plugin manages its iOS native source file list via a hook.
+     */
+    public function managesIosNativeSources(): bool
+    {
+        return ($this->manifest->ios['manages_native_sources'] ?? false) === true;
+    }
+
     public function getAndroidSourceFiles(): array
     {
         if (! $this->hasAndroidCode()) {

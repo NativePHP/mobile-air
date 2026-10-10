@@ -7,6 +7,7 @@ use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Native\Mobile\Plugins\Exceptions\PluginHookFailedException;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 class PluginHookRunner
 {
@@ -17,6 +18,8 @@ class PluginHookRunner
     public const HOOK_COPY_ASSETS = 'copy_assets';
 
     public const HOOK_POST_BUILD = 'post_build';
+
+    public const HOOK_NATIVE_SOURCES = 'native_sources';
 
     protected string $platform;
 
@@ -342,6 +345,109 @@ class PluginHookRunner
 
         if ($this->output instanceof OutputStyle) {
             (new Factory($this->output))->twoColumnDetail($label, $value);
+        }
+    }
+
+    /**
+     * Invoke the native_sources hook for a plugin and return the filtered list
+     * of source files. Returns null on any failure, signaling the caller to
+     * fall back to copying all sources.
+     *
+     * @return list<string>|null Array of file paths relative to the plugin's
+     *                           native source root, or null on failure
+     */
+    public function getNativeSourcesFromHook(Plugin $plugin): ?array
+    {
+        $hookCommand = $plugin->getHook(self::HOOK_NATIVE_SOURCES);
+
+        if (empty($hookCommand)) {
+            return null;
+        }
+
+        $this->twoColumnDetail("<fg=blue>Running native_sources hook</>", $plugin->name);
+
+        try {
+            $outputBuffer = new \Symfony\Component\Console\Output\BufferedOutput;
+
+            $exitCode = Artisan::call($hookCommand, [
+                '--platform' => $this->platform,
+                '--build-path' => $this->buildPath,
+                '--plugin-path' => $plugin->path,
+                '--app-id' => $this->appId,
+            ], $outputBuffer);
+
+            if ($exitCode !== 0) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook exited {$exitCode} — ".
+                    'falling back to copying all sources'
+                );
+
+                return null;
+            }
+
+            $output = trim($outputBuffer->fetch());
+
+            if ($output === '') {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook returned empty output — ".
+                    'falling back to copying all sources'
+                );
+
+                return null;
+            }
+
+            $sources = json_decode($output, true);
+
+            if (! is_array($sources)) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook returned invalid JSON — ".
+                    'falling back to copying all sources'
+                );
+
+                return null;
+            }
+
+            if (empty($sources)) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook returned an empty list — ".
+                    'falling back to copying all sources'
+                );
+
+                return null;
+            }
+
+            $filtered = [];
+
+            foreach ($sources as $path) {
+                if (! is_string($path)) {
+                    $this->warn(
+                        "Plugin '{$plugin->name}': native_sources hook returned non-string path — ".
+                        'falling back to copying all sources'
+                    );
+
+                    return null;
+                }
+
+                if (str_contains($path, '..')) {
+                    $this->warn(
+                        "Plugin '{$plugin->name}': native_sources hook returned path with '..' (path traversal) — ".
+                        'falling back to copying all sources'
+                    );
+
+                    return null;
+                }
+
+                $filtered[] = trim($path, '/');
+            }
+
+            return array_values(array_unique($filtered));
+        } catch (\Throwable $e) {
+            $this->warn(
+                "Plugin '{$plugin->name}': native_sources hook failed ({$e->getMessage()}) — ".
+                'falling back to copying all sources'
+            );
+
+            return null;
         }
     }
 }
