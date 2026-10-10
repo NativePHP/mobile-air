@@ -72,6 +72,10 @@ the real picture. Roughly:
   commands for iOS and Android.
 - `Platform`, which reads the platform from `NATIVEPHP_PLATFORM` instead of asking the bridge.
 - The platform-neutral half of `native:watch` (Watchman, the polling watcher, the watch terminal).
+- The dispatcher for events marked `BroadcastsGlobally` (`Support\GlobalEventDispatcher`), the
+  marker itself (`Contracts\BroadcastsGlobally`) and the contract a platform answers the
+  dispatcher through (`Contracts\RoutesGlobalEvents`). Mobile keeps `Lane`,
+  `GlobalEventTransport` and its `GlobalEventRouter`.
 
 Mobile keeps its chrome elements (top bar, bottom nav, sheets and so on), layouts,
 `NativeRouter`, Jump, the icon resolver and the Xcode and Android Studio projects.
@@ -87,6 +91,11 @@ TypeError that looks impossible. The shim therefore aliases the whole moved set 
 time any old Edge name is used. It finds that set by walking core's `src/Edge`, so a class
 you move into core's `Edge` is covered without editing the shim. A class moved under a
 prefix the shim doesn't list yet needs a new entry.
+
+One old name is not an alias. `Native\Mobile\Events\Concerns\BroadcastsGlobally` is a real
+interface in mobile that extends core's. Laravel keeps a listener under the name it was given
+and finds listeners by the real interface names, so `Event::listen()` on an aliased interface
+is never called. An interface that code may listen on stays a real one.
 
 Mobile's own Edge tests still use the old names on purpose, so every run tests the aliases.
 
