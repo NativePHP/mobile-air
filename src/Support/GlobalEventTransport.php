@@ -120,6 +120,15 @@ class GlobalEventTransport
             return false;
         }
 
+        // A full queue takes a post all the same: it drops its oldest frame
+        // for it, and native answers that the post was delivered. So an
+        // event that the queue has no room for is not posted at all.
+        if (! $jump && ($waiting = static::waitingInFullQueue($bytes)) !== null) {
+            static::warnOnce('full:'.$event::class, static::stays($event, 'the native event queue is full ('.$waiting.' events wait in it for the main lane).'));
+
+            return false;
+        }
+
         // Under Jump the payload goes into the spool that the dev machine's
         // loop drains, and on a device native posts it to the loop of a
         // screen. An event that was not delivered leaves nothing.
@@ -129,9 +138,56 @@ class GlobalEventTransport
     }
 
     /**
+     * Count the events that wait in the native event queue when it has no room
+     * for a payload of this size: it holds as many frames as it takes, or
+     * the payload would take it over its bytes. Null when it has room.
+     *
+     * An older extension cannot be asked for these counters, and what
+     * one answers may be of no use. Null is the answer for both,
+     * and the event is then sent as it was before this check.
+     *
+     * The check cannot close every gap. Two lanes can pass it at the same
+     * moment and post more than there is room for. An event of the
+     * device that arrives at a full queue still pushes out the
+     * oldest frame, as it does when no lane posts anything.
+     *
+     * The size is counted as for MAX_PAYLOAD_BYTES, which is
+     * close to what native writes and not the same, so the
+     * check can be off by that near the limit of bytes.
+     */
+    protected static function waitingInFullQueue(int $bytes): ?int
+    {
+        $stats = function_exists('nativephp_event_queue_stats') ? nativephp_event_queue_stats() : null;
+
+        if (! is_array($stats)) {
+            return null;
+        }
+
+        foreach (['depth', 'bytes', 'max_frames', 'max_bytes'] as $counter) {
+            if (! is_int($stats[$counter] ?? null)) {
+                return null;
+            }
+        }
+
+        // A queue without a limit above zero has nothing to be full by.
+        if ($stats['max_frames'] < 1 || $stats['max_bytes'] < 1) {
+            return null;
+        }
+
+        $full = $stats['depth'] >= $stats['max_frames']
+            || $bytes > $stats['max_bytes'] - $stats['bytes'];
+
+        return $full ? $stats['depth'] : null;
+    }
+
+    /**
      * Ask native to post the payload of an event to the loop of a native
      * screen. It was delivered when native answers that it is in the
      * queue of a live session, and any other answer means no.
+     *
+     * A full queue is no reason for native to answer no. It takes the
+     * payload, drops its oldest frame for it and answers that it is
+     * in the queue, which is why send() asks for room before this.
      *
      * The payload is all that is sent. Native takes no name from a
      * call and posts under EVENT_NAME alone, which it holds for

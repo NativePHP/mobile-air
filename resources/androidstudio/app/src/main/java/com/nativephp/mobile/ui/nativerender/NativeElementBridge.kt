@@ -875,7 +875,8 @@ class NativeElementBridge private constructor() {
          *
          * Returns true when the event is in the queue of a live native screen
          * session. False means it was dropped: no native screen session is
-         * live, or the queue is full because PHP stopped draining it.
+         * live. A full queue answers true as well: it takes the event and
+         * drops its oldest frame for it.
          *
          * For a native event that PHP hands over itself (Event.Broadcast),
          * meant for its main runloop alone. The web sink posts to PHP at

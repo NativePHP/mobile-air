@@ -30,8 +30,11 @@ enum EventFunctions {
     /// Returns:
     ///   - success: boolean, false only when `payload` is not an object
     ///   - delivered: boolean, true when the event is in the queue of a live
-    ///     native screen session. False means there is no such session or
-    ///     its queue is full, and the event was dropped.
+    ///     native screen session. False means there is no such session, and
+    ///     the event was dropped. A full queue does not answer false: it
+    ///     takes the event and drops its oldest frame for it. So PHP asks
+    ///     the queue for its counters before it calls, and keeps the event
+    ///     when there is no room for it.
     ///
     /// The name is fixed and any `event` parameter is ignored, so nothing can
     /// be posted through here that the main PHP thread will accept without

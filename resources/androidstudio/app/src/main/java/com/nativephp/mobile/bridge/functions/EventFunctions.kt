@@ -47,11 +47,13 @@ object EventFunctions {
      *
      * The `delivered` flag in the reply is load-bearing: true means the event
      * handed over is in the queue of a live native screen session. False means
-     * it was dropped (no native screen session, or the queue is full), and PHP
-     * then keeps its broadcast event in the interpreter that fired it. Nothing
-     * is held here for a session that starts later. The queue belongs to the
-     * session, not to one screen, so a screen that opens later in the same
-     * session may still read the event.
+     * it was dropped (no native screen session), and PHP then keeps its
+     * broadcast event in the interpreter that fired it. A full queue does not
+     * answer false: it takes the event and drops its oldest frame for it. So
+     * PHP asks the queue for its counters before it calls, and keeps the event
+     * when there is no room for it. Nothing is held here for a session that
+     * starts later. The queue belongs to the session, not to one screen, so a
+     * screen that opens later in the same session may still read the event.
      *
      * A missing `payload`, or one that is not an object, answers `success`
      * false and writes nothing.

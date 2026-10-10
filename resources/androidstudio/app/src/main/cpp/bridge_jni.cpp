@@ -540,7 +540,8 @@ static jboolean element_write_event(JNIEnv* env, jclass, jint type, jint callbac
     }
 
     // True only when the extension queued the event. It drops it when no
-    // region is registered, or when the queue is over its backlog cap.
+    // region is registered. A queue at its backlog cap queues it all the
+    // same, and drops its oldest frame to make room.
     return queued == 1 ? JNI_TRUE : JNI_FALSE;
 }
 

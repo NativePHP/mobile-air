@@ -190,6 +190,32 @@ function bootWithAppKey(?string $key): void
     app()->forgetInstance('encrypter');
 }
 
+/**
+ * Stand in for the extension of a device, which no test loads. It
+ * answers the counters of the native event queue that a test
+ * gave with queueHolds(), and null when a test gave none.
+ */
+function nativephp_event_queue_stats(): mixed
+{
+    return app()->bound('native.event-queue') ? app('native.event-queue') : null;
+}
+
+/**
+ * Let the native event queue hold this many frames and bytes, next to
+ * the limits that the extension has for it on a device. The lanes
+ * of a test read them as the extension would answer them.
+ */
+function queueHolds(int $frames, int $bytes): void
+{
+    app()->instance('native.event-queue', [
+        'depth' => $frames,
+        'bytes' => $bytes,
+        'dropped' => 0,
+        'max_frames' => 1024,
+        'max_bytes' => 8388608,
+    ]);
+}
+
 function createOrdersTable(): void
 {
     Schema::create('orders', function (Blueprint $table) {
@@ -432,6 +458,38 @@ it('stays in the lane that fired it, where its listeners then run, when it canno
         true,
     ],
 ]);
+
+it('stays in the lane that fired it, and is not posted, while the native event queue has no room for it', function (int $frames, int $bytes) {
+    queueHolds($frames, $bytes);
+
+    Log::spy();
+
+    $heard = 0;
+    Event::listen(OrderShipped::class, function () use (&$heard) {
+        $heard++;
+
+        return 'noted';
+    });
+
+    // A full queue takes a post all the same and drops its oldest event for it, so nothing may be posted to it.
+    expect(onLane('queue', fn () => event(new OrderShipped(42, 'shipped'))))->toContain('noted')
+        ->and($heard)->toBe(1)
+        ->and(posted())->toBe([]);
+
+    Log::shouldHaveReceived('warning');
+})->with([
+    'it holds as many frames as it takes' => [1024, 4096],
+    'the event would take it over its bytes' => [3, 8388608 - 8],
+]);
+
+it('still crosses to the main lane when the native event queue has one place left for it', function () {
+    queueHolds(frames: 1023, bytes: 4096);
+
+    Event::listen(OrderShipped::class, fn () => 'noted');
+
+    expect(onLane('queue', fn () => event(new OrderShipped(42, 'shipped'))))->toBe([])
+        ->and(posted())->toHaveCount(1);
+});
 
 // ── Jump ────────────────────────────────────────────
 
