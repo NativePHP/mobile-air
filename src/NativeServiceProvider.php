@@ -42,6 +42,7 @@ use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\Elements as ChromeElements;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\Device\ThermalStateChanged;
+use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
@@ -117,6 +118,11 @@ class NativeServiceProvider extends PackageServiceProvider
         require_once __DIR__.'/helpers.php';
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
+
+        // Installed while providers register, so that whatever takes the
+        // dispatcher when the app boots takes this one, and a marked
+        // event that PHP fires reaches the live screen through it.
+        GlobalEventDispatcher::install($this->app);
 
         $this->pointEdgeLogAtDebugLog();
         $this->useDeviceAppKey();

@@ -10,7 +10,9 @@ use Native\Mobile\Edge\Concerns\RestartsOnHotReload;
 use Native\Mobile\Edge\Concerns\RunsAsyncTasks;
 use Native\Mobile\Edge\Concerns\WrapsScreensInNativeChrome;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
+use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Platform;
+use Native\Mobile\Support\GlobalEventTransport;
 use SupaNative\Core\Edge\CallbackRegistry;
 use SupaNative\Core\Edge\NativeComponent as CoreNativeComponent;
 use SupaNative\Core\Edge\NativeDumpException;
@@ -142,6 +144,26 @@ abstract class NativeComponent extends CoreNativeComponent
     }
 
     /**
+     * The dispatcher of this package keeps the mark, since it is the one
+     * that hands an event that PHP fired to the live screen. It skips
+     * an event with the mark, since the screen has heard that one.
+     */
+    protected function markEventFromNative(object $event): void
+    {
+        GlobalEventDispatcher::markFromNative($event);
+    }
+
+    /**
+     * The dispatcher of this package answers, as it knows which listeners
+     * count: one for the class of the event or for an interface of it,
+     * and not a wildcard, which a logging tool has for every event.
+     */
+    protected function laravelListensFor(object $event): bool
+    {
+        return GlobalEventDispatcher::laravelListensFor($event);
+    }
+
+    /**
      * Hot reload and app teardown are dev-loop / lifecycle plumbing, so tree
      * observers never see them as user actions.
      *
@@ -169,13 +191,49 @@ abstract class NativeComponent extends CoreNativeComponent
 
     /**
      * The native events the shell owns, claimed before any listener sees
-     * them: a deep link arriving warm, then an async task completing.
-     * First to claim the event returns true, and core stops there.
+     * them: a deep link arriving warm, then an event of another lane,
+     * and then an async task completing. Whichever claims an event
+     * returns true, and core does nothing more with that event.
      */
     protected function handlePlatformNativeEvent(string $eventName, mixed $payload): bool
     {
         return $this->handleDeepLinkEvent($eventName, $payload)
+            || $this->handleEventOfAnotherLane($eventName, $payload)
             || $this->handleAsyncCompletionEvent($eventName, $payload);
+    }
+
+    /**
+     * An event marked BroadcastsGlobally that another lane has fired. This
+     * frame carries it, serialized and signed with the key of the app.
+     * It is fired here as if this lane had fired it to begin with.
+     */
+    protected function handleEventOfAnotherLane(string $eventName, mixed $payload): bool
+    {
+        if ($eventName !== GlobalEventTransport::EVENT_NAME) {
+            return false;
+        }
+
+        $this->fireEventOfAnotherLane($payload);
+
+        return true;
+    }
+
+    /**
+     * Fire the event that another lane sent to this one, which the
+     * payload of its frame carries. Laravel's listeners run in
+     * here, and the screen hears it on its next loop turn.
+     */
+    private function fireEventOfAnotherLane(mixed $payload): void
+    {
+        $event = GlobalEventTransport::receive($payload);
+        $laravelHeard = $event !== null && $this->fireThroughLaravel($event);
+
+        // The arrival changed nothing on the screen, so the loops keep the
+        // frame. A handler that runs for the event on the next turn gets
+        // its frame there. A Laravel listener that ran for the event
+        // is a change and needs a frame, and so does a component
+        // event that still waits for the flush after this one.
+        $this->nativeEventUnheard = ! $laravelHeard && $this->nativePendingComponentEvents === [];
     }
 
     /**
@@ -203,6 +261,22 @@ abstract class NativeComponent extends CoreNativeComponent
             parent::run();
         } finally {
             self::restoreActive($previousActiveComponent);
+        }
+    }
+
+    /**
+     * Core's teardown, and then this screen stops being the live one.
+     * This package tracks which screen is live, in RunsAsyncTasks,
+     * which is why core cannot take that final step on its own.
+     */
+    public function unmount(): void
+    {
+        parent::unmount();
+
+        // An unmounted screen is not the live one, so an event that PHP
+        // fires from here on is not put in its inbox any more.
+        if (self::active() === $this) {
+            self::$nativeActiveComponent = null;
         }
     }
 
@@ -271,6 +345,8 @@ abstract class NativeComponent extends CoreNativeComponent
         // $this->replace('/login') — must be honored: don't clear it and don't
         // enter the loop, so the router navigates immediately.
         if ($this->nativeNavigationIntent !== null) {
+            $this->nativeEventInbox = [];
+
             return;
         }
 
@@ -290,6 +366,7 @@ abstract class NativeComponent extends CoreNativeComponent
         }
 
         $previousActiveComponent = self::markActive($this);
+        $skipRender = false;
 
         while ($this->nativeRunning) {
             // Superseded by a newer Jump native session — this runloop is an
@@ -301,15 +378,35 @@ abstract class NativeComponent extends CoreNativeComponent
             }
 
             self::markActive($this);
+
+            // What PHP fired with event() since the last turn is delivered
+            // first. A handler that ran for it gets its frame, also
+            // when the turn before this one kept the frame.
+            if ($this->deliverGlobalEvents()) {
+                $skipRender = false;
+            }
+
+            // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
             $this->runGuardedInteraction(
                 'flushDispatchedEvents()',
                 fn () => $this->flushDispatchedEvents(),
             );
-            $this->nativeCallbacks->reset();
-            $this->resetComputedCache();
+
+            // A native event that went unheard leaves the frame on screen
+            // as it is. Its callback ids and computed values are still
+            // in use, so both remain until the next frame is drawn.
+            if (! $skipRender) {
+                $this->nativeCallbacks->reset();
+                $this->resetComputedCache();
+            }
+
             $this->syncTailwindPlatform();
 
-            if (! $this->nativeHasError) {
+            if (! $this->nativeHasError && ! $skipRender) {
                 try {
                     $t0 = microtime(true);
 
@@ -350,7 +447,22 @@ abstract class NativeComponent extends CoreNativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event($this->nextEventTimeout());
+            $skipRender = false;
+            $timeout = $this->nextEventTimeout();
+
+            // An event in the inbox does not wait for a tap or a poll. The
+            // wait is cut to its floor of one millisecond, which still
+            // lets a device event in first. When none came, the next
+            // turn keeps this frame, unless a component event waits
+            // to be delivered or a handler of the inbox runs.
+            $inboxWaits = $this->nativeEventInbox !== [] && $timeout !== 1;
+            $event = nativephp_element_wait_event($inboxWaits ? 1 : $timeout);
+
+            if ($event === null && $inboxWaits) {
+                $skipRender = $this->nativePendingComponentEvents === [];
+
+                continue;
+            }
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
@@ -387,6 +499,7 @@ abstract class NativeComponent extends CoreNativeComponent
                 try {
                     $this->dispatchNativeEvent($event);
                     $this->flushDispatchedEvents();
+                    $skipRender = $this->nativeEventUnheard;
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -416,5 +529,9 @@ abstract class NativeComponent extends CoreNativeComponent
         // Hand the baton back to whatever was driving before this hot-swapped
         // loop took over, so a later dispatch scopes to the right screen.
         self::restoreActive($previousActiveComponent);
+
+        // What still waits in the inbox was meant for the turn that will
+        // not come. A covered screen gets none of it when it returns.
+        $this->nativeEventInbox = [];
     }
 }
