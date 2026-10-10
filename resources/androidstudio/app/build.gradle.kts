@@ -209,6 +209,9 @@ dependencies {
     implementation(libs.androidx.browser)
 
     testImplementation(libs.junit)
+    // The android.jar on the unit test classpath only stubs org.json, so
+    // JVM tests that build or parse JSON need the real implementation.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.ui.test.junit4)

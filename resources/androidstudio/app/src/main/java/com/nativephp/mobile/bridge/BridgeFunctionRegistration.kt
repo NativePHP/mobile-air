@@ -5,6 +5,7 @@ import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.functions.AsyncFunctions
 import com.nativephp.mobile.bridge.functions.DeviceFunctions
 import com.nativephp.mobile.bridge.functions.DialogFunctions
+import com.nativephp.mobile.bridge.functions.EventFunctions
 import com.nativephp.mobile.bridge.functions.FileFunctions
 import com.nativephp.mobile.bridge.functions.PerfFunctions
 import com.nativephp.mobile.bridge.functions.SystemFunctions
@@ -22,6 +23,11 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     // (AsyncTask::dispatch()). iOS twin: Bridge/Functions/AsyncFunctions.swift.
     registry.register("AsyncTask.Dispatch", AsyncFunctions.Dispatch())
     registry.register("AsyncTask.Complete", AsyncFunctions.Complete())
+
+    // Event.*: carries a BroadcastsGlobally event fired on another PHP thread
+    // to the native screens' runloop. Queue only, never the web sink.
+    // iOS twin: Bridge/Functions/EventFunctions.swift.
+    registry.register("Event.Broadcast", EventFunctions.Broadcast())
 
     // Device.* — core built-in (migrated from the nativephp/mobile-device
     // plugin). iOS twin: Bridge/Functions/DeviceFunctions.swift.

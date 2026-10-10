@@ -35,7 +35,7 @@ static jint element_get_node_count(JNIEnv*, jclass);
 static jint element_get_format_version(JNIEnv*, jclass);
 static jint element_get_runtime_flags(JNIEnv*, jclass);
 static void element_set_runtime_flags(JNIEnv*, jclass, jint);
-static void element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
+static jboolean element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
 
 // Phase 0 — symbols exported by the PHP nativephp extension (libphp.a)
 // Linked into the same .so as this JNI bridge.
@@ -105,7 +105,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
         {(char*)"nativeGetFormatVersion",  (char*)"()I",                       (void*)element_get_format_version},
         {(char*)"nativeGetRuntimeFlags",   (char*)"()I",                       (void*)element_get_runtime_flags},
         {(char*)"nativeSetRuntimeFlags",   (char*)"(I)V",                      (void*)element_set_runtime_flags},
-        {(char*)"nativeElementWriteEvent", (char*)"(III[B)V",                  (void*)element_write_event},
+        {(char*)"nativeElementWriteEvent", (char*)"(III[B)Z",                  (void*)element_write_event},
     };
 
     jclass elClass = env->FindClass("com/nativephp/mobile/ui/nativerender/NativeElementBridge");
@@ -524,19 +524,24 @@ static void element_set_runtime_flags(JNIEnv*, jclass, jint flags) {
     nphp_set_runtime_flags((uint32_t)flags);
 }
 
-static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
+static jboolean element_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
     // Hand the body bytes to the PHP extension, which owns the event mutex, the
     // growable heap buffer and the header framing (nphp_element_post_event in
     // nphp_element.c). No more inline buffer / truncation here.
     jsize data_len = data ? env->GetArrayLength(data) : 0;
+    int queued;
     if (data_len > 0) {
         jbyte* bytes = env->GetByteArrayElements(data, nullptr);
-        nphp_element_post_event(type, callback_id, node_id,
-                                reinterpret_cast<const uint8_t*>(bytes), (uint32_t)data_len);
+        queued = nphp_element_post_event(type, callback_id, node_id,
+                                         reinterpret_cast<const uint8_t*>(bytes), (uint32_t)data_len);
         env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
     } else {
-        nphp_element_post_event(type, callback_id, node_id, nullptr, 0);
+        queued = nphp_element_post_event(type, callback_id, node_id, nullptr, 0);
     }
+
+    // True only when the extension queued the event. It drops it when no
+    // region is registered, or when the queue is over its backlog cap.
+    return queued == 1 ? JNI_TRUE : JNI_FALSE;
 }
 
 /* ═══════════════════════════════════════════════════════════
