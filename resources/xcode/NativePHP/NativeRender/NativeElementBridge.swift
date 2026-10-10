@@ -533,18 +533,20 @@ final class NativeElementBridge {
 
     /// Write event to PHP shared memory event ring buffer.
     /// Event format: [magic:u32][type:u8][callback_id:u32][node_id:u32][timestamp:u64][data_size:u16][data...]
-    static func nativeElementWriteEvent(_ type: Int32, _ callbackId: Int32, _ nodeId: Int32, _ data: UnsafePointer<UInt8>?, _ dataSize: Int32) {
+    @discardableResult
+    static func nativeElementWriteEvent(_ type: Int32, _ callbackId: Int32, _ nodeId: Int32, _ data: UnsafePointer<UInt8>?, _ dataSize: Int32) -> Bool {
         // Hand the body bytes to the PHP extension, which owns the event mutex,
         // the event queue, and the header framing (nphp_element_post_event in
         // nphp_element.c). No more region poking by offset, no 4KB cap, no
         // hand-rolled framing.
         //
-        // The return value (1 = queued, 0 = dropped) is discarded: a UI event
-        // has nothing useful to do about a drop, and a dropped one is already
-        // logged by the extension with the callback_id it would have woken.
-        // A caller that DOES care — an async-task completion, say — should
-        // check it rather than copy this.
-        _ = nphp_element_post_event(type, callbackId, nodeId, data, UInt32(max(0, dataSize)))
+        // The return value (1 = queued, 0 = dropped) is passed up as a Bool.
+        // The UI senders discard it: a UI event has nothing useful to do
+        // about a drop, and a dropped one is already logged by the extension
+        // with the callback_id it would have woken.
+        // A caller that DOES care should check it, as Event.Broadcast does
+        // (AsyncTask.Complete still discards it).
+        return nphp_element_post_event(type, callbackId, nodeId, data, UInt32(max(0, dataSize))) == 1
     }
 
     static func sendPressEvent(_ callbackId: Int, nodeId: Int) {
@@ -659,7 +661,9 @@ final class NativeElementBridge {
     /// Inject a native event into the element event queue.
     /// Wakes up nativephp_element_wait_event() on the PHP side.
     /// Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
-    static func sendNativeEvent(eventName: String, payloadJson: String) {
+    /// Returns true when the event was queued, false when it was dropped.
+    @discardableResult
+    static func sendNativeEvent(eventName: String, payloadJson: String) -> Bool {
         let nameBytes = Array(eventName.utf8)
         let payloadBytes = Array(payloadJson.utf8)
         var buf = Data(capacity: 4 + nameBytes.count + 4 + payloadBytes.count)
@@ -669,10 +673,11 @@ final class NativeElementBridge {
         var payloadLen = UInt32(payloadBytes.count).littleEndian
         buf.append(Data(bytes: &payloadLen, count: 4))
         buf.append(contentsOf: payloadBytes)
-        writeEvent(type: EventType.native, callbackId: 0, nodeId: 0, data: buf)
+        return writeEvent(type: EventType.native, callbackId: 0, nodeId: 0, data: buf)
     }
 
-    private static func writeEvent(type: Int, callbackId: Int, nodeId: Int, data: Data?) {
+    @discardableResult
+    private static func writeEvent(type: Int, callbackId: Int, nodeId: Int, data: Data?) -> Bool {
         // nodeId carries an FNV-1a 32-bit hash widened to Int — when bit
         // 31 is set the value exceeds Int32.max and the checked
         // `Int32(nodeId)` initializer traps. Use `truncatingIfNeeded`
@@ -682,19 +687,19 @@ final class NativeElementBridge {
         let c = Int32(truncatingIfNeeded: callbackId)
         let n = Int32(truncatingIfNeeded: nodeId)
         if let data, data.count > 0 {
-            data.withUnsafeBytes { ptr in
+            return data.withUnsafeBytes { ptr -> Bool in
                 if let base = ptr.baseAddress {
-                    nativeElementWriteEvent(
+                    return nativeElementWriteEvent(
                         t, c, n,
                         base.assumingMemoryBound(to: UInt8.self),
                         Int32(truncatingIfNeeded: data.count)
                     )
                 } else {
-                    nativeElementWriteEvent(t, c, n, nil, 0)
+                    return nativeElementWriteEvent(t, c, n, nil, 0)
                 }
             }
         } else {
-            nativeElementWriteEvent(t, c, n, nil, 0)
+            return nativeElementWriteEvent(t, c, n, nil, 0)
         }
     }
 

@@ -45,6 +45,12 @@ use PHPUnit\Framework\TestCase;
  * destination while the current screen stays alive underneath; goBack()
  * pops back onto it, firing onResume() and re-rendering with preserved
  * state — exactly what NativeRouter::loop() does on device.
+ *
+ * The screen under test is the live screen, as the one in a runloop is.
+ * An event marked BroadcastsGlobally that PHP fires with event() waits
+ * for the end of the interaction it was fired in, and then runs the
+ * screen's #[On] listeners on a turn of its own. Fired from the
+ * body of a test, it is delivered at once and renders once.
  */
 class TestableComponent
 {
@@ -98,6 +104,9 @@ class TestableComponent
         self::EVENT_SHEET_DISMISS => ['on_dismiss'],
     ];
 
+    /** Turns one interaction may take before a listener that keeps firing events fails the test. */
+    protected const MAX_TURNS = 100;
+
     protected NativeComponent $component;
 
     /** The wire tree from the most recent publish this harness observed. */
@@ -119,6 +128,9 @@ class TestableComponent
 
     /** Frame count snapshot taken when the last interaction started. */
     protected int $framesBeforeInteraction = 0;
+
+    /** How deep the harness is in component code. Above zero, an interaction is in progress. */
+    protected int $guardDepth = 0;
 
     /** Per-test snapshot sequence numbers, keyed by file+test. */
     protected static array $snapshotSequence = [];
@@ -211,6 +223,20 @@ class TestableComponent
             $this->registerNativeEventListeners();
         });
 
+        // The router marks a screen as the live one before its mount(), and
+        // so does the harness. An event that PHP fires with event() then
+        // lands in the inbox of this screen, and the harness is told,
+        // weakly, so that the screen can go when the test ends.
+        $harness = \WeakReference::create($this);
+        $watcher = static fn () => $harness->get()?->globalEventArrived();
+
+        $this->scoped(function () use ($watcher) {
+            /** @var NativeComponent $this */
+            $this->nativeEventInboxWatcher = $watcher;
+        });
+
+        NativeComponent::markActive($component);
+
         $this->guard(function () use ($component) {
             // #[Lazy] components paint a placeholder before mount() on
             // device; keep that behavior so the publish is observable.
@@ -222,11 +248,24 @@ class TestableComponent
             // A redirect from mount() (e.g. an auth gate) skips the first
             // render, exactly like runLoop() honoring a pre-set intent.
             if ($component->getNavigationIntent() === null) {
-                $this->renderFrame();
+                $this->takeTurns(render: true);
             } else {
                 $this->lastTree = $this->bridge->lastPublish();
             }
         });
+
+        $this->endLoopIfStopped();
+    }
+
+    /**
+     * A screen stops being the live one when its test lets go of the harness,
+     * so that an event a later test fires does not land in its inbox.
+     */
+    public function __destruct()
+    {
+        if (isset($this->component) && NativeComponent::active() === $this->component) {
+            NativeComponent::restoreActive(null);
+        }
     }
 
     // ── State & interaction ─────────────────────────
@@ -490,7 +529,9 @@ class TestableComponent
      * Deliver a native event (wire type 20) — what the device sends when a
      * bridge API completes or a plugin pushes an event. Fires #[On]
      * listeners, fluent ->on() closures, and pending then()/catch()
-     * callbacks, then re-renders.
+     * callbacks, then re-renders. No re-render follows an event that the
+     * screen listens for when none of its `when` filters matched and no
+     * Laravel listener ran for it.
      *
      *     ->emitNative(LocationUpdated::class, ['latitude' => 40.7, ...])
      */
@@ -498,12 +539,18 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $this->guard(fn () => $this->scoped(function () use ($event, $payload) {
+        $unheard = $this->guard(fn () => $this->scoped(function () use ($event, $payload) {
             /** @var NativeComponent $this */
             $this->dispatchNativeEvent(['event' => $event, 'payload' => $payload]);
+
+            return $this->nativeEventUnheard;
         }));
 
-        return $this->afterInteraction();
+        // The runloop skips the render after a native event that ran
+        // nothing here: no `when` filter of the screen matched it
+        // and no Laravel listener ran. The harness leaves the
+        // frame and its count as they were in that case.
+        return $this->afterInteraction(render: ! $unheard);
     }
 
     /** Simulate the system back gesture / hardware back button. */
@@ -709,11 +756,15 @@ class TestableComponent
             $this->nativeRunning = true;
         });
 
+        NativeComponent::markActive($this->component);
+
         $this->guard(function () {
             $this->component->onResume();
             $this->component->flushDispatchedEvents();
-            $this->renderFrame();
+            $this->takeTurns(render: true);
         });
+
+        $this->endLoopIfStopped();
     }
 
     // ── Assertions ──────────────────────────────────
@@ -1458,12 +1509,16 @@ class TestableComponent
      */
     protected function guard(\Closure $fn): mixed
     {
+        $this->guardDepth++;
+
         try {
             return $fn();
         } catch (NativeDumpException $e) {
             Assert::fail(
                 'Component called dd() at '.$e->getSourceFile().':'.$e->getSourceLine()."\n".$e->getFormattedDumps()
             );
+        } finally {
+            $this->guardDepth--;
         }
     }
 
@@ -1514,24 +1569,122 @@ class TestableComponent
     {
         $this->ensureActive();
         $this->framesBeforeInteraction = $this->frameCount;
+
+        // The screen that a test interacts with is the live one, as in its runloop.
+        NativeComponent::markActive($this->component);
     }
 
     /**
      * Post-interaction re-render, mirroring the runloop: a component that
      * set a navigation intent has stopped (its final state was already
      * published by publishFinalState()); otherwise render the next frame.
+     * Pass false after an interaction that the runloop does not render for.
      */
-    protected function afterInteraction(): static
+    protected function afterInteraction(bool $render = true): static
     {
         $this->guard(fn () => $this->component->flushDispatchedEvents());
 
-        if ($this->component->getNavigationIntent() === null && $this->isRunning()) {
-            $this->guard(fn () => $this->renderFrame());
-        } elseif ($this->component->getNavigationIntent() !== null) {
+        if (! $this->hasStopped()) {
+            $this->takeTurns($render);
+        }
+
+        if ($this->component->getNavigationIntent() !== null) {
             $this->lastTree = $this->bridge->lastPublish() ?? $this->lastTree;
         }
 
+        $this->endLoopIfStopped();
+
         return $this;
+    }
+
+    /**
+     * Take the turns the runloop takes once an interaction is over. Each
+     * turn delivers the events that PHP fired with event() since the
+     * one before, and renders when the interaction or a handler of
+     * such an event ran. What a handler fires is a turn more.
+     */
+    protected function takeTurns(bool $render): void
+    {
+        $turns = 0;
+
+        do {
+            if (++$turns > self::MAX_TURNS) {
+                Assert::fail(
+                    'A listener keeps firing events marked BroadcastsGlobally: '.get_class($this->component).
+                    ' took '.self::MAX_TURNS.' turns in a row and its inbox still was not empty.'
+                );
+            }
+
+            $heard = $this->guard(fn () => $this->scoped(function () {
+                /** @var NativeComponent $this */
+                return $this->deliverGlobalEvents(guarded: false);
+            }));
+
+            // A handler that navigated has ended the loop before its frame.
+            if ($heard && $this->hasStopped()) {
+                break;
+            }
+
+            if ($render || $heard) {
+                $this->guard(fn () => $this->renderFrame());
+            }
+
+            $render = false;
+        } while ($this->hasWaitingEvents());
+    }
+
+    /**
+     * An event that PHP fired with event() has landed in the inbox of the
+     * screen. During an interaction it waits for afterInteraction(). In
+     * the body of a test it is settled at once, which stands for the
+     * next turn of a loop: on a device nothing fires in between.
+     *
+     * @internal Called by the component, through the watcher set on it.
+     */
+    protected function globalEventArrived(): void
+    {
+        // A harness that an earlier test left behind takes no turns in this one.
+        if ($this->guardDepth > 0 || FakeBridge::current() !== $this->bridge) {
+            return;
+        }
+
+        $this->framesBeforeInteraction = $this->frameCount;
+
+        $this->afterInteraction(render: false);
+    }
+
+    /**
+     * Do what the end of a runloop does for a screen that navigated or
+     * stopped: it is not the live screen any more, and what waits
+     * in its inbox is dropped, so nothing arrives on its return.
+     */
+    protected function endLoopIfStopped(): void
+    {
+        if (! $this->hasStopped()) {
+            return;
+        }
+
+        $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $this->nativeEventInbox = [];
+        });
+
+        if (NativeComponent::active() === $this->component) {
+            NativeComponent::restoreActive(null);
+        }
+    }
+
+    protected function hasStopped(): bool
+    {
+        return $this->component->getNavigationIntent() !== null || ! $this->isRunning();
+    }
+
+    protected function hasWaitingEvents(): bool
+    {
+        return $this->scoped(function () {
+            /** @var NativeComponent $this */
+            return $this->nativeEventInbox !== [];
+        });
     }
 
     protected function isRunning(): bool

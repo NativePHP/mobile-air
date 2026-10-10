@@ -4,6 +4,7 @@ namespace Native\Mobile\Http\Controllers;
 
 use Closure;
 use Illuminate\Http\Request;
+use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Support\NativeCallbacks;
 use ReflectionClass;
 use ReflectionFunction;
@@ -22,6 +23,11 @@ class DispatchEventFromAppController
         }
 
         $event = new $eventClass(...$this->constructorArguments($eventClass, $payload));
+
+        // The device sent this event, and a native screen hears it through
+        // its own channel. The mark keeps the dispatcher from handing
+        // it to the live screen once more when event() runs it.
+        GlobalEventDispatcher::markFromNative($event);
 
         // Existing path: dispatch to Laravel listeners and #[On] handlers. Untouched.
         event($event);

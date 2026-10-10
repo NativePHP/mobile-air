@@ -5,6 +5,7 @@ namespace Native\Mobile\Http\Bridge;
 use Illuminate\Http\Request;
 use InvalidArgumentException;
 use Native\Mobile\Runtime;
+use Native\Mobile\Support\Lane;
 use Throwable;
 
 /**
@@ -344,6 +345,13 @@ final class BridgeDispatcher
 
         try {
             $parsed = self::prepareGlobals($platform, $lane, $method, $uri, $scriptPath, $cookie, $contentType, $headers, $body, $length);
+
+            // A web view lane only answers the web view inside a native
+            // screen, and nothing else. Its first request marks this
+            // interpreter as such a lane for as long as it lives.
+            if ($lane === 'webview') {
+                Lane::dedicateToWebView();
+            }
 
             // Built from the superglobals just set, as Request::capture() did.
             $request = RequestFactory::make($_GET, $parsed, $_COOKIE, $_SERVER, $body);

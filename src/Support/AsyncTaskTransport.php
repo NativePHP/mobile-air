@@ -331,6 +331,60 @@ class AsyncTaskTransport
         }
     }
 
+    /**
+     * Spool an event that a Jump runner fired, for the runloop of the dev
+     * machine to drain as a native event, and answer whether it is in
+     * the spool. On false nothing of it is left there for the loop.
+     *
+     * The loop takes the oldest file first, by its modification time, so
+     * an event leaves ahead of the completion of its task, which is
+     * written after it. Only within one second the name decides:
+     * it sorts ahead of a task id, and in the order of firing.
+     *
+     * @internal
+     */
+    public static function spoolJumpEvent(string $event, array $payload): bool
+    {
+        $json = json_encode(['event' => $event, 'payload' => $payload]);
+
+        if ($json === false) {
+            return false;
+        }
+
+        $dir = static::directory('complete');
+        static::ensureDir($dir);
+
+        $path = $dir.DIRECTORY_SEPARATOR.sprintf('0-%020d-%s.json', hrtime(true), bin2hex(random_bytes(4)));
+
+        // The loop may drain the spool at any moment, and it takes every
+        // `*.json` there. So the event is written under a name that
+        // it does not take, and gets its own once it is whole.
+        $temporary = $path.'.tmp';
+
+        // A write that fails says so in a warning, which Laravel throws
+        // as an exception. A file that is not there with every byte
+        // of the event, for whichever reason, was not written.
+        try {
+            static::writeSpoolFile($temporary, $json);
+
+            clearstatcache(true, $temporary);
+
+            $whole = is_file($temporary) && filesize($temporary) === strlen($json);
+        } catch (\Throwable) {
+            $whole = false;
+        }
+
+        // A rename puts the whole file in the spool in one step. From then
+        // on the answer stands, whether the loop took the file or not.
+        if ($whole && @rename($temporary, $path)) {
+            return true;
+        }
+
+        @unlink($temporary);
+
+        return false;
+    }
+
     protected static function writeCompletionSpool(string $id, string $event, array $payload): void
     {
         $dir = static::directory('complete');
@@ -398,11 +452,14 @@ class AsyncTaskTransport
         }
 
         // Oldest first, so completions surface in the order they finished.
-        // Spool names are random UUIDs, so a plain sort() would order them
+        // Task spool names are random UUIDs, so a plain sort() would order them
         // arbitrarily — the modification time is the only thing that actually
         // tracks completion order. Names break ties, since filemtime has
         // one-second granularity on some filesystems and two tasks can easily
-        // land inside the same second.
+        // land inside the same second. So can an event and the completion of
+        // the task that fired it. That is why spoolJumpEvent() names an event
+        // `0-<hrtime>-<random>`: it sorts ahead of every UUID, so the event
+        // surfaces first, and events keep the order they were fired in.
         clearstatcache();
         usort($files, fn ($a, $b) => [filemtime($a), $a] <=> [filemtime($b), $b]);
         $file = $files[0];
