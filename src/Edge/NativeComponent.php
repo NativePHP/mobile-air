@@ -9,8 +9,6 @@ use Native\Mobile\Edge\Concerns\InteractsWithAppShell;
 use Native\Mobile\Edge\Concerns\RestartsOnHotReload;
 use Native\Mobile\Edge\Concerns\RunsAsyncTasks;
 use Native\Mobile\Edge\Concerns\WrapsScreensInNativeChrome;
-use Native\Mobile\Events\Concerns\BroadcastsGlobally;
-use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Platform;
 use Native\Mobile\Support\GlobalEventTransport;
 use SupaNative\Core\Edge\CallbackRegistry;
@@ -131,36 +129,6 @@ abstract class NativeComponent extends CoreNativeComponent
                 ? $method->getAttributes(OnNative::class, \ReflectionAttribute::IS_INSTANCEOF)
                 : []),
         ];
-    }
-
-    /**
-     * Mobile marks its globally-broadcast events with an interface, so a
-     * theme flip or an orientation change reaches `Event::listen` handlers
-     * anywhere in the app and not just the active screen's `#[On]`.
-     */
-    protected function eventBroadcastsGlobally(string $eventClass): bool
-    {
-        return is_subclass_of($eventClass, BroadcastsGlobally::class);
-    }
-
-    /**
-     * The dispatcher of this package keeps the mark, since it is the one
-     * that hands an event that PHP fired to the live screen. It skips
-     * an event with the mark, since the screen has heard that one.
-     */
-    protected function markEventFromNative(object $event): void
-    {
-        GlobalEventDispatcher::markFromNative($event);
-    }
-
-    /**
-     * The dispatcher of this package answers, as it knows which listeners
-     * count: one for the class of the event or for an interface of it,
-     * and not a wildcard, which a logging tool has for every event.
-     */
-    protected function laravelListensFor(object $event): bool
-    {
-        return GlobalEventDispatcher::laravelListensFor($event);
     }
 
     /**

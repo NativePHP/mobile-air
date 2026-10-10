@@ -42,7 +42,6 @@ use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\Elements as ChromeElements;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\Device\ThermalStateChanged;
-use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
@@ -51,15 +50,19 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\DeviceAppKey;
+use Native\Mobile\Support\GlobalEventRouter;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
+use SupaNative\Core\Contracts\RoutesGlobalEvents;
 use SupaNative\Core\Edge\EdgeLog;
 use SupaNative\Core\Edge\ElementRegistry;
 use SupaNative\Core\Edge\ImageSource;
 use SupaNative\Core\Edge\NativeTagPrecompiler;
 use SupaNative\Core\Edge\ScreenRoutes;
 use SupaNative\Core\Edge\TailwindParser;
+use SupaNative\Core\Platform as RenderPlatform;
+use SupaNative\Core\Support\GlobalEventDispatcher;
 
 class NativeServiceProvider extends PackageServiceProvider
 {
@@ -118,6 +121,13 @@ class NativeServiceProvider extends PackageServiceProvider
         require_once __DIR__.'/helpers.php';
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
+
+        // On a desktop platform the desktop package answers for the screens,
+        // so this package binds its own router on any other platform, and
+        // also where no platform is declared, such as the dev machine.
+        if (! RenderPlatform::isDesktop()) {
+            $this->app->singleton(RoutesGlobalEvents::class, GlobalEventRouter::class);
+        }
 
         // Installed while providers register, so that whatever takes the
         // dispatcher when the app boots takes this one, and a marked

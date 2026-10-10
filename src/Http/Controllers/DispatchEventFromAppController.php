@@ -4,10 +4,10 @@ namespace Native\Mobile\Http\Controllers;
 
 use Closure;
 use Illuminate\Http\Request;
-use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Support\NativeCallbacks;
 use ReflectionClass;
 use ReflectionFunction;
+use SupaNative\Core\Support\GlobalEventDispatcher;
 
 class DispatchEventFromAppController
 {

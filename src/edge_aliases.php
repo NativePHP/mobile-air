@@ -24,6 +24,20 @@
  *     Native\Mobile\Support\Watch\WatchConsole      → SupaNative\Core\Support\Watch\WatchConsole
  *     Native\Mobile\Exceptions\WatchPromptCancelled → SupaNative\Core\Exceptions\WatchPromptCancelled
  *
+ * The event dispatcher came after that, and it changed
+ * folder on the way, so no prefix can cover it, and
+ * the autoloader below has it by its whole name:
+ *
+ *     Native\Mobile\Events\GlobalEventDispatcher → SupaNative\Core\Support\GlobalEventDispatcher
+ *
+ * The marker `Events\Concerns\BroadcastsGlobally` moved to core as well, and
+ * is not aliased here. The old name is an interface of this package which
+ * extends core's, so an event that names it carries core's marker too.
+ *
+ * An alias would lose listeners. Laravel keeps a listener under the name
+ * it was given, and finds the listeners of an event by the real names
+ * of its interfaces, so a listener under an alias is never called.
+ *
  * Everything that stayed behind (NativeComponent, the chrome elements,
  * Layouts, NativeRouter, `Attributes\OnNative`, the rest of `Support`) keeps
  * its `Native\Mobile\*` name. This file makes the ones that MOVED still answer
@@ -186,6 +200,9 @@ spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): 
         'Native\\Mobile\\Support\\' => 'SupaNative\\Core\\Support\\',
         'Native\\Mobile\\Concerns\\' => 'SupaNative\\Core\\Concerns\\',
         'Native\\Mobile\\Exceptions\\' => 'SupaNative\\Core\\Exceptions\\',
+
+        // A whole name and not a prefix, as this class changed folder as well.
+        'Native\\Mobile\\Events\\GlobalEventDispatcher' => 'SupaNative\\Core\\Support\\GlobalEventDispatcher',
     ];
 
     $oldPrefix = null;

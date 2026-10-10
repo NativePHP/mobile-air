@@ -61,4 +61,4 @@ namespace Native\Mobile\Events\Concerns;
  * so its event leaves all the same: its listeners do not run
  * in the task, and it waits in the spool file for a loop.
  */
-interface BroadcastsGlobally {}
+interface BroadcastsGlobally extends \SupaNative\Core\Contracts\BroadcastsGlobally {}

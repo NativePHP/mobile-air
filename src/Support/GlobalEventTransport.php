@@ -3,7 +3,7 @@
 namespace Native\Mobile\Support;
 
 use Illuminate\Support\Facades\Log;
-use Native\Mobile\Events\Concerns\BroadcastsGlobally;
+use SupaNative\Core\Contracts\BroadcastsGlobally;
 
 /**
  * Carries an event marked BroadcastsGlobally from the lane that fired it to
@@ -26,9 +26,11 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
  * payload to the spool that the loop on the dev machine
  * drains, and that loop takes it as a native event.
  *
- * {@see BroadcastsGlobally} lists when an event stays in its lane instead, and
- * tells what `SerializesModels` does for an event that holds a model. What
- * counts as delivered, also under Jump, is said on {@see self::send()}.
+ * {@see \Native\Mobile\Events\Concerns\BroadcastsGlobally} lists
+ * when an event stays in its own lane instead, and tells what
+ * `SerializesModels` does for an event that holds a model.
+ *
+ * What counts as delivered, also under Jump, is said on {@see self::send()}.
  *
  * @internal
  */
