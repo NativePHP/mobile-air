@@ -77,6 +77,18 @@ the real picture. Roughly:
   dispatcher through (`Contracts\RoutesGlobalEvents`). Mobile keeps `Lane`,
   `GlobalEventTransport` and its `GlobalEventRouter`.
 
+One thing is in core without having moved. Core has its own `AsyncTask`: `AsyncTask`,
+`PendingAsyncTask`, `Exceptions\AsyncTaskException`, `Events\Async`, `Testing\FakeAsyncTask`,
+`Support\AsyncTaskRegistry`, `Support\AsyncTaskRunner`, `Support\AsyncTaskCaptures`, the
+contract a platform answers through (`Contracts\RunsAsyncTasks`) and `async()` on
+`NativeComponent`. Desktop uses them. Mobile keeps its own classes under `Native\Mobile`
+and none of its files changed, so there are no aliases for these and the sync commands
+below do not see them. Step 3 of a sync has a look of its own for them.
+
+Core's `NativeComponent::async()` declares no return type, on purpose. Mobile's screen class
+has an `async()` of its own that returns mobile's `PendingAsyncTask`, and PHP refuses to load
+a class whose method returns another type than its parent declares.
+
 Mobile keeps its chrome elements (top bar, bottom nav, sheets and so on), layouts,
 `NativeRouter`, Jump, the icon resolver and the Xcode and Android Studio projects.
 
@@ -161,6 +173,20 @@ sync", however many syncs there have been.
   `src/Concerns`, `src/Exceptions`). Decide whether it is platform-neutral. If it is, it
   belongs in core, so desktop gets it too. If you're not sure, leave it in mobile and list it
   in the PR as a candidate for core.
+- **Main changed mobile's AsyncTask files.** Core has the platform-neutral half of these as
+  classes of its own, and mobile's files are still there, so the commands in step 2 list such
+  a change in no group. Look for it by hand:
+
+  ```sh
+  git log --no-merges --format='%h %cs %s' $base..origin/main -- \
+    src/AsyncTask.php src/PendingAsyncTask.php src/Support/AsyncTaskRegistry.php \
+    src/Support/AsyncTaskRunner.php src/Testing/FakeAsyncTask.php \
+    src/Exceptions/AsyncTaskException.php src/Events/Async
+  ```
+
+  Port what is platform-neutral into core's classes by hand, and run desktop's `test:php`,
+  which is where core's AsyncTask classes are tested. `AsyncTaskTransport`,
+  `RunAsyncTaskCommand` and `AsyncTaskRunner::run()` are mobile's own and have no twin in core.
 - **Reverts.** Look at the final state, not each commit. Some PRs were reverted and landed
   again later (#333 was reverted and came back as #391).
 
