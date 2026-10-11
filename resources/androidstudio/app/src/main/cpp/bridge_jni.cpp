@@ -12,6 +12,16 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// Per-call bridge tracing (function names, parameter JSON, result JSON).
+// Bridge payloads can carry tokens, keys and user data, and logcat is readable
+// through adb and bug reports, so this tracing is compiled into debug builds
+// only. Release builds (CMake Release/RelWithDebInfo define NDEBUG) keep LOGE.
+#ifdef NDEBUG
+#define LOGT(...) ((void) 0)
+#else
+#define LOGT(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#endif
+
 // Use the shared JavaVM from php_bridge.c
 extern "C" JavaVM* g_jvm;
 
@@ -206,7 +216,7 @@ extern "C" int NativePHPCan(const char* functionName) {
 
     env->DeleteLocalRef(jFunctionName);
 
-    LOGI("BridgeJNI: NativePHPCan('%s') = %d", functionName, result);
+    LOGT("BridgeJNI: NativePHPCan('%s') = %d", functionName, result);
     return static_cast<int>(result);
 }
 
@@ -218,11 +228,11 @@ extern "C" int NativePHPCan(const char* functionName) {
  * @return JSON string with result or NULL if function doesn't exist
  */
 extern "C" const char* NativePHPCall(const char* functionName, const char* parametersJSON) {
-    LOGI("🚀 BridgeJNI: NativePHPCall called with function='%s'", functionName ? functionName : "NULL");
+    LOGT("🚀 BridgeJNI: NativePHPCall called with function='%s'", functionName ? functionName : "NULL");
     if (parametersJSON) {
-        LOGI("📦 BridgeJNI: Parameters JSON: %s", parametersJSON);
+        LOGT("📦 BridgeJNI: Parameters JSON: %s", parametersJSON);
     } else {
-        LOGI("📦 BridgeJNI: Parameters JSON: NULL");
+        LOGT("📦 BridgeJNI: Parameters JSON: NULL");
     }
 
     if (functionName == nullptr) {
@@ -235,14 +245,14 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
         LOGE("❌ BridgeJNI: Failed to get JNIEnv in NativePHPCall");
         return nullptr;
     }
-    LOGI("✅ BridgeJNI: Got JNIEnv successfully");
+    LOGT("✅ BridgeJNI: Got JNIEnv successfully");
 
     jstring jFunctionName = env->NewStringUTF(functionName);
     if (jFunctionName == nullptr) {
         LOGE("❌ BridgeJNI: Failed to create jstring for function name");
         return nullptr;
     }
-    LOGI("✅ BridgeJNI: Created jstring for function name");
+    LOGT("✅ BridgeJNI: Created jstring for function name");
 
     jstring jParametersJSON = nullptr;
     if (parametersJSON != nullptr) {
@@ -252,10 +262,10 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
             env->DeleteLocalRef(jFunctionName);
             return nullptr;
         }
-        LOGI("✅ BridgeJNI: Created jstring for parameters");
+        LOGT("✅ BridgeJNI: Created jstring for parameters");
     }
 
-    LOGI("🔄 BridgeJNI: Calling Kotlin nativePHPCall method...");
+    LOGT("🔄 BridgeJNI: Calling Kotlin nativePHPCall method...");
     jobject jResult = env->CallStaticObjectMethod(g_bridgeRouterClass, g_nativePHPCallMethod,
                                                     jFunctionName, jParametersJSON);
 
@@ -265,10 +275,10 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
     }
 
     if (jResult == nullptr) {
-        LOGI("⚠️ BridgeJNI: NativePHPCall returned null");
+        LOGT("⚠️ BridgeJNI: NativePHPCall returned null");
         return nullptr;
     }
-    LOGI("✅ BridgeJNI: Got non-null result from Kotlin");
+    LOGT("✅ BridgeJNI: Got non-null result from Kotlin");
 
     // Convert Java String to C string
     const char* resultStr = env->GetStringUTFChars(static_cast<jstring>(jResult), nullptr);
@@ -278,7 +288,7 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
         return nullptr;
     }
 
-    LOGI("📤 BridgeJNI: Result JSON: %s", resultStr);
+    LOGT("📤 BridgeJNI: Result JSON: %s", resultStr);
 
     // We need to make a copy because we're releasing the Java string
     // Note: This memory will be managed by PHP
@@ -287,7 +297,7 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
     env->ReleaseStringUTFChars(static_cast<jstring>(jResult), resultStr);
     env->DeleteLocalRef(jResult);
 
-    LOGI("✅ BridgeJNI: NativePHPCall('%s') completed successfully", functionName);
+    LOGT("✅ BridgeJNI: NativePHPCall('%s') completed successfully", functionName);
     return resultCopy;
 }
 
