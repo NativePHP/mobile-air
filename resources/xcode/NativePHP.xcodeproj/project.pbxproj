@@ -2040,6 +2040,7 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lresolv",
+					"-Wl,-U,_NativeElement_PostTreeUpdateForSurface",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.nativephp.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -2091,6 +2092,7 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lresolv",
+					"-Wl,-U,_NativeElement_PostTreeUpdateForSurface",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.nativephp.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -2263,6 +2265,7 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lresolv",
+					"-Wl,-U,_NativeElement_PostTreeUpdateForSurface",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.nativephp.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -2316,6 +2319,7 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lresolv",
+					"-Wl,-U,_NativeElement_PostTreeUpdateForSurface",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.nativephp.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
