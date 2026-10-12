@@ -32,12 +32,39 @@ class NativeRouter
      */
     protected const SCREEN_INTENT_TTL = 60;
 
+    /** Memoized once per process; see debugLoggingEnabled(). */
+    private static ?bool $debugLogging = null;
+
+    /**
+     * Whether the edge-nav log is being written.
+     *
+     * This log is a development aid, but the runloop calls debugLog() at least
+     * twice per tick — and a screen with `native:poll="1ms"` ticks up to 1000
+     * times a second. Left on, that is an unbounded append-only file growing
+     * by ~110 bytes a frame (megabytes per minute on a polling screen) plus an
+     * open/write/close syscall in the middle of every frame. So it follows
+     * APP_DEBUG: on while you're developing, off in a release build.
+     *
+     * Hot-path callers should check this before building their message, so the
+     * sprintf() is skipped too — not just the write.
+     */
+    public static function debugLoggingEnabled(): bool
+    {
+        return static::$debugLogging ??= function_exists('config')
+            ? (bool) config('app.debug', false)
+            : false;
+    }
+
     /**
      * File-based debug logging — error_log() doesn't reach Android logcat,
      * so we write to a file on device instead.
      */
     public static function debugLog(string $msg): void
     {
+        if (! static::debugLoggingEnabled()) {
+            return;
+        }
+
         $logPath = function_exists('storage_path')
             ? storage_path('logs/edge-nav.log')
             : sys_get_temp_dir().'/edge-nav.log';
