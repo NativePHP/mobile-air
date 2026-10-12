@@ -1686,8 +1686,9 @@ class NestedClass {}');
     /**
      * @test
      *
-     * When manages_native_sources is true and the hook returns a valid list,
-     * only the listed files are copied.
+     * When top-level manages_native_sources is true and the hook returns a
+     * valid list, only the listed files are copied. This is the canonical
+     * contract used by mobile-ui.
      */
     public function it_copies_only_listed_files_when_hook_succeeds(): void
     {
@@ -1713,11 +1714,7 @@ class NestedClass {}');
             });
 
         $plugin = $this->createTestPlugin([
-            'ios' => [
-                'manages_native_sources' => true,
-                'info_plist' => [],
-                'dependencies' => [],
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:filter-sources',
             ],
@@ -1763,10 +1760,7 @@ class NestedClass {}');
         });
 
         $plugin = $this->createTestPlugin([
-            'ios' => [
-                'manages_native_sources' => true,
-                'info_plist' => [],
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:failing-hook',
             ],
@@ -1818,9 +1812,7 @@ class NestedClass {}');
         });
 
         $plugin = $this->createTestPlugin([
-            'ios' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:empty-hook',
             ],
@@ -1872,9 +1864,7 @@ class NestedClass {}');
         });
 
         $plugin = $this->createTestPlugin([
-            'ios' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:invalid-json',
             ],
@@ -1926,9 +1916,7 @@ class NestedClass {}');
         });
 
         $plugin = $this->createTestPlugin([
-            'ios' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:traversal',
             ],
@@ -1980,9 +1968,7 @@ class NestedClass {}');
         });
 
         $plugin = $this->createTestPlugin([
-            'ios' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:missing-file',
             ],
@@ -2026,9 +2012,7 @@ class NestedClass {}');
             });
 
         $plugin = $this->createTestPlugin([
-            'ios' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:dir-filter',
             ],
@@ -2060,8 +2044,8 @@ class NestedClass {}');
         $this->files->put($swiftPath.'/Hook.swift', "import Foundation\n\nclass Hook {}");
 
         $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
             'ios' => [
-                'manages_native_sources' => true,
                 'sources' => ['Explicit.swift'],
             ],
             'hooks' => [

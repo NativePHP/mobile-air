@@ -325,11 +325,15 @@ class Plugin
 
     /**
      * Whether this plugin manages its own native source file list via a hook.
+     *
+     * Canonical signal: top-level `manages_native_sources: true` in
+     * nativephp.json, which applies to both platforms. Per-platform
+     * `android.manages_native_sources` / `ios.manages_native_sources`
+     * still work and override the top-level value when present.
      */
     public function managesNativeSources(): bool
     {
-        return ($this->manifest->android['manages_native_sources'] ?? false)
-            || ($this->manifest->ios['manages_native_sources'] ?? false);
+        return $this->managesAndroidNativeSources() || $this->managesIosNativeSources();
     }
 
     /**
@@ -337,7 +341,7 @@ class Plugin
      */
     public function managesAndroidNativeSources(): bool
     {
-        return ($this->manifest->android['manages_native_sources'] ?? false) === true;
+        return $this->managesNativeSourcesFor($this->manifest->android);
     }
 
     /**
@@ -345,7 +349,22 @@ class Plugin
      */
     public function managesIosNativeSources(): bool
     {
-        return ($this->manifest->ios['manages_native_sources'] ?? false) === true;
+        return $this->managesNativeSourcesFor($this->manifest->ios);
+    }
+
+    /**
+     * Resolve the native-source filtering flag for a platform.
+     *
+     * A per-platform `manages_native_sources` key wins when present;
+     * otherwise the top-level manifest flag is used.
+     */
+    private function managesNativeSourcesFor(array $platformConfig): bool
+    {
+        if (array_key_exists('manages_native_sources', $platformConfig)) {
+            return $platformConfig['manages_native_sources'] === true;
+        }
+
+        return $this->manifest->managesNativeSources;
     }
 
     public function getAndroidSourceFiles(): array

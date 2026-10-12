@@ -2059,8 +2059,9 @@ object TestFunctions {
     /**
      * @test
      *
-     * When manages_native_sources is true and the hook returns a valid list,
-     * only the listed files are copied.
+     * When top-level manages_native_sources is true and the hook returns a
+     * valid list, only the listed files are copied. This is the canonical
+     * contract used by mobile-ui.
      */
     public function it_copies_only_listed_files_when_hook_succeeds(): void
     {
@@ -2087,11 +2088,7 @@ object TestFunctions {
             });
 
         $plugin = $this->createTestPlugin([
-            'android' => [
-                'manages_native_sources' => true,
-                'permissions' => [],
-                'dependencies' => [],
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:filter-sources',
             ],
@@ -2136,10 +2133,7 @@ object TestFunctions {
         });
 
         $plugin = $this->createTestPlugin([
-            'android' => [
-                'manages_native_sources' => true,
-                'permissions' => [],
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:failing-hook',
             ],
@@ -2190,9 +2184,7 @@ object TestFunctions {
         });
 
         $plugin = $this->createTestPlugin([
-            'android' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:empty-hook',
             ],
@@ -2243,9 +2235,7 @@ object TestFunctions {
         });
 
         $plugin = $this->createTestPlugin([
-            'android' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:invalid-json',
             ],
@@ -2296,9 +2286,7 @@ object TestFunctions {
         });
 
         $plugin = $this->createTestPlugin([
-            'android' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:traversal',
             ],
@@ -2349,9 +2337,7 @@ object TestFunctions {
         });
 
         $plugin = $this->createTestPlugin([
-            'android' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:missing-file',
             ],
@@ -2394,9 +2380,7 @@ object TestFunctions {
             });
 
         $plugin = $this->createTestPlugin([
-            'android' => [
-                'manages_native_sources' => true,
-            ],
+            'manages_native_sources' => true,
             'hooks' => [
                 'native_sources' => 'test:dir-filter',
             ],

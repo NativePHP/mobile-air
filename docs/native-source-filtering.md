@@ -12,27 +12,28 @@ The primary use case is plugins that ship multiple components or features where 
 
 ## Plugin Manifest Configuration
 
-To enable native source filtering, add two entries to your plugin's `nativephp.json`:
-
-### Android
+To enable native source filtering, add two **top-level** entries to your plugin's `nativephp.json`. This is the canonical form (used by [mobile-ui PR #127](https://github.com/NativePHP/mobile-ui/pull/127)):
 
 ```json
 {
-  "android": {
-    "manages_native_sources": true
-  },
+  "manages_native_sources": true,
   "hooks": {
     "native_sources": "your-plugin:filter-sources"
   }
 }
 ```
 
-### iOS
+The top-level `manages_native_sources` flag applies to **both Android and iOS**. Core invokes the same hook once per platform with `--platform=ios|android`.
+
+### Per-platform override (optional)
+
+You may still set the flag under `android` or `ios`. A per-platform key, when present, overrides the top-level value for that platform only:
 
 ```json
 {
+  "manages_native_sources": true,
   "ios": {
-    "manages_native_sources": true
+    "manages_native_sources": false
   },
   "hooks": {
     "native_sources": "your-plugin:filter-sources"
@@ -40,7 +41,7 @@ To enable native source filtering, add two entries to your plugin's `nativephp.j
 }
 ```
 
-Both platforms can share the same hook command, or use different commands if needed.
+In this example the hook runs for Android and is skipped for iOS.
 
 ## Hook Contract
 
@@ -192,11 +193,8 @@ This allows plugins to:
 Example:
 ```json
 {
-  "android": {
-    "manages_native_sources": true
-  },
+  "manages_native_sources": true,
   "ios": {
-    "manages_native_sources": true,
     "sources": ["OnlyThisFile.swift"]
   },
   "hooks": {
@@ -213,6 +211,7 @@ In this case:
 
 The feature includes comprehensive test coverage for both Android and iOS:
 
+- ✅ Top-level `manages_native_sources: true` activates the hook for both platforms
 - ✅ Flag absent => unchanged behavior (all sources copied)
 - ✅ Flag + valid list => only listed files copied
 - ✅ Hook exits non-zero => fallback with warning
@@ -231,7 +230,7 @@ See:
 No migration needed - this is a new opt-in feature. Existing plugins continue to work unchanged.
 
 To adopt it:
-1. Add `"manages_native_sources": true` to your platform config
+1. Add top-level `"manages_native_sources": true` to `nativephp.json`
 2. Add the `"native_sources"` hook to your hooks
 3. Implement the hook command
 4. Test that the hook returns valid JSON and exits 0

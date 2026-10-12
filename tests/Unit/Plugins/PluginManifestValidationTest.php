@@ -69,6 +69,29 @@ class PluginManifestValidationTest extends TestCase
         $this->assertEquals([], $manifest->android);
         $this->assertEquals([], $manifest->ios);
         $this->assertEquals([], $manifest->events);
+        $this->assertFalse($manifest->managesNativeSources);
+    }
+
+    /**
+     * @test
+     *
+     * Top-level manages_native_sources is the canonical opt-in used by
+     * plugins such as mobile-ui. Only a boolean true enables it.
+     */
+    public function it_parses_top_level_manages_native_sources(): void
+    {
+        $enabled = new PluginManifest([
+            'namespace' => 'TestPlugin',
+            'manages_native_sources' => true,
+        ]);
+        $this->assertTrue($enabled->managesNativeSources);
+        $this->assertTrue($enabled->toArray()['manages_native_sources']);
+
+        $ignored = new PluginManifest([
+            'namespace' => 'TestPlugin',
+            'manages_native_sources' => 'true',
+        ]);
+        $this->assertFalse($ignored->managesNativeSources);
     }
 
     /**
