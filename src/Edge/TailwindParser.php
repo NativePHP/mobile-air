@@ -812,10 +812,13 @@ class TailwindParser
             in_array($class, ['flex', 'inline-flex', 'block', 'inline-block', 'grid'], true) => ['display' => 0],
 
             // Font family. Exact matches MUST precede the `font-` weight branch.
-            // Sent as int: 0 = sans (default), 1 = serif, 2 = mono.
+            // Sent as int: 0 = sans (default), 1 = serif, 2 = mono, 3 = rounded
+            // (SwiftUI's `.rounded` design, SF Pro Rounded; platforms without a
+            // rounded system face keep the default sans).
             $class === 'font-sans' => ['fontFamily' => 0],
             $class === 'font-serif' => ['fontFamily' => 1],
             $class === 'font-mono' => ['fontFamily' => 2],
+            $class === 'font-rounded' => ['fontFamily' => 3],
 
             str_starts_with($class, 'font-') => self::parseFontWeight(substr($class, 5)),
 
