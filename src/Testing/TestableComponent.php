@@ -1150,6 +1150,50 @@ class TestableComponent
         return $this;
     }
 
+    /**
+     * Assert the tab with the given label is raised out of the native tab
+     * bar as a disc (`Tab::raised()` / `<native:bottom-nav-item raised>`).
+     * Only native tab chrome draws the disc, so a raised tab on a layout
+     * that doesn't use native chrome fails here.
+     */
+    public function assertTabRaised(string $label): static
+    {
+        $this->assertHasTab($label);
+
+        $tabs = $this->findElement($this->tree(), 'native_root_tabs');
+
+        Assert::assertNotNull(
+            $tabs,
+            "Tab [{$label}] can't be raised here: only native tab chrome draws a raised tab, and this screen renders none."
+        );
+
+        $tab = $this->findElement($tabs, 'bottom_nav_item', fn ($n) => ($n['props']['label'] ?? null) === $label);
+
+        Assert::assertTrue(
+            (bool) ($tab['props']['raised'] ?? false),
+            "Tab [{$label}] exists but is not raised."
+        );
+
+        return $this;
+    }
+
+    /** Assert the tab with the given label is an ordinary, flat tab. */
+    public function assertTabNotRaised(string $label): static
+    {
+        $this->assertHasTab($label);
+
+        Assert::assertNull(
+            $this->findElement(
+                $this->tree(),
+                'bottom_nav_item',
+                fn ($n) => ($n['props']['label'] ?? null) === $label && (bool) ($n['props']['raised'] ?? false)
+            ),
+            "Tab [{$label}] is raised."
+        );
+
+        return $this;
+    }
+
     // ── Accessibility assertions ────────────────────
 
     /**
