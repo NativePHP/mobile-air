@@ -5,6 +5,7 @@ namespace Tests\Feature\Plugins;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Foundation\Console\ClosureCommand;
 use Illuminate\Support\Facades\Artisan;
+use Laravel\Prompts\Prompt;
 use Native\Mobile\Plugins\Exceptions\PluginHookFailedException;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
@@ -12,6 +13,9 @@ use Native\Mobile\Plugins\PluginManifest;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
+
+use function Laravel\Prompts\error;
+use function Laravel\Prompts\outro;
 
 /**
  * Feature tests for PluginHookRunner.
@@ -104,6 +108,68 @@ class PluginHookRunnerTest extends TestCase
         $this->expectException(PluginHookFailedException::class);
 
         $this->runnerFor('probe:hook-missing')->runCopyAssetsHooks();
+    }
+
+    /**
+     * native:run android printed nothing from Prompts after a hook ran, so
+     * "App launched!" and "Gradle build failed" never reached the terminal.
+     * The hook command had re-pointed Prompts at its own output.
+     */
+    public function test_prompts_output_after_a_hook_still_reaches_the_build_output(): void
+    {
+        $this->registerHook('probe:hook-quiet', 0);
+
+        $buildBuffer = new BufferedOutput;
+        Prompt::setOutput(new OutputStyle(new ArrayInput([]), $buildBuffer));
+
+        // No output handed to the runner, as in 4.5.x: Artisan buffers the
+        // hook's output and the hook command points Prompts at that buffer.
+        $runner = new PluginHookRunner(
+            platform: 'android',
+            buildPath: sys_get_temp_dir(),
+            appId: 'com.example.probe',
+            plugins: collect([$this->runnerPlugin('probe:hook-quiet')]),
+        );
+
+        $runner->runCopyAssetsHooks();
+
+        error('Gradle build failed');
+        outro('App launched!');
+
+        $printed = $buildBuffer->fetch();
+        $this->assertStringContainsString('Gradle build failed', $printed);
+        $this->assertStringContainsString('App launched!', $printed);
+    }
+
+    public function test_prompts_output_is_restored_when_a_hook_fails(): void
+    {
+        $this->registerHook('probe:hook-fails-quietly', 1);
+
+        $buildBuffer = new BufferedOutput;
+        Prompt::setOutput(new OutputStyle(new ArrayInput([]), $buildBuffer));
+
+        try {
+            $this->runnerFor('probe:hook-fails-quietly')->runCopyAssetsHooks();
+            $this->fail('Expected the hook to fail');
+        } catch (PluginHookFailedException) {
+            error('Plugin compilation failed');
+        }
+
+        $this->assertStringContainsString('Plugin compilation failed', $buildBuffer->fetch());
+        $this->assertStringNotContainsString('Plugin compilation failed', $this->buffer->fetch());
+    }
+
+    private function runnerPlugin(string $hookCommand): Plugin
+    {
+        return new Plugin(
+            name: 'vendor/probe',
+            path: sys_get_temp_dir(),
+            version: '1.0.0',
+            manifest: new PluginManifest([
+                'namespace' => 'Probe',
+                'hooks' => ['copy_assets' => $hookCommand],
+            ]),
+        );
     }
 
     public function test_a_plugin_without_the_hook_is_left_alone(): void

@@ -687,6 +687,9 @@ XML;
             }
 
             $this->logToFile('APK installed on device');
+            // A plain line, since twoColumnDetail truncates long paths and
+            // scripts driving native:run want the whole thing.
+            $this->line("  <fg=gray>APK</> {$apkPath}");
 
             $launchCmd = "$adbCommand -s $targetDeviceId shell am start -n $appId/$mainActivity";
             $this->logToFile("Launching app: $launchCmd");
