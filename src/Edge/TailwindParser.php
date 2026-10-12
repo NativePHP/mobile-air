@@ -1560,6 +1560,15 @@ class TailwindParser
             : null;
     }
 
+    /**
+     * Arbitrary width/height: `[92%]` becomes the `"92%"` percent size the
+     * fraction classes produce; anything else is a fixed point value.
+     */
+    private static function arbitrarySize(string $value): float|string
+    {
+        return str_ends_with($value, '%') ? ((float) $value).'%' : (float) $value;
+    }
+
     private static function parseArbitrary(string $prefix, string $value): ?array
     {
         $isColor = str_starts_with($value, '#');
@@ -1580,12 +1589,16 @@ class TailwindParser
             'mb' => ['marginBottom' => (float) $value],
             'ml' => ['marginLeft' => (float) $value],
             'gap' => ['gap' => (float) $value],
-            'w' => ['width' => (float) $value],
-            'h' => ['height' => (float) $value],
-            'min-w' => ['minWidth' => (float) $value],
-            'max-w' => ['maxWidth' => (float) $value],
-            'min-h' => ['minHeight' => (float) $value],
-            'max-h' => ['maxHeight' => (float) $value],
+            // `w-[92%]` uses the same "N%" encoding as `w-5/6`. Min/max are
+            // packed as bare floats with no size mode, so a percentage there
+            // is left unparsed (dropped-class diagnostics) rather than being
+            // silently read as points.
+            'w' => ['width' => self::arbitrarySize($value)],
+            'h' => ['height' => self::arbitrarySize($value)],
+            'min-w' => str_ends_with($value, '%') ? null : ['minWidth' => (float) $value],
+            'max-w' => str_ends_with($value, '%') ? null : ['maxWidth' => (float) $value],
+            'min-h' => str_ends_with($value, '%') ? null : ['minHeight' => (float) $value],
+            'max-h' => str_ends_with($value, '%') ? null : ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],
