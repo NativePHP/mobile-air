@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
@@ -610,17 +611,23 @@ XML;
             $this->logToFile("Windows build exit code: $exitCode");
             $buildSuccessful = ($exitCode === 0);
         } else {
-            $process = Process::path($androidPath)
-                ->timeout(600);
+            $process = $this->gradleProcess($androidPath);
 
             // TTY needs a real terminal; Symfony throws on Docker/CI/piped output
             if (! $this->option('no-tty') && SymfonyProcess::isTtySupported()) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
-                file_put_contents($this->androidLogPath, $output, FILE_APPEND);
-            });
+            try {
+                $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
+                    file_put_contents($this->androidLogPath, $output, FILE_APPEND);
+                });
+            } catch (ProcessTimedOutException) {
+                $this->logToFile('ERROR: Gradle build timed out after '.$this->gradleTimeout().' seconds');
+                $this->reportGradleTimeout($gradleTask);
+
+                return false;
+            }
 
             if (! $result->successful()) {
                 $this->logToFile('ERROR: Gradle build failed with exit code: '.$result->exitCode());

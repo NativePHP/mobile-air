@@ -191,8 +191,10 @@ trait PackagesIos
                 }
             }
 
+            // No limit: the caches were just cleared, so every package is
+            // downloaded again, which can outlast a fixed timeout.
             $result = Process::path($iosPath)
-                ->timeout(300)
+                ->forever()
                 ->run(['xcodebuild', '-resolvePackageDependencies']);
 
             if (! $result->successful()) {

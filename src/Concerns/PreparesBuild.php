@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
+use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
@@ -578,14 +580,19 @@ trait PreparesBuild
             passthru($cmd, $exitCode);
             $buildSuccessful = ($exitCode === 0);
         } else {
-            $process = Process::path($androidPath)
-                ->timeout(600);
+            $process = $this->gradleProcess($androidPath);
 
             if (! $this->option('no-tty')) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask");
+            try {
+                $result = $process->run("$gradleWrapper $gradleTask");
+            } catch (ProcessTimedOutException) {
+                $this->reportGradleTimeout($gradleTask);
+
+                return false;
+            }
 
             if (! $result->successful()) {
                 \Laravel\Prompts\error('Gradle build failed');
@@ -607,6 +614,50 @@ trait PreparesBuild
         }
 
         return $buildSuccessful;
+    }
+
+    /**
+     * Seconds Gradle may run before it is stopped, or null for no limit.
+     *
+     * There is no limit by default. A cold first build downloads Gradle, the
+     * Android plugin and every dependency, and can take 15 minutes or more on
+     * a slow connection or a busy machine. Set NATIVEPHP_GRADLE_TIMEOUT to a
+     * number of seconds to cap it, e.g. on CI.
+     */
+    protected function gradleTimeout(): ?int
+    {
+        $timeout = config('nativephp.android.gradle_timeout');
+
+        if (! is_numeric($timeout) || (int) $timeout <= 0) {
+            return null;
+        }
+
+        return (int) $timeout;
+    }
+
+    protected function gradleProcess(string $androidPath): PendingProcess
+    {
+        $process = Process::path($androidPath);
+        $timeout = $this->gradleTimeout();
+
+        return $timeout === null ? $process->forever() : $process->timeout($timeout);
+    }
+
+    /**
+     * Gradle was stopped by NATIVEPHP_GRADLE_TIMEOUT. The generated project is
+     * complete at this point, so the build can be finished by hand.
+     */
+    protected function reportGradleTimeout(string $gradleTask): void
+    {
+        $timeout = $this->gradleTimeout();
+        $wrapper = PHP_OS_FAMILY === 'Windows' ? 'gradlew.bat' : './gradlew';
+
+        \Laravel\Prompts\error("Gradle did not finish within {$timeout} seconds and was stopped.");
+        \Laravel\Prompts\note(
+            "A first build can take much longer while Gradle downloads its dependencies.\n".
+            "Finish it by running `cd nativephp/android && {$wrapper} {$gradleTask}`,\n".
+            'or raise or remove NATIVEPHP_GRADLE_TIMEOUT in your .env and run this command again.'
+        );
     }
 
     /**
