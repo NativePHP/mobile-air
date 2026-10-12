@@ -23,7 +23,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -49,11 +51,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.nativephp.mobile.ui.MaterialIcon
 
 /**
@@ -433,12 +437,12 @@ internal fun TopBarActionView(action: NativeUINode) {
                 NativeElementBridge.sendPressEvent(action.onPress, action.id)
             }
         }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+            TopBarActionGlyph(action, icon)
         }
     } else {
         var expanded by remember { mutableStateOf(false) }
         IconButton(enabled = !disabled, onClick = { expanded = true }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+            TopBarActionGlyph(action, icon)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             subItems.forEach { item ->
@@ -486,5 +490,35 @@ internal fun TopBarActionView(action: NativeUINode) {
                 )
             }
         }
+    }
+}
+
+/**
+ * The action's icon, or its `image` (e.g. the signed-in user's avatar) as a
+ * small circle when one is set. The icon is drawn first and the image laid
+ * over it, so the icon stays visible while the image loads and if it fails.
+ * Disabled actions fade the image like M3 fades the icon.
+ */
+@Composable
+internal fun TopBarActionGlyph(action: NativeUINode, icon: String) {
+    val label = action.props.getString("label", "")
+    val image = action.props.getString("image", "")
+
+    if (image.isEmpty()) {
+        MaterialIcon(name = icon, contentDescription = label)
+        return
+    }
+
+    Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+        MaterialIcon(name = icon, contentDescription = null)
+        AsyncImage(
+            model = image,
+            contentDescription = label,
+            contentScale = ContentScale.Crop,
+            alpha = if (action.props.getBool("disabled")) 0.38f else 1f,
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape),
+        )
     }
 }

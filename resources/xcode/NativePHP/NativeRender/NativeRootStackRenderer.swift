@@ -312,7 +312,11 @@ struct NativeRootStackRenderer: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: ""),
+                    label: action.props.getString("label", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     // Explicit dim: the hard-set foregroundColor above keeps
@@ -356,7 +360,11 @@ struct NativeRootStackRenderer: View {
                     }
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: ""),
+                    label: action.props.getString("label", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     .opacity(disabled ? 0.4 : 1)
@@ -564,6 +572,37 @@ struct WindowBackgroundModifier: ViewModifier {
             }
         } else {
             content
+        }
+    }
+}
+
+/// A top-bar action's SF Symbol, or its `image` (e.g. the signed-in user's
+/// avatar) as a small circle when one is set. The symbol shows while the
+/// image loads and stays if it fails. `.font`, `.foregroundColor` and
+/// `.opacity` applied by the caller still reach the symbol, and opacity
+/// fades the image too, so disabled actions dim either way.
+struct TopBarActionGlyph: View {
+    let icon: String
+    let image: String
+    let label: String
+
+    var body: some View {
+        if let url = URL(string: image), !image.isEmpty {
+            AsyncImage(url: url) { phase in
+                if case .success(let loaded) = phase {
+                    loaded
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 28, height: 28)
+                        .clipShape(Circle())
+                        .accessibilityLabel(label)
+                } else {
+                    Image(systemName: getIconForName(icon))
+                        .accessibilityLabel(label)
+                }
+            }
+        } else {
+            Image(systemName: getIconForName(icon))
         }
     }
 }
