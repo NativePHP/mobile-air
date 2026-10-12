@@ -11,6 +11,7 @@ use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
+use Native\Mobile\Edge\Exceptions\UnknownElementException;
 
 class NativeElementCollector
 {
@@ -394,7 +395,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -486,7 +487,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -1564,7 +1565,7 @@ class NativeElementCollector
         }
 
         $element = static::makeElement($type)
-            ?? throw new \RuntimeException("Unknown native element type: {$type}");
+            ?? throw UnknownElementException::forType($type);
 
         if ($rawClass !== null) {
             $element->setProp(static::$capturedAttributes['class'], $rawClass);
