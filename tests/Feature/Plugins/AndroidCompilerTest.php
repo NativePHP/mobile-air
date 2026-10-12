@@ -2377,4 +2377,254 @@ object TestFunctions {
         $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/File2.kt');
         $this->assertFileDoesNotExist($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/Unused.kt');
     }
+
+    /**
+     * @test
+     *
+     * PluginRendererRegistration.kt must only mention renderers defined in
+     * the files the hook selected. Registering a class that was never copied
+     * is the Android build failure mobile-ui PR #127 hit.
+     */
+    public function it_registers_only_renderers_defined_in_copied_sources(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/ui-plugin';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/ButtonRenderer.kt', "package com.test.plugin\n\nobject ButtonRenderer {}");
+        $this->files->put($kotlinPath.'/BadgeRenderer.kt', "package com.test.plugin\n\nobject BadgeRenderer {}");
+
+        $this->registerNativeSourcesHook('test:filter-renderers', 0, json_encode(['ButtonRenderer.kt']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'com.test.plugin.ButtonRenderer'),
+                $this->uiComponent('badge', 'com.test.plugin.BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('register("button"', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+        $this->assertStringNotContainsString('register("badge"', $registration);
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin/ButtonRenderer.kt');
+        $this->assertFileDoesNotExist($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin/BadgeRenderer.kt');
+    }
+
+    /**
+     * @test
+     *
+     * Several renderers in one source file: selecting the file registers
+     * every type it defines, matching how mobile-ui groups containers.
+     */
+    public function it_registers_every_renderer_defined_in_a_selected_file(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/shared-file-plugin';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/Containers.kt', "package com.test.plugin\n\nobject ColumnRenderer {}\nobject RowRenderer {}");
+        $this->files->put($kotlinPath.'/BadgeRenderer.kt', "package com.test.plugin\n\nobject BadgeRenderer {}");
+
+        $this->registerNativeSourcesHook('test:filter-shared-renderers', 0, json_encode(['Containers.kt']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-shared-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('column', 'com.test.plugin.ColumnRenderer'),
+                $this->uiComponent('row', 'com.test.plugin.RowRenderer'),
+                $this->uiComponent('badge', 'com.test.plugin.BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt'
+        );
+
+        $this->assertStringContainsString('ColumnRenderer', $registration);
+        $this->assertStringContainsString('RowRenderer', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * A renderer that cannot be mapped to any source file is kept, and the
+     * files the hook selected stay copied. Dropping an unmapped class would
+     * turn a parser miss into a missing-symbol failure.
+     */
+    public function it_keeps_unmapped_renderers_and_their_selected_files(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/unmapped-renderer';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/ButtonRenderer.kt', "package com.test.plugin\n\nobject ButtonRenderer {}");
+
+        $this->registerNativeSourcesHook('test:filter-unmapped-renderers', 0, json_encode(['ButtonRenderer.kt']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-unmapped-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'com.test.plugin.ButtonRenderer'),
+                $this->uiComponent('ghost', 'com.test.plugin.GhostRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('GhostRenderer', $registration);
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin/ButtonRenderer.kt');
+    }
+
+    /**
+     * @test
+     *
+     * An unmapped renderer whose file is named after the class is still
+     * copied, even when the hook did not list it.
+     */
+    public function it_copies_a_same_named_file_for_an_unmapped_renderer(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/unmapped-named-file';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/ButtonRenderer.kt', "package com.test.plugin\n\nobject ButtonRenderer {}");
+        $this->files->put($kotlinPath.'/GhostRenderer.kt', "package com.test.plugin\n\n// not a recognised type declaration");
+
+        $this->registerNativeSourcesHook('test:filter-unmapped-named', 0, json_encode(['ButtonRenderer.kt']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-unmapped-named',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'com.test.plugin.ButtonRenderer'),
+                $this->uiComponent('ghost', 'com.test.plugin.GhostRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/plugin/GhostRenderer.kt');
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt'
+        );
+        $this->assertStringContainsString('GhostRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * When the hook fails and we copy every source, every renderer is
+     * registered — the same as a plugin that never opted in.
+     */
+    public function it_registers_all_renderers_when_the_hook_falls_back(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/fallback-renderers';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/ButtonRenderer.kt', "package com.test.plugin\n\nobject ButtonRenderer {}");
+        $this->files->put($kotlinPath.'/BadgeRenderer.kt', "package com.test.plugin\n\nobject BadgeRenderer {}");
+
+        $this->registerNativeSourcesHook('test:filter-renderers-fallback', 1);
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-renderers-fallback',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'com.test.plugin.ButtonRenderer'),
+                $this->uiComponent('badge', 'com.test.plugin.BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * Without manages_native_sources, every renderer is registered.
+     */
+    public function it_registers_all_renderers_when_the_flag_is_absent(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/no-flag-renderers';
+        $kotlinPath = $pluginPath.'/resources/android/src';
+        $this->files->ensureDirectoryExists($kotlinPath);
+        $this->files->put($kotlinPath.'/ButtonRenderer.kt', "package com.test.plugin\n\nobject ButtonRenderer {}");
+        $this->files->put($kotlinPath.'/BadgeRenderer.kt', "package com.test.plugin\n\nobject BadgeRenderer {}");
+
+        $plugin = $this->createTestPlugin([
+            'components' => [
+                $this->uiComponent('button', 'com.test.plugin.ButtonRenderer'),
+                $this->uiComponent('badge', 'com.test.plugin.BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @return array{type: string, element: string, blade: string, android_renderer: string, ios_renderer: string}
+     */
+    private function uiComponent(string $type, string $androidRenderer, ?string $iosRenderer = null): array
+    {
+        return [
+            'type' => $type,
+            'element' => 'Native\\Mobile\\UI\\Elements\\'.ucfirst($type),
+            'blade' => 'Native\\Mobile\\UI\\Components\\'.ucfirst($type),
+            'android_renderer' => $androidRenderer,
+            'ios_renderer' => $iosRenderer ?? ucfirst($type).'Renderer',
+        ];
+    }
 }

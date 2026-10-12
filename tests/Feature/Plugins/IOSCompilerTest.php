@@ -2045,4 +2045,259 @@ class NestedClass {}');
         $this->assertFileExists($pluginDir.'/Explicit.swift');
         $this->assertFileDoesNotExist($pluginDir.'/Hook.swift');
     }
+
+    /**
+     * @test
+     *
+     * PluginRendererRegistration.swift must only mention renderers defined
+     * in the files the hook selected.
+     */
+    public function it_registers_only_renderers_defined_in_copied_sources(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/ui-plugin';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-renderers', 0, json_encode(['ButtonRenderer.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('register("button"', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+        $this->assertStringNotContainsString('register("badge"', $registration);
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/ButtonRenderer.swift');
+        $this->assertFileDoesNotExist($pluginDir.'/BadgeRenderer.swift');
+    }
+
+    /**
+     * @test
+     *
+     * Several renderers in one Swift file: selecting the file registers
+     * every type it defines.
+     */
+    public function it_registers_every_renderer_defined_in_a_selected_file(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/shared-file-plugin';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/Containers.swift', "import SwiftUI\n\nstruct ColumnRenderer: View { var body: some View { EmptyView() } }\nstruct RowRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-shared-renderers', 0, json_encode(['Containers.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-shared-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('column', 'ColumnRenderer'),
+                $this->uiComponent('row', 'RowRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ColumnRenderer', $registration);
+        $this->assertStringContainsString('RowRenderer', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * A renderer that cannot be mapped to any source file is kept, and the
+     * files the hook selected stay copied.
+     */
+    public function it_keeps_unmapped_renderers_and_their_selected_files(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/unmapped-renderer';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-unmapped-renderers', 0, json_encode(['ButtonRenderer.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-unmapped-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('ghost', 'GhostRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('GhostRenderer', $registration);
+        $this->assertFileExists(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/ButtonRenderer.swift'
+        );
+    }
+
+    /**
+     * @test
+     *
+     * An unmapped renderer whose file is named after the class is still
+     * copied, even when the hook did not list it.
+     */
+    public function it_copies_a_same_named_file_for_an_unmapped_renderer(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/unmapped-named-file';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/GhostRenderer.swift', '// not a recognised type declaration');
+
+        $this->registerNativeSourcesHook('test:filter-unmapped-named', 0, json_encode(['ButtonRenderer.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-unmapped-named',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('ghost', 'GhostRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/GhostRenderer.swift'
+        );
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+        $this->assertStringContainsString('GhostRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * When the hook fails and we copy every source, every renderer is registered.
+     */
+    public function it_registers_all_renderers_when_the_hook_falls_back(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/fallback-renderers';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-renderers-fallback', 1);
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-renderers-fallback',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * ios.sources is also a selected subset, so registrations follow it too.
+     */
+    public function it_registers_only_renderers_named_in_ios_sources(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/explicit-renderers';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'sources' => ['ButtonRenderer.swift'],
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @return array{type: string, element: string, blade: string, android_renderer: string, ios_renderer: string}
+     */
+    private function uiComponent(string $type, string $iosRenderer): array
+    {
+        return [
+            'type' => $type,
+            'element' => 'Native\\Mobile\\UI\\Elements\\'.ucfirst($type),
+            'blade' => 'Native\\Mobile\\UI\\Components\\'.ucfirst($type),
+            'android_renderer' => 'com.test.plugin.'.ucfirst($type).'Renderer',
+            'ios_renderer' => $iosRenderer,
+        ];
+    }
 }

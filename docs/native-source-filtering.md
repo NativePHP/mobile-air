@@ -178,6 +178,10 @@ Only the files returned by the hook are copied and compiled:
 - Directories are walked recursively for matching source files
 - Everything else is ignored
 
+Renderer registrations (`PluginRendererRegistration.kt` / `.swift`) follow the same subset. Core maps each manifest `android_renderer` / `ios_renderer` to the source file that defines that type and emits a registration only when that file was copied. Several renderers in one file (for example `ColumnRenderer` and `RowRenderer` in `ContainerRenderers.kt`) are all registered when the file is selected.
+
+If a renderer cannot be mapped to any file, it is **kept** — both the registration and any of its files the hook already selected. Dropping an unmapped class would turn a parser miss into a missing-symbol failure. When the hook fails and Core falls back to copying every source, every renderer is registered, same as a plugin that never opted in.
+
 ### With the flag + failed hook
 
 Falls back to copying all sources (same as "without the flag" behavior) with a warning explaining what went wrong.
@@ -220,6 +224,10 @@ The feature includes comprehensive test coverage for both Android and iOS:
 - ✅ Hook returns path with `..` => rejected with fallback
 - ✅ Hook references non-existent file => fallback with warning
 - ✅ Hook returns directory => all matching files in that directory copied
+- ✅ Flag + list => only renderers defined in copied sources are registered
+- ✅ Shared source file => every type it defines is registered
+- ✅ Unmapped renderer => registration (and selected files) kept
+- ✅ Hook fallback / flag absent => every renderer is registered
 
 See:
 - `tests/Feature/Plugins/AndroidCompilerTest.php`

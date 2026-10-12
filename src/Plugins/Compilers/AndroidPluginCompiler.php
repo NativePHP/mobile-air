@@ -6,6 +6,7 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Native\Mobile\Exceptions\PluginConflictException;
 use Native\Mobile\Plugins\LegacyFirebaseConfig;
+use Native\Mobile\Plugins\NativeSourceTypeMap;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -39,6 +40,15 @@ class AndroidPluginCompiler
     protected string $legacyGeneratedPath;
 
     protected array $generatedFiles = [];
+
+    /**
+     * Relative paths (from the plugin's Android source root) that a
+     * manages_native_sources hook actually copied, keyed by plugin name.
+     * Absent means every source was copied and every renderer is registered.
+     *
+     * @var array<string, list<string>>
+     */
+    protected array $selectedNativeSources = [];
 
     protected ?string $appId = null;
 
@@ -166,6 +176,7 @@ class AndroidPluginCompiler
     public function compile(): void
     {
         $this->generatedFiles = [];
+        $this->selectedNativeSources = [];
 
         // Check for plugin conflicts before compiling
         $conflicts = $this->registry->detectConflicts();
@@ -686,6 +697,7 @@ class AndroidPluginCompiler
 
         // Validate that all listed files exist and copy them
         $copiedAny = false;
+        $copied = [];
 
         foreach ($filteredSources as $relativePath) {
             $absolutePath = $sourcePath.'/'.$relativePath;
@@ -732,11 +744,13 @@ class AndroidPluginCompiler
                 foreach ($this->files->allFiles($absolutePath) as $file) {
                     if ($file->getExtension() === 'kt') {
                         $this->copySingleKotlinFile($file->getPathname(), $plugin);
+                        $copied[] = $this->relativePluginSourcePath($sourcePath, $file->getPathname());
                         $copiedAny = true;
                     }
                 }
             } elseif (pathinfo($absolutePath, PATHINFO_EXTENSION) === 'kt') {
                 $this->copySingleKotlinFile($absolutePath, $plugin);
+                $copied[] = $relativePath;
                 $copiedAny = true;
             }
         }
@@ -748,7 +762,58 @@ class AndroidPluginCompiler
             );
 
             $this->copyPluginSourcesWithoutFilter($plugin, $sourcePath);
+
+            return;
         }
+
+        $copied = array_values(array_unique($copied));
+        $copied = $this->keepUnmappedRendererFiles($plugin, $sourcePath, $copied);
+        $this->selectedNativeSources[$plugin->name] = $copied;
+    }
+
+    /**
+     * Copy files named after renderers we could not map, so an unmapped
+     * class is not registered without its source.
+     *
+     * @param  list<string>  $copied
+     * @return list<string>
+     */
+    protected function keepUnmappedRendererFiles(Plugin $plugin, string $sourcePath, array $copied): array
+    {
+        $renderers = [];
+
+        foreach ($plugin->getComponents() as $component) {
+            if (! empty($component['android_renderer'])) {
+                $renderers[] = $component['android_renderer'];
+            }
+        }
+
+        foreach (NativeSourceTypeMap::filesToKeepForUnmapped(
+            $renderers,
+            $sourcePath,
+            $copied,
+            'android',
+            $this->files
+        ) as $relative) {
+            $absolute = $sourcePath.'/'.$relative;
+
+            if (! $this->files->isFile($absolute) || pathinfo($absolute, PATHINFO_EXTENSION) !== 'kt') {
+                continue;
+            }
+
+            $this->copySingleKotlinFile($absolute, $plugin);
+            $copied[] = $relative;
+        }
+
+        return array_values(array_unique($copied));
+    }
+
+    /**
+     * Path of $absolute relative to the plugin's Android source root.
+     */
+    protected function relativePluginSourcePath(string $sourcePath, string $absolute): string
+    {
+        return ltrim(str_replace('\\', '/', substr($absolute, strlen(rtrim($sourcePath, '/')))), '/');
     }
 
     /**
@@ -1050,6 +1115,22 @@ class AndroidPluginCompiler
     }
 
     /**
+     * A renderer is registered when its defining file was copied, or when
+     * that file cannot be identified (fail-open so a parser miss cannot
+     * strip a class the build still needs).
+     */
+    protected function shouldRegisterRenderer(Plugin $plugin, string $renderer): bool
+    {
+        return NativeSourceTypeMap::shouldRegister(
+            $renderer,
+            $plugin->getAndroidSourcePath(),
+            $this->selectedNativeSources[$plugin->name] ?? null,
+            'android',
+            $this->files
+        );
+    }
+
+    /**
      * Generate PluginRendererRegistration.kt for UI plugin renderers
      */
     protected function generateRendererRegistration(Collection $plugins): void
@@ -1059,6 +1140,10 @@ class AndroidPluginCompiler
         foreach ($plugins as $plugin) {
             foreach ($plugin->getComponents() as $component) {
                 if (empty($component['android_renderer'])) {
+                    continue;
+                }
+
+                if (! $this->shouldRegisterRenderer($plugin, $component['android_renderer'])) {
                     continue;
                 }
 
