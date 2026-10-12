@@ -341,7 +341,7 @@ class PluginValidateCommand extends Command
                 return;
             }
 
-            $validHooks = ['pre_compile', 'post_compile', 'copy_assets', 'post_build'];
+            $validHooks = ['pre_compile', 'post_compile', 'copy_assets', 'post_build', 'prepare_bundle'];
 
             foreach ($manifest->hooks as $hookName => $command) {
                 // Check hook name is valid
