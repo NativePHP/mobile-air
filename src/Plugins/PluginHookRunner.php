@@ -364,10 +364,10 @@ class PluginHookRunner
             return null;
         }
 
-        $this->twoColumnDetail("<fg=blue>Running native_sources hook</>", $plugin->name);
+        $this->twoColumnDetail('<fg=blue>Running native_sources hook</>', $plugin->name);
 
         try {
-            $outputBuffer = new \Symfony\Component\Console\Output\BufferedOutput;
+            $outputBuffer = new BufferedOutput;
 
             $exitCode = Artisan::call($hookCommand, [
                 '--platform' => $this->platform,

@@ -761,7 +761,7 @@ class AndroidPluginCompiler
 
         if ($package === null) {
             $this->warn(
-                "Plugin '{$plugin->name}': ".basename($filePath)." has no package declaration. ".
+                "Plugin '{$plugin->name}': ".basename($filePath).' has no package declaration. '.
                 "Plugins should declare packages like 'package com.yourvendor.pluginname'"
             );
             $safeNamespace = $this->sanitizeKotlinName($plugin->getNamespace());
