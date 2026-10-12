@@ -350,7 +350,7 @@ trait PreparesBuild
 
             $bundleMeta = json_encode([
                 'version' => $version,
-                'version_code' => $versionCode,
+                'version_code' => (int) $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
                 'entry_mode' => $entryMode,
