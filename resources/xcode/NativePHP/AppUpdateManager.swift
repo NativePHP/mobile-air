@@ -102,6 +102,7 @@ class AppUpdateManager {
 
             // Create installed.version file after successful extraction
             createInstalledVersionFile()
+            recordExtractedBuildId()
 
             // Run migrations and clear caches for newly extracted app
             runMigrationsAndClearCaches()
@@ -634,8 +635,52 @@ class AppUpdateManager {
             return true
         }
 
+        // Same version, but a different build: a rebuild installed over the
+        // top without a version bump. Without this the app kept running the
+        // code (and compiled views) it extracted from the previous build.
+        if let bundledBuild = bundledBuildId(), bundledBuild != extractedBuildId() {
+            print("📦 Bundle build (\(bundledBuild)) differs from extracted (\(extractedBuildId() ?? "none")), updating from bundle")
+            return true
+        }
+
         print("✅ App already up to date with bundle id (\(bundledId))")
         return false
+    }
+
+    // MARK: - Build identity
+    //
+    // bundle_meta.json carries a build_id that changes on every build. The id
+    // of the bundle last extracted is kept outside the app directory, because
+    // an OTA payload replaces that directory wholesale and must not look like
+    // a new build to the next launch.
+
+    private var extractedBuildIdPath: String {
+        return documentsPath + "/.bundle_build_id"
+    }
+
+    private func bundledBuildId() -> String? {
+        guard let id = bundleMetaJson()?["build_id"] as? String, !id.isEmpty else { return nil }
+        return id
+    }
+
+    private func extractedBuildId() -> String? {
+        guard let id = try? String(contentsOfFile: extractedBuildIdPath, encoding: .utf8) else { return nil }
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func recordExtractedBuildId() {
+        guard let id = bundledBuildId() else {
+            try? FileManager.default.removeItem(atPath: extractedBuildIdPath)
+            return
+        }
+
+        do {
+            try id.write(toFile: extractedBuildIdPath, atomically: true, encoding: .utf8)
+            print("📝 Recorded extracted bundle build: \(id)")
+        } catch {
+            print("❌ Failed to record extracted bundle build: \(error)")
+        }
     }
 
     private func getBundledAppVersion() -> String? {
@@ -720,7 +765,21 @@ class AppUpdateManager {
     private func bundleMetadata() -> (version: String, versionCode: Int)? {
         guard let json = bundleMetaJson(), let version = json["version"] as? String else { return nil }
 
-        return (version, (json["version_code"] as? NSNumber)?.intValue ?? 0)
+        // version_code comes from .env, so the build has written it as a JSON
+        // string ("1"). Reading only a number turned that into 0, the bundle
+        // id never matched installed.version ("…b1"), and every launch
+        // re-extracted the whole bundle.
+        let code: Int
+        if let number = json["version_code"] as? NSNumber {
+            code = number.intValue
+        } else if let string = json["version_code"] as? String,
+                  let parsed = Int(string.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            code = parsed
+        } else {
+            code = 0
+        }
+
+        return (version, code)
     }
 
     private func bundleMetaJson() -> [String: Any]? {
@@ -777,9 +836,12 @@ class AppUpdateManager {
     private func createInstalledVersionFile() {
         let installedVersionPath = documentsPath + "/app/installed.version"
 
-        // Build composite identity from the extracted .env so the on-disk
-        // identity matches the bundle (same format: "version+b+versionCode" or "DEBUG").
-        guard let id = getInstalledVersionIdFromEnv() else {
+        // Record the bundle's own identity, the same value shouldUpdateFromBundle
+        // compares against (as Android does). Rebuilding it from the extracted
+        // .env gave "…b0" whenever .env had no NATIVEPHP_APP_VERSION_CODE line,
+        // which never matched and re-extracted on every launch. The .env is
+        // only a fallback for shells without bundle metadata.
+        guard let id = getBundledAppVersionFast() ?? getInstalledVersionIdFromEnv() else {
             print("⚠️ Could not determine app version id for installed.version file")
             return
         }
