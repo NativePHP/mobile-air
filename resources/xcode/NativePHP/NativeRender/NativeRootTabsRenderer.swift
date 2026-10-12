@@ -95,10 +95,11 @@ struct NativeRootTabsRenderer: View {
         // async since `path` is @Published.
         if !currentUri.isEmpty, owningIdx < tabs.count {
             let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
+            let stackDepth = node.props.getInt("stack_depth", default: 0)
             let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
             coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
-                coord.receive(uri: currentUri, rootNode: node)
+                coord.receive(uri: currentUri, depth: stackDepth, rootNode: node)
             }
         }
 

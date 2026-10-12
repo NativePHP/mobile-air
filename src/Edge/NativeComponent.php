@@ -869,6 +869,11 @@ abstract class NativeComponent
             // Active tab's screen URI — used by the iOS bridge's per-URI
             // diff to keep tab-switch animations smooth.
             $attrs['currentUri'] = $this->nativeRouter?->currentUri() ?? '';
+            // Router stack depth — lets the native coordinators reconcile
+            // push/pop by LEVEL instead of URI membership, so revisiting a
+            // URI that is already on the stack pushes a new level rather
+            // than being misread as a pop back to the earlier one.
+            $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
 
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
@@ -998,6 +1003,9 @@ abstract class NativeComponent
             // NavigationCoordinator can route push / pop / no-op
             // correctly across publishes.
             $attrs['currentUri'] = $this->nativeRouter?->currentUri() ?? '';
+            // Router stack depth — depth-based reconciliation (see the
+            // tabs sentinel above for rationale).
+            $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
             // Per-screen nav-bar opt-out — the sentinel (and its
             // NavigationStack) survives; only the toolbar hides.
             if ($this->shouldHideNavBar()) {
