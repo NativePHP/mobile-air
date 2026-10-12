@@ -39,6 +39,13 @@ class PluginManifest implements JsonSerializable
 
     public readonly array $components;
 
+    /**
+     * Top-level opt-in for native source filtering. When true, both
+     * platforms use the `native_sources` hook unless a per-platform
+     * `manages_native_sources` key overrides it.
+     */
+    public readonly bool $managesNativeSources;
+
     public function __construct(array $data)
     {
         $this->validate($data);
@@ -50,6 +57,7 @@ class PluginManifest implements JsonSerializable
         $this->platforms = $this->normalizePlatforms($data['platforms'] ?? null);
         $this->bridgeFunctions = $data['bridge_functions'] ?? [];
         $this->components = $data['components'] ?? [];
+        $this->managesNativeSources = ($data['manages_native_sources'] ?? false) === true;
         $this->android = $data['android'] ?? [];
         $this->ios = $data['ios'] ?? [];
         $this->assets = $data['assets'] ?? [];
@@ -318,6 +326,7 @@ class PluginManifest implements JsonSerializable
             'platforms' => $this->platforms,
             'bridge_functions' => $this->bridgeFunctions,
             'components' => $this->components,
+            'manages_native_sources' => $this->managesNativeSources,
             'android' => $this->android,
             'ios' => $this->ios,
             'assets' => $this->assets,

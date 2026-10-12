@@ -7,6 +7,7 @@ use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use Native\Mobile\Exceptions\PluginConflictException;
 use Native\Mobile\Plugins\LegacyFirebaseConfig;
+use Native\Mobile\Plugins\NativeSourceTypeMap;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -21,6 +22,15 @@ class IOSPluginCompiler
     protected string $iosProjectPath;
 
     protected string $generatedPath;
+
+    /**
+     * Relative paths (from the plugin's iOS source root) that a
+     * manages_native_sources hook or ios.sources list actually copied,
+     * keyed by plugin name. Absent means every source was copied.
+     *
+     * @var array<string, list<string>>
+     */
+    protected array $selectedNativeSources = [];
 
     protected ?PluginHookRunner $hookRunner = null;
 
@@ -93,6 +103,8 @@ class IOSPluginCompiler
      */
     public function compile(): void
     {
+        $this->selectedNativeSources = [];
+
         // Check for plugin conflicts before compiling
         $conflicts = $this->registry->detectConflicts();
         if (! empty($conflicts)) {
@@ -228,15 +240,164 @@ class IOSPluginCompiler
         $pluginDir = $this->generatedPath.'/'.$plugin->getNamespace();
         $this->files->ensureDirectoryExists($pluginDir);
 
+        // Check if plugin has explicit ios.sources list
         $explicit = $plugin->getIosSources();
 
         if ($explicit !== []) {
-            $this->copyDeclaredSwiftSources($plugin, $sourcePath, $pluginDir, $explicit);
+            $copied = $this->copyDeclaredSwiftSources($plugin, $sourcePath, $pluginDir, $explicit);
+            $copied = $this->keepUnmappedRendererFiles($plugin, $sourcePath, $pluginDir, $copied);
+            $this->selectedNativeSources[$plugin->name] = $copied;
+
+            return;
+        }
+
+        // Check if plugin manages its own native sources via a hook
+        if ($plugin->managesIosNativeSources()) {
+            $this->copyFilteredPluginSources($plugin, $sourcePath, $pluginDir);
 
             return;
         }
 
         $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+    }
+
+    /**
+     * Copy only the source files returned by the plugin's native_sources hook.
+     * Falls back to copying all sources if the hook fails, times out, returns
+     * invalid JSON, returns an empty list, or references files that don't exist.
+     */
+    protected function copyFilteredPluginSources(Plugin $plugin, string $sourcePath, string $pluginDir): void
+    {
+        $filteredSources = $this->getHookRunner()->getNativeSourcesFromHook($plugin);
+
+        if ($filteredSources === null) {
+            // Hook failed; fall back to copying all sources
+            $this->warn(
+                "Plugin '{$plugin->name}': native_sources hook failed — ".
+                'copying all sources as fallback'
+            );
+
+            $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+            return;
+        }
+
+        // Validate that all listed files exist and copy them
+        $copiedAny = false;
+        $copied = [];
+
+        foreach ($filteredSources as $relativePath) {
+            $absolutePath = $sourcePath.'/'.$relativePath;
+
+            // Validate path is within the plugin's source directory
+            $realSource = realpath($sourcePath);
+            $realAbsolute = realpath($absolutePath);
+
+            if ($realAbsolute === false) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced non-existent file '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+                return;
+            }
+
+            if (! str_starts_with($realAbsolute, $realSource.'/')) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced file outside plugin directory '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+                return;
+            }
+
+            if (! $this->files->exists($absolutePath)) {
+                $this->warn(
+                    "Plugin '{$plugin->name}': native_sources hook referenced non-existent file '{$relativePath}' — ".
+                    'falling back to copying all sources'
+                );
+
+                $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+                return;
+            }
+
+            // If it's a directory, recursively copy matching files
+            if ($this->files->isDirectory($absolutePath)) {
+                foreach (SwiftSourceFilter::collect($absolutePath) as $swiftRelative) {
+                    $destPath = $pluginDir.'/'.$relativePath.'/'.$swiftRelative;
+                    $this->files->ensureDirectoryExists(dirname($destPath));
+                    $this->files->copy($absolutePath.'/'.$swiftRelative, $destPath);
+                    $copied[] = $relativePath.'/'.$swiftRelative;
+                    $copiedAny = true;
+                }
+            } else {
+                // Single file
+                $destPath = $pluginDir.'/'.$relativePath;
+                $this->files->ensureDirectoryExists(dirname($destPath));
+                $this->files->copy($absolutePath, $destPath);
+                $copied[] = $relativePath;
+                $copiedAny = true;
+            }
+        }
+
+        if (! $copiedAny) {
+            $this->warn(
+                "Plugin '{$plugin->name}': native_sources hook resulted in no Swift files being copied — ".
+                'falling back to copying all sources'
+            );
+
+            $this->copySwiftFilesRecursively($sourcePath, $pluginDir);
+
+            return;
+        }
+
+        $copied = array_values(array_unique($copied));
+        $copied = $this->keepUnmappedRendererFiles($plugin, $sourcePath, $pluginDir, $copied);
+        $this->selectedNativeSources[$plugin->name] = $copied;
+    }
+
+    /**
+     * Copy files named after renderers we could not map, so an unmapped
+     * class is not registered without its source.
+     *
+     * @param  list<string>  $copied
+     * @return list<string>
+     */
+    protected function keepUnmappedRendererFiles(Plugin $plugin, string $sourcePath, string $pluginDir, array $copied): array
+    {
+        $renderers = [];
+
+        foreach ($plugin->getComponents() as $component) {
+            if (! empty($component['ios_renderer'])) {
+                $renderers[] = $component['ios_renderer'];
+            }
+        }
+
+        foreach (NativeSourceTypeMap::filesToKeepForUnmapped(
+            $renderers,
+            $sourcePath,
+            $copied,
+            'ios',
+            $this->files
+        ) as $relative) {
+            $absolute = $sourcePath.'/'.$relative;
+
+            if (! $this->files->isFile($absolute)) {
+                continue;
+            }
+
+            $destPath = $pluginDir.'/'.$relative;
+            $this->files->ensureDirectoryExists(dirname($destPath));
+            $this->files->copy($absolute, $destPath);
+            $copied[] = $relative;
+        }
+
+        return array_values(array_unique($copied));
     }
 
     /**
@@ -247,15 +408,22 @@ class IOSPluginCompiler
      * a test target into the app.
      *
      * @param  list<string>  $sources
+     * @return list<string> Relative paths actually copied
      */
-    protected function copyDeclaredSwiftSources(Plugin $plugin, string $source, string $destination, array $sources): void
+    protected function copyDeclaredSwiftSources(Plugin $plugin, string $source, string $destination, array $sources): array
     {
+        $copied = [];
+
         foreach ($sources as $relative) {
             $relative = trim($relative, '/');
             $path = $source.'/'.$relative;
 
             if ($this->files->isDirectory($path)) {
                 $this->copySwiftFilesRecursively($path, $destination.'/'.$relative);
+
+                foreach (SwiftSourceFilter::collect($path) as $swiftRelative) {
+                    $copied[] = $relative.'/'.$swiftRelative;
+                }
 
                 continue;
             }
@@ -268,7 +436,10 @@ class IOSPluginCompiler
 
             $this->files->ensureDirectoryExists(dirname($destination.'/'.$relative));
             $this->files->copy($path, $destination.'/'.$relative);
+            $copied[] = $relative;
         }
+
+        return array_values(array_unique($copied));
     }
 
     /**
@@ -384,6 +555,22 @@ class IOSPluginCompiler
     }
 
     /**
+     * A renderer is registered when its defining file was copied, or when
+     * that file cannot be identified (fail-open so a parser miss cannot
+     * strip a class the build still needs).
+     */
+    protected function shouldRegisterRenderer(Plugin $plugin, string $renderer): bool
+    {
+        return NativeSourceTypeMap::shouldRegister(
+            $renderer,
+            $plugin->getIosSourcePath(),
+            $this->selectedNativeSources[$plugin->name] ?? null,
+            'ios',
+            $this->files
+        );
+    }
+
+    /**
      * Generate PluginRendererRegistration.swift for UI plugin renderers
      */
     protected function generateRendererRegistration(Collection $plugins): void
@@ -393,6 +580,10 @@ class IOSPluginCompiler
         foreach ($plugins as $plugin) {
             foreach ($plugin->getComponents() as $component) {
                 if (empty($component['ios_renderer'])) {
+                    continue;
+                }
+
+                if (! $this->shouldRegisterRenderer($plugin, $component['ios_renderer'])) {
                     continue;
                 }
 
