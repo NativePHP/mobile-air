@@ -5,6 +5,11 @@ rendered as real SwiftUI (iOS) and Jetpack Compose (Android) UI — driven entir
 and EDGE Blade elements. A full PHP runtime runs directly on the device with SQLite — no web server required.
 - Documentation: `https://nativephp.com/docs/mobile/4/**`
 - IMPORTANT: Always activate the `nativephp-mobile` skill every time you work on any NativePHP functionality.
+- New app: `laravel new my-app --using=nativephp/mobile-starter --no-node`. A screen is a `NativeComponent` class,
+  a Blade view in `resources/views/native/` (`php artisan native:make Name` creates both) and a `Route::native()`
+  line in `routes/mobile.php`.
+- Check behaviour with Pest and `Native\Mobile\Testing\Native::test()`. It needs no device and takes seconds, where a
+  device build takes minutes. The skill has a worked screen, its test, and where builds put the .app and .apk.
 
 ### Native UI First — Always
 
@@ -90,8 +95,8 @@ install must follow all three steps:
 3. `php artisan native:plugin:register vendor/plugin-name` — adds it to the `NativeServiceProvider`
 4. `php artisan native:plugin:list` — verify it shows as registered
 
-Then tell the user to rebuild with `php artisan native:run` (native code only compiles in at build time — do not
-run this yourself). If `native:run` warns "The following plugins are installed but not registered", go back to
+Then rebuild with `native:run` (see Build and Run below; native code only compiles in at build time). If
+`native:run` warns "The following plugins are installed but not registered", go back to
 step 3.
 
 ### Database Seeding — Always via Migrations
@@ -103,28 +108,27 @@ the data, still create it — but invoke it **from the migration's `up()`** (e.g
 never rely on `db:seed` being run. Seed migrations must be safe for both fresh installs and updates of existing
 user databases.
 
-### Build Commands — Tell the User, Never Run
+### Build and Run — Do It Yourself
 
-**CRITICAL: Never execute any of these commands yourself. Always instruct the user to run them manually in their
-terminal.**
+Check behaviour with `Native::test()` first. When a change needs a build to take effect or to be checked, run it
+yourself from the Laravel root against a booted simulator or running emulator:
 
-| Command | Purpose |
-|---|---|
-| `php artisan native:run ios` | Compile and run on iOS simulator/device |
-| `php artisan native:run android` | Compile and run on Android emulator/device |
-| `php artisan native:run ios --watch` | Build, deploy, then start hot reload — all in one |
-| `php artisan native:watch` | Hot reload (watch for file changes) |
-| `php artisan native:open` | Open project in Xcode or Android Studio |
-| `php artisan native:install` | Install/upgrade the native shell |
+```bash
+xcrun simctl list devices booted     # iOS simulator UDIDs
+adb devices                          # Android serials
+php artisan native:run ios <UDID> --no-tty -n
+php artisan native:run android <SERIAL> --no-tty -n
+```
 
-Notes:
-- The `./native` shortcut wraps the `native:` namespace (`./native run`, `./native watch`).
-- The Vite dev server is **opt-in** in v4: add `--vite` to `native:run`/`native:watch` only when the app actually
-  uses JS/CSS HMR. Native UI screens hot-reload without Vite.
-- `npm run build -- --mode=ios|android` is only needed for apps with web-view assets — not for native UI screens.
+Use the platform the user named; otherwise use whichever device is running. If no simulator or emulator is
+available, say so and give the user the command instead. It returns once the app is installed and launched.
 
-**Always ask which platform before giving any build or run command.** If the user hasn't specified iOS or Android,
-ask: "Which platform do you want to build/test on — iOS or Android?" Never assume a platform.
+Ask first, or leave to the user:
+- `--watch` and `native:watch` never exit, so don't block on them. Start one in the background only when the user
+  wants hot reload.
+- Release builds (`--build=release|bundle`), signing, `native:package` and store uploads.
 
-When the platform is confirmed, give the relevant command(s) above and tell the user to run it in their terminal.
-Do not run it yourself.
+Other commands: `native:open` (Xcode or Android Studio), `native:install` (install or upgrade the native shell).
+The `./native` shortcut wraps the `native:` namespace. The Vite dev server is **opt-in** in v4: add `--vite` only
+when the app uses JS/CSS HMR; native UI screens hot-reload without it. `npm run build -- --mode=ios|android` is only
+needed for apps with web-view assets.
