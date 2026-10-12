@@ -3,6 +3,8 @@
 namespace Tests\Feature\Plugins;
 
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\Console\ClosureCommand;
+use Illuminate\Support\Facades\Artisan;
 use Mockery;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\Plugin;
@@ -1657,6 +1659,30 @@ class NestedClass {}');
     }
 
     /**
+     * Register a real artisan command for the native_sources hook.
+     * Artisan::shouldReceive() cannot mock Orchestra Testbench's final Kernel.
+     */
+    private function registerNativeSourcesHook(string $command, int $exitCode = 0, string $stdout = ''): object
+    {
+        $seen = (object) ['platform' => null];
+
+        Artisan::registerCommand(new ClosureCommand(
+            $command.' {--platform=} {--build-path=} {--plugin-path=} {--app-id=}',
+            function () use ($exitCode, $stdout, $seen) {
+                $seen->platform = $this->option('platform');
+
+                if ($stdout !== '') {
+                    $this->line($stdout);
+                }
+
+                return $exitCode;
+            }
+        ));
+
+        return $seen;
+    }
+
+    /**
      * @test
      *
      * When manages_native_sources is absent or false, behavior is unchanged:
@@ -1698,20 +1724,7 @@ class NestedClass {}');
         $this->files->put($swiftPath.'/Used.swift', "import Foundation\n\nclass Used {}");
         $this->files->put($swiftPath.'/Unused.swift', "import Foundation\n\nclass Unused {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->with(
-                'test:filter-sources',
-                \Mockery::on(function ($args) {
-                    return $args['--platform'] === 'ios';
-                }),
-                \Mockery::any()
-            )
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['Used.swift']));
-
-                return 0;
-            });
+        $hook = $this->registerNativeSourcesHook('test:filter-sources', 0, json_encode(['Used.swift']));
 
         $plugin = $this->createTestPlugin([
             'manages_native_sources' => true,
@@ -1726,6 +1739,7 @@ class NestedClass {}');
 
         $this->compiler->compile();
 
+        $this->assertSame('ios', $hook->platform);
         $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
         $this->assertFileExists($pluginDir.'/Used.swift');
         $this->assertFileDoesNotExist($pluginDir.'/Unused.swift');
@@ -1744,9 +1758,7 @@ class NestedClass {}');
         $this->files->ensureDirectoryExists($swiftPath);
         $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturn(1);
+        $this->registerNativeSourcesHook('test:failing-hook', 1);
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -1792,13 +1804,7 @@ class NestedClass {}');
         $this->files->ensureDirectoryExists($swiftPath);
         $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write('[]');
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:empty-hook', 0, '[]');
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -1844,13 +1850,7 @@ class NestedClass {}');
         $this->files->ensureDirectoryExists($swiftPath);
         $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write('not valid json');
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:invalid-json', 0, 'not valid json');
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -1896,13 +1896,7 @@ class NestedClass {}');
         $this->files->ensureDirectoryExists($swiftPath);
         $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['../../../etc/passwd']));
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:traversal', 0, json_encode(['../../../etc/passwd']));
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -1948,13 +1942,7 @@ class NestedClass {}');
         $this->files->ensureDirectoryExists($swiftPath);
         $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['DoesNotExist.swift']));
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:missing-file', 0, json_encode(['DoesNotExist.swift']));
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -2003,13 +1991,7 @@ class NestedClass {}');
         $this->files->put($swiftPath.'/subdir/File2.swift', "import Foundation\n\nclass File2 {}");
         $this->files->put($swiftPath.'/Unused.swift', "import Foundation\n\nclass Unused {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['subdir']));
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:dir-filter', 0, json_encode(['subdir']));
 
         $plugin = $this->createTestPlugin([
             'manages_native_sources' => true,

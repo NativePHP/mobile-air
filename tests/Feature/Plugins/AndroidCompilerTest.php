@@ -3,6 +3,8 @@
 namespace Tests\Feature\Plugins;
 
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\Console\ClosureCommand;
+use Illuminate\Support\Facades\Artisan;
 use Mockery;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Plugin;
@@ -2031,6 +2033,30 @@ object TestFunctions {
     }
 
     /**
+     * Register a real artisan command for the native_sources hook.
+     * Artisan::shouldReceive() cannot mock Orchestra Testbench's final Kernel.
+     */
+    private function registerNativeSourcesHook(string $command, int $exitCode = 0, string $stdout = ''): object
+    {
+        $seen = (object) ['platform' => null];
+
+        Artisan::registerCommand(new ClosureCommand(
+            $command.' {--platform=} {--build-path=} {--plugin-path=} {--app-id=}',
+            function () use ($exitCode, $stdout, $seen) {
+                $seen->platform = $this->option('platform');
+
+                if ($stdout !== '') {
+                    $this->line($stdout);
+                }
+
+                return $exitCode;
+            }
+        ));
+
+        return $seen;
+    }
+
+    /**
      * @test
      *
      * When manages_native_sources is absent or false, behavior is unchanged:
@@ -2071,21 +2097,7 @@ object TestFunctions {
         $this->files->put($kotlinPath.'/Used.kt', "package com.test\n\nclass Used {}");
         $this->files->put($kotlinPath.'/Unused.kt', "package com.test\n\nclass Unused {}");
 
-        // Create a mock command that returns the filtered list
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->with(
-                'test:filter-sources',
-                \Mockery::on(function ($args) {
-                    return $args['--platform'] === 'android';
-                }),
-                \Mockery::any()
-            )
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['Used.kt']));
-
-                return 0;
-            });
+        $hook = $this->registerNativeSourcesHook('test:filter-sources', 0, json_encode(['Used.kt']));
 
         $plugin = $this->createTestPlugin([
             'manages_native_sources' => true,
@@ -2100,6 +2112,7 @@ object TestFunctions {
 
         $this->compiler->compile();
 
+        $this->assertSame('android', $hook->platform);
         $this->assertFileExists($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/Used.kt');
         $this->assertFileDoesNotExist($this->testBasePath.'/android/app/src/nativephp/kotlin/com/test/Unused.kt');
     }
@@ -2117,9 +2130,7 @@ object TestFunctions {
         $this->files->ensureDirectoryExists($kotlinPath);
         $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturn(1);
+        $this->registerNativeSourcesHook('test:failing-hook', 1);
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -2164,13 +2175,7 @@ object TestFunctions {
         $this->files->ensureDirectoryExists($kotlinPath);
         $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write('[]');
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:empty-hook', 0, '[]');
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -2215,13 +2220,7 @@ object TestFunctions {
         $this->files->ensureDirectoryExists($kotlinPath);
         $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write('not valid json');
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:invalid-json', 0, 'not valid json');
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -2266,13 +2265,7 @@ object TestFunctions {
         $this->files->ensureDirectoryExists($kotlinPath);
         $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['../../../etc/passwd']));
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:traversal', 0, json_encode(['../../../etc/passwd']));
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -2317,13 +2310,7 @@ object TestFunctions {
         $this->files->ensureDirectoryExists($kotlinPath);
         $this->files->put($kotlinPath.'/File1.kt', "package com.test\n\nclass File1 {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['DoesNotExist.kt']));
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:missing-file', 0, json_encode(['DoesNotExist.kt']));
 
         $warnings = [];
         $this->compiler->setOutput(new class($warnings)
@@ -2371,13 +2358,7 @@ object TestFunctions {
         $this->files->put($kotlinPath.'/subdir/File2.kt', "package com.test\n\nclass File2 {}");
         $this->files->put($kotlinPath.'/Unused.kt', "package com.test\n\nclass Unused {}");
 
-        \Illuminate\Support\Facades\Artisan::shouldReceive('call')
-            ->once()
-            ->andReturnUsing(function ($command, $args, $output) {
-                $output->write(json_encode(['subdir']));
-
-                return 0;
-            });
+        $this->registerNativeSourcesHook('test:dir-filter', 0, json_encode(['subdir']));
 
         $plugin = $this->createTestPlugin([
             'manages_native_sources' => true,
