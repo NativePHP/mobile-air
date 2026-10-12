@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,7 +20,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,6 +34,7 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarDefaults
@@ -43,18 +47,22 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -236,6 +244,40 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         }
     }
 
+    // A tab tap — from its NavigationBarItem, or from the disc of a raised
+    // tab. Local selection updates instantly so the ripple / selection
+    // indicator responds; for the search tab, no PHP navigation fires (it's
+    // an iOS-/Android-side overlay). For regular tabs, the
+    // BottomNavItem-auto-wired `replace` press handler fires here. A tap
+    // back to the active tab normally needs no press — except while another
+    // tab's navigation is in flight: PHP is already navigating away and
+    // must be told to come back.
+    val onTabTap: (Int, NativeUINode) -> Unit = { actualIdx, tab ->
+        selection = actualIdx
+        val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
+        if (!tab.props.getBool("search") && tapNavigates && tab.onPress != 0) {
+            if (tab.props.getString("url", "").isNotEmpty()) {
+                val tappedId = tabIds.getOrElse(actualIdx) { "" }
+                pendingTabId?.let { prev ->
+                    if (prev != tappedId) supersededTabIds.add(prev)
+                }
+                pendingTabId = tappedId
+            }
+            NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
+        }
+    }
+
+    // Raised tabs (`Tab::raised()`), drawn by `RaisedTabDisc` over their
+    // items' measured slots. With none in the bar, none of the raised-tab
+    // modifiers, providers or layers below are added. Each raised tab gets
+    // one interaction source, shared by its item and its disc, so a press on
+    // either animates the disc.
+    val raisedTabs = visibleTabs.filter { it.props.getBool("raised") && !it.props.getBool("search") }
+    val raisedIds = raisedTabs.map { tabIds[tabs.indexOf(it)] }.toSet()
+    val raisedGeometry = remember { RaisedTabGeometry() }
+    val raisedInteractions = remember(raisedIds) { raisedIds.associateWith { MutableInteractionSource() } }
+    SideEffect { raisedGeometry.retain(raisedIds) }
+
     // System back: defer to PHP (the tabs root has nowhere to pop within Compose).
     BackHandler(enabled = true) {
         NativeElementBridge.sendSystemBackEvent()
@@ -324,86 +366,139 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     }
                 }
 
-                NavigationBar(
-                    containerColor = if (bgArgb != 0)
-                        argbToComposeColor(bgArgb)
-                    else
-                        NavigationBarDefaults.containerColor
+                // A raised tab's disc rises out of the bar, and
+                // NavigationBar's Surface clips its content — so the bar
+                // sits in a plain Box and the discs are drawn after it.
+                // Compose hit-tests outside a parent's bounds unless it
+                // clips, so the raised part of a disc stays tappable.
+                Box(
+                    modifier = if (raisedTabs.isEmpty()) {
+                        Modifier
+                    } else {
+                        Modifier.onGloballyPositioned { raisedGeometry.onBoxPositioned(it) }
+                    }
                 ) {
-                    visibleTabs.forEach { tab ->
-                        val actualIdx = tabs.indexOf(tab)
-                        val label = tab.props.getString("label", "")
-                        val icon = tab.props.getString("icon", "circle")
-                        val badge = tab.props.getString("badge", "")
-                        val news = tab.props.getBool("news")
-                        val isSearchTab = tab.props.getBool("search")
+                    NavigationBar(
+                        containerColor = if (bgArgb != 0)
+                            argbToComposeColor(bgArgb)
+                        else
+                            NavigationBarDefaults.containerColor
+                    ) {
+                        visibleTabs.forEach { tab ->
+                            val actualIdx = tabs.indexOf(tab)
+                            val tabId = tabIds[actualIdx]
+                            val label = tab.props.getString("label", "")
+                            val icon = tab.props.getString("icon", "circle")
+                            val badge = tab.props.getString("badge", "")
+                            val news = tab.props.getBool("news")
+                            // A raised tab's disc is its icon and its selected
+                            // state: the item keeps its label, semantics and
+                            // taps, but leaves an empty icon-sized slot (so the
+                            // label stays put), draws no selection pill and no
+                            // ripple — the disc's press scale is the feedback.
+                            val isRaised = tabId in raisedIds
 
-                        NavigationBarItem(
-                            selected = actualIdx == selection,
-                            onClick = {
-                                // Local selection updates instantly so
-                                // the ripple / selection indicator
-                                // responds; for the search tab, no PHP
-                                // navigation fires (it's an iOS-/Android-
-                                // side overlay). For regular tabs, the
-                                // BottomNavItem-auto-wired `replace`
-                                // press handler fires here. A tap back
-                                // to the active tab normally needs no
-                                // press — except while another tab's
-                                // navigation is in flight: PHP is
-                                // already navigating away and must be
-                                // told to come back.
-                                selection = actualIdx
-                                val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
-                                if (!isSearchTab && tapNavigates && tab.onPress != 0) {
-                                    if (tab.props.getString("url", "").isNotEmpty()) {
-                                        val tappedId = tabIds.getOrElse(actualIdx) { "" }
-                                        pendingTabId?.let { prev ->
-                                            if (prev != tappedId) supersededTabIds.add(prev)
+                            val item: @Composable () -> Unit = {
+                                NavigationBarItem(
+                                    selected = actualIdx == selection,
+                                    onClick = { onTabTap(actualIdx, tab) },
+                                    icon = {
+                                        if (isRaised) {
+                                            // The disc carries the badge; it would cover it here.
+                                            Box(Modifier.size(24.dp))
+                                        } else if (badge.isNotEmpty() || news) {
+                                            BadgedBox(badge = {
+                                                Badge {
+                                                    if (badge.isNotEmpty()) Text(badge, fontFamily = chromeFontFamily)
+                                                }
+                                            }) {
+                                                MaterialIcon(name = icon, contentDescription = label)
+                                            }
+                                        } else {
+                                            MaterialIcon(name = icon, contentDescription = label)
                                         }
-                                        pendingTabId = tappedId
-                                    }
-                                    NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
-                                }
-                            },
-                            icon = {
-                                if (badge.isNotEmpty() || news) {
-                                    BadgedBox(badge = {
-                                        Badge {
-                                            if (badge.isNotEmpty()) Text(badge, fontFamily = chromeFontFamily)
+                                    },
+                                    modifier = if (isRaised) {
+                                        Modifier.onGloballyPositioned { raisedGeometry.onItemPositioned(tabId, it) }
+                                    } else {
+                                        Modifier
+                                    },
+                                    label = {
+                                        Text(
+                                            label,
+                                            fontFamily = chromeFontFamily,
+                                            modifier = if (isRaised) {
+                                                Modifier.onGloballyPositioned { raisedGeometry.onLabelPositioned(tabId, it) }
+                                            } else {
+                                                Modifier
+                                            },
+                                        )
+                                    },
+                                    // `active_color` (TabBar::activeColor) tints the selected
+                                    // tab; `text_color` (TabBar::textColor) tints the inactive
+                                    // icons + labels. Layer both onto the M3 defaults via copy()
+                                    // so anything PHP doesn't supply keeps the themed default.
+                                    colors = run {
+                                        var c = NavigationBarItemDefaults.colors()
+                                        if (activeColorArgb != 0) {
+                                            val active = argbToComposeColor(activeColorArgb)
+                                            c = c.copy(
+                                                selectedIconColor = active,
+                                                selectedTextColor = active,
+                                                selectedIndicatorColor = active.copy(alpha = 0.16f),
+                                            )
                                         }
-                                    }) {
-                                        MaterialIcon(name = icon, contentDescription = label)
-                                    }
-                                } else {
-                                    MaterialIcon(name = icon, contentDescription = label)
-                                }
-                            },
-                            label = { Text(label, fontFamily = chromeFontFamily) },
-                            // `active_color` (TabBar::activeColor) tints the selected
-                            // tab; `text_color` (TabBar::textColor) tints the inactive
-                            // icons + labels. Layer both onto the M3 defaults via copy()
-                            // so anything PHP doesn't supply keeps the themed default.
-                            colors = run {
-                                var c = NavigationBarItemDefaults.colors()
-                                if (activeColorArgb != 0) {
-                                    val active = argbToComposeColor(activeColorArgb)
-                                    c = c.copy(
-                                        selectedIconColor = active,
-                                        selectedTextColor = active,
-                                        selectedIndicatorColor = active.copy(alpha = 0.16f),
-                                    )
-                                }
-                                if (textColorArgb != 0) {
-                                    val inactive = argbToComposeColor(textColorArgb)
-                                    c = c.copy(
-                                        unselectedIconColor = inactive,
-                                        unselectedTextColor = inactive,
-                                    )
-                                }
-                                c
+                                        if (textColorArgb != 0) {
+                                            val inactive = argbToComposeColor(textColorArgb)
+                                            c = c.copy(
+                                                unselectedIconColor = inactive,
+                                                unselectedTextColor = inactive,
+                                            )
+                                        }
+                                        if (isRaised) {
+                                            c = c.copy(selectedIndicatorColor = Color.Transparent)
+                                        }
+                                        c
+                                    },
+                                    interactionSource = raisedInteractions[tabId],
+                                )
                             }
-                        )
+
+                            if (isRaised) {
+                                CompositionLocalProvider(LocalRippleConfiguration provides null, content = item)
+                            } else {
+                                item()
+                            }
+                        }
+                    }
+
+                    if (raisedTabs.isNotEmpty()) {
+                        // The disc layer takes the bar's size (so a large disc
+                        // never grows the bar, or the content padding under
+                        // it) and measures the discs unbounded from its
+                        // top-left: the slots are absolute coordinates from
+                        // that corner, in either layout direction.
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .wrapContentSize(AbsoluteAlignment.TopLeft, unbounded = true),
+                            contentAlignment = AbsoluteAlignment.TopLeft,
+                        ) {
+                            raisedTabs.forEach { tab ->
+                                val actualIdx = tabs.indexOf(tab)
+                                val tabId = tabIds[actualIdx]
+                                val slot = raisedGeometry.slots[tabId] ?: return@forEach
+                                RaisedTabDisc(
+                                    tab = tab,
+                                    slot = slot,
+                                    selected = actualIdx == selection,
+                                    fallbackFill = raisedTabFallbackFill(activeColorArgb),
+                                    chromeFontFamily = chromeFontFamily,
+                                    interactionSource = raisedInteractions.getValue(tabId),
+                                    onClick = { onTabTap(actualIdx, tab) },
+                                )
+                            }
+                        }
                     }
                 }
             }
