@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Support\HostOperatingSystem;
 use Tests\TestCase;
 
 final class ScreenshotCommandTest extends TestCase
@@ -15,6 +16,10 @@ final class ScreenshotCommandTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // iOS capture is gated on a macOS host; pin it so these tests also
+        // run on the Linux CI runner.
+        $this->app->instance(HostOperatingSystem::class, HostOperatingSystem::Darwin);
 
         $this->outputDir = sys_get_temp_dir().'/nativephp_screenshot_test_'.uniqid();
         File::makeDirectory($this->outputDir, 0755, true);
@@ -113,6 +118,19 @@ final class ScreenshotCommandTest extends TestCase
         $this->artisan('native:screenshot', ['os' => 'ios', 'udid' => 'NOT-A-REAL-UDID', '--output' => $this->outputDir.'/shot.png'])
             ->expectsOutputToContain("No simulator found for target 'NOT-A-REAL-UDID'")
             ->assertFailed();
+    }
+
+    public function test_ios_capture_requires_a_macos_host(): void
+    {
+        Process::fake();
+
+        $this->app->instance(HostOperatingSystem::class, HostOperatingSystem::Linux);
+
+        $this->artisan('native:screenshot', ['os' => 'ios', '--output' => $this->outputDir.'/shot.png'])
+            ->expectsOutputToContain('iOS screenshots require macOS')
+            ->assertFailed();
+
+        Process::assertNothingRan();
     }
 
     public function test_android_capture_fails_when_adb_is_not_installed(): void

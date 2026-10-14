@@ -8,6 +8,9 @@ namespace Native\Mobile\Support;
  * Wraps `PHP_OS_FAMILY` (the machine running this CLI process, not the app's
  * target platform — see `Native\Mobile\Platform` for that) so call sites
  * compare against a fixed enum instead of matching its raw string values.
+ *
+ * Tests can pin the host by binding a case into the container:
+ * `$this->app->instance(HostOperatingSystem::class, HostOperatingSystem::Darwin)`.
  */
 enum HostOperatingSystem: string
 {
@@ -20,6 +23,10 @@ enum HostOperatingSystem: string
 
     public static function current(): self
     {
+        if (app()->bound(self::class)) {
+            return app(self::class);
+        }
+
         return self::tryFrom(PHP_OS_FAMILY) ?? self::Unknown;
     }
 }
