@@ -48,6 +48,7 @@ class BundleExclusions
     public const CLEANUP_ONLY = [
         '*.lock',
         'artisan',
+        'auth.json',
     ];
 
     /**
