@@ -67,6 +67,14 @@ class RunsAndroidTest extends TestCase
         $this->assertDirectoryDoesNotExist($buildDir);
     }
 
+    public function test_run_android_reports_failure_so_the_command_can_exit_non_zero()
+    {
+        File::deleteDirectory($this->testProjectPath.'/nativephp/android');
+        $this->buildType = 'debug';
+
+        $this->assertFalse($this->runAndroid());
+    }
+
     public function test_detect_current_app_id_from_gradle()
     {
         // Create test build.gradle.kts - real code matches applicationId, not namespace

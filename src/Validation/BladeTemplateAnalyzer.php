@@ -5,6 +5,7 @@ namespace Native\Mobile\Validation;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\PathHelper;
 
 class BladeTemplateAnalyzer
 {
@@ -267,8 +268,6 @@ class BladeTemplateAnalyzer
 
     protected function relativePath(string $path): string
     {
-        $base = base_path().'/';
-
-        return str_starts_with($path, $base) ? substr($path, strlen($base)) : $path;
+        return PathHelper::relativeTo($path, base_path());
     }
 }
