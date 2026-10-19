@@ -145,16 +145,18 @@ struct BridgeResponse {
 /// - Returns: 1 if function exists, 0 if it doesn't
 @_cdecl("NativePHPCan")
 public func NativePHPCan(_ cFunctionName: UnsafePointer<CChar>?) -> Int32 {
-    guard let cFunctionName = cFunctionName else {
-        return 0
+    autoreleasepool {
+        guard let cFunctionName = cFunctionName else {
+            return 0
+        }
+
+        let functionName = String(cString: cFunctionName)
+        let exists = BridgeFunctionRegistry.shared.exists(functionName)
+
+        print("🔍 NativePHPCan('\(functionName)'): \(exists ? "YES" : "NO")")
+
+        return exists ? 1 : 0
     }
-
-    let functionName = String(cString: cFunctionName)
-    let exists = BridgeFunctionRegistry.shared.exists(functionName)
-
-    print("🔍 NativePHPCan('\(functionName)'): \(exists ? "YES" : "NO")")
-
-    return exists ? 1 : 0
 }
 
 /// Call a native function through the bridge router
@@ -168,92 +170,97 @@ public func NativePHPCall(
     _ cFunctionName: UnsafePointer<CChar>?,
     _ cParametersJSON: UnsafePointer<CChar>?
 ) -> UnsafePointer<CChar>? {
-    // Validate function name
-    guard let cFunctionName = cFunctionName else {
-        print("❌ NativePHPCall: Missing function name")
-        return nil
-    }
+    // PHP runs on plain pthreads that drain no autorelease pool, so whatever
+    // Foundation autoreleases in a call would stay until the thread ends.
+    // The pool frees it on return, after strdup has copied the answer.
+    autoreleasepool {
+        // Validate function name
+        guard let cFunctionName = cFunctionName else {
+            print("❌ NativePHPCall: Missing function name")
+            return nil
+        }
 
-    let functionName = String(cString: cFunctionName)
+        let functionName = String(cString: cFunctionName)
 
-    // Check if function exists - return nil if not
-    guard BridgeFunctionRegistry.shared.exists(functionName) else {
-        print("❌ NativePHPCall: Function '\(functionName)' not found")
-        return nil
-    }
+        // Check if function exists - return nil if not
+        guard BridgeFunctionRegistry.shared.exists(functionName) else {
+            print("❌ NativePHPCall: Function '\(functionName)' not found")
+            return nil
+        }
 
-    // Parse parameters JSON
-    var parameters: [String: Any] = [:]
-    if let cParametersJSON = cParametersJSON {
-        let parametersJSON = String(cString: cParametersJSON)
+        // Parse parameters JSON
+        var parameters: [String: Any] = [:]
+        if let cParametersJSON = cParametersJSON {
+            let parametersJSON = String(cString: cParametersJSON)
 
-        if !parametersJSON.isEmpty {
-            do {
-                if let jsonData = parametersJSON.data(using: .utf8),
-                   let parsed = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                    parameters = parsed
+            if !parametersJSON.isEmpty {
+                do {
+                    if let jsonData = parametersJSON.data(using: .utf8),
+                       let parsed = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                        parameters = parsed
+                    }
+                } catch {
+                    let response = BridgeResponse.error(
+                        code: "INVALID_JSON",
+                        message: "Failed to parse parameters JSON: \(error.localizedDescription)"
+                    )
+                    if let jsonString = BridgeResponse.toJSON(response) {
+                        return UnsafePointer(strdup(jsonString))
+                    }
+                    return nil
                 }
-            } catch {
-                let response = BridgeResponse.error(
-                    code: "INVALID_JSON",
-                    message: "Failed to parse parameters JSON: \(error.localizedDescription)"
+            }
+        }
+
+        print("🚀 NativePHPCall('\(functionName)') with parameters: \(parameters)")
+
+        // Get the function
+        guard let function = BridgeFunctionRegistry.shared.get(functionName) else {
+            // This shouldn't happen since we checked exists() above, but handle it anyway
+            print("❌ NativePHPCall: Function '\(functionName)' disappeared between checks")
+            return nil
+        }
+
+        // Execute the function with error handling
+        do {
+            let result = try function.execute(parameters: parameters)
+            let response = BridgeResponse.success(data: result)
+
+            if let jsonString = BridgeResponse.toJSON(response) {
+                print("✅ NativePHPCall('\(functionName)') succeeded")
+                return UnsafePointer(strdup(jsonString))
+            } else {
+                let errorResponse = BridgeResponse.error(
+                    code: "SERIALIZATION_ERROR",
+                    message: "Failed to serialize response to JSON"
                 )
-                if let jsonString = BridgeResponse.toJSON(response) {
-                    return UnsafePointer(strdup(jsonString))
+                if let errorJson = BridgeResponse.toJSON(errorResponse) {
+                    return UnsafePointer(strdup(errorJson))
                 }
                 return nil
             }
-        }
-    }
+        } catch let error as BridgeError {
+            // Handle known bridge errors
+            print("⚠️ NativePHPCall('\(functionName)') failed: \(error.message)")
+            let response = BridgeResponse.error(from: error)
 
-    print("🚀 NativePHPCall('\(functionName)') with parameters: \(parameters)")
-
-    // Get the function
-    guard let function = BridgeFunctionRegistry.shared.get(functionName) else {
-        // This shouldn't happen since we checked exists() above, but handle it anyway
-        print("❌ NativePHPCall: Function '\(functionName)' disappeared between checks")
-        return nil
-    }
-
-    // Execute the function with error handling
-    do {
-        let result = try function.execute(parameters: parameters)
-        let response = BridgeResponse.success(data: result)
-
-        if let jsonString = BridgeResponse.toJSON(response) {
-            print("✅ NativePHPCall('\(functionName)') succeeded")
-            return UnsafePointer(strdup(jsonString))
-        } else {
-            let errorResponse = BridgeResponse.error(
-                code: "SERIALIZATION_ERROR",
-                message: "Failed to serialize response to JSON"
+            if let jsonString = BridgeResponse.toJSON(response) {
+                return UnsafePointer(strdup(jsonString))
+            }
+            return nil
+        } catch {
+            // Handle unexpected errors
+            print("❌ NativePHPCall('\(functionName)') unexpected error: \(error.localizedDescription)")
+            let response = BridgeResponse.error(
+                code: "UNKNOWN_ERROR",
+                message: "Unexpected error: \(error.localizedDescription)"
             )
-            if let errorJson = BridgeResponse.toJSON(errorResponse) {
-                return UnsafePointer(strdup(errorJson))
+
+            if let jsonString = BridgeResponse.toJSON(response) {
+                return UnsafePointer(strdup(jsonString))
             }
             return nil
         }
-    } catch let error as BridgeError {
-        // Handle known bridge errors
-        print("⚠️ NativePHPCall('\(functionName)') failed: \(error.message)")
-        let response = BridgeResponse.error(from: error)
-
-        if let jsonString = BridgeResponse.toJSON(response) {
-            return UnsafePointer(strdup(jsonString))
-        }
-        return nil
-    } catch {
-        // Handle unexpected errors
-        print("❌ NativePHPCall('\(functionName)') unexpected error: \(error.localizedDescription)")
-        let response = BridgeResponse.error(
-            code: "UNKNOWN_ERROR",
-            message: "Unexpected error: \(error.localizedDescription)"
-        )
-
-        if let jsonString = BridgeResponse.toJSON(response) {
-            return UnsafePointer(strdup(jsonString))
-        }
-        return nil
     }
 }
 
@@ -282,23 +289,29 @@ public func NativeUI_UnregisterRegion() {
 /// The region contains flat_buffer, prop_buffer, type_table, and event_buffer.
 @_cdecl("NativeElement_RegisterRegion")
 public func NativeElement_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
-    guard let region = region else {
-        print("NativeElement_RegisterRegion called with nil region")
-        return
+    autoreleasepool {
+        guard let region = region else {
+            print("NativeElement_RegisterRegion called with nil region")
+            return
+        }
+        print("NativeElement_RegisterRegion: region at \(region)")
+        NativeElementBridge.registerRegion(region)
     }
-    print("NativeElement_RegisterRegion: region at \(region)")
-    NativeElementBridge.registerRegion(region)
 }
 
 /// Called by nphp_element_shutdown() to unregister the element region.
 @_cdecl("NativeElement_UnregisterRegion")
 public func NativeElement_UnregisterRegion() {
-    print("NativeElement_UnregisterRegion: region released")
-    NativeElementBridge.unregisterRegion()
+    autoreleasepool {
+        print("NativeElement_UnregisterRegion: region released")
+        NativeElementBridge.unregisterRegion()
+    }
 }
 
 /// Called by nphp_element_publish() / zif_nphp_frame_end() after PHP writes the flat buffer.
 @_cdecl("NativeElement_PostTreeUpdate")
 public func NativeElement_PostTreeUpdate() {
-    NativeElementBridge.postTreeUpdateFromRegion()
+    autoreleasepool {
+        NativeElementBridge.postTreeUpdateFromRegion()
+    }
 }
