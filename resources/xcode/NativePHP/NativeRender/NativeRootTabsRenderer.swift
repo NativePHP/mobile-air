@@ -304,6 +304,9 @@ struct NativeRootTabsRenderer: View {
                             }
                         }
                     )
+                    .modifier(SystemTabBarSuppressionModifier(
+                        suppressed: customPresenter != nil
+                    ))
 
                 }
                 .badge(badgeFor(tab))
@@ -326,6 +329,9 @@ struct NativeRootTabsRenderer: View {
                         onQueryCallbackId: searchOnQueryCb,
                         debounceMs: searchDebounceMs
                     )
+                    .modifier(SystemTabBarSuppressionModifier(
+                        suppressed: customPresenter != nil
+                    ))
                 }
                 .badge(badgeFor(searchTab))
             }
@@ -1088,7 +1094,6 @@ private struct CustomTabPresentationModifier: ViewModifier {
     func body(content: Content) -> some View {
         if let presenter, let context {
             content
-                .toolbar(.hidden, for: .tabBar)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if !context.isHidden {
                         VStack(spacing: 0) {
@@ -1099,6 +1104,23 @@ private struct CustomTabPresentationModifier: ViewModifier {
                         }
                     }
                 }
+        } else {
+            content
+        }
+    }
+}
+
+/// Tab-bar visibility is a preference produced by the selected TabView
+/// content. Apply custom-presentation suppression inside every tab rather than
+/// to the TabView container, matching the placement used by hide-on-push.
+private struct SystemTabBarSuppressionModifier: ViewModifier {
+    let suppressed: Bool
+
+    func body(content: Content) -> some View {
+        if suppressed {
+            content
+                .toolbar(.hidden, for: .tabBar)
+                .ignoresSafeArea(.container, edges: .bottom)
         } else {
             content
         }
