@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge\Layouts\Builders;
 
+use InvalidArgumentException;
 use Native\Mobile\Edge\Elements\BottomNav;
 use Native\Mobile\Edge\Elements\BottomNavItem;
 
@@ -24,6 +25,12 @@ use Native\Mobile\Edge\Elements\BottomNavItem;
  */
 class TabBar
 {
+    public const MAX_PRESENTATION_IDENTIFIER_LENGTH = 128;
+
+    public const MAX_PRESENTATION_CONFIGURATION_BYTES = 16384;
+
+    public const MAX_PRESENTATION_CONFIGURATION_DEPTH = 8;
+
     /** @var Tab[] */
     private array $tabs = [];
 
@@ -52,6 +59,10 @@ class TabBar
 
     private bool $minimizeOnScroll = false;
 
+    private ?string $presentationIdentifier = null;
+
+    private ?string $presentationConfiguration = null;
+
     public static function make(): self
     {
         return new self;
@@ -79,6 +90,8 @@ class TabBar
         $bar->textColor = $props['text_color'] ?? null;
         $bar->font = $props['font_name'] ?? null;
         $bar->minimizeOnScroll = (bool) ($props['minimize_on_scroll'] ?? false);
+        $bar->presentationIdentifier = $props['tab_presentation_id'] ?? null;
+        $bar->presentationConfiguration = $props['tab_presentation_configuration'] ?? null;
 
         foreach ($element->getChildren() as $child) {
             if ($child instanceof BottomNavItem) {
@@ -187,6 +200,62 @@ class TabBar
     }
 
     /**
+     * Select a plugin-provided native tab-bar presentation for this layout.
+     *
+     * NativePHP continues to own the root tabs, selection, callbacks, and
+     * navigation stacks. The identifier only selects a registered visual
+     * presenter; the bounded JSON configuration contains presenter-specific
+     * design tokens.
+     */
+    public function presentation(string $identifier, array $configuration = []): self
+    {
+        if (
+            strlen($identifier) > self::MAX_PRESENTATION_IDENTIFIER_LENGTH
+            || preg_match('/\A[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[a-z0-9]+(?:[._-][a-z0-9]+)*)?\z/', $identifier) !== 1
+        ) {
+            throw new InvalidArgumentException('Tab presentation identifiers must be lowercase, at most 128 bytes, and use letters, numbers, dots, dashes, underscores, and at most one namespace colon.');
+        }
+
+        if ($configuration !== [] && array_is_list($configuration)) {
+            throw new InvalidArgumentException('Tab presentation configuration must be a JSON object, not a top-level list.');
+        }
+
+        try {
+            $json = $configuration === [] ? '{}' : json_encode(
+                $configuration,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                self::MAX_PRESENTATION_CONFIGURATION_DEPTH
+            );
+        } catch (\JsonException $exception) {
+            throw new InvalidArgumentException('Tab presentation configuration must contain bounded, JSON-compatible values: '.$exception->getMessage(), previous: $exception);
+        }
+
+        self::assertConfigurationValues($configuration);
+
+        if (strlen($json) > self::MAX_PRESENTATION_CONFIGURATION_BYTES) {
+            throw new InvalidArgumentException('Tab presentation configuration may not exceed 16384 encoded bytes.');
+        }
+
+        $this->presentationIdentifier = $identifier;
+        $this->presentationConfiguration = $json;
+
+        return $this;
+    }
+
+    private static function assertConfigurationValues(array $configuration): void
+    {
+        array_walk_recursive($configuration, static function (mixed $value): void {
+            if (is_object($value) || is_resource($value)) {
+                throw new InvalidArgumentException('Tab presentation configuration may contain only JSON scalar values, arrays, and null.');
+            }
+
+            if (is_float($value) && ! is_finite($value)) {
+                throw new InvalidArgumentException('Tab presentation configuration may not contain non-finite numbers.');
+            }
+        });
+    }
+
+    /**
      * Mark the tab that "owns" the current URL as active. Uses
      * longest-prefix matching so a pushed sub-route (e.g.
      * `/syncup-native/chat/123` under a `/syncup-native` Chats tab)
@@ -271,6 +340,10 @@ class TabBar
         if ($this->minimizeOnScroll) {
             $attrs['minimizeOnScroll'] = true;
         }
+        if ($this->presentationIdentifier !== null) {
+            $attrs['tabPresentationId'] = $this->presentationIdentifier;
+            $attrs['tabPresentationConfiguration'] = $this->presentationConfiguration;
+        }
 
         return $attrs;
     }
@@ -321,6 +394,13 @@ class TabBar
         }
         if ($this->font !== null) {
             $attrs['fontName'] = $this->font;
+        }
+        if ($this->minimizeOnScroll) {
+            $attrs['minimizeOnScroll'] = true;
+        }
+        if ($this->presentationIdentifier !== null) {
+            $attrs['tabPresentationId'] = $this->presentationIdentifier;
+            $attrs['tabPresentationConfiguration'] = $this->presentationConfiguration;
         }
 
         $nav->applyAttributes($attrs);
