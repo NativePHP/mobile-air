@@ -213,10 +213,74 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         || searchItemNodes.isNotEmpty()
         || (searchTabIdx >= 0 && selection == searchTabIdx)
 
-    val visibleTabs = if (searchTabIdx >= 0 && !shouldShowSearchTab) {
-        tabs.filterIndexed { idx, _ -> idx != searchTabIdx }
+    val visibleTabEntries = tabs.mapIndexedNotNull { idx, tab ->
+        if (idx == searchTabIdx && !shouldShowSearchTab) null else idx to tab
+    }
+
+    val presentationIdentifier = node.props.getString("tab_presentation_id", "")
+    val presentationConfigurationJson = node.props.getString("tab_presentation_configuration", "")
+    val requestsCustomPresentation = presentationIdentifier.isNotEmpty() && presentationIdentifier != "system"
+    val presentationConfiguration = remember(requestsCustomPresentation, presentationConfigurationJson) {
+        presentationConfigurationJson.takeIf { requestsCustomPresentation && it.isNotEmpty() }
+            ?.let(NativeTabPresentationConfiguration::parse)
+    }
+    val customPresenter = if (requestsCustomPresentation && presentationConfiguration != null) {
+        NativeTabPresentationRegistry.presenter(presentationIdentifier)
     } else {
-        tabs
+        null
+    }
+
+    LaunchedEffect(presentationIdentifier, presentationConfigurationJson, customPresenter) {
+        if (requestsCustomPresentation && customPresenter == null) {
+            val reason = if (presentationConfiguration == null) "invalid configuration" else "not registered"
+            android.util.Log.w(
+                "NativePHP",
+                "Tab presenter '$presentationIdentifier' $reason; using the system tab bar.",
+            )
+        }
+    }
+
+    val activateTabAt: (Int) -> Unit = activate@{ actualIdx ->
+        if (actualIdx < 0 || actualIdx >= tabs.size) return@activate
+        val tab = tabs[actualIdx]
+        val requestedId = tabIds[actualIdx]
+        val isSearchTab = tab.props.getBool("search")
+        selection = actualIdx
+        val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
+        if (!isSearchTab && tapNavigates && tab.onPress != 0) {
+            if (tab.props.getString("url", "").isNotEmpty()) {
+                pendingTabId?.let { previous ->
+                    if (previous != requestedId) supersededTabIds.add(previous)
+                }
+                pendingTabId = requestedId
+            }
+            NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
+        }
+    }
+
+    val descriptorEntries = if (customPresenter != null) visibleTabEntries.map { (actualIdx, tab) ->
+        val label = tab.props.getString("label", "")
+        val url = tab.props.getString("url", "")
+        actualIdx to NativeTabDescriptor(
+            id = nativeTabPresentationIdentifier(tabIds.getOrElse(actualIdx) { "tab_$actualIdx" }, actualIdx),
+            label = label,
+            accessibilityLabel = label,
+            icon = tab.props.getString("icon", "circle"),
+            badge = tab.props.getString("badge", "").ifEmpty { null },
+            showsNews = tab.props.getBool("news"),
+            role = when {
+                tab.props.getBool("search") -> NativeTabRole.SEARCH
+                url.isEmpty() -> NativeTabRole.ACTION
+                else -> NativeTabRole.NAVIGATION
+            },
+        )
+    } else emptyList()
+    val tabDescriptors = descriptorEntries.map { it.second }
+    val descriptorIndexByIdentifier = descriptorEntries.associate { (index, descriptor) ->
+        descriptor.id to index
+    }
+    val activatePresentedTab: (String) -> Unit = { identifier ->
+        descriptorIndexByIdentifier[identifier]?.let(activateTabAt)
     }
 
     val isOnSearchTab = searchTabIdx >= 0 && selection == searchTabIdx
@@ -324,48 +388,33 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     }
                 }
 
-                NavigationBar(
+                if (customPresenter != null && presentationConfiguration != null) {
+                    customPresenter(
+                        NativeTabPresentationContext(
+                            tabs = tabDescriptors,
+                            selectedTabIdentifier = nativeTabPresentationIdentifier(
+                                tabIds.getOrElse(selection) { activeTabId },
+                                selection,
+                            ),
+                            configuration = presentationConfiguration,
+                            isHidden = false,
+                            activation = activatePresentedTab,
+                        ),
+                    )
+                } else NavigationBar(
                     containerColor = if (bgArgb != 0)
                         argbToComposeColor(bgArgb)
                     else
                         NavigationBarDefaults.containerColor
                 ) {
-                    visibleTabs.forEach { tab ->
-                        val actualIdx = tabs.indexOf(tab)
+                    visibleTabEntries.forEach { (actualIdx, tab) ->
                         val label = tab.props.getString("label", "")
                         val icon = tab.props.getString("icon", "circle")
                         val badge = tab.props.getString("badge", "")
                         val news = tab.props.getBool("news")
-                        val isSearchTab = tab.props.getBool("search")
-
                         NavigationBarItem(
                             selected = actualIdx == selection,
-                            onClick = {
-                                // Local selection updates instantly so
-                                // the ripple / selection indicator
-                                // responds; for the search tab, no PHP
-                                // navigation fires (it's an iOS-/Android-
-                                // side overlay). For regular tabs, the
-                                // BottomNavItem-auto-wired `replace`
-                                // press handler fires here. A tap back
-                                // to the active tab normally needs no
-                                // press — except while another tab's
-                                // navigation is in flight: PHP is
-                                // already navigating away and must be
-                                // told to come back.
-                                selection = actualIdx
-                                val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
-                                if (!isSearchTab && tapNavigates && tab.onPress != 0) {
-                                    if (tab.props.getString("url", "").isNotEmpty()) {
-                                        val tappedId = tabIds.getOrElse(actualIdx) { "" }
-                                        pendingTabId?.let { prev ->
-                                            if (prev != tappedId) supersededTabIds.add(prev)
-                                        }
-                                        pendingTabId = tappedId
-                                    }
-                                    NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
-                                }
-                            },
+                            onClick = { activateTabAt(actualIdx) },
                             icon = {
                                 if (badge.isNotEmpty() || news) {
                                     BadgedBox(badge = {
