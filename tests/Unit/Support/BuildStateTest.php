@@ -3,7 +3,9 @@
 namespace Tests\Unit\Support;
 
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Commands\InstallCommand;
 use Native\Mobile\Support\BuildState;
+use ReflectionClass;
 use Tests\TestCase;
 
 class BuildStateTest extends TestCase
@@ -145,7 +147,7 @@ class BuildStateTest extends TestCase
         // it can be trusted. Asserted on the source because running the
         // installer here would download PHP binaries.
         $source = file_get_contents(
-            (new \ReflectionClass(\Native\Mobile\Commands\InstallCommand::class))->getFileName()
+            (new ReflectionClass(InstallCommand::class))->getFileName()
         );
 
         $this->assertMatchesRegularExpression('/foreach \(\$removing as \$platform\) \{\s*BuildState::clear\(/', $source);
