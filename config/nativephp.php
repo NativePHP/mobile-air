@@ -81,6 +81,11 @@ return [
     |
     |     'deeplink_paths' => ['/docs/', '/orders/'],
     |
+    | A path ending in `/` claims everything beneath it, but not itself. One
+    | ending in `*` claims every path that starts with what comes before it,
+    | so `/@*` claims `/@taylor` and `/@taylor/posts`. Any other path is
+    | matched exactly.
+    |
     | On iOS this is already handled server-side by the `components` block of
     | your apple-app-site-association file, so these values are Android-only:
     | Android's assetlinks.json has no path component, which means the scoping
