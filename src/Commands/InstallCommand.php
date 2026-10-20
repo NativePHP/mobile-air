@@ -19,6 +19,7 @@ use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\outro;
 use function Laravel\Prompts\text;
+use function Laravel\Prompts\warning;
 
 class InstallCommand extends Command
 {
@@ -162,6 +163,7 @@ class InstallCommand extends Command
         if ($shouldInstallPhp) {
             $this->phpVersion = $this->detectPhpVersion();
             $this->fetchVersionsManifest();
+            $this->warnIfFormatVersionDiffers();
         }
 
         if ($installAndroid) {
@@ -310,6 +312,15 @@ class InstallCommand extends Command
         $branch = $this->getBinaryBranch();
         $versionsUrl = PhpBinaries::manifestUrl($branch);
 
+        // Never something to install by accident, so say so up front.
+        if (PhpBinaries::isPrerelease()) {
+            warning(sprintf(
+                'Installing prerelease PHP binaries %s, because NATIVEPHP_BIN_BRANCH is %s.',
+                PhpBinaries::release(),
+                PhpBinaries::selection()
+            ));
+        }
+
         try {
             $this->versionsManifest = json_decode(
                 (new Client)->get($versionsUrl)->getBody()->getContents(),
@@ -325,6 +336,20 @@ class InstallCommand extends Command
             // the ResponseException branch exposes getResponse()).
             $statusCode = method_exists($e, 'getResponse') ? $e->getResponse()?->getStatusCode() : null;
 
+            // A prerelease or branch build that isn't there was asked for by
+            // NATIVEPHP_BIN_BRANCH, and updating the package won't fix that.
+            if ($statusCode === 404 && PhpBinaries::selection() !== 'main') {
+                $this->failInstall(sprintf(
+                    'PHP binaries release %s is not published on %s.'
+                    ."\n".'Check NATIVEPHP_BIN_BRANCH, which is set to %s.',
+                    PhpBinaries::release(),
+                    $branch,
+                    PhpBinaries::selection()
+                ));
+
+                return;
+            }
+
             if ($statusCode === 404) {
                 $this->failInstall(sprintf(
                     'PHP binaries release %s is no longer published.'
@@ -339,6 +364,34 @@ class InstallCommand extends Command
             $this->failInstall("Failed to fetch the PHP binaries manifest from: {$versionsUrl}"
                 ."\n".TransferFailure::describe($e));
         }
+    }
+
+    /**
+     * Warn when the binaries about to be installed speak a different wire
+     * format from the readers this package ships.
+     *
+     * That can't happen with the pinned release, because FormatVersionSyncTest
+     * fails the build first. It can with a prerelease or a branch build, and
+     * then the app builds and launches and never draws anything, which is a
+     * long way from here to work back from.
+     */
+    protected function warnIfFormatVersionDiffers(): void
+    {
+        $published = $this->versionsManifest['format_version'] ?? null;
+        $expected = PhpBinaries::readerFormatVersion();
+
+        if (! is_int($published) || $expected === null || $published === $expected) {
+            return;
+        }
+
+        warning(sprintf(
+            'The %s binaries use wire format %d, but this version of nativephp/mobile expects format %d.',
+            PhpBinaries::release(),
+            $published,
+            $expected
+        ));
+        note('The app will build and launch, then render nothing. Install binaries that use format '
+            .$expected.', or a nativephp/mobile that expects format '.$published.'.');
     }
 
     protected function detectPhpVersion(): string

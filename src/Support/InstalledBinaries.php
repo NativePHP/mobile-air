@@ -34,14 +34,15 @@ class InstalledBinaries
     public const FILE = '.nativephp-binaries.json';
 
     /**
-     * The release and branch this version of the package installs.
+     * The release and branch an install would put there now: the pinned
+     * release, or the prerelease NATIVEPHP_BIN_BRANCH asks for.
      *
      * @return array{release: string, branch: string}
      */
     public static function expected(): array
     {
         return [
-            'release' => PhpBinaries::VERSION,
+            'release' => PhpBinaries::release(),
             'branch' => PhpBinaries::branch(),
         ];
     }
