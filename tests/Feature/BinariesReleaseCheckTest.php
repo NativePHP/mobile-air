@@ -41,6 +41,7 @@ class BinariesReleaseCheckTest extends TestCase
     protected function tearDown(): void
     {
         File::deleteDirectory($this->projectPath);
+        $this->setBranch(null);
 
         parent::tearDown();
     }
@@ -131,6 +132,53 @@ class BinariesReleaseCheckTest extends TestCase
             ->assertSuccessful();
     }
 
+    public function test_it_says_nothing_when_the_installed_prerelease_is_the_one_asked_for(): void
+    {
+        $this->setBranch('main/4.2.0-rc.1');
+        $this->writeRecord('4.2.0-rc.1');
+
+        $this->artisan('native:run', ['os' => 'android'])
+            ->doesntExpectOutputToContain('PHP binaries release')
+            ->assertSuccessful();
+    }
+
+    /**
+     * Unsetting NATIVEPHP_BIN_BRANCH after trying a prerelease leaves the
+     * prerelease installed until something says otherwise.
+     */
+    public function test_going_back_from_a_prerelease_is_a_mismatch(): void
+    {
+        $this->writeRecord('4.2.0-rc.1');
+
+        Artisan::call('native:run', ['os' => 'android', '--no-interaction' => true]);
+
+        $this->assertStringContainsString(
+            'nativephp/android has PHP binaries release 4.2.0-rc.1, but this version of nativephp/mobile installs '.PhpBinaries::VERSION.'.',
+            preg_replace('/\s+/', ' ', Artisan::output())
+        );
+        $this->assertSame([['platform' => 'android', 'force' => true]], FakeInstallCommand::$calls);
+    }
+
+    /**
+     * The package didn't choose a prerelease, so the warning shouldn't say it did.
+     */
+    public function test_asking_for_a_prerelease_credits_nativephp_bin_branch(): void
+    {
+        $this->setBranch('main/4.2.0-rc.1');
+        $this->writeRecord(PhpBinaries::VERSION);
+
+        Artisan::call('native:run', ['os' => 'android', '--no-interaction' => true]);
+
+        $this->assertStringContainsString(
+            'nativephp/android has PHP binaries release '.PhpBinaries::VERSION.', but NATIVEPHP_BIN_BRANCH asks for 4.2.0-rc.1.',
+            preg_replace('/\s+/', ' ', Artisan::output())
+        );
+        $this->assertSame(
+            ['release' => '4.2.0-rc.1', 'branch' => 'main'],
+            InstalledBinaries::read($this->projectPath.'/nativephp/android')
+        );
+    }
+
     /**
      * Every project installed before the release was recorded. It can't be
      * compared, so it says so and carries on, without a prompt.
@@ -153,6 +201,19 @@ class BinariesReleaseCheckTest extends TestCase
         $this->artisan('native:run', ['os' => 'android'])
             ->doesntExpectOutputToContain('PHP binaries release')
             ->assertSuccessful();
+    }
+
+    private function setBranch(?string $branch): void
+    {
+        if ($branch === null) {
+            unset($_SERVER['NATIVEPHP_BIN_BRANCH'], $_ENV['NATIVEPHP_BIN_BRANCH']);
+            putenv('NATIVEPHP_BIN_BRANCH');
+
+            return;
+        }
+
+        $_SERVER['NATIVEPHP_BIN_BRANCH'] = $_ENV['NATIVEPHP_BIN_BRANCH'] = $branch;
+        putenv("NATIVEPHP_BIN_BRANCH={$branch}");
     }
 
     private function writeRecord(string $release, string $branch = 'main'): void

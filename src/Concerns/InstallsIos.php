@@ -75,7 +75,7 @@ trait InstallsIos
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::release());
 
             return;
         }

@@ -55,6 +55,7 @@ class InstallsRecordBinariesReleaseTest extends TestCase
     protected function tearDown(): void
     {
         File::deleteDirectory($this->projectPath);
+        $this->setBranch(null);
 
         parent::tearDown();
     }
@@ -130,9 +131,53 @@ class InstallsRecordBinariesReleaseTest extends TestCase
         );
     }
 
+    /**
+     * A prerelease comes from its own manifest and its own cache directory,
+     * and is what gets recorded.
+     */
+    public function test_installing_a_prerelease_records_the_prerelease(): void
+    {
+        $this->setBranch('main/4.2.0-rc.1');
+        $this->installer->versionsManifest['versions']['8.4']['ios'] = [$this->archiveUrl('ios')];
+
+        $this->cacheArchive('ios', ['Libraries/libphp.a', 'Include/php/main/php.h']);
+
+        $this->installer->installIos();
+
+        $this->assertSame([], $this->installer->failures());
+        $this->assertFileExists($this->projectPath.'/nativephp/binaries/main-4.2.0-rc.1/ios-4.2.0-rc.1-php8.4.26.zip');
+        $this->assertSame(
+            ['release' => '4.2.0-rc.1', 'branch' => 'main'],
+            InstalledBinaries::read($this->projectPath.'/nativephp/ios')
+        );
+    }
+
+    public function test_a_missing_php_version_names_the_prerelease_it_is_missing_from(): void
+    {
+        $this->setBranch('main/4.2.0-rc.1');
+        $this->installer->phpVersion = '8.3';
+
+        $this->installer->installAndroid();
+
+        $this->assertSame(['PHP 8.3 binaries are not part of release 4.2.0-rc.1'], $this->installer->failures());
+    }
+
     private function archiveUrl(string $platform): string
     {
-        return PhpBinaries::HOST.'/main/'.$platform.'-'.PhpBinaries::VERSION.'-php8.4.26.zip';
+        return PhpBinaries::HOST.'/'.PhpBinaries::branch().'/'.$platform.'-'.PhpBinaries::release().'-php8.4.26.zip';
+    }
+
+    private function setBranch(?string $branch): void
+    {
+        if ($branch === null) {
+            unset($_SERVER['NATIVEPHP_BIN_BRANCH'], $_ENV['NATIVEPHP_BIN_BRANCH']);
+            putenv('NATIVEPHP_BIN_BRANCH');
+
+            return;
+        }
+
+        $_SERVER['NATIVEPHP_BIN_BRANCH'] = $_ENV['NATIVEPHP_BIN_BRANCH'] = $branch;
+        putenv("NATIVEPHP_BIN_BRANCH={$branch}");
     }
 
     /**

@@ -58,6 +58,27 @@ class InstalledBinariesTest extends TestCase
         $this->assertNotSame(InstalledBinaries::expected(), InstalledBinaries::read($this->platformPath));
     }
 
+    /**
+     * Installing a prerelease records the prerelease, so the next run
+     * doesn't call it a mismatch. Going back to the pinned release does.
+     */
+    public function test_it_records_the_prerelease_nativephp_bin_branch_asks_for(): void
+    {
+        $this->setBranch('main/4.2.0-rc.1');
+
+        InstalledBinaries::record($this->platformPath);
+
+        $this->assertSame(
+            ['release' => '4.2.0-rc.1', 'branch' => 'main'],
+            InstalledBinaries::read($this->platformPath)
+        );
+        $this->assertSame(InstalledBinaries::expected(), InstalledBinaries::read($this->platformPath));
+
+        $this->setBranch(null);
+
+        $this->assertNotSame(InstalledBinaries::expected(), InstalledBinaries::read($this->platformPath));
+    }
+
     public function test_nothing_is_recorded_for_a_project_that_was_never_installed(): void
     {
         $this->assertNull(InstalledBinaries::read($this->platformPath));
