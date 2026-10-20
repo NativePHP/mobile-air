@@ -9,6 +9,7 @@ use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
+use Native\Mobile\Support\GradleJava;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 use function Laravel\Prompts\error;
@@ -72,6 +73,13 @@ trait RunsAndroid
             return false;
         }
 
+        // Before anything slow, so a Java that can't build fails in seconds
+        $java = $this->findGradleJava($androidPath);
+
+        if ($java === null) {
+            return false;
+        }
+
         $minSdk = (int) config('nativephp.android.min_sdk', 26);
         if ($minSdk < 26) {
             $this->logToFile("ERROR: NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26");
@@ -125,7 +133,7 @@ trait RunsAndroid
             return false;
         }
 
-        if (! $this->runTheAndroidBuild($target)) {
+        if (! $this->runTheAndroidBuild($target, $java)) {
             return false;
         }
 
@@ -568,7 +576,7 @@ XML;
         File::put($path, "sdk.dir=$sdkPath".PHP_EOL);
     }
 
-    private function runTheAndroidBuild(?string $targetDeviceId): bool
+    private function runTheAndroidBuild(?string $targetDeviceId, GradleJava $java): bool
     {
         $androidPath = base_path('nativephp/android');
         $gradleWrapper = PHP_OS_FAMILY === 'Windows' ? 'gradlew.bat' : './gradlew';
@@ -588,6 +596,8 @@ XML;
             default => throw new \Exception("Unknown build type: $this->buildType")
         };
 
+        $gradleCommand = $gradleWrapper.$java->gradleArguments().' '.$gradleTask;
+
         $verbose = $this->getOutput()->isVerbose();
 
         $this->components->twoColumnDetail('Build type', $this->buildType);
@@ -597,11 +607,13 @@ XML;
         $this->logToFile('--- Starting Gradle Build ---');
         $this->logToFile("Gradle wrapper: $gradleWrapper");
         $this->logToFile("Gradle task: $gradleTask");
+        $this->logToFile('Gradle launched with: '.$java->describe());
         $this->logToFile('Verbose mode: '.($verbose ? 'enabled' : 'disabled'));
 
         $buildSuccessful = false;
         if (PHP_OS_FAMILY === 'Windows') {
-            $cmd = "cd /d \"$androidPath\" && $gradleWrapper $gradleTask";
+            $setJavaHome = $java->home !== null ? "set \"JAVA_HOME={$java->home}\" && " : '';
+            $cmd = "cd /d \"$androidPath\" && {$setJavaHome}{$gradleCommand}";
             $this->logToFile("Windows command: $cmd");
             $exitCode = 0;
             passthru($cmd, $exitCode);
@@ -611,6 +623,7 @@ XML;
             $buildSuccessful = ($exitCode === 0);
         } else {
             $process = Process::path($androidPath)
+                ->env($java->environment())
                 ->timeout(600);
 
             // TTY needs a real terminal; Symfony throws on Docker/CI/piped output
@@ -618,7 +631,7 @@ XML;
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
+            $result = $process->run($gradleCommand, function ($type, $output) {
                 file_put_contents($this->androidLogPath, $output, FILE_APPEND);
             });
 

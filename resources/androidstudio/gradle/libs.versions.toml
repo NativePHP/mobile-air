@@ -1,6 +1,6 @@
 [versions]
-agp = "8.13.2"
-kotlin = "2.0.0"
+agp = "9.4.0"
+kotlin = "2.4.21"
 coreKtx = "1.13.1"
 appcompat = "1.7.1"
 material = "1.12.0"
@@ -43,6 +43,5 @@ androidx-browser = { group = "androidx.browser", name = "browser", version.ref =
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 

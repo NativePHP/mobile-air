@@ -8,6 +8,7 @@ use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
+use Native\Mobile\Support\GradleJava;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
@@ -542,6 +543,28 @@ trait PreparesBuild
     }
 
     /**
+     * The Java to start Gradle with, or null after explaining why there's
+     * none that will work.
+     */
+    protected function findGradleJava(string $androidPath): ?GradleJava
+    {
+        $java = GradleJava::find();
+        $problem = $java === null ? GradleJava::missingReason() : $java->projectProblem($androidPath);
+
+        if ($problem === null) {
+            return $java;
+        }
+
+        $this->logToFile('ERROR: '.$problem);
+        \Laravel\Prompts\error($problem);
+        \Laravel\Prompts\note($java === null
+            ? 'Install Android Studio (it comes with a suitable JDK), or set JAVA_HOME to a JDK '.GradleJava::MINIMUM_VERSION.' or newer.'
+            : 'Run `php artisan native:install android` to update the Android project, or set JAVA_HOME to a JDK from '.GradleJava::MINIMUM_VERSION.' to 24.');
+
+        return null;
+    }
+
+    /**
      * Execute Gradle build with optional signing configuration
      */
     protected function executeGradleBuild(string $gradleTask, ?array $signingConfig = null): bool
@@ -558,6 +581,14 @@ trait PreparesBuild
             }
         }
 
+        $java = $this->findGradleJava($androidPath);
+
+        if ($java === null) {
+            return false;
+        }
+
+        $gradleCommand = $gradleWrapper.$java->gradleArguments().' '.$gradleTask;
+
         // Apply signing configuration if provided
         if ($signingConfig) {
             $this->applySigningConfiguration($signingConfig);
@@ -573,19 +604,21 @@ trait PreparesBuild
         $buildSuccessful = false;
 
         if (PHP_OS_FAMILY === 'Windows') {
-            $cmd = "cd /d \"$androidPath\" && $gradleWrapper $gradleTask";
+            $setJavaHome = $java->home !== null ? "set \"JAVA_HOME={$java->home}\" && " : '';
+            $cmd = "cd /d \"$androidPath\" && {$setJavaHome}{$gradleCommand}";
             $exitCode = 0;
             passthru($cmd, $exitCode);
             $buildSuccessful = ($exitCode === 0);
         } else {
             $process = Process::path($androidPath)
+                ->env($java->environment())
                 ->timeout(600);
 
             if (! $this->option('no-tty')) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask");
+            $result = $process->run($gradleCommand);
 
             if (! $result->successful()) {
                 \Laravel\Prompts\error('Gradle build failed');

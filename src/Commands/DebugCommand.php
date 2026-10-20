@@ -5,6 +5,7 @@ namespace Native\Mobile\Commands;
 use Composer\InstalledVersions;
 use Illuminate\Console\Command;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\GradleJava;
 
 class DebugCommand extends Command
 {
@@ -88,7 +89,8 @@ class DebugCommand extends Command
 
         $tools['Android Studio'] = $this->getAndroidStudioVersion();
         $tools['Gradle'] = $this->getGradleVersion();
-        $tools['Java'] = $this->getCommandVersion('java -version 2>&1', fn ($output) => $output[0] ?? null);
+        // The Java native:run starts Gradle with, which isn't always the one on the PATH
+        $tools['Java'] = GradleJava::find()?->describe() ?? 'Not found';
 
         if (PHP_OS_FAMILY === 'Darwin') {
             $tools['CocoaPods'] = $this->getCommandVersion('pod --version 2>/dev/null', fn ($output) => isset($output[0]) ? 'CocoaPods '.trim($output[0]) : null);
