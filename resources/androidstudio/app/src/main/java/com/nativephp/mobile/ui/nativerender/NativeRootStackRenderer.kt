@@ -424,6 +424,8 @@ internal fun TopBarActionView(action: NativeUINode) {
     val icon = action.props.getString("icon", "more_vert")
     val disabled = action.props.getBool("disabled")
     val subItems = action.children.filter { it.type == "top_bar_action" }
+    // Screen-reader name: `a11y_label` (NavAction::a11yLabel()), else the visible label.
+    val a11yLabel = action.props.getString("a11y_label").ifEmpty { action.props.getString("label") }
 
     if (subItems.isEmpty()) {
         // `enabled=false` swallows the tap and swaps LocalContentColor for
@@ -433,12 +435,12 @@ internal fun TopBarActionView(action: NativeUINode) {
                 NativeElementBridge.sendPressEvent(action.onPress, action.id)
             }
         }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+            MaterialIcon(name = icon, contentDescription = a11yLabel)
         }
     } else {
         var expanded by remember { mutableStateOf(false) }
         IconButton(enabled = !disabled, onClick = { expanded = true }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+            MaterialIcon(name = icon, contentDescription = a11yLabel)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             subItems.forEach { item ->
@@ -469,11 +471,11 @@ internal fun TopBarActionView(action: NativeUINode) {
                             if (isDestructive) {
                                 MaterialIcon(
                                     name = itemIcon,
-                                    contentDescription = itemLabel,
+                                    contentDescription = null,
                                     tint = destructiveColor,
                                 )
                             } else {
-                                MaterialIcon(name = itemIcon, contentDescription = itemLabel)
+                                MaterialIcon(name = itemIcon, contentDescription = null)
                             }
                         }
                     } else null,

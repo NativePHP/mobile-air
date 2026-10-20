@@ -7,6 +7,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -38,7 +40,9 @@ val MaterialIconsFont = FontFamily(
  * person, notifications, shopping_cart, favorite, star, etc.
  *
  * @param name The Material Icon ligature name (e.g., "settings", "qr_code_2", "home")
- * @param contentDescription Accessibility description (matches Icon API)
+ * @param contentDescription Accessibility description (matches Icon API). Null or
+ *   empty marks the icon decorative: TalkBack skips it instead of reading the
+ *   ligature name ("arrow_back").
  * @param modifier Modifier for the icon
  * @param tint Icon color (defaults to LocalContentColor)
  */
@@ -50,7 +54,7 @@ fun MaterialIcon(
     tint: Color = LocalContentColor.current
 ) {
     Box(
-        modifier = modifier.size(24.dp),
+        modifier = modifier.size(24.dp).then(iconSemantics(contentDescription)),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -75,6 +79,17 @@ fun MaterialIcon(
 }
 
 /**
+ * The glyph is a ligature `Text`, so without this TalkBack would read the
+ * icon's machine name. Replace it with the description, or with nothing.
+ */
+private fun iconSemantics(contentDescription: String?): Modifier =
+    if (contentDescription.isNullOrEmpty()) {
+        Modifier.clearAndSetSemantics {}
+    } else {
+        Modifier.clearAndSetSemantics { this.contentDescription = contentDescription }
+    }
+
+/**
  * Overload with custom size support
  */
 @Composable
@@ -86,7 +101,7 @@ fun MaterialIcon(
     tint: Color = LocalContentColor.current
 ) {
     Box(
-        modifier = modifier.size(size),
+        modifier = modifier.size(size).then(iconSemantics(contentDescription)),
         contentAlignment = Alignment.Center
     ) {
         Text(

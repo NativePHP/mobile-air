@@ -324,6 +324,7 @@ struct NativeRootStackRenderer: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         } else {
             Menu {
                 ForEach(subItems) { item in
@@ -366,6 +367,7 @@ struct NativeRootStackRenderer: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         }
     }
 }
@@ -564,6 +566,26 @@ struct WindowBackgroundModifier: ViewModifier {
             }
         } else {
             content
+        }
+    }
+}
+
+/// Accessible name for an icon-only top-bar action (plain Button or Menu
+/// trigger): `a11y_label` (`NavAction::a11yLabel()`), else the visible
+/// `label`, else SwiftUI's default — which for a bare SF Symbol is the
+/// symbol's own name (`building.2` reads as "Business").
+///
+/// Shared by both chrome renderers' trailing action views.
+struct TopBarActionA11yLabelModifier: ViewModifier {
+    let action: NativeUINode
+
+    func body(content: Content) -> some View {
+        let a11yLabel = action.props.getString("a11y_label")
+        let label = a11yLabel.isEmpty ? action.props.getString("label") : a11yLabel
+        if label.isEmpty {
+            content
+        } else {
+            content.accessibilityLabel(Text(label))
         }
     }
 }

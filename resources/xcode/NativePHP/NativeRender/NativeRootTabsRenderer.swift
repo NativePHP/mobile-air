@@ -690,6 +690,7 @@ private struct TabsActionView: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         } else {
             Menu {
                 ForEach(subItems) { item in
@@ -728,6 +729,7 @@ private struct TabsActionView: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         }
     }
 }

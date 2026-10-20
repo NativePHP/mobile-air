@@ -121,7 +121,7 @@ private fun RenderSideNavHeaderContent(
             if (icon.isNotEmpty()) {
                 MaterialIcon(
                     name = icon,
-                    contentDescription = title,
+                    contentDescription = null,
                     modifier = Modifier.padding(end = 16.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -173,21 +173,23 @@ private fun RenderSideNavItemContent(
     val badge = props.getString("badge")
     val badgeColor = props.getString("badge_color")
     val context = LocalContext.current
+    val labelShown = when (labelVisibility) {
+        "unlabeled" -> false
+        "selected" -> active
+        else -> true
+    }
 
     NavigationDrawerItem(
         icon = {
-            MaterialIcon(name = icon, contentDescription = label)
+            // Name the icon only when the label text isn't rendered beside it.
+            MaterialIcon(name = icon, contentDescription = if (labelShown) null else label)
         },
         label = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                when (labelVisibility) {
-                    "unlabeled" -> {}
-                    "selected" -> if (active) Text(label)
-                    else -> Text(label)
-                }
+                if (labelShown) Text(label)
 
                 if (badge.isNotEmpty()) {
                     Badge(
@@ -237,7 +239,7 @@ private fun RenderSideNavGroupContent(
     Column {
         NavigationDrawerItem(
             icon = if (icon.isNotEmpty()) {
-                { MaterialIcon(name = icon, contentDescription = heading) }
+                { MaterialIcon(name = icon, contentDescription = null) }
             } else null,
             label = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
