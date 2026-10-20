@@ -420,6 +420,8 @@ class NativeServiceProvider extends PackageServiceProvider
                     }
                 }
 
+                NativeRouter::logRestartAfterCrash();
+
                 $exitUri = $router->start($componentClass, $params, $path);
 
                 if ($exitUri !== null) {

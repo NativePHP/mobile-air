@@ -228,11 +228,17 @@ final class PersistentPHPRuntime {
         // response cap instead of PHP's 2MB/8MB defaults; BridgeDispatcher
         // applies them to request bodies the way PHP does. They go here, not
         // in the embed SAPI's ini_entries: php_embed_init() replaces those.
+        //
+        // memory_limit: PHP's 128M default is sized for one web request, but
+        // a native session is a single request that lives as long as the app,
+        // holding every screen's state. A screen with a long list reached it,
+        // and the fatal error ended the session. Apps can ini_set() their own.
         let phpIni = """
         curl.cainfo="\(caPath)"
         openssl.cafile="\(caPath)"
         upload_max_filesize=16M
         post_max_size=16M
+        memory_limit=512M
         """
 
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

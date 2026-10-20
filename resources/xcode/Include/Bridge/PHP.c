@@ -577,6 +577,25 @@ static void *php_worker_main(void *arg) {
 
 // ── Work handlers (all run on the PHP worker thread) ──
 
+// After PHP bails out of a dispatch, add the fatal error that stopped it to
+// what it printed. Laravel turns display_errors off and reports fatal errors
+// from a shutdown function, which never runs here (the persistent runtime's
+// request doesn't end), so otherwise nothing would say why PHP stopped.
+static void append_last_fatal_error(void) {
+    int fatal = E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_PARSE;
+    if (!PG(last_error_message) || !(PG(last_error_type) & fatal)) return;
+
+    char *line = NULL;
+    int n = asprintf(&line, "\nPHP Fatal error: %s in %s on line %d\n",
+                     ZSTR_VAL(PG(last_error_message)),
+                     PG(last_error_file) ? ZSTR_VAL(PG(last_error_file)) : "Unknown",
+                     PG(last_error_lineno));
+    if (n > 0) {
+        append_output(line, (size_t)n);
+    }
+    free(line);
+}
+
 static void do_dispatch(const dispatch_params_t *params) {
     if (!persistent_initialized) {
         php_work_str_result = bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.", &php_work_result_len);
@@ -614,11 +633,18 @@ static void do_dispatch(const dispatch_params_t *params) {
         return;
     }
 
+    int bailed_out = 0;
     zend_first_try {
         zend_eval_string(code, NULL, "persistent_dispatch");
+    } zend_catch {
+        bailed_out = 1;
     } zend_end_try();
 
     free(code);
+
+    if (bailed_out) {
+        append_last_fatal_error();
+    }
 
     php_work_str_result = bridge_collect_response("persistent_dispatch", &php_work_result_len);
 }
@@ -656,6 +682,18 @@ static void do_shutdown(void) {
     if (!persistent_initialized) return;
 
     clear_output_buffer();
+
+    // A native session that died part-way (a fatal error) never shut its
+    // element region down. The extension's module shutdown would then free
+    // the last tree it kept after this request's memory is gone, and hang
+    // there. So shut it down while the request is still alive. A no-op when
+    // the session ended normally and did it itself. Only this lane may: the
+    // region belongs to the native session, which runs here.
+    zend_first_try {
+        zend_eval_string(
+            "if (function_exists('nativephp_element_shutdown')) { nativephp_element_shutdown(); }",
+            NULL, "persistent_element_shutdown");
+    } zend_end_try();
 
     zend_first_try {
         zend_eval_string(
