@@ -27,6 +27,18 @@ class NativeTabPresentationRegistryTest {
     }
 
     @Test
+    fun resolutionFallsBackUnlessAValidPresenterResolves() {
+        val configuration = NativeTabPresentationConfiguration.from(emptyMap())
+        assertNull(NativeTabPresentationRegistry.resolve("", null))
+        assertNull(NativeTabPresentationRegistry.resolve("system", configuration))
+        assertNull(NativeTabPresentationRegistry.resolve("example:missing", configuration))
+
+        assertTrue(NativeTabPresentationRegistry.register("example:available") {})
+        assertNull(NativeTabPresentationRegistry.resolve("example:available", null))
+        assertNotNull(NativeTabPresentationRegistry.resolve("example:available", configuration))
+    }
+
+    @Test
     fun configurationProvidesTypedValues() {
         val configuration = NativeTabPresentationConfiguration.from(
             mapOf("radius" to 24, "glass" to true, "labels" to listOf("Home", "Profile")),

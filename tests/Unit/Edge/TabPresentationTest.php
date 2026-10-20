@@ -67,6 +67,13 @@ it('serializes an empty configuration as an object', function () {
         ->toBe('{}');
 });
 
+it('preserves an unknown valid presentation identifier for native fallback', function () {
+    expect(TabBar::make()->presentation('example:missing')->toRootProps())->toBe([
+        'tabPresentationId' => 'example:missing',
+        'tabPresentationConfiguration' => '{}',
+    ]);
+});
+
 it('maps presentation metadata onto the native root wire names', function () {
     $root = NativeRootTabs::make();
     $root->applyAttributes(TabBar::make()->presentation('acme:minimal', ['gap' => 8])->toRootProps());

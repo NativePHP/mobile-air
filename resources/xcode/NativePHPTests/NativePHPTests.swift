@@ -24,6 +24,21 @@ struct NativePHPTests {
         registry.resetForTesting()
     }
 
+    @Test func tabPresentationResolutionFallsBackUnlessAValidPresenterResolves() throws {
+        let registry = NativeTabPresentationRegistry.shared
+        registry.resetForTesting()
+        defer { registry.resetForTesting() }
+
+        let configuration = try #require(NativeTabPresentationConfiguration(json: "{}"))
+        #expect(registry.resolve(identifier: "", configuration: nil) == nil)
+        #expect(registry.resolve(identifier: "system", configuration: configuration) == nil)
+        #expect(registry.resolve(identifier: "example:missing", configuration: configuration) == nil)
+
+        #expect(registry.register(identifier: "example:available") { _ in AnyView(EmptyView()) })
+        #expect(registry.resolve(identifier: "example:available", configuration: nil) == nil)
+        #expect(registry.resolve(identifier: "example:available", configuration: configuration) != nil)
+    }
+
     @Test func tabPresentationConfigurationAndActivationAreValidated() async throws {
         let configuration = try #require(NativeTabPresentationConfiguration(
             json: #"{"radius":24,"glass":true,"labels":["Home","Profile"]}"#

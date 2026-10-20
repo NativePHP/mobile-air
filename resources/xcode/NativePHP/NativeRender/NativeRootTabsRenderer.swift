@@ -200,9 +200,10 @@ struct NativeRootTabsRenderer: View {
         let presentationConfiguration = requestsCustomPresentation
             ? NativeTabPresentationConfiguration(json: presentationJSON)
             : nil
-        let customPresenter = presentationConfiguration.flatMap { _ in
-            NativeTabPresentationRegistry.shared.presenter(for: presentationIdentifier)
-        }
+        let customPresenter = NativeTabPresentationRegistry.shared.resolve(
+            identifier: presentationIdentifier,
+            configuration: presentationConfiguration
+        )
         let descriptorEntries: [(index: Int, descriptor: NativeTabDescriptor)] = customPresenter == nil
             ? []
             : visibleTabEntries.map { index, tab in

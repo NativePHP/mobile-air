@@ -97,5 +97,13 @@ object NativeTabPresentationRegistry {
 
     internal fun presenter(identifier: String): NativeTabPresenter? = presenters[identifier]
 
+    internal fun resolve(
+        identifier: String,
+        configuration: NativeTabPresentationConfiguration?,
+    ): NativeTabPresenter? {
+        if (identifier.isEmpty() || identifier == "system" || configuration == null) return null
+        return presenter(identifier)
+    }
+
     internal fun resetForTesting() = presenters.clear()
 }

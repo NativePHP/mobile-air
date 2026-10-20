@@ -224,11 +224,10 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         presentationConfigurationJson.takeIf { requestsCustomPresentation && it.isNotEmpty() }
             ?.let(NativeTabPresentationConfiguration::parse)
     }
-    val customPresenter = if (requestsCustomPresentation && presentationConfiguration != null) {
-        NativeTabPresentationRegistry.presenter(presentationIdentifier)
-    } else {
-        null
-    }
+    val customPresenter = NativeTabPresentationRegistry.resolve(
+        identifier = presentationIdentifier,
+        configuration = presentationConfiguration,
+    )
 
     LaunchedEffect(presentationIdentifier, presentationConfigurationJson, customPresenter) {
         if (requestsCustomPresentation && customPresenter == null) {

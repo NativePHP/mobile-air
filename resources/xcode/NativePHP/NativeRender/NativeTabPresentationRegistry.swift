@@ -151,6 +151,12 @@ public final class NativeTabPresentationRegistry {
         return presenters[identifier]
     }
 
+    func resolve(identifier: String,
+                 configuration: NativeTabPresentationConfiguration?) -> NativeTabPresenter? {
+        guard !identifier.isEmpty, identifier != "system", configuration != nil else { return nil }
+        return presenter(for: identifier)
+    }
+
     static func diagnostic(_ message: String) {
 #if DEBUG
         print("[NativePHP] \(message)")
