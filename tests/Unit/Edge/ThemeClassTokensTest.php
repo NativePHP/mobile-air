@@ -61,6 +61,19 @@ it('still gives a bare theme border a width of its own', function () {
         ->toBe(['borderColor' => '#00E475', 'borderWidth' => 1]);
 });
 
+it('lets a theme border on one side stay on that side', function () {
+    // The implied width is uniform, so applying it beside `border-l` would draw a box.
+    expect(TailwindParser::parse('border-l border-dashed border-theme-primary'))
+        ->toEqual(['borderLeftWidth' => 1, 'borderStyle' => 1, 'borderColor' => '#FF6B00', 'dark' => ['borderColor' => '#FFA85C']])
+        ->and(TailwindParser::parse('border-theme-success border-b-2'))
+        ->toBe(['borderColor' => '#00E475', 'borderBottomWidth' => 2]);
+});
+
+it('gives a dashed theme border the implied width', function () {
+    expect(TailwindParser::parse('border-dashed border-theme-success'))
+        ->toBe(['borderStyle' => 1, 'borderColor' => '#00E475', 'borderWidth' => 1]);
+});
+
 it('never leaks the internal default-width key into the parsed output', function () {
     // parse() resolves it at the end; the renderers read this array directly, so a
     // leftover key would reach the wire as an unknown style prop.
