@@ -6,6 +6,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\TransferException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
@@ -58,6 +59,11 @@ trait InstallsIos
 
     private function installPHPIos(): void
     {
+        // Whatever was recorded describes the binaries about to be replaced.
+        // It's written again at the end, so an install that stops partway
+        // leaves no record rather than one for binaries that aren't there.
+        InstalledBinaries::forget($this->iosPath);
+
         $includeIcu = $this->includeIcuIos ?? false;
         $phpVersion = $this->phpVersion;
         $versions = $this->versionsManifest;
@@ -200,6 +206,8 @@ trait InstallsIos
         if (is_dir($bridgeSrc)) {
             File::copyDirectory($bridgeSrc, $bridgeDst);
         }
+
+        InstalledBinaries::record($this->iosPath);
 
         try {
             File::deleteDirectory($extractPath);
