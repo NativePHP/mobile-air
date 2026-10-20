@@ -832,6 +832,14 @@ class TailwindParser
             str_starts_with($class, 'to-') => self::parseGradientStop('to', substr($class, 3)),
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
+
+            // Outlined text: the glyphs drawn hollow, as an outline of this
+            // width in points in the text's own colour. The web's transparent
+            // fill with `-webkit-text-stroke`. Arbitrary widths
+            // (`text-outline-[1.5]`) are handled in parseArbitrary.
+            $class === 'text-outline' => ['textOutline' => 1.0],
+            str_starts_with($class, 'text-outline-') && ctype_digit(substr($class, 13)) => ['textOutline' => (float) substr($class, 13)],
+
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
 
             // Display. `hidden` takes the node out of layout (Display.none);
@@ -1651,6 +1659,7 @@ class TailwindParser
             'max-h' => ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
+            'text-outline' => is_numeric(rtrim($value, 'px')) ? ['textOutline' => (float) $value] : null,
             'rounded' => ['borderRadius' => (float) $value],
             // `rounded-br-[4px]` etc. The arbitrary regex is non-greedy up to
             // the final `-[`, so the whole `rounded-<side>` arrives as prefix.
