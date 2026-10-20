@@ -10,6 +10,7 @@ use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Concerns\RunsAndroid;
 use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\InstalledBinaries;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
@@ -111,6 +112,10 @@ class RunCommand extends Command
             } else {
                 $os = 'android';
             }
+        }
+
+        if (! $this->ensureBinariesMatchRelease($os)) {
+            return self::FAILURE;
         }
 
         $buildTypes = [
@@ -218,6 +223,85 @@ class RunCommand extends Command
         file_put_contents($lockPath, json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
 
         $exitCode = $this->call('native:install', ['--force' => true]);
+
+        if ($exitCode !== 0) {
+            error('native:install --force failed. Resolve the install error and retry.');
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Offer to reinstall when the PHP binaries in the platform project aren't
+     * the release this version of nativephp/mobile installs.
+     *
+     * Updating the package doesn't touch nativephp/ios or nativephp/android,
+     * so after a `composer update` the app keeps building with the old
+     * binaries and the old native project until someone reinstalls, and
+     * nothing says so. It builds, but without the new release's changes, and
+     * PHP code that relies on them can fail on the device. Reinstalling with
+     * `--skip-php` is worse: the native readers move to the new wire format,
+     * the binaries don't, and the app launches and renders nothing.
+     *
+     * A mismatch warns and asks rather than stopping the run. The record
+     * only holds the release number, which can't say whether anything that
+     * matters changed, and a developer running old binaries on purpose
+     * should be able to say no and carry on.
+     *
+     * Offline on purpose: it compares two local values, so it costs nothing
+     * on every run and works without a connection.
+     */
+    protected function ensureBinariesMatchRelease(string $os): bool
+    {
+        $platformPath = base_path('nativephp/'.$os);
+
+        // Nothing installed at all is a different problem, and the build
+        // reports it.
+        if (! is_dir($platformPath)) {
+            return true;
+        }
+
+        $installed = InstalledBinaries::read($platformPath);
+        $expected = InstalledBinaries::expected();
+
+        if ($installed === null) {
+            // Every project installed before the release was recorded lands
+            // here. Said on every run rather than once, because the next
+            // binaries release is exactly when it matters and a one-off
+            // notice would long since have scrolled away. One reinstall
+            // records the release and it stops.
+            warning("Can't tell which PHP binaries release is in nativephp/{$os}.");
+            note('Installs by older versions of nativephp/mobile, and installs that didn\'t finish, don\'t record it. '
+                .'This version installs release '.InstalledBinaries::describe($expected).'. '
+                .'Run `php artisan native:install --force` to reinstall and record it.');
+
+            return true;
+        }
+
+        if ($installed === $expected) {
+            return true;
+        }
+
+        warning(sprintf(
+            'nativephp/%s has PHP binaries release %s, but this version of nativephp/mobile installs %s.',
+            $os,
+            InstalledBinaries::describe($installed),
+            InstalledBinaries::describe($expected),
+        ));
+        note('Only `native:install` replaces the binaries. Updating nativephp/mobile or changing '
+            .'NATIVEPHP_BIN_BRANCH leaves the old ones in place. The app will still build, but anything '
+            .'that needs release '.InstalledBinaries::describe($expected).' can fail on the device.');
+
+        if (! confirm("Run `native:install {$os} --force` now?", default: true)) {
+            note('Building with release '.InstalledBinaries::describe($installed).'. '
+                .'Run `php artisan native:install --force` when you\'re ready.');
+
+            return true;
+        }
+
+        $exitCode = $this->call('native:install', ['platform' => $os, '--force' => true]);
 
         if ($exitCode !== 0) {
             error('native:install --force failed. Resolve the install error and retry.');

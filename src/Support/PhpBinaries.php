@@ -12,8 +12,12 @@ namespace Native\Mobile\Support;
  * the binaries it was tested against, and publishing a newer set can't reach
  * an install that hasn't opted into it.
  *
- * Because it lives in this package, `composer.lock` already pins it. There's
- * nothing to record in `nativephp.lock`.
+ * Because it lives in this package, `composer.lock` already pins which
+ * release an app should have. That isn't the same as the release it has: the
+ * binaries are copied into nativephp/ios and nativephp/android at install
+ * time and stay there when this package is updated. {@see InstalledBinaries}
+ * records what each install put there, and `native:run` warns when that isn't
+ * this release.
  *
  * ## When to bump
  *
