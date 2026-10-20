@@ -11,6 +11,7 @@ use Native\Mobile\Concerns\RunsAndroid;
 use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\InstalledBinaries;
+use Native\Mobile\Support\PhpBinaries;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
@@ -266,6 +267,12 @@ class RunCommand extends Command
         $installed = InstalledBinaries::read($platformPath);
         $expected = InstalledBinaries::expected();
 
+        // Credit whoever chose the release: the package pins it, unless
+        // NATIVEPHP_BIN_BRANCH asked for a branch or a prerelease.
+        $source = PhpBinaries::selection() === 'main'
+            ? 'this version of nativephp/mobile installs'
+            : 'NATIVEPHP_BIN_BRANCH asks for';
+
         if ($installed === null) {
             // Every project installed before the release was recorded lands
             // here. Said on every run rather than once, because the next
@@ -274,7 +281,7 @@ class RunCommand extends Command
             // records the release and it stops.
             warning("Can't tell which PHP binaries release is in nativephp/{$os}.");
             note('Installs by older versions of nativephp/mobile, and installs that didn\'t finish, don\'t record it. '
-                .'This version installs release '.InstalledBinaries::describe($expected).'. '
+                .ucfirst($source).' release '.InstalledBinaries::describe($expected).'. '
                 .'Run `php artisan native:install --force` to reinstall and record it.');
 
             return true;
@@ -285,9 +292,10 @@ class RunCommand extends Command
         }
 
         warning(sprintf(
-            'nativephp/%s has PHP binaries release %s, but this version of nativephp/mobile installs %s.',
+            'nativephp/%s has PHP binaries release %s, but %s %s.',
             $os,
             InstalledBinaries::describe($installed),
+            $source,
             InstalledBinaries::describe($expected),
         ));
         note('Only `native:install` replaces the binaries. Updating nativephp/mobile or changing '
