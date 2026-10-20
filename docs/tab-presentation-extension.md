@@ -17,7 +17,7 @@ use Native\Mobile\Edge\Layouts\Builders\TabBar;
 return TabBar::make()
     ->add(Tab::link('Home', '/home', icon: 'home'))
     ->add(Tab::link('Profile', '/profile', icon: 'person'))
-    ->presentation('vendor:floating', [
+    ->presentation('acme:floating', [
         'cornerRadius' => 24,
         'showsLabels' => true,
     ]);
@@ -29,8 +29,8 @@ one namespace colon. `system` explicitly selects NativePHP's stock bar.
 
 Configuration must be a JSON object containing only JSON-compatible scalar,
 array, object, and null values. The maximum nesting depth is eight and the
-encoded maximum is 16 KiB. Objects, closures, resources, invalid UTF-8, and
-non-finite numbers are rejected before a tree is published.
+encoded maximum is 16 KiB. PHP object instances, closures, resources, invalid
+UTF-8, and non-finite numbers are rejected before a tree is published.
 
 An absent identifier, `system`, an unknown registration, or malformed native
 configuration uses the stock system bar. Existing applications therefore
@@ -43,9 +43,9 @@ bridge call, or delayed lifecycle callback is required:
 
 ```json
 {
-    "namespace": "Vendor\\LayoutKit",
+    "namespace": "Acme\\FloatingTabs",
     "ios": {
-        "init_function": "registerLayoutKitTabPresenters"
+        "init_function": "registerAcmeTabPresenters"
     }
 }
 ```
@@ -57,8 +57,8 @@ tree is rendered:
 ```swift
 import SwiftUI
 
-public func registerLayoutKitTabPresenters() {
-    NativeTabPresentationRegistry.shared.register(identifier: "vendor:floating") { context in
+public func registerAcmeTabPresenters() {
+    NativeTabPresentationRegistry.shared.register(identifier: "acme:floating") { context in
         AnyView(
             HStack {
                 ForEach(context.tabs) { tab in
@@ -86,15 +86,15 @@ Kotlin function:
 
 ```json
 {
-    "namespace": "Vendor\\LayoutKit",
+    "namespace": "Acme\\FloatingTabs",
     "android": {
-        "init_function": "com.vendor.layoutkit.registerLayoutKitTabPresenters"
+        "init_function": "com.acme.floatingtabs.registerAcmeTabPresenters"
     }
 }
 ```
 
 ```kotlin
-package com.vendor.layoutkit
+package com.acme.floatingtabs
 
 import android.content.Context
 import androidx.compose.foundation.layout.Row
@@ -102,8 +102,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nativephp.mobile.ui.nativerender.NativeTabPresentationRegistry
 
-fun registerLayoutKitTabPresenters(context: Context) {
-    NativeTabPresentationRegistry.register("vendor:floating") { presentation ->
+fun registerAcmeTabPresenters(context: Context) {
+    NativeTabPresentationRegistry.register("acme:floating") { presentation ->
         Row {
             presentation.tabs.forEach { tab ->
                 TextButton(onClick = { presentation.activate(tab.id) }) {

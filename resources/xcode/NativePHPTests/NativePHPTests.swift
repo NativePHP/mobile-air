@@ -30,6 +30,8 @@ struct NativePHPTests {
         ))
         #expect(configuration.number("radius") == 24)
         #expect(configuration.bool("glass") == true)
+        #expect(configuration.number("glass") == nil)
+        #expect(configuration.bool("radius") == nil)
         #expect(configuration.strings("labels") == ["Home", "Profile"])
         #expect(NativeTabPresentationConfiguration(json: "[1,2]") == nil)
 

@@ -33,6 +33,8 @@ class NativeTabPresentationRegistryTest {
         )
         assertEquals(24.0, configuration.number("radius"))
         assertEquals(true, configuration.boolean("glass"))
+        assertNull(configuration.number("glass"))
+        assertNull(configuration.boolean("radius"))
         assertEquals(listOf("Home", "Profile"), configuration.strings("labels"))
     }
 

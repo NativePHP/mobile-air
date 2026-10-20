@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import SwiftUI
 
@@ -60,7 +61,11 @@ public struct NativeTabPresentationConfiguration {
 
     public func string(_ key: String) -> String? { values[key] as? String }
     public func bool(_ key: String) -> Bool? { values[key] as? Bool }
-    public func number(_ key: String) -> Double? { (values[key] as? NSNumber)?.doubleValue }
+    public func number(_ key: String) -> Double? {
+        guard let number = values[key] as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return number.doubleValue
+    }
     public func strings(_ key: String) -> [String]? { values[key] as? [String] }
     public func object(_ key: String) -> [String: Any]? { values[key] as? [String: Any] }
 }
