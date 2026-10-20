@@ -10,6 +10,7 @@ use Native\Mobile\Concerns\InstallsAndroid;
 use Native\Mobile\Concerns\InstallsIos;
 use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Concerns\TracksInstallFailures;
+use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
 
@@ -139,6 +140,12 @@ class InstallCommand extends Command
                     $this->removeDirectory($path.DIRECTORY_SEPARATOR.$platform);
                 }
             });
+        }
+
+        // Whatever the last build remembered was about the project being
+        // replaced, so none of it can be trusted any more.
+        foreach ($removing as $platform) {
+            BuildState::clear($path.DIRECTORY_SEPARATOR.$platform);
         }
 
         $this->callSilently('vendor:publish', [

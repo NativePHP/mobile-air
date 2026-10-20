@@ -30,7 +30,8 @@ class RunCommand extends Command
         {--vite : Start the Vite dev server (opt-in; off by default)}
         {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
-        {--no-tty : Disable TTY mode for non-interactive environments}';
+        {--no-tty : Disable TTY mode for non-interactive environments}
+        {--fresh : Run every build step, even ones whose inputs are unchanged since the last build}';
 
     protected $description = 'Build, package, and run the NativePHP app';
 
