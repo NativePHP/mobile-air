@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge;
 
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route as IlluminateRoute;
+use Illuminate\Support\Facades\Log;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Screen\ScreenMounted;
@@ -44,6 +45,38 @@ class NativeRouter
             ? storage_path('logs/edge-nav.log')
             : sys_get_temp_dir().'/edge-nav.log';
         @file_put_contents($logPath, date('[H:i:s.').substr(microtime(), 2, 3).'] '.$msg."\n", FILE_APPEND);
+    }
+
+    /**
+     * Where iOS leaves what PHP printed when a native session died part-way
+     * (a fatal error, most often the memory limit), relative to
+     * storage_path(). Must match `NativeSession.crashOutputPath`.
+     */
+    public const CRASH_OUTPUT_PATH = 'framework/.native_session_crash';
+
+    /**
+     * Log why the last native session died, if iOS restarted it after PHP
+     * stopped part-way. PHP couldn't report it then: Laravel reports fatal
+     * errors from a shutdown function, and the persistent runtime's request
+     * never shuts down.
+     */
+    public static function logRestartAfterCrash(): void
+    {
+        $path = storage_path(self::CRASH_OUTPUT_PATH);
+        if (! is_file($path)) {
+            return;
+        }
+
+        $output = trim((string) @file_get_contents($path));
+        @unlink($path);
+
+        static::debugLog("RESTARTED: the last native session died part-way: {$output}");
+
+        try {
+            Log::error('The native session died part-way and was restarted', ['output' => $output]);
+        } catch (\Throwable) {
+            // A broken log channel mustn't stop the screen from starting.
+        }
     }
 
     /**
