@@ -9,9 +9,11 @@ use Native\Mobile\Concerns\ChecksLatestBuildNumber;
 use Native\Mobile\Concerns\CleansEnvFile;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAppIcon;
+use Native\Mobile\Concerns\InstallsCustomIcons;
 use Native\Mobile\Concerns\InstallsSplashScreen;
 use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Icon\Svg\SvgConversionException;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
@@ -24,7 +26,7 @@ use function Laravel\Prompts\error;
 
 class BuildIosAppCommand extends Command
 {
-    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
+    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsCustomIcons, InstallsSplashScreen, ValidatesAppConfig;
 
     private bool $verbose;
 
@@ -269,6 +271,16 @@ class BuildIosAppCommand extends Command
         $this->configureProvisioningProfile();
         $this->installIosIcon();
         $this->installIosSplashScreen();
+
+        try {
+            $this->installIosCustomIcons();
+        } catch (SvgConversionException $e) {
+            error($e->getMessage());
+            file_put_contents($this->logPath, 'ERROR: '.$e->getMessage().PHP_EOL, FILE_APPEND);
+
+            return false;
+        }
+
         $this->updateIcuConfiguration();
 
         // Compile plugins AFTER core config so plugin entries (like info_plist)

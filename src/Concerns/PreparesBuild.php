@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Icon\Svg\SvgConversionException;
 use Native\Mobile\Support\BuildFingerprint;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleExclusions;
@@ -14,7 +15,7 @@ use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
 {
-    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
+    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, InstallsCustomIcons, PlatformFileOperations;
 
     /**
      * Validate required environment variables for building
@@ -70,7 +71,18 @@ trait PreparesBuild
         $this->updateAndroidConfiguration();
         $this->installAndroidIcon();
         $this->installAndroidSplashScreen();
+
+        try {
+            $icons = $this->installAndroidCustomIcons();
+            $this->logToFile('Custom icons: '.($icons === [] ? 'none' : implode(', ', $icons)));
+        } catch (SvgConversionException $e) {
+            $this->logToFile('ERROR: '.$e->getMessage());
+            \Laravel\Prompts\error($e->getMessage());
+            exit(1);
+        }
+
         $this->prepareLaravelBundle($excludeDevDependencies, $reuseUnchanged);
+
         $this->logToFile('--- Android Build Preparation Complete ---');
     }
 

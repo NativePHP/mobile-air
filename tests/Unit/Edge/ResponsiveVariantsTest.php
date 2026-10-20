@@ -169,6 +169,19 @@ it('keeps the base radius on corners a breakpoint does not round', function () {
     ]);
 });
 
+it('turns a dashed border solid at a breakpoint', function () {
+    // border_style is sent for solid too, or the fold would keep the base's dashes.
+    expect(collectedVariants(collectColumn('border border-[#FF0000] border-dashed md:border-solid')))->toEqual([
+        ['min' => 768.0, 'props' => ['border_style' => 0]],
+    ]);
+});
+
+it('moves a border to another side at a breakpoint', function () {
+    expect(collectedVariants(collectColumn('border-b border-[#FF0000] md:border-b-0 md:border-l')))->toEqual([
+        ['min' => 768.0, 'props' => ['border_b' => 0.0, 'border_l' => 1.0]],
+    ]);
+});
+
 it('widens a border without restating the base border colour', function () {
     // A width alone never reached the wire before — the style builder
     // only emits a border with its colour. The colour is unchanged, so

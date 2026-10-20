@@ -303,6 +303,7 @@ struct NativeRootStackRenderer: View {
     @ViewBuilder
     private func actionView(_ action: NativeUINode, textColor: Color) -> some View {
         let icon = action.props.getString("icon", default: "ellipsis")
+        let disabled = action.props.getBool("disabled")
         let subItems = action.children.filter { $0.type == "top_bar_action" }
 
         if subItems.isEmpty {
@@ -311,14 +312,18 @@ struct NativeRootStackRenderer: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                NativeIconView(icon, pointSize: 17)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    // Explicit dim: the hard-set foregroundColor above keeps
+                    // SwiftUI's automatic disabled greying from showing.
+                    .opacity(disabled ? 0.4 : 1)
                     // same pill-sized hit region for
                     // the trailing actions (plain Button and Menu labels alike).
                     .frame(minWidth: 32, minHeight: 44)
                     .contentShape(Rectangle().inset(by: -6))
             }
+            .disabled(disabled)
         } else {
             Menu {
                 ForEach(subItems) { item in
@@ -335,14 +340,19 @@ struct NativeRootStackRenderer: View {
                             }
                         } label: {
                             if !itemIcon.isEmpty {
-                                Label(itemLabel, systemImage: getIconForName(itemIcon))
+                                Label {
+                                    Text(itemLabel)
+                                } icon: {
+                                    NativeIcon.image(itemIcon)
+                                }
                             } else {
                                 Text(itemLabel)
                             }
                         }
+                        .disabled(item.props.getBool("disabled"))
                         // SwiftUI's Menu won't propagate `.foregroundStyle(.red)`
                         // applied inside the Button label down to the Label's
-                        // systemImage — the icon stays on the menu's accent color
+                        // icon — it stays on the menu's accent color
                         // even with `Button(role: .destructive)`. Applying `.tint`
                         // on the Button itself is the path Menu actually honors;
                         // both the text and the symbol then render in the tint.
@@ -350,14 +360,16 @@ struct NativeRootStackRenderer: View {
                     }
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                NativeIconView(icon, pointSize: 17)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    .opacity(disabled ? 0.4 : 1)
                     // same pill-sized hit region for
                     // the trailing actions (plain Button and Menu labels alike).
                     .frame(minWidth: 32, minHeight: 44)
                     .contentShape(Rectangle().inset(by: -6))
             }
+            .disabled(disabled)
         }
     }
 }
