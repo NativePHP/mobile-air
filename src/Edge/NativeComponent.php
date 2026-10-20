@@ -1908,6 +1908,32 @@ abstract class NativeComponent
     }
 
     /**
+     * Give a deep link back to the browser.
+     *
+     * Android goes through the core System.OpenInBrowser. A plain
+     * Browser::open() there resolves the app's own verified App Link straight
+     * back to the app, which delivers the link here again, in a loop that never
+     * reaches the browser. iOS sends an app's own universal link to Safari when
+     * the app opens it, so there the browser plugin's open() is enough. Android
+     * projects installed before System.OpenInBrowser existed take that path
+     * too, and keep the old behaviour until the native project is reinstalled.
+     */
+    protected static function openDeepLinkInBrowser(string $url): bool
+    {
+        if (function_exists('nativephp_call')) {
+            $result = nativephp_call('System.OpenInBrowser', json_encode(['url' => $url]));
+
+            // Null means the platform doesn't have it, not that it failed.
+            if ($result !== null) {
+                return (json_decode($result, true)['success'] ?? false) === true;
+            }
+        }
+
+        // A no-op when the app doesn't ship the browser plugin.
+        return (new Browser)->open($url);
+    }
+
+    /**
      * Handle a native event (type 20) by looking up #[OnNative] listeners.
      */
     protected function dispatchNativeEvent(array $event): void
@@ -1931,13 +1957,12 @@ abstract class NativeComponent
                 // serves a local 404 — a dead end the user can't back out of. The
                 // link belongs to the site we took it from, so give it back to the
                 // browser and leave the current screen alone.
-                // open() is a no-op when the app doesn't ship a browser handler,
-                // so only swallow the link if it was actually handed off —
-                // otherwise fall through and behave exactly as before.
+                // Only swallow the link if it was actually handed off — otherwise
+                // fall through and behave exactly as before.
                 if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
                     NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
 
-                    if ((new Browser)->open($url)) {
+                    if (static::openDeepLinkInBrowser($url)) {
                         return;
                     }
 
