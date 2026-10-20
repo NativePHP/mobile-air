@@ -110,6 +110,16 @@ struct FlexContainer: Layout {
         /// `placeSubviews` reuses those sizes, so it needs to know they match
         /// the proposal it's placing for (see there).
         var measuredKey: ProposalKey?
+        /// Each child's size per exact proposal, for this cache's lifetime —
+        /// see `measure`.
+        var childSizes: [ChildSizeKey: CGSize] = [:]
+    }
+
+    /// A child (by index) and the exact proposal it was measured with.
+    struct ChildSizeKey: Hashable {
+        let index: Int
+        let width: CGFloat?
+        let height: CGFloat?
     }
 
     /// Bumped when the window width changes (rotation, Split View, Stage
@@ -267,6 +277,42 @@ struct FlexContainer: Layout {
         isRow ? info.marginTop : info.marginLeft
     }
 
+    // MARK: - Child measurement
+
+    /// A child's `sizeThatFits`, asked once per proposal.
+    ///
+    /// One layout pass measures each child several times — Phase A, the grow /
+    /// shrink re-measures, Phase 3, Phase 5's alignment measure, and the whole
+    /// walk again in `placeSubviews` after SwiftUI's probes — mostly with a
+    /// proposal it has already asked. For the
+    /// same exact proposal the answer can't change while this cache lives:
+    /// SwiftUI replaces the cache when the container or a child changes
+    /// (`updateCache`), and a window resize clears it (`measurementGeneration`) —
+    /// the lifetime `sizeCache` already relies on. The key is the exact proposal,
+    /// not a rounded `ProposalKey`, so a hit is what the child itself would answer.
+    private func measure(
+        _ subviews: Subviews,
+        _ i: Int,
+        _ proposal: ProposedViewSize,
+        _ cache: inout CacheData
+    ) -> CGSize {
+        let key = ChildSizeKey(index: i, width: proposal.width, height: proposal.height)
+        if let size = cache.childSizes[key] {
+            return size
+        }
+        let size = subviews[i].sizeThatFits(proposal)
+        cache.childSizes[key] = size
+        return size
+    }
+
+    /// Empties the memos on the first call after a window resize.
+    private func dropStaleMeasurements(_ cache: inout CacheData) {
+        guard cache.generation != Self.measurementGeneration else { return }
+        cache.sizeCache.removeAll(keepingCapacity: true)
+        cache.childSizes.removeAll(keepingCapacity: true)
+        cache.generation = Self.measurementGeneration
+    }
+
     // MARK: - sizeThatFits
 
     func sizeThatFits(
@@ -284,10 +330,7 @@ struct FlexContainer: Layout {
 
         // Memoization: SwiftUI calls sizeThatFits multiple times per layout
         // pass with the same proposal. Skip the full subview walk on repeats.
-        if cache.generation != Self.measurementGeneration {
-            cache.sizeCache.removeAll(keepingCapacity: true)
-            cache.generation = Self.measurementGeneration
-        }
+        dropStaleMeasurements(&cache)
         let key = ProposalKey(proposal)
         if let cached = cache.sizeCache[key] {
             return cached
@@ -331,7 +374,7 @@ struct FlexContainer: Layout {
             } else {
                 measureProposal = .unspecified
             }
-            let ideal = subviews[i].sizeThatFits(measureProposal)
+            let ideal = measure(subviews, i, measureProposal, &cache)
             cache.childInfos[i].idealSize = ideal
 
             let childMain: CGFloat
@@ -384,7 +427,7 @@ struct FlexContainer: Layout {
                     } else {
                         proposal = ProposedViewSize(width: crossAvail, height: distributedMain)
                     }
-                    let measured = subviews[i].sizeThatFits(proposal)
+                    let measured = measure(subviews, i, proposal, &cache)
                     cache.childInfos[i].idealSize = measured
                     childCrosses[i] = crossSize(measured) + crossMargin(info)
                 }
@@ -441,7 +484,7 @@ struct FlexContainer: Layout {
                     } else {
                         proposal = ProposedViewSize(width: crossAvail, height: reducedMain)
                     }
-                    let measured = subviews[i].sizeThatFits(proposal)
+                    let measured = measure(subviews, i, proposal, &cache)
                     cache.childInfos[i].idealSize = measured
                     childCrosses[i] = crossSize(measured) + crossMargin(info)
                 }
@@ -518,6 +561,7 @@ struct FlexContainer: Layout {
         // 0-wide probe, flex-shrink has zeroed them, and a text is placed 0pt
         // wide inside a correctly sized row — the label simply disappears.
         // Re-measure for this proposal (bypassing the memo) when they differ.
+        dropStaleMeasurements(&cache)
         let placementKey = ProposalKey(proposal)
         if cache.measuredKey != placementKey {
             cache.sizeCache[placementKey] = nil
@@ -629,7 +673,7 @@ struct FlexContainer: Layout {
             } else {
                 proposedChild = ProposedViewSize(width: crossAvail, height: nil)
             }
-            let measured = subviews[i].sizeThatFits(proposedChild)
+            let measured = measure(subviews, i, proposedChild, &cache)
             childCrosses[i] = crossSize(measured)
             // Update main size when the cross constraint changes it (e.g. text
             // wrapping that grows height when width is constrained). Skip
@@ -716,19 +760,19 @@ struct FlexContainer: Layout {
                     // proposes crossAvail, which makes container children (e.g.
                     // a flex column) fill the cross axis and report container
                     // cross size, not their natural content size.
-                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
+                    let natural = crossSize(measure(subviews, i, naturalProposal, &cache))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
                 case AlignItems.center:
                     // Center: measure natural size, center within container
-                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
+                    let natural = crossSize(measure(subviews, i, naturalProposal, &cache))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + (containerCross - finalCross) / 2
 
                 case AlignItems.end:
                     // End: measure natural size, align to end
-                    let natural = crossSize(subviews[i].sizeThatFits(naturalProposal))
+                    let natural = crossSize(measure(subviews, i, naturalProposal, &cache))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
 
