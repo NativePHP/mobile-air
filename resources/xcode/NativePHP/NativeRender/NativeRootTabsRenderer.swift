@@ -233,13 +233,14 @@ struct NativeRootTabsRenderer: View {
             hasPushedDestination: isRegularTabSelected && customPresentationHiddenForPush
         )
         let presentationContext = presentationConfiguration.map { configuration in
-            NativeTabPresentationContext(
+            return NativeTabPresentationContext(
                 tabs: tabDescriptors,
-                selectedTabIdentifier: nativeTabPresentationIdentifier(
-                    sourceIdentifier: tabs.indices.contains(owningIdx)
-                        ? tabs[owningIdx].props.getString("id", default: "tab_\(owningIdx)")
-                        : owningId,
-                    index: owningIdx
+                selectedTabIdentifier: nativeTabPresentationSelectedIdentifier(
+                    sourceIdentifiers: tabs.enumerated().map { index, tab in
+                        tab.props.getString("id", default: "tab_\(index)")
+                    },
+                    selectedSourceIdentifier: selection,
+                    fallbackIndex: owningIdx
                 ),
                 configuration: configuration,
                 isHidden: hidesCustomPresentation,

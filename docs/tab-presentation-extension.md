@@ -65,7 +65,10 @@ public func registerAcmeTabPresenters() {
                     Button {
                         context.activate(tab.id)
                     } label: {
-                        Label(tab.label, systemImage: tab.icon)
+                        HStack {
+                            NativeTabIcon(tab.icon)
+                            Text(tab.label)
+                        }
                     }
                     .accessibilityLabel(tab.accessibilityLabel)
                 }
@@ -100,6 +103,7 @@ import android.content.Context
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.nativephp.mobile.ui.MaterialIcon
 import com.nativephp.mobile.ui.nativerender.NativeTabPresentationRegistry
 
 fun registerAcmeTabPresenters(context: Context) {
@@ -107,6 +111,10 @@ fun registerAcmeTabPresenters(context: Context) {
         Row {
             presentation.tabs.forEach { tab ->
                 TextButton(onClick = { presentation.activate(tab.id) }) {
+                    MaterialIcon(
+                        name = tab.icon,
+                        contentDescription = null,
+                    )
                     Text(tab.label)
                 }
             }
@@ -118,6 +126,11 @@ fun registerAcmeTabPresenters(context: Context) {
 The presenter occupies the existing `Scaffold.bottomBar` slot. Scaffold owns
 the relevant navigation-bar and IME insets; plugins should not create another
 navigation container.
+
+Treat descriptor icon strings as opaque NativePHP identifiers rather than as
+SF Symbol or Material ligature names. `NativeTabIcon` on iOS and
+`MaterialIcon` on Android render both the normal platform icon names and the
+`custom:` app-asset identifiers produced by `Icon::custom()`.
 
 ## Presenter contract
 

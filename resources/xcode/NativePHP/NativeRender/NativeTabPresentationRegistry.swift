@@ -12,6 +12,16 @@ func nativeTabPresentationIdentifier(sourceIdentifier: String, index: Int) -> St
     "\(sourceIdentifier)#\(index)"
 }
 
+func nativeTabPresentationSelectedIdentifier(sourceIdentifiers: [String],
+                                             selectedSourceIdentifier: String,
+                                             fallbackIndex: Int) -> String {
+    let selectedIndex = sourceIdentifiers.firstIndex(of: selectedSourceIdentifier) ?? fallbackIndex
+    let sourceIdentifier = sourceIdentifiers.indices.contains(selectedIndex)
+        ? sourceIdentifiers[selectedIndex]
+        : selectedSourceIdentifier
+    return nativeTabPresentationIdentifier(sourceIdentifier: sourceIdentifier, index: selectedIndex)
+}
+
 func nativeTabPresentationIsHidden(explicitlyHidden: Bool, hasPushedDestination: Bool) -> Bool {
     explicitlyHidden || hasPushedDestination
 }
@@ -34,6 +44,25 @@ public struct NativeTabDescriptor: Identifiable, Sendable {
         self.badge = badge
         self.showsNews = showsNews
         self.role = role
+    }
+}
+
+/// Renders a tab descriptor's NativePHP icon identifier, including app-owned
+/// `custom:` assets, with the same resolver used by NativePHP's stock chrome.
+public struct NativeTabIcon: View {
+    private let name: String
+    private let pointSize: CGFloat
+    private let relativeTo: Font.TextStyle?
+
+    public init(_ name: String, pointSize: CGFloat = 17,
+                relativeTo: Font.TextStyle? = nil) {
+        self.name = name
+        self.pointSize = pointSize
+        self.relativeTo = relativeTo
+    }
+
+    public var body: some View {
+        NativeIconView(name, pointSize: pointSize, relativeTo: relativeTo)
     }
 }
 

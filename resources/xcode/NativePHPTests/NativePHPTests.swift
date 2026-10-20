@@ -56,6 +56,20 @@ struct NativePHPTests {
         #expect(nativeTabPresentationIdentifier(sourceIdentifier: "home", index: 1) == "home#1")
     }
 
+    @Test func tabPresentationSelectionTracksTheLiveSelectedTab() {
+        let identifiers = ["home", "profile"]
+        #expect(nativeTabPresentationSelectedIdentifier(
+            sourceIdentifiers: identifiers,
+            selectedSourceIdentifier: "profile",
+            fallbackIndex: 0
+        ) == "profile#1")
+        #expect(nativeTabPresentationSelectedIdentifier(
+            sourceIdentifiers: identifiers,
+            selectedSourceIdentifier: "missing",
+            fallbackIndex: 0
+        ) == "home#0")
+    }
+
     @Test func customPresentationUsesEffectiveSystemTabVisibility() {
         #expect(!nativeTabPresentationIsHidden(explicitlyHidden: false, hasPushedDestination: false))
         #expect(nativeTabPresentationIsHidden(explicitlyHidden: true, hasPushedDestination: false))
