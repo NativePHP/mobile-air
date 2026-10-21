@@ -43,6 +43,22 @@ class Device
         return null;
     }
 
+    /**
+     * The phone's timezone as an IANA name, like `Europe/Lisbon`, from the
+     * `timezone` key of getInfo(). Null off the device, and on native builds
+     * from before getInfo() carried it. Each call asks the device again,
+     * since the phone can change zone while the app runs, and getInfo() does
+     * more work than reading the zone, so keep the answer for a while if you
+     * need it for every row of a list.
+     */
+    public function getTimezone(): ?string
+    {
+        $info = json_decode($this->getInfo() ?? '', true);
+        $timezone = is_array($info) ? ($info['timezone'] ?? null) : null;
+
+        return is_string($timezone) && $timezone !== '' ? $timezone : null;
+    }
+
     public function getBatteryInfo(): ?string
     {
         if (function_exists('nativephp_call')) {
