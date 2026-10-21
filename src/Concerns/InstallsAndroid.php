@@ -5,6 +5,7 @@ namespace Native\Mobile\Concerns;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\TransferException;
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
@@ -114,6 +115,9 @@ trait InstallsAndroid
 
     private function installPHPAndroid(): void
     {
+        // See installPHPIos(): no record survives an install that stops partway.
+        InstalledBinaries::forget(base_path('nativephp/android'));
+
         // Fail early: ZipArchive validates (and on Linux/macOS extracts) the
         // downloaded archive, but ext-zip is not guaranteed on stock Linux or
         // Windows PHP installs — better to error now than after a multi-MB download.
@@ -138,7 +142,7 @@ trait InstallsAndroid
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::release());
 
             return;
         }
@@ -309,6 +313,8 @@ trait InstallsAndroid
                 $this->platformOptimizedCopy($includeSrc, $includeDst);
             }
         });
+
+        InstalledBinaries::record(base_path('nativephp/android'));
 
         try {
             $this->removeDirectory($extractPath);

@@ -12,8 +12,21 @@ namespace Native\Mobile\Support;
  * the binaries it was tested against, and publishing a newer set can't reach
  * an install that hasn't opted into it.
  *
- * Because it lives in this package, `composer.lock` already pins it. There's
- * nothing to record in `nativephp.lock`.
+ * Because it lives in this package, `composer.lock` already pins which
+ * release an app should have. That isn't the same as the release it has: the
+ * binaries are copied into nativephp/ios and nativephp/android at install
+ * time and stay there when this package is updated. {@see InstalledBinaries}
+ * records what each install put there, and `native:run` warns when that isn't
+ * the release this package would install now.
+ *
+ * ## Prereleases
+ *
+ * php-bin-mobile can also publish a build of any commit under a name with a
+ * prerelease suffix, such as `4.2.0-rc.1`. Nothing pins those, so they only
+ * reach an app that asks for one through NATIVEPHP_BIN_BRANCH:
+ * `main/4.2.0-rc.1` installs main's 4.2.0-rc.1, and a bare `4.2.0-rc.1`
+ * means the same. {@see release()} is what gets installed. VERSION stays the
+ * release this package was tested against.
  *
  * ## When to bump
  *
@@ -33,24 +46,82 @@ namespace Native\Mobile\Support;
 class PhpBinaries
 {
     /**
-     * Release of the PHP binaries to install.
+     * Release of the PHP binaries to install, unless NATIVEPHP_BIN_BRANCH
+     * asks for a prerelease. See {@see release()}.
      *
      * Matches NATIVEPHP_VERSION in php-bin-mobile's config/versions.sh.
      */
-    public const VERSION = '4.0.0';
+    public const VERSION = '4.1.0';
 
     public const HOST = 'https://bin.nativephp.com';
 
-    /** URL of the manifest listing every artifact in this release. */
-    public static function manifestUrl(string $branch = 'main'): string
+    /**
+     * A release with a prerelease suffix: `4.2.0-rc.1`.
+     *
+     * The suffix is required. A plain `4.2.0` at the end of
+     * NATIVEPHP_BIN_BRANCH is part of a branch name like `feat/4.2.0`, not a
+     * request for that release.
+     */
+    private const PRERELEASE = '/^\d+\.\d+\.\d+-[0-9A-Za-z.]+$/';
+
+    /** URL of the manifest listing every artifact in the release to install. */
+    public static function manifestUrl(?string $branch = null, ?string $release = null): string
     {
-        return self::HOST.'/'.$branch.'/'.self::VERSION.'.json';
+        return self::HOST.'/'.($branch ?? self::branch()).'/'.($release ?? self::release()).'.json';
     }
 
     /** Which branch's artifacts to install. */
     public static function branch(): string
     {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
+        return self::parse()['branch'];
+    }
+
+    /**
+     * Which release to install: VERSION, unless NATIVEPHP_BIN_BRANCH ends in
+     * a prerelease.
+     */
+    public static function release(): string
+    {
+        return self::parse()['release'];
+    }
+
+    public static function isPrerelease(): bool
+    {
+        return self::release() !== self::VERSION;
+    }
+
+    /** NATIVEPHP_BIN_BRANCH as set, or `main`. */
+    public static function selection(): string
+    {
+        $value = env('NATIVEPHP_BIN_BRANCH');
+        $value = is_string($value) ? trim($value, " \t/") : '';
+
+        return $value === '' ? 'main' : $value;
+    }
+
+    /**
+     * Split NATIVEPHP_BIN_BRANCH into the branch and the release.
+     *
+     * Only the last segment can name a release, so `main/4.2.0-rc.1` is
+     * main's 4.2.0-rc.1, and anything that doesn't end in a prerelease is a
+     * branch of the pinned release, as it always was.
+     *
+     * @return array{branch: string, release: string}
+     */
+    private static function parse(): array
+    {
+        $selection = self::selection();
+        $slash = strrpos($selection, '/');
+        $last = $slash === false ? $selection : substr($selection, $slash + 1);
+
+        if (preg_match(self::PRERELEASE, $last) !== 1) {
+            return ['branch' => $selection, 'release' => self::VERSION];
+        }
+
+        return [
+            'branch' => $slash === false ? 'main' : substr($selection, 0, $slash),
+            'release' => $last,
+        ];
     }
 
     /**
@@ -76,9 +147,36 @@ class PhpBinaries
      * directories and let a branch named `feat` collide with the parent of
      * `feat/anything`. Encoding the separator keeps it to one directory per
      * branch.
+     *
+     * A prerelease gets its own directory too, `main-4.2.0-rc.1`, so forcing
+     * a fresh download of it never clears main's archives, or the other way
+     * round.
      */
     public static function branchSegment(): string
     {
-        return preg_replace('/[^A-Za-z0-9._-]+/', '-', self::branch()) ?: 'main';
+        $source = self::isPrerelease() ? self::branch().'/'.self::release() : self::branch();
+
+        return preg_replace('/[^A-Za-z0-9._-]+/', '-', $source) ?: 'main';
+    }
+
+    /**
+     * The wire format this package's native readers expect.
+     *
+     * Read from the Kotlin reader's source, the same way FormatVersionSyncTest
+     * does. The Swift reader has to agree with it, and that test fails the
+     * build when it doesn't. Null when it can't be found, so a moved file
+     * costs the check that uses this rather than the install.
+     */
+    public static function readerFormatVersion(): ?int
+    {
+        $source = @file_get_contents(
+            dirname(__DIR__, 2).'/resources/androidstudio/app/src/main/java/com/nativephp/mobile/ui/nativerender/NativeElementBridge.kt'
+        );
+
+        if ($source === false || preg_match_all('/\bEXPECTED_FORMAT_VERSION\s*=\s*(\d+)/', $source, $matches) !== 1) {
+            return null;
+        }
+
+        return (int) $matches[1][0];
     }
 }

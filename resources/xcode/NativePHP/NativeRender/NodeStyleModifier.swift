@@ -187,8 +187,14 @@ struct NodeStyleModifier: ViewModifier {
 
         // Both shapes are Insettable, so the border keeps drawing INSIDE the
         // bounds via strokeBorder — plain `stroke` would straddle the edge and
-        // shift every existing border by half its width.
-        if let radii = cornerRadii {
+        // shift every existing border by half its width. Dashed, dotted and
+        // per-side borders draw inside the bounds the same way (see NodeBorder).
+        if let border = NodeBorder(props: props, width: width, radius: radius, radii: cornerRadii) {
+            NodeBorderShape(border: border)
+                .fill(color)
+                .opacity(width > 0 ? 1 : 0)
+                .allowsHitTesting(false)
+        } else if let radii = cornerRadii {
             UnevenRoundedRectangle(cornerRadii: radii)
                 .strokeBorder(color, lineWidth: width)
                 .opacity(width > 0 ? 1 : 0)

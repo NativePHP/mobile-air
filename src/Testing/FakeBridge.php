@@ -83,6 +83,13 @@ class FakeBridge implements GatedBridge
 
     public int $shutdownCount = 0;
 
+    /**
+     * Events queueEvent() posted for the next waits.
+     *
+     * @var list<array<string, mixed>>
+     */
+    protected array $queuedEvents = [];
+
     // ── Binding ─────────────────────────────────────
 
     /**
@@ -172,16 +179,31 @@ class FakeBridge implements GatedBridge
 
     /**
      * The runloop never blocks under test — the harness dispatches events
-     * directly — so a wait always behaves as an instant idle tick.
+     * directly — so a wait returns an event queued with queueEvent(), or
+     * behaves as an instant idle tick.
      */
     public function elementWaitEvent(int $timeoutMs): ?array
     {
-        return null;
+        return array_shift($this->queuedEvents);
+    }
+
+    /**
+     * Queue an event for the next wait, as the native side posts one. A reset
+     * drops it, as the C bridge's does.
+     *
+     * @param  array<string, mixed>  $event
+     */
+    public function queueEvent(array $event): static
+    {
+        $this->queuedEvents[] = $event;
+
+        return $this;
     }
 
     public function elementReset(): void
     {
         $this->resetCount++;
+        $this->queuedEvents = [];
     }
 
     public function elementShutdown(): void

@@ -117,7 +117,8 @@ final class FormatVersionSyncTest extends TestCase
      */
     private function publishedFormatVersion(): int
     {
-        $url = PhpBinaries::manifestUrl();
+        // Main's pinned release, whatever NATIVEPHP_BIN_BRANCH is set to here.
+        $url = PhpBinaries::manifestUrl('main', PhpBinaries::VERSION);
         $manifest = json_decode($this->fetchManifest($url), true);
 
         if (! is_array($manifest)) {

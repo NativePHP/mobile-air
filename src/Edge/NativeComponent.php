@@ -2755,7 +2755,7 @@ abstract class NativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event($this->nextEventTimeout());
+            $event = $this->nativeRouter?->takeCarriedEvent() ?? nativephp_element_wait_event($this->nextEventTimeout());
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —

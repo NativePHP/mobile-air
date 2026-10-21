@@ -312,7 +312,7 @@ struct NativeRootStackRenderer: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                NativeIconView(icon, pointSize: 17)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     // Explicit dim: the hard-set foregroundColor above keeps
@@ -341,7 +341,11 @@ struct NativeRootStackRenderer: View {
                             }
                         } label: {
                             if !itemIcon.isEmpty {
-                                Label(itemLabel, systemImage: getIconForName(itemIcon))
+                                Label {
+                                    Text(itemLabel)
+                                } icon: {
+                                    NativeIcon.image(itemIcon)
+                                }
                             } else {
                                 Text(itemLabel)
                             }
@@ -349,7 +353,7 @@ struct NativeRootStackRenderer: View {
                         .disabled(item.props.getBool("disabled"))
                         // SwiftUI's Menu won't propagate `.foregroundStyle(.red)`
                         // applied inside the Button label down to the Label's
-                        // systemImage — the icon stays on the menu's accent color
+                        // icon — it stays on the menu's accent color
                         // even with `Button(role: .destructive)`. Applying `.tint`
                         // on the Button itself is the path Menu actually honors;
                         // both the text and the symbol then render in the tint.
@@ -357,7 +361,7 @@ struct NativeRootStackRenderer: View {
                     }
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                NativeIconView(icon, pointSize: 17)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     .opacity(disabled ? 0.4 : 1)

@@ -227,7 +227,7 @@ struct NativeRootTabsRenderer: View {
                     }
                 }()
 
-                Tab(label, systemImage: getIconForName(icon), value: tabId) {
+                Tab(label, nativeIcon: icon, value: tabId) {
                     PerTabContent(
                         coordinator: coord,
                         hasNavBar: hasNavBar,
@@ -250,7 +250,7 @@ struct NativeRootTabsRenderer: View {
                 let searchTab = tabs[searchIdx]
                 let searchLabel = searchTab.props.getString("label", default: "Search")
                 let searchIcon = searchTab.props.getString("icon", default: "magnifyingglass")
-                Tab(searchLabel, systemImage: getIconForName(searchIcon), value: searchId, role: .search) {
+                Tab(searchLabel, nativeIcon: searchIcon, value: searchId, role: .search) {
                     SearchTabContainer(
                         placeholder: searchPlaceholder,
                         itemNodes: searchItemNodes,
@@ -678,7 +678,7 @@ private struct TabsActionView: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                NativeIconView(icon, pointSize: 17)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     // Explicit dim: the hard-set foregroundColor above keeps
@@ -706,7 +706,11 @@ private struct TabsActionView: View {
                             }
                         } label: {
                             if !itemIcon.isEmpty {
-                                Label(itemLabel, systemImage: getIconForName(itemIcon))
+                                Label {
+                                    Text(itemLabel)
+                                } icon: {
+                                    NativeIcon.image(itemIcon)
+                                }
                             } else {
                                 Text(itemLabel)
                             }
@@ -714,12 +718,12 @@ private struct TabsActionView: View {
                         .disabled(item.props.getBool("disabled"))
                         // See NativeRootStackRenderer.swift for the rationale —
                         // .tint on the Button is what SwiftUI's Menu actually
-                        // routes to the Label's systemImage in destructive rows.
+                        // routes to the Label's icon in destructive rows.
                         .tint(isDestructive ? .red : nil)
                     }
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                NativeIconView(icon, pointSize: 17)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     .opacity(disabled ? 0.4 : 1)
@@ -1225,9 +1229,11 @@ private struct ObjectResultRow: View {
                 // an SF Symbol) get mapped to their SF equivalent.
                 // Using the raw name with `Image(systemName:)` for an
                 // unknown symbol leaves a 24pt empty gap on the left —
-                // that's what the visible padding was.
+                // that's what the visible padding was. NativeIconView
+                // also draws `custom:` icons, scaled with the body text
+                // like the symbols.
                 if let leading, !leading.isEmpty {
-                    Image(systemName: getIconForName(leading))
+                    NativeIconView(leading, pointSize: 17, relativeTo: .body)
                         .foregroundStyle(.secondary)
                         .frame(width: 24)
                 }
@@ -1242,7 +1248,7 @@ private struct ObjectResultRow: View {
                 }
                 Spacer(minLength: 0)
                 if let trailing, !trailing.isEmpty {
-                    Image(systemName: getIconForName(trailing))
+                    NativeIconView(trailing, pointSize: 17, relativeTo: .body)
                         .foregroundStyle(.tertiary)
                 }
             }
