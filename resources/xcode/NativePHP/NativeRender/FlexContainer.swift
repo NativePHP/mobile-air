@@ -306,7 +306,15 @@ struct FlexContainer: Layout {
         //   - flex_grow > 0       → 0 (Tailwind `flex-1` = `1 1 0%`)
         //   - otherwise           → natural main size from .unspecified measure
         var totalMain: CGFloat = 0
-        var maxCross: CGFloat = 0
+        // Each child's cross size plus margins, from its latest measurement.
+        // Phase B and B2 overwrite a child's entry when they re-measure it,
+        // and the container's cross size is the largest entry at the end.
+        // Taking a running max instead kept the Phase A size of a flexed
+        // child, and under an indefinite cross that's an `.unspecified`
+        // measure: a fit image's natural size. A flex-1 column holding a
+        // 2400x1600 photo made its list row 1,600pt tall while the photo was
+        // drawn 212pt tall at the column's real width.
+        var childCrosses = [CGFloat](repeating: 0, count: subviews.count)
         var hypotheticalMains = [Int: CGFloat]()
         var totalGrow: CGFloat = 0
         var totalShrink: CGFloat = 0
@@ -339,7 +347,7 @@ struct FlexContainer: Layout {
             totalMain += childMain + mainMargin(info)
             totalGrow += grow
             totalShrink += info.flexShrink
-            maxCross = max(maxCross, crossSize(ideal) + crossMargin(info))
+            childCrosses[i] = crossSize(ideal) + crossMargin(info)
         }
 
         let gaps = gap * CGFloat(max(0, cache.flowIndices.count - 1))
@@ -378,12 +386,7 @@ struct FlexContainer: Layout {
                     }
                     let measured = subviews[i].sizeThatFits(proposal)
                     cache.childInfos[i].idealSize = measured
-                    // maxCross was tracking Phase A measurements — replace this
-                    // child's contribution with the new (constrained) one.
-                    let newCross = crossSize(measured) + crossMargin(info)
-                    if newCross > maxCross {
-                        maxCross = newCross
-                    }
+                    childCrosses[i] = crossSize(measured) + crossMargin(info)
                 }
             }
         }
@@ -440,10 +443,7 @@ struct FlexContainer: Layout {
                     }
                     let measured = subviews[i].sizeThatFits(proposal)
                     cache.childInfos[i].idealSize = measured
-                    let newCross = crossSize(measured) + crossMargin(info)
-                    if newCross > maxCross {
-                        maxCross = newCross
-                    }
+                    childCrosses[i] = crossSize(measured) + crossMargin(info)
                 }
 
                 // Recompute from the shrunk values so `finalMain` below reports
@@ -472,7 +472,7 @@ struct FlexContainer: Layout {
         if proposedCross.isFinite {
             finalCross = proposedCross
         } else {
-            finalCross = maxCross
+            finalCross = cache.flowIndices.reduce(0) { max($0, childCrosses[$1]) }
         }
 
         let result = makeSize(main: finalMain, cross: finalCross)
