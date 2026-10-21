@@ -239,6 +239,16 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
                 pendingDeepLink = null
 
+                // Async task lane (AsyncTask::dispatch()). Started BEFORE the first
+                // route runs, not with the deferred queue worker below: a screen may
+                // dispatch while it mounts, and a dispatch with no executor fails.
+                // Pool threads boot their PHP context lazily on first task, so this
+                // costs nothing until work is dispatched.
+                if (!isFinishing && !isDestroyed &&
+                    phpBridge.isPersistentMode() && asyncExecutor == null) {
+                    asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+                }
+
                 when (BootPlanner.plan(this, target)) {
                     BootPlanner.Entry.NATIVE_DIRECT -> {
                         // Direct JNI dispatch into the native runloop — the WebView
@@ -267,14 +277,6 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         phpBridge.isPersistentMode() && queueWorker == null) {
                         Log.d("MainActivity", "▶️ Starting deferred background queue worker")
                         queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
-                    }
-
-                    // Async task lane (AsyncTask::dispatch()). Pool threads boot
-                    // their PHP context lazily on first task, so starting the
-                    // executor now costs nothing until work is dispatched.
-                    if (!isFinishing && !isDestroyed &&
-                        phpBridge.isPersistentMode() && asyncExecutor == null) {
-                        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                     }
                 }, WORKER_START_DELAY_MS)
 
