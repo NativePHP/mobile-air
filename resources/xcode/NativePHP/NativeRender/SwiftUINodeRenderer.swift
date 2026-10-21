@@ -336,6 +336,60 @@ struct ResolvedNodeView: View, Equatable {
     }
 
     var body: some View {
+        if Self.drawsLayoutOnly(node) {
+            content
+                .modifier(NodeLayoutModifier(
+                    layout: node.layout,
+                    availableWidth: availableWidth,
+                    availableHeight: availableHeight,
+                    safeAreaTop: safeAreaTop,
+                    safeAreaBottom: safeAreaBottom
+                ))
+        } else {
+            decorated
+        }
+    }
+
+    // MARK: - Leaves with nothing to draw but themselves
+
+    /// Leaf types whose renderers keep no state of their own (only the
+    /// environment and the shared theme), so rebuilding one is invisible.
+    private static let bareLeafTypes: Set<String> = ["text", "icon", "spacer", "divider"]
+
+    /// Props that give one of the modifiers after layout something to do.
+    private static let effectProps = [
+        "dark_bg_color", "gradient_stops", "radius_tl", "glass", "glow_radius", "blur", "dark_opacity",
+        "selectable", "content_transition", "animate-duration", "animate-loop",
+        "translate-x", "translate-y", "scale", "rotate",
+        "translate-x_sv", "translate-y_sv", "scale_sv", "rotate_sv", "opacity_sv",
+        "on_double_tap", "on_press_down", "on_press_up", "press-scale", "press-opacity", "press-translate-y",
+    ]
+
+    /// Whether a node needs nothing after its layout. The full chain in
+    /// `decorated` is about twenty modifiers per node (background, clip,
+    /// glass, border, shadow, glow, blur and opacity among them), built
+    /// whether they draw anything or not. A list builds them for every node of
+    /// a row as it scrolls in, and on an iPhone 16 Pro that was most of the
+    /// time a trace put down to FlexContainer measuring rows: SwiftUI makes a
+    /// node's views the first time its parent measures it.
+    ///
+    /// Only leaves take the short path. Moving a node from one branch of
+    /// `body` to the other rebuilds everything under it, so a container that
+    /// gained a background would drop its children's state (a focused field,
+    /// an image loading). A text or icon has nothing to lose.
+    static func drawsLayoutOnly(_ node: NativeUINode) -> Bool {
+        guard bareLeafTypes.contains(node.type) else { return false }
+        if node.onPress != 0 || node.onLongPress != 0 { return false }
+        if node.layout?.display == Display.none { return false }
+        if let s = node.style, s.bgColor != 0 || s.borderRadius > 0 || s.borderWidth > 0 || s.elevation > 0 || s.opacity != 1 {
+            return false
+        }
+        let props = node.props
+        return !effectProps.contains { props.has($0) }
+    }
+
+    @ViewBuilder
+    private var decorated: some View {
         content
             .modifier(NodeLayoutModifier(
                 layout: node.layout,
