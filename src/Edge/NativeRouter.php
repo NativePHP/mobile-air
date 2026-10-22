@@ -2,6 +2,10 @@
 
 namespace Native\Mobile\Edge;
 
+use Illuminate\Http\Request;
+use Illuminate\Routing\Route as IlluminateRoute;
+use Native\Mobile\Events\Async\AsyncTaskFailed;
+use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -30,12 +34,39 @@ class NativeRouter
      */
     protected const SCREEN_INTENT_TTL = 60;
 
+    /** Memoized once per process; see debugLoggingEnabled(). */
+    private static ?bool $debugLogging = null;
+
+    /**
+     * Whether the edge-nav log is being written.
+     *
+     * This log is a development aid, but the runloop calls debugLog() at least
+     * twice per tick — and a screen with `native:poll="1ms"` ticks up to 1000
+     * times a second. Left on, that is an unbounded append-only file growing
+     * by ~110 bytes a frame (megabytes per minute on a polling screen) plus an
+     * open/write/close syscall in the middle of every frame. So it follows
+     * APP_DEBUG: on while you're developing, off in a release build.
+     *
+     * Hot-path callers should check this before building their message, so the
+     * sprintf() is skipped too — not just the write.
+     */
+    public static function debugLoggingEnabled(): bool
+    {
+        return static::$debugLogging ??= function_exists('config')
+            ? (bool) config('app.debug', false)
+            : false;
+    }
+
     /**
      * File-based debug logging — error_log() doesn't reach Android logcat,
      * so we write to a file on device instead.
      */
     public static function debugLog(string $msg): void
     {
+        if (! static::debugLoggingEnabled()) {
+            return;
+        }
+
         $logPath = function_exists('storage_path')
             ? storage_path('logs/edge-nav.log')
             : sys_get_temp_dir().'/edge-nav.log';
@@ -84,9 +115,10 @@ class NativeRouter
      * URI → component class registry.
      * Populated by Route::native() calls.
      *
-     * Each entry: ['class' => string, 'layout' => ?string]
+     * Each entry retains the actual Illuminate route so native navigation and
+     * HTTP routing share matching, constraints, decoding, and route binders.
      *
-     * @var array<string, array{class: string, layout: ?string}>
+     * @var array<string, array{class: string, layout: ?string, route: IlluminateRoute}>
      */
     protected static array $routes = [];
 
@@ -112,10 +144,24 @@ class NativeRouter
     protected ?Transition $deferredTransition = null;
 
     /**
+     * Async completions kept from the reset in flushDeferredTransition(), for
+     * the runloop of the screen that's showing to handle next.
+     *
+     * @var list<array<string, mixed>>
+     */
+    protected array $carriedEvents = [];
+
+    /**
      * Flush the deferred transition — resets buffers and signals the
      * transition type to Kotlin. Called just before the first publish()
      * of a new component so the old tree stays visible until the new
      * one is ready.
+     *
+     * The reset drops every queued event, which is right for taps on the
+     * screen going away. But a task the new screen dispatched from mount()
+     * can finish before that first frame, and its completion would be
+     * dropped with them. Its timeout is disarmed once it finishes, so the
+     * screen would wait for it forever. Those completions are kept.
      */
     public function flushDeferredTransition(): void
     {
@@ -126,18 +172,67 @@ class NativeRouter
         $t = $this->deferredTransition;
         $this->deferredTransition = null;
 
+        $this->carriedEvents = [...$this->carriedEvents, ...static::takeAsyncCompletions()];
+
         static::signalTransition($t);
         static::resetBuffers();
     }
 
+    /**
+     * The next async completion kept from a transition reset, if any.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function takeCarriedEvent(): ?array
+    {
+        return array_shift($this->carriedEvents);
+    }
+
+    /**
+     * Drain the event queue, keeping only async task completions. Each carries
+     * its task id, and NativeComponent checks which screen dispatched it, so
+     * handing it to the next runloop can't wake the wrong screen.
+     *
+     * @return list<array<string, mixed>>
+     */
+    protected static function takeAsyncCompletions(): array
+    {
+        $completions = [];
+
+        while (($event = nativephp_element_wait_event(0)) !== null) {
+            $name = (string) ($event['event'] ?? '');
+            $name = str_starts_with($name, 'native:') ? substr($name, 7) : $name;
+
+            if (($event['type'] ?? null) === NativeComponent::EVENT_NATIVE
+                && ($name === AsyncTaskFinished::class || $name === AsyncTaskFailed::class)) {
+                $completions[] = $event;
+            }
+        }
+
+        return $completions;
+    }
+
     // ── Static registry ─────────────────────────────
 
-    public static function register(string $uri, string $class, ?string $layout = null): void
+    public static function register(string|IlluminateRoute $uri, string $class, ?string $layout = null): void
     {
-        $pattern = '/'.ltrim($uri, '/');
+        if ($uri instanceof IlluminateRoute) {
+            $route = $uri;
+            $pattern = '/'.ltrim($route->uri(), '/');
+        } else {
+            $pattern = '/'.ltrim($uri, '/');
+            $route = new IlluminateRoute(['GET'], ltrim($pattern, '/'), fn () => null);
+
+            if (function_exists('app') && app()->bound('router')) {
+                $route->setRouter(app('router'));
+                $route->setContainer(app());
+            }
+        }
+
         static::$routes[$pattern] = [
             'class' => $class,
             'layout' => $layout ?? static::$currentGroupLayout,
+            'route' => $route,
         ];
     }
 
@@ -176,40 +271,71 @@ class NativeRouter
 
     public static function resolve(string $uri): ?array
     {
-        $uri = '/'.ltrim($uri, '/');
+        $match = static::matchRoute($uri);
 
-        // Match on the path alone. A query string would otherwise be swallowed
-        // by the last route parameter — "/docs/{page}?utm_source=x" matched with
-        // page = "installation?utm_source=x", so a tagged link resolved to a
-        // screen that then found nothing. Tagged links are the common case for
-        // anything shared publicly.
-        $uri = explode('?', $uri, 2)[0];
-
-        // Exact match first
-        if (isset(static::$routes[$uri])) {
-            $entry = static::$routes[$uri];
-
-            return [
-                'class' => $entry['class'],
-                'layout' => $entry['layout'] ?? null,
-                'params' => [],
-            ];
+        if ($match === null) {
+            return null;
         }
 
-        // Pattern match with route parameters
-        foreach (static::$routes as $pattern => $entry) {
-            $regex = preg_replace('/\{(\w+)\}/', '(?P<$1>[^/]+)', $pattern);
-            $regex = '#^'.$regex.'$#';
+        $entry = $match['entry'];
+        $route = clone $match['route'];
+        $route->bind($match['request']);
 
-            if (preg_match($regex, $uri, $matches)) {
-                $params = array_filter($matches, fn ($key) => is_string($key), ARRAY_FILTER_USE_KEY);
+        if (function_exists('app') && app()->bound('router')) {
+            $router = app('router');
+            $router->substituteBindings($route);
+            ComponentRouteBinder::resolve($route, $entry['class']);
+        }
 
-                return [
-                    'class' => $entry['class'],
-                    'layout' => $entry['layout'] ?? null,
-                    'params' => $params,
-                ];
+        return [
+            'class' => $entry['class'],
+            'layout' => $entry['layout'] ?? null,
+            'params' => $route->parametersWithoutNulls(),
+            'route' => $route,
+        ];
+    }
+
+    /**
+     * Match a registered route without binding its parameters.
+     *
+     * @return array{entry: array, route: IlluminateRoute, request: Request}|null
+     */
+    private static function matchRoute(string $uri): ?array
+    {
+        $request = Request::create('/'.ltrim($uri, '/'), 'GET');
+
+        $literalRoutes = [];
+        $parameterizedRoutes = [];
+
+        foreach (static::$routes as $entry) {
+            if ($entry['route']->parameterNames() === []) {
+                $literalRoutes[] = $entry;
+            } else {
+                $parameterizedRoutes[] = $entry;
             }
+        }
+
+        foreach ([...$literalRoutes, ...$parameterizedRoutes] as $entry) {
+            $registeredRoute = $entry['route'];
+
+            if (function_exists('app') && app()->bound('router')) {
+                $registeredRoute->setRouter(app('router'));
+                $registeredRoute->setContainer(app());
+            }
+
+            // Match the registered route so its compiled pattern is retained
+            // across this long-lived process. Binding happens only in
+            // resolve(); predicates such as isNativeRoute() stay side-effect
+            // free and cannot trigger model lookups.
+            if (! $registeredRoute->matches($request)) {
+                continue;
+            }
+
+            return [
+                'entry' => $entry,
+                'route' => $registeredRoute,
+                'request' => $request,
+            ];
         }
 
         return null;
@@ -217,7 +343,11 @@ class NativeRouter
 
     public static function isNativeRoute(string $uri): bool
     {
-        return static::resolve($uri) !== null;
+        try {
+            return static::matchRoute($uri) !== null;
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -344,12 +474,12 @@ class NativeRouter
                 continue;
             }
 
-            $resolved = static::resolve($uri);
-            if ($resolved === null) {
-                continue;
-            }
-
             try {
+                $resolved = static::resolve($uri);
+                if ($resolved === null) {
+                    continue;
+                }
+
                 $component = $this->createComponent(
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
@@ -357,7 +487,7 @@ class NativeRouter
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
                 }
-                $component->mount();
+                $component->mountComponent();
             } catch (\Throwable $e) {
                 static::debugLog("preloadStack: skipped $uri — ".$e->getMessage());
 
@@ -420,6 +550,7 @@ class NativeRouter
     protected function loop(): ?string
     {
         $freshPush = true;
+        $reenterCurrentScreen = false;
 
         while (! empty($this->stack)) {
             $entry = &$this->stack[count($this->stack) - 1];
@@ -427,15 +558,23 @@ class NativeRouter
 
             static::debugLog('loop: top, component='.get_class($component).' freshPush='.($freshPush ? 'Y' : 'N').' stack='.count($this->stack));
 
+            // This component is what's driving the screen from here until its
+            // runLoop() returns — including mount()/onResume(), which run before
+            // runLoop() gets to mark itself. "Start loading when the screen
+            // opens" is the canonical async dispatch and it lives in mount(), so
+            // without this the task would scope to the screen being replaced and
+            // its completion (and its timeout) would be dropped as off-screen.
+            $previousActiveComponent = NativeComponent::markActive($component);
+
             try {
                 if ($freshPush) {
                     // For #[Lazy] screens, paint the placeholder before the
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
-                    $component->mount();
+                    $component->mountComponent();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
-                } else {
+                } elseif (! $reenterCurrentScreen) {
                     static::debugLog('loop: calling onResume() on '.get_class($component));
                     $component->onResume();
                     $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
@@ -447,9 +586,13 @@ class NativeRouter
                 $component->renderErrorScreen($e);
             }
 
+            $reenterCurrentScreen = false;
+
             static::debugLog('loop: entering runLoop() on '.get_class($component));
             $component->runLoop();
             static::debugLog('loop: runLoop() returned on '.get_class($component));
+
+            NativeComponent::restoreActive($previousActiveComponent);
 
             $intent = $component->getNavigationIntent();
 
@@ -477,7 +620,16 @@ class NativeRouter
             switch ($intent->type) {
                 case NavigationIntent::NAVIGATE:
                     static::debugLog("NAVIGATE: resolving uri={$intent->uri}");
-                    $resolved = static::resolve($intent->uri);
+                    try {
+                        $resolved = static::resolve($intent->uri);
+                    } catch (\Throwable $e) {
+                        static::debugLog('NAVIGATE binding FAILED: '.$e->getMessage()."\n".$e->getTraceAsString());
+                        $component->renderErrorScreen($e);
+                        $freshPush = false;
+                        $reenterCurrentScreen = true;
+
+                        break;
+                    }
 
                     if ($resolved === null) {
                         static::debugLog('NAVIGATE: unresolved, exiting to web');
@@ -528,7 +680,16 @@ class NativeRouter
 
                 case NavigationIntent::REPLACE:
                     static::debugLog("REPLACE: resolving uri={$intent->uri}");
-                    $resolved = static::resolve($intent->uri);
+                    try {
+                        $resolved = static::resolve($intent->uri);
+                    } catch (\Throwable $e) {
+                        static::debugLog('REPLACE binding FAILED: '.$e->getMessage()."\n".$e->getTraceAsString());
+                        $component->renderErrorScreen($e);
+                        $freshPush = false;
+                        $reenterCurrentScreen = true;
+
+                        break;
+                    }
 
                     if ($resolved === null) {
                         static::debugLog('REPLACE: unresolved, exiting to web');

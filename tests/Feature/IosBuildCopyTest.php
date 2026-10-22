@@ -386,6 +386,39 @@ class IosBuildCopyTest extends TestCase
         $this->assertFileExists($appPath.'composer.json');
     }
 
+    /**
+     * auth.json holds Composer credentials. It has to reach the copied tree
+     * in case composer install fetches a private package there, and it must
+     * be gone again before the tree is zipped into the app.
+     */
+    public function test_composer_auth_json_survives_copy_but_not_cleanup(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Behavioral rsync test requires a Unix-like OS.');
+        }
+
+        $source = $this->testProjectPath.'/app-source/';
+        $this->createDirectoryStructure($source, [
+            'auth.json' => '{"http-basic":{"repo.example.com":{"username":"u","password":"p"}}}',
+            'composer.json' => '{"name":"app"}',
+            'config' => ['auth.json' => '{}'],
+        ]);
+
+        $destination = $this->testProjectPath.'/bundle';
+
+        BundleFileManager::copy($source, $destination);
+
+        $this->assertFileExists($destination.'/auth.json');
+
+        BundleFileManager::removeUnnecessaryFiles($destination);
+
+        $this->assertFileDoesNotExist($destination.'/auth.json');
+        $this->assertFileExists($destination.'/composer.json');
+
+        // Only the project-root file is Composer's; same-named app files stay.
+        $this->assertFileExists($destination.'/config/auth.json');
+    }
+
     public function test_remove_handles_missing_directories_gracefully(): void
     {
         $appPath = $this->testProjectPath.'/nativephp/ios/laravel/';

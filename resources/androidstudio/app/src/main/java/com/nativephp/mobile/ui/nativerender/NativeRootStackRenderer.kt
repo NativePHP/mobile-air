@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.exclude
@@ -22,6 +23,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -47,11 +51,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.nativephp.mobile.ui.MaterialIcon
 
 /**
@@ -98,6 +104,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val title = activeNode.props.getString("title", "")
     val subtitle = activeNode.props.getString("subtitle", "")
     val showBack = activeNode.props.getBool("back")
+    val reservesNavigationBarSlot = NativeRootHostRegistry.reservesNavigationBarSlot(activeNode)
     val bgArgb = activeNode.props.getColor("background_color", 0)
     val textArgb = activeNode.props.getColor("text_color", 0)
     val hasExplicitBg = bgArgb != 0
@@ -237,6 +244,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     modifier = if (rtl) Modifier.scale(scaleX = -1f, scaleY = 1f) else Modifier
                 )
             }
+        } else if (reservesNavigationBarSlot) {
+            Spacer(modifier = Modifier.width(48.dp))
         }
     }
     val barColors = if (hasExplicitBg) {
@@ -417,20 +426,25 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 @Composable
 internal fun TopBarActionView(action: NativeUINode) {
     val icon = action.props.getString("icon", "more_vert")
+    val disabled = action.props.getBool("disabled")
     val subItems = action.children.filter { it.type == "top_bar_action" }
+    // Screen-reader name: `a11y_label` (NavAction::a11yLabel()), else the visible label.
+    val a11yLabel = action.props.getString("a11y_label").ifEmpty { action.props.getString("label") }
 
     if (subItems.isEmpty()) {
-        IconButton(onClick = {
+        // `enabled=false` swallows the tap and swaps LocalContentColor for
+        // the M3 disabled tone, so the icon greys out on its own.
+        IconButton(enabled = !disabled, onClick = {
             if (action.onPress != 0) {
                 NativeElementBridge.sendPressEvent(action.onPress, action.id)
             }
         }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+            TopBarActionGlyph(action, icon, a11yLabel)
         }
     } else {
         var expanded by remember { mutableStateOf(false) }
-        IconButton(onClick = { expanded = true }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+        IconButton(enabled = !disabled, onClick = { expanded = true }) {
+            TopBarActionGlyph(action, icon, a11yLabel)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             subItems.forEach { item ->
@@ -444,6 +458,7 @@ internal fun TopBarActionView(action: NativeUINode) {
                 val isDestructive = item.props.getBool("destructive")
                 val destructiveColor = MaterialTheme.colorScheme.error
                 DropdownMenuItem(
+                    enabled = !item.props.getBool("disabled"),
                     text = {
                         Text(
                             itemLabel,
@@ -460,11 +475,11 @@ internal fun TopBarActionView(action: NativeUINode) {
                             if (isDestructive) {
                                 MaterialIcon(
                                     name = itemIcon,
-                                    contentDescription = itemLabel,
+                                    contentDescription = null,
                                     tint = destructiveColor,
                                 )
                             } else {
-                                MaterialIcon(name = itemIcon, contentDescription = itemLabel)
+                                MaterialIcon(name = itemIcon, contentDescription = null)
                             }
                         }
                     } else null,
@@ -477,5 +492,34 @@ internal fun TopBarActionView(action: NativeUINode) {
                 )
             }
         }
+    }
+}
+
+/**
+ * The action's icon, or its `image` (e.g. the signed-in user's avatar) as a
+ * small circle when one is set. The icon is drawn first and the image laid
+ * over it, so the icon stays visible while the image loads and if it fails.
+ * Disabled actions fade the image like M3 fades the icon.
+ */
+@Composable
+internal fun TopBarActionGlyph(action: NativeUINode, icon: String, label: String) {
+    val image = action.props.getString("image", "")
+
+    if (image.isEmpty()) {
+        MaterialIcon(name = icon, contentDescription = label)
+        return
+    }
+
+    Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+        MaterialIcon(name = icon, contentDescription = null)
+        AsyncImage(
+            model = image,
+            contentDescription = label,
+            contentScale = ContentScale.Crop,
+            alpha = if (action.props.getBool("disabled")) 0.38f else 1f,
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape),
+        )
     }
 }

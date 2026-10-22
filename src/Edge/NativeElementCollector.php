@@ -11,6 +11,7 @@ use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
+use Native\Mobile\Edge\Exceptions\UnknownElementException;
 
 class NativeElementCollector
 {
@@ -57,6 +58,17 @@ class NativeElementCollector
         'column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas',
         'spacer', 'divider', 'bottom_bar', 'virtual_list',
         'text', 'button', 'webview',
+    ];
+
+    /**
+     * Wire prop for each side's border width, keyed to the TailwindParser
+     * attribute that sets it. Clockwise from the top, as the renderers walk them.
+     */
+    protected const BORDER_SIDES = [
+        'border_t' => 'borderTopWidth',
+        'border_r' => 'borderRightWidth',
+        'border_b' => 'borderBottomWidth',
+        'border_l' => 'borderLeftWidth',
     ];
 
     /**
@@ -358,7 +370,9 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildBorderProps($attrs)
+                + static::buildAnimationProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -393,7 +407,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -407,7 +421,9 @@ class NativeElementCollector
             $props = $element->getResolvedProps(static::$callbacks);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
-                + static::buildCornerRadiusProps($attrs);
+                + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -453,7 +469,9 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildBorderProps($attrs)
+                + static::buildAnimationProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -483,7 +501,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -497,7 +515,9 @@ class NativeElementCollector
             $props = $element->getResolvedProps(static::$callbacks);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
-                + static::buildCornerRadiusProps($attrs);
+                + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -627,6 +647,14 @@ class NativeElementCollector
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
         }
+        if (isset($attrs['display'])) {
+            $layout['display'] = (int) $attrs['display'];
+        }
+        // The `hidden` attribute (`<native:column hidden>`, `:hidden="$x"`)
+        // wins over any display class, like the HTML attribute it mirrors.
+        if (! empty($attrs['hidden'])) {
+            $layout['display'] = 1;
+        }
         if (isset($attrs['alignSelf']) && ($alignSelf = AlignSelf::parse($attrs['alignSelf'])) !== null) {
             $layout['align_self'] = $alignSelf;
         }
@@ -663,8 +691,8 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $style['border_radius'] = (float) $attrs['borderRadius'];
         }
-        if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
-            $style['border_width'] = (float) $attrs['borderWidth'];
+        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
+            $style['border_width'] = $borderWidth;
             $style['border_color'] = $attrs['borderColor'];
         }
         if (isset($attrs['opacity'])) {
@@ -850,6 +878,166 @@ class NativeElementCollector
         }
 
         return $props;
+    }
+
+    /**
+     * Border style and per-side border widths (`border-dashed`, `border-l`,
+     * `border-y-2`, …), on the prop bag beside the corner radii: the packed
+     * node carries one `border_width` float and no style.
+     *
+     * `border_style` is 0 solid, 1 dashed, 2 dotted, and is emitted whenever
+     * one was authored, solid included, so `md:border-solid` can undo a
+     * dashed base. The sides follow buildCornerRadiusProps: all four
+     * whenever ANY is authored, each resolved against the uniform `border-*`
+     * width (0 when there is none), so `border-l` alone is a left border
+     * and `border border-l-0` is a box missing its left side.
+     *
+     * @return array{border_style?: int, border_t?: float, border_r?: float, border_b?: float, border_l?: float}
+     */
+    public static function buildBorderProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['borderStyle'])) {
+            $props['border_style'] = (int) $attrs['borderStyle'];
+        }
+
+        if (! TailwindParser::hasSideBorderWidth($attrs)) {
+            return $props;
+        }
+
+        $uniform = isset($attrs['borderWidth']) ? (float) $attrs['borderWidth'] : 0.0;
+
+        foreach (self::BORDER_SIDES as $prop => $attr) {
+            $props[$prop] = isset($attrs[$attr]) ? (float) $attrs[$attr] : $uniform;
+        }
+
+        return $props;
+    }
+
+    /**
+     * The `border_width` the style block carries: the uniform width, or the
+     * widest side when sides were authored. Renderers that read the sides
+     * from buildBorderProps only use it to tell that there is a border;
+     * older ones draw a full border of that width. Null when no width was
+     * authored, which leaves the node without a border.
+     */
+    protected static function borderWidth(array $attrs): ?float
+    {
+        $widths = [];
+
+        foreach (self::BORDER_SIDES as $attr) {
+            if (isset($attrs[$attr])) {
+                $widths[] = (float) $attrs[$attr];
+            } elseif (isset($attrs['borderWidth'])) {
+                $widths[] = (float) $attrs['borderWidth'];
+            }
+        }
+
+        return $widths === [] ? null : max($widths);
+    }
+
+    /**
+     * Responsive variants — the `md:` / `lg:` class buckets — as ONE
+     * `_variants` prop: a JSON list of `{min, layout?, style?, props?}`
+     * entries sorted by min-width. The native NodeView folds them over the
+     * base node cumulatively (base → sm → md → …) at decode time and picks
+     * the widest entry whose min fits the live window width.
+     *
+     * Each entry is the difference between two complete builds of the node:
+     * everything up to the previous breakpoint, and that plus this
+     * breakpoint's classes. Building a breakpoint's classes on their own
+     * gets composite values wrong, because the builders read sibling keys
+     * the breakpoint doesn't carry — `p-4 md:px-8` would ship
+     * `[0, 32, 0, 32]` and lose the vertical padding, `rounded-xl
+     * md:rounded-t-3xl` would square the bottom corners, and `md:border-2`
+     * would vanish for want of a colour. Building through a real element
+     * also means a prefixed class reaches the wire exactly as the
+     * unprefixed class does, element props included (Text tracking, Image
+     * fit, LazyGrid columns).
+     *
+     * @param  \Closure(): ?Element  $make  a fresh element of the node's type
+     */
+    public static function buildVariantProps(array $attrs, \Closure $make): array
+    {
+        if (empty($attrs['variants']) || ! is_array($attrs['variants'])) {
+            return [];
+        }
+
+        $breakpoints = [];
+        foreach ($attrs['variants'] as $name => $inner) {
+            $min = TailwindParser::breakpointMinWidth((string) $name);
+            if ($min !== null && is_array($inner)) {
+                $breakpoints[] = [$min, $inner];
+            }
+        }
+        usort($breakpoints, fn (array $a, array $b) => $a[0] <=> $b[0]);
+
+        $cumulative = $attrs;
+        unset($cumulative['variants']);
+        $previous = static::variantSnapshot($make, $cumulative);
+        if ($previous === null) {
+            return [];
+        }
+
+        $entries = [];
+        foreach ($breakpoints as [$min, $inner]) {
+            $cumulative = TailwindParser::mergeAttributes($cumulative, $inner);
+            $current = static::variantSnapshot($make, $cumulative);
+
+            $entry = ['min' => $min];
+            foreach (['layout', 'style', 'props'] as $part) {
+                $changed = array_filter(
+                    $current[$part],
+                    fn (mixed $value, string $key): bool => ! array_key_exists($key, $previous[$part])
+                        || $previous[$part][$key] !== $value,
+                    ARRAY_FILTER_USE_BOTH,
+                );
+                if ($changed !== []) {
+                    $entry[$part] = $changed;
+                }
+            }
+            if (count($entry) > 1) {
+                $entries[] = $entry;
+            }
+
+            $previous = $current;
+        }
+
+        return $entries === [] ? [] : ['_variants' => json_encode($entries)];
+    }
+
+    /**
+     * The layout / style / props a node of `$make`'s type serializes to
+     * for `$attrs` — the same appliers the element path runs, on a
+     * throwaway element with a throwaway callback registry, so nothing
+     * leaks into the screen's callback ids.
+     *
+     * @return array{layout: array, style: array, props: array}|null
+     */
+    protected static function variantSnapshot(\Closure $make, array $attrs): ?array
+    {
+        $element = $make();
+        if (! $element instanceof Element) {
+            return null;
+        }
+
+        $element->applyAttributes($attrs);
+        static::applyLayout($element, $attrs);
+        static::applyStyle($element, $attrs);
+        static::applyElementProps($element, $attrs);
+        $element->mergeDarkProps(static::buildDarkProps($attrs));
+        foreach (static::buildGradientProps($attrs) + static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+
+        $node = $element->toArray(new CallbackRegistry);
+
+        return [
+            'layout' => $node['layout'] ?? [],
+            'style' => $node['style'] ?? [],
+            'props' => $node['props'] ?? [],
+        ];
     }
 
     /**
@@ -1400,6 +1588,32 @@ class NativeElementCollector
         static::$componentDepth = 0;
     }
 
+    /**
+     * A fresh, unconfigured element for a node type — the builtins plus
+     * anything registered with ElementRegistry — or null when the type is
+     * unknown.
+     */
+    protected static function makeElement(string $type): ?Element
+    {
+        return match ($type) {
+            'column' => Column::make(),
+            'row' => Row::make(),
+            'stack' => Stack::make(),
+            'scroll_view' => ScrollView::make(),
+            'spacer' => Elements\Spacer::make(),
+            'divider' => Elements\Divider::make(),
+            'pressable' => Elements\Pressable::make(),
+            'canvas' => Elements\Canvas::make(),
+            // Inline `<native:bottom-bar>` — bottom-pinned content (chat input,
+            // search bar, …). Hoisted out of the screen tree to the
+            // native-chrome root in NativeComponent::wrapWithNativeChrome and
+            // pinned via `.safeAreaInset(.bottom)` (iOS) / `Scaffold(bottomBar=)`
+            // (Android), which keeps it above the software keyboard natively.
+            'bottom_bar' => Elements\BottomBar::make(),
+            default => ElementRegistry::resolve($type),
+        };
+    }
+
     protected static function createElement(string $type, array $attrs): Element
     {
         // Raw-class capture happens BEFORE parsing consumes the attribute.
@@ -1422,24 +1636,8 @@ class NativeElementCollector
             unset($attrs['native-key'], $attrs['native:key']);
         }
 
-        $element = match ($type) {
-            'column' => Column::make(),
-            'row' => Row::make(),
-            'stack' => Stack::make(),
-            'scroll_view' => ScrollView::make(),
-            'spacer' => Elements\Spacer::make(),
-            'divider' => Elements\Divider::make(),
-            'pressable' => Elements\Pressable::make(),
-            'canvas' => Elements\Canvas::make(),
-            // Inline `<native:bottom-bar>` — bottom-pinned content (chat input,
-            // search bar, …). Hoisted out of the screen tree to the
-            // native-chrome root in NativeComponent::wrapWithNativeChrome and
-            // pinned via `.safeAreaInset(.bottom)` (iOS) / `Scaffold(bottomBar=)`
-            // (Android), which keeps it above the software keyboard natively.
-            'bottom_bar' => Elements\BottomBar::make(),
-            default => ElementRegistry::resolve($type)
-                ?? throw new \RuntimeException("Unknown native element type: {$type}"),
-        };
+        $element = static::makeElement($type)
+            ?? throw UnknownElementException::forType($type);
 
         if ($rawClass !== null) {
             $element->setProp(static::$capturedAttributes['class'], $rawClass);
@@ -1505,8 +1703,15 @@ class NativeElementCollector
         }
 
         // Per-corner radius rides the prop bag for the same reason — the
-        // packed node has only one `border_radius` float.
-        foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
+        // packed node has only one `border_radius` float. Per-side border
+        // widths and the border style likewise.
+        foreach (static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+        // Responsive variants (`md:` / `lg:` classes) ride the prop bag as
+        // one JSON string the native NodeView resolves against the live
+        // window width — the packed node has no room for alternatives.
+        foreach (static::buildVariantProps($attrs, fn () => static::makeElement($type)) as $key => $value) {
             $element->setProp($key, $value);
         }
 
@@ -1555,6 +1760,12 @@ class NativeElementCollector
         }
         if (isset($attrs['flexDirection'])) {
             $element->flexDirection((int) $attrs['flexDirection']);
+        }
+        if (isset($attrs['display'])) {
+            $element->display((int) $attrs['display']);
+        }
+        if (! empty($attrs['hidden'])) {
+            $element->hidden();
         }
         // Padding (uniform + directional from Tailwind classes)
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;
@@ -1659,8 +1870,8 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $element->borderRadius((float) $attrs['borderRadius']);
         }
-        if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
-            $element->border((float) $attrs['borderWidth'], $attrs['borderColor']);
+        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
+            $element->border($borderWidth, $attrs['borderColor']);
         }
         if (isset($attrs['opacity']) && ! ($attrs['opacity'] instanceof SharedValue)) {
             // SharedValue-bound opacity is routed through the prop bag
@@ -1670,6 +1881,33 @@ class NativeElementCollector
         }
         if (isset($attrs['elevation'])) {
             $element->elevation((float) $attrs['elevation']);
+        }
+        // Colored glow halo (`glow-emerald` etc.). Props bag — same path
+        // as glass / dark_bg_color; no NodeStyle binary-layout change.
+        // Defaults match TailwindParser Slice 1 (radius 16, opacity 0.55)
+        // so an EDGE `glowColor` attr alone still produces a visible halo.
+        if (isset($attrs['glowColor'])) {
+            $element->setProp('glow_color', (string) $attrs['glowColor']);
+            $element->setProp(
+                'glow_radius',
+                isset($attrs['glowRadius']) ? (float) $attrs['glowRadius'] : 16.0
+            );
+            $element->setProp(
+                'glow_opacity',
+                isset($attrs['glowOpacity']) ? (float) $attrs['glowOpacity'] : 0.55
+            );
+        } else {
+            if (isset($attrs['glowRadius'])) {
+                $element->setProp('glow_radius', (float) $attrs['glowRadius']);
+            }
+            if (isset($attrs['glowOpacity'])) {
+                $element->setProp('glow_opacity', (float) $attrs['glowOpacity']);
+            }
+        }
+        // Gaussian blur filter (`blur-*` / `blur-[Npx]`). Props bag — same
+        // path as glow; no NodeStyle binary-layout change. Radius in points.
+        if (isset($attrs['blur'])) {
+            $element->setProp('blur', (float) $attrs['blur']);
         }
         // Liquid Glass material (1 = regular, 2 = thick). Stored as a
         // generic prop so the renderer can read it via `props.getInt`
@@ -1742,11 +1980,33 @@ class NativeElementCollector
         if (isset($attrs['_pinchEnd']) && method_exists($element, 'onPinchEnd')) {
             $element->onPinchEnd($attrs['_pinchEnd']);
         }
+        if (isset($attrs['_dragEnd']) && method_exists($element, 'onDragEnd')) {
+            $element->onDragEnd($attrs['_dragEnd']);
+        }
         if (isset($attrs['_navigated']) && method_exists($element, 'onNavigated')) {
             $element->onNavigated($attrs['_navigated']);
         }
         if (isset($attrs['_navigate'])) {
             $element->setNavigateConfig($attrs['_navigate']);
+        }
+
+        static::applyCustomElementEvents($element, $attrs);
+    }
+
+    protected static function applyCustomElementEvents(Element $element, array $attrs): void
+    {
+        foreach (NativeTagPrecompiler::customElementEvents() as $event) {
+            $attr = '_'.$event;
+
+            if (! isset($attrs[$attr])) {
+                continue;
+            }
+
+            $method = 'on'.str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $event)));
+
+            if (method_exists($element, $method)) {
+                $element->{$method}($attrs[$attr]);
+            }
         }
     }
 

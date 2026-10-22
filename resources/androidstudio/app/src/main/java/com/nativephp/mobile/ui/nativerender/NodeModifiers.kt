@@ -17,12 +17,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 
 // MARK: - Linear Gradient
@@ -92,7 +99,7 @@ fun argbToComposeColor(argb: Int): Color {
 
 /**
  * Applies visual style properties from a NativeUINode.
- * Handles background color, corner radius, border, shadow, opacity,
+ * Handles background color, corner radius, border, shadow, glow, blur, opacity,
  * and dark mode overrides from dark_* props.
  */
 /**
@@ -158,10 +165,52 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
     val bgArgb = if (darkBg != 0) darkBg else style.bgColor
     val shape = nodeShape(radius, props)
 
-    // Shadow — must come before background. Compose shadow requires a shape
-    // to cast from; the background provides the visual fill.
+    // Elevation `shadow-*` — must come before background. Compose shadow
+    // requires a shape to cast from; the background provides the visual fill.
     if (style.elevation > 0f) {
         mod = mod.shadow(elevation = style.elevation.dp, shape = shape)
+    }
+
+    // Colored `glow-*` halo (Slice 1). Prefer Compose `dropShadow` (BOM
+    // 2025.12 / Compose 1.10) for a true zero-offset colored blur. If that
+    // API is unavailable on an older toolchain, fall back to elevation
+    // `shadow` with matching ambientColor/spotColor — documented below.
+    val glowArgb = props.getColor("glow_color", 0)
+    val glowRadius = props.getFloat("glow_radius", 0f)
+    val glowOpacity = props.getFloat("glow_opacity", 0f)
+    if (glowArgb != 0 && glowRadius > 0f && glowOpacity > 0f) {
+        val base = argbToComposeColor(glowArgb)
+        // Stack two dropShadows (outer softer / inner denser) to mirror
+        // iOS's double zero-offset `.shadow` stack.
+        val outer = base.copy(alpha = (base.alpha * glowOpacity * 0.55f).coerceIn(0f, 1f))
+        val inner = base.copy(alpha = (base.alpha * glowOpacity).coerceIn(0f, 1f))
+        mod = mod
+            .dropShadow(
+                shape = shape,
+                shadow = Shadow(
+                    radius = glowRadius.dp,
+                    color = outer,
+                    offset = DpOffset.Zero,
+                ),
+            )
+            .dropShadow(
+                shape = shape,
+                shadow = Shadow(
+                    radius = (glowRadius * 0.5f).coerceAtLeast(1f).dp,
+                    color = inner,
+                    offset = DpOffset.Zero,
+                ),
+            )
+        // Fallback (documented): when `dropShadow` is not on the classpath,
+        // replace the block above with elevation-colored shadows —
+        //   mod = mod.shadow(
+        //       elevation = glowRadius.dp,
+        //       shape = shape,
+        //       ambientColor = inner,
+        //       spotColor = inner,
+        //   )
+        // That approximates a colored halo via Material elevation lighting
+        // rather than a true zero-offset blur; prefer dropShadow on BOM 2025.12+.
     }
 
     // Background — a linear gradient wins over the flat color when declared,
@@ -175,8 +224,8 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         if (bgColor != Color.Transparent) {
             mod = mod.background(bgColor, shape)
         }
-    } else if (style.elevation > 0f) {
-        // Shadow needs a background to be visible — add white if none specified
+    } else if (style.elevation > 0f || (glowArgb != 0 && glowRadius > 0f)) {
+        // Elevation / glow needs a background to be visible — add white if none specified
         mod = mod.background(Color.White, shape)
     }
 
@@ -192,9 +241,24 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         if (borderArgb != 0) {
             val borderColor = argbToComposeColor(borderArgb)
             if (borderColor != Color.Transparent) {
-                mod = mod.border(style.borderWidth.dp, borderColor, shape)
+                // Dashed, dotted and per-side borders (see NodeBorder).
+                val border = NodeBorder.from(props, style.borderWidth, radius)
+                mod = if (border != null) {
+                    mod.nodeBorder(border, borderColor)
+                } else {
+                    mod.border(style.borderWidth.dp, borderColor, shape)
+                }
             }
         }
+    }
+
+    // Tailwind `blur-*` — Gaussian softens the node's own pixels (page-bg
+    // orbs). Compose `Modifier.blur` uses RenderEffect and is API 31+ only;
+    // on older devices it is a documented no-op (Compose framework behavior).
+    // Default NativePHP minSdk is 33, so production apps get real blur.
+    val blurRadius = props.getFloat("blur", 0f)
+    if (blurRadius > 0f) {
+        mod = mod.blur(blurRadius.dp)
     }
 
     return mod
@@ -328,19 +392,26 @@ fun Modifier.nodeGestures(
     if (callbackId == 0 && longPressId == 0 && doubleTapId == 0) return mod
 
     val onClickAction: () -> Unit = {
+        KeyboardFocusPolicy.dismissForInteractiveTap()
         if (callbackId != 0) {
             NativeElementBridge.sendPressEvent(callbackId, nodeId)
         }
     }
     val onLongClickAction: (() -> Unit)? = if (longPressId != 0) {
-        { NativeElementBridge.sendLongPressEvent(longPressId, nodeId) }
+        {
+            KeyboardFocusPolicy.dismissForInteractiveTap()
+            NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
+        }
     } else {
         null
     }
     // Double-tap reuses the press event type — the callback id alone routes
     // to the @doubleTap handler on the PHP side.
     val onDoubleClickAction: (() -> Unit)? = if (doubleTapId != 0) {
-        { NativeElementBridge.sendPressEvent(doubleTapId, nodeId) }
+        {
+            KeyboardFocusPolicy.dismissForInteractiveTap()
+            NativeElementBridge.sendPressEvent(doubleTapId, nodeId)
+        }
     } else {
         null
     }
@@ -349,11 +420,21 @@ fun Modifier.nodeGestures(
     // `combinedClickable`.
     val needCombined = onLongClickAction != null || onDoubleClickAction != null
 
+    // A tappable `pressable` is a button to TalkBack, as SwiftUI's Button
+    // is to VoiceOver. The clickable already merges its children's text
+    // into one focusable element.
+    val role = if (NodeAccessibility.isButton(node.type, callbackId != 0, node.props.getBool("has_menu"))) {
+        Role.Button
+    } else {
+        null
+    }
+
     return if (interactionSource != null) {
         if (needCombined) {
             mod.combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
+                role = role,
                 onLongClick = onLongClickAction,
                 onDoubleClick = onDoubleClickAction,
                 onClick = onClickAction,
@@ -362,19 +443,44 @@ fun Modifier.nodeGestures(
             mod.clickable(
                 interactionSource = interactionSource,
                 indication = null,
+                role = role,
                 onClick = onClickAction,
             )
         }
     } else {
         if (needCombined) {
             mod.combinedClickable(
+                role = role,
                 onLongClick = onLongClickAction,
                 onDoubleClick = onDoubleClickAction,
                 onClick = onClickAction,
             )
         } else {
-            mod.clickable(onClick = onClickAction)
+            mod.clickable(role = role, onClick = onClickAction)
         }
     }
+}
+
+// MARK: - Accessibility Modifier
+
+/**
+ * Gives a core container (`pressable`, `column`, `row`, `stack`) with an
+ * `a11y-label` that label as its whole description: TalkBack focuses the
+ * node once and reads the label (plus `a11y-hint`) instead of each child.
+ *
+ * Must sit INSIDE (after) `nodeGestures` in the chain. `clearAndSetSemantics`
+ * clears the semantics of everything inside it, so placed before the
+ * clickable it would drop the click action and button role as well as the
+ * children's text.
+ */
+fun Modifier.nodeAccessibility(node: NativeUINode): Modifier {
+    val description = NodeAccessibility.description(
+        type = node.type,
+        label = node.props.getString("a11y_label"),
+        hint = node.props.getString("a11y_hint"),
+        hasMenu = node.props.getBool("has_menu"),
+    ) ?: return this
+
+    return clearAndSetSemantics { contentDescription = description }
 }
 

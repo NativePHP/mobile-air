@@ -221,9 +221,71 @@ class BuildConfigurationTest extends TestCase
         $this->assertStringContainsString('-keepattributes SourceFile,LineNumberTable', $proguardContent);  // keep_line_numbers=true
     }
 
+    public function test_profileable_build_stays_minified_when_release_minify_is_disabled()
+    {
+        $gradlePath = $this->testProjectPath.'/nativephp/android/app/build.gradle.kts';
+        File::put($gradlePath, $this->gradleWithProfileableBuildType('isMinifyEnabled = REPLACE_MINIFY_ENABLED', 'isMinifyEnabled = true'));
+
+        config(['nativephp.android.build.minify_enabled' => false]);
+
+        $this->testUpdateBuildConfiguration();
+
+        $gradleContent = File::get($gradlePath);
+        $this->assertMatchesRegularExpression('/release \{\s*isMinifyEnabled = false/', $gradleContent);
+        $this->assertMatchesRegularExpression('/create\("profileable"\) \{[^}]*isMinifyEnabled = true/', $gradleContent);
+    }
+
+    public function test_profileable_minify_is_restored_in_previously_rewritten_projects()
+    {
+        // Earlier versions rewrote every isMinifyEnabled, so existing projects have it off in the profileable block
+        $gradlePath = $this->testProjectPath.'/nativephp/android/app/build.gradle.kts';
+        File::put($gradlePath, $this->gradleWithProfileableBuildType('isMinifyEnabled = false', 'isMinifyEnabled = false'));
+
+        config(['nativephp.android.build.minify_enabled' => false]);
+
+        $this->testUpdateBuildConfiguration();
+
+        $gradleContent = File::get($gradlePath);
+        $this->assertMatchesRegularExpression('/release \{\s*isMinifyEnabled = false/', $gradleContent);
+        $this->assertMatchesRegularExpression('/create\("profileable"\) \{[^}]*isMinifyEnabled = true/', $gradleContent);
+    }
+
     /**
      * Helper methods
      */
+    protected function gradleWithProfileableBuildType(string $releaseMinify, string $profileableMinify): string
+    {
+        return 'android {
+    buildTypes {
+        release {
+            '.$releaseMinify.'
+            isShrinkResources = REPLACE_SHRINK_RESOURCES
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+
+            val releaseSigningConfig = signingConfigs.getByName("release")
+            if (releaseSigningConfig.storeFile != null) {
+                signingConfig = releaseSigningConfig
+            }
+
+            ndk {
+                debugSymbolLevel = "REPLACE_DEBUG_SYMBOLS"
+            }
+        }
+        create("profileable") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isProfileable = true
+            '.$profileableMinify.'
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
+    }
+}';
+    }
+
     protected function createAndroidBuildStructure(): void
     {
         $structure = [
@@ -331,6 +393,8 @@ REPLACE_CUSTOM_PROGUARD_RULES',
     protected function updateDeepLinkConfiguration(): void {}
 
     protected function updatePermissions(): void {}
+
+    protected function updateReleaseAudience(): void {}
 
     protected function updateIcuConfiguration(): void {}
 }

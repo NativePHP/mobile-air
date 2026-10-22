@@ -21,6 +21,9 @@ class PhotoTaken
     public function __construct(
         public string $path,
         public string $mimeType = 'image/jpeg',
-        public ?string $id = null
+        public ?string $id = null,
+        public ?string $takenAt = null,
+        public ?float $latitude = null,
+        public ?float $longitude = null
     ) {}
 }

@@ -27,11 +27,15 @@ class NavAction
 
     private ?string $url = null;
 
+    private ?string $image = null;
+
     private ?string $event = null;
 
     private ?string $press = null;
 
     private bool $destructive = false;
+
+    private bool $disabled = false;
 
     /**
      * Marks this action as a visual divider rather than a tappable row.
@@ -72,6 +76,19 @@ class NavAction
         $div->isDivider = true;
 
         return $div;
+    }
+
+    /**
+     * Show a remote image (e.g. the signed-in user's avatar) in a small
+     * circle instead of the icon. The icon still shows while the image
+     * loads and if it fails, so set one too. Empty strings are ignored, so
+     * `->image($user->avatarUrl ?? '')` falls back to the icon cleanly.
+     */
+    public function image(?string $url): self
+    {
+        $this->image = ($url === null || trim($url) === '') ? null : $url;
+
+        return $this;
     }
 
     public function label(string $label): self
@@ -122,6 +139,19 @@ class NavAction
     public function destructive(bool $value = true): self
     {
         $this->destructive = $value;
+
+        return $this;
+    }
+
+    /**
+     * Grey the action out and ignore taps — for actions that are sometimes
+     * unavailable (undo with nothing to undo, save with no changes).
+     * Attributes are reactive, so `->disabled(! $this->canUndo)` updates
+     * live as the screen's state changes.
+     */
+    public function disabled(bool $value = true): self
+    {
+        $this->disabled = $value;
 
         return $this;
     }
@@ -179,11 +209,17 @@ class NavAction
         if ($this->url !== null) {
             $attrs['url'] = $this->url;
         }
+        if ($this->image !== null) {
+            $attrs['image'] = $this->image;
+        }
         if ($this->event !== null) {
             $attrs['event'] = $this->event;
         }
         if ($this->destructive) {
             $attrs['destructive'] = true;
+        }
+        if ($this->disabled) {
+            $attrs['disabled'] = true;
         }
 
         $action->applyAttributes($attrs);
