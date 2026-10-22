@@ -9,6 +9,7 @@ use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
+use Native\Mobile\Http\Bridge\RequestFactory;
 
 class NativeRouter
 {
@@ -269,6 +270,35 @@ class NativeRouter
         static::$currentGroupLayout = null;
     }
 
+    /**
+     * The path a navigation URI addresses, with no query string or fragment,
+     * in the shape a cold launch gets from request()->path().
+     *
+     * Fragments never come from the shells' deep links, but app code can pass
+     * one to navigate(), and it is never part of a route.
+     */
+    public static function pathOf(string $uri): string
+    {
+        $uri = explode('#', $uri, 2)[0];
+
+        return '/'.trim(explode('?', $uri, 2)[0], '/');
+    }
+
+    /**
+     * The query parameters a navigation URI carries, parsed as PHP fills $_GET
+     * for a cold launch. Past max_input_vars the rest are dropped, as they
+     * would be at request startup, instead of throwing.
+     *
+     * @return array<array-key, mixed>
+     */
+    public static function queryOf(string $uri): array
+    {
+        $uri = explode('#', $uri, 2)[0];
+        $mark = strpos($uri, '?');
+
+        return $mark === false ? [] : RequestFactory::query(substr($uri, $mark + 1));
+    }
+
     public static function resolve(string $uri): ?array
     {
         $match = static::matchRoute($uri);
@@ -291,6 +321,7 @@ class NativeRouter
             'class' => $entry['class'],
             'layout' => $entry['layout'] ?? null,
             'params' => $route->parametersWithoutNulls(),
+            'query' => static::queryOf($uri),
             'route' => $route,
         ];
     }
@@ -302,7 +333,9 @@ class NativeRouter
      */
     private static function matchRoute(string $uri): ?array
     {
-        $request = Request::create('/'.ltrim($uri, '/'), 'GET');
+        // Routes match on the path. Leaving the query off also keeps Symfony
+        // from parsing it here, where too many parameters would throw.
+        $request = Request::create(static::pathOf($uri), 'GET');
 
         $literalRoutes = [];
         $parameterizedRoutes = [];
@@ -483,6 +516,7 @@ class NativeRouter
                 $component = $this->createComponent(
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
+                    query: $resolved['query'],
                 );
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
@@ -508,6 +542,9 @@ class NativeRouter
      * Entry point. Init shared memory, run the navigation loop,
      * shutdown when done.
      *
+     * `$uri` is the URI the app launched at, query string included, so the
+     * launch screen's query() answers the same as on any later screen.
+     *
      * @return string|null Exit URI for redirect, or null
      */
     public function start(string $class, array $params = [], string $uri = ''): ?string
@@ -518,7 +555,7 @@ class NativeRouter
 
         try {
             static::debugLog("start: class=$class uri=$uri");
-            $component = $this->createComponent($class, $params);
+            $component = $this->createComponent($class, $params, query: static::queryOf($uri));
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
@@ -646,7 +683,8 @@ class NativeRouter
                     $next = $this->createComponent(
                         $resolved['class'],
                         $resolved['params'],
-                        $intent->data
+                        $intent->data,
+                        $resolved['query'],
                     );
                     if (! empty($resolved['layout'])) {
                         $next->setLayout($resolved['layout']);
@@ -711,7 +749,8 @@ class NativeRouter
                         $next = $this->createComponent(
                             $resolved['class'],
                             $resolved['params'],
-                            $intent->data
+                            $intent->data,
+                            $resolved['query'],
                         );
                         if (! empty($resolved['layout'])) {
                             $next->setLayout($resolved['layout']);
@@ -789,12 +828,13 @@ class NativeRouter
         }
     }
 
-    protected function createComponent(string $class, array $params = [], array $data = []): NativeComponent
+    protected function createComponent(string $class, array $params = [], array $data = [], array $query = []): NativeComponent
     {
         $component = new $class;
         $component->setRouter($this);
         $component->setParams($params);
         $component->setData($data);
+        $component->setQuery($query);
 
         return $component;
     }

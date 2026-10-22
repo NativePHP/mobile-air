@@ -4,13 +4,14 @@ use Illuminate\Support\Facades\Route;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\CounterScreen;
-use Tests\Fixtures\Edge\DetailScreen;
+use Tests\Fixtures\Edge\QueryScreen;
 
 /*
  * A deep link arriving while the app is already running is delivered as a
  * `__deeplink` native event, becomes a NAVIGATE intent, and is resolved by
- * NativeRouter like any in-app navigation. Everything below the resolver
- * already preserved the query string; the resolver is where it was lost.
+ * NativeRouter like any in-app navigation. Its query string reaches the screen
+ * as query(), never as data(): anyone can open a link to the app, and data()
+ * only holds what the app passed itself.
  *
  * Reported as #290: an OAuth callback (`myapp://auth/callback?authCode=...`)
  * reached the screen with no code on it.
@@ -19,52 +20,82 @@ use Tests\Fixtures\Edge\DetailScreen;
 beforeEach(fn () => NativeRouter::clearRoutes());
 afterEach(fn () => NativeRouter::clearRoutes());
 
-it('gives a warm deep link its query parameters as navigation data', function () {
-    Route::native('/detail/{id}', DetailScreen::class);
+it('gives a warm deep link its query', function () {
+    Route::native('/auth/callback', QueryScreen::class);
+
+    // myapp://auth/callback?code=a%2Bb%3D%3D&state=x%26y, as the shells send it.
+    Native::test(CounterScreen::class)
+        ->emitNative('__deeplink', ['uri' => '/auth/callback?code=a%2Bb%3D%3D&state=x%26y'])
+        ->followNavigation()
+        ->assertScreen(QueryScreen::class)
+        ->assertSee('code "a+b=="')
+        ->assertSee('"state":"x&y"');
+});
+
+it('keeps a deep link query out of data()', function () {
+    Route::native('/checkout', QueryScreen::class);
 
     Native::test(CounterScreen::class)
-        ->emitNative('__deeplink', ['uri' => '/detail/7?from=deeplink'])
-        ->assertNavigatedTo('/detail/7?from=deeplink')
+        ->emitNative('__deeplink', ['uri' => '/checkout?from=link'])
         ->followNavigation()
-        ->assertScreen(DetailScreen::class)
-        ->assertSee('Detail 7 from deeplink');
+        ->assertSee('from data "nowhere"')
+        ->assertSee('"from":"link"');
 });
 
-it('lands the OAuth callback shape from the report', function () {
-    Route::native('/auth/callback', DetailScreen::class);
+it('keeps a navigate() payload and the query apart', function () {
+    Route::native('/detail', QueryScreen::class);
 
-    // `myapp://auth/callback?authCode=example`, normalised by DeepLinkRouter.
-    $screen = Native::test(CounterScreen::class)
-        ->emitNative('__deeplink', ['uri' => '/auth/callback?authCode=example'])
-        ->followNavigation();
-
-    expect($screen->instance()->data('authCode'))->toBe('example');
-});
-
-it('prefers an explicit navigate() payload over the query string', function () {
-    Route::native('/detail/{id}', DetailScreen::class);
-
-    // The URI is where the value came from; the payload is what the caller
-    // asked for. The caller is more specific, so it wins.
     Native::test(CounterScreen::class)
-        ->call('navigate', '/detail/7?from=query', ['from' => 'payload'])
+        ->call('navigate', '/detail?from=query', ['from' => 'payload'])
         ->followNavigation()
-        ->assertSee('Detail 7 from payload');
+        ->assertSee('from data "payload"')
+        ->assertSee('"from":"query"');
 });
 
-it('exposes the query to Native::visit() the way the device does', function () {
-    Route::native('/detail/{id}', DetailScreen::class);
+it('gives Native::visit() the query the way the device does, arrays and all', function () {
+    Route::native('/search', QueryScreen::class);
 
-    Native::visit('/detail/9?from=visit')
-        ->assertSee('Detail 9 from visit');
+    Native::visit('/search?code=x&tag[]=alpha')
+        ->assertSee('code "x"')
+        ->assertSee('first tag "alpha"');
 });
 
-it('restores query data onto a hot-reloaded stack', function () {
-    Route::native('/detail/{id}', DetailScreen::class);
+it('gives a screen with no query string an empty query', function () {
+    Route::native('/search', QueryScreen::class);
 
-    // preloadStack replays the entries below the top after a PHP reboot. It
-    // reads the same stored URIs, so it needs the query off them too —
-    // otherwise a save while deep-linked drops back a screen with no data.
+    Native::visit('/search')
+        ->assertSee('query []')
+        ->assertSee('code "none"');
+});
+
+it('gives the launch screen the query from the URI it started at', function () {
+    // A cold deep link: the provider hands start() the request's path and its
+    // raw query string. Stop before the runloop and look at what was built.
+    $router = new class extends NativeRouter
+    {
+        public array $launched = [];
+
+        protected function loop(): ?string
+        {
+            $this->launched = $this->stack;
+
+            return null;
+        }
+    };
+
+    $router->start(QueryScreen::class, [], '/auth/callback?code=a%2Bb%3D%3D');
+
+    $screen = $router->launched[0]['component'];
+
+    expect((fn () => $this->query('code'))->call($screen))->toBe('a+b==')
+        ->and($router->launched[0]['uri'])->toBe('/auth/callback?code=a%2Bb%3D%3D');
+});
+
+it('restores the query onto a hot-reloaded stack', function () {
+    Route::native('/search', QueryScreen::class);
+
+    // preloadStack replays the entries below the top after a PHP reboot, from
+    // the URIs the stack stored, query strings and all.
     $router = new class extends NativeRouter
     {
         public function restored(): array
@@ -73,12 +104,9 @@ it('restores query data onto a hot-reloaded stack', function () {
         }
     };
 
-    $router->preloadStack([['uri' => '/detail/3?from=restored']]);
+    $router->preloadStack([['uri' => '/search?code=restored']]);
 
-    expect($router->stackDepth())->toBe(1);
+    $screen = $router->restored()[0]['component'];
 
-    $component = $router->restored()[0]['component'];
-
-    expect($component->param('id'))->toBe('3')
-        ->and($component->data('from'))->toBe('restored');
+    expect((fn () => $this->query('code'))->call($screen))->toBe('restored');
 });
