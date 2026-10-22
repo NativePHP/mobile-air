@@ -169,7 +169,7 @@ trait InstallsAppIcon
             $srcWidth, $srcHeight
         );
 
-        imagepng($resized, $dst, 0);
+        imagepng($resized, $dst, 6);
         imagedestroy($resized);
         imagedestroy($srcImage);
     }
