@@ -75,7 +75,7 @@ class NativeElementBridge private constructor() {
         @JvmStatic external fun nativeGetPropBuffer(): java.nio.ByteBuffer?
         @JvmStatic external fun nativeGetTypeTable(): Array<String>?
         @JvmStatic external fun nativeGetNodeCount(): Int
-        @JvmStatic external fun nativeElementWriteEvent(type: Int, callbackId: Int, nodeId: Int, data: ByteArray?)
+        @JvmStatic external fun nativeElementWriteEvent(type: Int, callbackId: Int, nodeId: Int, data: ByteArray?): Boolean
 
         /* Phase 0 — wire-format version + runtime feature flags
          * (NPHP_FORMAT_VERSION / NPHP_FLAG_* in nphp_element.h). */
@@ -853,7 +853,6 @@ class NativeElementBridge private constructor() {
         /**
          * Inject a native event into the element event queue.
          * This wakes up nativephp_element_wait_event() on the PHP side.
-         * Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
          *
          * The queue is only drained by an EDGE screen's PHP runloop, so the
          * event is ALSO offered to the web delivery sink — on a webview
@@ -862,6 +861,29 @@ class NativeElementBridge private constructor() {
          * solely to wake the runloop and stay off the web arm.
          */
         fun sendNativeEvent(eventName: String, payloadJson: String) {
+            postNativeEventToQueue(eventName, payloadJson)
+
+            if (!eventName.startsWith("__")) {
+                webEventSink?.get()?.onNativeEvent(eventName, payloadJson)
+            }
+        }
+
+        /**
+         * The queue half of sendNativeEvent: write the event into the element
+         * event queue and offer it to nothing else.
+         * Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
+         *
+         * Returns true when the event is in the queue of a live native screen
+         * session. False means it was dropped: no native screen session is
+         * live. A full queue answers true as well: it takes the event and
+         * drops its oldest frame for it.
+         *
+         * For a native event that PHP hands over itself (Event.Broadcast),
+         * meant for its main runloop alone. The web sink posts to PHP at
+         * /_native/api/events, where PHP would fire it as an event again,
+         * so nothing that came from PHP may go back that way.
+         */
+        fun postNativeEventToQueue(eventName: String, payloadJson: String): Boolean {
             val nameBytes = eventName.toByteArray(Charsets.UTF_8)
             val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8)
             val buf = ByteBuffer.allocate(4 + nameBytes.size + 4 + payloadBytes.size)
@@ -870,11 +892,7 @@ class NativeElementBridge private constructor() {
             buf.put(nameBytes)
             buf.putInt(payloadBytes.size)
             buf.put(payloadBytes)
-            nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
-
-            if (!eventName.startsWith("__")) {
-                webEventSink?.get()?.onNativeEvent(eventName, payloadJson)
-            }
+            return nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
         }
 
         /** Held weakly so a destroyed activity is never kept alive. The

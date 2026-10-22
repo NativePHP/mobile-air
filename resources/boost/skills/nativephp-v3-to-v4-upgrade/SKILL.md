@@ -42,8 +42,8 @@ Three composer facts that block a naive `composer require`:
 
 `php artisan native:plugin:register nativephp/mobile-ui`, verify with `native:plugin:list`. The app's
 `app/Providers/NativeServiceProvider::plugins()` imports the provider **by FQCN**, so the namespace
-change has to be applied there too. Device builds then need a user-run `native:run` (never run build
-commands yourself — always ask which platform first).
+change has to be applied there too. Device builds then need a `native:run`, which you can run yourself
+(`php artisan native:run <ios|android> <device> --no-tty -n` on a booted simulator or running emulator).
 
 Without the UI plugin, `nativephp/mobile` ships the EDGE runtime but NOT the component library
 (text/image/button/list/inputs, bottom-sheet, layout builders, `Theme`, `config/native-ui.php`, icon
@@ -210,8 +210,8 @@ Wire-format facts that make assertions land first time:
    `resources/views/components`, and old Livewire test dirs. Rewrite generic smoke tests
    (`assertSeeLivewire` → route-resolution or `Native::visit()->assertScreen()`).
 3. `composer dump-autoload`, full suite, `vendor/bin/pint --dirty`, `php artisan native:validate`.
-4. Remind the user to rebuild — plugin registration, plugin Swift/Kotlin sources AND bundled fonts all
-   compile in at build time.
+4. Rebuild with `native:run` on a simulator or emulator as the final check — plugin registration, plugin
+   Swift/Kotlin sources AND bundled fonts all compile in at build time.
 
 ## Patching the framework during an upgrade
 

@@ -2,6 +2,8 @@
 
 use Illuminate\Support\Facades\Route;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\NavigationIntent;
+use Native\Mobile\Testing\FakeBridge;
 use Tests\Fixtures\Edge\CounterScreen;
 
 beforeEach(fn () => NativeRouter::clearRoutes());
@@ -11,6 +13,16 @@ afterEach(fn () => NativeRouter::clearRoutes());
 function routable(string $uri): bool
 {
     return (fn () => static::routableDeepLink($uri))->call(new CounterScreen);
+}
+
+/** Deliver a warm deep link the way the native shell does, and return the navigation it asked for. */
+function deliverDeepLink(string $uri, string $url): ?NavigationIntent
+{
+    return (function () use ($uri, $url) {
+        $this->dispatchNativeEvent(['event' => '__deeplink', 'payload' => ['uri' => $uri, 'url' => $url]]);
+
+        return $this->nativeNavigationIntent;
+    })->call(new CounterScreen);
 }
 
 it('treats a native route as routable', function () {
@@ -64,4 +76,37 @@ it('does not bind the shared route object while probing', function () {
 
     // A read-only question must not leave the collection's Route mutated.
     expect(app('router')->getRoutes()->getByName('probe.docs')->parameters ?? null)->toBeNull();
+});
+
+it('gives an unrouted link to the core browser handoff and stays on the current screen', function () {
+    $bridge = FakeBridge::enable()->respondTo('System.OpenInBrowser', ['success' => true]);
+
+    expect(deliverDeepLink('/blog', 'https://example.com/blog'))->toBeNull();
+
+    // Browser::open() is the call that looped on Android: a plain ACTION_VIEW
+    // for the app's own App Link resolves straight back to the app.
+    $bridge->assertCalled('System.OpenInBrowser', fn (array $params) => $params['url'] === 'https://example.com/blog')
+        ->assertNotCalled('Browser.Open');
+});
+
+it('navigates rather than falling back to Browser::open() when the core handoff fails', function () {
+    $bridge = FakeBridge::enable()
+        ->respondTo('System.OpenInBrowser', ['success' => false])
+        ->respondTo('Browser.Open', ['success' => true]);
+
+    expect(deliverDeepLink('/blog', 'https://example.com/blog'))
+        ->type->toBe(NavigationIntent::NAVIGATE)
+        ->uri->toBe('/blog');
+
+    $bridge->assertNotCalled('Browser.Open');
+});
+
+it('uses the browser plugin where the platform has no core handoff', function () {
+    // iOS, and Android projects installed before System.OpenInBrowser existed.
+    // The bridge answers null for a function it doesn't have.
+    $bridge = FakeBridge::enable()->respondTo('Browser.Open', ['success' => true]);
+
+    expect(deliverDeepLink('/blog', 'https://example.com/blog'))->toBeNull();
+
+    $bridge->assertCalled('Browser.Open', fn (array $params) => $params['url'] === 'https://example.com/blog');
 });

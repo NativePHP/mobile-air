@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge\Elements;
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\Enums\ImageFit;
 use Native\Mobile\Edge\ImageSource;
 
 class Image extends Element
@@ -28,7 +29,7 @@ class Image extends Element
             $this->imageProps['src'] = ImageSource::forDevice($attrs['src']);
         }
         if (isset($attrs['fit'])) {
-            $this->fit((int) $attrs['fit']);
+            $this->fit($attrs['fit']);
         }
         if (isset($attrs['tintColor'])) {
             $this->tintColor($attrs['tintColor']);
@@ -50,9 +51,16 @@ class Image extends Element
         return $this;
     }
 
-    public function fit(int $mode): static
+    /**
+     * How the image fills its frame: an {@see ImageFit} case, its name
+     * (`cover`, `contain`, `fill`, `none`) or its wire value. Anything else
+     * is ignored and the renderer's default (contain) applies.
+     */
+    public function fit(int|string|ImageFit $mode): static
     {
-        $this->imageProps['fit'] = $mode;
+        if (($resolved = ImageFit::parse($mode)) !== null) {
+            $this->imageProps['fit'] = $resolved;
+        }
 
         return $this;
     }
