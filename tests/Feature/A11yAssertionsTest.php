@@ -64,6 +64,11 @@ it('hydrates a11y-label and a11y-hint blade attributes for builtin elements', fu
         ->assertAccessible();
 });
 
+it('hydrates a11y-label on layout containers, which the native renderers read', function () {
+    Native::test(A11yBladeScreen::class)
+        ->assertElement('row', fn (array $n) => ($n['props']['a11y_label'] ?? null) === 'Events: 5, last 10h ago');
+});
+
 // ── Pest sugar ──────────────────────────────────────
 
 it('composes with expect() via toBeAccessible', function () {
