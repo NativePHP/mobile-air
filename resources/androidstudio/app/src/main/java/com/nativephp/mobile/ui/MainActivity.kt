@@ -24,6 +24,7 @@ import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
+import com.nativephp.mobile.ui.nativerender.FrameTracker
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
@@ -185,6 +186,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         }
 
         handleDeepLinkIntent(intent)
+
+        NativeUIBridge.createState()
+        NativeUIThemeProvider.createState()
+        FrameTracker.createState()
 
         // Set up Compose UI and PAINT THE SPLASH FIRST, from a minimal onCreate, so the
         // first frame is on screen ASAP (TTID). Everything heavy — WebView (Chromium)
