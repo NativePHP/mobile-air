@@ -48,13 +48,13 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
     // width — LocalAvailableWidth is the root BoxWithConstraints' maxWidth —
     // so no renderer has to know breakpoints exist. resolved() returns a
     // cached node per winning variant, so identity stays stable between
-    // resizes and key(node.id) below keeps its state.
+    // resizes and key(node.id, node.type) below keeps its state.
     ResolvedNodeView(node.resolved(LocalAvailableWidth.current), overrideModifier)
 }
 
 @Composable
 private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
-    key(node.id) {
+    key(node.id, node.type) {
         val renderer = NativeRendererRegistry.get(node.type)
         val isDarkMode = isSystemInDarkTheme()
         val safeAreaTop = LocalSafeAreaTop.current
