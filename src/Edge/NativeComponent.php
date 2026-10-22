@@ -3040,6 +3040,10 @@ abstract class NativeComponent
 
     public function navigate(string $uri, array $data = []): static
     {
+        if ($this->openedExternally($uri)) {
+            return $this;
+        }
+
         // Navigation is a screen-level concern: a nested child forwards to
         // the screen so the intent lands where the runloop reads it (and
         // publishFinalState renders the full screen, not the child alone).
@@ -3050,7 +3054,7 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, static::appPath($uri), $data);
         $this->publishFinalState();
         $this->stop();
 
@@ -3091,6 +3095,10 @@ abstract class NativeComponent
 
     public function replace(string $uri, array $data = []): static
     {
+        if ($this->openedExternally($uri)) {
+            return $this;
+        }
+
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
             $this->rootScreen()->replace($uri, $data);
@@ -3099,7 +3107,7 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, static::appPath($uri), $data);
         $this->publishFinalState();
         $this->stop();
 
@@ -3167,6 +3175,10 @@ abstract class NativeComponent
 
     public function exitToWeb(string $uri): void
     {
+        if ($this->openedExternally($uri)) {
+            return;
+        }
+
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
             $this->rootScreen()->exitToWeb($uri);
@@ -3174,7 +3186,7 @@ abstract class NativeComponent
             return;
         }
 
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, static::appPath($uri));
         $this->stop();
     }
 
@@ -3188,6 +3200,70 @@ abstract class NativeComponent
     public function route(string $name, mixed $parameters = []): string
     {
         return URL::route($name, $parameters, absolute: false);
+    }
+
+    /**
+     * Reduce an absolute URL on the app's own host to its path, so the
+     * global route() / url() helpers work anywhere a URI is accepted. They
+     * prefix the request root (or APP_URL), which never matches a native
+     * route and would exit to the WebView with a URL it can't load.
+     */
+    protected static function appPath(string $uri): string
+    {
+        $parts = parse_url($uri);
+
+        if ($parts === false || ! isset($parts['scheme'], $parts['host']) || static::isExternalUrl($uri)) {
+            return $uri;
+        }
+
+        return '/'.ltrim($parts['path'] ?? '', '/')
+            .(isset($parts['query']) ? '?'.$parts['query'] : '')
+            .(isset($parts['fragment']) ? '#'.$parts['fragment'] : '');
+    }
+
+    /**
+     * A URL with a scheme that doesn't point at the app: another host, or a
+     * hostless scheme like mailto: or tel:.
+     */
+    protected static function isExternalUrl(string $uri): bool
+    {
+        $parts = parse_url($uri);
+
+        if ($parts === false || ! isset($parts['scheme'])) {
+            return false;
+        }
+
+        if (! isset($parts['host'])) {
+            return true;
+        }
+
+        $appHosts = array_filter([
+            parse_url(URL::to('/'), PHP_URL_HOST),
+            parse_url((string) config('app.url'), PHP_URL_HOST),
+        ]);
+
+        return ! in_array(strtolower($parts['host']), array_map('strtolower', $appHosts), true);
+    }
+
+    /**
+     * Hand an external URL to the system browser and keep the current screen.
+     * Exiting to the WebView can't show it: the shells load only the path of
+     * an exit URL, so the native UI would be torn down for a blank page — the
+     * same dead end deep links avoid by opening the browser. Browser::open()
+     * needs the nativephp/mobile-browser plugin; without it the tap is a
+     * no-op rather than a broken screen.
+     */
+    protected function openedExternally(string $uri): bool
+    {
+        if (! static::isExternalUrl($uri)) {
+            return false;
+        }
+
+        if (! (new Browser)->open($uri)) {
+            NativeRouter::debugLog("NAVIGATE: no browser handler for $uri — is nativephp/mobile-browser installed?");
+        }
+
+        return true;
     }
 
     // ── Parameter / data access ─────────────────────
