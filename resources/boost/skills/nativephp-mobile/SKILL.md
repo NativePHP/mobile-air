@@ -265,7 +265,8 @@ them (reserve those for fully chrome-less screens).
 `NONE`→normal, `LIGHT`/`MODERATE`→warm, `SEVERE`→hot, `CRITICAL`/`EMERGENCY`/`SHUTDOWN`→critical (8–9 always
 Normal). iOS is 1:1 (`nominal`/`fair`/`serious`/`critical`). `Device::getInfo()` JSON (decode it) also
 includes `processorCount`, `activeProcessorCount`, `systemUptime`, and `memTotal` (device RAM in bytes,
-alongside existing `memUsed`).
+alongside existing `memUsed`). `Device::getTimezone()` gives the phone's IANA timezone (`Europe/Lisbon`), or
+`null` off-device; Laravel's `app.timezone` (UTC by default) is not the phone's.
 
 **Plugins** (separate Composer packages): browser, camera, microphone, network, share (free); biometrics,
 geolocation, scanner, secure-storage (paid); firebase (push notifications, proprietary); vibe
