@@ -251,20 +251,25 @@ extension View {
     /// also the correct scope — a tap on the tab bar or a toolbar button is
     /// that control's business, not a dismiss.
     ///
-    /// Two gestures, because a tap means different things depending on
+    /// Two taps, because a tap means different things depending on
     /// whether a child claimed it (mobile-air #335):
     ///
-    /// - The regular gesture loses to a child's own tap, so it only fires
+    /// - `KeyboardDismissTap` loses to a child's own tap, so it only fires
     ///   for taps nothing else claimed. That is the plain-area tap-away
     ///   path and it always dismisses, even when the focused field opted
     ///   into `keep-focus-on-submit`.
-    /// - The simultaneous gesture fires for every tap, including ones a
-    ///   child `Button`, chip, checkbox or plugin control claimed. It
-    ///   dismisses unless the focused field asked to keep focus. Those
-    ///   controls never go through `KeyboardFocusPolicy.dispatchPress`,
+    /// - `KeyboardDismissWindowTap` fires for every tap on the screen,
+    ///   including ones a child `Button`, chip, checkbox or plugin control
+    ///   claimed. It dismisses unless the focused field asked to keep focus.
+    ///   Those controls never go through `KeyboardFocusPolicy.dispatchPress`,
     ///   so without this they would leave the keyboard up, where before
     ///   #335 a tap on them dropped it. It skips a tap on the focused
     ///   field itself, so tapping to move the caret keeps the keyboard.
+    ///
+    /// Neither is a SwiftUI `TapGesture`: once one of those recognises, UIKit
+    /// cancels the touch in any UIKit view underneath, so UIKit-backed
+    /// controls (SwiftUI's own `SignInWithAppleButton`, a plugin's
+    /// `UIControl`) never got their touch-up and did nothing.
     ///
     /// `@press` handlers still dismiss through
     /// `KeyboardFocusPolicy.dispatchPress` themselves, under the same
@@ -273,17 +278,128 @@ extension View {
     func dismissesKeyboardOnTap() -> some View {
         contentShape(Rectangle())
             .gesture(
-                TapGesture().onEnded {
+                KeyboardDismissTap {
                     KeyboardFocusPolicy.resignKeyboard()
                 }
             )
-            .simultaneousGesture(
-                SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
-                    guard !KeyboardFocusPolicy.focusedFieldKeepsFocus,
-                          !KeyboardFocusPolicy.firstResponderContains(tap.location) else { return }
-                    KeyboardFocusPolicy.resignKeyboard()
+            .background(KeyboardDismissWindowTap())
+    }
+}
+
+/// The plain-area tap of `dismissesKeyboardOnTap()`: a UIKit tap that never
+/// cancels the touch underneath. Attached with `.gesture`, it still loses to
+/// a child's own tap.
+private struct KeyboardDismissTap: UIGestureRecognizerRepresentable {
+    let onTap: () -> Void
+
+    func makeUIGestureRecognizer(context: Context) -> UITapGestureRecognizer {
+        let recognizer = UITapGestureRecognizer()
+        recognizer.cancelsTouchesInView = false
+        recognizer.delaysTouchesEnded = false
+
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UITapGestureRecognizer, context: Context) {
+        if recognizer.state == .ended {
+            onTap()
+        }
+    }
+}
+
+/// The every-tap half of `dismissesKeyboardOnTap()`. A SwiftUI gesture that
+/// recognises alongside its children stops UIKit-backed ones (text fields
+/// included) from getting their taps, so this is a plain UIKit recognizer on
+/// the window, like `EscapeHatchGesture`: it never cancels or delays a touch
+/// and recognises alongside everything.
+///
+/// It only acts on taps inside a screen that asked for it: the tapped view
+/// must be inside the view controller that hosts one of these anchors. Taps
+/// on the tab bar, a navigation bar or a sheet are left alone, as they were
+/// when this was a gesture on the screen content.
+private struct KeyboardDismissWindowTap: UIViewRepresentable {
+    func makeUIView(context: Context) -> Anchor {
+        Anchor()
+    }
+
+    func updateUIView(_ anchor: Anchor, context: Context) {}
+
+    final class Anchor: UIView {
+        init() {
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) is not supported")
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+
+            if let window {
+                Recognizer.installed(on: window).anchors.add(self)
+            }
+        }
+
+        /// The view of the view controller hosting this screen.
+        var screen: UIView? {
+            var responder = next
+            while let current = responder {
+                if let controller = current as? UIViewController {
+                    return controller.view
                 }
-            )
+                responder = current.next
+            }
+
+            return nil
+        }
+    }
+
+    final class Recognizer: UITapGestureRecognizer, UIGestureRecognizerDelegate {
+        let anchors = NSHashTable<Anchor>.weakObjects()
+
+        /// The window's recognizer, added the first time a screen needs it.
+        static func installed(on window: UIWindow) -> Recognizer {
+            if let existing = window.gestureRecognizers?.lazy.compactMap({ $0 as? Recognizer }).first {
+                return existing
+            }
+
+            let recognizer = Recognizer()
+            window.addGestureRecognizer(recognizer)
+
+            return recognizer
+        }
+
+        init() {
+            super.init(target: nil, action: nil)
+            addTarget(self, action: #selector(tapped))
+            cancelsTouchesInView = false
+            delaysTouchesBegan = false
+            delaysTouchesEnded = false
+            delegate = self
+        }
+
+        @objc private func tapped() {
+            guard state == .ended, let window = view as? UIWindow else { return }
+
+            let point = location(in: window)
+
+            guard let hit = window.hitTest(point, with: nil),
+                  anchors.allObjects.contains(where: { $0.window === window && $0.screen.map(hit.isDescendant) == true }),
+                  !KeyboardFocusPolicy.focusedFieldKeepsFocus,
+                  !KeyboardFocusPolicy.firstResponderContains(point) else { return }
+
+            KeyboardFocusPolicy.resignKeyboard()
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
     }
 }
 
