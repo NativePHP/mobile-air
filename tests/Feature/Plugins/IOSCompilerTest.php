@@ -3,6 +3,8 @@
 namespace Tests\Feature\Plugins;
 
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\Console\ClosureCommand;
+use Illuminate\Support\Facades\Artisan;
 use Mockery;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\Plugin;
@@ -1654,5 +1656,648 @@ class NestedClass {}');
             path: $path ?? $this->testBasePath.'/plugins/test-plugin',
             manifest: $manifest
         );
+    }
+
+    /**
+     * Register a real artisan command for the native_sources hook.
+     * Artisan::shouldReceive() cannot mock Orchestra Testbench's final Kernel.
+     */
+    private function registerNativeSourcesHook(string $command, int $exitCode = 0, string $stdout = ''): object
+    {
+        $seen = (object) ['platform' => null];
+
+        Artisan::registerCommand(new ClosureCommand(
+            $command.' {--platform=} {--build-path=} {--plugin-path=} {--app-id=}',
+            function () use ($exitCode, $stdout, $seen) {
+                $seen->platform = $this->option('platform');
+
+                if ($stdout !== '') {
+                    $this->line($stdout);
+                }
+
+                return $exitCode;
+            }
+        ));
+
+        return $seen;
+    }
+
+    /**
+     * @test
+     *
+     * When manages_native_sources is absent or false, behavior is unchanged:
+     * all Swift files in the plugin's iOS source directory are copied.
+     */
+    public function it_copies_all_sources_when_flag_is_absent(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/test-plugin';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
+        $this->files->put($swiftPath.'/File2.swift', "import Foundation\n\nclass File2 {}");
+
+        $plugin = $this->createTestPlugin([], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/File1.swift');
+        $this->assertFileExists($pluginDir.'/File2.swift');
+    }
+
+    /**
+     * @test
+     *
+     * When top-level manages_native_sources is true and the hook returns a
+     * valid list, only the listed files are copied. This is the canonical
+     * contract used by mobile-ui.
+     */
+    public function it_copies_only_listed_files_when_hook_succeeds(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/filtered-plugin';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/Used.swift', "import Foundation\n\nclass Used {}");
+        $this->files->put($swiftPath.'/Unused.swift', "import Foundation\n\nclass Unused {}");
+
+        $hook = $this->registerNativeSourcesHook('test:filter-sources', 0, json_encode(['Used.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-sources',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertSame('ios', $hook->platform);
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/Used.swift');
+        $this->assertFileDoesNotExist($pluginDir.'/Unused.swift');
+    }
+
+    /**
+     * @test
+     *
+     * When the hook fails (non-zero exit), fall back to copying all sources
+     * with a clear warning.
+     */
+    public function it_falls_back_to_all_sources_when_hook_fails(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/failing-hook';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
+
+        $this->registerNativeSourcesHook('test:failing-hook', 1);
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:failing-hook',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/File1.swift');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'native_sources hook exited') && str_contains($w, 'falling back')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns an empty list, fall back to copying all sources.
+     */
+    public function it_falls_back_when_hook_returns_empty_list(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/empty-hook';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
+
+        $this->registerNativeSourcesHook('test:empty-hook', 0, '[]');
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:empty-hook',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/File1.swift');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'returned an empty list')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns invalid JSON, fall back to copying all sources.
+     */
+    public function it_falls_back_when_hook_returns_invalid_json(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/invalid-json-hook';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
+
+        $this->registerNativeSourcesHook('test:invalid-json', 0, 'not valid json');
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:invalid-json',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/File1.swift');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'invalid JSON')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns a path with "..", reject it and fall back.
+     */
+    public function it_rejects_path_traversal_attempts(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/traversal-hook';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
+
+        $this->registerNativeSourcesHook('test:traversal', 0, json_encode(['../../../etc/passwd']));
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:traversal',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/File1.swift');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, "'..'") && str_contains($w, 'path traversal')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook references a file that doesn't exist, fall back.
+     */
+    public function it_falls_back_when_hook_references_nonexistent_file(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/missing-file-hook';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/File1.swift', "import Foundation\n\nclass File1 {}");
+
+        $this->registerNativeSourcesHook('test:missing-file', 0, json_encode(['DoesNotExist.swift']));
+
+        $warnings = [];
+        $this->compiler->setOutput(new class($warnings)
+        {
+            public function __construct(public array &$warnings) {}
+
+            public function warn(string $message): void
+            {
+                $this->warnings[] = $message;
+            }
+        });
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:missing-file',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/File1.swift');
+        $this->assertNotEmpty(array_filter(
+            $warnings,
+            fn ($w) => str_contains($w, 'non-existent file')
+        ));
+    }
+
+    /**
+     * @test
+     *
+     * When the hook returns a directory path, all Swift files in that
+     * directory are copied.
+     */
+    public function it_copies_directory_contents_when_hook_returns_directory(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/dir-hook';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath.'/subdir');
+        $this->files->put($swiftPath.'/subdir/File1.swift', "import Foundation\n\nclass File1 {}");
+        $this->files->put($swiftPath.'/subdir/File2.swift', "import Foundation\n\nclass File2 {}");
+        $this->files->put($swiftPath.'/Unused.swift', "import Foundation\n\nclass Unused {}");
+
+        $this->registerNativeSourcesHook('test:dir-filter', 0, json_encode(['subdir']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:dir-filter',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/subdir/File1.swift');
+        $this->assertFileExists($pluginDir.'/subdir/File2.swift');
+        $this->assertFileDoesNotExist($pluginDir.'/Unused.swift');
+    }
+
+    /**
+     * @test
+     *
+     * When ios.sources is present, it takes precedence over manages_native_sources.
+     */
+    public function it_prefers_explicit_sources_over_hook(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/explicit-and-hook';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/Explicit.swift', "import Foundation\n\nclass Explicit {}");
+        $this->files->put($swiftPath.'/Hook.swift', "import Foundation\n\nclass Hook {}");
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'ios' => [
+                'sources' => ['Explicit.swift'],
+            ],
+            'hooks' => [
+                'native_sources' => 'test:should-not-run',
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/Explicit.swift');
+        $this->assertFileDoesNotExist($pluginDir.'/Hook.swift');
+    }
+
+    /**
+     * @test
+     *
+     * PluginRendererRegistration.swift must only mention renderers defined
+     * in the files the hook selected.
+     */
+    public function it_registers_only_renderers_defined_in_copied_sources(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/ui-plugin';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-renderers', 0, json_encode(['ButtonRenderer.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('register("button"', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+        $this->assertStringNotContainsString('register("badge"', $registration);
+
+        $pluginDir = $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin';
+        $this->assertFileExists($pluginDir.'/ButtonRenderer.swift');
+        $this->assertFileDoesNotExist($pluginDir.'/BadgeRenderer.swift');
+    }
+
+    /**
+     * @test
+     *
+     * Several renderers in one Swift file: selecting the file registers
+     * every type it defines.
+     */
+    public function it_registers_every_renderer_defined_in_a_selected_file(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/shared-file-plugin';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/Containers.swift', "import SwiftUI\n\nstruct ColumnRenderer: View { var body: some View { EmptyView() } }\nstruct RowRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-shared-renderers', 0, json_encode(['Containers.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-shared-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('column', 'ColumnRenderer'),
+                $this->uiComponent('row', 'RowRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ColumnRenderer', $registration);
+        $this->assertStringContainsString('RowRenderer', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * A renderer that cannot be mapped to any source file is kept, and the
+     * files the hook selected stay copied.
+     */
+    public function it_keeps_unmapped_renderers_and_their_selected_files(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/unmapped-renderer';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-unmapped-renderers', 0, json_encode(['ButtonRenderer.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-unmapped-renderers',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('ghost', 'GhostRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('GhostRenderer', $registration);
+        $this->assertFileExists(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/ButtonRenderer.swift'
+        );
+    }
+
+    /**
+     * @test
+     *
+     * An unmapped renderer whose file is named after the class is still
+     * copied, even when the hook did not list it.
+     */
+    public function it_copies_a_same_named_file_for_an_unmapped_renderer(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/unmapped-named-file';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/GhostRenderer.swift', '// not a recognised type declaration');
+
+        $this->registerNativeSourcesHook('test:filter-unmapped-named', 0, json_encode(['ButtonRenderer.swift']));
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-unmapped-named',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('ghost', 'GhostRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $this->assertFileExists(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/TestPlugin/GhostRenderer.swift'
+        );
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+        $this->assertStringContainsString('GhostRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * When the hook fails and we copy every source, every renderer is registered.
+     */
+    public function it_registers_all_renderers_when_the_hook_falls_back(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/fallback-renderers';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $this->registerNativeSourcesHook('test:filter-renderers-fallback', 1);
+
+        $plugin = $this->createTestPlugin([
+            'manages_native_sources' => true,
+            'hooks' => [
+                'native_sources' => 'test:filter-renderers-fallback',
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @test
+     *
+     * ios.sources is also a selected subset, so registrations follow it too.
+     */
+    public function it_registers_only_renderers_named_in_ios_sources(): void
+    {
+        $pluginPath = $this->testBasePath.'/plugins/explicit-renderers';
+        $swiftPath = $pluginPath.'/resources/ios/Sources';
+        $this->files->ensureDirectoryExists($swiftPath);
+        $this->files->put($swiftPath.'/ButtonRenderer.swift', "import SwiftUI\n\nstruct ButtonRenderer: View { var body: some View { EmptyView() } }");
+        $this->files->put($swiftPath.'/BadgeRenderer.swift', "import SwiftUI\n\nstruct BadgeRenderer: View { var body: some View { EmptyView() } }");
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'sources' => ['ButtonRenderer.swift'],
+            ],
+            'components' => [
+                $this->uiComponent('button', 'ButtonRenderer'),
+                $this->uiComponent('badge', 'BadgeRenderer'),
+            ],
+        ], $pluginPath);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $registration = $this->files->get(
+            $this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift'
+        );
+
+        $this->assertStringContainsString('ButtonRenderer', $registration);
+        $this->assertStringNotContainsString('BadgeRenderer', $registration);
+    }
+
+    /**
+     * @return array{type: string, element: string, blade: string, android_renderer: string, ios_renderer: string}
+     */
+    private function uiComponent(string $type, string $iosRenderer): array
+    {
+        return [
+            'type' => $type,
+            'element' => 'Native\\Mobile\\UI\\Elements\\'.ucfirst($type),
+            'blade' => 'Native\\Mobile\\UI\\Components\\'.ucfirst($type),
+            'android_renderer' => 'com.test.plugin.'.ucfirst($type).'Renderer',
+            'ios_renderer' => $iosRenderer,
+        ];
     }
 }

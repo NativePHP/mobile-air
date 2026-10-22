@@ -667,6 +667,81 @@ class PluginTest extends TestCase
     }
 
     /**
+     * @test
+     *
+     * Absent flag: plugins copy all sources as before. Neither platform
+     * should report that it manages native sources.
+     */
+    public function it_does_not_manage_native_sources_when_flag_is_absent(): void
+    {
+        $this->assertFalse($this->plugin->managesNativeSources());
+        $this->assertFalse($this->plugin->managesAndroidNativeSources());
+        $this->assertFalse($this->plugin->managesIosNativeSources());
+    }
+
+    /**
+     * @test
+     *
+     * Top-level manages_native_sources: true is the canonical contract
+     * (mobile-ui PR #127) and must turn the hook path on for both platforms.
+     */
+    public function it_manages_native_sources_for_both_platforms_when_top_level_flag_is_set(): void
+    {
+        $plugin = new Plugin(
+            name: 'test/filtered-plugin',
+            version: '1.0.0',
+            path: $this->validPluginPath,
+            manifest: new PluginManifest([
+                'namespace' => 'FilteredPlugin',
+                'manages_native_sources' => true,
+                'hooks' => ['native_sources' => 'plugin:filter-sources'],
+            ])
+        );
+
+        $this->assertTrue($plugin->managesNativeSources());
+        $this->assertTrue($plugin->managesAndroidNativeSources());
+        $this->assertTrue($plugin->managesIosNativeSources());
+    }
+
+    /**
+     * @test
+     *
+     * Per-platform flags still work and override the top-level value
+     * when present.
+     */
+    public function it_honors_per_platform_manages_native_sources_overrides(): void
+    {
+        $androidOnly = new Plugin(
+            name: 'test/android-only',
+            version: '1.0.0',
+            path: $this->validPluginPath,
+            manifest: new PluginManifest([
+                'namespace' => 'AndroidOnly',
+                'android' => ['manages_native_sources' => true],
+            ])
+        );
+
+        $this->assertTrue($androidOnly->managesNativeSources());
+        $this->assertTrue($androidOnly->managesAndroidNativeSources());
+        $this->assertFalse($androidOnly->managesIosNativeSources());
+
+        $iosDisabled = new Plugin(
+            name: 'test/ios-disabled',
+            version: '1.0.0',
+            path: $this->validPluginPath,
+            manifest: new PluginManifest([
+                'namespace' => 'IosDisabled',
+                'manages_native_sources' => true,
+                'ios' => ['manages_native_sources' => false],
+            ])
+        );
+
+        $this->assertTrue($iosDisabled->managesNativeSources());
+        $this->assertTrue($iosDisabled->managesAndroidNativeSources());
+        $this->assertFalse($iosDisabled->managesIosNativeSources());
+    }
+
+    /**
      * @param  list<string>  $platforms
      */
     private function pluginForPlatforms(array $platforms, ?string $path = null): Plugin
