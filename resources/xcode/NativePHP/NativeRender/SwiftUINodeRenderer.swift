@@ -387,14 +387,15 @@ struct ResolvedNodeView: View, Equatable {
     }
 
     private var laidOut: some View {
-        content
-            .modifier(NodeLayoutModifier(
-                layout: node.layout,
-                availableWidth: availableWidth,
-                availableHeight: availableHeight,
-                safeAreaTop: safeAreaTop,
-                safeAreaBottom: safeAreaBottom
-            ))
+        NodeLayoutModifier(
+            layout: node.layout,
+            availableWidth: availableWidth,
+            availableHeight: availableHeight,
+            safeAreaTop: safeAreaTop,
+            safeAreaBottom: safeAreaBottom,
+            alwaysPads: node.keepsState
+        )
+        .apply(to: content)
     }
 
     // MARK: - Content Dispatch (via plugin registry)
