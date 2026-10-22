@@ -71,7 +71,9 @@ class PhpBinaries
      *
      * @var list<string>
      */
-    public const MANIFEST_KEYS = [];
+    public const MANIFEST_KEYS = [
+        'fYf2iV1+S1cFJYqtMPwGqj2Cy/t1FKfWbIePpITSZks=',
+    ];
 
     private const SIGNATURE_BYTES = 64;
 
