@@ -38,6 +38,7 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     registry.register("System.GetAppearance", SystemFunctions.GetAppearance(context))
     registry.register("System.GetOrientation", SystemFunctions.GetOrientation(context))
     registry.register("System.MinimizeApp", SystemFunctions.MinimizeApp(activity))
+    registry.register("System.OpenInBrowser", SystemFunctions.OpenInBrowser(context))
 
     // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog
     // plugin). iOS twin: Bridge/Functions/DialogFunctions.swift.
