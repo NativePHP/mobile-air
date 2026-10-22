@@ -9,7 +9,15 @@ use function Laravel\Prompts\select;
 
 trait WatchesIos
 {
-    use InteractsWithWatchTerminal, ManagesWatchman;
+    use InteractsWithWatchTerminal, ManagesIosHotReloadPort, ManagesWatchman;
+
+    /**
+     * Sent, newline-terminated, to ask the app's hot reload server for a
+     * reload. The server ignores any other connection, because dev tools
+     * probe listening ports. Must match `HotReloadServer.reloadCommand` in
+     * resources/xcode/NativePHP/HotReloadServer.swift.
+     */
+    protected const IOS_RELOAD_COMMAND = 'nativephp:hot-reload';
 
     /**
      * UDID of the simulator or device being watched.
@@ -88,6 +96,8 @@ trait WatchesIos
         $this->line('Watching iOS paths: '.implode(', ', $this->getIosWatchPaths()));
 
         if ($isSimulator) {
+            $this->line('Hot reload port: '.$this->iosHotReloadPort());
+
             // Get the derived data path / data container path
             $derivedDataPath = Process::run("xcrun simctl get_app_container {$target} {$appId} data")
                 ->output();
@@ -101,6 +111,24 @@ trait WatchesIos
             }
 
             $this->iosAppContainer = $derivedDataPath;
+
+            // Seed the hot file into the container. The app resolves Vite through
+            // Vite::useHotFile(public_path('ios-hot')), and by the time watching
+            // starts the file already exists, so no change event will ever
+            // carry it across.
+            if ($viteRunning) {
+                $this->info('Vite dev server detected - syncing hot file to simulator');
+                $hotFileDestination = $derivedDataPath.'/Documents/app/public/ios-hot';
+                $hotFileDirectory = dirname($hotFileDestination);
+
+                if (! is_dir($hotFileDirectory) && ! @mkdir($hotFileDirectory, 0755, true) && ! is_dir($hotFileDirectory)) {
+                    $this->warn("Could not create {$hotFileDirectory} - the app will not find the Vite dev server.");
+                } elseif (! @copy($viteHotFile, $hotFileDestination)) {
+                    $this->warn("Could not copy the hot file to {$hotFileDestination} - the app will not find the Vite dev server.");
+                } else {
+                    $this->triggerIosReload();
+                }
+            }
 
             $this->startIosWatching($derivedDataPath, $viteHotFile);
         } else {
@@ -136,10 +164,10 @@ trait WatchesIos
 
     private function startIosWatchingDevice(string $target, string $appId): void
     {
-        // Start iproxy to forward port 9999 from the device to localhost over USB
-        // This allows triggerIosReload() to reach the device's HotReloadServer
-        if ($this->startIproxyForwarding($target)) {
-            $this->info('USB port forwarding active - reload triggers will reach the device');
+        // Start iproxy to forward a free Mac port to the device's hot reload
+        // port over USB or Wi-Fi. This allows triggerIosReload() to reach it.
+        if ($forwarding = $this->startIproxyForwarding($target)) {
+            $this->info('Port forwarding active over USB or Wi-Fi - reload triggers will reach the device');
         } else {
             $this->warn('iproxy not found - files will sync but automatic reload is unavailable.');
             $this->line('Install it for automatic reload: <fg=cyan>brew install libimobiledevice</fg=cyan>');
@@ -157,7 +185,13 @@ trait WatchesIos
                     $this->handleIosFileChangeDevice($changedFile, $basePath, $target, $appId);
                 },
                 fn () => $this->pumpWatchTerminal(),
-                fn () => $this->triggerIosReload(),
+                // Without iproxy the trigger would land on whatever else
+                // holds the port on this Mac, such as a simulator app.
+                function () use ($forwarding) {
+                    if ($forwarding) {
+                        $this->triggerIosReload();
+                    }
+                },
             );
         } finally {
             // Reached when the watcher stops on its own (watchman died); the
@@ -305,21 +339,36 @@ trait WatchesIos
 
     private function triggerIosReload(): void
     {
-        // Connect to the hot reload server to trigger a reload
+        $port = $this->iosHotReloadPort();
+
+        // Connect to the hot reload server and send the reload command
         // For simulators this reaches the server directly (shared network)
-        // For physical devices, iproxy forwards this to the device over USB
-        $socket = @fsockopen('127.0.0.1', 9999, $errno, $errstr, 1);
+        // For physical devices, iproxy forwards this to the device over USB or Wi-Fi
+        $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 1);
 
         if ($socket) {
+            @fwrite($socket, self::IOS_RELOAD_COMMAND."\n");
+
             // Hold the connection open long enough for iproxy to forward
-            // it to the device over USB before we close
+            // it to the device before we close
             usleep(200000);
             fclose($socket);
         } else {
             // Transient rather than a scrollback line: the app being down is a
             // state, not an event, so repeating it once per save is just noise.
-            $this->watchActivity("reload failed — nothing listening on port 9999 ({$errstr})", 'yellow');
+            $this->watchActivity("reload failed — nothing listening on port {$port} ({$errstr})", 'yellow');
         }
+    }
+
+    /**
+     * Host port reload triggers connect to: the simulator app's hot reload
+     * server, or iproxy forwarding to a physical device. Read on every
+     * trigger, so a watcher follows the app when `native:run` relaunches it
+     * on a new port. Tests override it.
+     */
+    protected function iosHotReloadPort(): int
+    {
+        return $this->recordedIosHotReloadPort((string) $this->iosTarget) ?? self::IOS_DEFAULT_HOT_RELOAD_PORT;
     }
 
     private function startIproxyForwarding(string $target): bool
@@ -330,15 +379,15 @@ trait WatchesIos
             return false;
         }
 
-        // Kill any existing processes on port 9999
-        Process::run('lsof -ti:9999 | xargs kill 2>/dev/null');
-        usleep(500000);
+        // Only the Mac end needs a free port. The device end is the app's
+        // default port, which nothing on this Mac competes for, so apps
+        // launched from Xcode or the home screen are reachable too.
+        $port = $this->pickIosHotReloadPort($target);
+        $this->recordIosHotReloadPort($target, $port);
 
-        // Start iproxy in background for USB port forwarding
-        // v2 syntax: iproxy -u UDID LOCAL_PORT:DEVICE_PORT
-        $escapedTarget = escapeshellarg($target);
+        // Start iproxy in the background
         $logFile = base_path('nativephp/iproxy.log');
-        exec("{$iproxyPath} -u {$escapedTarget} 9999:9999 > {$logFile} 2>&1 & echo \$!", $output);
+        exec($this->iproxyCommand($iproxyPath, $target, $port, $logFile), $output);
         $pid = (int) ($output[0] ?? 0);
 
         if ($pid <= 0) {
@@ -353,8 +402,8 @@ trait WatchesIos
 
         // register_shutdown_function does NOT run when the watcher is stopped
         // with Ctrl-C (SIGINT) — the usual way — so iproxy would be orphaned
-        // and keep holding port 9999, breaking the next run's hot reload.
-        // Install signal handlers that tear it down before exiting.
+        // and keep holding its port. Install signal handlers that tear it
+        // down before exiting.
         if (function_exists('pcntl_async_signals')) {
             pcntl_async_signals(true);
             $teardown = function () use ($pid) {
@@ -380,9 +429,25 @@ trait WatchesIos
             return false;
         }
 
-        $this->line("iproxy running (PID {$pid}), log: {$logFile}");
+        $this->line("iproxy forwarding port {$port} to the device (PID {$pid}), log: {$logFile}");
 
         return true;
+    }
+
+    /**
+     * Shell command that starts iproxy in the background and echoes its PID.
+     *
+     * `-l -n` looks the device up over USB and over Wi-Fi. With neither flag
+     * iproxy only finds USB devices, so a phone on Wi-Fi never got its
+     * reloads: the connection to iproxy on localhost still succeeded, so the
+     * watcher had no way to report the failure.
+     */
+    private function iproxyCommand(string $iproxyPath, string $target, int $port, string $logFile): string
+    {
+        $escapedTarget = escapeshellarg($target);
+        $devicePort = self::IOS_DEFAULT_HOT_RELOAD_PORT;
+
+        return "{$iproxyPath} -l -n -u {$escapedTarget} {$port}:{$devicePort} > {$logFile} 2>&1 & echo \$!";
     }
 
     private function promptForWatchTarget(): ?string
@@ -493,30 +558,6 @@ trait WatchesIos
     private function getIosExcludePatterns(): array
     {
         return config('nativephp.hot_reload.exclude_patterns', $this->iosExcludePatterns);
-    }
-
-    private function killHotReloadServers(): void
-    {
-        // Find processes listening on port 9999
-        $result = Process::run(['lsof', '-ti:9999']);
-
-        if ($result->successful()) {
-            $pids = array_filter(explode("\n", trim($result->output())));
-
-            foreach ($pids as $pid) {
-                if (is_numeric($pid)) {
-                    // Try graceful shutdown first
-                    Process::run(['kill', '-15', $pid]);
-                    sleep(3); // Wait 3 seconds for graceful shutdown
-
-                    // Check if process is still running, force kill if needed
-                    $stillRunning = Process::run(['kill', '-0', $pid])->successful();
-                    if ($stillRunning) {
-                        Process::run(['kill', '-9', $pid]);
-                    }
-                }
-            }
-        }
     }
 
     private function quitOtherRunningApps(string $target, string $currentAppId): void

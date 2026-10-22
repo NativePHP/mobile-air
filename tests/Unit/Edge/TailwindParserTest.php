@@ -295,6 +295,124 @@ it('parses border color', function () {
     expect(TailwindParser::parse('border-black'))->toBe(['borderColor' => '#000000']);
 });
 
+it('parses border style', function () {
+    expect(TailwindParser::parse('border-solid'))->toBe(['borderStyle' => 0]);
+    expect(TailwindParser::parse('border-dashed'))->toBe(['borderStyle' => 1]);
+    expect(TailwindParser::parse('border-dotted'))->toBe(['borderStyle' => 2]);
+});
+
+it('parses per-side border widths', function () {
+    expect(TailwindParser::parse('border-t'))->toBe(['borderTopWidth' => 1]);
+    expect(TailwindParser::parse('border-r-2'))->toBe(['borderRightWidth' => 2]);
+    expect(TailwindParser::parse('border-b-0'))->toBe(['borderBottomWidth' => 0]);
+    expect(TailwindParser::parse('border-l-8'))->toBe(['borderLeftWidth' => 8]);
+});
+
+it('expands axis border widths to their two sides', function () {
+    expect(TailwindParser::parse('border-x'))->toBe(['borderLeftWidth' => 1, 'borderRightWidth' => 1]);
+    expect(TailwindParser::parse('border-y-4'))->toBe(['borderTopWidth' => 4, 'borderBottomWidth' => 4]);
+});
+
+it('parses arbitrary per-side border widths', function () {
+    expect(TailwindParser::parse('border-l-[1.5]'))->toBe(['borderLeftWidth' => 1.5]);
+    expect(TailwindParser::parse('border-y-[3px]'))->toBe(['borderTopWidth' => 3.0, 'borderBottomWidth' => 3.0]);
+});
+
+it('keeps colors that start with a side letter as colors', function () {
+    expect(TailwindParser::parse('border-red-500'))->toBe(['borderColor' => '#EF4444']);
+    expect(TailwindParser::parse('border-blue-500'))->toBe(['borderColor' => '#3B82F6']);
+    expect(TailwindParser::parse('border-teal-500'))->toBe(['borderColor' => '#14B8A6']);
+    expect(TailwindParser::parse('border-lime-500'))->toBe(['borderColor' => '#84CC16']);
+    expect(TailwindParser::parse('border-transparent'))->toBe(['borderColor' => '#00000000']);
+});
+
+it('drops per-side colors, logical sides and widths off the scale', function () {
+    // There is one border colour on the wire, so a side's own colour would
+    // silently paint every side. Dropping it surfaces it in the diagnostics.
+    expect(TailwindParser::parse('border-l-red-500'))->toBe([]);
+    expect(TailwindParser::parse('border-l-[#FF0000]'))->toBe([]);
+    expect(TailwindParser::parse('border-s'))->toBe([]);
+    expect(TailwindParser::parse('border-e-2'))->toBe([]);
+    expect(TailwindParser::parse('border-l-3'))->toBe([]);
+});
+
+it('puts per-side widths and the border style on the wire', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'w-[1] border-l border-dashed border-red-500']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'])->toMatchArray([
+        'border_style' => 1,
+        'border_t' => 0.0,
+        'border_r' => 0.0,
+        'border_b' => 0.0,
+        'border_l' => 1.0,
+    ])
+        // A side alone is enough for the style block to carry the colour.
+        ->and($tree['style'])->toMatchArray(['border_width' => 1.0, 'border_color' => '#EF4444']);
+});
+
+it('resolves per-side widths against the uniform width on the wire', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'border-2 border-l-0 border-b-4 border-red-500']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'])->toMatchArray([
+        'border_t' => 2.0,
+        'border_r' => 2.0,
+        'border_b' => 4.0,
+        'border_l' => 0.0,
+    ])
+        // The widest side, so renderers that ignore the sides still draw one.
+        ->and($tree['style']['border_width'])->toBe(4.0);
+});
+
+it('sends a dashed ring as a uniform border with a style', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'size-12 rounded-full border-2 border-dashed border-red-500']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'])->toMatchArray(['border_style' => 1])
+        ->and($tree['props'])->not->toHaveKey('border_l')
+        ->and($tree['style'])->toMatchArray(['border_width' => 2.0, 'border_radius' => 9999.0]);
+});
+
+it('sends a dashed elbow as two sides and the corner between them', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'border-l border-b rounded-bl-[12] border-dashed border-red-500']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'])->toMatchArray([
+        'border_style' => 1,
+        'border_t' => 0.0,
+        'border_r' => 0.0,
+        'border_b' => 1.0,
+        'border_l' => 1.0,
+        'radius_tl' => 0.0,
+        'radius_tr' => 0.0,
+        'radius_br' => 0.0,
+        'radius_bl' => 12.0,
+    ]);
+});
+
+it('leaves a plain border exactly as it was on the wire', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'border border-red-500']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'] ?? [])->not->toHaveKey('border_style')
+        ->and($tree['props'] ?? [])->not->toHaveKey('border_t')
+        ->and($tree['style'])->toMatchArray(['border_width' => 1.0, 'border_color' => '#EF4444']);
+});
+
+it('sends no border without a colour, whatever sides are set', function () {
+    NativeElementCollector::reset();
+    NativeElementCollector::leaf('column', ['class' => 'border-l-2 border-dashed']);
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['style'] ?? [])->not->toHaveKey('border_width');
+});
+
 it('parses border radius', function () {
     expect(TailwindParser::parse('rounded'))->toBe(['borderRadius' => 4]);
     expect(TailwindParser::parse('rounded-none'))->toBe(['borderRadius' => 0]);
@@ -420,6 +538,75 @@ it('parses shadow/elevation', function () {
     expect(TailwindParser::parse('shadow-none'))->toBe(['elevation' => 0]);
 });
 
+it('parses named glow utilities without touching elevation', function () {
+    expect(TailwindParser::parse('glow-emerald'))->toBe([
+        'glowColor' => '#10B981',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+    expect(TailwindParser::parse('glow-indigo'))->toBe([
+        'glowColor' => '#6366F1',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+    expect(TailwindParser::parse('glow-rose'))->toBe([
+        'glowColor' => '#F43F5E',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+
+    // Size suffixes are independent of elevation `shadow-*` scale.
+    expect(TailwindParser::parse('glow-emerald-sm'))->toMatchArray([
+        'glowColor' => '#10B981',
+        'glowRadius' => 8.0,
+    ]);
+    expect(TailwindParser::parse('glow-indigo-md'))->toMatchArray([
+        'glowColor' => '#6366F1',
+        'glowRadius' => 16.0,
+    ]);
+    expect(TailwindParser::parse('glow-rose-lg'))->toMatchArray([
+        'glowColor' => '#F43F5E',
+        'glowRadius' => 24.0,
+    ]);
+
+    // Unknown family / size → dropped (not elevation).
+    expect(TailwindParser::parse('glow-amber'))->toBe([]);
+    expect(TailwindParser::parse('glow-emerald-xl'))->toBe([]);
+
+    // `shadow-*` remains elevation-only; glow does not overload it.
+    expect(TailwindParser::parse('shadow-lg glow-emerald'))->toMatchArray([
+        'elevation' => 8,
+        'glowColor' => '#10B981',
+        'glowRadius' => 16.0,
+        'glowOpacity' => 0.55,
+    ]);
+});
+
+it('parses blur utilities for page-bg orbs', function () {
+    expect(TailwindParser::parse('blur'))->toBe(['blur' => 8.0]);
+    expect(TailwindParser::parse('blur-none'))->toBe(['blur' => 0.0]);
+    expect(TailwindParser::parse('blur-sm'))->toBe(['blur' => 4.0]);
+    expect(TailwindParser::parse('blur-md'))->toBe(['blur' => 12.0]);
+    expect(TailwindParser::parse('blur-lg'))->toBe(['blur' => 16.0]);
+    expect(TailwindParser::parse('blur-xl'))->toBe(['blur' => 24.0]);
+    expect(TailwindParser::parse('blur-2xl'))->toBe(['blur' => 40.0]);
+    expect(TailwindParser::parse('blur-3xl'))->toBe(['blur' => 64.0]);
+
+    // Arbitrary radius (Stitch page orbs often use blur-[100px]).
+    expect(TailwindParser::parse('blur-[100px]'))->toBe(['blur' => 100.0]);
+    expect(TailwindParser::parse('blur-[64]'))->toBe(['blur' => 64.0]);
+
+    // Unknown size → dropped.
+    expect(TailwindParser::parse('blur-4xl'))->toBe([]);
+
+    // Coexists with elevation and glow; does not overload either.
+    expect(TailwindParser::parse('blur-3xl shadow-md glow-indigo'))->toMatchArray([
+        'blur' => 64.0,
+        'elevation' => 6,
+        'glowColor' => '#6366F1',
+    ]);
+});
+
 it('parses safe-area', function () {
     expect(TailwindParser::parse('safe-area'))->toBe(['safeArea' => true]);
 });
@@ -442,6 +629,19 @@ it('parses arbitrary gap and dimensions', function () {
     expect(TailwindParser::parse('gap-[6]'))->toBe(['gap' => 6.0]);
     expect(TailwindParser::parse('w-[200]'))->toBe(['width' => 200.0]);
     expect(TailwindParser::parse('h-[100]'))->toBe(['height' => 100.0]);
+});
+
+it('parses arbitrary percent width and height like fractions', function () {
+    expect(TailwindParser::parse('w-[92%]'))->toBe(['width' => '92%']);
+    expect(TailwindParser::parse('h-[50%]'))->toBe(['height' => '50%']);
+    expect(TailwindParser::parse('w-[33.5%]'))->toBe(['width' => '33.5%']);
+});
+
+it('drops arbitrary percent min/max sizes instead of reading them as points', function () {
+    expect(TailwindParser::parse('max-w-[92%]'))->toBe([]);
+    expect(TailwindParser::parse('min-w-[10%]'))->toBe([]);
+    expect(TailwindParser::parse('max-h-[50%]'))->toBe([]);
+    expect(TailwindParser::parse('min-h-[20%]'))->toBe([]);
 });
 
 it('parses arbitrary colors', function () {
@@ -713,7 +913,7 @@ it('composes platform variants in reverse order with dark', function () {
 // ── Edge Cases ──────────────────────────────────────
 
 it('ignores unknown classes silently', function () {
-    $result = TailwindParser::parse('hover:bg-blue-500 unknown-class grid-cols-3 animate-spin');
+    $result = TailwindParser::parse('hover:bg-blue-500 unknown-class columns-3 animate-spin');
     expect($result)->toBe([]);
 });
 

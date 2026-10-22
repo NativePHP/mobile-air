@@ -69,6 +69,7 @@ trait HasPlatformIcon
      *   ->icon(android: Android::Search)    // Android override only
      *   ->icon(ios: …, android: …)          // explicit per-platform
      *   ->icon('share', ios: Ios::SquareAndArrowUp)  // shared + iOS override
+     *   ->icon(Icon::custom('bell'), android: Android::Notifications)
      *
      * The Android override may be either a Filled (`Android`) or
      * Outlined (`AndroidOutlined`) enum case — the chosen variant is
@@ -115,6 +116,8 @@ trait HasPlatformIcon
      *   is an [AndroidSymbol] enum case.
      * - Returns `null` for raw-string overrides and shared-name fallback
      *   so the renderer keeps its current default behavior unchanged.
+     * - Returns `null` whenever the resolved icon is a custom one
+     *   (`Icon::custom('bell')`), even if it came from an enum case.
      *
      * On iOS the value is irrelevant — SF Symbols don't have variant
      * fonts, and the renderer doesn't read this prop.

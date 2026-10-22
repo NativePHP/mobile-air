@@ -46,7 +46,17 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
-    key(node.id) {
+    // Resolve responsive (`md:` / `lg:`) variants against the live window
+    // width — LocalAvailableWidth is the root BoxWithConstraints' maxWidth —
+    // so no renderer has to know breakpoints exist. resolved() returns a
+    // cached node per winning variant, so identity stays stable between
+    // resizes and key(node.id, node.type) below keeps its state.
+    ResolvedNodeView(node.resolved(LocalAvailableWidth.current), overrideModifier)
+}
+
+@Composable
+private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
+    key(node.id, node.type) {
         val renderer = NativeRendererRegistry.get(node.type)
         val isDarkMode = isSystemInDarkTheme()
         val safeAreaTop = LocalSafeAreaTop.current
@@ -255,6 +265,7 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         //   → nodeStyle                     (background + border)
         //   → clip (rounded pressable)
         //   → nodeGestures                  (clickable; ripple now lives inside the scaled visual)
+        //   → nodeAccessibility             (a11y-label replaces the children's semantics, inside the clickable so its action survives)
         //   → nodeLayout                    (padding)
         var modifier: Modifier = base
 
@@ -305,9 +316,7 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         if (hasPress && (radius > 0f || node.props.has("radius_tl"))) {
             modifier = modifier.clip(nodeShape(radius, node.props))
         }
-        modifier = modifier
-            .nodeGestures(node, interactionSource)
-            .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
+        modifier = modifier.nodeGestures(node, interactionSource)
 
         // `ref` is both the test-targeting handle (Maestro / Compose UI tests)
         // AND the shared-element identity: two screens naming an element the
@@ -320,9 +329,15 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             // trades a real accessibility affordance for a test convenience.
             // The tag reaches UiAutomator (and therefore Maestro `id:`) via
             // `testTagsAsResourceId` set once at the root in NativeUIContent.
+            //
+            // Outside `nodeAccessibility`: an `a11y-label` there clears every
+            // semantics modifier inside it, which would drop the tag.
             modifier = modifier.semantics { testTag = ref }
         }
 
+        modifier = modifier
+            .nodeAccessibility(node)
+            .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
         // In-place text change animation (`content_transition` — numeric
         // roll / crossfade). Wraps the content in AnimatedContent keyed on

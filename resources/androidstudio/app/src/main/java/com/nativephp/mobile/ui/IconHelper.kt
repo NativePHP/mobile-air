@@ -1,12 +1,21 @@
 package com.nativephp.mobile.ui
 
+import android.annotation.SuppressLint
+import android.util.Log
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.graphics.takeOrElse
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -28,6 +37,39 @@ val MaterialIconsFont = FontFamily(
 )
 
 /**
+ * Prefix of an app icon (`Icon::custom()` on the PHP side). `native:build`
+ * compiles `resources/icons/<name>.svg` into
+ * `res/drawable/nativephp_custom_<name with - as _>.xml`.
+ */
+const val CUSTOM_ICON_PREFIX = "custom:"
+
+/** Custom icons already reported missing, so each one logs once. */
+private val missingCustomIcons = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+/**
+ * Drawable id for the custom icon [bare] (the name after `custom:`), or 0
+ * when this build has none (Jump, or a build that predates the icon). The
+ * drawables are only ever looked up by name, hence getIdentifier.
+ */
+@SuppressLint("DiscouragedApi")
+@Composable
+private fun rememberCustomIconId(bare: String): Int {
+    val context = LocalContext.current
+
+    return remember(bare) {
+        val id = context.resources.getIdentifier(
+            "nativephp_custom_" + bare.replace('-', '_'),
+            "drawable",
+            context.packageName
+        )
+        if (id == 0 && missingCustomIcons.add(bare)) {
+            Log.w("NativeIcon", "Custom icon '$bare' has no drawable in this build, using the Material glyph")
+        }
+        id
+    }
+}
+
+/**
  * Renders a Material Icon using the font-based ligature approach.
  * This composable is a drop-in replacement for Icon(imageVector = ...).
  *
@@ -37,8 +79,14 @@ val MaterialIconsFont = FontFamily(
  * Common icon names: home, settings, search, menu, close, add, delete,
  * person, notifications, shopping_cart, favorite, star, etc.
  *
+ * `custom:<name>` draws the app's own icon (see [CUSTOM_ICON_PREFIX]) with
+ * the same size and tint, falling back to the glyph for `<name>` when the
+ * drawable is missing.
+ *
  * @param name The Material Icon ligature name (e.g., "settings", "qr_code_2", "home")
- * @param contentDescription Accessibility description (matches Icon API)
+ * @param contentDescription Accessibility description (matches Icon API). Null or
+ *   empty marks the icon decorative: TalkBack skips it instead of reading the
+ *   ligature name ("arrow_back").
  * @param modifier Modifier for the icon
  * @param tint Icon color (defaults to LocalContentColor)
  */
@@ -49,30 +97,25 @@ fun MaterialIcon(
     modifier: Modifier = Modifier,
     tint: Color = LocalContentColor.current
 ) {
-    Box(
-        modifier = modifier.size(24.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = getIconName(name),
-            fontFamily = MaterialIconsFont,
-            fontSize = 24.sp,
-            color = tint,
-            textAlign = TextAlign.Center,
-            // Icons are rendered as an icon-font glyph; like regular text, Android's
-            // default font padding pushes the glyph off-center inside its box, so it
-            // doesn't vertically align with adjacent text (e.g. the X engagement row).
-            // Strip the padding/line-height so the glyph sits centered in the box.
-            style = TextStyle(
-                platformStyle = PlatformTextStyle(includeFontPadding = false),
-                lineHeightStyle = LineHeightStyle(
-                    alignment = LineHeightStyle.Alignment.Center,
-                    trim = LineHeightStyle.Trim.Both
-                )
-            )
-        )
-    }
+    MaterialIcon(
+        name = name,
+        contentDescription = contentDescription,
+        modifier = modifier,
+        size = 24.dp,
+        tint = tint
+    )
 }
+
+/**
+ * The glyph is a ligature `Text`, so without this TalkBack would read the
+ * icon's machine name. Replace it with the description, or with nothing.
+ */
+private fun iconSemantics(contentDescription: String?): Modifier =
+    if (contentDescription.isNullOrEmpty()) {
+        Modifier.clearAndSetSemantics {}
+    } else {
+        Modifier.clearAndSetSemantics { this.contentDescription = contentDescription }
+    }
 
 /**
  * Overload with custom size support
@@ -85,8 +128,24 @@ fun MaterialIcon(
     size: Dp = 24.dp,
     tint: Color = LocalContentColor.current
 ) {
+    if (name.startsWith(CUSTOM_ICON_PREFIX)) {
+        val id = rememberCustomIconId(name.removePrefix(CUSTOM_ICON_PREFIX))
+        if (id != 0) {
+            // Icon(painter) treats Unspecified as "no tint" and would draw the
+            // drawable's raw black; the glyph path's Text falls back to
+            // LocalContentColor, so match that.
+            Icon(
+                painter = painterResource(id),
+                contentDescription = contentDescription,
+                modifier = modifier.size(size),
+                tint = tint.takeOrElse { LocalContentColor.current }
+            )
+            return
+        }
+    }
+
     Box(
-        modifier = modifier.size(size),
+        modifier = modifier.size(size).then(iconSemantics(contentDescription)),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -114,22 +173,25 @@ fun MaterialIcon(
  * Get the Material Icon ligature name for the given icon name.
  *
  * Flow:
- * 1. Check manual mapping for aliases (e.g., "home" -> "home", "cart" -> "shopping_cart")
- * 2. Normalize the name (kebab-case to underscore)
- * 3. Return for font ligature rendering
+ * 1. Strip a `custom:` prefix, so a custom icon falls back to its bare name's glyph
+ * 2. Check manual mapping for aliases (e.g., "home" -> "home", "cart" -> "shopping_cart")
+ * 3. Normalize the name (kebab-case to underscore)
+ * 4. Return for font ligature rendering
  *
  * @param iconName The icon name from EDGE JSON
  * @return Material Icons font ligature name
  */
 fun getIconName(iconName: String): String {
+    val name = iconName.removePrefix(CUSTOM_ICON_PREFIX)
+
     // Check manual mapping first for aliases
-    val mapped = getManualMapping(iconName)
+    val mapped = getManualMapping(name)
     if (mapped != null) {
         return mapped
     }
 
     // Normalize: kebab-case to underscore, lowercase
-    return iconName.lowercase().replace("-", "_")
+    return name.lowercase().replace("-", "_")
 }
 
 /**
@@ -397,6 +459,15 @@ private fun getManualMapping(iconName: String): String? {
         "airplane" -> "flight"
         "power" -> "power_settings_new"
         "moon", "moon.fill" -> "dark_mode"
+        // SF names this app uses that had no alias.
+        "trophy", "trophy.fill" -> "emoji_events"
+        "building.2", "building.2.fill" -> "apartment"
+        "wifi.slash" -> "wifi_off"
+        "wand.and.stars" -> "auto_fix_high"
+        "questionmark.circle.fill" -> "help"
+        "hammer", "hammer.fill" -> "hardware"
+        "figure.soccer" -> "sports_soccer"
+        "clipboard", "clipboard.fill" -> "assignment"
         "sun.max", "sun.max.fill" -> "light_mode"
         "cloud", "cloud.fill" -> "cloud"
         "location.fill" -> "my_location"

@@ -10,19 +10,18 @@ import SwiftUI
 /// `ref` at all, so every `tapOn: id:` failed with "Element with Id matching
 /// regex not found" even though the ref was present in the tree.
 ///
-/// Applied to every node, so it deliberately does the cheapest possible thing
-/// when the prop is absent.
-///
-/// Note: `a11y_label` / `a11y_hint` are emitted by PHP (see `HasA11y`) but no
-/// iOS renderer consumes them yet — that gap is untouched here.
+/// Only applied to nodes with a `ref` (see `NodeDecorations.ref`).
 struct NodeIdentityModifier: ViewModifier {
-    let props: GenericProps
+    let node: NativeUINode
 
     func body(content: Content) -> some View {
-        let ref = props.getString("ref", default: "")
+        let ref = node.props.getString("ref", default: "")
 
-        if ref.isEmpty {
-            content
+        if NodeAccessibility.applies(to: node) {
+            // `NodeAccessibilityModifier` has already made this node one
+            // element (a labelled container, or a pressable read as a
+            // button). Name that element rather than wrapping it in another.
+            content.accessibilityIdentifier(ref)
         } else {
             content
                 // `.contain` keeps this node's DESCENDANTS as separate
