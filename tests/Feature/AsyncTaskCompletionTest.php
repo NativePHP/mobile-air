@@ -4,6 +4,8 @@ use Illuminate\Support\Facades\Cache;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\Transition;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Support\AsyncTaskRegistry;
@@ -271,4 +273,23 @@ it('scopes a task dispatched from mount() to the screen being mounted', function
 
     expect($origin)->toBe($opening)
         ->and(NativeComponent::active())->toBe($previous);
+});
+
+it('keeps a completion that lands before the new screen has drawn its first frame', function () {
+    $bridge = FakeBridge::enable();
+    $router = new NativeRouter;
+    (new ReflectionProperty(NativeRouter::class, 'deferredTransition'))->setValue($router, Transition::Fade);
+
+    // A tap on the screen going away, then a task the new screen dispatched from mount() finishing.
+    $bridge->queueEvent(['type' => 1, 'callback_id' => 7]);
+    $bridge->queueEvent(['type' => 20, 'event' => 'native:'.AsyncTaskFinished::class, 'payload' => ['id' => 't1', 'result' => 'done']]);
+
+    $router->flushDeferredTransition();
+
+    expect($router->takeCarriedEvent())->toBe(['type' => 20, 'event' => 'native:'.AsyncTaskFinished::class, 'payload' => ['id' => 't1', 'result' => 'done']])
+        ->and($router->takeCarriedEvent())->toBeNull()
+        ->and(nativephp_element_wait_event(0))->toBeNull()
+        ->and($bridge->resetCount)->toBe(1);
+
+    FakeBridge::disable();
 });

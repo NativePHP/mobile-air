@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
@@ -119,7 +120,10 @@ trait RunsAndroid
         $cleanCache = $this->buildType !== 'debug';
         $excludeDevDependencies = $this->buildType !== 'debug';
 
-        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies);
+        // Reuse the staged app and skip unchanged steps unless asked not to
+        $reuseUnchanged = ! ($this->hasOption('fresh') && $this->input->getOption('fresh'));
+
+        $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies, $reuseUnchanged);
 
         if (! $this->compileAndroidPlugins()) {
             return false;
@@ -610,17 +614,23 @@ XML;
             $this->logToFile("Windows build exit code: $exitCode");
             $buildSuccessful = ($exitCode === 0);
         } else {
-            $process = Process::path($androidPath)
-                ->timeout(600);
+            $process = $this->gradleProcess($androidPath);
 
             // TTY needs a real terminal; Symfony throws on Docker/CI/piped output
             if (! $this->option('no-tty') && SymfonyProcess::isTtySupported()) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
-                file_put_contents($this->androidLogPath, $output, FILE_APPEND);
-            });
+            try {
+                $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
+                    file_put_contents($this->androidLogPath, $output, FILE_APPEND);
+                });
+            } catch (ProcessTimedOutException) {
+                $this->logToFile('ERROR: Gradle build timed out after '.$this->gradleTimeout().' seconds');
+                $this->reportGradleTimeout($gradleTask);
+
+                return false;
+            }
 
             if (! $result->successful()) {
                 $this->logToFile('ERROR: Gradle build failed with exit code: '.$result->exitCode());
@@ -687,6 +697,9 @@ XML;
             }
 
             $this->logToFile('APK installed on device');
+            // A plain line, since twoColumnDetail truncates long paths and
+            // scripts driving native:run want the whole thing.
+            $this->line("  <fg=gray>APK</> {$apkPath}");
 
             $launchCmd = "$adbCommand -s $targetDeviceId shell am start -n $appId/$mainActivity";
             $this->logToFile("Launching app: $launchCmd");

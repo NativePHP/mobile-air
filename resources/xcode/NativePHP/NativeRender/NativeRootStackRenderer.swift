@@ -314,8 +314,7 @@ struct NativeRootStackRenderer: View {
             } label: {
                 TopBarActionGlyph(
                     icon: icon,
-                    image: action.props.getString("image", default: ""),
-                    label: action.props.getString("label", default: "")
+                    image: action.props.getString("image", default: "")
                 )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
@@ -328,6 +327,7 @@ struct NativeRootStackRenderer: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         } else {
             Menu {
                 ForEach(subItems) { item in
@@ -344,7 +344,11 @@ struct NativeRootStackRenderer: View {
                             }
                         } label: {
                             if !itemIcon.isEmpty {
-                                Label(itemLabel, systemImage: getIconForName(itemIcon))
+                                Label {
+                                    Text(itemLabel)
+                                } icon: {
+                                    NativeIcon.image(itemIcon)
+                                }
                             } else {
                                 Text(itemLabel)
                             }
@@ -352,7 +356,7 @@ struct NativeRootStackRenderer: View {
                         .disabled(item.props.getBool("disabled"))
                         // SwiftUI's Menu won't propagate `.foregroundStyle(.red)`
                         // applied inside the Button label down to the Label's
-                        // systemImage — the icon stays on the menu's accent color
+                        // icon — it stays on the menu's accent color
                         // even with `Button(role: .destructive)`. Applying `.tint`
                         // on the Button itself is the path Menu actually honors;
                         // both the text and the symbol then render in the tint.
@@ -362,8 +366,7 @@ struct NativeRootStackRenderer: View {
             } label: {
                 TopBarActionGlyph(
                     icon: icon,
-                    image: action.props.getString("image", default: ""),
-                    label: action.props.getString("label", default: "")
+                    image: action.props.getString("image", default: "")
                 )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
@@ -374,6 +377,7 @@ struct NativeRootStackRenderer: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         }
     }
 }
@@ -576,33 +580,54 @@ struct WindowBackgroundModifier: ViewModifier {
     }
 }
 
-/// A top-bar action's SF Symbol, or its `image` (e.g. the signed-in user's
-/// avatar) as a small circle when one is set. The symbol shows while the
-/// image loads and stays if it fails. `.font`, `.foregroundColor` and
-/// `.opacity` applied by the caller still reach the symbol, and opacity
-/// fades the image too, so disabled actions dim either way.
+/// A top-bar action's icon, with its `image` (e.g. the signed-in user's
+/// avatar) laid over it as a 28pt circle when one is set. The icon is drawn
+/// first, so it shows while the image loads and stays if it fails.
+/// `.font`, `.foregroundColor` and `.opacity` applied by the caller still
+/// reach the icon, and opacity fades the image too, so disabled actions dim
+/// either way. Accessible naming comes from `TopBarActionA11yLabelModifier`.
 struct TopBarActionGlyph: View {
     let icon: String
     let image: String
-    let label: String
 
     var body: some View {
         if let url = URL(string: image), !image.isEmpty {
-            AsyncImage(url: url) { phase in
-                if case .success(let loaded) = phase {
-                    loaded
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 28, height: 28)
-                        .clipShape(Circle())
-                        .accessibilityLabel(label)
-                } else {
-                    Image(systemName: getIconForName(icon))
-                        .accessibilityLabel(label)
+            ZStack {
+                NativeIconView(icon, pointSize: 17)
+                AsyncImage(url: url) { phase in
+                    if case .success(let loaded) = phase {
+                        loaded
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 28, height: 28)
+                            .clipShape(Circle())
+                    } else {
+                        Color.clear.frame(width: 0, height: 0)
+                    }
                 }
             }
         } else {
-            Image(systemName: getIconForName(icon))
+            NativeIconView(icon, pointSize: 17)
+        }
+    }
+}
+
+/// Accessible name for an icon-only top-bar action (plain Button or Menu
+/// trigger): `a11y_label` (`NavAction::a11yLabel()`), else the visible
+/// `label`, else SwiftUI's default — which for a bare SF Symbol is the
+/// symbol's own name (`building.2` reads as "Business").
+///
+/// Shared by both chrome renderers' trailing action views.
+struct TopBarActionA11yLabelModifier: ViewModifier {
+    let action: NativeUINode
+
+    func body(content: Content) -> some View {
+        let a11yLabel = action.props.getString("a11y_label")
+        let label = a11yLabel.isEmpty ? action.props.getString("label") : a11yLabel
+        if label.isEmpty {
+            content
+        } else {
+            content.accessibilityLabel(Text(label))
         }
     }
 }

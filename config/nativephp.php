@@ -299,6 +299,11 @@ return [
 
     'android' => [
         'gradle_jdk_path' => env('NATIVEPHP_GRADLE_PATH'),
+
+        // Seconds a Gradle build may run before it is stopped. Empty or 0 means
+        // no limit, which is the default: a cold first build that downloads
+        // every dependency can take well over 10 minutes.
+        'gradle_timeout' => env('NATIVEPHP_GRADLE_TIMEOUT'),
         'android_sdk_path' => env('NATIVEPHP_ANDROID_SDK_LOCATION'),
         'emulator_path' => env('ANDROID_EMULATOR'),
         '7zip-location' => env('NATIVEPHP_7ZIP_LOCATION', 'C:\\Program Files\\7-Zip\\7z.exe'),

@@ -48,13 +48,13 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
     // width — LocalAvailableWidth is the root BoxWithConstraints' maxWidth —
     // so no renderer has to know breakpoints exist. resolved() returns a
     // cached node per winning variant, so identity stays stable between
-    // resizes and key(node.id) below keeps its state.
+    // resizes and key(node.id, node.type) below keeps its state.
     ResolvedNodeView(node.resolved(LocalAvailableWidth.current), overrideModifier)
 }
 
 @Composable
 private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
-    key(node.id) {
+    key(node.id, node.type) {
         val renderer = NativeRendererRegistry.get(node.type)
         val isDarkMode = isSystemInDarkTheme()
         val safeAreaTop = LocalSafeAreaTop.current
@@ -261,6 +261,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         //   → nodeStyle                     (background + border)
         //   → clip (rounded pressable)
         //   → nodeGestures                  (clickable; ripple now lives inside the scaled visual)
+        //   → nodeAccessibility             (a11y-label replaces the children's semantics, inside the clickable so its action survives)
         //   → nodeLayout                    (padding)
         var modifier: Modifier = base
 
@@ -299,6 +300,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         }
         modifier = modifier
             .nodeGestures(node, interactionSource)
+            .nodeAccessibility(node)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
         // In-place text change animation (`content_transition` — numeric
