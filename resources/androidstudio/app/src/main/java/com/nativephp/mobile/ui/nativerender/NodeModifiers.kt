@@ -238,7 +238,13 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         if (borderArgb != 0) {
             val borderColor = argbToComposeColor(borderArgb)
             if (borderColor != Color.Transparent) {
-                mod = mod.border(style.borderWidth.dp, borderColor, shape)
+                // Dashed, dotted and per-side borders (see NodeBorder).
+                val border = NodeBorder.from(props, style.borderWidth, radius)
+                mod = if (border != null) {
+                    mod.nodeBorder(border, borderColor)
+                } else {
+                    mod.border(style.borderWidth.dp, borderColor, shape)
+                }
             }
         }
     }

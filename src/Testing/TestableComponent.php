@@ -1543,9 +1543,9 @@ class TestableComponent
             $this->resetComputedCache();
 
             $element = $this->renderToElement();
-            $tree = $this->memoizedToArray($element);
+            $tree = $this->memoizedToArray($element, $fingerprint);
 
-            nativephp_element_publish($tree);
+            $this->publishRenderedFrame($tree, $fingerprint);
 
             return $tree;
         });
