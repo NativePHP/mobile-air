@@ -1,0 +1,99 @@
+try {
+    // Clean PHP output buffers from previous dispatch
+    while (ob_get_level() > 0) { ob_end_clean(); }
+
+    // Drop stale HTTP_* / CONTENT_* keys from previous request before re-populating.
+    // $_SERVER persists across dispatches in the persistent runtime; without this,
+    // headers like X-Inertia leak into subsequent requests and trigger JSON responses.
+    foreach ($_SERVER as $__k => $__v) {
+        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {
+            unset($_SERVER[$__k]);
+        }
+    }
+
+    // Sync $_SERVER from current env (setenv in C doesn't update PHP $_SERVER)
+    $_SERVER['REQUEST_METHOD'] = '%s';
+    $_SERVER['REQUEST_URI'] = '%s';
+    $_SERVER['SCRIPT_FILENAME'] = '%s';
+    $_SERVER['PHP_SELF'] = '/native.php';
+    $_SERVER['HTTP_HOST'] = '127.0.0.1';
+    $_SERVER['SERVER_NAME'] = '127.0.0.1';
+    $_SERVER['SERVER_PORT'] = '80';
+    $_SERVER['APP_URL'] = 'http://127.0.0.1';
+    $_SERVER['NATIVEPHP_RUNNING'] = 'true';
+
+    // Sync ALL env vars into $_SERVER (C setenv() doesn't update PHP $_SERVER)
+    foreach (getenv() as $__k => $__v) {
+        $_SERVER[$__k] = $__v;
+    }
+
+    // Ensure CONTENT_TYPE is set without HTTP_ prefix (CGI convention)
+    if (isset($_SERVER['HTTP_CONTENT_TYPE'])) {
+        $_SERVER['CONTENT_TYPE'] = $_SERVER['HTTP_CONTENT_TYPE'];
+    }
+    if (isset($_SERVER['HTTP_CONTENT_LENGTH'])) {
+        $_SERVER['CONTENT_LENGTH'] = $_SERVER['HTTP_CONTENT_LENGTH'];
+    }
+
+    // Set QUERY_STRING from the URI
+    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');
+    if ($__qpos !== false) {
+        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);
+    } else {
+        $_SERVER['QUERY_STRING'] = '';
+    }
+
+    // Reset superglobals for this request
+    $_GET = [];
+    $_POST = [];
+    $_COOKIE = [];
+    $_FILES = [];
+    $_REQUEST = [];
+
+    // Parse cookies
+    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {
+        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {
+            $__parts = explode('=', $__pair, 2);
+            if (count($__parts) === 2) {
+                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);
+            }
+        }
+    }
+
+    // Parse query string
+    if ($_SERVER['QUERY_STRING'] !== '') {
+        parse_str($_SERVER['QUERY_STRING'], $_GET);
+    }
+
+    // Parse POST body into $_POST for form-urlencoded requests
+    // php://input is set up by the C layer but $_POST was cleared above
+    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {
+        $__rawInput = file_get_contents('php://input');
+        if ($__rawInput !== false && $__rawInput !== '') {
+            $__ct = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {
+                parse_str($__rawInput, $_POST);
+            }
+            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);
+        }
+    }
+
+    $__response = \Native\Mobile\Runtime::dispatch(
+        \Illuminate\Http\Request::capture()
+    );
+    $__code = $__response->getStatusCode();
+    $__status = \Symfony\Component\HttpFoundation\Response::$statusTexts[$__code] ?? 'OK';
+    echo "HTTP/1.1 {$__code} {$__status}\r\n";
+    foreach ($__response->headers->all() as $__name => $__values) {
+        foreach ($__values as $__value) {
+            echo "{$__name}: {$__value}\r\n";
+        }
+    }
+    echo "\r\n";
+    $__response->sendContent();
+} catch (\Throwable $e) {
+    echo "HTTP/1.1 500 Internal Server Error\r\n";
+    echo "Content-Type: text/plain\r\n\r\n";
+    echo 'Persistent dispatch error: ' . $e->getMessage() . "\n";
+    echo $e->getTraceAsString();
+}

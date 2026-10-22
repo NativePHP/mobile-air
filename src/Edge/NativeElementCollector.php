@@ -10,8 +10,8 @@ use Native\Mobile\Edge\Elements\Stack;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
-use Native\Mobile\Edge\Enums\WhiteSpace;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
+use Native\Mobile\Edge\Exceptions\UnknownElementException;
 
 class NativeElementCollector
 {
@@ -61,6 +61,17 @@ class NativeElementCollector
     ];
 
     /**
+     * Wire prop for each side's border width, keyed to the TailwindParser
+     * attribute that sets it. Clockwise from the top, as the renderers walk them.
+     */
+    protected const BORDER_SIDES = [
+        'border_t' => 'borderTopWidth',
+        'border_r' => 'borderRightWidth',
+        'border_b' => 'borderBottomWidth',
+        'border_l' => 'borderLeftWidth',
+    ];
+
+    /**
      * Phase 1 — Blade-side key-path stack for the streaming render path.
      *
      * `<native:row native:key="row-{{ $i }}">` works the same way
@@ -102,9 +113,6 @@ class NativeElementCollector
      * (children === null means a leaf run).
      */
     protected static array $textFrames = [];
-
-    /** True while a captured slot descriptor is being emitted as a leaf (see leaf()). */
-    protected static bool $emittingText = false;
 
     /**
      * Plugin-registered attribute capture.
@@ -250,7 +258,6 @@ class NativeElementCollector
         static::$stack = [];
         static::$roots = [];
         static::$textFrames = [];
-        static::$emittingText = false;
         static::$keyPathStack = [];
 
         try {
@@ -363,7 +370,9 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildBorderProps($attrs)
+                + static::buildAnimationProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -398,7 +407,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -412,7 +421,9 @@ class NativeElementCollector
             $props = $element->getResolvedProps(static::$callbacks);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
-                + static::buildCornerRadiusProps($attrs);
+                + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -458,7 +469,9 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
-                + static::buildAnimationProps($attrs);
+                + static::buildBorderProps($attrs)
+                + static::buildAnimationProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -488,7 +501,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -502,7 +515,9 @@ class NativeElementCollector
             $props = $element->getResolvedProps(static::$callbacks);
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
-                + static::buildCornerRadiusProps($attrs);
+                + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
+                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -632,6 +647,14 @@ class NativeElementCollector
         if (isset($attrs['aspectRatio'])) {
             $layout['aspect_ratio'] = (float) $attrs['aspectRatio'];
         }
+        if (isset($attrs['display'])) {
+            $layout['display'] = (int) $attrs['display'];
+        }
+        // The `hidden` attribute (`<native:column hidden>`, `:hidden="$x"`)
+        // wins over any display class, like the HTML attribute it mirrors.
+        if (! empty($attrs['hidden'])) {
+            $layout['display'] = 1;
+        }
         if (isset($attrs['alignSelf']) && ($alignSelf = AlignSelf::parse($attrs['alignSelf'])) !== null) {
             $layout['align_self'] = $alignSelf;
         }
@@ -668,8 +691,8 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $style['border_radius'] = (float) $attrs['borderRadius'];
         }
-        if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
-            $style['border_width'] = (float) $attrs['borderWidth'];
+        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
+            $style['border_width'] = $borderWidth;
             $style['border_color'] = $attrs['borderColor'];
         }
         if (isset($attrs['opacity'])) {
@@ -855,6 +878,166 @@ class NativeElementCollector
         }
 
         return $props;
+    }
+
+    /**
+     * Border style and per-side border widths (`border-dashed`, `border-l`,
+     * `border-y-2`, …), on the prop bag beside the corner radii: the packed
+     * node carries one `border_width` float and no style.
+     *
+     * `border_style` is 0 solid, 1 dashed, 2 dotted, and is emitted whenever
+     * one was authored, solid included, so `md:border-solid` can undo a
+     * dashed base. The sides follow buildCornerRadiusProps: all four
+     * whenever ANY is authored, each resolved against the uniform `border-*`
+     * width (0 when there is none), so `border-l` alone is a left border
+     * and `border border-l-0` is a box missing its left side.
+     *
+     * @return array{border_style?: int, border_t?: float, border_r?: float, border_b?: float, border_l?: float}
+     */
+    public static function buildBorderProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['borderStyle'])) {
+            $props['border_style'] = (int) $attrs['borderStyle'];
+        }
+
+        if (! TailwindParser::hasSideBorderWidth($attrs)) {
+            return $props;
+        }
+
+        $uniform = isset($attrs['borderWidth']) ? (float) $attrs['borderWidth'] : 0.0;
+
+        foreach (self::BORDER_SIDES as $prop => $attr) {
+            $props[$prop] = isset($attrs[$attr]) ? (float) $attrs[$attr] : $uniform;
+        }
+
+        return $props;
+    }
+
+    /**
+     * The `border_width` the style block carries: the uniform width, or the
+     * widest side when sides were authored. Renderers that read the sides
+     * from buildBorderProps only use it to tell that there is a border;
+     * older ones draw a full border of that width. Null when no width was
+     * authored, which leaves the node without a border.
+     */
+    protected static function borderWidth(array $attrs): ?float
+    {
+        $widths = [];
+
+        foreach (self::BORDER_SIDES as $attr) {
+            if (isset($attrs[$attr])) {
+                $widths[] = (float) $attrs[$attr];
+            } elseif (isset($attrs['borderWidth'])) {
+                $widths[] = (float) $attrs['borderWidth'];
+            }
+        }
+
+        return $widths === [] ? null : max($widths);
+    }
+
+    /**
+     * Responsive variants — the `md:` / `lg:` class buckets — as ONE
+     * `_variants` prop: a JSON list of `{min, layout?, style?, props?}`
+     * entries sorted by min-width. The native NodeView folds them over the
+     * base node cumulatively (base → sm → md → …) at decode time and picks
+     * the widest entry whose min fits the live window width.
+     *
+     * Each entry is the difference between two complete builds of the node:
+     * everything up to the previous breakpoint, and that plus this
+     * breakpoint's classes. Building a breakpoint's classes on their own
+     * gets composite values wrong, because the builders read sibling keys
+     * the breakpoint doesn't carry — `p-4 md:px-8` would ship
+     * `[0, 32, 0, 32]` and lose the vertical padding, `rounded-xl
+     * md:rounded-t-3xl` would square the bottom corners, and `md:border-2`
+     * would vanish for want of a colour. Building through a real element
+     * also means a prefixed class reaches the wire exactly as the
+     * unprefixed class does, element props included (Text tracking, Image
+     * fit, LazyGrid columns).
+     *
+     * @param  \Closure(): ?Element  $make  a fresh element of the node's type
+     */
+    public static function buildVariantProps(array $attrs, \Closure $make): array
+    {
+        if (empty($attrs['variants']) || ! is_array($attrs['variants'])) {
+            return [];
+        }
+
+        $breakpoints = [];
+        foreach ($attrs['variants'] as $name => $inner) {
+            $min = TailwindParser::breakpointMinWidth((string) $name);
+            if ($min !== null && is_array($inner)) {
+                $breakpoints[] = [$min, $inner];
+            }
+        }
+        usort($breakpoints, fn (array $a, array $b) => $a[0] <=> $b[0]);
+
+        $cumulative = $attrs;
+        unset($cumulative['variants']);
+        $previous = static::variantSnapshot($make, $cumulative);
+        if ($previous === null) {
+            return [];
+        }
+
+        $entries = [];
+        foreach ($breakpoints as [$min, $inner]) {
+            $cumulative = TailwindParser::mergeAttributes($cumulative, $inner);
+            $current = static::variantSnapshot($make, $cumulative);
+
+            $entry = ['min' => $min];
+            foreach (['layout', 'style', 'props'] as $part) {
+                $changed = array_filter(
+                    $current[$part],
+                    fn (mixed $value, string $key): bool => ! array_key_exists($key, $previous[$part])
+                        || $previous[$part][$key] !== $value,
+                    ARRAY_FILTER_USE_BOTH,
+                );
+                if ($changed !== []) {
+                    $entry[$part] = $changed;
+                }
+            }
+            if (count($entry) > 1) {
+                $entries[] = $entry;
+            }
+
+            $previous = $current;
+        }
+
+        return $entries === [] ? [] : ['_variants' => json_encode($entries)];
+    }
+
+    /**
+     * The layout / style / props a node of `$make`'s type serializes to
+     * for `$attrs` — the same appliers the element path runs, on a
+     * throwaway element with a throwaway callback registry, so nothing
+     * leaks into the screen's callback ids.
+     *
+     * @return array{layout: array, style: array, props: array}|null
+     */
+    protected static function variantSnapshot(\Closure $make, array $attrs): ?array
+    {
+        $element = $make();
+        if (! $element instanceof Element) {
+            return null;
+        }
+
+        $element->applyAttributes($attrs);
+        static::applyLayout($element, $attrs);
+        static::applyStyle($element, $attrs);
+        static::applyElementProps($element, $attrs);
+        $element->mergeDarkProps(static::buildDarkProps($attrs));
+        foreach (static::buildGradientProps($attrs) + static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+
+        $node = $element->toArray(new CallbackRegistry);
+
+        return [
+            'layout' => $node['layout'] ?? [],
+            'style' => $node['style'] ?? [],
+            'props' => $node['props'] ?? [],
+        ];
     }
 
     /**
@@ -1071,13 +1254,6 @@ class NativeElementCollector
         static::guardAgainstComponentSlot($type);
         $attrs = static::stripEventBindings($attrs);
 
-        // A `:text` attribute honours an explicit whitespace policy. Slot text
-        // arriving via emitTextDescriptor() was already normalized on capture
-        // (runs keep their edge spaces), so it must not pass through again.
-        if ($type === 'text' && ! static::$emittingText) {
-            $attrs = static::applyTextWhiteSpace($attrs);
-        }
-
         if (static::$streaming) {
             static::leafStreaming($type, $attrs);
 
@@ -1096,17 +1272,36 @@ class NativeElementCollector
     // ── Inline text runs (<text> with nested <text>) ─────
 
     /**
+     * Default whitespace mode for text when no whitespace-* class is
+     * present. Both sources collapse like the browser does at paint
+     * time, so slot and attribute text can never disagree; adding
+     * whitespace-pre-wrap or pre-line opts any element back out.
+     */
+    protected const DEFAULT_WHITESPACE = 'normal';
+
+    /**
      * Begin capturing a `<text>` element's slot as ordered inline runs.
      * Flushes the parent `<text>`'s pending raw text as a run first (so a
      * nested run lands in document order), then buffers this element's content.
      */
     public static function textOpen(array $attrs): void
     {
+        $inherited = null;
+
         if (! empty(static::$textFrames)) {
             static::captureRawRunIntoTopFrame();
+
+            // Resolve the parent's mode as this frame opens, so a nested
+            // run inherits the closest classed ancestor, mirroring
+            // how the CSS white-space property cascades down.
+            $inherited = end(static::$textFrames)['whitespace'];
         }
 
-        static::$textFrames[] = ['attrs' => $attrs, 'children' => []];
+        static::$textFrames[] = [
+            'attrs' => $attrs,
+            'children' => [],
+            'whitespace' => static::whitespaceMode($attrs) ?? $inherited,
+        ];
         ob_start();
     }
 
@@ -1122,25 +1317,34 @@ class NativeElementCollector
         $buffer = ob_get_clean();
         $frame = array_pop(static::$textFrames);
         $isNested = ! empty(static::$textFrames);
-        $policy = static::whiteSpacePolicy($frame['attrs']);
+        $mode = $frame['whitespace'];
 
         if (! empty($frame['children'])) {
             // Container: its own trailing buffer is a run; own text stays empty.
-            $tail = static::normalizeRunText($buffer, $policy);
+            $tail = static::normalizeRunText($buffer, $mode);
             if ($tail !== '') {
                 $frame['children'][] = ['attrs' => ['text' => $tail], 'children' => null];
             }
-            $descriptor = ['attrs' => $frame['attrs'], 'children' => $frame['children']];
-        } else {
-            // Childless <text>: a RUN when nested (preserve meaningful edge
-            // spaces), but a top-level leaf keeps today's exact trimmed +
-            // whitespace-collapsed string so nothing else regresses.
-            $attrs = $frame['attrs'];
-            $text = $isNested ? static::normalizeRunText($buffer, $policy) : static::normalizeLeafText($buffer, $policy);
+            $descriptor = [
+                'attrs' => static::applyAttributeWhitespace($frame['attrs'], $mode),
+                'children' => $frame['children'],
+            ];
+        } elseif ($isNested) {
+            // Childless nested <text>: a RUN, normalized without trimming so
+            // meaningful edge spaces survive, under the inherited mode. Its
+            // attribute text gets the run-shaped transform for the same
+            // reason: the browser trims at block boundaries only, so a
+            // separator run like `:text="' / '"` keeps its spacing.
+            $attrs = static::applyRunAttributeWhitespace($frame['attrs'], $mode);
+            $text = static::normalizeRunText($buffer, $mode);
             if ($text !== '') {
                 $attrs['text'] = $text;
             }
             $descriptor = ['attrs' => $attrs, 'children' => null];
+        } else {
+            // Top-level leaf: merge slot and attribute text through the
+            // shared whitespace policy (per-source defaults intact).
+            $descriptor = ['attrs' => static::mergeSlotText($frame['attrs'], $buffer, $mode), 'children' => null];
         }
 
         if ($isNested) {
@@ -1154,78 +1358,165 @@ class NativeElementCollector
         }
     }
 
+    /**
+     * A self-closing `<text />` is a paired tag with an empty slot, so it
+     * runs the exact open/close cycle the paired form does. That makes
+     * a nested one a RUN of its parent in document order, where it
+     * used to escape the frame as a misplaced sibling.
+     */
+    public static function textLeaf(array $attrs): void
+    {
+        static::textOpen($attrs);
+        static::textClose();
+    }
+
+    /**
+     * Merge a captured slot into a text element's attrs under the shared
+     * whitespace policy, applying the default when no class is present.
+     * Only textClose calls this, with the mode its frame resolved at
+     * open time, so every authoring form funnels through one merge.
+     */
+    protected static function mergeSlotText(array $attrs, string $rawSlot, ?string $mode): array
+    {
+        $attrs = static::applyAttributeWhitespace($attrs, $mode);
+
+        $text = static::normalizeLeafText($rawSlot, $mode);
+        if ($text !== '') {
+            $attrs['text'] = $text;
+        }
+
+        return $attrs;
+    }
+
+    /**
+     * Resolve the whitespace-* utility governing an element's text from
+     * its raw class attribute, or null when the class carries none.
+     * TailwindParser caches per class string, so this is cheap.
+     */
+    protected static function whitespaceMode(array $attrs): ?string
+    {
+        if (! is_string($attrs['class'] ?? null)) {
+            return null;
+        }
+
+        return TailwindParser::parse($attrs['class'])['whitespace'] ?? null;
+    }
+
+    /**
+     * Apply the whitespace policy to attribute-sourced text. With no
+     * class present the attribute default collapses like the slot
+     * does, so both sources of text behave identically.
+     */
+    protected static function applyAttributeWhitespace(array $attrs, ?string $mode): array
+    {
+        if (isset($attrs['text']) && is_string($attrs['text'])) {
+            $attrs['text'] = static::applyWhitespace($attrs['text'], $mode);
+        }
+
+        return $attrs;
+    }
+
+    /**
+     * Run-shaped counterpart for attribute text on nested runs: collapse
+     * without trimming so explicit edge spaces survive, and never drop
+     * the string, since `:text` content is intentional rather than
+     * template formatting like raw inter-tag whitespace is.
+     */
+    protected static function applyRunAttributeWhitespace(array $attrs, ?string $mode): array
+    {
+        if (isset($attrs['text']) && is_string($attrs['text'])) {
+            $attrs['text'] = static::applyRunWhitespace($attrs['text'], $mode);
+        }
+
+        return $attrs;
+    }
+
+    /**
+     * Run-shaped whitespace transform: collapse without trimming, so a
+     * run keeps whatever edge spacing its author gave it. The browser
+     * behaves the same way, trimming at block boundaries only.
+     */
+    protected static function applyRunWhitespace(string $text, ?string $mode): string
+    {
+        return match ($mode ?? static::DEFAULT_WHITESPACE) {
+            'pre-wrap' => $text,
+            'pre-line' => static::collapsePreLine($text),
+            default => preg_replace('/\s+/', ' ', $text),
+        };
+    }
+
+    /**
+     * The pre-line collapse: newline runs become one newline first, then
+     * the remaining horizontal runs collapse to single spaces. The two
+     * passes only make sense together and in this order.
+     */
+    protected static function collapsePreLine(string $text): string
+    {
+        return preg_replace('/[^\S\n]+/', ' ', preg_replace('/[^\S\n]*\n[^\S\n]*/', "\n", $text));
+    }
+
+    /**
+     * Leaf-shaped whitespace transform: 'normal' trims and collapses every
+     * whitespace run, 'pre-line' keeps newlines while collapsing the
+     * horizontal runs around them and trimming, 'pre-wrap' touches nothing.
+     */
+    protected static function applyWhitespace(string $text, ?string $mode): string
+    {
+        return match ($mode ?? static::DEFAULT_WHITESPACE) {
+            'pre-wrap' => $text,
+            'pre-line' => trim(static::collapsePreLine($text)),
+            default => preg_replace('/\s+/', ' ', trim($text)),
+        };
+    }
+
     /** Flush the currently-buffered raw text as a run of the top frame. */
     protected static function captureRawRunIntoTopFrame(): void
     {
         $top = count(static::$textFrames) - 1;
-        $text = static::normalizeRunText(ob_get_clean(), static::whiteSpacePolicy(static::$textFrames[$top]['attrs']));
+        $text = static::normalizeRunText(ob_get_clean(), static::$textFrames[$top]['whitespace']);
         if ($text !== '') {
             static::$textFrames[$top]['children'][] = ['attrs' => ['text' => $text], 'children' => null];
         }
     }
 
     /**
-     * Whitespace policy for a raw run: drop pure-whitespace segments (inter-tag
-     * newlines/indentation are formatting, not content) so multiline markup
-     * doesn't inject spurious spaces; normalize internal whitespace per the
-     * element's policy (collapse by default) but PRESERVE meaningful
-     * leading/trailing spaces (a run may be `" / "`, or prose like `"Use "`
-     * before an inline chip).
+     * Whitespace policy for a raw run. The default (and 'normal') drops
+     * pure-whitespace segments (inter-tag newlines/indentation are
+     * formatting, not content) and collapses internal whitespace runs to a
+     * single space while PRESERVING meaningful leading/trailing spaces (a
+     * run may be `" / "`, or prose like `"Use "` before an inline chip).
+     * 'pre-line' keeps newlines and never trims, so run boundaries
+     * still carry their spacing; 'pre-wrap' keeps the run verbatim.
      */
-    protected static function normalizeRunText(string $raw, ?WhiteSpace $policy = null): string
+    protected static function normalizeRunText(string $raw, ?string $mode = null): string
     {
-        $s = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
-        if (trim($s) === '') {
+        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+
+        // Under the default collapse a purely-whitespace raw segment is
+        // template formatting rather than content, so it drops before
+        // the shared run transform handles everything that remains.
+        if (($mode ?? static::DEFAULT_WHITESPACE) === 'normal' && trim($text) === '') {
             return '';
         }
 
-        return ($policy ?? WhiteSpace::Normal)->apply($s);
+        return static::applyRunWhitespace($text, $mode);
     }
 
     /**
-     * Leaf `<text>` slot text. The edges are always trimmed — the newline and
-     * indentation around a slot are template formatting under every policy —
-     * and the interior follows the element's whitespace policy: collapsed to
-     * single spaces by default, line breaks kept under `whitespace-pre-line`,
-     * every byte kept under `whitespace-pre`.
+     * Leaf `<text>` slot text. A formatting-only slot counts as "no slot"
+     * in every mode, so a paired tag written with pretty indentation can
+     * never clobber `:text`; anything else goes through the policy,
+     * which defaults to today's exact trim-and-collapse shape.
      */
-    public static function normalizeLeafText(string $raw, ?WhiteSpace $policy = null): string
+    protected static function normalizeLeafText(string $raw, ?string $mode = null): string
     {
-        return ($policy ?? WhiteSpace::Normal)->apply(trim(html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8')));
-    }
+        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
 
-    /**
-     * The whitespace policy an element's attributes declare, via a
-     * `whitespace-*` class or a `white-space` attribute. Null when the element
-     * says nothing, so each capture path keeps its own default.
-     */
-    public static function whiteSpacePolicy(array $attrs): ?WhiteSpace
-    {
-        if (isset($attrs['class']) && is_string($attrs['class']) && str_contains($attrs['class'], 'whitespace-')) {
-            $attrs = array_merge(TailwindParser::parse($attrs['class']), $attrs);
+        if (trim($text) === '') {
+            return '';
         }
 
-        return WhiteSpace::fromAttributes($attrs);
-    }
-
-    /**
-     * A `:text` attribute reaches the tree byte-for-byte by default (the value
-     * came from PHP, not from a template buffer, so nothing needs undoing). An
-     * explicit whitespace policy on the element applies to it as well, so slot
-     * and attribute agree whenever the author has said what they want.
-     */
-    public static function applyTextWhiteSpace(array $attrs): array
-    {
-        if (! isset($attrs['text']) || ! is_string($attrs['text'])) {
-            return $attrs;
-        }
-
-        $policy = static::whiteSpacePolicy($attrs);
-        if ($policy !== null) {
-            $attrs['text'] = $policy->apply(trim($attrs['text']));
-        }
-
-        return $attrs;
+        return static::applyWhitespace($text, $mode);
     }
 
     /**
@@ -1236,12 +1527,7 @@ class NativeElementCollector
     protected static function emitTextDescriptor(array $descriptor): void
     {
         if ($descriptor['children'] === null) {
-            static::$emittingText = true;
-            try {
-                static::leaf('text', $descriptor['attrs']);
-            } finally {
-                static::$emittingText = false;
-            }
+            static::leaf('text', $descriptor['attrs']);
 
             return;
         }
@@ -1290,7 +1576,6 @@ class NativeElementCollector
         static::$streaming = false;
         static::$pollIntervals = [];
         static::$textFrames = [];
-        static::$emittingText = false;
         // Phase 1 — clear any leftover key-path entries between frames
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).
@@ -1301,6 +1586,32 @@ class NativeElementCollector
         // after. Guards against a scope leaked by an aborted frame.
         static::$owner = null;
         static::$componentDepth = 0;
+    }
+
+    /**
+     * A fresh, unconfigured element for a node type — the builtins plus
+     * anything registered with ElementRegistry — or null when the type is
+     * unknown.
+     */
+    protected static function makeElement(string $type): ?Element
+    {
+        return match ($type) {
+            'column' => Column::make(),
+            'row' => Row::make(),
+            'stack' => Stack::make(),
+            'scroll_view' => ScrollView::make(),
+            'spacer' => Elements\Spacer::make(),
+            'divider' => Elements\Divider::make(),
+            'pressable' => Elements\Pressable::make(),
+            'canvas' => Elements\Canvas::make(),
+            // Inline `<native:bottom-bar>` — bottom-pinned content (chat input,
+            // search bar, …). Hoisted out of the screen tree to the
+            // native-chrome root in NativeComponent::wrapWithNativeChrome and
+            // pinned via `.safeAreaInset(.bottom)` (iOS) / `Scaffold(bottomBar=)`
+            // (Android), which keeps it above the software keyboard natively.
+            'bottom_bar' => Elements\BottomBar::make(),
+            default => ElementRegistry::resolve($type),
+        };
     }
 
     protected static function createElement(string $type, array $attrs): Element
@@ -1325,24 +1636,8 @@ class NativeElementCollector
             unset($attrs['native-key'], $attrs['native:key']);
         }
 
-        $element = match ($type) {
-            'column' => Column::make(),
-            'row' => Row::make(),
-            'stack' => Stack::make(),
-            'scroll_view' => ScrollView::make(),
-            'spacer' => Elements\Spacer::make(),
-            'divider' => Elements\Divider::make(),
-            'pressable' => Elements\Pressable::make(),
-            'canvas' => Elements\Canvas::make(),
-            // Inline `<native:bottom-bar>` — bottom-pinned content (chat input,
-            // search bar, …). Hoisted out of the screen tree to the
-            // native-chrome root in NativeComponent::wrapWithNativeChrome and
-            // pinned via `.safeAreaInset(.bottom)` (iOS) / `Scaffold(bottomBar=)`
-            // (Android), which keeps it above the software keyboard natively.
-            'bottom_bar' => Elements\BottomBar::make(),
-            default => ElementRegistry::resolve($type)
-                ?? throw new \RuntimeException("Unknown native element type: {$type}"),
-        };
+        $element = static::makeElement($type)
+            ?? throw UnknownElementException::forType($type);
 
         if ($rawClass !== null) {
             $element->setProp(static::$capturedAttributes['class'], $rawClass);
@@ -1408,8 +1703,15 @@ class NativeElementCollector
         }
 
         // Per-corner radius rides the prop bag for the same reason — the
-        // packed node has only one `border_radius` float.
-        foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
+        // packed node has only one `border_radius` float. Per-side border
+        // widths and the border style likewise.
+        foreach (static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+        // Responsive variants (`md:` / `lg:` classes) ride the prop bag as
+        // one JSON string the native NodeView resolves against the live
+        // window width — the packed node has no room for alternatives.
+        foreach (static::buildVariantProps($attrs, fn () => static::makeElement($type)) as $key => $value) {
             $element->setProp($key, $value);
         }
 
@@ -1458,6 +1760,12 @@ class NativeElementCollector
         }
         if (isset($attrs['flexDirection'])) {
             $element->flexDirection((int) $attrs['flexDirection']);
+        }
+        if (isset($attrs['display'])) {
+            $element->display((int) $attrs['display']);
+        }
+        if (! empty($attrs['hidden'])) {
+            $element->hidden();
         }
         // Padding (uniform + directional from Tailwind classes)
         $uniformPadding = isset($attrs['padding']) && ! is_array($attrs['padding']) ? (float) $attrs['padding'] : null;
@@ -1562,8 +1870,8 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $element->borderRadius((float) $attrs['borderRadius']);
         }
-        if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
-            $element->border((float) $attrs['borderWidth'], $attrs['borderColor']);
+        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
+            $element->border($borderWidth, $attrs['borderColor']);
         }
         if (isset($attrs['opacity']) && ! ($attrs['opacity'] instanceof SharedValue)) {
             // SharedValue-bound opacity is routed through the prop bag
@@ -1573,6 +1881,33 @@ class NativeElementCollector
         }
         if (isset($attrs['elevation'])) {
             $element->elevation((float) $attrs['elevation']);
+        }
+        // Colored glow halo (`glow-emerald` etc.). Props bag — same path
+        // as glass / dark_bg_color; no NodeStyle binary-layout change.
+        // Defaults match TailwindParser Slice 1 (radius 16, opacity 0.55)
+        // so an EDGE `glowColor` attr alone still produces a visible halo.
+        if (isset($attrs['glowColor'])) {
+            $element->setProp('glow_color', (string) $attrs['glowColor']);
+            $element->setProp(
+                'glow_radius',
+                isset($attrs['glowRadius']) ? (float) $attrs['glowRadius'] : 16.0
+            );
+            $element->setProp(
+                'glow_opacity',
+                isset($attrs['glowOpacity']) ? (float) $attrs['glowOpacity'] : 0.55
+            );
+        } else {
+            if (isset($attrs['glowRadius'])) {
+                $element->setProp('glow_radius', (float) $attrs['glowRadius']);
+            }
+            if (isset($attrs['glowOpacity'])) {
+                $element->setProp('glow_opacity', (float) $attrs['glowOpacity']);
+            }
+        }
+        // Gaussian blur filter (`blur-*` / `blur-[Npx]`). Props bag — same
+        // path as glow; no NodeStyle binary-layout change. Radius in points.
+        if (isset($attrs['blur'])) {
+            $element->setProp('blur', (float) $attrs['blur']);
         }
         // Liquid Glass material (1 = regular, 2 = thick). Stored as a
         // generic prop so the renderer can read it via `props.getInt`
@@ -1645,11 +1980,33 @@ class NativeElementCollector
         if (isset($attrs['_pinchEnd']) && method_exists($element, 'onPinchEnd')) {
             $element->onPinchEnd($attrs['_pinchEnd']);
         }
+        if (isset($attrs['_dragEnd']) && method_exists($element, 'onDragEnd')) {
+            $element->onDragEnd($attrs['_dragEnd']);
+        }
         if (isset($attrs['_navigated']) && method_exists($element, 'onNavigated')) {
             $element->onNavigated($attrs['_navigated']);
         }
         if (isset($attrs['_navigate'])) {
             $element->setNavigateConfig($attrs['_navigate']);
+        }
+
+        static::applyCustomElementEvents($element, $attrs);
+    }
+
+    protected static function applyCustomElementEvents(Element $element, array $attrs): void
+    {
+        foreach (NativeTagPrecompiler::customElementEvents() as $event) {
+            $attr = '_'.$event;
+
+            if (! isset($attrs[$attr])) {
+                continue;
+            }
+
+            $method = 'on'.str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $event)));
+
+            if (method_exists($element, $method)) {
+                $element->{$method}($attrs[$attr]);
+            }
         }
     }
 

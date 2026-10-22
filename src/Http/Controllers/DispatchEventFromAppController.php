@@ -4,7 +4,9 @@ namespace Native\Mobile\Http\Controllers;
 
 use Closure;
 use Illuminate\Http\Request;
+use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Support\NativeCallbacks;
+use ReflectionClass;
 use ReflectionFunction;
 
 class DispatchEventFromAppController
@@ -20,7 +22,12 @@ class DispatchEventFromAppController
             ]);
         }
 
-        $event = new $eventClass(...$payload);
+        $event = new $eventClass(...$this->constructorArguments($eventClass, $payload));
+
+        // The device sent this event, and a native screen hears it through
+        // its own channel. The mark keeps the dispatcher from handing
+        // it to the live screen once more when event() runs it.
+        GlobalEventDispatcher::markFromNative($event);
 
         // Existing path: dispatch to Laravel listeners and #[On] handlers. Untouched.
         event($event);
@@ -33,6 +40,41 @@ class DispatchEventFromAppController
             'success' => true,
             'callback' => $handled,
         ]);
+    }
+
+    /**
+     * Drop payload keys the event's constructor doesn't declare. Native sides
+     * and plugins can add fields before the PHP event class catches up, and
+     * unpacking an unknown string key throws "Unknown named parameter".
+     * Positional payloads and variadic constructors pass through untouched.
+     */
+    protected function constructorArguments(string $eventClass, array $payload): array
+    {
+        if (array_is_list($payload)) {
+            return $payload;
+        }
+
+        $constructor = (new ReflectionClass($eventClass))->getConstructor();
+
+        if ($constructor === null) {
+            return [];
+        }
+
+        $names = [];
+
+        foreach ($constructor->getParameters() as $parameter) {
+            if ($parameter->isVariadic()) {
+                return $payload;
+            }
+
+            $names[$parameter->getName()] = true;
+        }
+
+        return array_filter(
+            $payload,
+            fn ($key) => is_int($key) || isset($names[$key]),
+            ARRAY_FILTER_USE_KEY
+        );
     }
 
     /**

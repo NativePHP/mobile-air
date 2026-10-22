@@ -9,36 +9,45 @@ use Native\Mobile\Concerns\ChecksLatestBuildNumber;
 use Native\Mobile\Concerns\CleansEnvFile;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAppIcon;
+use Native\Mobile\Concerns\InstallsCustomIcons;
 use Native\Mobile\Concerns\InstallsSplashScreen;
 use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Icon\Svg\SvgConversionException;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
+use Native\Mobile\Support\BuildFingerprint;
+use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleFileManager;
 
 use function Laravel\Prompts\error;
 
 class BuildIosAppCommand extends Command
 {
-    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsSplashScreen, ValidatesAppConfig;
+    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsCustomIcons, InstallsSplashScreen, ValidatesAppConfig;
 
     private bool $verbose;
 
     private string $appPath;
 
-    private string $basePath;
+    protected string $basePath;
 
     private string $containerPath;
 
     private string $logPath;
 
-    private ?string $target;
+    protected ?string $target;
 
     private string $xcodeProjectPath;
 
+    private int|string $buildNumber;
+
+    private ?BuildState $buildState = null;
+
     protected $signature = 'native:build {--target=} {--release} {--simulated} {--no-tty} {--cleanup-provisioning-profile : Clean up CI provisioning profile settings}
+        {--fresh : Run every build step, even ones whose inputs are unchanged since the last build}
         {--upload-to-app-store : Upload iOS app to App Store Connect after packaging}
         {--jump-by= : Add extra number to the suggested version (e.g. --jump-by=10 to skip ahead)}
         {--api-key= : Path to App Store Connect API key file (iOS)}
@@ -50,7 +59,7 @@ class BuildIosAppCommand extends Command
     {
         // Building iOS apps needs Xcode and its command-line tools, so bail out
         // early before we touch the build log or copy any files.
-        if (PHP_OS_FAMILY !== 'Darwin') {
+        if (! $this->runningOnMacOs()) {
             $this->error('native:build requires macOS — building iOS apps needs Xcode and its command-line tools.');
 
             return Command::FAILURE;
@@ -77,6 +86,17 @@ class BuildIosAppCommand extends Command
         // Clear the last log
         file_put_contents($this->logPath, '');
 
+        // Resolve the build number BEFORE the Laravel app is bundled. The zipped
+        // .env and bundled.version are the runtime's only way to tell one build
+        // from the next: if they're sealed with the boot-time value and the
+        // App Store Connect lookup only runs afterwards, every upload of the
+        // same version ships an identical bundle identity and the device never
+        // re-extracts. Xcode-driven builds manage their own build number and
+        // must not have .env bumped underneath them, so they keep the boot value.
+        if (! getenv('NATIVEPHP_XCODE_BUILD')) {
+            $this->resolveBuildNumber();
+        }
+
         $this->bundleLaravelApp();
 
         if (! getenv('NATIVEPHP_XCODE_BUILD')) {
@@ -91,60 +111,159 @@ class BuildIosAppCommand extends Command
         return Command::SUCCESS;
     }
 
-    private function bundleLaravelApp(): void
+    /**
+     * Overridable so the ordering in handle() can be exercised on Linux CI,
+     * where the real check would bail before the bundle step is reached.
+     */
+    protected function runningOnMacOs(): bool
+    {
+        return PHP_OS_FAMILY === 'Darwin';
+    }
+
+    protected function bundleLaravelApp(): void
     {
         @mkdir($this->appPath, 0755, true);
 
-        $this->components->task('Copying Laravel app', fn () => BundleFileManager::copy(
-            base_path(),
-            $this->appPath,
-            config('nativephp.cleanup_exclude_files', [])
-        ));
+        $configExcludes = config('nativephp.cleanup_exclude_files', []);
+        $release = (bool) $this->option('release');
+        $state = $this->buildState();
+
+        // The staged copy of the app in nativephp/ios/laravel is kept between
+        // builds. It can be brought up to date in place when it was made with
+        // the same exclusions; otherwise start from an empty directory.
+        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::excludes($configExcludes, base_path()));
+        $incremental = $state->matches('staging', $stagingFingerprint) && is_dir($this->appPath.'vendor');
+
+        // Its vendor/ can be kept too when nothing composer install depends
+        // on has changed since the last successful install.
+        $composerFingerprint = BuildFingerprint::composer(base_path(), $release ? ['--no-dev'] : []);
+        $reuseVendor = $incremental
+            && $state->matches('composer', $composerFingerprint)
+            && is_file($this->appPath.'vendor/autoload.php');
+        $autoloadWasCurrent = $reuseVendor && $state->matches('autoload', $composerFingerprint);
+
+        // Whatever happens next changes the staged tree, so nothing about it
+        // can be trusted until each step has finished again.
+        $state->forget('staging', 'autoload', ...($reuseVendor ? [] : ['composer']));
+
+        $changes = null;
+
+        $this->components->task(
+            $incremental ? 'Copying Laravel app (changed files only)' : 'Copying Laravel app',
+            function () use ($incremental, $reuseVendor, $configExcludes, &$changes) {
+                if (! $incremental) {
+                    BundleFileManager::copy(base_path(), $this->appPath, $configExcludes);
+
+                    return;
+                }
+
+                // Written by this command further down, so always start from
+                // the project's own copy.
+                @unlink($this->appPath.'.env');
+
+                $changes = BundleFileManager::sync(
+                    base_path(),
+                    $this->appPath,
+                    $configExcludes,
+                    $reuseVendor ? ['/vendor'] : [],
+                );
+            }
+        );
+
+        $state->record('staging', $stagingFingerprint);
 
         // Set ASSET_URL in .env
         file_put_contents($this->appPath.'.env', PHP_EOL.'ASSET_URL="/_assets"'.PHP_EOL, FILE_APPEND);
 
-        $this->components->task('Installing Composer dependencies', function () {
-            $result = Process::path($this->appPath)
-                ->forever()
-                ->run([
-                    'composer',
-                    'install',
-                    ...($this->option('release') ? ['--no-dev'] : []),
-                ], function ($type, $output) {
-                    file_put_contents($this->logPath, $output, FILE_APPEND);
+        if ($reuseVendor) {
+            $this->skippedTask('Installing Composer dependencies');
 
-                    if ($this->verbose) {
-                        $this->output->write($output);
-                    }
-                });
+            // vendor/ is unchanged, but the app's own classes may not be.
+            // Regenerate the autoloader if anything it's built from moved.
+            $composerJson = json_decode((string) file_get_contents(base_path('composer.json')), true);
+            $autoloadPaths = is_array($composerJson) ? BuildFingerprint::autoloadPaths($composerJson, ! $release) : [''];
 
-            if (! $result->successful()) {
-                $errorOutput = $result->errorOutput();
-                if ($errorOutput) {
-                    file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
-                }
-
-                error('Composer install failed. Check your dependencies and try again.');
-                file_put_contents($this->logPath, 'ERROR: composer install failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
-                exit(1);
+            if ($autoloadWasCurrent && ! BuildFingerprint::touches($changes, $autoloadPaths)) {
+                $this->skippedTask('Updating Composer autoloader');
+            } else {
+                $this->components->task('Updating Composer autoloader', fn () => $this->runComposer([
+                    'dump-autoload',
+                    '--no-scripts',
+                    ...($release ? ['--no-dev'] : []),
+                ]));
             }
+        } else {
+            $this->components->task('Installing Composer dependencies', fn () => $this->runComposer([
+                'install',
+                ...($release ? ['--no-dev'] : []),
+            ]));
 
-            return true;
-        });
+            $state->record('composer', $composerFingerprint);
+        }
+
+        $state->record('autoload', $composerFingerprint);
 
         $this->components->task('Removing unnecessary files', fn () => BundleFileManager::removeUnnecessaryFiles(
             $this->appPath,
-            config('nativephp.cleanup_exclude_files', [])
+            $configExcludes
         ));
         $this->cleanEnvFile($this->appPath.'.env');
         $this->createAppZip();
     }
 
+    /**
+     * Run a composer command in the staged app, exiting the build if it fails.
+     *
+     * @param  array<int, string>  $arguments
+     */
+    private function runComposer(array $arguments): bool
+    {
+        $result = Process::path($this->appPath)
+            ->forever()
+            ->run(['composer', ...$arguments], function ($type, $output) {
+                file_put_contents($this->logPath, $output, FILE_APPEND);
+
+                if ($this->verbose) {
+                    $this->output->write($output);
+                }
+            });
+
+        if (! $result->successful()) {
+            $errorOutput = $result->errorOutput();
+            if ($errorOutput) {
+                file_put_contents($this->logPath, $errorOutput, FILE_APPEND);
+            }
+
+            error('Composer '.$arguments[0].' failed. Check your dependencies and try again.');
+            file_put_contents($this->logPath, 'ERROR: composer '.$arguments[0].' failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
+            exit(1);
+        }
+
+        return true;
+    }
+
+    /**
+     * What this build remembers about the previous one. Builds started by
+     * Xcode, and any build run with --fresh, start from nothing.
+     */
+    protected function buildState(): BuildState
+    {
+        return $this->buildState ??= BuildState::for(
+            $this->basePath,
+            $this->option('release') ? 'release' : 'debug',
+            (bool) $this->option('fresh') || (bool) getenv('NATIVEPHP_XCODE_BUILD'),
+        );
+    }
+
+    private function skippedTask(string $description): void
+    {
+        $this->components->twoColumnDetail($description, '<fg=gray>skipped (unchanged)</>');
+    }
+
     private function configureXcodeProject(): bool
     {
         $this->updateAppVersion();
-        $this->updateBuildNumber();
+        $this->applyBuildNumber();
         $this->setAppName();
         $this->updateInfoPlistFiles();
         $this->configureDeviceOrientations();
@@ -152,6 +271,16 @@ class BuildIosAppCommand extends Command
         $this->configureProvisioningProfile();
         $this->installIosIcon();
         $this->installIosSplashScreen();
+
+        try {
+            $this->installIosCustomIcons();
+        } catch (SvgConversionException $e) {
+            error($e->getMessage());
+            file_put_contents($this->logPath, 'ERROR: '.$e->getMessage().PHP_EOL, FILE_APPEND);
+
+            return false;
+        }
+
         $this->updateIcuConfiguration();
 
         // Compile plugins AFTER core config so plugin entries (like info_plist)
@@ -206,12 +335,22 @@ class BuildIosAppCommand extends Command
             ]);
     }
 
-    private function updateBuildNumber(): void
+    /**
+     * Work out the build number this build ships with, and persist it to .env
+     * and config so everything downstream (the zipped .env, bundled.version,
+     * bundle_meta.json, plugin hooks and the Xcode project) agrees on it.
+     *
+     * Must run before bundleLaravelApp(): the bundle copies .env and reads
+     * config('nativephp.version_code'), so a number resolved any later never
+     * reaches the runtime.
+     */
+    protected function resolveBuildNumber(): int|string
     {
         // Only increment build number for actual packaging/release builds that will be uploaded
         // Skip for: device runs, simulator builds, cleanup operations, debug builds
         $shouldIncrementBuildNumber = $this->option('release') &&
                                      ! $this->option('target') &&
+                                     ! $this->option('simulated') &&
                                      ! $this->option('cleanup-provisioning-profile');
 
         // Get current build number from config
@@ -230,19 +369,30 @@ class BuildIosAppCommand extends Command
             $currentBuildNumber = 1;
             if ($shouldIncrementBuildNumber) {
                 $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+                config(['nativephp.version_code' => $currentBuildNumber]);
             }
         } else {
             if ($shouldIncrementBuildNumber) {
                 $currentBuildNumber = (int) $currentBuildNumber + 1;
                 $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+                config(['nativephp.version_code' => $currentBuildNumber]);
             }
         }
+
+        return $this->buildNumber = $currentBuildNumber;
+    }
+
+    private function applyBuildNumber(): void
+    {
+        // handle() resolves before bundling; fall back rather than trip over an
+        // uninitialised property if a future caller reaches here without it.
+        $buildNumber = $this->buildNumber ?? $this->resolveBuildNumber();
 
         // Update CFBundleVersion (build number) in Xcode project
         Process::path($this->xcodeProjectPath)
             ->run([
                 'sed', '-i', null,
-                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$currentBuildNumber};|g",
+                "s|CURRENT_PROJECT_VERSION = [^;]*;|CURRENT_PROJECT_VERSION = {$buildNumber};|g",
                 'project.pbxproj',
             ]);
     }
@@ -876,7 +1026,8 @@ class BuildIosAppCommand extends Command
 
         $this->createBundledVersionFile($zipPath);
 
-        Process::run("rm -rf {$escapedAppPath}");
+        // The staged app stays in place so the next build only has to copy
+        // what changed. See bundleLaravelApp().
     }
 
     private function createBundledVersionFile(string $zipPath): void
@@ -908,11 +1059,16 @@ class BuildIosAppCommand extends Command
 
         $bundleMeta = json_encode([
             'version' => $appVersion,
-            'version_code' => $versionCode,
+            'version_code' => (int) $versionCode,
             'bifrost_app_id' => $bifrostAppId,
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
             'entry_mode' => $entryMode,
             'native_routes' => $nativeRoutes,
+            // What this shell ships with, so a lane cannot offer it a release
+            // that predates its own code. Written here because .env is
+            // replaced wholesale by a payload and this has to outlive one.
+            'shell_built_at' => env('NATIVEPHP_OTA_SHELL_BUILT_AT'),
+            'shell_commit' => env('NATIVEPHP_OTA_SHELL_COMMIT'),
         ], JSON_PRETTY_PRINT);
 
         file_put_contents(dirname($zipPath).'/bundle_meta.json', $bundleMeta);
@@ -955,48 +1111,13 @@ class BuildIosAppCommand extends Command
 
     private function build(): bool
     {
-        $simulated = $this->option('simulated');
-        $signingArgs = $this->getSigningArgs($simulated);
-
-        // No target-specific args needed - workspace builds don't support target specification
-        $targetSpecificArgs = [];
-
-        // Use CocoaPods workspace if it exists, otherwise fall back to internal workspace
-        $workspace = file_exists($this->basePath.'/NativePHP.xcworkspace')
-            ? 'NativePHP.xcworkspace'
-            : 'NativePHP.xcodeproj/project.xcworkspace';
-
-        // Build the complete command array for logging
-        $xcodebuildCommand = [
-            'xcodebuild',
-            '-scheme', 'NativePHP'.($simulated ? '-simulator' : ''),
-            '-workspace', $workspace,
-            '-sdk', ($simulated ? 'iphonesimulator' : 'iphoneos'),
-            ...($simulated ? [] : ['-configuration', $this->option('release') ? 'Release' : 'Debug']),
-            ...$signingArgs,
-            // Note: CODE_SIGN_STYLE is already included in $signingArgs, no need to duplicate
-            ...$targetSpecificArgs,
-            '-derivedDataPath', 'build',
-            // Skip Swift Package Manager plugin validation to avoid bundle signing issues
-            '-skipPackagePluginValidation',
-            // Add verbose output to help debug build failures
-            '-verbose',
-            ...($this->target ? [
-                '-destination', 'id='.$this->target.($simulated ? '' : ',platform=iOS'),
-                'build',
-            ] : [
-                '-archivePath', $this->basePath.'/build/NativePHP.xcarchive',
-                'archive',
-            ]),
-        ];
-
         $result = Process::path($this->basePath)
             ->forever()
             ->env([
                 'NATIVEPHP_CLI_BUILD' => true,
             ])
             ->tty($this->verbose && ! $this->option('no-tty'))
-            ->run($xcodebuildCommand, function ($type, $output) {
+            ->run($this->xcodebuildCommand(), function ($type, $output) {
                 file_put_contents($this->logPath, $output, FILE_APPEND);
 
                 if ($this->verbose) {
@@ -1109,10 +1230,77 @@ class BuildIosAppCommand extends Command
 
         \Laravel\Prompts\outro('App build succeeded!');
 
+        if ($this->option('simulated')) {
+            $this->line('<fg=yellow>Simulator app:</> '.$this->simulatorAppPath());
+        }
+
         // Run post-build hooks for all plugins
         $this->runPostBuildHooks();
 
         return true;
+    }
+
+    /**
+     * The xcodebuild invocation for this build.
+     *
+     * A simulated build with no target builds for any simulator rather than
+     * archiving, so CI and scripts can get a simulator .app without a device
+     * to point at. It lands at simulatorAppPath().
+     *
+     * @return array<int, string>
+     */
+    protected function xcodebuildCommand(): array
+    {
+        $simulated = (bool) $this->option('simulated');
+
+        // Use CocoaPods workspace if it exists, otherwise fall back to internal workspace
+        $workspace = file_exists($this->basePath.'/NativePHP.xcworkspace')
+            ? 'NativePHP.xcworkspace'
+            : 'NativePHP.xcodeproj/project.xcworkspace';
+
+        $action = match (true) {
+            (bool) $this->target => [
+                '-destination', 'id='.$this->target.($simulated ? '' : ',platform=iOS'),
+                'build',
+            ],
+            // A generic destination builds every simulator architecture. The
+            // app target already excludes x86_64 (the PHP simulator libraries
+            // are arm64 only), so stop the dependencies building it too.
+            $simulated => [
+                '-destination', 'generic/platform=iOS Simulator',
+                'ARCHS=arm64',
+                'build',
+            ],
+            default => [
+                '-archivePath', $this->basePath.'/build/NativePHP.xcarchive',
+                'archive',
+            ],
+        };
+
+        return [
+            'xcodebuild',
+            '-scheme', 'NativePHP'.($simulated ? '-simulator' : ''),
+            '-workspace', $workspace,
+            '-sdk', ($simulated ? 'iphonesimulator' : 'iphoneos'),
+            ...($simulated ? [] : ['-configuration', $this->option('release') ? 'Release' : 'Debug']),
+            // CODE_SIGN_STYLE is already included in the signing args when needed
+            ...$this->getSigningArgs($simulated),
+            '-derivedDataPath', 'build',
+            // Skip Swift Package Manager plugin validation to avoid bundle signing issues
+            '-skipPackagePluginValidation',
+            // Add verbose output to help debug build failures
+            '-verbose',
+            ...$action,
+        ];
+    }
+
+    /**
+     * Where a simulated build leaves the app. The simulator scheme builds its
+     * Debug configuration.
+     */
+    protected function simulatorAppPath(): string
+    {
+        return $this->basePath.'/build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app';
     }
 
     private function validateInfoPlistXml(string $filePath): void
@@ -1210,8 +1398,14 @@ class BuildIosAppCommand extends Command
             $compiler->compile();
 
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("❌ Plugin compilation failed: {$e->getMessage()}");
+
+            // A hook that fataled carries the real error underneath. Without
+            // this the author sees the message and no idea where it came from.
+            if ($cause = $e->getPrevious()) {
+                $this->line("   at {$cause->getFile()}:{$cause->getLine()}");
+            }
 
             return false;
         }
@@ -1246,6 +1440,9 @@ class BuildIosAppCommand extends Command
 
     /**
      * Install CocoaPods dependencies if Podfile exists.
+     *
+     * Skipped when the Podfile, lockfile, Pods sandbox and Xcode project are
+     * exactly as the last successful `pod install` left them.
      */
     private function installCocoaPods(): void
     {
@@ -1255,9 +1452,21 @@ class BuildIosAppCommand extends Command
             return;
         }
 
+        $state = $this->buildState();
+
+        if ($state->matches('cocoapods', BuildFingerprint::cocoaPods($this->basePath))) {
+            $this->skippedTask('Installing CocoaPods dependencies');
+
+            return;
+        }
+
+        $state->forget('cocoapods');
+
         $this->components->task('Installing CocoaPods dependencies', function () {
+            // No limit: a first install downloads every pod, which can take
+            // longer than any fixed timeout on a slow connection.
             $result = Process::path($this->basePath)
-                ->timeout(300)
+                ->forever()
                 ->run(['pod', 'install'], function ($type, $output) {
                     file_put_contents($this->logPath, $output, FILE_APPEND);
 
@@ -1273,6 +1482,9 @@ class BuildIosAppCommand extends Command
 
             return true;
         });
+
+        // Taken after the install, since pod install rewrites the project.
+        $state->record('cocoapods', BuildFingerprint::cocoaPods($this->basePath));
     }
 
     /**
@@ -1295,9 +1507,21 @@ class BuildIosAppCommand extends Command
             return;
         }
 
-        $this->components->task('Resolving Swift Package dependencies', function () {
+        $state = $this->buildState();
+
+        if ($state->matches('swift-packages', BuildFingerprint::swiftPackages($this->basePath))) {
+            $this->skippedTask('Resolving Swift Package dependencies');
+
+            return;
+        }
+
+        $state->forget('swift-packages');
+
+        $resolved = false;
+
+        $this->components->task('Resolving Swift Package dependencies', function () use (&$resolved) {
             $result = Process::path($this->basePath)
-                ->timeout(300)
+                ->forever()
                 ->run([
                     'xcodebuild',
                     '-resolvePackageDependencies',
@@ -1310,7 +1534,11 @@ class BuildIosAppCommand extends Command
                     }
                 });
 
-            return $result->successful();
+            return $resolved = $result->successful();
         });
+
+        if ($resolved) {
+            $state->record('swift-packages', BuildFingerprint::swiftPackages($this->basePath));
+        }
     }
 }

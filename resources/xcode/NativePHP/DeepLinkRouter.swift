@@ -4,6 +4,9 @@ final class DeepLinkRouter {
     static let shared = DeepLinkRouter()
 
     private var pendingURL: String?
+    /// The https URL behind pendingURL when it came from a universal link,
+    /// so a cold start can still give an unrouted link back to Safari.
+    private var pendingExternalURL: String?
     private var isWebViewReady = false
     private var isPhpReady = false
 
@@ -31,17 +34,30 @@ final class DeepLinkRouter {
         if NativeUIBridge.shared.isActive {
             let route = pendingURL.replacingOccurrences(of: "php://127.0.0.1", with: "")
             DebugLogger.shared.log("🔗 Processing pending deep link via native-ui: \(route)")
-            dispatchNativeUIDeepLink(route.isEmpty ? "/" : route)
+            dispatchNativeUIDeepLink(route.isEmpty ? "/" : route, externalURL: pendingExternalURL)
             self.pendingURL = nil
+            self.pendingExternalURL = nil
         } else if isWebViewReady {
             DebugLogger.shared.log("🔗 Processing pending URL: \(pendingURL)")
             self.redirectToURL(pendingURL)
             self.pendingURL = nil
+            self.pendingExternalURL = nil
         }
     }
 
     func hasPendingURL() -> Bool {
         return pendingURL != nil
+    }
+
+    /// The route of a pending universal link, or nil when nothing is pending
+    /// or the pending link came from a custom scheme (it has no web page to
+    /// go back to).
+    func pendingUniversalLinkRoute() -> String? {
+        guard let pendingURL, pendingExternalURL != nil else {
+            return nil
+        }
+        let route = pendingURL.replacingOccurrences(of: "php://127.0.0.1", with: "")
+        return route.isEmpty ? "/" : route
     }
 
     /// Re-attempt delivery of a parked deep link — called when native-ui
@@ -132,6 +148,10 @@ final class DeepLinkRouter {
             route = url.path.isEmpty || url.path == "/" ? "/" : url.path
         }
 
+        // Only a real web URL can be handed back to the browser; a custom-scheme
+        // link has nowhere else to go.
+        let externalURL = (url.scheme == "https" || url.scheme == "http") ? url.absoluteString : nil
+
         // Add query parameters if present
         let fullRoute = route + (url.query.map { "?\($0)" } ?? "")
 
@@ -164,7 +184,6 @@ final class DeepLinkRouter {
                 // Hand the original https URL along; PHP gives it back to
                 // Safari when the app has no route for the path, instead of
                 // exiting to the WebView and serving a local 404.
-                let externalURL = (url.scheme == "https" || url.scheme == "http") ? url.absoluteString : nil
                 dispatchNativeUIDeepLink(normalizedRoute, externalURL: externalURL)
             } else {
                 // Inertia/WebView SPA: use the SPA router to preserve state.
@@ -177,6 +196,7 @@ final class DeepLinkRouter {
             DebugLogger.shared.log("🔗 Not ready, storing as pending URL")
             // Store the URL to handle once the runtime is ready
             pendingURL = newURLString
+            pendingExternalURL = externalURL
         }
     }
 
