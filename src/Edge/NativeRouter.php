@@ -799,7 +799,8 @@ class NativeRouter
      *
      * A guard that throws is treated as a denial rather than taking the
      * runloop down: failing open would silently grant access, which is the
-     * bug this whole mechanism exists to fix.
+     * bug this whole mechanism exists to fix. ScreenGuard::failed() decides
+     * where the user goes instead.
      */
     protected function guard(NativeComponent $component, string $uri): ?NavigationIntent
     {
@@ -818,9 +819,7 @@ class NativeRouter
 
             return ScreenGuard::check($match['route'], $uri);
         } catch (\Throwable $e) {
-            static::debugLog('guard FAILED for '.$uri.': '.$e->getMessage());
-
-            return new NavigationIntent(NavigationIntent::BACK);
+            return ScreenGuard::failed($e, $uri);
         }
     }
 

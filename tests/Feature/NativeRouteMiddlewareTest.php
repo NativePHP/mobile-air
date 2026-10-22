@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Routing\Middleware\SubstituteBindings;
@@ -7,6 +8,7 @@ use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\AllowMiddleware;
@@ -20,10 +22,12 @@ beforeEach(function () {
     DenyMiddleware::reset();
     GuardedScreen::reset();
     ScreenGuard::$skip = ScreenGuard::DEFAULT_SKIP;
+    ScreenGuard::onFailure(null);
 });
 
 afterEach(function () {
     NativeRouter::clearRoutes();
+    ScreenGuard::onFailure(null);
 });
 
 // ── The reported bug (#252) ─────────────────────────
@@ -178,16 +182,106 @@ it('lets an app opt its own middleware out of per-navigation runs', function () 
 
 // ── Guard failure must not fail open ────────────────
 
-it('refuses the navigation when the middleware itself blows up', function () {
+it('sends the user to the start_url when the middleware itself blows up', function () {
     // An unresolvable alias throws inside the pipeline. Failing OPEN here
-    // would silently grant access — the exact bug this mechanism exists to
-    // fix — so the router turns any guard exception into a refusal.
+    // would silently grant access, the exact bug this mechanism exists to
+    // fix. Refusing in place can leave the app on a blank screen, so the
+    // user lands on the start screen and the exception is reported.
+    $reported = captureReports();
+
+    Route::native('/', CounterScreen::class);
+    Route::native('/guarded', GuardedScreen::class)->middleware('no-such-middleware-alias');
+
+    Native::visit('/guarded')->assertReplacedWith('/');
+
+    expect(GuardedScreen::$mounts)->toBe(0);
+    expect($reported)->toHaveCount(1);
+});
+
+it('follows the configured start_url after a guard failure', function () {
+    config(['nativephp.start_url' => '/home']);
+
+    Route::native('/home', CounterScreen::class);
+    Route::native('/guarded', GuardedScreen::class)->middleware('no-such-middleware-alias');
+
+    Native::visit('/guarded')->assertReplacedWith('/home');
+});
+
+it('lets the app decide where a failed guard sends the user', function () {
+    $failed = null;
+
+    ScreenGuard::onFailure(function (Throwable $e, string $uri) use (&$failed) {
+        $failed = $uri;
+
+        return '/oops';
+    });
+
+    Route::native('/oops', CounterScreen::class);
+    Route::native('/guarded', GuardedScreen::class)->middleware('no-such-middleware-alias');
+
+    Native::visit('/guarded')->assertReplacedWith('/oops');
+
+    expect($failed)->toBe('/guarded');
+    expect(GuardedScreen::$mounts)->toBe(0);
+});
+
+it('lets the app keep the user where they were after a guard failure', function () {
+    ScreenGuard::onFailure(fn () => new NavigationIntent(NavigationIntent::BACK));
+
     Route::native('/guarded', GuardedScreen::class)->middleware('no-such-middleware-alias');
 
     Native::visit('/guarded')->assertWentBack();
+});
+
+it('hands a non-native failure destination to the web', function () {
+    ScreenGuard::onFailure(fn () => 'https://example.com/help');
+
+    Route::native('/guarded', GuardedScreen::class)->middleware('no-such-middleware-alias');
+
+    Native::visit('/guarded')->assertExitedToWeb('https://example.com/help');
+});
+
+it('hands the start screen to the web when its own guard is the one that failed', function () {
+    // Replacing onto the screen that just failed would fail again, forever.
+    // A real request lets the HTTP kernel run the middleware itself and
+    // show Laravel's error page if it really is broken.
+    Route::native('/', GuardedScreen::class)->middleware('no-such-middleware-alias');
+
+    Native::visit('/')->assertExitedToWeb('/');
 
     expect(GuardedScreen::$mounts)->toBe(0);
 });
+
+it('still sends the user somewhere when the failure callback throws', function () {
+    $reported = captureReports();
+
+    ScreenGuard::onFailure(fn () => throw new RuntimeException('callback broke'));
+
+    Route::native('/', CounterScreen::class);
+    Route::native('/guarded', GuardedScreen::class)->middleware('no-such-middleware-alias');
+
+    Native::visit('/guarded')->assertReplacedWith('/');
+
+    expect($reported)->toHaveCount(2);
+});
+
+/**
+ * Collect what the guard hands to Laravel's reporter.
+ *
+ * @return ArrayObject<int, Throwable>
+ */
+function captureReports(): ArrayObject
+{
+    $reported = new ArrayObject;
+
+    app(ExceptionHandler::class)->reportable(function (Throwable $e) use ($reported) {
+        $reported[] = $e;
+
+        return false;
+    });
+
+    return $reported;
+}
 
 /**
  * The `web` group as a real app has it. Testbench doesn't register one, but

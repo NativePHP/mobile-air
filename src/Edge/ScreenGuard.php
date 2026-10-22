@@ -43,6 +43,8 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  *     screen, or EXIT_WEB when the target is not a native route
  *   - middleware aborts (403, or returns a response) → BACK, the
  *     navigation is refused and the user stays where they were
+ *   - middleware throws → reported, then REPLACE onto the app's start_url,
+ *     or wherever [onFailure] sends it
  */
 class ScreenGuard
 {
@@ -67,6 +69,9 @@ class ScreenGuard
     /** @var array<int, class-string> */
     public static array $skip = self::DEFAULT_SKIP;
 
+    /** @var (\Closure(\Throwable, string): (NavigationIntent|string|null))|null */
+    public static ?\Closure $onFailure = null;
+
     /**
      * Let an app opt additional middleware out of per-navigation execution —
      * a rate limiter or an analytics logger that should count one visit per
@@ -80,12 +85,27 @@ class ScreenGuard
     }
 
     /**
+     * Choose where the user goes when a guard throws instead of answering.
+     * The callback gets the exception and the URI that was being guarded, and
+     * returns a URI or a NavigationIntent. Returning null keeps the default,
+     * which is the app's start_url.
+     *
+     *     ScreenGuard::onFailure(fn (Throwable $e, string $uri) => '/oops');
+     *
+     * @param  (callable(\Throwable, string): (NavigationIntent|string|null))|null  $callback
+     */
+    public static function onFailure(?callable $callback): void
+    {
+        static::$onFailure = $callback === null ? null : \Closure::fromCallable($callback);
+    }
+
+    /**
      * Decide whether $uri may be mounted. Null means allow.
      *
      * Fails CLOSED: any exception escaping the pipeline (an unresolvable
      * middleware alias, a guard with a bug) refuses the navigation. Failing
      * open would silently grant access, which is the failure mode this whole
-     * mechanism exists to remove.
+     * mechanism exists to remove. See [failed] for where the user goes.
      */
     public static function check(?LaravelRoute $route, string $uri): ?NavigationIntent
     {
@@ -96,10 +116,52 @@ class ScreenGuard
         try {
             return static::run($route, $uri);
         } catch (\Throwable $e) {
-            NativeRouter::debugLog("ScreenGuard: {$uri} guard threw ".$e::class.': '.$e->getMessage());
-
-            return new NavigationIntent(NavigationIntent::BACK);
+            return static::failed($e, $uri);
         }
+    }
+
+    /**
+     * Where to send the user after a guard threw. The screen stays refused,
+     * but refusing in place is not enough: a REPLACE has nothing beneath it to
+     * go back to, so a broken guard would leave the app on a blank screen. The
+     * exception is reported, and the user lands on the app's start_url, or on
+     * whatever [onFailure] returns.
+     *
+     * When that destination is the screen that just failed, it goes to the
+     * WebView as a real request instead. The HTTP kernel then runs the same
+     * middleware itself, and shows either the screen or Laravel's error page.
+     */
+    public static function failed(\Throwable $e, string $uri): NavigationIntent
+    {
+        NativeRouter::debugLog("ScreenGuard: {$uri} guard threw ".$e::class.': '.$e->getMessage());
+
+        static::report($e);
+
+        $target = null;
+
+        if (static::$onFailure !== null) {
+            try {
+                $target = (static::$onFailure)($e, $uri);
+            } catch (\Throwable $callbackFailure) {
+                static::report($callbackFailure);
+            }
+        }
+
+        if ($target instanceof NavigationIntent) {
+            return $target;
+        }
+
+        if (! is_string($target) || $target === '') {
+            $target = static::startUri();
+        }
+
+        $path = '/'.ltrim((string) (parse_url($target, PHP_URL_PATH) ?: '/'), '/');
+
+        if ($path !== '/'.ltrim($uri, '/') && NativeRouter::isNativeRoute($path)) {
+            return new NavigationIntent(NavigationIntent::REPLACE, $path);
+        }
+
+        return new NavigationIntent(NavigationIntent::EXIT_WEB, $target);
     }
 
     protected static function run(LaravelRoute $route, string $uri): ?NavigationIntent
@@ -248,6 +310,20 @@ class ScreenGuard
         }
 
         return new NavigationIntent(NavigationIntent::EXIT_WEB, $target);
+    }
+
+    protected static function startUri(): string
+    {
+        return (string) (config('nativephp.start_url') ?: '/');
+    }
+
+    /** A reporter that throws must not stop the user being sent somewhere. */
+    protected static function report(\Throwable $e): void
+    {
+        try {
+            report($e);
+        } catch (\Throwable) {
+        }
     }
 
     /** Best-effort login URI for an AuthenticationException with no redirect set. */
