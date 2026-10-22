@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Elements;
 
 use Native\Mobile\Icon\AndroidSymbol;
+use Native\Mobile\Icon\Icon;
 use Native\Mobile\Icon\IconResolver;
 use Native\Mobile\Icon\IosSymbol;
 use SupaNative\Core\Edge\CallbackRegistry;
@@ -169,6 +170,10 @@ class BottomNavItem extends Element
             if ($resolved['variant'] !== null && ! isset($this->props['material_variant'])) {
                 $this->props['material_variant'] = $resolved['variant'];
             }
+        }
+        // An explicit `material-variant` attr means nothing to a custom icon.
+        if (Icon::isCustom($this->props['icon'] ?? null)) {
+            unset($this->props['material_variant']);
         }
 
         // Search-role tabs are iOS-owned (the floating Liquid Glass

@@ -69,7 +69,9 @@ use SupaNative\Core\Platform as RenderPlatform;
  *
  * The `variant` ('filled' / 'outlined' / null) is only set when the
  * Android override is an `AndroidSymbol` enum instance, and only on
- * Android — on iOS the value is irrelevant.
+ * Android — on iOS the value is irrelevant. A resolved custom icon
+ * (`custom:<name>`, see [Icon::custom]) never gets one, whichever slot
+ * it came from: it's drawn from a VectorDrawable, not a Material font.
  */
 class IconResolver
 {
@@ -99,7 +101,7 @@ class IconResolver
             $icon = $override->value;
         }
 
-        $variant = ($platform === Platform::ANDROID && $android instanceof AndroidSymbol)
+        $variant = ($platform === Platform::ANDROID && $android instanceof AndroidSymbol && ! Icon::isCustom($icon))
             ? $android->variant()
             : null;
 

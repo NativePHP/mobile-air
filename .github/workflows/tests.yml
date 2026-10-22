@@ -80,7 +80,7 @@ jobs:
       - name: Run Pint
         run: vendor/bin/pint --test
 
-  # The one test in the suite that talks to the network, so it gets its own
+  # The tests in the suite that talk to the network, so they get their own
   # job: a CDN blip should read as "couldn't check the binaries manifest",
   # not take the whole test run down with it.
   format-version-sync:
@@ -106,9 +106,13 @@ jobs:
       # the format version published by the binaries release PhpBinaries pins.
       # Mismatched halves render nothing at runtime and say so only in a log
       # nobody reads, so this is the last place it can be caught cheaply.
-      - name: Check readers against the pinned binaries release
+      #
+      # Also asserts that release's manifest is signed with a key in
+      # PhpBinaries::MANIFEST_KEYS. native:install refuses it otherwise, so
+      # shipping a key the manifest isn't signed with breaks every install.
+      - name: Check readers and signature against the pinned binaries release
         env:
-          # Locally the test skips when the manifest is unreachable, so being
-          # offline doesn't fail the suite. Here it has to actually run.
+          # Locally the tests skip when the manifest is unreachable, so being
+          # offline doesn't fail the suite. Here they have to actually run.
           NATIVEPHP_ENFORCE_BINARY_MANIFEST: 1
-        run: vendor/bin/pest --filter=FormatVersionSyncTest
+        run: vendor/bin/pest --filter='FormatVersionSyncTest|ManifestSignatureSyncTest'

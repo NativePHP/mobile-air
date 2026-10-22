@@ -11,6 +11,7 @@ use Native\Mobile\Edge\Concerns\RunsAsyncTasks;
 use Native\Mobile\Edge\Concerns\WrapsScreensInNativeChrome;
 use Native\Mobile\Platform;
 use Native\Mobile\Support\GlobalEventTransport;
+use Native\Mobile\System;
 use SupaNative\Core\Edge\CallbackRegistry;
 use SupaNative\Core\Edge\NativeComponent as CoreNativeComponent;
 use SupaNative\Core\Edge\NativeDumpException;
@@ -275,6 +276,16 @@ abstract class NativeComponent extends CoreNativeComponent
     }
 
     /**
+     * Under Jump the epoch is a constant 0, so PHP can't see the phone
+     * drop its tree, and every frame is sent as before. On a device
+     * each reset moves the epoch, and the unchanged frame waits.
+     */
+    protected function skipsUnchangedFrames(): bool
+    {
+        return ! System::runningInJump();
+    }
+
+    /**
      * Just the render/event loop — no init/shutdown.
      * Used by NativeRouter for hot-swap navigation.
      *
@@ -328,6 +339,7 @@ abstract class NativeComponent extends CoreNativeComponent
         // of this session can't emit REUSE.
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
+        $this->publishedFrame = null;
 
         if (empty($this->nativeEventListeners)) {
             $this->registerNativeEventListeners();
@@ -380,6 +392,7 @@ abstract class NativeComponent extends CoreNativeComponent
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
+                        $this->publishedFrame = null;
                         $this->flushDeferredTransition();
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
@@ -390,21 +403,24 @@ abstract class NativeComponent extends CoreNativeComponent
                         $element = $this->renderToElement();
 
                         $t1 = microtime(true);
-                        $tree = $this->memoizedToArray($element);
+                        $tree = $this->memoizedToArray($element, $fingerprint);
                         $t2 = microtime(true);
 
                         $this->flushDeferredTransition();
 
-                        nativephp_element_publish($tree);
-                        TreeObservers::tree(
-                            $tree, $this->nativeRouter?->currentUri() ?? '/'
-                        );
+                        $published = $this->publishRenderedFrame($tree, $fingerprint);
+                        if ($published) {
+                            TreeObservers::tree(
+                                $tree, $this->nativeRouter?->currentUri() ?? '/'
+                            );
+                        }
 
                         $t3 = microtime(true);
                         NativeRouter::debugLog(sprintf(
-                            'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
+                            'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms%s',
                             static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                            ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
+                            ($t3 - $t2) * 1000, ($t3 - $t0) * 1000,
+                            $published ? '' : ' unchanged, not published'
                         ));
                     }
                 } catch (NativeDumpException $e) {
@@ -424,7 +440,7 @@ abstract class NativeComponent extends CoreNativeComponent
             // turn keeps this frame, unless a component event waits
             // to be delivered or a handler of the inbox runs.
             $inboxWaits = $this->nativeEventInbox !== [] && $timeout !== 1;
-            $event = nativephp_element_wait_event($inboxWaits ? 1 : $timeout);
+            $event = $this->router()?->takeCarriedEvent() ?? nativephp_element_wait_event($inboxWaits ? 1 : $timeout);
 
             if ($event === null && $inboxWaits) {
                 $skipRender = $this->nativePendingComponentEvents === [];

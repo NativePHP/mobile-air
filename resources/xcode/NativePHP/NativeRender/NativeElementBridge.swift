@@ -362,7 +362,7 @@ final class NativeElementBridge {
     /// signals. Grabs the latest pending update atomically (coalescing — any
     /// intermediate frames are dropped). Parses tree, diffs, posts to main thread.
     private static func shadowThreadLoop() {
-        while shadowRunning {
+        func runPass() {
             // Grab latest pending update (atomic swap to nil)
             os_unfair_lock_lock(&pendingLock)
             let update = pendingUpdate
@@ -380,7 +380,7 @@ final class NativeElementBridge {
                     pthread_cond_wait(&shadowCond, &shadowMutex)
                 }
                 pthread_mutex_unlock(&shadowMutex)
-                continue
+                return
             }
 
             // Mark "tree update arrived from PHP" — this is the T1
@@ -394,7 +394,7 @@ final class NativeElementBridge {
                 update.flatData, propData: update.propData,
                 typeTable: update.typeTable, nodeCount: update.nodeCount
             ) else {
-                continue
+                return
             }
 
             // Determine whether this is a continuation within native chrome
@@ -526,6 +526,13 @@ final class NativeElementBridge {
                 // fresh tree from the rebooted PHP runtime lands.
                 if bridge.isReloading { bridge.isReloading = false }
             }
+        }
+
+        while shadowRunning {
+            // This pthread drains no autorelease pool of its own, so every pass
+            // gets one. Otherwise what parsing and diffing autorelease would
+            // stay behind for as long as the shadow thread keeps running.
+            autoreleasepool { runPass() }
         }
     }
 

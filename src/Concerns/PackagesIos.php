@@ -135,7 +135,8 @@ trait PackagesIos
         putenv("NATIVEPHP_EXPORT_METHOD={$exportMethod}");
 
         // Pass through relevant options to build command
-        $buildOptions = ['--release' => true];
+        // Store builds never reuse anything from a previous build.
+        $buildOptions = ['--release' => true, '--fresh' => true];
 
         // Pass through App Store options
         if ($this->option('upload-to-app-store')) {
