@@ -992,7 +992,10 @@ trait PreparesBuild
         $gradleContent = str_replace('REPLACE_SHRINK_RESOURCES', $shrinkResources, $gradleContent);
         $gradleContent = str_replace('REPLACE_DEBUG_SYMBOLS', $debugSymbols, $gradleContent);
 
-        $gradleContent = preg_replace('/isMinifyEnabled\s*=\s*(true|false)/', "isMinifyEnabled = $minifyEnabled", $gradleContent);
+        // minify_enabled only applies to the release build type. The profileable build type
+        // always minifies so profiles measure the same R8 output users get.
+        $gradleContent = $this->replaceInGradleBlock($gradleContent, '\brelease', '/isMinifyEnabled\s*=\s*(true|false)/', "isMinifyEnabled = $minifyEnabled");
+        $gradleContent = $this->replaceInGradleBlock($gradleContent, 'create\("profileable"\)', '/isMinifyEnabled\s*=\s*(true|false)/', 'isMinifyEnabled = true');
         $gradleContent = preg_replace('/isShrinkResources\s*=\s*(true|false)/', "isShrinkResources = $shrinkResources", $gradleContent);
         $gradleContent = preg_replace('/debugSymbolLevel\s*=\s*"[^"]*"/', "debugSymbolLevel = \"$debugSymbols\"", $gradleContent);
 
@@ -1031,6 +1034,18 @@ trait PreparesBuild
         }
 
         File::put($proguardPath, $proguardContent);
+    }
+
+    /**
+     * Apply a replacement only inside the brace-delimited Gradle block whose opening matches $blockPattern
+     */
+    protected function replaceInGradleBlock(string $gradleContent, string $blockPattern, string $pattern, string $replacement): string
+    {
+        return preg_replace_callback(
+            '/'.$blockPattern.'\s*(\{(?:[^{}]++|(?1))*\})/',
+            fn (array $block) => preg_replace($pattern, $replacement, $block[0]),
+            $gradleContent
+        );
     }
 
     /**
