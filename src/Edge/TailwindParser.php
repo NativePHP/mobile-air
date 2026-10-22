@@ -5,6 +5,7 @@ namespace Native\Mobile\Edge;
 use Illuminate\Support\Facades\Log;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
+use Native\Mobile\Edge\Enums\ImageFit;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Enums\TextAlign;
 use Native\Mobile\Platform;
@@ -915,13 +916,12 @@ class TailwindParser
             str_starts_with($class, 'self-') => self::parseAlignSelf(substr($class, 5)),
 
             // Object fit (images) — mirrors CSS `object-fit`, mapped to the
-            // `fit` prop the image renderer reads (0 none, 1 contain/fit,
-            // 2 cover/crop, 3 fill/stretch).
-            $class === 'object-none' => ['fit' => 0],
-            $class === 'object-contain' => ['fit' => 1],
-            $class === 'object-cover' => ['fit' => 2],
-            $class === 'object-fill' => ['fit' => 3],
-            $class === 'object-scale-down' => ['fit' => 1],
+            // `fit` prop the image renderer reads.
+            $class === 'object-none' => ['fit' => ImageFit::None->value],
+            $class === 'object-contain' => ['fit' => ImageFit::Contain->value],
+            $class === 'object-cover' => ['fit' => ImageFit::Cover->value],
+            $class === 'object-fill' => ['fit' => ImageFit::Fill->value],
+            $class === 'object-scale-down' => ['fit' => ImageFit::Contain->value],
 
             // Aspect ratio — sets the `aspect_ratio` flex layout field
             // (applied natively via AspectRatioModifier on iOS/Android).
