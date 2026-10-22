@@ -1,0 +1,153 @@
+name: Android Template
+
+# Builds the Android project that native:install copies into an app, the way
+# native:run builds it, across the JDKs people have installed. The weekly run
+# picks up new JDK and Gradle releases, so one that breaks the template fails
+# here before it reaches anyone's machine.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'resources/androidstudio/**'
+      - 'src/Concerns/RunsAndroid.php'
+      - 'src/Concerns/PreparesBuild.php'
+      - 'src/Concerns/InstallsAndroid.php'
+      - 'src/Support/GradleJava.php'
+      - 'src/Plugins/Compilers/AndroidPluginCompiler.php'
+      - '.github/workflows/android-template.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'resources/androidstudio/**'
+      - 'src/Concerns/RunsAndroid.php'
+      - 'src/Concerns/PreparesBuild.php'
+      - 'src/Concerns/InstallsAndroid.php'
+      - 'src/Support/GradleJava.php'
+      - 'src/Plugins/Compilers/AndroidPluginCompiler.php'
+      - '.github/workflows/android-template.yml'
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: android-template-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: JDK ${{ matrix.jdk }} · daemon ${{ matrix.daemon }} · Gradle ${{ matrix.gradle }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # What developers get: whatever JAVA_HOME is, the daemon runs on the
+          # JDK pinned in gradle/gradle-daemon-jvm.properties, downloaded if
+          # it isn't installed.
+          - { jdk: '17', daemon: pinned, gradle: wrapper }
+          - { jdk: latest, daemon: pinned, gradle: wrapper }
+          # The whole toolchain on each JDK, with the pin removed. Tells us
+          # the template still works on these JDKs and when the pin can move.
+          - { jdk: '17', daemon: jdk, gradle: wrapper }
+          - { jdk: '21', daemon: jdk, gradle: wrapper }
+          - { jdk: latest, daemon: jdk, gradle: wrapper }
+          # The newest Gradle release, so a bump of the wrapper is known safe
+          # (or known broken) before anyone makes it.
+          - { jdk: '25', daemon: pinned, gradle: current }
+
+    steps:
+      - name: Checkout mobile package
+        uses: actions/checkout@v4
+        with:
+          path: mobile
+
+      - name: Resolve JDK version
+        id: jdk
+        run: |
+          if [ "${{ matrix.jdk }}" = "latest" ]; then
+            version=$(curl -fsSL https://api.adoptium.net/v3/info/available_releases | jq -r .most_recent_feature_release)
+          else
+            version="${{ matrix.jdk }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Launching Gradle with JDK $version"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ steps.jdk.outputs.version }}
+
+      - name: Setup Gradle caching
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          extensions: dom, simplexml, mbstring, zip, curl, intl
+          coverage: none
+
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null
+
+      - name: Create a Laravel app using this branch
+        run: |
+          # The newest skeleton the package supports; move this when it supports the next major
+          composer create-project "laravel/laravel:^13.0" app --prefer-dist --no-interaction --quiet
+          cd app
+          composer config repositories.mobile path "$GITHUB_WORKSPACE/mobile"
+          composer require "nativephp/mobile:@dev" --with-all-dependencies --no-interaction
+          {
+            echo "NATIVEPHP_APP_ID=com.nativephp.templatecheck"
+            echo "NATIVEPHP_APP_VERSION=1.0.0"
+            # Runs R8 as well, which executes on the daemon's JDK
+            echo "NATIVEPHP_ANDROID_MINIFY_ENABLED=true"
+          } >> .env
+
+      - name: Install the Android project
+        working-directory: app
+        run: php artisan native:install android --force --no-interaction
+
+      - name: Remove the daemon JDK pin
+        if: matrix.daemon == 'jdk'
+        working-directory: app/nativephp/android
+        run: rm gradle/gradle-daemon-jvm.properties
+
+      - name: Use the newest Gradle release
+        if: matrix.gradle == 'current'
+        working-directory: app/nativephp/android
+        run: |
+          url=$(curl -fsSL https://services.gradle.org/versions/current | jq -r .downloadUrl)
+          sed -i "s#^distributionUrl=.*#distributionUrl=$url#" gradle/wrapper/gradle-wrapper.properties
+          grep distributionUrl gradle/wrapper/gradle-wrapper.properties
+
+      - name: Show which JVMs Gradle uses
+        working-directory: app/nativephp/android
+        run: ./gradlew --version
+
+      - name: Build a release APK with native:run
+        working-directory: app
+        run: php artisan native:run android --build=release --no-tty
+
+      - name: Check the APK
+        working-directory: app
+        run: |
+          apk=$(find nativephp/android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$apk"
+          ls -la "$apk"
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log-jdk${{ steps.jdk.outputs.version }}-${{ matrix.daemon }}-${{ matrix.gradle }}
+          path: app/nativephp/android-build.log
+          retention-days: 7

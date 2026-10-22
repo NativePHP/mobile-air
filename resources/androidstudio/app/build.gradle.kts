@@ -1,6 +1,6 @@
 plugins {
+    // Kotlin is built into AGP 9+, so there is no org.jetbrains.kotlin.android here.
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -11,7 +11,7 @@ android {
     // Generated NativePHP plugin sources — owned by the plugin compiler,
     // wiped and rebuilt on every compile. Do not edit.
     sourceSets.getByName("main") {
-        java.srcDir("src/nativephp/kotlin")
+        kotlin.directories += "src/nativephp/kotlin"
     }
 
     defaultConfig {
@@ -110,17 +110,10 @@ android {
         }
     }
 
+    // Kotlin's jvmTarget follows targetCompatibility.
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
-        freeCompilerArgs += listOf(
-            "-Xsuppress-version-warnings"
-        )
-        allWarningsAsErrors = false
     }
 
     buildFeatures {
@@ -158,6 +151,12 @@ android {
     ndkVersion = "27.0.12077973" // Updated to NDK r27
 
     // Static libs are linked by CMake into libphp_wrapper.so — no pre-built jniLibs needed
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.add("-Xsuppress-version-warnings")
+    }
 }
 
 dependencies {
