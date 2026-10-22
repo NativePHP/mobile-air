@@ -1,19 +1,53 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    What Android backs up and moves to a new phone, on Android 12 (API 31) and newer.
+    Older versions read backup_rules.xml instead, so change both files together.
+
+    Everything is included except the paths below. They are all rebuilt on the first
+    launch after a restore: the Laravel bundle is extracted again from the APK,
+    migrations run against the restored database and the caches fill up again.
+
+    Without these rules the extracted bundle alone takes an app over the 25 MB
+    Auto Backup limit, and an app over the limit gets no cloud backup at all.
+
+    What is kept: the database (app_storage/persisted_data/database), Laravel's
+    storage/app folder, and whatever the app or its plugins keep in files/,
+    shared_prefs/ or databases/.
+
+    See https://developer.android.com/identity/data/autobackup
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <!-- The extracted Laravel bundle, vendor and all -->
+        <exclude domain="root" path="app_storage/laravel/" />
+        <!-- Compiled views, the file cache, Laravel sessions and the native route list -->
+        <exclude domain="root" path="app_storage/persisted_data/storage/framework/" />
+        <exclude domain="root" path="app_storage/persisted_data/storage/logs/" />
+        <exclude domain="root" path="app_storage/php_sessions/" />
+        <!-- Written again on every launch -->
+        <exclude domain="file" path="cacert.pem" />
+        <exclude domain="file" path="php.ini" />
+        <!-- Cookies and web storage. Session cookies are encrypted with an APP_KEY
+             that is never backed up, so they are useless after a restore. -->
+        <exclude domain="root" path="app_webview/" />
+        <exclude domain="sharedpref" path="laravel_cookies.xml" />
+        <!-- OTA updates: a queued payload, plus the OTA plugin's record of the
+             release in laravel/, which is not restored -->
+        <exclude domain="root" path="app_storage/updates/" />
+        <exclude domain="file" path="ota/" />
+        <exclude domain="sharedpref" path="nativephp_ota.xml" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="root" path="app_storage/laravel/" />
+        <exclude domain="root" path="app_storage/persisted_data/storage/framework/" />
+        <exclude domain="root" path="app_storage/persisted_data/storage/logs/" />
+        <exclude domain="root" path="app_storage/php_sessions/" />
+        <exclude domain="file" path="cacert.pem" />
+        <exclude domain="file" path="php.ini" />
+        <exclude domain="root" path="app_webview/" />
+        <exclude domain="sharedpref" path="laravel_cookies.xml" />
+        <exclude domain="root" path="app_storage/updates/" />
+        <exclude domain="file" path="ota/" />
+        <exclude domain="sharedpref" path="nativephp_ota.xml" />
     </device-transfer>
-    -->
 </data-extraction-rules>
