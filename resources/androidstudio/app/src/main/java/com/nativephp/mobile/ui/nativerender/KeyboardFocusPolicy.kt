@@ -16,6 +16,10 @@ object KeyboardFocusPolicy {
     @Volatile
     private var focusedField: Any? = null
 
+    /** Publishes the focused input's pending text before an interactive action. */
+    @Volatile
+    private var flushFocusedField: (() -> Unit)? = null
+
     /** Whether the focused field opted into `keep-focus-on-submit`. */
     @Volatile
     var focusedFieldKeepsFocus = false
@@ -32,11 +36,14 @@ object KeyboardFocusPolicy {
     /**
      * Called by an input when it gains focus. [field] identifies the
      * input and must be the same instance it later passes to
-     * [fieldBlurred].
+     * [fieldBlurred]. [flush] must synchronously publish pending text
+     * (and cancel any debounce), without changing focus. Like the iOS
+     * policy, this hook runs on the UI thread before the press is posted.
      */
-    fun fieldFocused(field: Any, keepsFocus: Boolean) {
+    fun fieldFocused(field: Any, keepsFocus: Boolean, flush: (() -> Unit)? = null) {
         focusedField = field
         focusedFieldKeepsFocus = keepsFocus
+        flushFocusedField = flush
     }
 
     /**
@@ -50,14 +57,18 @@ object KeyboardFocusPolicy {
 
         focusedField = null
         focusedFieldKeepsFocus = false
+        flushFocusedField = null
     }
 
     /**
-     * Clear focus for a tap on an interactive element, unless the focused
-     * field asked to keep focus through sends. Plain-area taps skip
-     * this and always clear, so tap-away keeps working.
+     * Flush pending input before the caller posts its interactive event,
+     * then clear focus unless the field asked to keep it through sends.
+     * Keeping focus must not skip model publication. Plain-area taps skip
+     * this and always clear, so tap-away keeps working. This orders event
+     * posting; it does not wait for PHP to process the change.
      */
     fun dismissForInteractiveTap() {
+        flushFocusedField?.invoke()
         if (!focusedFieldKeepsFocus) {
             clearFocus?.invoke()
         }
