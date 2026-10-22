@@ -65,7 +65,15 @@ struct NodeStyleModifier: ViewModifier {
                 cornerRadius: radius,
                 cornerRadii: radii
             ))
-            .overlay(borderOverlay(dark: dark, radius: radius))
+            // The border is built only when there is one. Inside the overlay,
+            // so gaining or losing a border never moves the content: a node
+            // with none used to draw a zero-width stroke at zero opacity, and
+            // a list builds every node of a row as it scrolls in.
+            .overlay {
+                if (style?.borderWidth ?? 0) > 0 {
+                    borderOverlay(dark: dark, radius: radius)
+                }
+            }
             // Elevation `shadow-*` — black, y-offset cast (unchanged).
             .shadow(
                 color: shadowColor,
@@ -178,6 +186,7 @@ struct NodeStyleModifier: ViewModifier {
 
     // MARK: - Border
 
+    /// Only built for a node with a border width (see `body`).
     @ViewBuilder
     private func borderOverlay(dark: Bool, radius: CGFloat) -> some View {
         let width = CGFloat(style?.borderWidth ?? 0)
@@ -192,16 +201,13 @@ struct NodeStyleModifier: ViewModifier {
         if let border = NodeBorder(props: props, width: width, radius: radius, radii: cornerRadii) {
             NodeBorderShape(border: border)
                 .fill(color)
-                .opacity(width > 0 ? 1 : 0)
                 .allowsHitTesting(false)
         } else if let radii = cornerRadii {
             UnevenRoundedRectangle(cornerRadii: radii)
                 .strokeBorder(color, lineWidth: width)
-                .opacity(width > 0 ? 1 : 0)
         } else {
             RoundedRectangle(cornerRadius: radius)
                 .strokeBorder(color, lineWidth: width)
-                .opacity(width > 0 ? 1 : 0)
         }
     }
 
