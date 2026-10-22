@@ -261,6 +261,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         //   → nodeStyle                     (background + border)
         //   → clip (rounded pressable)
         //   → nodeGestures                  (clickable; ripple now lives inside the scaled visual)
+        //   → nodeAccessibility             (a11y-label replaces the children's semantics, inside the clickable so its action survives)
         //   → nodeLayout                    (padding)
         var modifier: Modifier = base
 
@@ -299,6 +300,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         }
         modifier = modifier
             .nodeGestures(node, interactionSource)
+            .nodeAccessibility(node)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
         // In-place text change animation (`content_transition` — numeric

@@ -222,6 +222,7 @@ trait RunsIos
             '--simulated' => $this->simulated,
             '--target' => $target,
             '--no-tty' => $this->option('no-tty'),
+            '--fresh' => $this->option('fresh'),
         ]);
 
         if ($result > 0) {

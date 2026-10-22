@@ -26,6 +26,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 
@@ -238,7 +241,13 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
         if (borderArgb != 0) {
             val borderColor = argbToComposeColor(borderArgb)
             if (borderColor != Color.Transparent) {
-                mod = mod.border(style.borderWidth.dp, borderColor, shape)
+                // Dashed, dotted and per-side borders (see NodeBorder).
+                val border = NodeBorder.from(props, style.borderWidth, radius)
+                mod = if (border != null) {
+                    mod.nodeBorder(border, borderColor)
+                } else {
+                    mod.border(style.borderWidth.dp, borderColor, shape)
+                }
             }
         }
     }
@@ -383,19 +392,26 @@ fun Modifier.nodeGestures(
     if (callbackId == 0 && longPressId == 0 && doubleTapId == 0) return mod
 
     val onClickAction: () -> Unit = {
+        KeyboardFocusPolicy.dismissForInteractiveTap()
         if (callbackId != 0) {
             NativeElementBridge.sendPressEvent(callbackId, nodeId)
         }
     }
     val onLongClickAction: (() -> Unit)? = if (longPressId != 0) {
-        { NativeElementBridge.sendLongPressEvent(longPressId, nodeId) }
+        {
+            KeyboardFocusPolicy.dismissForInteractiveTap()
+            NativeElementBridge.sendLongPressEvent(longPressId, nodeId)
+        }
     } else {
         null
     }
     // Double-tap reuses the press event type — the callback id alone routes
     // to the @doubleTap handler on the PHP side.
     val onDoubleClickAction: (() -> Unit)? = if (doubleTapId != 0) {
-        { NativeElementBridge.sendPressEvent(doubleTapId, nodeId) }
+        {
+            KeyboardFocusPolicy.dismissForInteractiveTap()
+            NativeElementBridge.sendPressEvent(doubleTapId, nodeId)
+        }
     } else {
         null
     }
@@ -404,11 +420,21 @@ fun Modifier.nodeGestures(
     // `combinedClickable`.
     val needCombined = onLongClickAction != null || onDoubleClickAction != null
 
+    // A tappable `pressable` is a button to TalkBack, as SwiftUI's Button
+    // is to VoiceOver. The clickable already merges its children's text
+    // into one focusable element.
+    val role = if (NodeAccessibility.isButton(node.type, callbackId != 0, node.props.getBool("has_menu"))) {
+        Role.Button
+    } else {
+        null
+    }
+
     return if (interactionSource != null) {
         if (needCombined) {
             mod.combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
+                role = role,
                 onLongClick = onLongClickAction,
                 onDoubleClick = onDoubleClickAction,
                 onClick = onClickAction,
@@ -417,19 +443,44 @@ fun Modifier.nodeGestures(
             mod.clickable(
                 interactionSource = interactionSource,
                 indication = null,
+                role = role,
                 onClick = onClickAction,
             )
         }
     } else {
         if (needCombined) {
             mod.combinedClickable(
+                role = role,
                 onLongClick = onLongClickAction,
                 onDoubleClick = onDoubleClickAction,
                 onClick = onClickAction,
             )
         } else {
-            mod.clickable(onClick = onClickAction)
+            mod.clickable(role = role, onClick = onClickAction)
         }
     }
+}
+
+// MARK: - Accessibility Modifier
+
+/**
+ * Gives a core container (`pressable`, `column`, `row`, `stack`) with an
+ * `a11y-label` that label as its whole description: TalkBack focuses the
+ * node once and reads the label (plus `a11y-hint`) instead of each child.
+ *
+ * Must sit INSIDE (after) `nodeGestures` in the chain. `clearAndSetSemantics`
+ * clears the semantics of everything inside it, so placed before the
+ * clickable it would drop the click action and button role as well as the
+ * children's text.
+ */
+fun Modifier.nodeAccessibility(node: NativeUINode): Modifier {
+    val description = NodeAccessibility.description(
+        type = node.type,
+        label = node.props.getString("a11y_label"),
+        hint = node.props.getString("a11y_hint"),
+        hasMenu = node.props.getBool("has_menu"),
+    ) ?: return this
+
+    return clearAndSetSemantics { contentDescription = description }
 }
 

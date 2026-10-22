@@ -362,7 +362,7 @@ final class NativeElementBridge {
     /// signals. Grabs the latest pending update atomically (coalescing — any
     /// intermediate frames are dropped). Parses tree, diffs, posts to main thread.
     private static func shadowThreadLoop() {
-        while shadowRunning {
+        func runPass() {
             // Grab latest pending update (atomic swap to nil)
             os_unfair_lock_lock(&pendingLock)
             let update = pendingUpdate
@@ -380,7 +380,7 @@ final class NativeElementBridge {
                     pthread_cond_wait(&shadowCond, &shadowMutex)
                 }
                 pthread_mutex_unlock(&shadowMutex)
-                continue
+                return
             }
 
             // Mark "tree update arrived from PHP" — this is the T1
@@ -394,7 +394,7 @@ final class NativeElementBridge {
                 update.flatData, propData: update.propData,
                 typeTable: update.typeTable, nodeCount: update.nodeCount
             ) else {
-                continue
+                return
             }
 
             // Determine whether this is a continuation within native chrome
@@ -526,6 +526,13 @@ final class NativeElementBridge {
                 // fresh tree from the rebooted PHP runtime lands.
                 if bridge.isReloading { bridge.isReloading = false }
             }
+        }
+
+        while shadowRunning {
+            // This pthread drains no autorelease pool of its own, so every pass
+            // gets one. Otherwise what parsing and diffing autorelease would
+            // stay behind for as long as the shadow thread keeps running.
+            autoreleasepool { runPass() }
         }
     }
 
@@ -976,24 +983,42 @@ final class NativeElementBridge {
 
     // MARK: - Tree Diff
 
+    /// The new tree, with each subtree that didn't change swapped for the old
+    /// tree's object, so NodeView's `===` skips it.
+    ///
+    /// Children are matched by id, not by position. A list that gains rows
+    /// (a page appended, a commit arriving at the top) keeps the rows it had:
+    /// matching by position gave up on any parent whose child count changed,
+    /// so every row of the list came in as a new object and SwiftUI redrew
+    /// all of them. An old node is only reused when it's equal to the new
+    /// one all the way down, so a positional id that now names a different
+    /// node can't put the wrong one on screen.
     private static func diffNode(old: NativeUINode, new: NativeUINode) -> NativeUINode {
-        guard old.id == new.id, old.type == new.type, old.children.count == new.children.count else {
+        guard old.id == new.id, old.type == new.type else {
             return new
         }
 
-        var allChildrenReused = true
-        let diffedChildren: [NativeUINode]
-        if new.children.isEmpty {
-            diffedChildren = new.children
-        } else {
-            var list: [NativeUINode] = []
-            list.reserveCapacity(new.children.count)
-            for i in new.children.indices {
-                let diffed = diffNode(old: old.children[i], new: new.children[i])
-                if diffed !== old.children[i] { allChildrenReused = false }
-                list.append(diffed)
+        let sameCount = old.children.count == new.children.count
+        var allChildrenReused = sameCount
+        var diffedChildren: [NativeUINode] = []
+        if !new.children.isEmpty {
+            // Built the first time a child isn't where it was.
+            var oldById: [Int: NativeUINode]?
+            diffedChildren.reserveCapacity(new.children.count)
+            for (i, child) in new.children.enumerated() {
+                let match: NativeUINode?
+                if i < old.children.count, old.children[i].id == child.id {
+                    match = old.children[i]
+                } else {
+                    if oldById == nil {
+                        oldById = Dictionary(old.children.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                    }
+                    match = oldById?[child.id]
+                }
+                let diffed = match.map { diffNode(old: $0, new: child) } ?? child
+                if !sameCount || diffed !== old.children[i] { allChildrenReused = false }
+                diffedChildren.append(diffed)
             }
-            diffedChildren = list
         }
 
         let fieldsMatch = old.layout == new.layout &&

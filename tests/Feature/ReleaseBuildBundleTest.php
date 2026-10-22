@@ -109,6 +109,7 @@ class ReleaseBuildBundleTest extends TestCase
         // The Android artisan.php bootstrap must survive that pass.
         $this->assertFalse($zip->statName('artisan'));
         $this->assertFalse($zip->statName('composer.lock'));
+        $this->assertFalse($zip->statName('auth.json'));
         $this->assertNotFalse($zip->statName('artisan.php'));
         $this->assertNotFalse($zip->statName('.version'));
 
@@ -180,6 +181,7 @@ class ReleaseBuildBundleTest extends TestCase
 
         File::put($this->testProjectPath.'/artisan', '#!/usr/bin/env php');
         File::put($this->testProjectPath.'/composer.lock', '{}');
+        File::put($this->testProjectPath.'/auth.json', '{}');
 
         File::ensureDirectoryExists($this->testProjectPath.'/vendor/acme/pkg/src');
         File::put($this->testProjectPath.'/vendor/acme/pkg/src/Pkg.php', '<?php');

@@ -24,6 +24,7 @@ import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
+import com.nativephp.mobile.ui.nativerender.FrameTracker
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
@@ -152,6 +153,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             sendOrientationChanged(currentOrientation)
         }
 
+        // Watch OS thermal status (Android 10+). Seed-callback on register is
+        // skipped inside the monitor so launch doesn't look like a change.
+        ThermalStateMonitor.start(this)
+
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
@@ -181,6 +186,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         }
 
         handleDeepLinkIntent(intent)
+
+        NativeUIBridge.createState()
+        NativeUIThemeProvider.createState()
+        FrameTracker.createState()
 
         // Set up Compose UI and PAINT THE SPLASH FIRST, from a minimal onCreate, so the
         // first frame is on screen ASAP (TTID). Everything heavy — WebView (Chromium)
@@ -235,6 +244,16 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
                 pendingDeepLink = null
 
+                // Async task lane (AsyncTask::dispatch()). Started BEFORE the first
+                // route runs, not with the deferred queue worker below: a screen may
+                // dispatch while it mounts, and a dispatch with no executor fails.
+                // Pool threads boot their PHP context lazily on first task, so this
+                // costs nothing until work is dispatched.
+                if (!isFinishing && !isDestroyed &&
+                    phpBridge.isPersistentMode() && asyncExecutor == null) {
+                    asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+                }
+
                 when (BootPlanner.plan(this, target)) {
                     BootPlanner.Entry.NATIVE_DIRECT -> {
                         // Direct JNI dispatch into the native runloop — the WebView
@@ -263,14 +282,6 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         phpBridge.isPersistentMode() && queueWorker == null) {
                         Log.d("MainActivity", "▶️ Starting deferred background queue worker")
                         queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
-                    }
-
-                    // Async task lane (AsyncTask::dispatch()). Pool threads boot
-                    // their PHP context lazily on first task, so starting the
-                    // executor now costs nothing until work is dispatched.
-                    if (!isFinishing && !isDestroyed &&
-                        phpBridge.isPersistentMode() && asyncExecutor == null) {
-                        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                     }
                 }, WORKER_START_DELAY_MS)
 
@@ -632,6 +643,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         super.onResume()
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_RESUME)
         registerShakeDetector()
+        // Appearance gets a config-change nudge when the theme flipped while
+        // we were away; thermal has no equivalent, so re-read and emit only
+        // if the OS value drifted.
+        ThermalStateMonitor.syncIfChanged(this)
     }
 
     override fun onPause() {
@@ -846,6 +861,8 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         // Stop async task lane
         asyncExecutor?.stop()
+
+        ThermalStateMonitor.stop(this)
     }
 
     override fun getWebView(): WebView {

@@ -118,20 +118,29 @@ Screens are built from `native:` Blade components (the prefix is optional but pr
 ```blade
 <native:column class="w-full h-full p-4 gap-4 bg-theme-background">
     <native:text class="text-2xl font-bold">Welcome</native:text>
-    <native:text-input native:model="name" placeholder="Your name" />
+    <native:outlined-text-input native:model="name" placeholder="Your name" />
     <native:button label="Save" @tap="save" />
 </native:column>
 ```
+
+The elements and their renderers come from the `nativephp/mobile-ui` plugin. Core has no renderers of its
+own, so even `column` and `text` need it. Install and register it before building any screen:
+`composer require nativephp/mobile-ui`, then `php artisan native:plugin:register nativephp/mobile-ui` (this
+adds `NativeUIServiceProvider` to `plugins()` in `app/Providers/NativeServiceProvider.php`). Check with
+`php artisan native:plugin:list`. If it is installed but not registered, bare tags like `<button>` disappear
+from the screen and `<native:*>` tags throw "Unknown native element type", in `Native::test()` too.
+
+There is no `text-input` element. Use `outlined-text-input`, `filled-text-input` or `bare-text-input`.
 
 Tap handlers use `@tap` (`@press` is a permanent alias — same for `@longTap`/`@longPress` and
 `@tapDown`/`@pressDown`, `@tapUp`/`@pressUp`; both spellings compile identically).
 
 ~40 elements are available — layout (column, row, stack, scroll-view, spacer, pressable), content (text, image,
-icon, divider, badge, progress-bar, activity-indicator), forms (button, button-group, text-input, toggle,
-checkbox, radio-group, select, slider, chip), chrome (top-bar, bottom-nav, fab, bottom-bar, side-nav — see
-Native Chrome below), lists (list, lazy-grid, carousel, refreshable), overlays (modal, bottom-sheet), and
-drawing (canvas, shapes). Fetch the component's doc page before using it — required props are validated at
-render time.
+icon, divider, badge, progress-bar, activity-indicator), forms (button, button-group, outlined-text-input,
+filled-text-input, bare-text-input, toggle, checkbox, radio-group, select, slider, chip), chrome (top-bar,
+bottom-nav, fab, bottom-bar, side-nav — see Native Chrome below), lists (list, lazy-grid, carousel, refreshable),
+overlays (modal, bottom-sheet), and drawing (canvas, shapes). Fetch the component's doc page before using it —
+required props are validated at render time.
 
 ## Custom Fonts
 
@@ -251,6 +260,13 @@ them (reserve those for fully chrome-less screens).
 
 **Core built-ins** (`Native\Mobile\Facades`): `Device`, `Dialog`, `File`, `System` — these ship inside
 `nativephp/mobile` in v4. Also `System::isIos()` / `isAndroid()` and Blade directives `@ios` / `@android`.
+`Device::thermalState()` returns a `ThermalState` enum (`Normal`/`Warm`/`Hot`/`Critical`); listen for
+`ThermalStateChanged` to throttle work when the phone heats up. Android maps by impact, not constant name:
+`NONE`→normal, `LIGHT`/`MODERATE`→warm, `SEVERE`→hot, `CRITICAL`/`EMERGENCY`/`SHUTDOWN`→critical (8–9 always
+Normal). iOS is 1:1 (`nominal`/`fair`/`serious`/`critical`). `Device::getInfo()` JSON (decode it) also
+includes `processorCount`, `activeProcessorCount`, `systemUptime`, and `memTotal` (device RAM in bytes,
+alongside existing `memUsed`). `Device::getTimezone()` gives the phone's IANA timezone (`Europe/Lisbon`), or
+`null` off-device; Laravel's `app.timezone` (UTC by default) is not the phone's.
 
 **Plugins** (separate Composer packages): browser, camera, microphone, network, share (free); biometrics,
 geolocation, scanner, secure-storage (paid); firebase (push notifications, proprietary); vibe

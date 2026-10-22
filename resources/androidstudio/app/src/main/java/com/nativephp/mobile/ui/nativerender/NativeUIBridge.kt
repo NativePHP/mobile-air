@@ -49,6 +49,9 @@ class NativeUIBridge private constructor() {
         @Volatile
         internal var navigationPending = false
 
+        /** Creates this object's Compose state; call on the main thread before the first composition. */
+        fun createState() {}
+
         /**
          * Called by UI.SetTransition bridge function to queue a navigation animation.
          */
