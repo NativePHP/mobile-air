@@ -312,7 +312,10 @@ struct NativeRootStackRenderer: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                NativeIconView(icon, pointSize: 17)
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     // Explicit dim: the hard-set foregroundColor above keeps
@@ -361,7 +364,10 @@ struct NativeRootStackRenderer: View {
                     }
                 }
             } label: {
-                NativeIconView(icon, pointSize: 17)
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     .opacity(disabled ? 0.4 : 1)
@@ -570,6 +576,38 @@ struct WindowBackgroundModifier: ViewModifier {
             }
         } else {
             content
+        }
+    }
+}
+
+/// A top-bar action's icon, with its `image` (e.g. the signed-in user's
+/// avatar) laid over it as a 28pt circle when one is set. The icon is drawn
+/// first, so it shows while the image loads and stays if it fails.
+/// `.font`, `.foregroundColor` and `.opacity` applied by the caller still
+/// reach the icon, and opacity fades the image too, so disabled actions dim
+/// either way. Accessible naming comes from `TopBarActionA11yLabelModifier`.
+struct TopBarActionGlyph: View {
+    let icon: String
+    let image: String
+
+    var body: some View {
+        if let url = URL(string: image), !image.isEmpty {
+            ZStack {
+                NativeIconView(icon, pointSize: 17)
+                AsyncImage(url: url) { phase in
+                    if case .success(let loaded) = phase {
+                        loaded
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 28, height: 28)
+                            .clipShape(Circle())
+                    } else {
+                        Color.clear.frame(width: 0, height: 0)
+                    }
+                }
+            }
+        } else {
+            NativeIconView(icon, pointSize: 17)
         }
     }
 }

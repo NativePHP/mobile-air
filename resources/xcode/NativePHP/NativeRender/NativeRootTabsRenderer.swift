@@ -678,7 +678,10 @@ private struct TabsActionView: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                NativeIconView(icon, pointSize: 17)
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     // Explicit dim: the hard-set foregroundColor above keeps
@@ -723,7 +726,10 @@ private struct TabsActionView: View {
                     }
                 }
             } label: {
-                NativeIconView(icon, pointSize: 17)
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     .opacity(disabled ? 0.4 : 1)
