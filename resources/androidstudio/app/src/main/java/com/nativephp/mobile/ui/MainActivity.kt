@@ -761,7 +761,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             val route = if (scheme != null && scheme != "http" && scheme != "https") {
                 val host = uri.host ?: ""
                 val path = uri.path ?: ""
-                val query = uri.query?.let { "?$it" } ?: ""
+                val query = uri.encodedQuery?.let { "?$it" } ?: ""
                 if (host.isNotEmpty()) "/$host$path$query" else "$path$query"
             } else {
                 fcmUrl
@@ -800,7 +800,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             }
         }
 
-        val query = uri.query
+        // Keep the query percent-encoded, as iOS does. PHP decodes it once;
+        // uri.query is already decoded, so a code like a%2Bb would reach
+        // PHP as "a b" and an encoded & would split the parameter.
+        val query = uri.encodedQuery
         val laravelUrl = if (uri.scheme != "http" && uri.scheme != "https") {
             // Custom scheme (e.g., myapp://profile/settings): treat host as first path segment
             // This matches iOS behavior where the entire URI after scheme:// is the path
