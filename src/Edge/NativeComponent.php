@@ -189,6 +189,21 @@ abstract class NativeComponent
      *  next frame re-validates the whole tree. ~2s at 60fps publish rate. */
     private const NPHP_FORCE_FULL_FRAME_EVERY = 120;
 
+    /**
+     * Fingerprint of the last frame the runloop published (see
+     * memoizedToArray()), and the force_full_frame epoch it went out under.
+     * The next frame is not published when it has the same fingerprint and
+     * the epoch hasn't moved: the native side already has it.
+     *
+     * Null at the start of every runloop session, on the memo heartbeat,
+     * and whenever this component draws something else (error or dump
+     * screen, placeholder, final state, streamed frame), so the next frame
+     * always goes out.
+     */
+    private ?string $publishedFrame = null;
+
+    private int $publishedFrameEpoch = 0;
+
     public function render(): Element|View
     {
         return $this->view(static::inferViewName());
@@ -249,7 +264,11 @@ abstract class NativeComponent
         return (nativephp_runtime_flags() & 0x02) !== 0;
     }
 
-    private function memoizedToArray(Element $element): array
+    /**
+     * @param  ?string  $fingerprint  Set to what the frame looks like to the
+     *                                native side, see frameFingerprint().
+     */
+    private function memoizedToArray(Element $element, ?string &$fingerprint = null): array
     {
         $this->publishCount++;
 
@@ -265,7 +284,10 @@ abstract class NativeComponent
             // correctness while the keyed/positional REUSE desync is unsolved.
             $throwaway = [];
 
-            return $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
+            $tree = $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
+            $fingerprint = self::frameFingerprint($tree, $emitted);
+
+            return $tree;
         }
 
         // Explicit invalidation: when the C extension bumps the region's
@@ -288,6 +310,10 @@ abstract class NativeComponent
         // amortized across frames and self-heals any stale entries.
         if ($this->publishCount % self::NPHP_FORCE_FULL_FRAME_EVERY === 1) {
             $this->lastNodeHashes = [];
+
+            // The heartbeat re-sends the whole tree, so it must not be held
+            // back as unchanged.
+            $this->publishedFrame = null;
         }
 
         $tree = $element->toArray(
@@ -309,7 +335,65 @@ abstract class NativeComponent
         // frame guarantees a remounting node always re-emits FULL.
         $this->lastNodeHashes = array_intersect_key($this->lastNodeHashes, $emitted);
 
+        $fingerprint = self::frameFingerprint($tree, $emitted);
+
         return $tree;
+    }
+
+    /**
+     * What a built frame looks like to the native side, cheaply. toArray()
+     * folds every node's type, layout, style, props, callbacks and children
+     * into the root's `_hash`; node ids aren't in it, so they are added in
+     * emit order. Two frames with the same fingerprint publish the same tree.
+     *
+     * @param  array<string, mixed>  $tree
+     * @param  array<int, true>  $emittedIds
+     */
+    private static function frameFingerprint(array $tree, array $emittedIds): ?string
+    {
+        if (! isset($tree['_hash'])) {
+            return null;
+        }
+
+        return $tree['_hash'].':'.hash('xxh3', implode(',', array_keys($emittedIds)));
+    }
+
+    /**
+     * Publish a frame the runloop rendered, unless the native side already
+     * has it: same fingerprint as the last frame published, and nothing has
+     * reset the region or bumped its force_full_frame epoch since (a reset,
+     * a refused frame, nativephp_force_full_frame()). Returns whether the
+     * frame was published.
+     *
+     * The C extension already drops a frame whose bytes match the last one
+     * it published, before the native side sees it. Holding it back here
+     * also saves building those bytes: a walk of the whole tree, a few ms
+     * on a long list.
+     *
+     * Not under Jump: the epoch there is a constant 0, so PHP can't see
+     * the phone drop its tree, and every frame is sent as before.
+     *
+     * @param  array<string, mixed>  $tree
+     */
+    private function publishRenderedFrame(array $tree, ?string $fingerprint): bool
+    {
+        // Read before publishing: a frame the extension refuses bumps the
+        // epoch, so the next one goes out even if it is the same.
+        $epoch = nativephp_force_full_frame_epoch();
+
+        if ($fingerprint !== null
+            && $fingerprint === $this->publishedFrame
+            && $epoch === $this->publishedFrameEpoch
+            && ! System::runningInJump()) {
+            return false;
+        }
+
+        nativephp_element_publish($tree);
+
+        $this->publishedFrame = $fingerprint;
+        $this->publishedFrameEpoch = $epoch;
+
+        return true;
     }
 
     /**
@@ -1771,6 +1855,7 @@ abstract class NativeComponent
             $element = $result instanceof View
                 ? $this->fromView($result)
                 : $result;
+            $this->publishedFrame = null;
             nativephp_element_publish($this->memoizedToArray($element));
         } catch (\Throwable $e) {
             NativeRouter::debugLog('placeholder() FAILED in '.static::class.': '.$e->getMessage());
@@ -2035,17 +2120,7 @@ abstract class NativeComponent
             foreach ($ctor->getParameters() as $param) {
                 $name = $param->getName();
                 if (array_key_exists($name, $payload)) {
-                    $value = $payload[$name];
-                    $type = $param->getType();
-                    if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
-                        $value = match ($type->getName()) {
-                            'int' => (int) $value,
-                            'float' => (float) $value,
-                            'string' => (string) $value,
-                            'bool' => (bool) $value,
-                            default => $value,
-                        };
-                    }
+                    $value = $this->coercePayloadValue($payload[$name], $param->getType());
                     $args[$name] = $value;
                 } elseif ($param->isDefaultValueAvailable()) {
                     $args[$name] = $param->getDefaultValue();
@@ -2058,6 +2133,35 @@ abstract class NativeComponent
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * Coerce a native payload value to a constructor / #[On] parameter type.
+     * Scalars match the builtin hint; backed enums are hydrated via tryFrom
+     * so handlers can type-hint ThermalState (etc.) instead of raw strings.
+     */
+    private function coercePayloadValue(mixed $value, ?\ReflectionType $type): mixed
+    {
+        if (! $type instanceof \ReflectionNamedType) {
+            return $value;
+        }
+
+        if ($type->isBuiltin()) {
+            return match ($type->getName()) {
+                'int' => (int) $value,
+                'float' => (float) $value,
+                'string' => (string) $value,
+                'bool' => (bool) $value,
+                default => $value,
+            };
+        }
+
+        $typeName = $type->getName();
+        if ((is_string($value) || is_int($value)) && is_subclass_of($typeName, \BackedEnum::class)) {
+            return $typeName::tryFrom($value) ?? $value;
+        }
+
+        return $value;
     }
 
     /**
@@ -2519,6 +2623,7 @@ abstract class NativeComponent
         // reader's perspective; discard any prior memo hashes.
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
+        $this->publishedFrame = null;
 
         nativephp_element_init();
 
@@ -2553,13 +2658,17 @@ abstract class NativeComponent
 
             if (! $this->nativeHasError) {
                 try {
-                    if (! $this->renderStreaming()) {
+                    if ($this->renderStreaming()) {
+                        $this->publishedFrame = null;
+                    } else {
                         $element = $this->renderToElement();
-                        $tree = $this->memoizedToArray($element);
-                        nativephp_element_publish($tree);
-                        TreeObservers::tree(
-                            $tree, $this->nativeRouter?->currentUri() ?? '/'
-                        );
+                        $tree = $this->memoizedToArray($element, $fingerprint);
+
+                        if ($this->publishRenderedFrame($tree, $fingerprint)) {
+                            TreeObservers::tree(
+                                $tree, $this->nativeRouter?->currentUri() ?? '/'
+                            );
+                        }
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
@@ -2711,6 +2820,7 @@ abstract class NativeComponent
         // of this session can't emit REUSE.
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
+        $this->publishedFrame = null;
 
         if (empty($this->nativeEventListeners)) {
             $this->registerNativeEventListeners();
@@ -2750,6 +2860,7 @@ abstract class NativeComponent
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
+                        $this->publishedFrame = null;
                         $this->nativeRouter?->flushDeferredTransition();
                         if ($perf) {
                             NativeRouter::debugLog(sprintf(
@@ -2761,22 +2872,25 @@ abstract class NativeComponent
                         $element = $this->renderToElement();
 
                         $t1 = $perf ? microtime(true) : 0.0;
-                        $tree = $this->memoizedToArray($element);
+                        $tree = $this->memoizedToArray($element, $fingerprint);
                         $t2 = $perf ? microtime(true) : 0.0;
 
                         $this->nativeRouter?->flushDeferredTransition();
 
-                        nativephp_element_publish($tree);
-                        TreeObservers::tree(
-                            $tree, $this->nativeRouter?->currentUri() ?? '/'
-                        );
+                        $published = $this->publishRenderedFrame($tree, $fingerprint);
+                        if ($published) {
+                            TreeObservers::tree(
+                                $tree, $this->nativeRouter?->currentUri() ?? '/'
+                            );
+                        }
 
                         if ($perf) {
                             $t3 = microtime(true);
                             NativeRouter::debugLog(sprintf(
-                                'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
+                                'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms%s',
                                 static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                                ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
+                                ($t3 - $t2) * 1000, ($t3 - $t0) * 1000,
+                                $published ? '' : ' unchanged, not published'
                             ));
                         }
                     }
@@ -2788,7 +2902,7 @@ abstract class NativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event($this->nextEventTimeout());
+            $event = $this->nativeRouter?->takeCarriedEvent() ?? nativephp_element_wait_event($this->nextEventTimeout());
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
@@ -3073,6 +3187,7 @@ abstract class NativeComponent
         try {
             $element = $this->renderToElement();
             $tree = $element->toArray($this->nativeCallbacks);
+            $this->publishedFrame = null;
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             // Render failure on the way out — outgoing component is
@@ -3180,6 +3295,17 @@ abstract class NativeComponent
         // fragment, a database detail.
         $showDetail = (bool) config('app.debug', false);
 
+        // Every path here has caught the exception without rethrowing, so hand
+        // it to Laravel's reporter before drawing over it. The identity check
+        // stops a font-size re-render from reporting it twice, and a reporter
+        // that throws must not cost the user the error screen.
+        if ($this->errorException !== $e) {
+            try {
+                report($e);
+            } catch (\Throwable) {
+            }
+        }
+
         $this->nativeHasError = true;
         $this->errorException = $e;
         $this->nativeCallbacks ??= new CallbackRegistry;
@@ -3269,6 +3395,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
+            $this->publishedFrame = null;
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Error screen render failed: '.$renderError->getMessage());
@@ -3331,6 +3458,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
+            $this->publishedFrame = null;
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Dump screen render failed: '.$renderError->getMessage());

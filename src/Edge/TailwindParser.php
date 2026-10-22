@@ -293,6 +293,28 @@ class TailwindParser
         'l' => ['borderRadiusTopLeft', 'borderRadiusBottomLeft'],
     ];
 
+    /**
+     * Tailwind's `border-*` width scale, shared by the uniform and per-side
+     * forms. A bare `border` / `border-l` is 1.
+     */
+    private const BORDER_WIDTHS = ['0' => 0, '2' => 2, '4' => 4, '8' => 8];
+
+    /**
+     * Which sides each `border-<side>` suffix sets, `x` and `y` being the
+     * axis pairs. Physical sides only, for the same reason as
+     * BORDER_RADIUS_CORNERS: `border-s` / `border-e` stay unparsed.
+     *
+     * @var array<string, list<string>>
+     */
+    private const BORDER_SIDES = [
+        't' => ['borderTopWidth'],
+        'r' => ['borderRightWidth'],
+        'b' => ['borderBottomWidth'],
+        'l' => ['borderLeftWidth'],
+        'x' => ['borderLeftWidth', 'borderRightWidth'],
+        'y' => ['borderTopWidth', 'borderBottomWidth'],
+    ];
+
     private const SHADOW = [
         'sm' => 1, 'md' => 6, 'lg' => 8, 'xl' => 12, '2xl' => 16, 'none' => 0,
     ];
@@ -386,6 +408,15 @@ class TailwindParser
                 continue;
             }
             $result = self::mergeAttributes($result, $parsed);
+        }
+
+        // Apply a theme border's implied width only where no class set one explicitly.
+        // A side counts: `border-l border-theme-outline` is a left border, not a box.
+        if (isset($result['borderWidthDefault'])) {
+            if (! self::hasSideBorderWidth($result)) {
+                $result['borderWidth'] ??= $result['borderWidthDefault'];
+            }
+            unset($result['borderWidthDefault']);
         }
 
         self::$cache[$classString] = $result;
@@ -697,6 +728,11 @@ class TailwindParser
             $class === 'w-full' => ['fillWidth' => true],
             $class === 'h-full' => ['fillHeight' => true],
             $class === 'border' => ['borderWidth' => 1],
+            // Border style. Sent as int: 0 solid, 1 dashed, 2 dotted. These
+            // MUST precede the `border-` branch, which would try them as colors.
+            $class === 'border-solid' => ['borderStyle' => 0],
+            $class === 'border-dashed' => ['borderStyle' => 1],
+            $class === 'border-dotted' => ['borderStyle' => 2],
             $class === 'rounded' => ['borderRadius' => 4],
             $class === 'shadow' => ['elevation' => 3],
             $class === 'safe-area' => ['safeArea' => true],
@@ -1335,7 +1371,12 @@ class TailwindParser
             return null;
         }
         $dark = self::resolveThemeToken($token, true);
-        $out = ['borderColor' => $light, 'borderWidth' => 1];
+        // borderWidthDefault, not borderWidth: a theme border needs *a* width to be
+        // visible at all, but must not overrule an explicit one. Asserting
+        // borderWidth here made `border-2 border-theme-outline` render 1px, while the
+        // reverse order rendered 2px — an order dependence with no visible cause.
+        // parse() resolves this key at the end, so the outcome is order-independent.
+        $out = ['borderColor' => $light, 'borderWidthDefault' => 1];
         if ($dark !== null && $dark !== $light) {
             $out['dark'] = ['borderColor' => $dark];
         }
@@ -1385,9 +1426,18 @@ class TailwindParser
     private static function parseBorder(string $value): ?array
     {
         // Width values
-        $widths = ['0' => 0, '2' => 2, '4' => 4, '8' => 8];
-        if (isset($widths[$value])) {
-            return ['borderWidth' => $widths[$value]];
+        if (isset(self::BORDER_WIDTHS[$value])) {
+            return ['borderWidth' => self::BORDER_WIDTHS[$value]];
+        }
+
+        // Per-side widths: `border-l`, `border-x-2`. No color starts with a
+        // side letter and a dash, so `border-red-500` can't land here, and a
+        // per-side color (`border-l-red-500`) has no width and is dropped.
+        [$side, $size] = array_pad(explode('-', $value, 2), 2, null);
+        if (isset(self::BORDER_SIDES[$side])) {
+            $width = $size === null ? 1 : (self::BORDER_WIDTHS[$size] ?? null);
+
+            return $width === null ? null : array_fill_keys(self::BORDER_SIDES[$side], $width);
         }
 
         // Special colors
@@ -1452,6 +1502,30 @@ class TailwindParser
         $corners = self::BORDER_RADIUS_CORNERS[$side] ?? null;
 
         return $corners === null ? null : array_fill_keys($corners, (float) $value);
+    }
+
+    /**
+     * Arbitrary per-side width — `border-l-[1.5]`, `border-y-[3px]`. A
+     * per-side color (`border-l-[#f00]`) has no wire slot and is dropped.
+     *
+     * @return array<string, float>|null
+     */
+    private static function parseArbitraryBorderSide(string $side, string $value): ?array
+    {
+        if (str_starts_with($value, '#')) {
+            return null;
+        }
+
+        return array_fill_keys(self::BORDER_SIDES[$side], (float) $value);
+    }
+
+    /**
+     * Whether parsed attributes set the width of any one side.
+     */
+    public static function hasSideBorderWidth(array $attrs): bool
+    {
+        return isset($attrs['borderTopWidth']) || isset($attrs['borderRightWidth'])
+            || isset($attrs['borderBottomWidth']) || isset($attrs['borderLeftWidth']);
     }
 
     private static function parseShadow(string $value): ?array
@@ -1583,6 +1657,8 @@ class TailwindParser
             'rounded-tl', 'rounded-tr', 'rounded-br', 'rounded-bl',
             'rounded-t', 'rounded-r', 'rounded-b', 'rounded-l' => self::parseArbitraryRounded(substr($prefix, 8), $value),
             'border' => $isColor ? self::arbitraryColor('borderColor', $value) : ['borderWidth' => (float) $value],
+            'border-t', 'border-r', 'border-b', 'border-l',
+            'border-x', 'border-y' => self::parseArbitraryBorderSide(substr($prefix, 7), $value),
             'opacity' => ['opacity' => (float) $value],
             // `blur-[100px]` / `blur-[64]` — Gaussian radius in points.
             'blur' => ['blur' => (float) $value],

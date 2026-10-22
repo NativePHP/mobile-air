@@ -481,6 +481,23 @@ struct FlexContainer: Layout {
         return result
     }
 
+    // MARK: - Alignment
+
+    /// A flex container has no alignment guides of its own, and nothing in it
+    /// aligns on a guide. Without these, SwiftUI's default merges every
+    /// subview's guides, which measures the whole subtree again each time a
+    /// parent stack or a list row asks. A list asks every row, for where its
+    /// separator starts, so every row that scrolled in was measured again. The
+    /// separator now starts at the row's leading edge, as Android's divider
+    /// does, rather than under the first text inside the row.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout CacheData) -> CGFloat? {
+        nil
+    }
+
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout CacheData) -> CGFloat? {
+        nil
+    }
+
     // MARK: - placeSubviews
 
     func placeSubviews(

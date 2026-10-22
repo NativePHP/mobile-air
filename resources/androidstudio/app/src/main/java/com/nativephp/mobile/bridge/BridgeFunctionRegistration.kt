@@ -30,11 +30,13 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     registry.register("Device.GetId", DeviceFunctions.GetId(context))
     registry.register("Device.GetInfo", DeviceFunctions.GetInfo(context))
     registry.register("Device.GetBatteryInfo", DeviceFunctions.GetBatteryInfo(context))
+    registry.register("Device.GetThermalState", DeviceFunctions.GetThermalState(context))
 
     // System.* — core built-in (migrated from the nativephp/mobile-system
     // plugin). iOS twin: Bridge/Functions/SystemFunctions.swift.
     registry.register("System.OpenAppSettings", SystemFunctions.OpenAppSettings(context))
     registry.register("System.GetAppearance", SystemFunctions.GetAppearance(context))
+    registry.register("System.GetOrientation", SystemFunctions.GetOrientation(context))
     registry.register("System.MinimizeApp", SystemFunctions.MinimizeApp(activity))
 
     // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog

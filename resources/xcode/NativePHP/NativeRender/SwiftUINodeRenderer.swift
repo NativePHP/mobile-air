@@ -132,6 +132,108 @@ struct NativeTreeRenderer: View {
 
 // MARK: - Tap-to-dismiss Keyboard
 
+/// Focus policy shared between the text-input renderers, which know
+/// whether the focused field opted into `keep-focus-on-submit`, and
+/// the gesture layer, which decides whether a tap on an interactive
+/// element should also dismiss the keyboard (mobile-air #335).
+enum KeyboardFocusPolicy {
+    /// Token for the field that owns the state below, nil when no field
+    /// is focused. When focus moves between two fields the old field's
+    /// blur can arrive after the new field's focus, so a blur only
+    /// clears the state when it comes from the current owner.
+    private static var focusedField: AnyHashable?
+
+    /// Registered by the focused input; flushes its undispatched text
+    /// change so PHP sees the field's latest value before a press.
+    private static var flushFocusedField: (() -> Void)?
+
+    /// Whether the focused field opted into `keep-focus-on-submit`.
+    private(set) static var focusedFieldKeepsFocus = false
+
+    /// True while any text field holds focus, so press dispatch knows
+    /// a pending autocorrection or debounced change might be in play.
+    static var focusedFieldActive: Bool { focusedField != nil }
+
+    /// Called by an input when it gains focus. `field` identifies the
+    /// input and must be the same value it later passes to `fieldBlurred`.
+    static func fieldFocused(_ field: AnyHashable, keepsFocus: Bool, flush: @escaping () -> Void) {
+        focusedField = field
+        focusedFieldKeepsFocus = keepsFocus
+        flushFocusedField = flush
+    }
+
+    /// Called by an input when it blurs or leaves the screen. Ignored
+    /// unless `field` is the current owner, so a late blur from the
+    /// previous field cannot clear the state of the one that took over.
+    static func fieldBlurred(_ field: AnyHashable) {
+        guard focusedField == field else { return }
+
+        focusedField = nil
+        focusedFieldKeepsFocus = false
+        flushFocusedField = nil
+    }
+
+    /// Dispatch a press event with focus handling around it: flush the
+    /// focused field's pending change, resign unless the field keeps
+    /// focus, and defer the press one runloop turn while focused so
+    /// a tap-committed autocorrection's change event lands in PHP
+    /// before the press does (mobile-air #335).
+    static func dispatchPress(_ send: @escaping () -> Void) {
+        flushFocusedField?()
+
+        if !focusedFieldKeepsFocus {
+            resignKeyboard()
+        }
+
+        if focusedFieldActive {
+            DispatchQueue.main.async(execute: send)
+        } else {
+            send()
+        }
+    }
+
+    static func resignKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+    }
+
+    /// Whether `point`, in window coordinates, lands on the view that
+    /// currently holds first responder. False when nothing is focused
+    /// or the first responder is not a view.
+    static func firstResponderContains(_ point: CGPoint) -> Bool {
+        guard let view = UIResponder.currentFirstResponder() as? UIView else {
+            return false
+        }
+
+        return view.convert(view.bounds, to: nil).contains(point)
+    }
+}
+
+private extension UIResponder {
+    private weak static var capturedFirstResponder: UIResponder?
+
+    /// UIKit has no public accessor for the first responder. An action
+    /// sent to a nil target is delivered to it, so it records itself.
+    static func currentFirstResponder() -> UIResponder? {
+        capturedFirstResponder = nil
+        UIApplication.shared.sendAction(
+            #selector(nativePHPCaptureFirstResponder(_:)),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+        return capturedFirstResponder
+    }
+
+    @objc func nativePHPCaptureFirstResponder(_ sender: Any?) {
+        UIResponder.capturedFirstResponder = self
+    }
+}
+
 extension View {
     /// Dismiss the keyboard when the user taps anywhere in this subtree.
     ///
@@ -149,20 +251,39 @@ extension View {
     /// also the correct scope — a tap on the tab bar or a toolbar button is
     /// that control's business, not a dismiss.
     ///
-    /// `simultaneousGesture` rather than `onTapGesture` so it runs ALONGSIDE
-    /// whatever it lands on: buttons, pressables and list rows underneath keep
-    /// receiving their own taps instead of having them swallowed.
+    /// Two gestures, because a tap means different things depending on
+    /// whether a child claimed it (mobile-air #335):
+    ///
+    /// - The regular gesture loses to a child's own tap, so it only fires
+    ///   for taps nothing else claimed. That is the plain-area tap-away
+    ///   path and it always dismisses, even when the focused field opted
+    ///   into `keep-focus-on-submit`.
+    /// - The simultaneous gesture fires for every tap, including ones a
+    ///   child `Button`, chip, checkbox or plugin control claimed. It
+    ///   dismisses unless the focused field asked to keep focus. Those
+    ///   controls never go through `KeyboardFocusPolicy.dispatchPress`,
+    ///   so without this they would leave the keyboard up, where before
+    ///   #335 a tap on them dropped it. It skips a tap on the focused
+    ///   field itself, so tapping to move the caret keeps the keyboard.
+    ///
+    /// `@press` handlers still dismiss through
+    /// `KeyboardFocusPolicy.dispatchPress` themselves, under the same
+    /// keep-focus rule. The `contentShape` keeps empty regions of the
+    /// screen hit-testable for the gestures.
     func dismissesKeyboardOnTap() -> some View {
-        simultaneousGesture(
-            TapGesture().onEnded {
-                UIApplication.shared.sendAction(
-                    #selector(UIResponder.resignFirstResponder),
-                    to: nil,
-                    from: nil,
-                    for: nil
-                )
-            }
-        )
+        contentShape(Rectangle())
+            .gesture(
+                TapGesture().onEnded {
+                    KeyboardFocusPolicy.resignKeyboard()
+                }
+            )
+            .simultaneousGesture(
+                SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+                    guard !KeyboardFocusPolicy.focusedFieldKeepsFocus,
+                          !KeyboardFocusPolicy.firstResponderContains(tap.location) else { return }
+                    KeyboardFocusPolicy.resignKeyboard()
+                }
+            )
     }
 }
 
@@ -382,7 +503,9 @@ private struct DoubleTapModifier: ViewModifier {
             content.onTapGesture(count: 2) {
                 // Reuses the Press event type — the callback id alone routes
                 // to the @doubleTap handler, and Press dispatch passes no args.
-                NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content
@@ -397,7 +520,9 @@ private struct TapModifier: ViewModifier {
     func body(content: Content) -> some View {
         if callbackId != 0 {
             content.onTapGesture {
-                NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content
@@ -412,7 +537,9 @@ private struct LongPressModifier: ViewModifier {
     func body(content: Content) -> some View {
         if callbackId != 0 {
             content.onLongPressGesture(minimumDuration: 0.5) {
-                NativeElementBridge.sendLongPressEvent(callbackId, nodeId: nodeId)
+                KeyboardFocusPolicy.dispatchPress {
+                    NativeElementBridge.sendLongPressEvent(callbackId, nodeId: nodeId)
+                }
             }
         } else {
             content

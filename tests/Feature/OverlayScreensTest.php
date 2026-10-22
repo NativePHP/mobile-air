@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Contracts\Debug\ExceptionHandler;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\NativeDumpException;
@@ -47,6 +48,43 @@ function fakeOverlaySlider(): void
     };
 
     ElementRegistry::register('slider', $slider::class);
+}
+
+/**
+ * Swap in an exception handler that records what report() hands it, and
+ * optionally throws, so the tests can see what reaches Laravel.
+ */
+function recordReportedExceptions(bool $throws = false): ArrayObject
+{
+    $reported = new ArrayObject;
+
+    app()->instance(ExceptionHandler::class, new class($reported, $throws) implements ExceptionHandler
+    {
+        public function __construct(private ArrayObject $reported, private bool $throws) {}
+
+        public function report(Throwable $e)
+        {
+            $this->reported[] = $e;
+
+            if ($this->throws) {
+                throw new LogicException('Reporter failed');
+            }
+        }
+
+        public function shouldReport(Throwable $e)
+        {
+            return true;
+        }
+
+        public function render($request, Throwable $e)
+        {
+            throw $e;
+        }
+
+        public function renderForConsole($output, Throwable $e) {}
+    });
+
+    return $reported;
 }
 
 beforeEach(function () {
@@ -116,6 +154,27 @@ it('treats a missing app.debug as off', function () {
     expect(overlayJson($screen))->toContain('Please try again, or go back.')
         ->not->toContain('Boom town')
         ->not->toContain('STACK TRACE');
+});
+
+it('reports the exception to Laravel once, even when the overlay re-renders it', function () {
+    config()->set('app.debug', true);
+    $reported = recordReportedExceptions();
+
+    $screen = Native::test(CounterScreen::class);
+    $exception = new RuntimeException('Boom town');
+    $screen->instance()->renderErrorScreen($exception);
+    $screen->instance()->__overlaySetFontSize(20);
+
+    expect($reported->getArrayCopy())->toBe([$exception]);
+});
+
+it('still renders the exception overlay when the reporter throws', function () {
+    recordReportedExceptions(throws: true);
+
+    $screen = Native::test(CounterScreen::class);
+    $screen->instance()->renderErrorScreen(new RuntimeException('Boom town'));
+
+    expect(overlayJson($screen))->toContain('Something went wrong');
 });
 
 it('offers a back action when a screen is below on the stack', function () {

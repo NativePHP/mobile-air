@@ -1,0 +1,43 @@
+name: Update CA file
+
+# Keeps the CA bundles the iOS and Android apps hand to PHP for HTTPS in step
+# with the Mozilla bundle curl.se publishes. Both platforms get the same file.
+# curl.se only regenerates it when Mozilla's certificates change, so most runs
+# find nothing to do.
+
+on:
+  schedule:
+    # Daily at 00:00 UTC.
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-ca-file:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch the latest CA file
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL --retry 3 -O https://curl.se/ca/cacert.pem
+          curl -fsSL --retry 3 -O https://curl.se/ca/cacert.pem.sha256
+          sha256sum -c cacert.pem.sha256
+          cp cacert.pem "$GITHUB_WORKSPACE/resources/xcode/NativePHP/cacert.pem"
+          cp cacert.pem "$GITHUB_WORKSPACE/resources/androidstudio/app/src/main/assets/cacert.pem"
+
+      - name: Open a pull request if it changed
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: update-ca-file
+          delete-branch: true
+          base: main
+          title: Update CA file
+          commit-message: Update CA file
+          body: Updates the iOS and Android `cacert.pem` to the latest Mozilla CA bundle from https://curl.se/docs/caextract.html.
