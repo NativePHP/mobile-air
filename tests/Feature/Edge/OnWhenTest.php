@@ -261,8 +261,9 @@ it('publishes no frame after a miss, keeps the frame on screen usable, and draws
 
     $screen->{$loop}();
 
-    // The first frame, one for the tap, one for the event that matched and one for the idle tick.
-    expect($bridge->publishes)->toHaveCount(4)
+    // The first frame, one for the tap and one for the event that matched. The idle
+    // tick draws the same frame again, which the native side has, so it is held back.
+    expect($bridge->publishes)->toHaveCount(3)
         ->and($screen->log)->toBe(['thisOrderShipped:sent'])
         ->and($screen->count)->toBe(1);
 })->with(['run()' => 'run', 'runLoop()' => 'runLoop']);
