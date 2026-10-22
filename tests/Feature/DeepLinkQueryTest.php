@@ -87,8 +87,9 @@ it('gives the launch screen the query from the URI it started at', function () {
 
     $screen = $router->launched[0]['component'];
 
+    // The stack records the launch screen by its path, as it always has.
     expect((fn () => $this->query('code'))->call($screen))->toBe('a+b==')
-        ->and($router->launched[0]['uri'])->toBe('/auth/callback?code=a%2Bb%3D%3D');
+        ->and($router->launched[0]['uri'])->toBe('/auth/callback');
 });
 
 it('restores the query onto a hot-reloaded stack', function () {

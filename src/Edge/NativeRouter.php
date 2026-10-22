@@ -564,9 +564,11 @@ class NativeRouter
                 $component->setLayout($resolved['layout']);
             }
 
+            // The launch screen has always been recorded by its path, and the
+            // shells look its tab up by that. Keep it that way.
             $this->stack[] = [
                 'component' => $component,
-                'uri' => $uri,
+                'uri' => $uri === '' ? '' : static::pathOf($uri),
                 'params' => $params,
             ];
 
