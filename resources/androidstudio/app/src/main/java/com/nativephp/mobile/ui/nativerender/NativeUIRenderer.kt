@@ -121,10 +121,16 @@ fun NativeUIContent() {
             // SharedTransitionLayout wraps the swap so elements sharing a
             // `ref` across the two panes morph between them. Compose matches
             // and animates these itself — unlike iOS, which has no equivalent
-            // and needs the source/slave roles driven by hand.
+            // and flies a copy of each element in an overlay by hand.
             //
             // A ref present on only one pane simply never matches and renders
             // normally, so no pairing set is needed here.
+            //
+            // Only a `morph` navigation hands the scope down. Under any other
+            // transition every ref'd node stays a plain node, as on iOS, so a
+            // ref used only as a test handle and repeated across screens
+            // doesn't start travelling during an ordinary slide.
+            val morphing = pendingTransition == "morph"
             SharedTransitionLayout {
                 AnimatedContent(
                     targetState = screenKey,
@@ -144,7 +150,7 @@ fun NativeUIContent() {
                         // plain recursive composable and cannot receive them
                         // any other way.
                         CompositionLocalProvider(
-                            LocalSharedTransitionScope provides this@SharedTransitionLayout,
+                            LocalSharedTransitionScope provides if (morphing) this@SharedTransitionLayout else null,
                             LocalAnimatedVisibilityScope provides this@AnimatedContent
                         ) {
                             // Fold any plugin-registered root hosts (side drawers,
@@ -210,10 +216,9 @@ internal fun transitionFor(type: String?): ContentTransform {
             slideOutHorizontally(intSpec) { -it / 3 }
         // Shared-element swap: the screens only cross-fade, because the motion
         // the user reads comes from elements morphing across (see
-        // `Modifier.heroMorph`). Duration matches iOS's
-        // `nativeViewTransitionAnimation` so a morph is paced the same on both
-        // platforms.
-        "view_transition" -> fadeIn(tween(350)) togetherWith fadeOut(tween(350))
+        // `Modifier.heroMorph`). Duration matches iOS's `nativeMorphAnimation`
+        // so a morph is paced the same on both platforms.
+        "morph" -> fadeIn(tween(350)) togetherWith fadeOut(tween(350))
         "none" -> fadeIn(tween(0)) togetherWith fadeOut(tween(0))
         else -> fadeIn(spec) togetherWith fadeOut(spec)
     }

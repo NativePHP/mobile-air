@@ -4,7 +4,7 @@ import SwiftUI
 /// is how UI drivers (Maestro, XCUITest) target an element by name.
 ///
 /// `ref` is the element's public handle — the same one that pairs shared
-/// elements across a view transition — so a driver targeting `id: "photo-1"`
+/// elements across a morph transition — so a driver targeting `id: "photo-1"`
 /// and a morph matching `ref="photo-1"` are naming the same thing. Without
 /// this the identifier never leaves PHP: nothing in the iOS renderer read
 /// `ref` at all, so every `tapOn: id:` failed with "Element with Id matching

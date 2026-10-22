@@ -320,7 +320,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
 
         // `ref` is both the test-targeting handle (Maestro / Compose UI tests)
         // AND the shared-element identity: two screens naming an element the
-        // same thing morph it between them under a `view_transition`.
+        // same thing morph it between them under a `morph` transition.
         val ref = node.props.getString("ref", "")
         if (ref.isNotEmpty()) {
             // testTag ONLY — deliberately not contentDescription. Overwriting

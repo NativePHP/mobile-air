@@ -4,7 +4,7 @@ import SwiftUI
 ///
 /// Identity is the element's `ref` — the same handle used for test targeting.
 /// Two screens naming an element the same thing morph it between them during a
-/// `view_transition` navigation. A ref that exists only as a test handle and
+/// `morph` navigation. A ref that exists only as a test handle and
 /// must never travel opts out with `morph="none"`.
 ///
 /// This modifier does NOT animate anything. The flight itself is rendered by
@@ -20,7 +20,7 @@ import SwiftUI
 ///
 /// Motion is shaped by props read on the far side, in the store:
 ///   - `morph`          — frame (default) | position | size | none
-///   - `morph_duration` — ms; overrides the shared 350ms view-transition pace
+///   - `morph_duration` — ms; overrides the shared 350ms morph pace
 ///   - `morph_easing`   — linear / ease-in / ease-out / ease-in-out / spring
 struct NodeHeroModifier: ViewModifier {
     let props: GenericProps

@@ -1,6 +1,5 @@
 
 import Foundation
-import SwiftUI // withAnimation, for the view_transition hero source flip
 import UIKit // needed for UIScreen.main, UIApplication
 import os
 import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags (Phase 0 format check)
@@ -525,7 +524,7 @@ final class NativeElementBridge {
                     // matched elements are hidden before the incoming screen's
                     // very first layout — otherwise they paint once at their
                     // destination before taking off.
-                    if bridge.pendingTransition == "view_transition" {
+                    if bridge.pendingTransition == "morph" {
                         HeroFlightStore.shared.beginSwap(
                             incomingNodes: Self.collectRefNodes(finalTree.root)
                         )

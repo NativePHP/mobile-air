@@ -29,10 +29,10 @@ enum Transition: string
      * still is what lets the morph carry the motion, which is the same reason
      * the web API cross-fades its root while named elements animate.
      *
-     * Elements sharing a `ref` still morph best-effort under the
-     * other transitions; this case is the one tuned for them.
+     * Elements only morph under this transition. Under any other, a `ref`
+     * repeated across two screens is just a name.
      */
-    case ViewTransition = 'view_transition';
+    case Morph = 'morph';
 
     case None = 'none';
 }

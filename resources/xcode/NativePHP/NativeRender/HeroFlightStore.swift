@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Owns the shared-element ("hero") flights for `view_transition` navigations.
+/// Owns the shared-element ("hero") flights for `morph` navigations.
 ///
 /// ## Why a flight store rather than `matchedGeometryEffect`
 ///
@@ -88,7 +88,7 @@ final class HeroFlightStore: ObservableObject {
 
     // MARK: - Swap lifecycle
 
-    /// Begin a `view_transition`. Called synchronously from the publish path,
+    /// Begin a `morph` swap. Called synchronously from the publish path,
     /// before the incoming tree is handed to SwiftUI.
     func beginSwap(incomingNodes: [String: NativeUINode]) {
         let matched = Set(incomingNodes.keys).intersection(liveFrames.keys)

@@ -40,7 +40,7 @@ abstract class Element
      * names (the `data-testid` equivalent).
      *
      * It is ALSO the shared-element identity: two elements on different
-     * screens sharing a ref morph into each other during a `view_transition`
+     * screens sharing a ref morph into each other during a `morph`
      * navigation (see NodeHeroModifier on iOS). A ref that exists purely as a
      * test handle and must never travel can opt out with `morph="none"`.
      */

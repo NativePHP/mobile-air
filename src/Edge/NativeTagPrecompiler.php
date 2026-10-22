@@ -40,7 +40,7 @@ class NativeTagPrecompiler
         'fadeFromBottom' => 'fade_from_bottom',
         'scaleFromCenter' => 'scale_from_center',
         'parallaxPush' => 'parallax_push',
-        'viewTransition' => 'view_transition',
+        'morph' => 'morph',
         'none' => 'none',
     ];
 

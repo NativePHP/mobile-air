@@ -1968,7 +1968,7 @@ class NativeElementCollector
         //   morph          — frame (default: travel + resize) | position
         //                    (travel, keep own size) | size (resize in place)
         //                    | none (opt out; keeps `ref` as a plain handle)
-        //   morph-duration — ms; overrides the shared view-transition pace
+        //   morph-duration — ms; overrides the shared 350ms morph pace
         //   morph-easing   — linear | ease-in | ease-out | ease-in-out | spring
         //
         // Deliberately distinct from `animate-duration` / `animate-easing`,

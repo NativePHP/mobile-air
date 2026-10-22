@@ -80,7 +80,7 @@ it('emits per-element timing', function () {
     expect($props['morph_easing'])->toBe('spring');
 });
 
-it('leaves timing unset so the shared view-transition pace applies', function () {
+it('leaves timing unset so the shared morph pace applies', function () {
     $element = Column::make();
     NativeElementCollector::applyStyle($element, ['morph' => 'position']);
 
@@ -101,17 +101,17 @@ it('survives the blade precompiler as static attributes', function () {
     expect($result)->toContain("'morph-easing' => 'spring'");
 });
 
-it('compiles @navigate.viewTransition to the view_transition intent', function () {
-    expect(($this->precompiler)("<native:column @navigate.viewTransition('/album/3') />"))
-        ->toContain('view_transition');
+it('compiles @navigate.morph to the morph transition', function () {
+    expect(($this->precompiler)("<native:column @navigate.morph('/album/3') />"))
+        ->toContain("nav('navigate', 'morph', '/album/3')");
 });
 
 it('lets back navigation carry the transition too', function () {
-    expect(($this->precompiler)('<native:column @navigate.back.viewTransition />'))
-        ->toContain('view_transition');
+    expect(($this->precompiler)('<native:column @navigate.back.morph />'))
+        ->toContain("nav('back', 'morph')");
 });
 
-it('exposes ViewTransition on the Transition enum', function () {
-    expect(Transition::ViewTransition->value)->toBe('view_transition');
-    expect(Transition::from('view_transition'))->toBe(Transition::ViewTransition);
+it('exposes Morph on the Transition enum', function () {
+    expect(Transition::Morph->value)->toBe('morph');
+    expect(Transition::from('morph'))->toBe(Transition::Morph);
 });

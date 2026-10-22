@@ -21,22 +21,22 @@ import androidx.compose.ui.geometry.Rect
  * feature iOS implements in `NodeHeroModifier`.
  *
  * Identity is the element's `ref`. Two screens naming an element the same
- * thing morph it between them during a `view_transition` navigation. A ref
+ * thing morph it between them during a `morph` navigation. A ref
  * that exists only as a test handle and must never travel opts out with
  * `morph="none"`.
  *
  * Compose does the heavy lifting here that iOS does not: `SharedTransitionLayout`
  * wrapped around the screen-swapping `AnimatedContent` matches keys across the
- * two panes and animates the bounds itself. There is no source/slave role to
- * assign, no arming, and no timing race — all of which the iOS side needs.
+ * two panes and animates the bounds itself. There is no overlay to manage, no
+ * frames to collect, and no timing race — all of which the iOS side needs.
  *
  * A ref present on only one pane never matches and renders normally, so
  * unmatched elements are inert without any pairing set.
  *
  * ## Parity note: `morph="position"` / `morph="size"`
  *
- * iOS maps these onto `MatchedGeometryProperties.position` / `.size`, which
- * share only half the geometry. Compose's shared-element API always animates
+ * iOS interpolates the rect itself (`HeroFlightStore.rects`), so it can share
+ * only half the geometry. Compose's shared-element API always animates
  * the full bounds and exposes no equivalent, so both values fall back to the
  * default full-bounds morph here. That is a real behavioural difference
  * between the platforms, not an oversight — the alternative was to invent an
@@ -50,7 +50,7 @@ fun Modifier.heroMorph(node: NativeUINode): Modifier {
 
     // Fast path — the overwhelming majority of nodes. No ref, an explicit
     // opt-out, or no host providing the scopes (previews, tests, any tree
-    // rendered outside NativeUIContent).
+    // rendered outside NativeUIContent, or a navigation that isn't a morph).
     if (ref.isEmpty() || mode == "none") return this
 
     val sharedScope = LocalSharedTransitionScope.current ?: return this
@@ -69,7 +69,7 @@ fun Modifier.heroMorph(node: NativeUINode): Modifier {
 
 /**
  * `morph-duration` (ms) and `morph-easing` for one element, falling back to a
- * 350ms ease-in-out that matches iOS's shared view-transition pace so an
+ * 350ms ease-in-out that matches iOS's morph pace so an
  * untuned morph looks the same on both platforms.
  *
  * Deliberately distinct from `animate-duration` / `animate-easing`, which
