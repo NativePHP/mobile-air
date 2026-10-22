@@ -375,6 +375,11 @@ struct ResolvedNodeView: View, Equatable {
                 .nodeModifier(if: decorations.contains(.pressFeedback)) {
                     $0.modifier(NodePressFeedbackModifier(props: node.props))
                 }
+                // Accessibility outside the gestures, so the one element it
+                // makes covers the whole tappable surface.
+                .nodeModifier(if: decorations.contains(.accessibility)) {
+                    $0.modifier(NodeAccessibilityModifier(node: node))
+                }
                 // Hidden (`display: none`) outside everything above, so the
                 // background and border go with the content. FlexContainer never
                 // places a hidden child and SwiftUI centres it at the container's
@@ -471,6 +476,7 @@ struct NodeDecorations: OptionSet {
     static let gesture = NodeDecorations(rawValue: 1 << 11)
     static let pressFeedback = NodeDecorations(rawValue: 1 << 12)
     static let hidden = NodeDecorations(rawValue: 1 << 13)
+    static let accessibility = NodeDecorations(rawValue: 1 << 14)
 
     /// The layers whose changes never rebuilt a node, kept on every node
     /// that keeps state.
@@ -548,6 +554,9 @@ struct NodeDecorations: OptionSet {
         if node.layout?.display == Display.none {
             insert(.hidden)
         }
+        if NodeAccessibility.applies(to: node) {
+            insert(.accessibility)
+        }
     }
 }
 
@@ -622,6 +631,73 @@ private struct NodeGestureModifier: ViewModifier {
             }
             .nodeModifier(if: pressDownId != 0 || pressUpId != 0) {
                 $0.modifier(PressDownUpModifier(downId: pressDownId, upId: pressUpId, nodeId: nodeId))
+            }
+    }
+}
+
+// MARK: - Accessibility Modifier
+
+/// How a core layout node (`pressable`, `column`, `row`, `stack`) appears to
+/// VoiceOver. These types draw no control of their own, so without this
+/// their `a11y-label` / `a11y-hint` never reached the screen reader, and a
+/// pressable read as loose text fragments with no button trait. Mirrors
+/// Android's `NodeAccessibility`.
+enum NodeAccessibility {
+    /// Core containers whose renderers never read `a11y_label` themselves.
+    static let containerTypes: Set<String> = ["pressable", "column", "row", "stack"]
+
+    /// A `pressable` with a tap handler is a button. A pressable with a
+    /// `:menu` is a SwiftUI `Menu`, which is a button already and owns the
+    /// tap, so it is left to its renderer.
+    static func isButton(_ node: NativeUINode) -> Bool {
+        node.type == "pressable" && node.onPress != 0 && !node.props.getBool("has_menu")
+    }
+
+    static func applies(to node: NativeUINode) -> Bool {
+        guard containerTypes.contains(node.type), !node.props.getBool("has_menu") else { return false }
+
+        return !node.props.getString("a11y_label").isEmpty || isButton(node)
+    }
+}
+
+/// With an `a11y-label`, the node becomes one element read as that label
+/// (children ignored), plus `a11y-hint`. Without one, a tappable pressable
+/// combines its children into one element, as SwiftUI's `Button` does with
+/// its label. A tappable pressable gets the button trait, and any node here
+/// with `@press` activates it the same way a tap does.
+private struct NodeAccessibilityModifier: ViewModifier {
+    let node: NativeUINode
+
+    func body(content: Content) -> some View {
+        let label = node.props.getString("a11y_label")
+        let hint = node.props.getString("a11y_hint")
+        let isButton = NodeAccessibility.isButton(node)
+        let nodeId = node.id
+        let pressId = node.onPress
+
+        content
+            .nodeModifier(if: label.isEmpty) {
+                $0.accessibilityElement(children: .combine)
+            }
+            .nodeModifier(if: !label.isEmpty) {
+                $0.accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(label))
+            }
+            .nodeModifier(if: !hint.isEmpty) {
+                $0.accessibilityHint(Text(hint))
+            }
+            .nodeModifier(if: isButton) {
+                $0.accessibilityAddTraits(.isButton)
+            }
+            // Explicit activation, so a double-tap fires `@press` rather than
+            // a synthesized tap at the element's centre, which could land on
+            // a child that is now hidden from VoiceOver.
+            .nodeModifier(if: pressId != 0) {
+                $0.accessibilityAction {
+                    KeyboardFocusPolicy.dispatchPress {
+                        NativeElementBridge.sendPressEvent(pressId, nodeId: nodeId)
+                    }
+                }
             }
     }
 }
