@@ -113,9 +113,10 @@ it('does not mutate the route instance the HTTP router matches against', functio
         Route::native('/bound/{id}', GuardedScreen::class);
     });
 
-    Native::visit('/bound/42');
+    $route = NativeRouter::registeredRoutes()['/bound/{id}']['route'];
 
-    $route = NativeRouter::resolve('/bound/42')['route'];
+    // In-app navigation hands the guard this registered instance.
+    ScreenGuard::check($route, '/bound/42');
 
     expect(fn () => $route->parameters())->toThrow(LogicException::class);
 });

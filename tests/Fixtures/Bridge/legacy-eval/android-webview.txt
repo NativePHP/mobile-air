@@ -1,0 +1,78 @@
+try {
+    while (ob_get_level() > 0) { ob_end_clean(); }
+
+    foreach ($_SERVER as $__k => $__v) {
+        if (str_starts_with($__k, 'HTTP_') || $__k === 'CONTENT_TYPE' || $__k === 'CONTENT_LENGTH') {
+            unset($_SERVER[$__k]);
+        }
+    }
+
+    $_SERVER['REQUEST_METHOD'] = '%s';
+    $_SERVER['REQUEST_URI'] = '%s';
+    $_SERVER['SCRIPT_FILENAME'] = '%s';
+    $_SERVER['PHP_SELF'] = '/native.php';
+    $_SERVER['HTTP_HOST'] = '127.0.0.1';
+    $_SERVER['SERVER_NAME'] = '127.0.0.1';
+    $_SERVER['SERVER_PORT'] = '80';
+    $_SERVER['APP_URL'] = 'http://127.0.0.1';
+    $_SERVER['NATIVEPHP_RUNNING'] = 'true';
+    $_SERVER['NATIVEPHP_PLATFORM'] = 'android';
+    if ('%s' !== '') { $_SERVER['HTTP_COOKIE'] = '%s'; }
+    if ('%s' !== '') { $_SERVER['CONTENT_TYPE'] = '%s'; $_SERVER['HTTP_CONTENT_TYPE'] = '%s'; }
+
+    $__qpos = strpos($_SERVER['REQUEST_URI'], '?');
+    if ($__qpos !== false) {
+        $_SERVER['QUERY_STRING'] = substr($_SERVER['REQUEST_URI'], $__qpos + 1);
+    } else {
+        $_SERVER['QUERY_STRING'] = '';
+    }
+
+    $_GET = [];
+    $_POST = [];
+    $_COOKIE = [];
+    $_FILES = [];
+    $_REQUEST = [];
+
+    if (isset($_SERVER['HTTP_COOKIE']) && $_SERVER['HTTP_COOKIE'] !== '') {
+        foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $__pair) {
+            $__parts = explode('=', $__pair, 2);
+            if (count($__parts) === 2) {
+                $_COOKIE[$__parts[0]] = urldecode($__parts[1]);
+            }
+        }
+    }
+
+    if ($_SERVER['QUERY_STRING'] !== '') {
+        parse_str($_SERVER['QUERY_STRING'], $_GET);
+    }
+
+    if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'PUT', 'PATCH'])) {
+        $__rawInput = file_get_contents('php://input');
+        if ($__rawInput !== false && $__rawInput !== '') {
+            $__ct = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (stripos($__ct, 'application/x-www-form-urlencoded') !== false) {
+                parse_str($__rawInput, $_POST);
+            }
+            $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);
+        }
+    }
+
+    $__response = \Native\Mobile\Runtime::dispatch(
+        \Illuminate\Http\Request::capture()
+    );
+    $__code = $__response->getStatusCode();
+    $__status = \Symfony\Component\HttpFoundation\Response::$statusTexts[$__code] ?? 'OK';
+    echo "HTTP/1.1 {$__code} {$__status}\r\n";
+    foreach ($__response->headers->all() as $__name => $__values) {
+        foreach ($__values as $__value) {
+            echo "{$__name}: {$__value}\r\n";
+        }
+    }
+    echo "\r\n";
+    $__response->sendContent();
+} catch (\Throwable $e) {
+    echo "HTTP/1.1 500 Internal Server Error\r\n";
+    echo "Content-Type: text/plain\r\n\r\n";
+    echo 'Webview dispatch error: ' . $e->getMessage() . "\n";
+    echo $e->getTraceAsString();
+}

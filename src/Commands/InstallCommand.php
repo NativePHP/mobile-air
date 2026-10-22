@@ -3,23 +3,27 @@
 namespace Native\Mobile\Commands;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Console\Command;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAndroid;
 use Native\Mobile\Concerns\InstallsIos;
 use Native\Mobile\Concerns\PlatformFileOperations;
+use Native\Mobile\Concerns\TracksInstallFailures;
+use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\TransferFailure;
 
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\outro;
 use function Laravel\Prompts\text;
+use function Laravel\Prompts\warning;
 
 class InstallCommand extends Command
 {
-    use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations;
+    use DisplaysMarketingBanners, InstallsAndroid, InstallsIos, PlatformFileOperations, TracksInstallFailures;
 
     protected bool $forcing = true;
 
@@ -36,7 +40,7 @@ class InstallCommand extends Command
 
     protected $description = 'Install all of the NativePHP resources';
 
-    public function handle(): void
+    public function handle(): int
     {
         intro('Installing NativePHP for Mobile');
 
@@ -45,7 +49,9 @@ class InstallCommand extends Command
         $this->forcing = ! $this->option('no-force');
 
         if ($this->option('force')) {
-            $cacheDir = base_path('nativephp/binaries');
+            // Scoped to the current branch: forcing a re-download of one
+            // branch's binaries is no reason to evict another's.
+            $cacheDir = PhpBinaries::cacheDirectory();
             if (is_dir($cacheDir)) {
                 $this->components->task('Clearing cached PHP binaries', function () use ($cacheDir) {
                     $files = glob($cacheDir.'/*.zip');
@@ -69,7 +75,7 @@ class InstallCommand extends Command
         if ($platform && ! in_array($platform, ['android', 'ios', 'both'])) {
             error('Invalid platform. Please specify "android" (a), "ios" (i), or "both".');
 
-            return;
+            return self::FAILURE;
         }
 
         // Check for WSL environment - Android is not supported in WSL
@@ -81,7 +87,7 @@ class InstallCommand extends Command
                 Please run this command from Windows CMD instead of WSL.
                 NOTE);
 
-            return;
+            return self::FAILURE;
         }
 
         // Determine which platforms to install
@@ -97,7 +103,7 @@ class InstallCommand extends Command
             if ($platform === 'ios') {
                 error('iOS installation is only available on macOS.');
 
-                return;
+                return self::FAILURE;
             }
             $installAndroid = true;
         }
@@ -116,11 +122,31 @@ class InstallCommand extends Command
 
         $path = base_path('nativephp');
 
-        if ($this->forcing && is_dir($path)) {
-            $this->components->task('Removing existing native app directories', function () use ($path) {
-                $this->removeDirectory($path.DIRECTORY_SEPARATOR.'ios');
-                $this->removeDirectory($path.DIRECTORY_SEPARATOR.'android');
+        // Only the platforms actually being installed. Removing the other one's
+        // directory deletes a project this command was never asked to touch, and
+        // then reports success — so `native:install ios` followed by
+        // `native:install android` leaves you with no iOS project at all, with
+        // nothing in either run's output to say so.
+        $removing = array_values(array_filter([
+            $installAndroid ? 'android' : null,
+            $installIos ? 'ios' : null,
+        ]));
+
+        if ($this->forcing && is_dir($path) && $removing !== []) {
+            $label = 'Removing existing '.implode(' and ', $removing).' '
+                .(count($removing) === 1 ? 'directory' : 'directories');
+
+            $this->components->task($label, function () use ($path, $removing) {
+                foreach ($removing as $platform) {
+                    $this->removeDirectory($path.DIRECTORY_SEPARATOR.$platform);
+                }
             });
+        }
+
+        // Whatever the last build remembered was about the project being
+        // replaced, so none of it can be trusted any more.
+        foreach ($removing as $platform) {
+            BuildState::clear($path.DIRECTORY_SEPARATOR.$platform);
         }
 
         $this->callSilently('vendor:publish', [
@@ -137,6 +163,7 @@ class InstallCommand extends Command
         if ($shouldInstallPhp) {
             $this->phpVersion = $this->detectPhpVersion();
             $this->fetchVersionsManifest();
+            $this->warnIfFormatVersionDiffers();
         }
 
         if ($installAndroid) {
@@ -168,9 +195,26 @@ class InstallCommand extends Command
             });
         }
 
+        if ($this->installFailed()) {
+            // No success banner and no marketing over a broken install, and a
+            // non-zero exit so a caller can tell. The messages were printed
+            // where they happened, so this counts rather than repeats them.
+            $this->newLine();
+
+            $count = count($this->installFailures);
+            error($count === 1
+                ? '1 error was reported above — the app is not ready to build.'
+                : "{$count} errors were reported above — the app is not ready to build.");
+            note('Fix the cause and re-run `php artisan native:install --force`.');
+
+            return self::FAILURE;
+        }
+
         outro('NativePHP for Mobile installed successfully!');
 
         $this->showSuperNativeBanner();
+
+        return self::SUCCESS;
     }
 
     protected function ensureAppIdIsSet(): void
@@ -260,7 +304,7 @@ class InstallCommand extends Command
 
     protected function getBinaryBranch(): string
     {
-        return env('NATIVEPHP_BIN_BRANCH', 'main');
+        return PhpBinaries::branch();
     }
 
     protected function fetchVersionsManifest(): void
@@ -268,18 +312,45 @@ class InstallCommand extends Command
         $branch = $this->getBinaryBranch();
         $versionsUrl = PhpBinaries::manifestUrl($branch);
 
+        // Never something to install by accident, so say so up front.
+        if (PhpBinaries::isPrerelease()) {
+            warning(sprintf(
+                'Installing prerelease PHP binaries %s, because NATIVEPHP_BIN_BRANCH is %s.',
+                PhpBinaries::release(),
+                PhpBinaries::selection()
+            ));
+        }
+
+        $client = $this->binariesClient();
+
         try {
-            $this->versionsManifest = json_decode(
-                (new Client)->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
-        } catch (RequestException $e) {
+            $body = $client->get($versionsUrl)->getBody()->getContents();
+        } catch (TransferException $e) {
             // A 404 here is specific: the manifest is named for the binary
             // release this package pins, so a missing one means that release
             // was withdrawn — not that the CDN is down. Say which, because the
             // fixes are completely different.
-            if ($e->getResponse()?->getStatusCode() === 404) {
-                error(sprintf(
+            // method_exists() keeps this working on both Guzzle 7 (where the
+            // response lives on RequestException) and Guzzle 8 (where only
+            // the ResponseException branch exposes getResponse()).
+            $statusCode = method_exists($e, 'getResponse') ? $e->getResponse()?->getStatusCode() : null;
+
+            // A prerelease or branch build that isn't there was asked for by
+            // NATIVEPHP_BIN_BRANCH, and updating the package won't fix that.
+            if ($statusCode === 404 && PhpBinaries::selection() !== 'main') {
+                $this->failInstall(sprintf(
+                    'PHP binaries release %s is not published on %s.'
+                    ."\n".'Check NATIVEPHP_BIN_BRANCH, which is set to %s.',
+                    PhpBinaries::release(),
+                    $branch,
+                    PhpBinaries::selection()
+                ));
+
+                return;
+            }
+
+            if ($statusCode === 404) {
+                $this->failInstall(sprintf(
                     'PHP binaries release %s is no longer published.'
                     ."\n".'Update nativephp/mobile to a version that pins a current release:'
                     ."\n".'    composer update nativephp/mobile',
@@ -289,8 +360,128 @@ class InstallCommand extends Command
                 return;
             }
 
-            error("Failed to fetch the PHP binaries manifest from: {$versionsUrl}");
+            $this->failInstall("Failed to fetch the PHP binaries manifest from: {$versionsUrl}"
+                ."\n".TransferFailure::describe($e));
+
+            return;
         }
+
+        $body = $this->verifiedManifest($client, $versionsUrl, $body);
+
+        if ($body !== null) {
+            $this->versionsManifest = json_decode($body, true);
+        }
+    }
+
+    /**
+     * The manifest, once its signature checks out against one of
+     * {@see manifestKeys()}. Null after failing the install.
+     *
+     * The manifest lists the SHA-256 of every zip, and the installers check
+     * downloads against those. That only proves a zip matches the manifest.
+     * The signature proves the manifest came from php-bin-mobile's workflow,
+     * so someone who can write to the bucket can't swap a zip and its
+     * checksum together.
+     *
+     * php-bin-mobile uploads the manifest and then its signature, so a fetch
+     * in the second between the two can pair a new manifest with the old
+     * signature. Fetching both once more covers that. A second mismatch is
+     * real.
+     */
+    protected function verifiedManifest(Client $client, string $url, string $body): ?string
+    {
+        $keys = $this->manifestKeys();
+
+        if ($keys === []) {
+            return $body;
+        }
+
+        if (! function_exists('sodium_crypto_sign_verify_detached')) {
+            warning("The PHP binaries manifest's signature can't be checked, because the sodium extension isn't enabled.");
+            note('Downloads are still checked against the checksums in the manifest. Enable extension=sodium in your php.ini to check the signature too.');
+
+            return $body;
+        }
+
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            if ($attempt > 1) {
+                try {
+                    $body = $client->get($url)->getBody()->getContents();
+                } catch (TransferException $e) {
+                    $this->failInstall("Failed to fetch the PHP binaries manifest from: {$url}"
+                        ."\n".TransferFailure::describe($e));
+
+                    return null;
+                }
+            }
+
+            try {
+                $signature = $client->get($url.'.sig')->getBody()->getContents();
+            } catch (TransferException $e) {
+                $statusCode = method_exists($e, 'getResponse') ? $e->getResponse()?->getStatusCode() : null;
+
+                $this->failInstall($statusCode === 404
+                    ? "The PHP binaries manifest at {$url} isn't signed, so nothing in it will be installed."
+                    : "Failed to fetch the signature of the PHP binaries manifest from: {$url}.sig"
+                        ."\n".TransferFailure::describe($e));
+
+                return null;
+            }
+
+            if (PhpBinaries::signatureIsValid($body, $signature, $keys)) {
+                return $body;
+            }
+        }
+
+        $this->failInstall(
+            "The PHP binaries manifest at {$url} doesn't match its signature, so nothing in it will be installed."
+            ."\n".'Something between here and bin.nativephp.com changed it, or it was replaced on the server. Please report this to NativePHP.'
+        );
+
+        return null;
+    }
+
+    /**
+     * Public keys the manifest's signature is checked against.
+     *
+     * @return list<string>
+     */
+    protected function manifestKeys(): array
+    {
+        return PhpBinaries::MANIFEST_KEYS;
+    }
+
+    protected function binariesClient(): Client
+    {
+        return new Client;
+    }
+
+    /**
+     * Warn when the binaries about to be installed speak a different wire
+     * format from the readers this package ships.
+     *
+     * That can't happen with the pinned release, because FormatVersionSyncTest
+     * fails the build first. It can with a prerelease or a branch build, and
+     * then the app builds and launches and never draws anything, which is a
+     * long way from here to work back from.
+     */
+    protected function warnIfFormatVersionDiffers(): void
+    {
+        $published = $this->versionsManifest['format_version'] ?? null;
+        $expected = PhpBinaries::readerFormatVersion();
+
+        if (! is_int($published) || $expected === null || $published === $expected) {
+            return;
+        }
+
+        warning(sprintf(
+            'The %s binaries use wire format %d, but this version of nativephp/mobile expects format %d.',
+            PhpBinaries::release(),
+            $published,
+            $expected
+        ));
+        note('The app will build and launch, then render nothing. Install binaries that use format '
+            .$expected.', or a nativephp/mobile that expects format '.$published.'.');
     }
 
     protected function detectPhpVersion(): string

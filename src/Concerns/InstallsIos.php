@@ -2,14 +2,14 @@
 
 namespace Native\Mobile\Concerns;
 
-use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
 
-use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\warning;
 
@@ -58,6 +58,11 @@ trait InstallsIos
 
     private function installPHPIos(): void
     {
+        // Whatever was recorded describes the binaries about to be replaced.
+        // It's written again at the end, so an install that stops partway
+        // leaves no record rather than one for binaries that aren't there.
+        InstalledBinaries::forget($this->iosPath);
+
         $includeIcu = $this->includeIcuIos ?? false;
         $phpVersion = $this->phpVersion;
         $versions = $this->versionsManifest;
@@ -69,7 +74,7 @@ trait InstallsIos
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            error("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::release());
 
             return;
         }
@@ -90,7 +95,7 @@ trait InstallsIos
 
         if (! $url) {
             $variant = $includeIcu ? 'ICU' : 'non-ICU';
-            error("No {$variant} iOS binary found for PHP {$phpVersion}");
+            $this->failInstall("No {$variant} iOS binary found for PHP {$phpVersion}");
 
             return;
         }
@@ -99,42 +104,70 @@ trait InstallsIos
         $this->components->twoColumnDetail('PHP version', $fullVersion);
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
-        $cacheDir = base_path('nativephp/binaries');
+        $cacheDir = PhpBinaries::cacheDirectory();
         File::ensureDirectoryExists($cacheDir);
 
         $zipFilename = basename(parse_url($url, PHP_URL_PATH));
         $zipFile = $cacheDir.DIRECTORY_SEPARATOR.$zipFilename;
         $extractPath = storage_path('ios-temp');
 
+        $expected = PhpBinaries::expectedFile($versions, $phpVersion, 'ios', $url);
+
+        // A cached archive is only reused while it's still the file the
+        // manifest describes. A cut-off download or a damaged disk would
+        // otherwise be installed again on every run.
+        if (file_exists($zipFile) && $expected !== null && PhpBinaries::fileMismatch($zipFile, $expected) !== null) {
+            note("The cached {$zipFilename} doesn't match the release manifest, so it will be downloaded again.");
+            unlink($zipFile);
+        }
+
         if (file_exists($zipFile)) {
             $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
             $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
         } else {
-            $client = new Client;
-            $downloadFailed = false;
+            $client = $this->binariesClient();
+            $downloadFailed = null;
 
-            $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
-                try {
-                    $client->request('GET', $url, [
-                        'sink' => $zipFile,
-                        'connect_timeout' => 60,
-                        'timeout' => 600,
-                    ]);
+            try {
+                $this->components->task('Downloading iOS PHP binaries', function () use ($client, $url, $zipFile, &$downloadFailed) {
+                    try {
+                        $client->request('GET', $url, [
+                            'sink' => $zipFile,
+                            'connect_timeout' => 60,
+                            'timeout' => 600,
+                        ]);
 
-                    return true;
-                } catch (RequestException) {
-                    // Remove any partial/error response written to disk
-                    if (file_exists($zipFile)) {
-                        unlink($zipFile);
+                        return true;
+                    } catch (TransferException $e) {
+                        // Remove any partial/error response written to disk
+                        if (file_exists($zipFile)) {
+                            unlink($zipFile);
+                        }
+                        $downloadFailed = TransferFailure::describe($e);
+
+                        // Thrown rather than `return false`: as of Laravel 13 the
+                        // Task component matches the callback's return value
+                        // against the TaskResult enum, so false matches no arm and
+                        // renders DONE. Throwing leaves $result at its Failure
+                        // default, so the task reports FAIL on every supported
+                        // Laravel version.
+                        throw $e;
                     }
-                    $downloadFailed = true;
+                });
+            } catch (TransferException) {
+                // Already reported by the task line; the message is below.
+            }
 
-                    return false;
-                }
-            });
+            if ($downloadFailed !== null) {
+                $this->failInstall("Failed to download PHP binaries from: $url"."\n".$downloadFailed);
 
-            if ($downloadFailed) {
-                error("Failed to download PHP binaries from: $url");
+                return;
+            }
+
+            if ($expected !== null && ($mismatch = PhpBinaries::fileMismatch($zipFile, $expected)) !== null) {
+                unlink($zipFile);
+                $this->failInstall("The downloaded {$zipFilename} doesn't match the release manifest: {$mismatch}."
+                    ."\n".'Run the install again. If it keeps happening, something between here and bin.nativephp.com is changing the download.');
 
                 return;
             }
@@ -142,7 +175,7 @@ trait InstallsIos
             // Verify the downloaded file is actually a ZIP
             $zip = new ZipArchive;
             if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
-                error('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
+                $this->failInstall('Downloaded file is not a valid ZIP archive. The URL may be incorrect.');
                 unlink($zipFile);
 
                 return;
@@ -153,12 +186,16 @@ trait InstallsIos
             $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
         }
 
+        if ($expected !== null) {
+            $this->components->twoColumnDetail('SHA-256', 'Matches the release manifest');
+        }
+
         File::ensureDirectoryExists($extractPath);
 
         $zip = new ZipArchive;
 
         if ($zip->open($zipFile) !== true) {
-            error('Failed to open downloaded ZIP file.');
+            $this->failInstall('Failed to open downloaded ZIP file.');
 
             return;
         }
@@ -190,6 +227,8 @@ trait InstallsIos
         if (is_dir($bridgeSrc)) {
             File::copyDirectory($bridgeSrc, $bridgeDst);
         }
+
+        InstalledBinaries::record($this->iosPath);
 
         try {
             File::deleteDirectory($extractPath);
@@ -271,7 +310,7 @@ trait InstallsIos
         $projectPath = $this->iosPath.'/NativePHP.xcodeproj/project.pbxproj';
 
         if (! file_exists($projectPath)) {
-            error("Xcode project file not found at: $projectPath");
+            $this->failInstall("Xcode project file not found at: $projectPath");
 
             return;
         }

@@ -13,11 +13,15 @@ import android.widget.FrameLayout
 import android.content.pm.ActivityInfo
 import android.app.Activity
 import android.os.Message
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 class WebViewManager(
     private val context: Context,
@@ -42,7 +46,33 @@ class WebViewManager(
         setupCookieManager()
         setupWebViewClient()
         setupJavaScriptInterfaces()
+        installRequestBodyShimAtDocumentStart()
         WebViewManager.shared = this // 👈 make this instance globally accessible
+    }
+
+    /**
+     * Run the request body shim before any of the page's own scripts, so a
+     * request sent while the page is still loading carries its body too.
+     * Without DOCUMENT_START_SCRIPT support the shim only arrives with the
+     * onPageFinished injection, and requests sent before that reach PHP with
+     * no body.
+     */
+    private fun installRequestBodyShimAtDocumentStart() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            Log.w(TAG, "⚠️ WebView lacks DOCUMENT_START_SCRIPT: the request body shim loads at onPageFinished, " +
+                "so requests sent before then reach PHP without a body")
+            return
+        }
+        try {
+            WebViewCompat.addDocumentStartJavaScript(
+                webView,
+                RequestBodyShim.SCRIPT,
+                setOf("http://127.0.0.1", "http://localhost")
+            )
+            Log.d(TAG, "✅ Request body shim installed at document start")
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ Could not install the request body shim at document start: ${e.message}")
+        }
     }
 
     private fun configureWebViewSettings() {
@@ -318,7 +348,7 @@ class WebViewManager(
                         // Jump webview-forward session: assets live on the
                         // remote dev server, not in the local bundle.
                         if (JumpWebViewSession.isActive) {
-                            phpHandler.forwardToRemote(request, null)
+                            phpHandler.forwardToRemote(request, null as CapturedBody?)
                         } else {
                             Log.d(TAG, "🖼️ Handling asset request")
                             phpHandler.handleAssetRequest(url, request.requestHeaders)
@@ -327,27 +357,25 @@ class WebViewManager(
                     // Regular PHP requests
                     url.contains("127.0.0.1") -> {
                         Log.d(TAG, "🌐 Handling PHP request")
-                        val postData = if (request.method.equals("POST", ignoreCase = true) ||
-                            request.method.equals("PUT", ignoreCase = true) ||
-                            request.method.equals("PATCH", ignoreCase = true)) {
-                            val reqId = request.requestHeaders?.get("X-NativePHP-Req-Id")
+                        val requestMethod = request.method.uppercase()
+                        val postData: CapturedBody? = if (requestMethod != "GET" &&
+                            requestMethod != "HEAD" && requestMethod != "OPTIONS") {
+                            val reqId = request.requestHeaders?.entries
+                                ?.firstOrNull { it.key.equals("X-NativePHP-Req-Id", ignoreCase = true) }
+                                ?.value
                             if (reqId != null) {
                                 // Header may contain a comma-joined list if setRequestHeader
                                 // was called multiple times on the same XHR. Try each ID.
                                 reqId.split(",")
                                     .map { it.trim() }
                                     .firstNotNullOfOrNull { id ->
-                                        if (id.isNotEmpty()) phpBridge.consumePostData(id) else null
+                                        if (id.isNotEmpty()) phpBridge.consumePostBody(id) else null
                                     }
-                            } else {
+                            } else if (requestMethod == "POST") {
                                 // Native form submission — try full URL first, then path only
-                                var data = phpBridge.consumePostData(url)
-                                if (data == null) {
-                                    val path = request.url.path ?: "/"
-                                    data = phpBridge.consumePostData(path)
-                                }
-                                data
-                            }
+                                phpBridge.consumePostBody(url)
+                                    ?: phpBridge.consumePostBody(request.url.path ?: "/")
+                            } else null
                         } else null
                         // Jump webview-forward session: hand the request
                         // (with any consumed POST body) to the remote dev
@@ -455,89 +483,15 @@ class WebViewManager(
 
             });
 
-            // Guard against re-injection on every onPageFinished. Without this,
-            // each injection wraps XHR.send / window.fetch again, and repeated
-            // setRequestHeader('X-NativePHP-Req-Id', ...) calls get joined with
-            // ", " per HTTP spec — making the concatenated value unlookupable.
-            if (window.__nphpPostPatched) {
-                return "POST+PATCH+PUT interception already installed";
+            // Request body capture (fetch, XHR, forms). Usually already
+            // installed at document start; this is the fallback, and the shim
+            // guards itself against running twice.
+            var bodyShim = ${RequestBodyShim.SCRIPT.trim().removeSuffix(";")};
+
+            if (window.__nphpCsrfWatch) {
+                return bodyShim;
             }
-            window.__nphpPostPatched = true;
-
-            // Unique request ID counter
-            var _nphpReqId = 0;
-
-            // Capture form submissions — native form POSTs can't carry custom headers,
-            // so we store by URL for the fallback lookup in shouldInterceptRequest
-            document.addEventListener('submit', function(e) {
-                var form = e.target;
-                var method = form.method.toLowerCase();
-                if (["post", "patch", "put"].includes(method)) {
-                    var formData = new FormData(form);
-                    var urlEncodedData = new URLSearchParams();
-                    for (var pair of formData.entries()) {
-                        urlEncodedData.append(pair[0], pair[1]);
-                    }
-
-                    var bodyStr = urlEncodedData.toString();
-                    // Store by URL — native form submissions don't support custom headers
-                    AndroidPOST.logFormPostData(bodyStr, form.action);
-                }
-            });
-
-            // Capture XHR/AJAX requests
-            var originalXHROpen = XMLHttpRequest.prototype.open;
-            var originalXHRSend = XMLHttpRequest.prototype.send;
-            var originalXHRSetHeader = XMLHttpRequest.prototype.setRequestHeader;
-
-            XMLHttpRequest.prototype.open = function(method, url) {
-                this._method = method;
-                this._url = url;
-                return originalXHROpen.apply(this, arguments);
-            };
-
-            XMLHttpRequest.prototype.send = function(data) {
-                if (["post", "patch", "put"].includes(this._method.toLowerCase()) && data) {
-                    var reqId = 'nphp_' + (++_nphpReqId) + '_' + Date.now();
-                    AndroidPOST.logPostData(String(data), this._url, "", reqId);
-                    originalXHRSetHeader.call(this, 'X-NativePHP-Req-Id', reqId);
-                }
-                return originalXHRSend.apply(this, arguments);
-            };
-
-            // Capture fetch() requests
-            var originalFetch = window.fetch;
-
-            window.fetch = function(url, options) {
-                if (options && options.method && ["post", "patch", "put"].includes(options.method.toLowerCase()) && options.body) {
-                    var reqId = 'nphp_' + (++_nphpReqId) + '_' + Date.now();
-
-                    var bodyStr = options.body;
-                    if (options.body instanceof FormData) {
-                        // Convert FormData to URLSearchParams for PHP form parsing
-                        var urlParams = new URLSearchParams();
-                        options.body.forEach(function(value, key) {
-                            urlParams.append(key, value);
-                        });
-                        bodyStr = urlParams.toString();
-                    } else if (typeof options.body === 'object' && !(options.body instanceof Blob) && !(options.body instanceof ArrayBuffer)) {
-                        bodyStr = JSON.stringify(options.body);
-                    }
-
-                    AndroidPOST.logPostData(String(bodyStr), url, "", reqId);
-
-                    // Add request ID header to the actual fetch request
-                    if (!options.headers) {
-                        options.headers = {};
-                    }
-                    if (options.headers instanceof Headers) {
-                        options.headers.set('X-NativePHP-Req-Id', reqId);
-                    } else {
-                        options.headers['X-NativePHP-Req-Id'] = reqId;
-                    }
-                }
-                return originalFetch.apply(this, arguments);
-            };
+            window.__nphpCsrfWatch = true;
 
             // Find CSRF token
             function findAndSendCsrfToken() {
@@ -563,7 +517,7 @@ class WebViewManager(
                 subtree: true
             });
 
-            return "POST+PATCH+PUT interception installed";
+            return bodyShim;
         })();
     """.trimIndent()
 
@@ -588,6 +542,69 @@ class WebViewManager(
 }
 
 class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
+
+    private class PendingBody(
+        val url: String,
+        val contentType: String,
+        val isForm: Boolean,
+        expectedLength: Int
+    ) {
+        val bytes = ByteArrayOutputStream(expectedLength.coerceIn(32, MAX_PRESIZE))
+    }
+
+    private val pending = ConcurrentHashMap<String, PendingBody>()
+
+    companion object {
+        private const val MAX_PRESIZE = 16 * 1024 * 1024
+    }
+
+    /**
+     * Start a request body. [contentType] is what the browser computed for it
+     * (a multipart boundary included), [length] the byte count to expect.
+     * Form bodies are stored by URL, everything else by the request id the
+     * shim puts in the X-NativePHP-Req-Id header.
+     */
+    @JavascriptInterface
+    fun beginBody(key: String, url: String, contentType: String, length: Int, isForm: Boolean) {
+        pending[key] = PendingBody(url, contentType, isForm, length)
+    }
+
+    /** One base64 chunk of the body, decoded to bytes right away. */
+    @JavascriptInterface
+    fun appendBody(key: String, base64Chunk: String) {
+        val body = pending[key] ?: return
+        try {
+            body.bytes.write(android.util.Base64.decode(base64Chunk, android.util.Base64.NO_WRAP))
+        } catch (e: IllegalArgumentException) {
+            Log.e("$TAG-JS", "Bad base64 chunk for $key: ${e.message}")
+            pending.remove(key)
+        }
+    }
+
+    /** The body is complete: keep it for the request that carries it. */
+    @JavascriptInterface
+    fun commitBody(key: String) {
+        val body = pending.remove(key) ?: return
+        val captured = CapturedBody(body.bytes.toByteArray(), body.contentType)
+        Log.d("$TAG-JS", "📦 Body captured for ${body.url} key=$key (${captured.size} bytes, type=${body.contentType.ifEmpty { "none" }})")
+
+        phpBridge.storePostBody(key, captured)
+        if (body.isForm) {
+            // Native form submissions can't carry custom headers, so they are
+            // matched by URL; also store by path in case only that matches.
+            val path = android.net.Uri.parse(body.url).path
+            if (path != null && path != key) {
+                phpBridge.storePostBody(path, captured)
+            }
+        }
+
+        val type = body.contentType.lowercase()
+        if (type.contains("x-www-form-urlencoded") || type.contains("json")) {
+            LaravelSecurity.extractFromPostBody(String(captured.bytes, Charsets.UTF_8))
+        }
+    }
+
+    /** Text-only capture kept for older injected scripts. */
     @JavascriptInterface
     fun logPostData(data: String, url: String, headers: String, requestId: String) {
         Log.d("$TAG-JS", "📦 POST data captured (fetch/XHR) for: $url reqId=$requestId (length=${data.length})")
@@ -599,6 +616,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
         LaravelSecurity.extractFromPostBody(data)
     }
 
+    /** Text-only form capture kept for older injected scripts. */
     @JavascriptInterface
     fun logFormPostData(data: String, url: String) {
         // Native form submissions can't carry custom headers, so store by URL
