@@ -128,6 +128,9 @@ abstract class NativeComponent
 
     protected ?NavigationIntent $nativeNavigationIntent = null;
 
+    /** True while dispatching a system back (type 8) from native navigation. */
+    protected bool $nativeAnsweringSystemBack = false;
+
     protected ?NativeRouter $nativeRouter = null;
 
     protected array $nativeParams = [];
@@ -2904,6 +2907,23 @@ abstract class NativeComponent
         $this->back();
     }
 
+    /**
+     * Dispatch a system back — the hardware button, the system back
+     * chevron, or an edge-swipe pop. While it runs, back() knows the
+     * event came from native navigation and skips its farewell publish;
+     * see back() for why that matters.
+     */
+    public function handleSystemBack(): void
+    {
+        $this->nativeAnsweringSystemBack = true;
+
+        try {
+            $this->onBackPressed();
+        } finally {
+            $this->nativeAnsweringSystemBack = false;
+        }
+    }
+
     public static function registerDumpHandler(): void
     {
         if (self::$dumpHandlerRegistered) {
@@ -3378,7 +3398,7 @@ abstract class NativeComponent
                     continue;
                 }
                 $this->runGuardedInteraction('onBackPressed()', function () {
-                    $this->onBackPressed();
+                    $this->handleSystemBack();
                     $this->flushDispatchedEvents();
                 });
 
@@ -3559,7 +3579,18 @@ abstract class NativeComponent
 
         $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
-        $this->publishFinalState();
+
+        // The farewell frame keeps a PHP-initiated pop looking fresh while
+        // the native side animates it. Answering a SYSTEM back is the
+        // opposite situation: native navigation may already have removed
+        // this screen and shrunk its path, so a farewell frame reaches the
+        // coordinator as an unknown URI — which its reconciliation can only
+        // read as a brand-new push. Skip it to avoid reintroducing a screen
+        // that native navigation is backing away from.
+        if (! $this->nativeAnsweringSystemBack) {
+            $this->publishFinalState();
+        }
+
         $this->stop();
 
         return $this;
