@@ -103,6 +103,10 @@ class RunCommand extends Command
         // iOS builds depend on the Xcode toolchain (xcrun, xcodebuild), which only
         // exists on macOS — fail fast before touching logs, Vite, or devices
         if ($os === 'ios' && PHP_OS_FAMILY !== 'Darwin') {
+            if ($json) {
+                return $this->emitRunResult(['ok' => false, 'stage' => 'validate', 'error' => 'ios_requires_macos']);
+            }
+
             error('iOS builds require macOS (Xcode toolchain).');
             note('You can build and run the Android app on this machine with `php artisan native:run android`.');
 
@@ -111,6 +115,10 @@ class RunCommand extends Command
 
         // Check for WSL environment - Android is not supported in WSL
         if ($this->isRunningInWSL()) {
+            if ($json) {
+                return $this->emitRunResult(['ok' => false, 'stage' => 'validate', 'error' => 'wsl_not_supported']);
+            }
+
             error('Android is not supported in WSL (Windows Subsystem for Linux).');
             note(<<<'NOTE'
                 NativePHP for Android requires native Windows, Linux, or macOS.
@@ -271,8 +279,7 @@ class RunCommand extends Command
             return array_merge(['ok' => false], $base, $failure);
         }
 
-        // Give the app a moment to spawn before probing.
-        sleep(2);
+        $this->waitForLaunch();
 
         $probe = $this->probeAppProcess($os, (string) $this->argument('udid'), (string) config('nativephp.app_id'));
 
@@ -280,11 +287,17 @@ class RunCommand extends Command
             return array_merge(['ok' => false], $base, [
                 'stage' => 'verify',
                 'error' => $probe['installed'] ? 'app_not_running' : 'app_not_installed',
-                'hint' => 'The build reported no error but the app is not running — check for a boot fatal via native:tail or the devtools event log.',
+                'hint' => 'The build reported no error but the app is not running. Run `native:tail --fatals` to see whether it crashed while booting.',
             ]);
         }
 
         return array_merge(['ok' => true], $base, ['pid' => $probe['pid']]);
+    }
+
+    /** Give the app a moment to spawn before probing for it. */
+    protected function waitForLaunch(): void
+    {
+        sleep(2);
     }
 
     protected function emitRunResult(array $result): int

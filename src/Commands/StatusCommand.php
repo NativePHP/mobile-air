@@ -65,7 +65,8 @@ class StatusCommand extends Command
 
         $probe['logs'] = [
             'build' => base_path('nativephp/ios-build.log'),
-            'laravel' => $probe['installed'] ? $this->iosStorageFile($udid, $appId, 'logs/laravel.log') : null,
+            'laravel' => $probe['installed'] ? $this->iosStorageFile($udid, $appId, TailCommand::LARAVEL_LOG) : null,
+            'fatals' => $probe['installed'] ? $this->iosStorageFile($udid, $appId, TailCommand::FATALS_SPOOL) : null,
         ];
 
         return $probe;
@@ -77,7 +78,8 @@ class StatusCommand extends Command
 
         $probe['logs'] = [
             'build' => base_path('nativephp/android-build.log'),
-            'laravel' => 'device:app_storage/persisted_data/storage/logs/laravel.log',
+            'laravel' => 'device:app_storage/persisted_data/storage/'.TailCommand::LARAVEL_LOG,
+            'fatals' => 'device:app_storage/persisted_data/storage/'.TailCommand::FATALS_SPOOL,
         ];
 
         return $probe;

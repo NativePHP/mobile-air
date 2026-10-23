@@ -47,7 +47,7 @@ edit code
    ├─ ok:false, stage:build|install   → read .logTail (or native:tail); fix; rebuild
    ├─ ok:false, stage:verify          → app built but isn't running: boot fatal.
    │                                     laravel.log is usually EMPTY here (Laravel never got up).
-   │                                     read the trace from your own change; fix; rebuild
+   │                                     native:tail <os> --fatals --json; fix; rebuild
    └─ ok:true
       └─ php artisan native:screenshot <os> --json → Read the PNG → judge against the goal
          └─ exercise: php artisan native:open-url "<scheme>://<route>" <os> --json → screenshot each screen
@@ -78,17 +78,18 @@ That covers anything thrown while the app is running — including native (EDGE)
 through Laravel like the rest of the app.
 
 **It does not cover boot fatals.** An app that dies before Laravel is up writes nothing to `laravel.log`.
-The runtime spools those on-device, but **core cannot read the spool back** — draining it needs a devtools
-package. So with core alone, the only signals for a boot fatal are:
+The runtime records those on the device instead, along with true PHP fatals and uncaught throwables:
 
-- `native:run --json` returning `ok:false, stage:verify` (built and installed, but not running), and
-- a screenshot showing the app absent or on the red error screen.
+```bash
+php artisan native:tail <os> --fatals --json       # {"ok":true,"events":[{"kind":"boot_fatal","exception":{...}}]}
+```
 
-Do not read a clean `laravel.log` as evidence the app booted — for this failure class the log is expected
-to be empty. Trust `stage:verify` and the screenshot instead.
+Each event's `exception.app_frame` is the first line in the app's own code, which is usually the one to fix.
+An empty `events` list means nothing has crashed. Do not read a clean `laravel.log` as evidence the app
+booted: when `native:run --json` returns `ok:false, stage:verify`, check `--fatals` and the screenshot.
 
-Anything richer (timelines, component state, screen trees, spooled boot fatals, interactive inspection)
-comes from a devtools package rather than core; follow that package's own skill if the project has one.
+Anything richer (timelines, component state, screen trees, interactive inspection) comes from a devtools
+package rather than core; follow that package's own skill if the project has one.
 
 ## Exercising the app
 

@@ -1,22 +1,15 @@
 <?php
 
 /**
- * Device-side exception reporting — dependency-free on purpose.
+ * Device-side exception reporting, dependency-free on purpose.
  *
  * These helpers run in places where Laravel may be half-booted or already
  * dead (boot fatals, PHP fatal errors, uncaught throwables), so they lean on
  * nothing but raw PHP. This is the one failure class no observer or reporter
  * can cover: there is no framework left to report through.
  *
- * The durable on-device spool is the product. Core writes it and never reads
- * it back — draining it is a devtools package's job.
- *
- * The POST below is an optional seam, not a core feature. Nothing in core
- * provisions storage/framework/devtools.json, so by default the endpoint is
- * absent and the POST is skipped entirely. A devtools package that wants
- * boot fatals live on the dev machine can write that file to switch it on —
- * which is worth having, because a boot fatal happens before any package's
- * own transport could have started.
+ * Each event is appended to storage/framework/devtools/spool.jsonl on the
+ * device. `php artisan native:tail --fatals` reads it back.
  */
 if (! function_exists('nativephp_devtools_storage_path')) {
     function nativephp_devtools_storage_path(?string $storagePath): ?string
@@ -35,10 +28,7 @@ if (! function_exists('nativephp_devtools_rotate_spool')) {
      *
      * An earlier version simply stopped appending past the cap, which meant
      * one crash loop disabled device-side crash reporting permanently and
-     * silently — nothing ever truncates this file, so it could never
-     * recover. Rotating is safe now that the listener dedups on event id:
-     * dropping spool.cursor makes the drainer restart from zero, and any
-     * event it re-sends is discarded on arrival rather than shown twice.
+     * silently, because nothing ever truncates this file.
      *
      * Only the previous generation is kept, so the ceiling is 2x the cap.
      */
@@ -53,7 +43,8 @@ if (! function_exists('nativephp_devtools_rotate_spool')) {
         @unlink($spoolPath.'.1');
 
         if (@rename($spoolPath, $spoolPath.'.1')) {
-            // The cursor indexes bytes in the file we just moved aside.
+            // A reader that keeps its place in spool.cursor counted bytes in
+            // the file we just moved aside, so it has to start again.
             @unlink(dirname($spoolPath).'/spool.cursor');
         }
     }
@@ -61,8 +52,7 @@ if (! function_exists('nativephp_devtools_rotate_spool')) {
 
 if (! function_exists('nativephp_devtools_write_event')) {
     /**
-     * Spool one event and best-effort POST it. The spool is the source of
-     * truth; the native drainer delivers anything the POST couldn't.
+     * Append one event to the spool.
      *
      * @param  array<string, mixed>  $exception  {class, message, file, line, trace?}
      */
@@ -102,29 +92,6 @@ if (! function_exists('nativephp_devtools_write_event')) {
             nativephp_devtools_rotate_spool($spoolPath);
 
             @file_put_contents($spoolPath, $line."\n", FILE_APPEND | LOCK_EX);
-
-            $configPath = $storagePath.'/framework/devtools.json';
-            if (! is_file($configPath)) {
-                return;
-            }
-
-            $config = json_decode((string) @file_get_contents($configPath), true);
-            if (! is_array($config) || empty($config['endpoint'])) {
-                return;
-            }
-
-            $context = stream_context_create([
-                'http' => [
-                    'method' => 'POST',
-                    'header' => "Content-Type: application/json\r\n"
-                        .'Authorization: Bearer '.($config['token'] ?? '')."\r\n",
-                    'content' => $line,
-                    'timeout' => 0.2,
-                    'ignore_errors' => true,
-                ],
-            ]);
-
-            @file_get_contents(rtrim($config['endpoint'], '/').'/events', false, $context);
         } catch (Throwable) {
             // Reporting a fatal must never create a second one.
         }

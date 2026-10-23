@@ -110,8 +110,8 @@ it('rotates the spool past its cap instead of going silent', function () {
     expect($lines)->toHaveCount(1)
         ->and(json_decode($lines[0], true)['exception']['message'])->toBe('after rotation')
         ->and(is_file($this->spool.'.1'))->toBeTrue()
-        // The cursor indexed the rotated-away file; leaving it would make the
-        // drainer resume at a byte offset into unrelated content.
+        // The cursor indexed the rotated-away file; leaving it would make a
+        // reader resume at a byte offset into unrelated content.
         ->and(is_file(dirname($this->spool).'/spool.cursor'))->toBeFalse();
 });
 
