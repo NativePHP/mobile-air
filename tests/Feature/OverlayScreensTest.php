@@ -231,3 +231,16 @@ it('offers back on the dd overlay too when the stack is deep', function () {
 
     expect(overlayJson($screen))->toContain('Go back');
 });
+
+it('reports a genuinely new exception on the error screen', function () {
+    $reported = recordReportedExceptions();
+
+    $screen = Native::test(CounterScreen::class);
+    $first = new RuntimeException('first');
+    $second = new RuntimeException('second');
+
+    $screen->instance()->renderErrorScreen($first);
+    $screen->instance()->renderErrorScreen($second);
+
+    expect($reported->getArrayCopy())->toBe([$first, $second]);
+});

@@ -20,7 +20,7 @@ use function Laravel\Prompts\warning;
 
 trait RunsAndroid
 {
-    use DeclaresReleaseAudience, PreparesBuild, WatchesAndroid;
+    use DeclaresReleaseAudience, PreparesBuild, ReportsRunOutcome, WatchesAndroid;
 
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
@@ -61,6 +61,7 @@ trait RunsAndroid
 
         if (! is_dir($androidPath)) {
             $this->logToFile('ERROR: No Android project found at [nativephp/android]');
+            $this->failRun('validate', 'No Android project found at [nativephp/android].');
             error('No Android project found at [nativephp/android].');
             note('Run `php artisan native:install` or ensure you have the correct folder structure.');
 
@@ -70,12 +71,15 @@ trait RunsAndroid
         $this->logToFile('Android project path: '.$androidPath);
 
         if (! $this->validateBuildEnvironment()) {
+            $this->failRun('validate', 'Android build environment validation failed.', ['buildLog' => $this->androidLogPath]);
+
             return false;
         }
 
         $minSdk = (int) config('nativephp.android.min_sdk', 26);
         if ($minSdk < 26) {
             $this->logToFile("ERROR: NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26");
+            $this->failRun('validate', "NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
             error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
             note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
 
@@ -87,6 +91,7 @@ trait RunsAndroid
             $pluginMinSdk = $plugin->getAndroidMinVersion();
             if ($pluginMinSdk !== null && $minSdk < $pluginMinSdk) {
                 $this->logToFile("ERROR: Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk");
+                $this->failRun('validate', "Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
                 error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
                 note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
 
@@ -105,6 +110,7 @@ trait RunsAndroid
             $this->logToFile('Checking ADB availability...');
             if (! $this->canRunCommand('adb version')) {
                 $this->logToFile('ERROR: ADB is not installed or not in PATH');
+                $this->failRun('validate', 'ADB is not installed or not in your PATH.');
                 error('ADB is not installed or not in your PATH.');
 
                 return false;
@@ -126,10 +132,14 @@ trait RunsAndroid
         $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies, $reuseUnchanged);
 
         if (! $this->compileAndroidPlugins()) {
+            $this->failRun('build', 'Android plugin compilation failed.', ['buildLog' => $this->androidLogPath]);
+
             return false;
         }
 
         if (! $this->runTheAndroidBuild($target)) {
+            $this->failRun('build', 'Android build failed.', ['buildLog' => $this->androidLogPath]);
+
             return false;
         }
 
@@ -642,6 +652,7 @@ XML;
 
             if (! $result->successful()) {
                 $this->logToFile('ERROR: Gradle build failed with exit code: '.$result->exitCode());
+                $this->failRun('build', 'Gradle build failed.', ['buildLog' => $this->androidLogPath]);
                 error('Gradle build failed');
                 note("Check the build log for details: {$this->androidLogPath}");
 
@@ -697,6 +708,7 @@ XML;
                 $this->logToFile('ERROR: APK installation failed');
                 $this->logToFile($installResult->output());
                 $this->logToFile($installResult->errorOutput());
+                $this->failRun('install', 'APK installation failed: '.trim($installResult->errorOutput() ?: $installResult->output()));
                 error('APK installation failed');
                 note($installResult->errorOutput() ?: $installResult->output());
                 note('Try freeing up space on the device or uninstalling old apps.');
@@ -716,6 +728,7 @@ XML;
             if (! $launchResult->successful()) {
                 $this->logToFile('ERROR: App launch failed');
                 $this->logToFile($launchResult->errorOutput());
+                $this->failRun('launch', 'App launch failed: '.trim($launchResult->errorOutput() ?: $launchResult->output()));
                 error('App launch failed');
                 note($launchResult->errorOutput() ?: $launchResult->output());
 
