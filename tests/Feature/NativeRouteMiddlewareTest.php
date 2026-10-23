@@ -1,8 +1,10 @@
 <?php
 
 use Illuminate\Contracts\Debug\ExceptionHandler;
+use Illuminate\Contracts\Http\Kernel as HttpKernelContract;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
@@ -106,6 +108,28 @@ it('survives the web group that withRouting() puts every native route in', funct
     Native::visit('/bound/42')->assertSee('Guarded screen content');
 
     expect(GuardedScreen::$mounts)->toBe(2);
+});
+
+it('expands a group the HTTP kernel has not synced to the router yet', function () {
+    // The router only learns its middleware groups when the HTTP kernel is
+    // constructed. A console process (artisan, a test, a queue worker) can
+    // reach a native route without ever having built one, and the `web`
+    // group would then be treated as a class name: the pipeline fails to
+    // resolve it, the guard fails closed, and every navigation is refused.
+    app()->forgetInstance(HttpKernelContract::class);
+    app()->singleton(HttpKernelContract::class, fn ($app) => new class($app, $app['router']) extends HttpKernel
+    {
+        protected $middlewareGroups = ['kernel-only' => [DenyMiddleware::class]];
+    });
+
+    expect(app('router')->getMiddlewareGroups())->not->toHaveKey('kernel-only');
+
+    Route::native('/guarded', GuardedScreen::class)->middleware('kernel-only');
+    Route::native('/login', CounterScreen::class);
+
+    Native::visit('/guarded')->assertReplacedWith('/login');
+
+    expect(DenyMiddleware::$seen)->toBe(['guarded']);
 });
 
 it('does not mutate the route instance the HTTP router matches against', function () {
@@ -290,6 +314,10 @@ function captureReports(): ArrayObject
  */
 function registerWebGroup(): void
 {
+    // Build the kernel first. Its constructor syncs its own groups onto the
+    // router, which would replace this one if it were built afterwards.
+    app(HttpKernelContract::class);
+
     app('router')->middlewareGroup('web', [
         EncryptCookies::class,
         AddQueuedCookiesToResponse::class,
