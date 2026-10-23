@@ -159,21 +159,35 @@ function runClassic(string $platform, array $env, ?string $body, string $tempDir
  * Serve one request through BridgeDispatcher::handle() in its own PHP process,
  * with the fixture app booted as the persistent runtime.
  *
+ * $boot 'fails' makes Runtime::boot() throw after the app's config has loaded,
+ * and 'never' serves the request without an app, as when bootstrap/app.php
+ * itself threw. persistent.php logs a failed boot and goes on taking requests.
+ *
  * @param  array<string, string>  $ini
+ * @param  array<string, string>  $env
+ * @param  'ok'|'fails'|'never'  $boot
  * @return array{raw: string, head: string, body: string, stderr: string}
  */
-function runHandle(string $method, string $uri, string $contentType, string $bodyFile, array $ini = []): array
+function runHandle(string $method, string $uri, string $contentType, string $bodyFile, array $ini = [], array $env = [], string $boot = 'ok'): array
 {
     $root = dirname(__DIR__, 4);
+    $app = '$app = require '.var_export($root.'/tests/Fixtures/Bridge/classic-app/bootstrap/app.php', true).';';
+
+    $booting = match ($boot) {
+        'ok' => $app.'Native\Mobile\Runtime::boot($app);',
+        'fails' => $app.'$app->bind(Illuminate\Contracts\Http\Kernel::class, fn () => throw new RuntimeException("Boot blew up"));'
+            .'try { Native\Mobile\Runtime::boot($app); } catch (Throwable $e) { error_log("PERSISTENT BOOT FATAL: ".$e->getMessage()); }',
+        'never' => '',
+    };
+
     $script = 'require '.var_export($root.'/vendor/autoload.php', true).';'
-        .'$app = require '.var_export($root.'/tests/Fixtures/Bridge/classic-app/bootstrap/app.php', true).';'
-        .'Native\Mobile\Runtime::boot($app);'
+        .$booting
         .'Native\Mobile\Http\Bridge\BridgeDispatcher::$input = getenv("BRIDGE_TEST_BODY_FILE");'
         .'Native\Mobile\Http\Bridge\BridgeDispatcher::handle("ios", "persistent", '
         .var_export(base64_encode($method), true).', '.var_export(base64_encode($uri), true).', '
         .var_export(base64_encode('/native.php'), true).", '', ".var_export(base64_encode($contentType), true).", '');";
 
-    $process = new Process([PHP_BINARY, ...iniFlags($ini), '-r', $script], null, ['BRIDGE_TEST_BODY_FILE' => $bodyFile]);
+    $process = new Process([PHP_BINARY, ...iniFlags($ini), '-r', $script], null, $env + ['BRIDGE_TEST_BODY_FILE' => $bodyFile]);
     $process->mustRun();
 
     return splitRawResponse($process->getOutput(), $process->getErrorOutput());
@@ -347,4 +361,31 @@ describe('a body over post_max_size', function () {
             ->and($json['peakMemory'])->toBeLessThan($size)
             ->and($run['stderr'])->toContain("PHP Warning:  POST Content-Length of {$size} bytes exceeds the limit of 1048576 bytes");
     })->with(['persistent', 'ios', 'android']);
+});
+
+/*
+ * The persistent and webview lanes answer a request that throws outside the
+ * app's own exception handler with BridgeDispatcher's plain-text 500.
+ */
+describe('a persistent-lane crash', function () {
+    it('shows the user the error only in debug, and logs it either way', function (string $boot, array $env, string $debug, bool $shown, string $message) {
+        touch($this->tempDir.'/body');
+
+        $run = runHandle('GET', '/inspect', '', $this->tempDir.'/body', ['error_log' => ''], $env + ['APP_DEBUG' => $debug], $boot);
+        $response = Bridge::parse($run['raw']);
+
+        expect($response['status'])->toBe(500)
+            ->and($response['headers']['content-type'])->toBe(['text/plain'])
+            ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
+            ->and(str_starts_with($response['body'], "Persistent dispatch error: {$message}\n#0 "))->toBe($shown)
+            ->and($response['body'] === 'Something went wrong.')->toBe(! $shown)
+            ->and($run['stderr'])->toContain("REQUEST FATAL: Persistent dispatch error: {$message} in ")
+            ->and($run['stderr'])->toContain('REQUEST TRACE: #0 ');
+    })->with([
+        'debug on' => ['ok', ['BRIDGE_TEST_THROW_ON_TERMINATE' => '1'], 'true', true, 'Terminate blew up'],
+        'debug off' => ['ok', ['BRIDGE_TEST_THROW_ON_TERMINATE' => '1'], 'false', false, 'Terminate blew up'],
+        'boot failed, debug on' => ['fails', [], 'true', true, 'Runtime not booted. Call Runtime::boot() first.'],
+        'boot failed, debug off' => ['fails', [], 'false', false, 'Runtime not booted. Call Runtime::boot() first.'],
+        'never booted, debug on' => ['never', [], 'true', false, 'Runtime not booted. Call Runtime::boot() first.'],
+    ]);
 });

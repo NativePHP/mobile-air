@@ -90,8 +90,11 @@ class Runtime
                 // Never turn one failure into two on the error path.
             }
 
+            error_log('REQUEST FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
+            error_log('REQUEST TRACE: '.$e->getTraceAsString());
+
             $response = new Response(
-                'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
+                static::showsErrorDetail() ? 'Error: '.$e->getMessage()."\n".$e->getTraceAsString() : 'Something went wrong.',
                 500,
                 ['Content-Type' => 'text/plain']
             );
@@ -221,5 +224,24 @@ class Runtime
     public static function getApp(): ?Application
     {
         return static::$app;
+    }
+
+    /**
+     * Whether an error's message and trace may go in front of whoever is
+     * looking: only when the app is in debug, as on the EDGE error screen.
+     *
+     * boot() keeps the app even when booting it threw, so a boot that failed
+     * after the config loaded still answers. One that failed before, or never
+     * got an app, can't tell a developer from a user, so the user wins.
+     */
+    public static function showsErrorDetail(): bool
+    {
+        try {
+            return static::$app !== null
+                && static::$app->bound('config')
+                && (bool) static::$app['config']->get('app.debug');
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }

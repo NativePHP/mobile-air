@@ -1,7 +1,9 @@
 <?php
 
+use Illuminate\Foundation\Http\Events\RequestHandled;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Native\Mobile\Http\Bridge\BridgeDispatcher;
 use Native\Mobile\Runtime;
@@ -145,6 +147,8 @@ describe('handle()', function () {
     });
 
     it('returns the old plain-text 500, now with a content-length, when an argument is not base64', function (string $lane, string $prefix) {
+        config(['app.debug' => true]);
+
         BridgeDispatcher::$input = 'data://text/plain;base64,';
         ob_start();
         BridgeDispatcher::$bufferFloor = ob_get_level();
@@ -153,10 +157,54 @@ describe('handle()', function () {
 
         expect($response['status'])->toBe(500)
             ->and($response['headers']['content-type'])->toBe(['text/plain'])
+            ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
             ->and($response['body'])->toStartWith("{$prefix} dispatch error: Bridge argument [uri] is not valid base64.\n#0 ");
     })->with([
         ['persistent', 'Persistent'],
         ['webview', 'Webview'],
+    ]);
+
+    it('keeps the error out of the body unless the app is in debug, and logs it either way', function (string $lane, string $prefix, bool $debug) {
+        config(['app.debug' => $debug]);
+
+        $response = Bridge::parse(BridgeDispatcher::dispatch('windows', $lane, 'GET', '/', '/native.php'));
+        $log = file_get_contents($this->log);
+
+        expect($response['status'])->toBe(500)
+            ->and($response['headers']['content-type'])->toBe(['text/plain'])
+            ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
+            ->and(str_contains($response['body'], 'Unknown bridge platform [windows].'))->toBe($debug)
+            ->and($response['body'] === 'Something went wrong.')->toBe(! $debug)
+            ->and($log)->toContain("REQUEST FATAL: {$prefix} dispatch error: Unknown bridge platform [windows]. in ".(new ReflectionClass(BridgeDispatcher::class))->getFileName().':')
+            ->and($log)->toContain('REQUEST TRACE: #0 ');
+    })->with([
+        'persistent, debug on' => ['persistent', 'Persistent', true],
+        'persistent, debug off' => ['persistent', 'Persistent', false],
+        'webview, debug on' => ['webview', 'Webview', true],
+        'webview, debug off' => ['webview', 'Webview', false],
+    ]);
+
+    it('keeps a throw out of the kernel itself out of the body unless the app is in debug, and logs it either way', function (bool $debug) {
+        config(['app.debug' => $debug]);
+        Route::get('/handled', fn () => 'fine');
+
+        // The kernel catches what a route throws, but not what a
+        // RequestHandled listener throws, so this gets past it to Runtime.
+        Event::listen(RequestHandled::class, fn () => throw new RuntimeException('Handled blew up'));
+
+        $response = Bridge::parse(BridgeDispatcher::dispatch('ios', 'persistent', 'GET', '/handled', '/native.php'));
+        $log = file_get_contents($this->log);
+
+        expect($response['status'])->toBe(500)
+            ->and($response['headers']['content-type'])->toBe(['text/plain'])
+            ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
+            ->and(str_starts_with($response['body'], "Error: Handled blew up\n#0 "))->toBe($debug)
+            ->and($response['body'] === 'Something went wrong.')->toBe(! $debug)
+            ->and($log)->toContain('REQUEST FATAL: Handled blew up in '.__FILE__.':')
+            ->and($log)->toContain('REQUEST TRACE: #0 ');
+    })->with([
+        'debug on' => true,
+        'debug off' => false,
     ]);
 
     it('closes output buffers the previous dispatch left open', function () {
@@ -468,6 +516,8 @@ describe('responses', function () {
     });
 
     it('rejects an unknown platform or lane with the old 500 text', function (string $platform, string $lane, string $message) {
+        config(['app.debug' => true]);
+
         $response = Bridge::parse(BridgeDispatcher::dispatch($platform, $lane, 'GET', '/', '/native.php'));
 
         expect($response['status'])->toBe(500)
