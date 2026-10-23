@@ -415,8 +415,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         when {
             status in 300..399 && !location.isNullOrEmpty() -> {
+                // Keep the query, still encoded. The web route reads it from
+                // request()->query(), and PHPWebViewClient's redirects keep it too.
                 val path = if (location.startsWith("http")) {
-                    android.net.Uri.parse(location).encodedPath ?: "/"
+                    val parsed = android.net.Uri.parse(location)
+                    val encodedPath = parsed.encodedPath ?: "/"
+                    val query = parsed.encodedQuery
+                    if (!query.isNullOrEmpty()) "$encodedPath?$query" else encodedPath
                 } else {
                     location
                 }

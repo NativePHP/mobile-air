@@ -510,8 +510,9 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
               !loc.isEmpty
         else { return }
 
+        // Keep the query, as handleNativeSessionExit does.
         let path = (loc.hasPrefix("http") || loc.hasPrefix("php:"))
-            ? (URL(string: loc)?.path ?? "/")
+            ? (URL(string: loc).map { url in url.path + (url.query.map { "?" + $0 } ?? "") } ?? "/")
             : loc
 
         DispatchQueue.main.async {
