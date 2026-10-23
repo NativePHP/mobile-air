@@ -2079,30 +2079,64 @@ abstract class NativeComponent
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
+        //
+        // Screen-level only: NativeCallbacks is a global registry keyed by
+        // id + event class with no record of the component that registered the
+        // callback, so firing it per component would run a one-shot callback
+        // once per component in the tree.
         $callbackFired = $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
-
-        // Fluent closure listeners registered via ->on('Event', fn) — persistent
-        // and keyed by event name, so they fire every time the event arrives
-        // (unlike the one-shot camera callbacks above). The payload is exposed as
-        // a plain object so handlers can read $event->someField.
-        $closuresRan = $this->runNativeEventClosures($eventName, $payload);
 
         // System-level events tagged BroadcastsGlobally are ALSO pushed through
         // Laravel's dispatcher so listeners anywhere in the app react — not just
-        // this component's #[On] handlers. Those listeners run first, and they
-        // run even when this component declares no listener for the event.
+        // component #[On] handlers. Runs once per event, before component
+        // delivery, so it fires even when no component declares a listener.
         $laravelHeard = $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
 
-        $methodsRan = $this->runNativeEventListeners($eventName, $payload);
+        // Deliver to this screen AND every nested child component, so an #[On]
+        // listener works wherever it's declared — a child that owns a piece of
+        // state (a Logo tracking the system appearance) reacts without the
+        // screen having to relay the event down to it.
+        [$listening, $closuresRan, $methodsRan] = $this->deliverNativeEventToTree($eventName, $payload);
 
-        // The screen listens for this event, yet none of its filters matched
+        // A component listens for this event, yet none of its filters matched
         // and no callback, closure or Laravel listener ran for it. Nothing
         // here changed, so the loops keep the frame that is on screen.
         // A component event that still waits to be delivered by the
         // flush after this one is a change, and needs its frame.
-        $this->nativeEventUnheard = $this->nativeListenersFor($eventName) !== []
+        $this->nativeEventUnheard = $listening
             && ! $methodsRan && ! $callbackFired && ! $closuresRan && ! $laravelHeard
             && $this->nativePendingComponentEvents === [];
+    }
+
+    /**
+     * Run every component's listeners for a native event, this screen first
+     * and then its children, depth first. Each component runs its fluent
+     * ->on('Event', fn) closures, then its #[On] listeners. Every listening
+     * component receives it; there is no stopPropagation, matching how
+     * emit() reaches every listening ancestor.
+     *
+     * The tree is snapshotted because a handler may mount or unmount children
+     * mid-walk; this event still reaches the tree as it stood on arrival.
+     *
+     * @return array{bool, bool, bool} whether any component listens, whether
+     *                                 a closure ran, and whether a listener ran
+     */
+    private function deliverNativeEventToTree(string $eventName, mixed $payload): array
+    {
+        $listening = $closuresRan = $methodsRan = false;
+
+        foreach (iterator_to_array($this->componentTree(), false) as $component) {
+            $listening = $listening || $component->nativeListenersFor($eventName) !== [];
+
+            // Fluent closure listeners registered via ->on('Event', fn) — persistent
+            // and keyed by event name, so they fire every time the event arrives
+            // (unlike the one-shot camera callbacks above). The payload is exposed as
+            // a plain object so handlers can read $event->someField.
+            $closuresRan = $component->runNativeEventClosures($eventName, $payload) || $closuresRan;
+            $methodsRan = $component->runNativeEventListeners($eventName, $payload) || $methodsRan;
+        }
+
+        return [$listening, $closuresRan, $methodsRan];
     }
 
     /**
@@ -2238,9 +2272,10 @@ abstract class NativeComponent
     }
 
     /**
-     * Run this screen's ->on() closures and #[On] listeners for one event
-     * object. Its public properties are the payload, and a backed enum
-     * among them is given as its backing value, as a device sends it.
+     * Run the ->on() closures and #[On] listeners of this screen and its
+     * children for one event object. Its public properties are the payload,
+     * and a backed enum among them is given as its backing value, as a
+     * device sends it.
      */
     private function hearGlobalEvent(object $event): bool
     {
@@ -2249,8 +2284,7 @@ abstract class NativeComponent
             get_object_vars($event),
         );
 
-        $closuresRan = $this->runNativeEventClosures($event::class, $payload);
-        $methodsRan = $this->runNativeEventListeners($event::class, $payload);
+        [, $closuresRan, $methodsRan] = $this->deliverNativeEventToTree($event::class, $payload);
 
         return $closuresRan || $methodsRan;
     }
