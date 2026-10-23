@@ -54,7 +54,8 @@ enum BootPlanner {
 
         let path = startPath.components(separatedBy: "?").first ?? "/"
         let matched = patterns.contains { matches(pattern: $0, path: path) }
-        NSLog("[BootPlanner] Boot plan for \(path): \(matched ? "NATIVE_DIRECT" : "WEB_LEGACY") (\(patterns.count) native patterns)")
+        // The path can come from a deep link, so keep it out of the format string.
+        NSLog("%@", "[BootPlanner] Boot plan for \(path): \(matched ? "NATIVE_DIRECT" : "WEB_LEGACY") (\(patterns.count) native patterns)")
         return matched ? .nativeDirect : .webLegacy
     }
 

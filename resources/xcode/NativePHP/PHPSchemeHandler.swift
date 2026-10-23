@@ -516,7 +516,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             : loc
 
         DispatchQueue.main.async {
-            NSLog("[NativeBoot] ⇄ orphaned EXIT_WEB → \(path) (scheme task was cancelled)")
+            NSLog("%@", "[NativeBoot] ⇄ orphaned EXIT_WEB → \(path) (scheme task was cancelled)")
             if SharedWebView.shared.webView != nil {
                 // WebView exists (detached while native was active): load the
                 // destination into it, then unmount the native branch so it
