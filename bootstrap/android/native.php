@@ -95,7 +95,28 @@ try {
     $response->sendContent();
 
 } catch (Throwable $e) {
-    echo 'DEBUG: Request handling error: '.$e->getMessage()."\n";
-    echo 'DEBUG: Error type: '.get_class($e)."\n";
-    echo "DEBUG: Trace:\n".$e->getTraceAsString()."\n";
+    error_log('REQUEST FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
+    error_log('REQUEST TRACE: '.$e->getTraceAsString());
+
+    // The message and trace are for whoever is building the app, never for
+    // whoever is using it, as on the EDGE error screen. Before the config has
+    // loaded there's no telling which this is, so the user wins. Logcat gets
+    // the crash either way.
+    $showDetail = false;
+
+    try {
+        $showDetail = $app->bound('config') && (bool) $app['config']->get('app.debug');
+    } catch (Throwable) {
+    }
+
+    $body = $showDetail
+        ? 'Error: '.$e->getMessage()."\n".$e->getTraceAsString()
+        : 'Something went wrong.';
+
+    // A whole HTTP response, so PHPBridge passes it through as a 500 instead
+    // of wrapping it as an incomplete one.
+    echo "HTTP/1.1 500 Internal Server Error\r\n";
+    echo "content-type: text/plain\r\n";
+    echo 'content-length: '.strlen($body)."\r\n\r\n";
+    echo $body;
 }
