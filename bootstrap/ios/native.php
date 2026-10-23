@@ -85,7 +85,20 @@ try {
 
     error_log('REQUEST FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
 
-    $body = 'Error: '.$e->getMessage()."\n".$e->getTraceAsString();
+    // The message and trace are for whoever is building the app, never for
+    // whoever is using it, as on the EDGE error screen. Before the config has
+    // loaded there's no telling which this is, so the user wins. The crash is
+    // recorded in the spool either way, which `native:tail --fatals` reads.
+    $showDetail = false;
+
+    try {
+        $showDetail = isset($app) && $app->bound('config') && (bool) $app['config']->get('app.debug');
+    } catch (Throwable) {
+    }
+
+    $body = $showDetail
+        ? 'Error: '.$e->getMessage()."\n".$e->getTraceAsString()
+        : 'Something went wrong.';
 
     echo "HTTP/1.1 500 Internal Server Error\r\n";
     echo "content-type: text/plain\r\n";

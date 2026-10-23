@@ -281,6 +281,35 @@ describe('bootstrap native.php', function () {
         expect($run['head'])->toStartWith('HTTP/1.1 200 OK')
             ->and($run['body'])->toBe("\0".Bridge::allBytes()."\r\n\r\n\0 end\n");
     });
+
+    it('shows an iOS crash to the user only in debug, and records it either way', function (string $debug, bool $shown) {
+        $storage = $this->tempDir.'/storage';
+        mkdir($storage);
+
+        try {
+            $run = runClassic('ios', [
+                'REQUEST_METHOD' => 'GET',
+                'REQUEST_URI' => '/inspect',
+                'APP_DEBUG' => $debug,
+                'BRIDGE_TEST_STORAGE_PATH' => $storage,
+                'BRIDGE_TEST_THROW_ON_TERMINATE' => '1',
+            ], '', $this->tempDir);
+
+            $spool = (string) @file_get_contents($storage.'/framework/devtools/spool.jsonl');
+        } finally {
+            (new Filesystem)->deleteDirectory($storage);
+        }
+
+        $response = Bridge::parse($run['raw']);
+
+        expect($response['status'])->toBe(500)
+            ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
+            ->and(str_contains($response['body'], 'Terminate blew up'))->toBe($shown)
+            ->and($spool)->toContain('Terminate blew up');
+    })->with([
+        'debug on' => ['true', true],
+        'debug off' => ['false', false],
+    ]);
 });
 
 /*
