@@ -8,13 +8,14 @@ use Native\Mobile\Facades\System;
  * Cached, process-scoped current-platform detection.
  *
  * Used by hot-path resolvers (Tailwind variant parser, icon resolver,
- * future per-platform builders) that can't afford a bridge round-trip
- * per call.
+ * future per-platform builders). The answer comes from
+ * [System::platform]: an env read on device, but a bridge round-trip
+ * under `native:jump`, which these callers can't afford per call.
  *
  * One PHP process always runs on one platform — so detection happens
  * lazily on first read and the result sticks for the life of the
- * request. Outside the mobile runtime (tests, web preview) the bridge
- * function is absent and detection returns `null`; callers should treat
+ * request. Outside the mobile runtime (tests, web preview) there is no
+ * device to ask and detection returns `null`; callers should treat
  * that as "platform unknown" and degrade gracefully (e.g. drop
  * platform-variant classes silently).
  */
@@ -35,8 +36,10 @@ class Platform
      * Return `'ios'` / `'android'` / `null`. Cached after first SUCCESSFUL
      * detection.
      *
-     * Failure is deliberately NOT cached: detection is a bridge round-trip
-     * (Device.GetInfo), and in Jump dev mode the first render of a session
+     * On device the first call always succeeds, from NATIVEPHP_PLATFORM.
+     *
+     * Under Jump, failure is deliberately NOT cached: detection is a bridge
+     * round-trip (Device.GetInfo), and the first render of a session
      * can race the device's WebSocket attach — the call fails once, and a
      * cached failure would poison this long-lived `php -S` worker (and the
      * element runloop request, which lives for the whole screen) so every
@@ -65,11 +68,7 @@ class Platform
         }
 
         try {
-            if (System::isIos()) {
-                self::$platform = self::IOS;
-            } elseif (System::isAndroid()) {
-                self::$platform = self::ANDROID;
-            }
+            self::$platform = System::platform();
         } catch (\Throwable) {
             // Leave null — System wasn't ready.
         }

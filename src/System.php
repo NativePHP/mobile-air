@@ -23,36 +23,45 @@ class System
      */
     private static ?string $orientation = null;
 
-    public function isIos(): bool
+    /**
+     * 'ios' or 'android', or null off the device.
+     *
+     * On device the iOS and Android shells export NATIVEPHP_PLATFORM before
+     * PHP starts, so this is an env read with no bridge round-trip. That
+     * matters because @ios, @android, @mobile, @web and the isIos() helpers
+     * all land here, once per evaluation.
+     *
+     * Under `native:jump` PHP runs on the developer's machine and nothing sets
+     * the variable, so ask the connected device instead. Hot paths that can't
+     * pay for that on every call go through Platform, which caches it.
+     */
+    public function platform(): ?string
     {
-        $info = Device::getInfo();
-        if ($info) {
-            return json_decode($info)->platform === 'ios';
+        $platform = getenv('NATIVEPHP_PLATFORM');
+
+        if ($platform === 'ios' || $platform === 'android') {
+            return $platform;
         }
 
-        return false;
+        $info = json_decode(Device::getInfo() ?? '', true);
+        $platform = is_array($info) ? ($info['platform'] ?? null) : null;
+
+        return $platform === 'ios' || $platform === 'android' ? $platform : null;
+    }
+
+    public function isIos(): bool
+    {
+        return $this->platform() === 'ios';
     }
 
     public function isAndroid(): bool
     {
-        $info = Device::getInfo();
-        if ($info) {
-            return json_decode($info)->platform === 'android';
-        }
-
-        return false;
+        return $this->platform() === 'android';
     }
 
     public function isMobile(): bool
     {
-        $info = Device::getInfo();
-        if ($info) {
-            $platform = json_decode($info)->platform ?? null;
-
-            return in_array($platform, ['ios', 'android']);
-        }
-
-        return false;
+        return $this->platform() !== null;
     }
 
     /**
