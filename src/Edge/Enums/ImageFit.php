@@ -13,7 +13,7 @@ enum ImageFit: int
 {
     use ResolvesAlignmentValue;
 
-    /** Natural size, cropped to the frame. iOS draws it as Contain. */
+    /** Natural size, cropped to the frame. */
     case None = 0;
 
     /** Scale to fit inside the frame, letterboxed. The renderers' default. */
@@ -22,7 +22,7 @@ enum ImageFit: int
     /** Scale to cover the frame, cropping the overflow. */
     case Cover = 2;
 
-    /** Stretch to the frame's exact size. iOS draws it as Cover. */
+    /** Stretch to the frame's exact size. */
     case Fill = 3;
 
     public static function fromLabel(string $label): ?self

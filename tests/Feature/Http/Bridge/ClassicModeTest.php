@@ -282,18 +282,18 @@ describe('bootstrap native.php', function () {
             ->and($run['body'])->toBe("\0".Bridge::allBytes()."\r\n\r\n\0 end\n");
     });
 
-    it('shows an iOS crash to the user only in debug, and records it either way', function (string $debug, bool $shown) {
+    it('shows a crash to the user only in debug, and records it either way', function (string $platform, string $debug, bool $shown) {
         $storage = $this->tempDir.'/storage';
         mkdir($storage);
 
         try {
-            $run = runClassic('ios', [
+            $run = runClassic($platform, [
                 'REQUEST_METHOD' => 'GET',
                 'REQUEST_URI' => '/inspect',
                 'APP_DEBUG' => $debug,
                 'BRIDGE_TEST_STORAGE_PATH' => $storage,
                 'BRIDGE_TEST_THROW_ON_TERMINATE' => '1',
-            ], '', $this->tempDir);
+            ], '', $this->tempDir, ['error_log' => '']);
 
             $spool = (string) @file_get_contents($storage.'/framework/devtools/spool.jsonl');
         } finally {
@@ -303,10 +303,13 @@ describe('bootstrap native.php', function () {
         $response = Bridge::parse($run['raw']);
 
         expect($response['status'])->toBe(500)
+            ->and($response['headers']['content-type'])->toBe(['text/plain'])
             ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
             ->and(str_contains($response['body'], 'Terminate blew up'))->toBe($shown)
+            ->and($response['body'] === 'Something went wrong.')->toBe(! $shown)
+            ->and($run['stderr'])->toContain('REQUEST FATAL: Terminate blew up')
             ->and($spool)->toContain('Terminate blew up');
-    })->with([
+    })->with(['ios', 'android'])->with([
         'debug on' => ['true', true],
         'debug off' => ['false', false],
     ]);
