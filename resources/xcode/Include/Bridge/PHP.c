@@ -449,6 +449,21 @@ static void setup_persistent_sapi(void) {
     php_embed_module.header_handler  = ios_header_handler;
 }
 
+// php.ini gives every context PHP's 128M. The persistent runtime gets 512M:
+// the native session runs in it as a single request that lives as long as the
+// app, holding every screen's state, and a screen with a long list reached
+// 128M. The queue worker, the async lane and webview contexts keep 128M, so a
+// runaway there fails on its own instead of growing alongside the UI until
+// the OS kills the whole app. Apps can still ini_set() their own.
+static void raise_persistent_memory_limit(void) {
+    zend_string *name = zend_string_init("memory_limit", sizeof("memory_limit") - 1, 0);
+    if (zend_alter_ini_entry_chars(name, "512M", sizeof("512M") - 1, PHP_INI_SYSTEM, PHP_INI_STAGE_RUNTIME) != SUCCESS) {
+        fprintf(stderr, "PHP-WORKER: could not raise memory_limit to 512M\n");
+        fflush(stderr);
+    }
+    zend_string_release(name);
+}
+
 // ── Worker thread ───────────────────────────────────
 // Boots PHP, then loops processing work items.
 
@@ -482,6 +497,7 @@ static void *php_worker_main(void *arg) {
     fflush(stderr);
 
     sapi_module.header_handler = ios_header_handler;
+    raise_persistent_memory_limit();
 
     zend_first_try {
         zend_activate_modules();

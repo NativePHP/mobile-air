@@ -349,7 +349,7 @@ struct NativePHPApp: App {
         openssl.cafile="\(caPath)"
         upload_max_filesize=16M
         post_max_size=16M
-        memory_limit=512M
+        memory_limit=128M
         """
 
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
