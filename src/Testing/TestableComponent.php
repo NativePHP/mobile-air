@@ -157,7 +157,7 @@ class TestableComponent
 
     /**
      * Mount the component registered for a native route URI, with the
-     * route's params and layout resolved exactly as navigation would.
+     * route's params, query and layout resolved exactly as navigation would.
      * Requires the app's Route::native() registrations to be loaded.
      */
     public static function visit(string $uri, array $data = [], ?string $platform = null): static
@@ -206,6 +206,9 @@ class TestableComponent
         $this->component = $component;
         $component->setParams($params);
         $component->setData($data);
+        // From the URI, as the router does: visit('/search?q=x') and a followed
+        // navigate('/search?q=x') both give the screen query('q').
+        $component->setQuery($uri !== null ? NativeRouter::queryOf($uri) : []);
 
         if ($layout !== null) {
             $component->setLayout($layout);

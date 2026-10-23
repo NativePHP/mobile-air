@@ -137,6 +137,8 @@ abstract class NativeComponent
 
     protected array $nativeNavigationData = [];
 
+    protected array $nativeQuery = [];
+
     /** @var list<array{source: NativeComponent, event: ComponentEvent}> */
     private array $nativePendingComponentEvents = [];
 
@@ -3830,6 +3832,19 @@ abstract class NativeComponent
         return $this->nativeNavigationData[$key] ?? $default;
     }
 
+    /**
+     * The query string the screen was opened with, from a deep link, a cold
+     * launch or a navigate('/search?q=x'). Reads like `$request->query()`:
+     * no key gives them all, and dot notation reaches into arrays.
+     *
+     * Anyone who can open a link to the app controls these values, so treat
+     * them as user input. data() only ever holds what the app passed itself.
+     */
+    protected function query(?string $key = null, mixed $default = null): mixed
+    {
+        return data_get($this->nativeQuery, $key, $default);
+    }
+
     // ── Injection (called by NativeRouter) ──────────
 
     public function setRouter(NativeRouter $router): void
@@ -3845,6 +3860,11 @@ abstract class NativeComponent
     public function setData(array $data): void
     {
         $this->nativeNavigationData = $data;
+    }
+
+    public function setQuery(array $query): void
+    {
+        $this->nativeQuery = $query;
     }
 
     // ── Element resolution helper ──────────────────
