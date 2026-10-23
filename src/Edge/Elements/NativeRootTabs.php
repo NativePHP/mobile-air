@@ -106,6 +106,18 @@ class NativeRootTabs extends Element
         if (isset($attrs['stackDepth'])) {
             $this->props['stack_depth'] = (int) $attrs['stackDepth'];
         }
+        // Per-mount screen identity tokens, bottom-up stack order — see
+        // NativeRootStack::applyAttributes for the contract. Opaque
+        // random hex; absent on old frames (device restores nothing).
+        if (isset($attrs['screenTokens'])) {
+            $tokens = is_array($attrs['screenTokens'])
+                ? $attrs['screenTokens']
+                : [$attrs['screenTokens']];
+            $this->props['screen_tokens'] = array_values(array_map(
+                fn ($token): string => (string) $token,
+                $tokens
+            ));
+        }
 
         // Per-screen tab-bar overrides folded in by `wrapWithNativeChrome`.
         // `hide_tab_bar` is the explicit signal renderers use to hide the

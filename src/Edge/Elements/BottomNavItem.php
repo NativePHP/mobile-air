@@ -171,9 +171,10 @@ class BottomNavItem extends Element
      * PRESS event transports it — plus an optional
      * `reselect_scroll_target` prop naming a scroll container registered
      * in the Android `NativeScrollTargetRegistry`. When a target is set,
-     * native scrolls it to top instead of invoking PHP unless it is at
-     * exact top (first item AND zero pixel offset). Never suppresses the
-     * URL tab's auto-wired `on_press` navigation.
+     * native scrolls it to top first and then invokes PHP once the
+     * scroll completes — unless it is already at exact top (first item
+     * AND zero pixel offset), in which case PHP is invoked immediately.
+     * Never suppresses the URL tab's auto-wired `on_press` navigation.
      */
     public function onReselect(string $method, ?string $scrollTarget = null): static
     {

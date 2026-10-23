@@ -120,6 +120,9 @@ class TestableComponent
     /** The screen this one was pushed from (flow stack), if any. */
     protected ?TestableComponent $parent = null;
 
+    /** This screen's flow uri (visit()/follow()), used by popTo() target matching. */
+    protected ?string $uri = null;
+
     /** True while a followed screen sits on top of this one. */
     protected bool $suspended = false;
 
@@ -206,7 +209,10 @@ class TestableComponent
 
         // When the URI is known (visit()/follow()), attach a router with
         // this screen on its stack so currentUri()-driven chrome behaves
-        // as on device — tab highlighting, per-URI diff props, etc.
+        // as on device — tab highlighting, per-URI diff props, etc. The
+        // uri is also kept on the harness so a popTo() follow can match
+        // ancestors by it (see followPopTo()).
+        $this->uri = $uri;
         if ($uri !== null) {
             $router = new NativeRouter;
             \Closure::bind(function () use ($component, $uri, $params) {
@@ -655,16 +661,29 @@ class TestableComponent
      * Mirrors the router: on navigate the current screen stays ALIVE
      * underneath (goBack() returns to it, state intact, onResume() fired);
      * on replace it unmounts and drops out of the stack.
+     *
+     * A BACK intent carrying a uri — what NativeComponent::popTo() sets —
+     * is followed too: the flow stack unwinds to the EXISTING harness for
+     * that uri and returns it with its live component resumed, exactly as
+     * the router unwinds to the existing stack entry. A uri-less BACK is
+     * still not followable (use goBack()).
      */
     public function followNavigation(): static
     {
         $intent = $this->component->getNavigationIntent();
 
         Assert::assertNotNull($intent, 'No navigation occurred — there is nothing to follow.');
+
+        if ($intent->type === NavigationIntent::BACK
+            && $intent->uri !== null && $intent->uri !== '') {
+            return $this->followPopTo($intent);
+        }
+
         Assert::assertContains(
             $intent->type,
             [NavigationIntent::NAVIGATE, NavigationIntent::REPLACE],
-            "Cannot follow a [{$intent->type}] intent — only navigate/replace push a new screen."
+            "Cannot follow a [{$intent->type}] intent — only navigate/replace push a new screen. "
+                .'A plain back has nothing to follow (use goBack()); a back WITH a uri is a popTo and is followed.'
         );
 
         $resolved = NativeRouter::resolve($intent->uri);
@@ -697,6 +716,72 @@ class TestableComponent
     public function follow(): static
     {
         return $this->followNavigation();
+    }
+
+    /**
+     * Follow a popTo() intent (BACK + uri) through the flow stack, as
+     * NativeRouter::loop unwinds its own stack:
+     *
+     *  - uri already on this screen → no-op: this harness is returned
+     *    unchanged, nothing unmounts and nothing resumes;
+     *  - an ancestor harness carries the uri → this screen and every
+     *    screen between unmounts exactly once, and the EXISTING ancestor
+     *    is resumed — its component instance, state, and scroll data
+     *    never remounted (the onResume()/render the router performs);
+     *  - no ancestor carries the uri → the documented popTo fallback:
+     *    the same replace() semantics followNavigation already applies,
+     *    mounting a FRESH harness for the resolved route.
+     *
+     * Matching is by the uri visit()/follow() recorded — a flow built
+     * purely from Native::test() (no uris) cannot be popped by uri.
+     */
+    protected function followPopTo(NavigationIntent $intent): static
+    {
+        // The router consumes the intent in every branch below.
+        $this->component->resetNavigationIntent();
+
+        if ($this->uri === $intent->uri) {
+            return $this;
+        }
+
+        // Nearest ancestor for the target uri, remembering every screen
+        // that has to pop to reach it.
+        $ancestor = $this->parent;
+        $between = [];
+        while ($ancestor !== null && $ancestor->uri !== $intent->uri) {
+            $between[] = $ancestor;
+            $ancestor = $ancestor->parent;
+        }
+
+        if ($ancestor === null) {
+            // Not on the flow stack: replace onto a fresh mount of the
+            // resolved route — the documented popTo fallback.
+            $resolved = NativeRouter::resolve($intent->uri);
+
+            Assert::assertNotNull(
+                $resolved,
+                "popTo target [{$intent->uri}] is not on this flow and no native route is registered for it (it would exit to the web)."
+            );
+
+            $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri);
+
+            $this->component->unmount();
+            $next->parent = $this->parent;
+            $this->suspended = true;
+
+            return $next;
+        }
+
+        $this->component->unmount();
+        $this->suspended = true;
+        foreach ($between as $popped) {
+            $popped->component->unmount();
+            $popped->suspended = true;
+        }
+
+        $ancestor->resumeFromFlow();
+
+        return $ancestor;
     }
 
     /**
@@ -848,6 +933,12 @@ class TestableComponent
     public function assertWentBack(): static
     {
         return $this->assertIntent(NavigationIntent::BACK);
+    }
+
+    /** Assert a popTo() fired: a BACK intent carrying the target uri. */
+    public function assertPoppedTo(string $uri): static
+    {
+        return $this->assertIntent(NavigationIntent::BACK, $uri);
     }
 
     public function assertExitedToWeb(string $uri): static

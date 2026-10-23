@@ -4,7 +4,9 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -38,6 +40,76 @@ class NativeScrollTargetRegistryTest {
         NativeScrollTargetRegistry.register("feed", Any(), { true }, {})
 
         assertTrue(NativeScrollTargetRegistry.get("feed")!!.isAtTop())
+    }
+
+    @Test
+    fun aSameKeyReplacementYieldsADistinctEntryInstance() {
+        // The premise of the reselect gate's identity check
+        // (shouldFireReselectAfterScroll): a re-registration under the
+        // same key produces a NEW Entry object, so `get(key) ===
+        // capturedEntry` distinguishes the scrolled container from an
+        // abandoned one that a newer composition replaced mid-animation.
+        NativeScrollTargetRegistry.register("feed", Any(), { false }, {})
+        val first = NativeScrollTargetRegistry.get("feed")
+
+        NativeScrollTargetRegistry.register("feed", Any(), { true }, {})
+
+        val current = NativeScrollTargetRegistry.get("feed")
+        assertNotSame(first, current)
+    }
+
+    // ── Live availability predicate ──────────────
+
+    @Test
+    fun aRegisteredTargetIsAvailableByDefault() {
+        NativeScrollTargetRegistry.register("feed", Any(), { true }, {})
+
+        assertNotNull(NativeScrollTargetRegistry.get("feed"))
+    }
+
+    @Test
+    fun anUnavailableTargetBehavesExactlyLikeAMissingOne() {
+        // The pager gap: a hidden NEIGHBOR page stays composed and its
+        // registration is live — but the page is not on screen. Both
+        // the tap-time and the post-scroll reads go through get(), so
+        // false here closes the gap at both instants.
+        NativeScrollTargetRegistry.register("feed", Any(), { false }, {}, isAvailable = { false })
+
+        assertNull(NativeScrollTargetRegistry.get("feed"))
+    }
+
+    @Test
+    fun availabilityIsLiveAndCanFlipBackAndForth() {
+        var onScreen = false
+        NativeScrollTargetRegistry.register("feed", Any(), { true }, {}, isAvailable = { onScreen })
+
+        assertNull(NativeScrollTargetRegistry.get("feed"))
+
+        onScreen = true
+        assertNotNull(NativeScrollTargetRegistry.get("feed"))
+
+        onScreen = false
+        assertNull(NativeScrollTargetRegistry.get("feed"))
+    }
+
+    @Test
+    fun unregisterKeepsIdentitySemanticsWhileTheTargetIsUnavailable() {
+        val owner = Any()
+        var onScreen = false
+        NativeScrollTargetRegistry.register("feed", owner, { true }, {}, isAvailable = { onScreen })
+
+        // Unavailable is not unregistered: the entry is still there,
+        // only hidden from get().
+        assertNull(NativeScrollTargetRegistry.get("feed"))
+
+        // A stale owner still cannot remove it…
+        NativeScrollTargetRegistry.unregister("feed", Any())
+        onScreen = true
+        assertNotNull(NativeScrollTargetRegistry.get("feed"))
+
+        // …but the real owner can.
+        NativeScrollTargetRegistry.unregister("feed", owner)
+        assertNull(NativeScrollTargetRegistry.get("feed"))
     }
 
     @Test

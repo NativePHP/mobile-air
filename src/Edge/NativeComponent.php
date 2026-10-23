@@ -133,6 +133,18 @@ abstract class NativeComponent
 
     protected ?NativeRouter $nativeRouter = null;
 
+    /**
+     * Opaque per-MOUNT identity of this screen instance. Random 128-bit
+     * hex — deliberately NOT a process-scoped counter: the device side
+     * can restore saved state across a process restart, where a counter
+     * would reset and collide with a previous mount's token, restoring a
+     * stale scroll offset into an unrelated screen. Generated lazily
+     * and memoized, so one instance keeps ONE token across every
+     * re-render and resume, while every fresh mount (navigate, replace,
+     * popTo fallback, account switch, restart) starts a new one.
+     */
+    private ?string $nativeScreenToken = null;
+
     protected array $nativeParams = [];
 
     protected array $nativeNavigationData = [];
@@ -979,6 +991,10 @@ abstract class NativeComponent
             // URI that is already on the stack pushes a new level rather
             // than being misread as a pop back to the earlier one.
             $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
+            // Per-mount screen identity, bottom-up: the liveness list the
+            // device side keys per-screen saveable state (scroll position)
+            // by. See screenTokensForFrame().
+            $attrs['screenTokens'] = $this->screenTokensForFrame();
 
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
@@ -1111,6 +1127,9 @@ abstract class NativeComponent
             // Router stack depth — depth-based reconciliation (see the
             // tabs sentinel above for rationale).
             $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
+            // Per-mount screen identity, bottom-up — see the tabs
+            // sentinel above for rationale.
+            $attrs['screenTokens'] = $this->screenTokensForFrame();
             // Per-screen nav-bar opt-out — the sentinel (and its
             // NavigationStack) survives; only the toolbar hides.
             if ($this->shouldHideNavBar()) {
@@ -3530,6 +3549,41 @@ abstract class NativeComponent
 
     // ── Navigation methods ──────────────────────────
 
+    /**
+     * This screen instance's opaque per-mount identity (see
+     * $nativeScreenToken). Consumed by the chrome sentinels' frame
+     * metadata so device-side saveable state is keyed by mount, and
+     * safe to expose to tests/assertions: it carries no information
+     * beyond "this exact mounted instance".
+     */
+    public function screenToken(): string
+    {
+        return $this->nativeScreenToken ??= bin2hex(random_bytes(16));
+    }
+
+    /**
+     * The full bottom-up `screen_tokens` list for a frame this screen
+     * publishes: every live stack mount's token, with this screen's own
+     * token ensured as the TOP entry. The append covers the windows
+     * where the rendering component is not yet on the router's stack —
+     * `preloadStack` mounts before it pushes, the replace fallback
+     * publishes during its mount, and standalone/harness screens carry
+     * no router at all — so placeholder and farewell frames stay
+     * consistent with real ones.
+     *
+     * @return list<string>
+     */
+    private function screenTokensForFrame(): array
+    {
+        $tokens = $this->nativeRouter?->stackScreenTokens() ?? [];
+
+        if (! in_array($this->screenToken(), $tokens, true)) {
+            $tokens[] = $this->screenToken();
+        }
+
+        return $tokens;
+    }
+
     public function navigate(string $uri, array $data = []): static
     {
         if ($this->openedExternally($uri)) {
@@ -3611,6 +3665,52 @@ abstract class NativeComponent
 
         $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, static::appPath($uri), $data);
+        $this->publishFinalState();
+        $this->stop();
+
+        return $this;
+    }
+
+    /**
+     * Pop screens off the stack until the EXISTING entry for the given
+     * uri is on top again, then resume that same component instance.
+     *
+     * The stack-unwind counterpart to back(): back() pops exactly one
+     * screen, popTo() pops every screen ABOVE the topmost entry whose
+     * uri matches — so a tab tap deep in a thread / profile stack
+     * returns to the feed the user came from, with its state, cursor
+     * and scroll position intact (no remount, no fresh data load).
+     *
+     * Semantics:
+     *  - uri already on top → no-op (nothing unmounts, nothing resumes);
+     *  - uri present below → unwind to its topmost entry, unmounting
+     *    each popped screen exactly once; the target is resumed
+     *    (onResume), never re-mounted;
+     *  - uri NOT on the stack → fallback to the documented replace()
+     *    semantics: a FRESH component for the uri is mounted on top of
+     *    the remaining stack (no cached state is invented). An
+     *    unresolvable uri exits to the web, exactly like replace();
+     *  - back() itself is untouched: a uri-less BACK intent always
+     *    pops exactly one screen, even when a matching uri sits deeper.
+     *
+     * The target rides the BACK intent's `uri` field, so no new intent
+     * type crosses any wire; `null` keeps meaning "plain back".
+     *
+     * Like its siblings this is a screen-level concern: a nested child
+     * forwards to its root screen so the intent lands where the
+     * router's runloop reads it.
+     */
+    public function popTo(string $uri): static
+    {
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->popTo($uri);
+
+            return $this;
+        }
+
+        $this->flushDispatchedEvents();
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK, static::appPath($uri));
         $this->publishFinalState();
         $this->stop();
 

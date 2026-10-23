@@ -44,7 +44,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -369,6 +372,24 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // entering level uses the live padding, the exiting level keeps
         // the padding it was last laid out with, and each level's
         // vertical origin stays fixed for the whole slide.
+        // Per-mount saveable panes — the stack twin of the tabs renderer's
+        // wiring (see NativeRootTabsRenderer for the full rationale).
+        // PHP's `screen_tokens` is the authoritative liveness list; the
+        // level's identity is the TOP token, with the URI kept alongside
+        // for the coordinator cache lookups that stay URI-keyed.
+        val screenTokens = node.props.getStringList("screen_tokens")
+        val saveableHolder = rememberSaveableStateHolder()
+        val savedTokenLedger = rememberSaveable { mutableStateOf(ArrayList<String>()) }
+        SideEffect {
+            if (screenTokens.isNotEmpty()) {
+                ScreenTokens.evicted(savedTokenLedger.value, screenTokens).forEach { saveableHolder.removeState(it) }
+                savedTokenLedger.value = ArrayList(screenTokens)
+            }
+        }
+        val topToken = screenTokens.lastOrNull()
+        val levelKey = topToken ?: activeUri
+        val levelUris = remember { HashMap<String, String>() }
+        levelUris[levelKey] = activeUri
         val levelPaddings = remember { HashMap<String, PaddingValues>() }
         // Remember how deep each level sat when it
         // was shown so the slide can tell push from pop. A pop (target
@@ -376,17 +397,22 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // the RIGHT and the previous one back in from the left, as iOS does;
         // the symmetric spec played the push animation both ways.
         val levelDepths = remember { HashMap<String, Int>() }
-        levelDepths[activeUri] = path.size
+        levelDepths[levelKey] = path.size
         // …and the last tree seen for each level, so a popped level still
         // has content while it slides out: PHP's republish evicts it from
         // the coordinator cache within the slide, and the empty fallback
         // made the outgoing page vanish instead of sliding.
         val levelNodes = remember { HashMap<String, NativeUINode>() }
         if (levelNodes.size > 16) {
-            levelNodes.keys.retainAll((path + listOfNotNull(rootUri, activeUri)).toSet())
+            // Live keys = the keys whose URI is still on the path.
+            val liveUris = (path + listOfNotNull(rootUri, activeUri)).toSet()
+            val liveKeys = levelUris.filterValues { it in liveUris }.keys
+            levelNodes.keys.retainAll(liveKeys)
+            levelPaddings.keys.retainAll(liveKeys)
+            levelUris.keys.retainAll(liveKeys)
         }
         AnimatedContent(
-            targetState = activeUri,
+            targetState = levelKey,
             transitionSpec = {
                 val intSpec = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 250)
                 val popping = (levelDepths[targetState] ?: 0) < (levelDepths[initialState] ?: 0)
@@ -400,7 +426,12 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             },
             label = "stack-level",
             modifier = Modifier.fillMaxSize()
-        ) { uri ->
+        ) { level ->
+            // Resolve the level's URI from its key: the current level
+            // reads the live uri; an exiting level keeps the one it
+            // entered with (a token key must never leak into the
+            // URI-keyed coordinator caches).
+            val uri = if (level == levelKey) activeUri else levelUris[level] ?: level
             // The TopAppBar's nested-scroll connection is attached HERE —
             // directly wrapping the screen content — rather than on the
             // Scaffold modifier. With the connection on the Scaffold, the
@@ -413,25 +444,34 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 Modifier
             }
-            val levelPadding = if (uri == activeUri) {
-                levelPaddings[uri] = padding
+            val levelPadding = if (level == levelKey) {
+                levelPaddings[level] = padding
                 padding
             } else {
-                levelPaddings[uri] ?: padding
+                levelPaddings[level] ?: padding
             }
-            Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
-                val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
-                val levelContent = levelNode?.children?.firstOrNull {
-                    it.type != "top_bar_action" && it.type != "top_bar_title" &&
-                        it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
+            // Saveable scope per level identity — the key the level
+            // ENTERED with, never the live top token.
+            val levelBody: @Composable () -> Unit = {
+                Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
+                    val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[level] = it } ?: levelNodes[level]
+                    val levelContent = levelNode?.children?.firstOrNull {
+                        it.type != "top_bar_action" && it.type != "top_bar_title" &&
+                            it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
+                    }
+                    if (levelContent != null) {
+                        NodeView(node = levelContent)
+                    } else if (uri == currentUri && screenContent != null) {
+                        NodeView(node = screenContent)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize())
+                    }
                 }
-                if (levelContent != null) {
-                    NodeView(node = levelContent)
-                } else if (uri == currentUri && screenContent != null) {
-                    NodeView(node = screenContent)
-                } else {
-                    Box(modifier = Modifier.fillMaxSize())
-                }
+            }
+            if (screenTokens.isNotEmpty()) {
+                saveableHolder.SaveableStateProvider(level) { levelBody() }
+            } else {
+                levelBody()
             }
         }
     }

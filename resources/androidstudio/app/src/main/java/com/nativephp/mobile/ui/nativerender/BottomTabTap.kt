@@ -19,12 +19,20 @@ enum class BottomTabTapAction {
     FireReselectCallback,
 
     /** Active-tab reselect whose registered target is NOT at exact top:
-     *  animate it to top natively — no PHP round trip, no navigation,
-     *  no remount. */
-    ScrollTargetToTop,
+     *  ONE tap does both — animate the target to top natively, then,
+     *  after the scroll completes successfully, fire the `on_reselect`
+     *  callback once. No PHP round trip before the scroll, no remount.
+     *  Whether the fire actually happens after the suspend is gated by
+     *  [shouldFireReselectAfterScroll] (tab still active, no pending
+     *  navigation, scroll entry identity unchanged, tab still declaring
+     *  the same target key, fresh callback id) — a canceled scroll, a
+     *  tab switch, a navigation in flight, or a replaced tree must
+     *  never refresh the wrong or an abandoned view. */
+    ScrollThenReselect,
 
     /** Nothing to do — search tab, unconfigured callback, missing scroll
-     *  target, no URL press available, or a scroll already in flight. */
+     *  target, no URL press available, or a scroll already in flight
+     *  (re-taps coalesce into the running scroll+refresh). */
     Noop,
 }
 
@@ -40,12 +48,14 @@ enum class BottomTabTapAction {
  *     `on_reselect` unset → no-op (the pre-reselect behavior);
  *     no scroll target → always fire the callback;
  *     target registered and at EXACT top → fire the callback;
- *     target registered and scrolled down → scroll it to top natively;
+ *     target registered and scrolled down → scroll it to top natively
+ *     and then fire the callback once the scroll completes (one tap =
+ *     top + refresh; the post-scroll fire is gated, see above);
  *     target configured but unregistered → safely do nothing (never
  *     assume at-top);
- *     a scroll already in flight → let it settle (re-reading
- *     `isAtTop()` on the scroll's last frame could turn a stray tap
- *     into an accidental refresh).
+ *     a scroll already in flight → let it settle; the re-tap coalesces
+ *     into the running scroll+refresh (no second scroll, no double
+ *     callback).
  */
 fun decideBottomTabTap(
     actualIdx: Int,
@@ -76,6 +86,53 @@ fun decideBottomTabTap(
     return if (target.isAtTop()) {
         BottomTabTapAction.FireReselectCallback
     } else {
-        BottomTabTapAction.ScrollTargetToTop
+        BottomTabTapAction.ScrollThenReselect
     }
 }
+
+/**
+ * Post-scroll gate for the one-tap reselect contract. Evaluated AFTER
+ * the scroll-to-top suspend completes, against the world as it is THEN
+ * — never against the tap-time snapshot:
+ *
+ *  - [activeTabStillTapped]: the tab the user tapped is still the
+ *    active tab (latest published tree AND the local selection). A
+ *    tab switch mid-scroll is user navigation — the previous tab's
+ *    feed must not be refreshed from under the user.
+ *  - [noPendingNavigation]: no cross-tab navigation is in flight
+ *    (`pendingTabId == null`, read live at gate time). Between a
+ *    cross-tab press and PHP's replacement publish the published tree
+ *    still names the tapped tab as active — but per-component
+ *    callback registries restart numbering, so firing there can land
+ *    an id collision on the incoming screen's registry and invoke an
+ *    arbitrary method. The press window must be silent.
+ *  - [scrollEntryUnchanged]: the entry registered for the captured key
+ *    is still the EXACT instance that scrolled (identity, not mere
+ *    presence). A same-key re-registration during the animation — a
+ *    screen pushed over the feed and returned, a re-composed
+ *    container — replaces the entry; the captured instance is then an
+ *    abandoned view and must not be refreshed.
+ *  - [tabStillDeclaresTarget]: the freshest published tab for the
+ *    tapped id still declares the SAME `reselect_scroll_target` key.
+ *    PHP can switch the selected feed and republish with a new key
+ *    while the OLD target's neighbor page is still composed and its
+ *    entry still registered — identity alone would pass, but the fire
+ *    would refresh the feed the user just left.
+ *  - [freshReselectCallbackId]: the reselect callback id re-read from
+ *    the CURRENT tree. A republish may have re-registered callbacks
+ *    with fresh ids; the tap-time id can be stale or dropped (0).
+ *
+ * A canceled scroll never reaches this gate (the coroutine dies in the
+ * suspend). All five must hold for exactly one fire.
+ */
+fun shouldFireReselectAfterScroll(
+    activeTabStillTapped: Boolean,
+    noPendingNavigation: Boolean,
+    scrollEntryUnchanged: Boolean,
+    tabStillDeclaresTarget: Boolean,
+    freshReselectCallbackId: Int,
+): Boolean = activeTabStillTapped
+    && noPendingNavigation
+    && scrollEntryUnchanged
+    && tabStillDeclaresTarget
+    && freshReselectCallbackId != 0

@@ -176,8 +176,10 @@ class Tab
      * reselect. With one, native first checks the scroll container
      * registered under that key (see the Android
      * `NativeScrollTargetRegistry`): at exact top the handler fires
-     * (the usual refresh); scrolled down, native scrolls the container
-     * to top locally — no PHP round trip, no remount.
+     * immediately; scrolled down, native scrolls the container to top
+     * locally and then fires the handler once after the scroll
+     * completes — one tap means top AND refresh (no PHP round trip
+     * before the scroll, no remount).
      *
      *   Tab::link('Log', '/log')->onReselect('refreshLog', 'log-feed')
      */

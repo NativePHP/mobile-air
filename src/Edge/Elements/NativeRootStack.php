@@ -85,6 +85,20 @@ class NativeRootStack extends Element
         if (isset($attrs['stackDepth'])) {
             $this->props['stack_depth'] = (int) $attrs['stackDepth'];
         }
+        // Per-mount screen identity tokens, bottom-up stack order —
+        // opaque random hex, one per LIVE mounted instance. The device
+        // side keys per-screen saveable state (scroll position, pager
+        // page) by these; absence (old frames) means "no restore".
+        // Tolerated shapes: a list, or a single token scalar.
+        if (isset($attrs['screenTokens'])) {
+            $tokens = is_array($attrs['screenTokens'])
+                ? $attrs['screenTokens']
+                : [$attrs['screenTokens']];
+            $this->props['screen_tokens'] = array_values(array_map(
+                fn ($token): string => (string) $token,
+                $tokens
+            ));
+        }
 
         // Inline NavBar search field — Apple HIG / Expo pattern.
         // iOS attaches `.searchable` to the destination view; Android

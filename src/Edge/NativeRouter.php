@@ -413,6 +413,30 @@ class NativeRouter
     }
 
     /**
+     * The live stack's per-MOUNT screen tokens, bottom (root) first.
+     *
+     * Each entry's token is its component's opaque screenToken():
+     * stable for the lifetime of that mounted instance, brand new on
+     * every fresh mount / replace / account switch / process start.
+     * The chrome sentinels publish this list (plus, when the rendering
+     * screen is not yet on the stack, its own token — see
+     * NativeComponent::screenTokensForFrame) as the `screen_tokens`
+     * frame prop so the device side can key per-screen saveable state
+     * (scroll position, pager page) by screen-MOUNT identity instead
+     * of URI — a fresh REPLACE of the same URI must never alias the
+     * previous mount's restored state.
+     *
+     * @return list<string>
+     */
+    public function stackScreenTokens(): array
+    {
+        return array_map(
+            fn (array $entry): string => $entry['component']->screenToken(),
+            $this->stack
+        );
+    }
+
+    /**
      * True if the current screen is the first one on the stack
      * (i.e., it was not pushed from anything).
      */
@@ -663,6 +687,112 @@ class NativeRouter
                     break;
 
                 case NavigationIntent::BACK:
+                    // A BACK intent carrying a uri is a popTo(): unwind to
+                    // the topmost EXISTING entry for that uri and resume it.
+                    // A uri-less BACK (the only kind back() produces) keeps
+                    // its single-pop meaning even when a matching uri sits
+                    // deeper on the stack.
+                    $popToUri = $intent->uri;
+
+                    if ($popToUri !== null && $popToUri !== ''
+                        && ($entry['uri'] ?? '') === $popToUri) {
+                        // Already on the target: a genuine no-op. Nothing
+                        // unmounts, nothing resumes — re-enter the screen.
+                        static::debugLog("BACK/popTo: already on {$popToUri}, no-op");
+                        $freshPush = false;
+                        $reenterCurrentScreen = true;
+
+                        break;
+                    }
+
+                    if ($popToUri !== null && $popToUri !== '') {
+                        // Topmost matching entry BELOW the current screen.
+                        // The current screen always pops; the question is
+                        // how far past it the unwind reaches.
+                        $targetIdx = null;
+                        for ($i = count($this->stack) - 2; $i >= 0; $i--) {
+                            if (($this->stack[$i]['uri'] ?? '') === $popToUri) {
+                                $targetIdx = $i;
+
+                                break;
+                            }
+                        }
+
+                        if ($targetIdx === null) {
+                            // Target absent from the stack: fall back to the
+                            // documented replace() semantics — a FRESH mount
+                            // of the resolved route. Unresolvable exits to
+                            // the web, exactly like REPLACE. No cached state
+                            // is ever invented for a missing entry.
+                            static::debugLog("BACK/popTo: {$popToUri} not on stack, falling back to replace");
+
+                            try {
+                                $resolved = static::resolve($popToUri);
+                            } catch (\Throwable $e) {
+                                static::debugLog('BACK/popTo binding FAILED: '.$e->getMessage());
+                                $component->renderErrorScreen($e);
+                                $freshPush = false;
+                                $reenterCurrentScreen = true;
+
+                                break;
+                            }
+
+                            if ($resolved === null) {
+                                $this->unmountComponent($component);
+                                $this->stack = [];
+
+                                return $intent->uri;
+                            }
+
+                            $this->unmountComponent($component);
+                            array_pop($this->stack);
+                            $this->deferredTransition = $intent->transition ?? Transition::Fade;
+
+                            try {
+                                $next = $this->createComponent(
+                                    $resolved['class'],
+                                    $resolved['params'],
+                                    $intent->data
+                                );
+                                if (! empty($resolved['layout'])) {
+                                    $next->setLayout($resolved['layout']);
+                                }
+
+                                $this->stack[] = [
+                                    'component' => $next,
+                                    'uri' => $intent->uri,
+                                    'params' => $resolved['params'],
+                                ];
+                            } catch (\Throwable $e) {
+                                static::debugLog('BACK/popTo replace FAILED: '.$e->getMessage());
+
+                                return null;
+                            }
+
+                            $freshPush = true;
+
+                            break;
+                        }
+
+                        static::debugLog("BACK/popTo: unwinding to {$popToUri} at depth ".$targetIdx);
+                        $this->unmountComponent($component);
+                        array_pop($this->stack);
+
+                        // Announce before each pop, like every other pop in
+                        // the loop: ScreenUnmounted carries the uri of the
+                        // screen leaving, not of whatever surfaces next.
+                        while (count($this->stack) - 1 > $targetIdx) {
+                            $popped = $this->stack[count($this->stack) - 1];
+                            $this->unmountComponent($popped['component']);
+                            array_pop($this->stack);
+                        }
+
+                        $freshPush = false;
+                        $this->deferredTransition = $intent->transition ?? Transition::SlideFromLeft;
+
+                        break;
+                    }
+
                     static::debugLog('BACK: popping '.get_class($component));
                     $this->unmountComponent($component);
                     array_pop($this->stack);

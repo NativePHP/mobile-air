@@ -37,7 +37,9 @@ import java.util.concurrent.ConcurrentHashMap
  *    never be used.
  *  - `scrollToTop` is a suspend function that brings the container to
  *    that exact top state; the tabs renderer launches it on its own
- *    composition-scoped coroutine and cancels it on dispose.
+ *    composition-scoped coroutine, cancels it on dispose, and — once it
+ *    completes — fires the tab's reselect callback (one tap = top +
+ *    refresh; see `shouldFireReselectAfterScroll` for the gate).
  *  - Register/unregister on the main thread (Compose composition).
  *  - `unregister` matches the owner token by identity, so a stale
  *    `onDispose` from a superseded composition can never remove a newer
@@ -49,27 +51,40 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object NativeScrollTargetRegistry {
 
-    /** One mounted scroll target. */
+    /**
+     * One mounted scroll target.
+     *
+     * [isAvailable] is a LIVE predicate read at the two instants that
+     * matter — the tap (`decideBottomTabTap`) and the post-scroll gate
+     * — both synchronous, outside composition. It closes the pager
+     * gap where a hidden NEIGHBOR page stays composed and registered:
+     * its registration is live, but the page is not the one on screen.
+     * The UI plugin supplies the context (e.g. pager target page);
+     * the default `{ true }` keeps every non-pager caller unchanged.
+     */
     class Entry(
         val key: String,
         val owner: Any,
         val isAtTop: () -> Boolean,
         val scrollToTop: suspend () -> Unit,
+        val isAvailable: () -> Boolean = { true },
     )
 
     private val entries = ConcurrentHashMap<String, Entry>()
 
     /**
      * Register the scroll target for [key], replacing any entry previously
-     * registered under it (the newest composition wins).
+     * registered under it (the newest composition wins). [isAvailable] is
+     * evaluated LIVE on every [get] — see [Entry].
      */
     fun register(
         key: String,
         owner: Any,
         isAtTop: () -> Boolean,
         scrollToTop: suspend () -> Unit,
+        isAvailable: () -> Boolean = { true },
     ) {
-        entries[key] = Entry(key, owner, isAtTop, scrollToTop)
+        entries[key] = Entry(key, owner, isAtTop, scrollToTop, isAvailable)
     }
 
     /**
@@ -84,8 +99,14 @@ object NativeScrollTargetRegistry {
         }
     }
 
-    /** The entry currently registered for [key], or null when none is. */
-    fun get(key: String): Entry? = entries[key]
+    /**
+     * The entry currently registered for [key], or null when none is —
+     * or when the entry itself reports it is NOT available (hidden
+     * pager neighbor): both the tap-time and post-scroll reads go
+     * through here, so an unavailable target behaves exactly like a
+     * missing one at the moment it matters.
+     */
+    fun get(key: String): Entry? = entries[key]?.takeIf { it.isAvailable() }
 
     /** Drop every entry (test isolation). */
     fun clear() = entries.clear()

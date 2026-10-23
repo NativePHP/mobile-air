@@ -12,8 +12,9 @@ use Native\Mobile\Edge\Layouts\Builders\Tab;
  *     PRESS event when the already-active tab is re-tapped.
  *   - `reselect_scroll_target` prop: optional string naming a native
  *     scroll container registered in NativeScrollTargetRegistry. When
- *     present, native scrolls that container to top instead of invoking
- *     PHP unless it is already at exact top.
+ *     present, native scrolls that container to top first and then
+ *     invokes PHP once the scroll completes — unless it is already at
+ *     exact top, in which case PHP is invoked immediately.
  *
  * Both props are omitted entirely when no handler is configured, and a
  * configured handler never suppresses the URL tab's auto-wired
