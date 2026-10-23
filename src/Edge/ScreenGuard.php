@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge;
 
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
@@ -232,6 +233,13 @@ class ScreenGuard
      */
     protected static function resolve(LaravelRoute $route): array
     {
+        // The router only knows the `web` and `api` groups once the HTTP
+        // kernel has been built, because its constructor syncs them over.
+        // On device the kernel exists by now, but a console process or a
+        // test may not have built one, and an unknown group is read as a
+        // class name.
+        app(HttpKernel::class);
+
         $gathered = app('router')->resolveMiddleware(
             $route->gatherMiddleware(),
             $route->excludedMiddleware(),
