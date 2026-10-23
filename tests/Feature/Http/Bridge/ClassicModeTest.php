@@ -136,7 +136,9 @@ function runClassic(string $platform, array $env, ?string $body, string $tempDir
         $env += ['APP_URL' => 'php://127.0.0.1', 'REMOTE_ADDR' => '0.0.0.0'];
         mkdir(dirname($script), 0777, true);
         mkdir($work.'/app/bootstrap');
+        mkdir($work.'/app/vendor/nativephp/mobile/bootstrap/shared');
         copy($root.'/bootstrap/ios/native.php', $script);
+        copy($root.'/bootstrap/shared/devtools-boot-report.php', $work.'/app/vendor/nativephp/mobile/bootstrap/shared/devtools-boot-report.php');
         file_put_contents($work.'/app/vendor/autoload.php', '<?php return require '.var_export($root.'/vendor/autoload.php', true).';');
         file_put_contents($work.'/app/bootstrap/app.php', '<?php return require '.var_export($root.'/tests/Fixtures/Bridge/classic-app/bootstrap/app.php', true).';');
     }
@@ -294,18 +296,20 @@ describe('bootstrap native.php', function () {
             ->and($run['body'])->toBe("\0".Bridge::allBytes()."\r\n\r\n\0 end\n");
     });
 
-    it('shows an Android crash to the user only in debug, and logs it either way', function (string $debug, bool $shown) {
+    it('shows a crash to the user only in debug, and records it either way', function (string $platform, string $debug, bool $shown) {
         $storage = $this->tempDir.'/storage';
         mkdir($storage);
 
         try {
-            $run = runClassic('android', [
+            $run = runClassic($platform, [
                 'REQUEST_METHOD' => 'GET',
                 'REQUEST_URI' => '/inspect',
                 'APP_DEBUG' => $debug,
                 'BRIDGE_TEST_STORAGE_PATH' => $storage,
                 'BRIDGE_TEST_THROW_ON_TERMINATE' => '1',
             ], '', $this->tempDir, ['error_log' => '']);
+
+            $spool = (string) @file_get_contents($storage.'/framework/devtools/spool.jsonl');
         } finally {
             (new Filesystem)->deleteDirectory($storage);
         }
@@ -317,8 +321,9 @@ describe('bootstrap native.php', function () {
             ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
             ->and(str_contains($response['body'], 'Terminate blew up'))->toBe($shown)
             ->and($response['body'] === 'Something went wrong.')->toBe(! $shown)
-            ->and($run['stderr'])->toContain('REQUEST FATAL: Terminate blew up');
-    })->with([
+            ->and($run['stderr'])->toContain('REQUEST FATAL: Terminate blew up')
+            ->and($spool)->toContain('Terminate blew up');
+    })->with(['ios', 'android'])->with([
         'debug on' => ['true', true],
         'debug off' => ['false', false],
     ]);

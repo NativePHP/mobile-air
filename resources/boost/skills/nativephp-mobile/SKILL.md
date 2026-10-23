@@ -73,6 +73,9 @@ Ask first, or leave to the user: `--watch` and `native:watch` never exit, so don
 background only when the user wants hot reload). Release builds, signing, `native:package` and store uploads are
 the user's call.
 
+For a build-and-verify loop with machine-readable output (`native:run ... --json`, `native:devices`,
+`native:status`, `native:screenshot`, `native:tail`, `native:open-url`), follow the `nativephp-agent-loop` skill.
+
 The Vite dev server is **opt-in** in v4: add `--vite` to `native:run`/`native:watch` only when the app uses
 JS/CSS HMR (web-view assets). Native UI screens hot-reload without Vite. `npm run build -- --mode=ios|android`
 is only needed for apps that still ship web-view assets.

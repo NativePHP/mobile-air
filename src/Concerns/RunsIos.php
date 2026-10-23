@@ -15,6 +15,7 @@ trait RunsIos
 {
     use LaunchesIosSimulator;
     use ManagesIosHotReloadPort;
+    use ReportsRunOutcome;
     use ValidatesAppConfig;
 
     protected string $iosLogPath = 'nativephp/ios-build.log';
@@ -98,6 +99,7 @@ trait RunsIos
         // so bail out early with a clear message on Windows/Linux instead of
         // failing cryptically once xcrun is invoked.
         if (PHP_OS_FAMILY !== 'Darwin') {
+            $this->failRun('validate', 'iOS apps can only be built and run on macOS.');
             error('iOS apps can only be built and run on macOS.');
             note('Use `php artisan native:run android` on this machine.');
 
@@ -111,6 +113,7 @@ trait RunsIos
         file_put_contents($this->iosLogPath, '');
 
         if (! is_dir(base_path('nativephp/ios'))) {
+            $this->failRun('validate', 'No iOS project found at [nativephp/ios].');
             error('No iOS project found at [nativephp/ios].');
             note('Run `php artisan native:install` or ensure you have the correct folder structure.');
 
@@ -126,6 +129,10 @@ trait RunsIos
         $this->validateAppVersion($this->buildType);
 
         $devices = $this->getAvailableIosDevices();
+
+        if (empty($devices) && $this->runFailure !== null) {
+            return false;
+        }
 
         if (! $target = $this->argument('udid')) {
             $target = $this->promptForIosTarget($devices);
@@ -143,7 +150,13 @@ trait RunsIos
         $output = Process::run('xcrun xctrace list devices')->output();
 
         if (empty($output)) {
+            $this->failRun('devices', 'No iOS devices found.');
             error('No iOS devices found!');
+
+            if ($this->hasOption('json') && $this->option('json')) {
+                return [];
+            }
+
             exit();
         }
 
@@ -208,6 +221,7 @@ trait RunsIos
             $devicectlCheck = Process::run(['xcrun', 'devicectl', '--help']);
 
             if (! $devicectlCheck->successful()) {
+                $this->failRun('validate', 'xcrun devicectl not found (device deployment requires Xcode 15+).');
                 error('xcrun devicectl not found!');
                 note('Device deployment requires Xcode 15 or later. Simulator builds will still work.');
 
@@ -226,6 +240,7 @@ trait RunsIos
         ]);
 
         if ($result > 0) {
+            $this->failRun('build', 'Build failed.', ['buildLog' => $this->iosLogPath]);
             error('Build failed!');
             note('Inspect the nativephp/ios-build.log file or use the -v flag to enable verbose output.');
 
@@ -303,6 +318,7 @@ trait RunsIos
         });
 
         if ($installFailed) {
+            $this->failRun('install', 'App installation failed.', ['buildLog' => $this->iosLogPath]);
             error('App installation failed!');
             note('Check nativephp/ios-build.log for details.');
 
@@ -334,6 +350,7 @@ trait RunsIos
         });
 
         if ($launchFailed) {
+            $this->failRun('launch', 'App installed but launch failed.');
             warning('App installed but launch failed - tap the app icon in the simulator.');
         } else {
             outro('App launched!');
@@ -383,6 +400,7 @@ trait RunsIos
         });
 
         if ($installFailed) {
+            $this->failRun('install', 'App installation failed.', ['buildLog' => $this->iosLogPath]);
             error('App installation failed!');
             note('Check nativephp/ios-build.log for details.');
 
@@ -417,6 +435,7 @@ trait RunsIos
         });
 
         if ($launchFailed) {
+            $this->failRun('launch', 'App installed but launch failed.');
             warning('App installed but launch failed - tap the app icon on your device.');
         } else {
             outro('App launched!');
