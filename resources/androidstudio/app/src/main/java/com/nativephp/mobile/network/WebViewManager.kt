@@ -29,8 +29,9 @@ class WebViewManager(
     private val phpBridge: PHPBridge,
     // An embedded webview lives INSIDE the native tree (php-mode <webview>
     // element). It must never drive app-level state: no native/web mode
-    // flips, no chrome updates from response headers — those belong to the
-    // root webview alone.
+    // flips, no chrome updates from response headers, no safe-area
+    // injection into the root page, and no claim on [shared] — those
+    // belong to the root webview alone.
     private val embedded: Boolean = false
 ) {
     private val TAG = "PHPMonitor"
@@ -47,7 +48,9 @@ class WebViewManager(
         setupWebViewClient()
         setupJavaScriptInterfaces()
         installRequestBodyShimAtDocumentStart()
-        WebViewManager.shared = this // 👈 make this instance globally accessible
+        if (!embedded) {
+            WebViewManager.shared = this // 👈 make this instance globally accessible
+        }
     }
 
     /**
@@ -438,8 +441,11 @@ class WebViewManager(
                 super.onPageFinished(view, url)
                 Log.d(TAG, "✅ Page finished loading: $url")
 
-                // Inject safe area insets again to ensure they're set
-                (context as? MainActivity)?.injectSafeAreaInsetsToWebView()
+                // Inject safe area insets again to ensure they're set. This
+                // writes to the root webview, so an embedded one leaves it be.
+                if (!embedded) {
+                    (context as? MainActivity)?.injectSafeAreaInsetsToWebView()
+                }
 
                 // Inject JavaScript to capture form submissions and AJAX requests
                 injectJavaScript(view)
