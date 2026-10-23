@@ -1,10 +1,12 @@
 <?php
 
+use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\TextInput;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\BadgeChild;
 use Tests\Fixtures\Edge\NestedHostScreen;
@@ -202,15 +204,63 @@ it('delivers emit() to the parent through the @event tag binding', function () {
     expect($screen->instance()->savedEvents)->toBe(['tag:solo:1']);
 });
 
-it('bubbles a grandchild emit() past its parent to the screen #[On] listener', function () {
+it('keeps direct emit callbacks working for child templates', function () {
     $screen = Native::test(NestedHostScreen::class)
-        ->tap('poke-a');
+        ->tap('emit-solo');
 
-    expect($screen->instance()->pokes)->toBe(['badge-of-a']);
+    expect($screen->instance()->savedEvents)->toBe(['tag:direct:9']);
+});
+
+it('bubbles a grandchild emit() past its parent to the screen #[On] listener', function () {
+    Native::test(NestedHostScreen::class)
+        ->tap('poke-a')
+        ->assertSet('pokes', ['badge-of-a'])
+        ->assertSee('Pokes: badge-of-a')
+        ->assertRerendered();
 });
 
 it('re-renders after an emit so handler state changes paint', function () {
     Native::test(NestedHostScreen::class)
         ->tap('save-solo')
         ->assertRerendered();
+});
+
+// ── Events down ─────────────────────────────────────
+
+it('delivers a native event to child and grandchild #[On] listeners', function () {
+    $screen = Native::test(NestedHostScreen::class)
+        ->emitNative(AppearanceChanged::class, ['mode' => 'dark']);
+
+    $children = nestedChildrenOf($screen->instance());
+    $child = $children['user-card-child|i:0'];
+
+    // The screen still receives it (parent and child both listen — no
+    // stopPropagation), and it reaches a child and its grandchild.
+    expect($screen->instance()->appearance)->toBe('dark');
+    expect($child->appearance)->toBe('dark');
+    expect(nestedChildrenOf($child)['badge-child|i:0']->appearance)->toBe('dark');
+});
+
+it('delivers a native event to every child in a keyed list', function () {
+    $screen = Native::test(NestedHostScreen::class)
+        ->emitNative(AppearanceChanged::class, ['mode' => 'dark']);
+
+    $appearances = array_map(
+        fn ($child) => $child->appearance,
+        array_values(nestedChildrenOf($screen->instance())),
+    );
+
+    expect($appearances)->toBe(['dark', 'dark', 'dark']);
+});
+
+it('dispatches a globally-marked native event once, not once per component', function () {
+    $seen = [];
+    Event::listen(AppearanceChanged::class, function ($e) use (&$seen) {
+        $seen[] = $e->mode;
+    });
+
+    Native::test(NestedHostScreen::class)
+        ->emitNative(AppearanceChanged::class, ['mode' => 'dark']);
+
+    expect($seen)->toBe(['dark']);
 });

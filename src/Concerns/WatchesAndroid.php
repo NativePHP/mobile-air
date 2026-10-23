@@ -3,6 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Support\PathHelper;
 use Symfony\Component\Process\Process;
 
 trait WatchesAndroid
@@ -53,6 +54,7 @@ trait WatchesAndroid
                 $this->setupViteDevServerForwarding($this->vitePort);
             }
         }
+
         $this->startAndroidWatching();
     }
 
@@ -210,6 +212,7 @@ trait WatchesAndroid
     {
         // Service the interactive terminal (keypresses, activity line)
         $this->pumpWatchTerminal();
+
         // Check if we should sync public/build
         $this->checkAndSyncPublicBuild();
 
@@ -248,10 +251,8 @@ trait WatchesAndroid
 
     private function handleAndroidFileChange(string $filePath): void
     {
-        // Normalize paths to use forward slashes for consistent comparison across platforms
-        $basePath = str_replace('\\', '/', base_path());
-        $normalizedPath = str_replace('\\', '/', $filePath);
-        $relativePath = str_replace($basePath.'/', '', $normalizedPath);
+        // Forward slashes throughout, so the comparisons below hold on Windows too
+        $relativePath = PathHelper::relativeTo($filePath, base_path());
 
         if (str_starts_with($relativePath, 'public/build')) {
             $this->publicBuildChangeTime = microtime(true);
@@ -315,10 +316,10 @@ trait WatchesAndroid
         // Check if adb reverse is still active
         $process = $this->adb('reverse', '--list');
         $process->run();
-        $reverses = $process->isSuccessful() ? $process->getOutput() : '';
 
-        if (! str_contains($reverses, "tcp:{$this->vitePort}")) {
-            $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}")->run();
+        if (! $process->isSuccessful() || ! str_contains($process->getOutput(), "tcp:{$this->vitePort}")) {
+            $reverseProcess = $this->adb('reverse', "tcp:{$this->vitePort}", "tcp:{$this->vitePort}");
+            $reverseProcess->run();
         }
     }
 
@@ -434,20 +435,15 @@ trait WatchesAndroid
         $packageName = config('nativephp.app_id');
         $deviceBasePath = "/data/data/{$packageName}/app_storage/laravel";
 
-        // Fix the relative path calculation for Windows
-        $basePath = str_replace('\\', '/', base_path());
-        $normalizedLocalPath = str_replace('\\', '/', $localPath);
+        // Normalize paths for cross-platform compatibility
+        $localPath = PathHelper::normalize($localPath);
+        $base = PathHelper::normalize(base_path());
 
-        // Calculate proper relative path
-        if (str_starts_with($normalizedLocalPath, $basePath)) {
-            $calculatedRelativePath = substr($normalizedLocalPath, strlen($basePath) + 1); // +1 for trailing slash
-        } else {
-            $calculatedRelativePath = $relativePath;
+        // Outside the project root we keep the relative path the caller worked out.
+        if (str_starts_with($localPath, $base.'/')) {
+            $relativePath = PathHelper::relativeTo($localPath, $base);
         }
 
-        // Normalize paths for cross-platform compatibility
-        $localPath = $normalizedLocalPath;
-        $relativePath = $calculatedRelativePath;
         $devicePath = "{$deviceBasePath}/{$relativePath}";
 
         // Check if the file actually exists and is a file (not directory)

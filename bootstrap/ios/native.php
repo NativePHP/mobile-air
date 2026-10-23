@@ -1,25 +1,13 @@
 <?php
 
 use Illuminate\Contracts\Http\Kernel;
+use Native\Mobile\Http\Bridge\BridgeDispatcher;
+use Native\Mobile\Http\Bridge\OutputCapture;
+use Native\Mobile\Http\Bridge\RawHttpResponse;
 use Native\Mobile\Support\Ios\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 $_timing = ['start' => microtime(true)];
-
-if (isset($_SERVER['HTTP_COOKIE'])) {
-    parse_str(str_replace('; ', '&', $_SERVER['HTTP_COOKIE']), $cookies);
-    $_COOKIE = $cookies;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    parse_str($_SERVER['QUERY_STRING'], $parsed);
-    $_GET = $parsed;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    parse_str(file_get_contents('php://input'), $parsed);
-    $_POST = $parsed;
-}
 
 define('LARAVEL_START', microtime(true));
 
@@ -39,7 +27,13 @@ try {
     $kernel = $app->make(Kernel::class);
     $_timing['kernel'] = microtime(true);
 
-    $request = Request::capture();
+    // Query params, cookies, and the body from php://input parsed into $_POST,
+    // $_FILES and $request->file(), the way PHP-FPM would. Not Request::capture():
+    // on the embed SAPI it never fills $_FILES, and on Symfony 8 it calls
+    // request_parse_body(). Upload temp files the app didn't move are deleted when
+    // the request ends, as PHP does.
+    [$request, $parsedBody] = BridgeDispatcher::classicRequest(Request::class);
+    register_shutdown_function(fn () => $parsedBody->cleanup());
     $_timing['capture'] = microtime(true);
 
     // Bind request so service providers can resolve it during bootstrap
@@ -52,11 +46,13 @@ try {
     // an earlier instance() call. This must come after to take precedence.
     $app->instance('originalRequest', $request);
 
+    // Anything echoed outside the response (a stray echo, dump()) is kept for the
+    // body instead of landing in front of the status line.
     /** @var Response $response */
-    $response = $kernel->handle($request);
+    $response = OutputCapture::run(fn () => $kernel->handle($request), $stray);
     $_timing['handle'] = microtime(true);
 
-    $kernel->terminate($request, $response);
+    OutputCapture::run(fn () => $kernel->terminate($request, $response), $late);
     $_timing['terminate'] = microtime(true);
 
     // Calculate timing breakdown (in ms)
@@ -71,13 +67,15 @@ try {
     // Log timing (shows in Xcode console)
     error_log("PerfTiming: PHP autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
 
-    $code = $response->getStatusCode();
-    $status = Response::$statusTexts[$code] ?? ($code == 419 ? 'Page Expired' : 'Unknown');
-    echo "HTTP/1.1 {$code} {$status}\r\n";
-    echo "X-PHP-Timing: autoload={$autoloadMs}ms,bootstrap={$bootstrapMs}ms,handle={$handleMs}ms,total={$totalMs}ms\r\n";
-    echo $response->headers."\r\n\r\n";
+    // Raw HTTP/1.1, as the persistent and webview lanes write it: status line,
+    // headers, a blank line, then the body byte for byte with an exact
+    // content-length.
+    $response->headers->set('X-PHP-Timing', "autoload={$autoloadMs}ms,bootstrap={$bootstrapMs}ms,handle={$handleMs}ms,total={$totalMs}ms");
 
-    $response->sendContent();
+    $content = $stray.RawHttpResponse::content($response).$late;
+
+    echo RawHttpResponse::head($response, strlen($content));
+    echo $content;
 } catch (Throwable $e) {
     require_once __DIR__.'/../shared/devtools-boot-report.php';
     nativephp_devtools_boot_report(
@@ -87,7 +85,10 @@ try {
 
     error_log('REQUEST FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
 
+    $body = 'Error: '.$e->getMessage()."\n".$e->getTraceAsString();
+
     echo "HTTP/1.1 500 Internal Server Error\r\n";
-    echo "Content-Type: text/plain\r\n\r\n";
-    echo 'Error: '.$e->getMessage()."\n".$e->getTraceAsString();
+    echo "content-type: text/plain\r\n";
+    echo 'content-length: '.strlen($body)."\r\n\r\n";
+    echo $body;
 }

@@ -1,6 +1,8 @@
 <?php
 
 use Illuminate\Contracts\Debug\ExceptionHandler;
+use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
@@ -29,7 +31,78 @@ function attachStack($screen, int $count): void
     $component->setRouter($router);
 }
 
+/**
+ * Core ships no slider, so the overlay's font-size control only renders
+ * when a UI plugin provides one. Stand one in for the error screen tests.
+ */
+function fakeOverlaySlider(): void
+{
+    $slider = new class extends Element
+    {
+        protected string $type = 'slider';
+
+        public function onChange(string $method): static
+        {
+            return $this;
+        }
+    };
+
+    ElementRegistry::register('slider', $slider::class);
+}
+
+/**
+ * Swap in an exception handler that records what report() hands it, and
+ * optionally throws, so the tests can see what reaches Laravel.
+ */
+function recordReportedExceptions(bool $throws = false): ArrayObject
+{
+    $reported = new ArrayObject;
+
+    app()->instance(ExceptionHandler::class, new class($reported, $throws) implements ExceptionHandler
+    {
+        public function __construct(private ArrayObject $reported, private bool $throws) {}
+
+        public function report(Throwable $e)
+        {
+            $this->reported[] = $e;
+
+            if ($this->throws) {
+                throw new LogicException('Reporter failed');
+            }
+        }
+
+        public function shouldReport(Throwable $e)
+        {
+            return true;
+        }
+
+        public function render($request, Throwable $e)
+        {
+            throw $e;
+        }
+
+        public function renderForConsole($output, Throwable $e) {}
+    });
+
+    return $reported;
+}
+
+beforeEach(function () {
+    $this->registeredElements = ElementRegistry::all();
+});
+
+afterEach(function () {
+    ElementRegistry::reset();
+
+    foreach ($this->registeredElements as $type => $class) {
+        ElementRegistry::register($type, $class);
+    }
+});
+
 it('renders the exception overlay with message, class, and a retry action', function () {
+    config()->set('app.debug', true);
+    fakeOverlaySlider();
+
     $screen = Native::test(CounterScreen::class);
     $screen->instance()->renderErrorScreen(new RuntimeException('Boom town'));
 
@@ -38,10 +111,70 @@ it('renders the exception overlay with message, class, and a retry action', func
     expect($json)->toContain('Something went wrong')
         ->toContain('Boom town')
         ->toContain('RuntimeException')
+        ->toContain('OverlayScreensTest.php')
         ->toContain('STACK TRACE')
+        ->toContain('"type":"slider"')
         ->toContain('Try again')
+        ->not->toContain('Please try again, or go back.')
         // Standalone screen (no stack below) — nowhere to go back to.
         ->not->toContain('Go back');
+});
+
+it('keeps the exception detail off the overlay when debug is off', function () {
+    config()->set('app.debug', false);
+    fakeOverlaySlider();
+
+    $screen = Native::test(CounterScreen::class);
+    attachStack($screen, 2);
+
+    $screen->instance()->renderErrorScreen(new RuntimeException('Boom town'));
+
+    expect(overlayJson($screen))->toContain('Something went wrong')
+        ->toContain('Please try again, or go back.')
+        ->toContain('Go back')
+        ->toContain('Try again')
+        ->not->toContain('Boom town')
+        ->not->toContain('RuntimeException')
+        ->not->toContain('CounterScreen')
+        ->not->toContain('OverlayScreensTest.php')
+        ->not->toContain('THROWN AT')
+        ->not->toContain('YOUR CODE')
+        ->not->toContain('STACK TRACE')
+        ->not->toContain('"type":"slider"');
+});
+
+it('treats a missing app.debug as off', function () {
+    $app = config('app');
+    unset($app['debug']);
+    config()->set('app', $app);
+
+    $screen = Native::test(CounterScreen::class);
+    $screen->instance()->renderErrorScreen(new RuntimeException('Boom town'));
+
+    expect(overlayJson($screen))->toContain('Please try again, or go back.')
+        ->not->toContain('Boom town')
+        ->not->toContain('STACK TRACE');
+});
+
+it('reports the exception to Laravel once, even when the overlay re-renders it', function () {
+    config()->set('app.debug', true);
+    $reported = recordReportedExceptions();
+
+    $screen = Native::test(CounterScreen::class);
+    $exception = new RuntimeException('Boom town');
+    $screen->instance()->renderErrorScreen($exception);
+    $screen->instance()->__overlaySetFontSize(20);
+
+    expect($reported->getArrayCopy())->toBe([$exception]);
+});
+
+it('still renders the exception overlay when the reporter throws', function () {
+    recordReportedExceptions(throws: true);
+
+    $screen = Native::test(CounterScreen::class);
+    $screen->instance()->renderErrorScreen(new RuntimeException('Boom town'));
+
+    expect(overlayJson($screen))->toContain('Something went wrong');
 });
 
 it('offers a back action when a screen is below on the stack', function () {
@@ -99,82 +232,15 @@ it('offers back on the dd overlay too when the stack is deep', function () {
     expect(overlayJson($screen))->toContain('Go back');
 });
 
-it('reports a caught exception once, not again on every overlay repaint', function () {
-    // renderErrorScreen serves two callers: a catch site handing over a new
-    // throwable, and the overlay repainting the one already on screen. Only
-    // the first is a reportable event — otherwise each tap of the font-size
-    // control files another Sentry event for the same exception.
-    $reported = [];
-
-    app()->make(ExceptionHandler::class);
-    app()->bind(ExceptionHandler::class, function () use (&$reported) {
-        return new class($reported) implements ExceptionHandler
-        {
-            public function __construct(private array &$reported) {}
-
-            public function report(Throwable $e): void
-            {
-                $this->reported[] = $e;
-            }
-
-            public function shouldReport(Throwable $e): bool
-            {
-                return true;
-            }
-
-            public function render($request, Throwable $e)
-            {
-                return null;
-            }
-
-            public function renderForConsole($output, Throwable $e): void {}
-        };
-    });
-
-    $screen = Native::test(CounterScreen::class);
-    $boom = new RuntimeException('Reported once');
-
-    $screen->instance()->renderErrorScreen($boom);
-
-    // The overlay font-size control repaints by handing the same throwable back.
-    $screen->instance()->__overlaySetFontSize(20);
-    $screen->instance()->__overlaySetFontSize(24);
-
-    expect($reported)->toHaveCount(1)
-        ->and($reported[0])->toBe($boom);
-});
-
 it('reports a genuinely new exception on the error screen', function () {
-    $reported = [];
-
-    app()->bind(ExceptionHandler::class, function () use (&$reported) {
-        return new class($reported) implements ExceptionHandler
-        {
-            public function __construct(private array &$reported) {}
-
-            public function report(Throwable $e): void
-            {
-                $this->reported[] = $e;
-            }
-
-            public function shouldReport(Throwable $e): bool
-            {
-                return true;
-            }
-
-            public function render($request, Throwable $e)
-            {
-                return null;
-            }
-
-            public function renderForConsole($output, Throwable $e): void {}
-        };
-    });
+    $reported = recordReportedExceptions();
 
     $screen = Native::test(CounterScreen::class);
+    $first = new RuntimeException('first');
+    $second = new RuntimeException('second');
 
-    $screen->instance()->renderErrorScreen(new RuntimeException('first'));
-    $screen->instance()->renderErrorScreen(new RuntimeException('second'));
+    $screen->instance()->renderErrorScreen($first);
+    $screen->instance()->renderErrorScreen($second);
 
-    expect($reported)->toHaveCount(2);
+    expect($reported->getArrayCopy())->toBe([$first, $second]);
 });

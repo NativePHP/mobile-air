@@ -11,6 +11,8 @@ use Native\Mobile\Concerns\ResolvesDeviceTargets;
 use Native\Mobile\Concerns\RunsAndroid;
 use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\InstalledBinaries;
+use Native\Mobile\Support\PhpBinaries;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
@@ -32,6 +34,7 @@ class RunCommand extends Command
         {--no-vite : Force-disable the Vite dev server (redundant — this is the default)}
         {--start-url= : Set the initial URL/path to load on app start (e.g., /dashboard)}
         {--no-tty : Disable TTY mode for non-interactive environments}
+        {--fresh : Run every build step, even ones whose inputs are unchanged since the last build}
         {--json : Machine-readable result on the last line of stdout; never prompts (implies --no-tty)}';
 
     protected $description = 'Build, package, and run the NativePHP app';
@@ -148,6 +151,15 @@ class RunCommand extends Command
             }
         }
 
+        if (! $this->ensureBinariesMatchRelease($os)) {
+            return $json
+                ? $this->emitRunResult(array_merge(
+                    ['ok' => false, 'stage' => 'validate', 'error' => 'binaries_check_failed'],
+                    $this->runFailure ?? [],
+                ))
+                : self::FAILURE;
+        }
+
         // In --json mode a device must be deterministic: resolve it up front
         // (claimed device, last-used, or single booted target) and inject it
         // as the udid argument so the concerns never reach their prompts.
@@ -206,13 +218,20 @@ class RunCommand extends Command
 
         $startedAt = microtime(true);
 
-        match ($os) {
+        $succeeded = match ($os) {
             'android' => $this->runAndroid(),
             'ios' => $this->runIos(),
         };
 
         if ($json) {
-            return $this->emitRunResult($this->buildRunResult($os, $startedAt));
+            return $this->emitRunResult($this->buildRunResult($os, $startedAt, $succeeded));
+        }
+
+        // A build that stopped early has already said why. Carrying that out
+        // as the exit code is what lets CI notice it at all, and skipping the
+        // banner keeps that error from being buried under it.
+        if (! $succeeded) {
+            return self::FAILURE;
         }
 
         $this->showBifrostBanner();
@@ -226,7 +245,7 @@ class RunCommand extends Command
      * and running on the target, which also catches unchecked simctl
      * install/launch failures.
      */
-    protected function buildRunResult(string $os, float $startedAt): array
+    protected function buildRunResult(string $os, float $startedAt, bool $succeeded): array
     {
         $base = [
             'platform' => $os,
@@ -236,6 +255,11 @@ class RunCommand extends Command
             'buildLog' => base_path($os === 'ios' ? 'nativephp/ios-build.log' : 'nativephp/android-build.log'),
             'durationMs' => (int) round((microtime(true) - $startedAt) * 1000),
         ];
+
+        // A run that stopped early without recording why still failed.
+        if (! $succeeded) {
+            $this->failRun('build', 'The run stopped before the app was launched.', ['buildLog' => $base['buildLog']]);
+        }
 
         if ($this->runFailure !== null) {
             $failure = $this->runFailure;
@@ -352,6 +376,107 @@ class RunCommand extends Command
         file_put_contents($lockPath, json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
 
         $exitCode = $this->call('native:install', ['--force' => true]);
+
+        if ($exitCode !== 0) {
+            error('native:install --force failed. Resolve the install error and retry.');
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Offer to reinstall when the PHP binaries in the platform project aren't
+     * the release this version of nativephp/mobile installs.
+     *
+     * Updating the package doesn't touch nativephp/ios or nativephp/android,
+     * so after a `composer update` the app keeps building with the old
+     * binaries and the old native project until someone reinstalls, and
+     * nothing says so. It builds, but without the new release's changes, and
+     * PHP code that relies on them can fail on the device. Reinstalling with
+     * `--skip-php` is worse: the native readers move to the new wire format,
+     * the binaries don't, and the app launches and renders nothing.
+     *
+     * A mismatch warns and asks rather than stopping the run. The record
+     * only holds the release number, which can't say whether anything that
+     * matters changed, and a developer running old binaries on purpose
+     * should be able to say no and carry on.
+     *
+     * Offline on purpose: it compares two local values, so it costs nothing
+     * on every run and works without a connection.
+     */
+    protected function ensureBinariesMatchRelease(string $os): bool
+    {
+        $platformPath = base_path('nativephp/'.$os);
+
+        // Nothing installed at all is a different problem, and the build
+        // reports it.
+        if (! is_dir($platformPath)) {
+            return true;
+        }
+
+        $installed = InstalledBinaries::read($platformPath);
+        $expected = InstalledBinaries::expected();
+
+        // Credit whoever chose the release: the package pins it, unless
+        // NATIVEPHP_BIN_BRANCH asked for a branch or a prerelease.
+        $source = PhpBinaries::selection() === 'main'
+            ? 'this version of nativephp/mobile installs'
+            : 'NATIVEPHP_BIN_BRANCH asks for';
+
+        if ($installed === null) {
+            // Every project installed before the release was recorded lands
+            // here. Said on every run rather than once, because the next
+            // binaries release is exactly when it matters and a one-off
+            // notice would long since have scrolled away. One reinstall
+            // records the release and it stops.
+            warning("Can't tell which PHP binaries release is in nativephp/{$os}.");
+            note('Installs by older versions of nativephp/mobile, and installs that didn\'t finish, don\'t record it. '
+                .ucfirst($source).' release '.InstalledBinaries::describe($expected).'. '
+                .'Run `php artisan native:install --force` to reinstall and record it.');
+
+            return true;
+        }
+
+        if ($installed === $expected) {
+            return true;
+        }
+
+        warning(sprintf(
+            'nativephp/%s has PHP binaries release %s, but %s %s.',
+            $os,
+            InstalledBinaries::describe($installed),
+            $source,
+            InstalledBinaries::describe($expected),
+        ));
+        note('Only `native:install` replaces the binaries. Updating nativephp/mobile or changing '
+            .'NATIVEPHP_BIN_BRANCH leaves the old ones in place. The app will still build, but anything '
+            .'that needs release '.InstalledBinaries::describe($expected).' can fail on the device.');
+
+        // Never auto-reinstall in machine mode; surface the mismatch instead.
+        if ($this->option('json')) {
+            $this->failRun('validate', sprintf(
+                'nativephp/%s has PHP binaries release %s, but %s %s.',
+                $os,
+                InstalledBinaries::describe($installed),
+                $source,
+                InstalledBinaries::describe($expected),
+            ), [
+                'hint' => "Run `php artisan native:install {$os} --force`, then retry.",
+            ]);
+
+            return false;
+        }
+
+        if (! confirm("Run `native:install {$os} --force` now?", default: true)) {
+            note('Building with release '.InstalledBinaries::describe($installed).'. '
+                .'Run `php artisan native:install --force` when you\'re ready.');
+
+            return true;
+        }
+
+        $exitCode = $this->call('native:install', ['platform' => $os, '--force' => true]);
 
         if ($exitCode !== 0) {
             error('native:install --force failed. Resolve the install error and retry.');

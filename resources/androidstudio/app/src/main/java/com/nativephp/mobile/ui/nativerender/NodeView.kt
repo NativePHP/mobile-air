@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
@@ -32,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.unit.dp
 
 /**
@@ -45,7 +46,17 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
-    key(node.id) {
+    // Resolve responsive (`md:` / `lg:`) variants against the live window
+    // width — LocalAvailableWidth is the root BoxWithConstraints' maxWidth —
+    // so no renderer has to know breakpoints exist. resolved() returns a
+    // cached node per winning variant, so identity stays stable between
+    // resizes and key(node.id, node.type) below keeps its state.
+    ResolvedNodeView(node.resolved(LocalAvailableWidth.current), overrideModifier)
+}
+
+@Composable
+private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
+    key(node.id, node.type) {
         val renderer = NativeRendererRegistry.get(node.type)
         val isDarkMode = isSystemInDarkTheme()
         val safeAreaTop = LocalSafeAreaTop.current
@@ -61,6 +72,10 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
             var mod: Modifier = Modifier
             val layout = node.layout
             if (layout != null) {
+                // Constraint bounds first, so a `w-full max-w-*` node fills
+                // within its bound rather than being clamped afterwards —
+                // same ordering rule as `buildChildModifier`.
+                mod = mod.applySizeConstraints(layout)
                 when (layout.widthMode) {
                     SizeMode.FILL -> mod = mod.fillMaxWidth()
                     SizeMode.FIXED -> if (layout.width > 0f) mod = mod.width(layout.width.dp)
@@ -90,14 +105,16 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         // (rounded tappable surfaces) → click region (nodeGestures) →
         // inset children (nodeLayout).
         //
-        // The conditional `.clip(RoundedCornerShape)` is the reason
+        // The conditional `.clip(nodeShape(...))` is the reason
         // ripples stay inside the pill / rounded-button shape instead
         // of bleeding past the corners. It applies ONLY when both
         // conditions hold:
         //   - the node has a press / long-press handler (so ripple
         //     will actually be drawn — clipping a non-tappable surface
         //     wouldn't do anything useful)
-        //   - the node has a non-zero border radius
+        //   - the node has a non-zero uniform radius, OR per-corner
+        //     radii from `rounded-<side>-*` (which can be asymmetric
+        //     with a zero uniform radius — a squared-off chat bubble)
         // Non-tappable rounded surfaces (cards, chips with overflowing
         // avatars, etc.) intentionally skip the clip — the existing
         // policy in NodeModifiers.kt explains why we don't clip
@@ -241,13 +258,30 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
         // ── Modifier chain ───────────────────────────────────────────
         // Outer to inner:
         //   base (sizing)
+        //   → heroMorph                     (shared-element bounds; must wrap
+        //                                    the background, not sit inside it)
         //   → press feedback graphicsLayer  (wraps everything for visual scale/alpha on press)
         //   → animation graphicsLayer       (wraps bg too so translate/alpha affect the box, not just inner content)
         //   → nodeStyle                     (background + border)
         //   → clip (rounded pressable)
         //   → nodeGestures                  (clickable; ripple now lives inside the scaled visual)
+        //   → nodeAccessibility             (a11y-label replaces the children's semantics, inside the clickable so its action survives)
         //   → nodeLayout                    (padding)
         var modifier: Modifier = base
+
+        // Shared-element morph goes FIRST, i.e. outermost.
+        //
+        // Compose modifiers wrap outer→inner, so anything applied before
+        // `sharedBounds` is measured and drawn OUTSIDE the animated bounds.
+        // Applied last it moved only the node's children: on the three-hop
+        // chain the number travelled while its coloured box stayed put.
+        // Outermost, the background, border, clip, padding and content all
+        // ride the animated bounds together.
+        //
+        // Note this is the OPPOSITE order from iOS, where the equivalent
+        // modifier sits late in the chain — SwiftUI applies modifiers
+        // outward, so "last" there means the same thing "first" means here.
+        modifier = modifier.heroMorph(node)
 
         if (hasPressFeedback) {
             modifier = modifier.graphicsLayer {
@@ -276,11 +310,33 @@ fun NodeView(node: NativeUINode, overrideModifier: Modifier? = null) {
 
         modifier = modifier.nodeStyle(node.style, node.props, isDarkMode)
 
-        if (hasPress && radius > 0f) {
-            modifier = modifier.clip(RoundedCornerShape(radius.dp))
+        // Per-corner radii also count as "has a radius" here — otherwise a
+        // tappable bubble squared off with `rounded-br-none` would fall to the
+        // un-clipped branch and its ripple would bleed past the rounded corners.
+        if (hasPress && (radius > 0f || node.props.has("radius_tl"))) {
+            modifier = modifier.clip(nodeShape(radius, node.props))
         }
+        modifier = modifier.nodeGestures(node, interactionSource)
+
+        // `ref` is both the test-targeting handle (Maestro / Compose UI tests)
+        // AND the shared-element identity: two screens naming an element the
+        // same thing morph it between them under a `morph` transition.
+        val ref = node.props.getString("ref", "")
+        if (ref.isNotEmpty()) {
+            // testTag ONLY — deliberately not contentDescription. Overwriting
+            // the description with an internal handle makes TalkBack announce
+            // "photo-1" in place of whatever the element actually is, which
+            // trades a real accessibility affordance for a test convenience.
+            // The tag reaches UiAutomator (and therefore Maestro `id:`) via
+            // `testTagsAsResourceId` set once at the root in NativeUIContent.
+            //
+            // Outside `nodeAccessibility`: an `a11y-label` there clears every
+            // semantics modifier inside it, which would drop the tag.
+            modifier = modifier.semantics { testTag = ref }
+        }
+
         modifier = modifier
-            .nodeGestures(node, interactionSource)
+            .nodeAccessibility(node)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
         // In-place text change animation (`content_transition` — numeric

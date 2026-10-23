@@ -42,8 +42,8 @@ Three composer facts that block a naive `composer require`:
 
 `php artisan native:plugin:register nativephp/mobile-ui`, verify with `native:plugin:list`. The app's
 `app/Providers/NativeServiceProvider::plugins()` imports the provider **by FQCN**, so the namespace
-change has to be applied there too. Device builds then need a user-run `native:run` (never run build
-commands yourself — always ask which platform first).
+change has to be applied there too. Device builds then need a `native:run`, which you can run yourself
+(`php artisan native:run <ios|android> <device> --no-tty -n` on a booted simulator or running emulator).
 
 Without the UI plugin, `nativephp/mobile` ships the EDGE runtime but NOT the component library
 (text/image/button/list/inputs, bottom-sheet, layout builders, `Theme`, `config/native-ui.php`, icon
@@ -79,8 +79,10 @@ Produce three docs (parallel agents if orchestrating):
 ## Phase 2 — Scaffold (foundation before fan-out)
 
 Order: publish native-ui config → fill theme+fonts → `native-ui:generate-icons` → write `NativeLayout`
-classes (tabs / stack / form-stack / guest; `theme()` for all chrome colors, no hex) → rewrite
-`routes/web.php` with `Route::native()`/`Route::nativeGroup()` preserving every URI and route name →
+classes (tabs / stack / form-stack / guest; `theme()` for all chrome colors, no hex) → move the screens
+into `routes/mobile.php` as `Route::native()`/`Route::nativeGroup()` preserving every URI and route name,
+and delete the Livewire routes from `routes/web.php` (the package loads `routes/mobile.php` itself, only in
+native contexts) →
 generate ONE component with `native:make` to prove path conventions → write a `conventions.md`
 contract doc (namespaces, paths, layout assignments, theme tokens, gotchas) that all converters read.
 
@@ -175,7 +177,7 @@ These cost the most time. All verified from renderer source.
    the image overflows every sibling below it. Put `aspect-[3/4]` on the stack and give the image
    `w-full h-full`.
 5. **Unsupported Tailwind classes are dropped in silence.** Verify before assuming:
-   `TailwindParser::parse('the-class')` returning `[]` means unsupported. Known gaps: `blur-*`,
+   `TailwindParser::parse('the-class')` returning `[]` means unsupported. Known gaps:
    `scale-*`, per-corner radii (`rounded-t-xl` — only uniform keys parse), `max-w-*` / `min-w-*`.
    Gradients (`bg-gradient-to-*` / `bg-linear-to-*` with `from`/`via`/`to`) and `inset-*` ARE
    supported as of 2026-07.
@@ -208,8 +210,8 @@ Wire-format facts that make assertions land first time:
    `resources/views/components`, and old Livewire test dirs. Rewrite generic smoke tests
    (`assertSeeLivewire` → route-resolution or `Native::visit()->assertScreen()`).
 3. `composer dump-autoload`, full suite, `vendor/bin/pint --dirty`, `php artisan native:validate`.
-4. Remind the user to rebuild — plugin registration, plugin Swift/Kotlin sources AND bundled fonts all
-   compile in at build time.
+4. Rebuild with `native:run` on a simulator or emulator as the final check — plugin registration, plugin
+   Swift/Kotlin sources AND bundled fonts all compile in at build time.
 
 ## Patching the framework during an upgrade
 

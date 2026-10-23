@@ -11,8 +11,8 @@ screen → fix → re-verify. Everything here uses the headless `--json` command
 ## When this applies
 
 Activate when the user asks you to **build, run, verify, or iterate** on the app (not merely to write code)
-and the target is a **simulator/emulator with a debug build**. If those conditions do not hold, fall back to
-`nativephp-mobile`'s "Build Commands — Who Runs Them" rule (tell the user; don't run builds).
+and the target is a **simulator/emulator with a debug build**. Otherwise follow `nativephp-mobile`'s
+"Build Commands — Run Them Yourself" and "Building and Running" sections.
 
 **Always ask the user first** before: physical devices, release/bundle builds, `native:install`, uninstalling
 apps, or `simctl shutdown`/`erase`.

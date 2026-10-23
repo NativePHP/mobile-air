@@ -2,6 +2,7 @@
 
 namespace Native\Mobile;
 
+use Illuminate\Console\Events\CommandFinished;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
@@ -32,6 +33,7 @@ use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
+use Native\Mobile\Commands\RunAsyncTaskCommand;
 use Native\Mobile\Commands\RunCommand;
 use Native\Mobile\Commands\ScreenshotCommand;
 use Native\Mobile\Commands\SimCommand;
@@ -47,24 +49,34 @@ use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Events\Device\ThermalStateChanged;
+use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Events\System\AppearanceChanged;
+use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
+use Native\Mobile\Support\PathHelper;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
 class NativeServiceProvider extends PackageServiceProvider
 {
+    /**
+     * Real path of the routes/mobile.php this provider loaded. Tells our own
+     * include on an earlier boot apart from the app's (see appLoadsMobileRoutes).
+     */
+    protected static ?string $loadedMobileRoutes = null;
+
     public function configurePackage(Package $package): void
     {
         $package
             ->name('nativephp-mobile')
             ->hasConfigFile('nativephp')
-            ->hasViews()
             ->hasRoute('api')
             ->hasCommands([
                 PackageCommand::class,
@@ -74,6 +86,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 DebugCommand::class,
                 InstallCommand::class,
                 RunCommand::class,
+                RunAsyncTaskCommand::class,
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
                 SimCommand::class,
@@ -113,6 +126,12 @@ class NativeServiceProvider extends PackageServiceProvider
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
 
+        // Installed while providers register, so that whatever takes the
+        // dispatcher when the app boots takes this one, and a marked
+        // event that PHP fires reaches the live screen through it.
+        GlobalEventDispatcher::install($this->app);
+
+        $this->useDeviceAppKey();
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
@@ -129,6 +148,26 @@ class NativeServiceProvider extends PackageServiceProvider
                 ['JUMP_BRIDGE_PORT', 'JUMP_WS_PORT']
             )));
         }
+    }
+
+    /**
+     * On a device the encryption keys come from the native shell's secure
+     * storage via the environment. Android caches config on the device, so
+     * the keys are stripped from that file once it is written.
+     */
+    protected function useDeviceAppKey(): void
+    {
+        if (! config('nativephp-internal.running')) {
+            return;
+        }
+
+        DeviceAppKey::apply($this->app['config']);
+
+        $this->app['events']->listen(CommandFinished::class, function (CommandFinished $event) {
+            if ($event->command === 'config:cache' && $event->exitCode === 0) {
+                DeviceAppKey::scrubCachedConfig($this->app->getCachedConfigPath());
+            }
+        });
     }
 
     protected function publishPluginsServiceProvider(): void
@@ -149,13 +188,24 @@ class NativeServiceProvider extends PackageServiceProvider
      * Keep query-side caches in sync with their push events. When the OS flips
      * the theme, AppearanceChanged fires (and auto-dispatches globally); this
      * listener updates System's cached appearance so `System::appearance()` /
-     * `isDark()` stay fresh without re-probing the bridge.
+     * `isDark()` stay fresh without re-probing the bridge. OrientationChanged
+     * does the same for System::orientation(), and ThermalStateChanged does
+     * the same for Device::thermalState().
      */
     protected function registerSystemEventListeners(): void
     {
         Event::listen(
             AppearanceChanged::class,
             fn (AppearanceChanged $e) => System::rememberAppearance($e->mode),
+        );
+
+        Event::listen(
+            OrientationChanged::class,
+            fn (OrientationChanged $e) => System::rememberOrientation($e->orientation),
+        );
+        Event::listen(
+            ThermalStateChanged::class,
+            fn (ThermalStateChanged $e) => Device::rememberThermalState($e->state),
         );
     }
 
@@ -203,8 +253,10 @@ class NativeServiceProvider extends PackageServiceProvider
     {
         parent::boot();
 
+        // Only src/resources/views is registered. The package root
+        // resources/ dir never ships in the app bundle, and the
+        // device's view:cache throws on any missing path.
         $this->loadViewsFrom(__DIR__.'/resources/views', 'nativephp-mobile');
-        $this->loadViewsFrom(__DIR__.'/../resources/jump/views', 'jump');
 
         // Register `resources/views/native` as a primary view-finder
         // location (mirrors Livewire's `resources/views/livewire`
@@ -312,9 +364,7 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Route::macro('native', function (string $uri, string $componentClass) {
-            NativeRouter::register($uri, $componentClass);
-
-            return Route::get($uri, function () use ($componentClass) {
+            $route = Route::get($uri, function () use ($componentClass) {
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these
@@ -362,11 +412,12 @@ class NativeServiceProvider extends PackageServiceProvider
                     // restores onto it — otherwise the entry screen ("/") gets
                     // pushed on top of the restored stack and the user is dumped
                     // back at root. Leave .hot_restart in place; the target
-                    // route is the sole consumer. Normalize for a stable compare
-                    // so we can't redirect-loop.
+                    // route is the sole consumer. Compare paths alone so we can't
+                    // redirect-loop: the saved top keeps its query string and
+                    // $path never has one.
                     $savedTop = is_array($data) ? ($data['uri'] ?? null) : null;
                     $savedTopNorm = $savedTop !== null ? '/'.ltrim($savedTop, '/') : null;
-                    if ($age <= 30 && $savedTopNorm && $savedTopNorm !== $path) {
+                    if ($age <= 30 && $savedTopNorm && NativeRouter::pathOf($savedTopNorm) !== $path) {
                         return redirect($savedTopNorm);
                     }
 
@@ -376,7 +427,8 @@ class NativeServiceProvider extends PackageServiceProvider
                     // `start()` will push that as the top itself.
                     if ($age <= 30 && ! empty($stack)) {
                         $last = end($stack);
-                        if (is_array($last) && ($last['uri'] ?? null) === $path) {
+                        if (is_array($last) && is_string($last['uri'] ?? null)
+                            && NativeRouter::pathOf($last['uri']) === $path) {
                             array_pop($stack);
                         }
                         if (! empty($stack)) {
@@ -385,7 +437,11 @@ class NativeServiceProvider extends PackageServiceProvider
                     }
                 }
 
-                $exitUri = $router->start($componentClass, $params, $path);
+                // Hand the launch screen its query the way a warm link does: in
+                // the URI, parsed by the router. request()->query() has been
+                // through TrimStrings and ConvertEmptyStringsToNull by now.
+                $queryString = (string) request()->server('QUERY_STRING', '');
+                $exitUri = $router->start($componentClass, $params, $queryString === '' ? $path : "$path?$queryString");
 
                 if ($exitUri !== null) {
                     return redirect($exitUri);
@@ -398,6 +454,13 @@ class NativeServiceProvider extends PackageServiceProvider
 
                 return '';
             });
+
+            // Register the route itself so native navigation shares its
+            // constraints and binders. Its URI includes any group prefix, and
+            // is also the key ->layout() looks up.
+            NativeRouter::register($route, $componentClass);
+
+            return $route;
         });
 
         // Route::nativeGroup(layout: TabsLayout::class, function () { ... })
@@ -421,6 +484,79 @@ class NativeServiceProvider extends PackageServiceProvider
 
             return $this;
         });
+
+        $this->loadMobileRoutes();
+    }
+
+    /**
+     * Load the app's native screens from `routes/mobile.php`.
+     *
+     * Deferred to booted() so it registers after the app's own route files,
+     * which load while the app's route provider boots. A later route with the
+     * same method and URI replaces the earlier one, so a native screen at `/`
+     * takes over from a website's `/` in web.php.
+     */
+    protected function loadMobileRoutes(): void
+    {
+        $this->app->booted(function () {
+            $path = realpath(base_path('routes/mobile.php'));
+
+            if ($path === false || ! $this->shouldLoadMobileRoutes() || $this->app->routesAreCached()) {
+                return;
+            }
+
+            if ($this->appLoadsMobileRoutes($path)) {
+                return;
+            }
+
+            static::$loadedMobileRoutes = $path;
+            Route::middleware('web')->group($path);
+
+            // Route::native(...)->name(...) names a route after it has been
+            // added, so rebuild the lookups like the app's route provider does.
+            $routes = $this->app['router']->getRoutes();
+            $routes->refreshNameLookups();
+            $routes->refreshActionLookups();
+        });
+    }
+
+    /**
+     * An app that already loads routes/mobile.php itself (withRouting, a
+     * `then:` callback, a require from web.php) keeps its own middleware and
+     * prefix, and we stay out of the way. Included files last for the whole
+     * process, and a test suite boots many apps in one, so the file only
+     * counts as the app's if we didn't include it on an earlier boot. Not
+     * handled: an app that loads it itself on some boots but not others.
+     */
+    protected function appLoadsMobileRoutes(string $path): bool
+    {
+        if (static::$loadedMobileRoutes === $path) {
+            return false;
+        }
+
+        foreach (get_included_files() as $file) {
+            if (str_ends_with($file, 'mobile.php') && realpath($file) === $path) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Native routes are only registered where something native will use them,
+     * because the same app can also be deployed as a plain website. That means
+     * on device, in tests, in a Jump session (the device boots from this
+     * machine's server) and in native:* commands (builds bake the routes into
+     * bundle_meta.json, native:watch lists them). Not any console command:
+     * `route:cache` on a web server would bake them into its route cache.
+     */
+    protected function shouldLoadMobileRoutes(): bool
+    {
+        return (bool) config('nativephp-internal.running')
+            || $this->app->runningUnitTests()
+            || getenv('JUMP_BRIDGE_PORT') !== false
+            || ($this->app->runningInConsole() && str_starts_with($_SERVER['argv'][1] ?? '', 'native:'));
     }
 
     protected function registerBladeDirectives(): void
@@ -445,11 +581,13 @@ class NativeServiceProvider extends PackageServiceProvider
             return "<?php
                 \$__nativeErrorArgs = [{$expression}];
                 \$__nativeErrorField = \$__nativeErrorArgs[0];
-                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? '#FF0000';
+                \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? config('native-ui.theme.light.destructive', '#FF0000');
+                \$__nativeErrorDarkColor = isset(\$__nativeErrorArgs[1]) ? null : config('native-ui.theme.dark.destructive');
                 if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
                     \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
                         'text' => \$errors[\$__nativeErrorField],
                         'color' => \$__nativeErrorColor,
+                        'dark' => ['color' => \$__nativeErrorDarkColor],
                         'fontSize' => 12,
                     ]);
                 }
@@ -712,6 +850,10 @@ class NativeServiceProvider extends PackageServiceProvider
                 ElementRegistry::register($type, $elementClass);
             }
 
+            if (isset($component['element_events']) && is_array($component['element_events'])) {
+                NativeTagPrecompiler::registerElementEvents($component['element_events']);
+            }
+
             // Convert type to kebab Blade tag name:
             // "button" → "native-button"
             // "stripe.payment_sheet" → "native-stripe-payment-sheet"
@@ -821,7 +963,9 @@ class NativeServiceProvider extends PackageServiceProvider
                 continue;
             }
 
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            // Relative to the directory we started at — no base-path
+            // arithmetic, and it survives Windows separators after normalizing.
+            $relativePath = PathHelper::normalize($iterator->getSubPathname());
             $classPath = substr($relativePath, 0, -4);
 
             // Tag name from the class basename: UserCard → user-card.
@@ -858,7 +1002,7 @@ class NativeServiceProvider extends PackageServiceProvider
             }
 
             // Get relative path from Components directory
-            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            $relativePath = PathHelper::normalize($iterator->getSubPathname());
 
             // Remove .php extension
             $classPath = substr($relativePath, 0, -4);
