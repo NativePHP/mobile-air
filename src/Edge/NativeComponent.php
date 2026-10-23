@@ -37,9 +37,9 @@ use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Exceptions\AsyncTaskException;
+use Native\Mobile\Facades\System as SystemFacade;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\PendingAsyncTask;
-use Native\Mobile\Platform;
 use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\Support\NativeCallbacks;
@@ -3620,11 +3620,11 @@ abstract class NativeComponent
         // runloop, and strand the user on the blank WebView underneath.
         // Follow platform convention instead: on Android the system back
         // button backgrounds the app; on iOS the press is ignored. The
-        // Platform probe is null under Native::test() (no bridge), so the
+        // platform is null under Native::test() (no device), so the
         // harness keeps its BACK-intent assertions.
         if ($this->nativeRouter?->isRootScreen()
-            && ($platform = Platform::current()) !== null) {
-            if ($platform === Platform::ANDROID && function_exists('nativephp_call')) {
+            && ($platform = SystemFacade::platform()) !== null) {
+            if ($platform === 'android' && function_exists('nativephp_call')) {
                 nativephp_call('System.MinimizeApp', '{}');
             }
 

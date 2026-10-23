@@ -12,8 +12,8 @@ use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
-use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\System;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
 
@@ -192,10 +192,10 @@ class TestableComponent
         TailwindParser::setPlatform($platform);
         TailwindParser::clearCache();
 
-        // Same for platform-resolved icons (IconResolver & friends read
-        // Platform::current()) — `platform:` means "pretend we're on that
+        // Same for platform-resolved icons, @ios and friends (all read
+        // System::platform()) — `platform:` means "pretend we're on that
         // OS" everywhere, not just for Tailwind variants.
-        Platform::set($platform);
+        System::rememberPlatform($platform);
 
         $component = new $componentClass;
 
