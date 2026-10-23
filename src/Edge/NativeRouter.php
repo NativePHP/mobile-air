@@ -9,6 +9,7 @@ use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
+use Native\Mobile\Http\Bridge\RequestFactory;
 
 class NativeRouter
 {
@@ -34,12 +35,39 @@ class NativeRouter
      */
     protected const SCREEN_INTENT_TTL = 60;
 
+    /** Memoized once per process; see debugLoggingEnabled(). */
+    private static ?bool $debugLogging = null;
+
+    /**
+     * Whether the edge-nav log is being written.
+     *
+     * This log is a development aid, but the runloop calls debugLog() at least
+     * twice per tick — and a screen with `native:poll="1ms"` ticks up to 1000
+     * times a second. Left on, that is an unbounded append-only file growing
+     * by ~110 bytes a frame (megabytes per minute on a polling screen) plus an
+     * open/write/close syscall in the middle of every frame. So it follows
+     * APP_DEBUG: on while you're developing, off in a release build.
+     *
+     * Hot-path callers should check this before building their message, so the
+     * sprintf() is skipped too — not just the write.
+     */
+    public static function debugLoggingEnabled(): bool
+    {
+        return static::$debugLogging ??= function_exists('config')
+            ? (bool) config('app.debug', false)
+            : false;
+    }
+
     /**
      * File-based debug logging — error_log() doesn't reach Android logcat,
      * so we write to a file on device instead.
      */
     public static function debugLog(string $msg): void
     {
+        if (! static::debugLoggingEnabled()) {
+            return;
+        }
+
         $logPath = function_exists('storage_path')
             ? storage_path('logs/edge-nav.log')
             : sys_get_temp_dir().'/edge-nav.log';
@@ -190,6 +218,9 @@ class NativeRouter
     public static function register(string|IlluminateRoute $uri, string $class, ?string $layout = null): void
     {
         if ($uri instanceof IlluminateRoute) {
+            // Held as the live instance, not a copy: `->middleware()` chains
+            // onto the route after Route::native() returns, and ScreenGuard
+            // has to see the final list.
             $route = $uri;
             $pattern = '/'.ltrim($route->uri(), '/');
         } else {
@@ -242,6 +273,35 @@ class NativeRouter
         static::$currentGroupLayout = null;
     }
 
+    /**
+     * The path a navigation URI addresses, with no query string or fragment,
+     * in the shape a cold launch gets from request()->path().
+     *
+     * Fragments never come from the shells' deep links, but app code can pass
+     * one to navigate(), and it is never part of a route.
+     */
+    public static function pathOf(string $uri): string
+    {
+        $uri = explode('#', $uri, 2)[0];
+
+        return '/'.trim(explode('?', $uri, 2)[0], '/');
+    }
+
+    /**
+     * The query parameters a navigation URI carries, parsed as PHP fills $_GET
+     * for a cold launch. Past max_input_vars the rest are dropped, as they
+     * would be at request startup, instead of throwing.
+     *
+     * @return array<array-key, mixed>
+     */
+    public static function queryOf(string $uri): array
+    {
+        $uri = explode('#', $uri, 2)[0];
+        $mark = strpos($uri, '?');
+
+        return $mark === false ? [] : RequestFactory::query(substr($uri, $mark + 1));
+    }
+
     public static function resolve(string $uri): ?array
     {
         $match = static::matchRoute($uri);
@@ -264,6 +324,7 @@ class NativeRouter
             'class' => $entry['class'],
             'layout' => $entry['layout'] ?? null,
             'params' => $route->parametersWithoutNulls(),
+            'query' => static::queryOf($uri),
             'route' => $route,
         ];
     }
@@ -275,7 +336,9 @@ class NativeRouter
      */
     private static function matchRoute(string $uri): ?array
     {
-        $request = Request::create('/'.ltrim($uri, '/'), 'GET');
+        // Routes match on the path. Leaving the query off also keeps Symfony
+        // from parsing it here, where too many parameters would throw.
+        $request = Request::create(static::pathOf($uri), 'GET');
 
         $literalRoutes = [];
         $parameterizedRoutes = [];
@@ -456,6 +519,7 @@ class NativeRouter
                 $component = $this->createComponent(
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
+                    query: $resolved['query'],
                 );
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
@@ -481,6 +545,9 @@ class NativeRouter
      * Entry point. Init shared memory, run the navigation loop,
      * shutdown when done.
      *
+     * `$uri` is the URI the app launched at, query string included, so the
+     * launch screen's query() answers the same as on any later screen.
+     *
      * @return string|null Exit URI for redirect, or null
      */
     public function start(string $class, array $params = [], string $uri = ''): ?string
@@ -491,7 +558,7 @@ class NativeRouter
 
         try {
             static::debugLog("start: class=$class uri=$uri");
-            $component = $this->createComponent($class, $params);
+            $component = $this->createComponent($class, $params, query: static::queryOf($uri));
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
@@ -500,10 +567,17 @@ class NativeRouter
                 $component->setLayout($resolved['layout']);
             }
 
+            // The launch screen has always been recorded by its path, and the
+            // shells look its tab up by that. Keep it that way.
             $this->stack[] = [
                 'component' => $component,
-                'uri' => $uri,
+                'uri' => $uri === '' ? '' : static::pathOf($uri),
                 'params' => $params,
+                // The launch screen arrived as a real HTTP request, so the
+                // kernel already ran this route's middleware against the real
+                // request. Running it again here would double-count anything
+                // stateful (rate limiters, "last seen" writes).
+                'guarded' => true,
             ];
 
             return $this->loop();
@@ -531,6 +605,21 @@ class NativeRouter
 
             static::debugLog('loop: top, component='.get_class($component).' freshPush='.($freshPush ? 'Y' : 'N').' stack='.count($this->stack));
 
+            // Run the route's middleware before the screen is allowed to
+            // mount. Denial is expressed as a navigation intent on the
+            // component, which runLoop() honors by returning immediately —
+            // so mount() never runs and the guarded screen performs none of
+            // its data loading before being turned away.
+            if ($freshPush && ! ($entry['guarded'] ?? false)) {
+                $entry['guarded'] = true;
+                $denial = $this->guard($component, $entry['uri'] ?? '');
+
+                if ($denial !== null) {
+                    static::debugLog('loop: guard DENIED '.get_class($component)." type={$denial->type} uri={$denial->uri}");
+                    $component->setNavigationIntent($denial);
+                }
+            }
+
             // This component is what's driving the screen from here until its
             // runLoop() returns — including mount()/onResume(), which run before
             // runLoop() gets to mark itself. "Start loading when the screen
@@ -540,14 +629,14 @@ class NativeRouter
             $previousActiveComponent = NativeComponent::markActive($component);
 
             try {
-                if ($freshPush) {
+                if ($freshPush && ! $component->hasNavigationIntent()) {
                     // For #[Lazy] screens, paint the placeholder before the
                     // (potentially slow) mount() so navigation feels instant.
                     $component->publishPlaceholder();
                     static::debugLog('loop: calling mount() on '.get_class($component));
                     $component->mountComponent();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
-                } elseif (! $reenterCurrentScreen) {
+                } elseif (! $freshPush && ! $reenterCurrentScreen) {
                     static::debugLog('loop: calling onResume() on '.get_class($component));
                     $component->onResume();
                     $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
@@ -619,7 +708,8 @@ class NativeRouter
                     $next = $this->createComponent(
                         $resolved['class'],
                         $resolved['params'],
-                        $intent->data
+                        $intent->data,
+                        $resolved['query'],
                     );
                     if (! empty($resolved['layout'])) {
                         $next->setLayout($resolved['layout']);
@@ -684,7 +774,8 @@ class NativeRouter
                         $next = $this->createComponent(
                             $resolved['class'],
                             $resolved['params'],
-                            $intent->data
+                            $intent->data,
+                            $resolved['query'],
                         );
                         if (! empty($resolved['layout'])) {
                             $next->setLayout($resolved['layout']);
@@ -744,6 +835,36 @@ class NativeRouter
     }
 
     /**
+     * Run the target route's middleware for a screen about to mount.
+     * Null means the navigation is allowed.
+     *
+     * A guard that throws is treated as a denial rather than taking the
+     * runloop down: failing open would silently grant access, which is the
+     * bug this whole mechanism exists to fix. ScreenGuard::failed() decides
+     * where the user goes instead.
+     */
+    protected function guard(NativeComponent $component, string $uri): ?NavigationIntent
+    {
+        if ($uri === '') {
+            return null;
+        }
+
+        try {
+            // Match without binding: the route's own SubstituteBindings runs
+            // inside the guard's pipeline, after auth, as it would over HTTP.
+            $match = static::matchRoute($uri);
+
+            if ($match === null) {
+                return null;
+            }
+
+            return ScreenGuard::check($match['route'], $uri);
+        } catch (\Throwable $e) {
+            return ScreenGuard::failed($e, $uri);
+        }
+    }
+
+    /**
      * Fire a lifecycle event, best-effort.
      *
      * A listener that throws must not take the navigation loop down with
@@ -762,12 +883,13 @@ class NativeRouter
         }
     }
 
-    protected function createComponent(string $class, array $params = [], array $data = []): NativeComponent
+    protected function createComponent(string $class, array $params = [], array $data = [], array $query = []): NativeComponent
     {
         $component = new $class;
         $component->setRouter($this);
         $component->setParams($params);
         $component->setData($data);
+        $component->setQuery($query);
 
         return $component;
     }

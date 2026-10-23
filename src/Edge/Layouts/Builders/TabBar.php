@@ -5,6 +5,7 @@ namespace Native\Mobile\Edge\Layouts\Builders;
 use InvalidArgumentException;
 use Native\Mobile\Edge\Elements\BottomNav;
 use Native\Mobile\Edge\Elements\BottomNavItem;
+use Native\Mobile\Edge\NativeRouter;
 
 /**
  * Fluent builder for the bottom tab bar.
@@ -281,9 +282,12 @@ class TabBar
         }
 
         // Longest-prefix match across builder tabs AND prebuilt inline
-        // items, uniformly.
+        // items, uniformly. A screen opened with a query string still
+        // belongs to the tab for its path, but a tab whose own URL has a
+        // query matches the full URL, and being longer, wins.
         $bestTab = null;
         $bestLen = -1;
+        $currentPath = NativeRouter::pathOf($currentUrl);
 
         foreach ([...$this->tabs, ...$this->prebuiltTabElements] as $tab) {
             $tab->setActive(false);
@@ -293,8 +297,8 @@ class TabBar
                 continue;
             }
 
-            $isExact = $tabUrl === $currentUrl;
-            $isPrefix = str_starts_with($currentUrl, $tabUrl.'/');
+            $isExact = $tabUrl === $currentUrl || $tabUrl === $currentPath;
+            $isPrefix = str_starts_with($currentPath, $tabUrl.'/');
 
             if (($isExact || $isPrefix) && strlen($tabUrl) > $bestLen) {
                 $bestTab = $tab;

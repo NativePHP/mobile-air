@@ -80,7 +80,7 @@ object AsyncFunctions {
 }
 
 /** Re-serialize a decoded bridge parameter back to a JSON object string. */
-private fun jsonString(value: Any?): String = when (value) {
+internal fun jsonString(value: Any?): String = when (value) {
     is JSONObject -> value.toString()
     is String -> value
     is Map<*, *> -> JSONObject(value.entries.associate { (k, v) -> k.toString() to v }).toString()

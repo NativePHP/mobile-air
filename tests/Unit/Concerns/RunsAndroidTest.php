@@ -298,6 +298,24 @@ class RunsAndroidTest extends TestCase
         );
     }
 
+    public function test_deep_link_path_ending_in_a_star_claims_a_prefix_that_is_not_a_whole_segment()
+    {
+        // `/@*` takes every profile, `/@taylor` and beneath it. `/docs/*` is the
+        // same claim as `/docs/`, so it is only written once.
+        $this->assertSame(
+            '                <data android:scheme="https" android:host="app.example.com" android:pathPrefix="/@" />'."\n"
+            .'                <data android:scheme="https" android:host="app.example.com" android:pathPrefix="/docs/" />',
+            $this->deepLinkPathData('app.example.com', ['/@*', '/docs/', '/docs/*'])
+        );
+    }
+
+    public function test_deep_link_paths_refuse_a_star_that_would_widen_or_match_literally()
+    {
+        // `/*` is the whole domain again, and Android would match a `*` anywhere
+        // but the end as a literal star.
+        $this->assertNull($this->deepLinkPathData('app.example.com', ['/*', '*', '/a*b', '/@**']));
+    }
+
     public function test_deep_link_paths_ignore_unusable_values()
     {
         // A bare "/" or an unescapable character would silently widen the claim

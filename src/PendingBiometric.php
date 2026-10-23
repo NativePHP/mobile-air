@@ -101,7 +101,14 @@ class PendingBiometric
             if ($result) {
                 $decoded = json_decode($result, true);
 
-                return isset($decoded['status']) && $decoded['status'] === 'success';
+                // The bridge returns a function's data as-is on success
+                // (mobile-biometrics answers {"launched": true} on Android and
+                // {} on iOS) and only adds a status key for errors:
+                // {"status": "error", "code": ..., "message": ...}.
+                // The outcome itself arrives later as the Completed event.
+                $isError = isset($decoded['status']) && $decoded['status'] === 'error';
+
+                return ! $isError;
             }
         }
 

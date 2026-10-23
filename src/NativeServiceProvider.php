@@ -46,6 +46,7 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Events\Device\ThermalStateChanged;
+use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
@@ -116,6 +117,11 @@ class NativeServiceProvider extends PackageServiceProvider
         require_once __DIR__.'/helpers.php';
 
         $this->mergeConfigFrom($this->package->basePath('/../config/nativephp-internal.php'), 'nativephp-internal');
+
+        // Installed while providers register, so that whatever takes the
+        // dispatcher when the app boots takes this one, and a marked
+        // event that PHP fires reaches the live screen through it.
+        GlobalEventDispatcher::install($this->app);
 
         $this->useDeviceAppKey();
         $this->publishPluginsServiceProvider();
@@ -397,11 +403,12 @@ class NativeServiceProvider extends PackageServiceProvider
                     // restores onto it — otherwise the entry screen ("/") gets
                     // pushed on top of the restored stack and the user is dumped
                     // back at root. Leave .hot_restart in place; the target
-                    // route is the sole consumer. Normalize for a stable compare
-                    // so we can't redirect-loop.
+                    // route is the sole consumer. Compare paths alone so we can't
+                    // redirect-loop: the saved top keeps its query string and
+                    // $path never has one.
                     $savedTop = is_array($data) ? ($data['uri'] ?? null) : null;
                     $savedTopNorm = $savedTop !== null ? '/'.ltrim($savedTop, '/') : null;
-                    if ($age <= 30 && $savedTopNorm && $savedTopNorm !== $path) {
+                    if ($age <= 30 && $savedTopNorm && NativeRouter::pathOf($savedTopNorm) !== $path) {
                         return redirect($savedTopNorm);
                     }
 
@@ -411,7 +418,8 @@ class NativeServiceProvider extends PackageServiceProvider
                     // `start()` will push that as the top itself.
                     if ($age <= 30 && ! empty($stack)) {
                         $last = end($stack);
-                        if (is_array($last) && ($last['uri'] ?? null) === $path) {
+                        if (is_array($last) && is_string($last['uri'] ?? null)
+                            && NativeRouter::pathOf($last['uri']) === $path) {
                             array_pop($stack);
                         }
                         if (! empty($stack)) {
@@ -420,7 +428,11 @@ class NativeServiceProvider extends PackageServiceProvider
                     }
                 }
 
-                $exitUri = $router->start($componentClass, $params, $path);
+                // Hand the launch screen its query the way a warm link does: in
+                // the URI, parsed by the router. request()->query() has been
+                // through TrimStrings and ConvertEmptyStringsToNull by now.
+                $queryString = (string) request()->server('QUERY_STRING', '');
+                $exitUri = $router->start($componentClass, $params, $queryString === '' ? $path : "$path?$queryString");
 
                 if ($exitUri !== null) {
                     return redirect($exitUri);

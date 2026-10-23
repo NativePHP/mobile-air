@@ -5,12 +5,20 @@ namespace Native\Mobile\Edge;
 use Illuminate\Support\Facades\Log;
 use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
+use Native\Mobile\Edge\Enums\ImageFit;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Enums\TextAlign;
 use Native\Mobile\Platform;
 
 class TailwindParser
 {
+    /**
+     * Most parsed class strings the cache keeps. The cache lives for the
+     * whole persistent-runtime session, and dynamic classes add an entry
+     * per distinct string, so it has to be bounded.
+     */
+    public const CACHE_LIMIT = 2048;
+
     private static array $cache = [];
 
     /** @var array<string, list<string>> */
@@ -417,6 +425,14 @@ class TailwindParser
                 $result['borderWidth'] ??= $result['borderWidthDefault'];
             }
             unset($result['borderWidthDefault']);
+        }
+
+        if (count(self::$cache) >= self::CACHE_LIMIT) {
+            // Drop the oldest half: entries keep insertion order, so the
+            // strings a screen parsed most recently stay cached.
+            $keep = intdiv(self::CACHE_LIMIT, 2);
+            self::$cache = array_slice(self::$cache, -$keep, null, true);
+            self::$unsupportedCache = array_intersect_key(self::$unsupportedCache, self::$cache);
         }
 
         self::$cache[$classString] = $result;
@@ -842,10 +858,13 @@ class TailwindParser
             in_array($class, ['flex', 'inline-flex', 'block', 'inline-block', 'grid'], true) => ['display' => 0],
 
             // Font family. Exact matches MUST precede the `font-` weight branch.
-            // Sent as int: 0 = sans (default), 1 = serif, 2 = mono.
+            // Sent as int: 0 = sans (default), 1 = serif, 2 = mono, 3 = rounded
+            // (SwiftUI's `.rounded` design, SF Pro Rounded; platforms without a
+            // rounded system face keep the default sans).
             $class === 'font-sans' => ['fontFamily' => 0],
             $class === 'font-serif' => ['fontFamily' => 1],
             $class === 'font-mono' => ['fontFamily' => 2],
+            $class === 'font-rounded' => ['fontFamily' => 3],
 
             str_starts_with($class, 'font-') => self::parseFontWeight(substr($class, 5)),
 
@@ -915,13 +934,12 @@ class TailwindParser
             str_starts_with($class, 'self-') => self::parseAlignSelf(substr($class, 5)),
 
             // Object fit (images) — mirrors CSS `object-fit`, mapped to the
-            // `fit` prop the image renderer reads (0 none, 1 contain/fit,
-            // 2 cover/crop, 3 fill/stretch).
-            $class === 'object-none' => ['fit' => 0],
-            $class === 'object-contain' => ['fit' => 1],
-            $class === 'object-cover' => ['fit' => 2],
-            $class === 'object-fill' => ['fit' => 3],
-            $class === 'object-scale-down' => ['fit' => 1],
+            // `fit` prop the image renderer reads.
+            $class === 'object-none' => ['fit' => ImageFit::None->value],
+            $class === 'object-contain' => ['fit' => ImageFit::Contain->value],
+            $class === 'object-cover' => ['fit' => ImageFit::Cover->value],
+            $class === 'object-fill' => ['fit' => ImageFit::Fill->value],
+            $class === 'object-scale-down' => ['fit' => ImageFit::Contain->value],
 
             // Aspect ratio — sets the `aspect_ratio` flex layout field
             // (applied natively via AspectRatioModifier on iOS/Android).
@@ -1623,6 +1641,15 @@ class TailwindParser
             : null;
     }
 
+    /**
+     * Arbitrary width/height: `[92%]` becomes the `"92%"` percent size the
+     * fraction classes produce; anything else is a fixed point value.
+     */
+    private static function arbitrarySize(string $value): float|string
+    {
+        return str_ends_with($value, '%') ? ((float) $value).'%' : (float) $value;
+    }
+
     private static function parseArbitrary(string $prefix, string $value): ?array
     {
         $isColor = str_starts_with($value, '#');
@@ -1643,12 +1670,16 @@ class TailwindParser
             'mb' => ['marginBottom' => (float) $value],
             'ml' => ['marginLeft' => (float) $value],
             'gap' => ['gap' => (float) $value],
-            'w' => ['width' => (float) $value],
-            'h' => ['height' => (float) $value],
-            'min-w' => ['minWidth' => (float) $value],
-            'max-w' => ['maxWidth' => (float) $value],
-            'min-h' => ['minHeight' => (float) $value],
-            'max-h' => ['maxHeight' => (float) $value],
+            // `w-[92%]` uses the same "N%" encoding as `w-5/6`. Min/max are
+            // packed as bare floats with no size mode, so a percentage there
+            // is left unparsed (dropped-class diagnostics) rather than being
+            // silently read as points.
+            'w' => ['width' => self::arbitrarySize($value)],
+            'h' => ['height' => self::arbitrarySize($value)],
+            'min-w' => str_ends_with($value, '%') ? null : ['minWidth' => (float) $value],
+            'max-w' => str_ends_with($value, '%') ? null : ['maxWidth' => (float) $value],
+            'min-h' => str_ends_with($value, '%') ? null : ['minHeight' => (float) $value],
+            'max-h' => str_ends_with($value, '%') ? null : ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
             'rounded' => ['borderRadius' => (float) $value],

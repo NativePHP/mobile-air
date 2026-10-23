@@ -5,11 +5,9 @@ namespace Tests\Unit\Concerns;
 use Illuminate\Support\Facades\File;
 use Laravel\Prompts\Output\BufferedConsoleOutput;
 use Laravel\Prompts\Prompt;
-use Native\Mobile\Concerns\InstallsAndroid;
-use Native\Mobile\Concerns\InstallsIos;
-use Native\Mobile\Concerns\TracksInstallFailures;
 use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
+use Tests\Support\BinariesInstaller;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -55,6 +53,7 @@ class InstallsRecordBinariesReleaseTest extends TestCase
     protected function tearDown(): void
     {
         File::deleteDirectory($this->projectPath);
+        $this->setBranch(null);
 
         parent::tearDown();
     }
@@ -130,9 +129,53 @@ class InstallsRecordBinariesReleaseTest extends TestCase
         );
     }
 
+    /**
+     * A prerelease comes from its own manifest and its own cache directory,
+     * and is what gets recorded.
+     */
+    public function test_installing_a_prerelease_records_the_prerelease(): void
+    {
+        $this->setBranch('main/4.2.0-rc.1');
+        $this->installer->versionsManifest['versions']['8.4']['ios'] = [$this->archiveUrl('ios')];
+
+        $this->cacheArchive('ios', ['Libraries/libphp.a', 'Include/php/main/php.h']);
+
+        $this->installer->installIos();
+
+        $this->assertSame([], $this->installer->failures());
+        $this->assertFileExists($this->projectPath.'/nativephp/binaries/main-4.2.0-rc.1/ios-4.2.0-rc.1-php8.4.26.zip');
+        $this->assertSame(
+            ['release' => '4.2.0-rc.1', 'branch' => 'main'],
+            InstalledBinaries::read($this->projectPath.'/nativephp/ios')
+        );
+    }
+
+    public function test_a_missing_php_version_names_the_prerelease_it_is_missing_from(): void
+    {
+        $this->setBranch('main/4.2.0-rc.1');
+        $this->installer->phpVersion = '8.3';
+
+        $this->installer->installAndroid();
+
+        $this->assertSame(['PHP 8.3 binaries are not part of release 4.2.0-rc.1'], $this->installer->failures());
+    }
+
     private function archiveUrl(string $platform): string
     {
-        return PhpBinaries::HOST.'/main/'.$platform.'-'.PhpBinaries::VERSION.'-php8.4.26.zip';
+        return PhpBinaries::HOST.'/'.PhpBinaries::branch().'/'.$platform.'-'.PhpBinaries::release().'-php8.4.26.zip';
+    }
+
+    private function setBranch(?string $branch): void
+    {
+        if ($branch === null) {
+            unset($_SERVER['NATIVEPHP_BIN_BRANCH'], $_ENV['NATIVEPHP_BIN_BRANCH']);
+            putenv('NATIVEPHP_BIN_BRANCH');
+
+            return;
+        }
+
+        $_SERVER['NATIVEPHP_BIN_BRANCH'] = $_ENV['NATIVEPHP_BIN_BRANCH'] = $branch;
+        putenv("NATIVEPHP_BIN_BRANCH={$branch}");
     }
 
     /**
@@ -167,52 +210,3 @@ class InstallsRecordBinariesReleaseTest extends TestCase
 /**
  * Just enough of InstallCommand to run the binary installers on their own.
  */
-class BinariesInstaller
-{
-    use InstallsAndroid, InstallsIos, TracksInstallFailures;
-
-    public string $phpVersion = '8.4';
-
-    public ?array $versionsManifest = null;
-
-    protected bool $forcing = true;
-
-    public object $components;
-
-    public function __construct()
-    {
-        $this->components = new class
-        {
-            public function task(string $title, callable $callback): mixed
-            {
-                return $callback();
-            }
-
-            public function twoColumnDetail(mixed ...$args): void {}
-
-            public function warn(mixed ...$args): void {}
-        };
-    }
-
-    public function option(string $key): mixed
-    {
-        return false;
-    }
-
-    public function installIos(): void
-    {
-        $this->iosPath = base_path('nativephp/ios');
-        $this->installPHPIos();
-    }
-
-    public function installAndroid(): void
-    {
-        $this->installPHPAndroid();
-    }
-
-    /** @return string[] */
-    public function failures(): array
-    {
-        return $this->installFailures;
-    }
-}

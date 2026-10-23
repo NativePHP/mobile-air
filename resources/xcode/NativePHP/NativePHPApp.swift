@@ -106,9 +106,22 @@ struct NativePHPApp: App {
         // byte-identical to the old flow.
         let startPath = NativePHPApp.getStartURL()
         let hasPendingDeepLink = DeepLinkRouter.shared.hasPendingURL()
-        let plan: BootPlanner.Entry = hasPendingDeepLink
-            ? .webLegacy // cold deep links keep the proven WebView path for now
-            : BootPlanner.plan(startPath: startPath)
+        let plan: BootPlanner.Entry
+        if !hasPendingDeepLink {
+            plan = BootPlanner.plan(startPath: startPath)
+        } else if let linkRoute = DeepLinkRouter.shared.pendingUniversalLinkRoute(),
+                  BootPlanner.plan(startPath: linkRoute) == .webLegacy,
+                  BootPlanner.plan(startPath: startPath) == .nativeDirect {
+            // A universal link to a path with no native screen could be a web
+            // route or nothing at all, and only PHP can tell. Loading it in the
+            // WebView shows a local 404 for the second kind. Boot the start
+            // screen instead: the link is replayed as __deeplink with its URL
+            // once native-ui is active, so PHP navigates to it or gives it back
+            // to Safari, the same as a link that arrives while the app is open.
+            plan = .nativeDirect
+        } else {
+            plan = .webLegacy // cold deep links keep the proven WebView path for now
+        }
 
         switch plan {
         case .nativeDirect:
@@ -201,8 +214,10 @@ struct NativePHPApp: App {
         NSLog("[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
 
         if (300...399).contains(status), let location, !location.isEmpty {
+            // Keep the query. The web route reads it from request()->query(),
+            // and Foundation's `query` is still percent-encoded.
             let path = location.hasPrefix("http") || location.hasPrefix("php:")
-                ? (URL(string: location)?.path ?? "/")
+                ? (URL(string: location).map { url in url.path + (url.query.map { "?" + $0 } ?? "") } ?? "/")
                 : location
             DispatchQueue.main.async {
                 NSLog("[NativeBoot] ⇄ EXIT_WEB → \(path)")

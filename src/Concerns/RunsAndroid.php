@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
@@ -455,8 +456,11 @@ XML;
      *
      * A value ending in `/` becomes a `pathPrefix` claiming everything beneath
      * it — note that `/docs/` claims `/docs/x` but NOT `/docs` itself, since
-     * Android matches the prefix literally. Anything else becomes an exact
-     * `path`, so `/orders` doesn't also swallow `/orders-faq`.
+     * Android matches the prefix literally. A value ending in `*` claims every
+     * path that starts with what comes before it, for a prefix that isn't a
+     * whole segment: `/@*` claims `/@taylor` and `/@taylor/posts`. Anything
+     * else becomes an exact `path`, so `/orders` doesn't also swallow
+     * `/orders-faq`.
      *
      * Returns the whole-domain claim when nothing is configured (what apps got
      * before this was configurable), or null when paths were configured but
@@ -467,7 +471,7 @@ XML;
      */
     private function deepLinkPathData(string $host, array $paths): ?string
     {
-        $prefixes = [];
+        $claims = [];
 
         foreach ($paths as $path) {
             $path = trim((string) $path);
@@ -481,17 +485,23 @@ XML;
             // Reject anything that can't sit in an XML attribute unescaped, or
             // that would quietly widen the claim back out to the whole domain.
             // /u so a non-breaking space is caught as whitespace rather than
-            // sailing through into a prefix that can never match.
-            if ($path === '/' || preg_match('/[\s"\'<>&]/u', $path)) {
+            // sailing through into a prefix that can never match. A `*` only
+            // means something at the end; Android would match any other one
+            // literally.
+            if ($path === '/' || $path === '/*' || preg_match('/[\s"\'<>&]|\*./u', $path)) {
                 continue;
             }
 
-            $prefixes[$path] = true;
+            $claims[match (true) {
+                str_ends_with($path, '*') => 'pathPrefix="'.substr($path, 0, -1).'"',
+                str_ends_with($path, '/') => 'pathPrefix="'.$path.'"',
+                default => 'path="'.$path.'"',
+            }] = true;
         }
 
         $prefix = '                <data android:scheme="https" android:host="'.$host.'" ';
 
-        if ($prefixes === []) {
+        if ($claims === []) {
             // Nothing configured: whole domain, as before. Something configured
             // but all of it rejected: refuse, so a typo can't hand the app the
             // whole domain by accident.
@@ -500,9 +510,8 @@ XML;
 
         $lines = [];
 
-        foreach (array_keys($prefixes) as $path) {
-            $attribute = str_ends_with($path, '/') ? 'pathPrefix' : 'path';
-            $lines[] = $prefix.'android:'.$attribute.'="'.$path.'" />';
+        foreach (array_keys($claims) as $claim) {
+            $lines[] = $prefix.'android:'.$claim.' />';
         }
 
         return implode("\n", $lines);
@@ -613,17 +622,23 @@ XML;
             $this->logToFile("Windows build exit code: $exitCode");
             $buildSuccessful = ($exitCode === 0);
         } else {
-            $process = Process::path($androidPath)
-                ->timeout(600);
+            $process = $this->gradleProcess($androidPath);
 
             // TTY needs a real terminal; Symfony throws on Docker/CI/piped output
             if (! $this->option('no-tty') && SymfonyProcess::isTtySupported()) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
-                file_put_contents($this->androidLogPath, $output, FILE_APPEND);
-            });
+            try {
+                $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
+                    file_put_contents($this->androidLogPath, $output, FILE_APPEND);
+                });
+            } catch (ProcessTimedOutException) {
+                $this->logToFile('ERROR: Gradle build timed out after '.$this->gradleTimeout().' seconds');
+                $this->reportGradleTimeout($gradleTask);
+
+                return false;
+            }
 
             if (! $result->successful()) {
                 $this->logToFile('ERROR: Gradle build failed with exit code: '.$result->exitCode());
@@ -690,6 +705,9 @@ XML;
             }
 
             $this->logToFile('APK installed on device');
+            // A plain line, since twoColumnDetail truncates long paths and
+            // scripts driving native:run want the whole thing.
+            $this->line("  <fg=gray>APK</> {$apkPath}");
 
             $launchCmd = "$adbCommand -s $targetDeviceId shell am start -n $appId/$mainActivity";
             $this->logToFile("Launching app: $launchCmd");

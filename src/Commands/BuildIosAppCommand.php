@@ -1059,7 +1059,7 @@ class BuildIosAppCommand extends Command
 
         $bundleMeta = json_encode([
             'version' => $appVersion,
-            'version_code' => $versionCode,
+            'version_code' => (int) $versionCode,
             'bifrost_app_id' => $bifrostAppId,
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
             'entry_mode' => $entryMode,
@@ -1086,8 +1086,8 @@ class BuildIosAppCommand extends Command
             return;
         }
 
-        // Look for the main NativePHP target Release configuration and add PROVISIONING_PROFILE_SPECIFIER
-        // We need to find the Release config that has CODE_SIGN_ENTITLEMENTS (which is the main app target)
+        // Add PROVISIONING_PROFILE_SPECIFIER to every configuration that signs with NativePHP.entitlements.
+        // The simulator target's configurations match too, but simulator builds ignore provisioning profiles.
         $sedScript = '/CODE_SIGN_ENTITLEMENTS = NativePHP\\/NativePHP\\.entitlements;/a\\
 				PROVISIONING_PROFILE_SPECIFIER = "'.$profileIdentifier.'";';
 
@@ -1463,8 +1463,10 @@ class BuildIosAppCommand extends Command
         $state->forget('cocoapods');
 
         $this->components->task('Installing CocoaPods dependencies', function () {
+            // No limit: a first install downloads every pod, which can take
+            // longer than any fixed timeout on a slow connection.
             $result = Process::path($this->basePath)
-                ->timeout(300)
+                ->forever()
                 ->run(['pod', 'install'], function ($type, $output) {
                     file_put_contents($this->logPath, $output, FILE_APPEND);
 
@@ -1519,7 +1521,7 @@ class BuildIosAppCommand extends Command
 
         $this->components->task('Resolving Swift Package dependencies', function () use (&$resolved) {
             $result = Process::path($this->basePath)
-                ->timeout(300)
+                ->forever()
                 ->run([
                     'xcodebuild',
                     '-resolvePackageDependencies',

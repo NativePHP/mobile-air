@@ -11,6 +11,7 @@ use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
+use Native\Mobile\Edge\Exceptions\UnknownElementException;
 
 class NativeElementCollector
 {
@@ -371,6 +372,7 @@ class NativeElementCollector
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -406,7 +408,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -470,6 +472,7 @@ class NativeElementCollector
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -500,7 +503,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -784,6 +787,33 @@ class NativeElementCollector
         }
         if (isset($attrs['press-translate-y'])) {
             $props['press-translate-y'] = (float) $attrs['press-translate-y'];
+        }
+
+        return $props;
+    }
+
+    /**
+     * Shared-element identity + motion props for the builtin streaming path.
+     *
+     * `ref` is the public identity (test handle AND morph id). Morph shape/timing
+     * ride alongside it. The Element-tree path already applies these via
+     * applyCallbacks/applyStyle; streaming builtins used to drop them.
+     */
+    public static function buildHeroProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['ref']) && $attrs['ref'] !== '') {
+            $props['ref'] = (string) $attrs['ref'];
+        }
+        if (isset($attrs['morph'])) {
+            $props['morph'] = (string) $attrs['morph'];
+        }
+        if (isset($attrs['morph-duration'])) {
+            $props['morph_duration'] = (float) $attrs['morph-duration'];
+        }
+        if (isset($attrs['morph-easing'])) {
+            $props['morph_easing'] = (string) $attrs['morph-easing'];
         }
 
         return $props;
@@ -1636,7 +1666,7 @@ class NativeElementCollector
         }
 
         $element = static::makeElement($type)
-            ?? throw new \RuntimeException("Unknown native element type: {$type}");
+            ?? throw UnknownElementException::forType($type);
 
         if ($rawClass !== null) {
             $element->setProp(static::$capturedAttributes['class'], $rawClass);
@@ -1926,6 +1956,32 @@ class NativeElementCollector
         // auto-scrolls on new content when the user is already near the bottom.
         if (isset($attrs['scroll-anchor'])) {
             $element->setProp('scroll_anchor', (string) $attrs['scroll-anchor']);
+        }
+        // Shared-element motion controls. The element's IDENTITY is its
+        // `ref` (applied generically in applyCallbacks → Element::ref), so
+        // these only shape HOW a matched pair travels.
+        //
+        // Here rather than in `buildAnimationProps()` because that helper only
+        // runs on the builtin path, which would leave plugin elements
+        // (`<image>`, `<text>`) unable to be tuned.
+        //
+        //   morph          — frame (default: travel + resize) | position
+        //                    (travel, keep own size) | size (resize in place)
+        //                    | none (opt out; keeps `ref` as a plain handle)
+        //   morph-duration — ms; overrides the shared 350ms morph pace
+        //   morph-easing   — linear | ease-in | ease-out | ease-in-out | spring
+        //
+        // Deliberately distinct from `animate-duration` / `animate-easing`,
+        // which drive state-change transforms: an element may want a 200ms
+        // press response and a 600ms morph.
+        if (isset($attrs['morph'])) {
+            $element->setProp('morph', (string) $attrs['morph']);
+        }
+        if (isset($attrs['morph-duration'])) {
+            $element->setProp('morph_duration', (float) $attrs['morph-duration']);
+        }
+        if (isset($attrs['morph-easing'])) {
+            $element->setProp('morph_easing', (string) $attrs['morph-easing']);
         }
     }
 
