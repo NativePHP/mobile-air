@@ -56,6 +56,8 @@ claude.md
 test-keystore.jks
 .secrets
 .phpunit.cache/test-results
+/tests/coverage
+.phpactor.json
 .github/workflows/test-package-local.yml
 
 /composer.lock
