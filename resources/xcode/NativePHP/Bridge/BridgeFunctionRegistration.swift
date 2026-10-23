@@ -73,6 +73,12 @@ func registerBridgeFunctions() {
     SwiftUIRendererRegistry.shared.register("native_root_tabs") {
         AnyView(NativeRootTabsRenderer(node: $0))
     }
+    // The one in-body element the shell renders itself, because php mode
+    // needs the shell's own webview plumbing. Android twin:
+    // nativerender/NativeChromeRendererRegistration.kt.
+    SwiftUIRendererRegistry.shared.register("webview") {
+        AnyView(NativeWebviewRenderer(node: $0))
+    }
     // `bottom_bar` is a marker element — its content is extracted by
     // the parent chrome renderer (NavigationStack / TabView) and pinned
     // via `.safeAreaInset(edge: .bottom)`. The marker itself renders
