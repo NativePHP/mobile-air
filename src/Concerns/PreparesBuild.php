@@ -2,17 +2,22 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
+use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Icon\Svg\SvgConversionException;
+use Native\Mobile\Support\BuildFingerprint;
+use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
 {
-    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, PlatformFileOperations;
+    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, InstallsCustomIcons, PlatformFileOperations;
 
     /**
      * Validate required environment variables for building
@@ -55,7 +60,7 @@ trait PreparesBuild
     /**
      * Prepare Android build environment
      */
-    protected function prepareAndroidBuild(bool $cleanCache = true, bool $excludeDevDependencies = true): void
+    protected function prepareAndroidBuild(bool $cleanCache = true, bool $excludeDevDependencies = true, bool $reuseUnchanged = false): void
     {
         $this->logToFile('--- Preparing Android Build ---');
 
@@ -68,7 +73,18 @@ trait PreparesBuild
         $this->updateAndroidConfiguration();
         $this->installAndroidIcon();
         $this->installAndroidSplashScreen();
-        $this->prepareLaravelBundle($excludeDevDependencies);
+
+        try {
+            $icons = $this->installAndroidCustomIcons();
+            $this->logToFile('Custom icons: '.($icons === [] ? 'none' : implode(', ', $icons)));
+        } catch (SvgConversionException $e) {
+            $this->logToFile('ERROR: '.$e->getMessage());
+            \Laravel\Prompts\error($e->getMessage());
+            exit(1);
+        }
+
+        $this->prepareLaravelBundle($excludeDevDependencies, $reuseUnchanged);
+
         $this->logToFile('--- Android Build Preparation Complete ---');
     }
 
@@ -200,8 +216,13 @@ trait PreparesBuild
 
     /**
      * Prepare Laravel bundle
+     *
+     * With $reuseUnchanged, the staged app in nativephp/android/laravel is
+     * kept from the previous build and only brought up to date: changed
+     * files are copied, and composer install and the autoloader dump are
+     * skipped when their inputs are the same as last time. See BuildState.
      */
-    protected function prepareLaravelBundle(bool $excludeDevDependencies = true): void
+    protected function prepareLaravelBundle(bool $excludeDevDependencies = true, bool $reuseUnchanged = false): void
     {
         $this->logToFile('Preparing Laravel bundle...');
 
@@ -211,7 +232,9 @@ trait PreparesBuild
         $this->logToFile("  Source: $source");
         $this->logToFile("  Destination: $destinationZip");
 
-        if (PHP_OS_FAMILY === 'Windows') {
+        $isWindows = PHP_OS_FAMILY === 'Windows';
+
+        if ($isWindows) {
             // Derive the drive from the environment rather than assuming C:, and
             // probe writability up front — File::ensureDirectoryExists() below
             // throws (rather than returning false) when the drive root's ACL is
@@ -229,7 +252,34 @@ trait PreparesBuild
 
         $this->logToFile("  Temp directory: $tempDir");
 
-        if (is_dir($tempDir)) {
+        $configExcludes = config('nativephp.cleanup_exclude_files', []);
+
+        // Windows stages into a new temp directory every time, so there is
+        // never anything to reuse there.
+        $state = BuildState::for(
+            base_path('nativephp/android'),
+            $excludeDevDependencies ? 'no-dev' : 'dev',
+            ! $reuseUnchanged || $isWindows,
+        );
+
+        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::excludes($configExcludes, $source));
+        $incremental = ! $isWindows
+            && $state->matches('staging', $stagingFingerprint)
+            && is_dir($tempDir.DIRECTORY_SEPARATOR.'vendor');
+
+        $composerFingerprint = BuildFingerprint::composer($source, $excludeDevDependencies ? ['--no-dev'] : []);
+        $reuseVendor = $incremental
+            && $state->matches('composer', $composerFingerprint)
+            && is_file($tempDir.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'autoload.php');
+        $autoloadWasCurrent = $reuseVendor && $state->matches('autoload', $composerFingerprint);
+
+        $this->logToFile('  Reusing staged app: '.($incremental ? 'yes' : 'no').', vendor: '.($reuseVendor ? 'yes' : 'no'));
+
+        // Whatever happens next changes the staged tree, so nothing about it
+        // can be trusted until each step has finished again.
+        $state->forget('staging', 'autoload', ...($reuseVendor ? [] : ['composer']));
+
+        if (! $incremental && is_dir($tempDir)) {
             $this->logToFile('  Removing existing temp directory...');
             $this->removeDirectory($tempDir);
         }
@@ -241,8 +291,6 @@ trait PreparesBuild
                 unlink($destinationZip);
             }
 
-            $configExcludes = config('nativephp.cleanup_exclude_files', []);
-
             $this->logToFile('  Config excludes: '.(implode(', ', $configExcludes) ?: '(none)').' — bundled defaults in BundleExclusions');
 
             $srcDir = base_path('vendor/nativephp/mobile/bootstrap/android');
@@ -251,49 +299,93 @@ trait PreparesBuild
             // The copy restores BundleExclusions::REQUIRED_DIRECTORIES on the
             // way out, so the tree composer install boots into below already
             // has the directories Laravel needs.
-            $this->components->task('Copying Laravel source', fn () => BundleFileManager::copy($source, $tempDir, $configExcludes));
+            $changes = null;
+
+            if ($incremental) {
+                // Written by this method further down, so always start from
+                // the project's own copy.
+                @unlink($tempDir.DIRECTORY_SEPARATOR.'.env');
+
+                $this->components->task('Copying Laravel source (changed files only)', function () use ($source, $tempDir, $configExcludes, $reuseVendor, &$changes) {
+                    $changes = BundleFileManager::sync($source, $tempDir, $configExcludes, $reuseVendor ? ['/vendor'] : []);
+                });
+
+                $this->logToFile('  Changed paths: '.count($changes));
+            } else {
+                $this->components->task('Copying Laravel source', fn () => BundleFileManager::copy($source, $tempDir, $configExcludes));
+            }
+
+            $state->record('staging', $stagingFingerprint);
 
             $composerArgs = $excludeDevDependencies ? '--no-dev --no-interaction' : '--no-interaction';
 
-            $this->logToFile('  Installing Composer dependencies'.($excludeDevDependencies ? ' (--no-dev)' : '').'...');
-            $this->components->task('Installing Composer dependencies', function () use ($tempDir, $composerArgs) {
-                $result = Process::path($tempDir)
-                    ->timeout(300)
-                    ->run("composer install {$composerArgs}");
+            if ($reuseVendor) {
+                $this->logToFile('  Composer inputs unchanged, reusing staged vendor/');
+                $this->skippedBuildTask('Installing Composer dependencies');
+            } else {
+                $this->logToFile('  Installing Composer dependencies'.($excludeDevDependencies ? ' (--no-dev)' : '').'...');
+                $this->components->task('Installing Composer dependencies', function () use ($tempDir, $composerArgs) {
+                    $result = Process::path($tempDir)
+                        ->timeout(300)
+                        ->run("composer install {$composerArgs}");
 
-                $this->logToFile($result->output());
-                if ($result->errorOutput()) {
-                    $this->logToFile($result->errorOutput());
-                }
+                    $this->logToFile($result->output());
+                    if ($result->errorOutput()) {
+                        $this->logToFile($result->errorOutput());
+                    }
 
-                if (! $result->successful()) {
-                    \Laravel\Prompts\error('Composer install failed. Check your dependencies and try again.');
-                    $this->logToFile('ERROR: composer install failed with exit code '.$result->exitCode());
-                    exit(1);
-                }
+                    if (! $result->successful()) {
+                        \Laravel\Prompts\error('Composer install failed. Check your dependencies and try again.');
+                        $this->logToFile('ERROR: composer install failed with exit code '.$result->exitCode());
+                        exit(1);
+                    }
 
-                return true;
-            });
+                    return true;
+                });
 
-            $this->logToFile('  Optimizing autoloader...');
-            $this->components->task('Optimizing autoloader', function () use ($tempDir) {
-                $result = Process::path($tempDir)
-                    ->timeout(60)
-                    ->run('composer dump-autoload --optimize --classmap-authoritative');
+                $state->record('composer', $composerFingerprint);
+            }
 
-                $this->logToFile($result->output());
-                if ($result->errorOutput()) {
-                    $this->logToFile($result->errorOutput());
-                }
+            // The authoritative classmap only knows the classes that existed
+            // when it was dumped, so it has to be rebuilt whenever anything
+            // it's generated from changes.
+            $autoloadCurrent = false;
 
-                if (! $result->successful()) {
-                    \Laravel\Prompts\error('Autoloader optimization failed.');
-                    $this->logToFile('ERROR: composer dump-autoload failed with exit code '.$result->exitCode());
-                    exit(1);
-                }
+            if ($autoloadWasCurrent) {
+                $composerJson = json_decode((string) file_get_contents($source.DIRECTORY_SEPARATOR.'composer.json'), true);
+                $autoloadPaths = is_array($composerJson)
+                    ? BuildFingerprint::autoloadPaths($composerJson, ! $excludeDevDependencies)
+                    : [''];
 
-                return true;
-            });
+                $autoloadCurrent = ! BuildFingerprint::touches($changes, $autoloadPaths);
+            }
+
+            if ($autoloadCurrent) {
+                $this->logToFile('  Autoload sources unchanged, keeping the optimized autoloader');
+                $this->skippedBuildTask('Optimizing autoloader');
+            } else {
+                $this->logToFile('  Optimizing autoloader...');
+                $this->components->task('Optimizing autoloader', function () use ($tempDir) {
+                    $result = Process::path($tempDir)
+                        ->timeout(60)
+                        ->run('composer dump-autoload --optimize --classmap-authoritative');
+
+                    $this->logToFile($result->output());
+                    if ($result->errorOutput()) {
+                        $this->logToFile($result->errorOutput());
+                    }
+
+                    if (! $result->successful()) {
+                        \Laravel\Prompts\error('Autoloader optimization failed.');
+                        $this->logToFile('ERROR: composer dump-autoload failed with exit code '.$result->exitCode());
+                        exit(1);
+                    }
+
+                    return true;
+                });
+            }
+
+            $state->record('autoload', $composerFingerprint);
 
             $this->logToFile('  Removing non-runtime files...');
             $this->components->task('Removing non-runtime files', function () use ($tempDir, $configExcludes) {
@@ -350,7 +442,7 @@ trait PreparesBuild
 
             $bundleMeta = json_encode([
                 'version' => $version,
-                'version_code' => $versionCode,
+                'version_code' => (int) $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
                 'entry_mode' => $entryMode,
@@ -369,9 +461,18 @@ trait PreparesBuild
             $this->logToFile("  Bundle size: {$sizeMB} MB");
             $this->components->twoColumnDetail('Bundle size', "{$sizeMB} MB");
         } finally {
-            $this->logToFile('  Cleaning up temp directory...');
-            $this->removeDirectory($tempDir);
+            // On macOS and Linux the staged app is kept so the next build
+            // only has to copy what changed.
+            if ($isWindows) {
+                $this->logToFile('  Cleaning up temp directory...');
+                $this->removeDirectory($tempDir);
+            }
         }
+    }
+
+    protected function skippedBuildTask(string $description): void
+    {
+        $this->components->twoColumnDetail($description, '<fg=gray>skipped (unchanged)</>');
     }
 
     /**
@@ -578,14 +679,19 @@ trait PreparesBuild
             passthru($cmd, $exitCode);
             $buildSuccessful = ($exitCode === 0);
         } else {
-            $process = Process::path($androidPath)
-                ->timeout(600);
+            $process = $this->gradleProcess($androidPath);
 
             if (! $this->option('no-tty')) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask");
+            try {
+                $result = $process->run("$gradleWrapper $gradleTask");
+            } catch (ProcessTimedOutException) {
+                $this->reportGradleTimeout($gradleTask);
+
+                return false;
+            }
 
             if (! $result->successful()) {
                 \Laravel\Prompts\error('Gradle build failed');
@@ -607,6 +713,50 @@ trait PreparesBuild
         }
 
         return $buildSuccessful;
+    }
+
+    /**
+     * Seconds Gradle may run before it is stopped, or null for no limit.
+     *
+     * There is no limit by default. A cold first build downloads Gradle, the
+     * Android plugin and every dependency, and can take 15 minutes or more on
+     * a slow connection or a busy machine. Set NATIVEPHP_GRADLE_TIMEOUT to a
+     * number of seconds to cap it, e.g. on CI.
+     */
+    protected function gradleTimeout(): ?int
+    {
+        $timeout = config('nativephp.android.gradle_timeout');
+
+        if (! is_numeric($timeout) || (int) $timeout <= 0) {
+            return null;
+        }
+
+        return (int) $timeout;
+    }
+
+    protected function gradleProcess(string $androidPath): PendingProcess
+    {
+        $process = Process::path($androidPath);
+        $timeout = $this->gradleTimeout();
+
+        return $timeout === null ? $process->forever() : $process->timeout($timeout);
+    }
+
+    /**
+     * Gradle was stopped by NATIVEPHP_GRADLE_TIMEOUT. The generated project is
+     * complete at this point, so the build can be finished by hand.
+     */
+    protected function reportGradleTimeout(string $gradleTask): void
+    {
+        $timeout = $this->gradleTimeout();
+        $wrapper = PHP_OS_FAMILY === 'Windows' ? 'gradlew.bat' : './gradlew';
+
+        \Laravel\Prompts\error("Gradle did not finish within {$timeout} seconds and was stopped.");
+        \Laravel\Prompts\note(
+            "A first build can take much longer while Gradle downloads its dependencies.\n".
+            "Finish it by running `cd nativephp/android && {$wrapper} {$gradleTask}`,\n".
+            'or raise or remove NATIVEPHP_GRADLE_TIMEOUT in your .env and run this command again.'
+        );
     }
 
     /**
@@ -893,7 +1043,10 @@ trait PreparesBuild
         $gradleContent = str_replace('REPLACE_SHRINK_RESOURCES', $shrinkResources, $gradleContent);
         $gradleContent = str_replace('REPLACE_DEBUG_SYMBOLS', $debugSymbols, $gradleContent);
 
-        $gradleContent = preg_replace('/isMinifyEnabled\s*=\s*(true|false)/', "isMinifyEnabled = $minifyEnabled", $gradleContent);
+        // minify_enabled only applies to the release build type. The profileable build type
+        // always minifies so profiles measure the same R8 output users get.
+        $gradleContent = $this->replaceInGradleBlock($gradleContent, '\brelease', '/isMinifyEnabled\s*=\s*(true|false)/', "isMinifyEnabled = $minifyEnabled");
+        $gradleContent = $this->replaceInGradleBlock($gradleContent, 'create\("profileable"\)', '/isMinifyEnabled\s*=\s*(true|false)/', 'isMinifyEnabled = true');
         $gradleContent = preg_replace('/isShrinkResources\s*=\s*(true|false)/', "isShrinkResources = $shrinkResources", $gradleContent);
         $gradleContent = preg_replace('/debugSymbolLevel\s*=\s*"[^"]*"/', "debugSymbolLevel = \"$debugSymbols\"", $gradleContent);
 
@@ -932,6 +1085,18 @@ trait PreparesBuild
         }
 
         File::put($proguardPath, $proguardContent);
+    }
+
+    /**
+     * Apply a replacement only inside the brace-delimited Gradle block whose opening matches $blockPattern
+     */
+    protected function replaceInGradleBlock(string $gradleContent, string $blockPattern, string $pattern, string $replacement): string
+    {
+        return preg_replace_callback(
+            '/'.$blockPattern.'\s*(\{(?:[^{}]++|(?1))*\})/',
+            fn (array $block) => preg_replace($pattern, $replacement, $block[0]),
+            $gradleContent
+        );
     }
 
     /**

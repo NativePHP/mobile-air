@@ -23,7 +23,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -49,11 +51,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.nativephp.mobile.ui.MaterialIcon
 
 /**
@@ -80,7 +84,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
     LaunchedEffect(node) {
         if (currentUri.isNotEmpty()) {
-            coordinator.receive(currentUri, node)
+            coordinator.receive(currentUri, node.props.getInt("stack_depth", 0), node)
         }
     }
 
@@ -366,12 +370,33 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // the padding it was last laid out with, and each level's
         // vertical origin stays fixed for the whole slide.
         val levelPaddings = remember { HashMap<String, PaddingValues>() }
+        // Remember how deep each level sat when it
+        // was shown so the slide can tell push from pop. A pop (target
+        // shallower than the level leaving) slides the leaving screen out to
+        // the RIGHT and the previous one back in from the left, as iOS does;
+        // the symmetric spec played the push animation both ways.
+        val levelDepths = remember { HashMap<String, Int>() }
+        levelDepths[activeUri] = path.size
+        // …and the last tree seen for each level, so a popped level still
+        // has content while it slides out: PHP's republish evicts it from
+        // the coordinator cache within the slide, and the empty fallback
+        // made the outgoing page vanish instead of sliding.
+        val levelNodes = remember { HashMap<String, NativeUINode>() }
+        if (levelNodes.size > 16) {
+            levelNodes.keys.retainAll((path + listOfNotNull(rootUri, activeUri)).toSet())
+        }
         AnimatedContent(
             targetState = activeUri,
             transitionSpec = {
                 val intSpec = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 250)
-                slideInHorizontally(intSpec) { it } togetherWith
-                    slideOutHorizontally(intSpec) { -it }
+                val popping = (levelDepths[targetState] ?: 0) < (levelDepths[initialState] ?: 0)
+                if (popping) {
+                    slideInHorizontally(intSpec) { -it } togetherWith
+                        slideOutHorizontally(intSpec) { it }
+                } else {
+                    slideInHorizontally(intSpec) { it } togetherWith
+                        slideOutHorizontally(intSpec) { -it }
+                }
             },
             label = "stack-level",
             modifier = Modifier.fillMaxSize()
@@ -394,7 +419,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 levelPaddings[uri] ?: padding
             }
-            val levelNode = coordinator.rootNodeCache[uri]
+            val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
             val levelContent = levelNode?.children?.firstOrNull {
                 it.type != "top_bar_action" && it.type != "top_bar_title" &&
                     it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
@@ -424,6 +449,8 @@ internal fun TopBarActionView(action: NativeUINode) {
     val icon = action.props.getString("icon", "more_vert")
     val disabled = action.props.getBool("disabled")
     val subItems = action.children.filter { it.type == "top_bar_action" }
+    // Screen-reader name: `a11y_label` (NavAction::a11yLabel()), else the visible label.
+    val a11yLabel = action.props.getString("a11y_label").ifEmpty { action.props.getString("label") }
 
     if (subItems.isEmpty()) {
         // `enabled=false` swallows the tap and swaps LocalContentColor for
@@ -433,12 +460,12 @@ internal fun TopBarActionView(action: NativeUINode) {
                 NativeElementBridge.sendPressEvent(action.onPress, action.id)
             }
         }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+            TopBarActionGlyph(action, icon, a11yLabel)
         }
     } else {
         var expanded by remember { mutableStateOf(false) }
         IconButton(enabled = !disabled, onClick = { expanded = true }) {
-            MaterialIcon(name = icon, contentDescription = action.props.getString("label", ""))
+            TopBarActionGlyph(action, icon, a11yLabel)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             subItems.forEach { item ->
@@ -469,11 +496,11 @@ internal fun TopBarActionView(action: NativeUINode) {
                             if (isDestructive) {
                                 MaterialIcon(
                                     name = itemIcon,
-                                    contentDescription = itemLabel,
+                                    contentDescription = null,
                                     tint = destructiveColor,
                                 )
                             } else {
-                                MaterialIcon(name = itemIcon, contentDescription = itemLabel)
+                                MaterialIcon(name = itemIcon, contentDescription = null)
                             }
                         }
                     } else null,
@@ -502,4 +529,33 @@ internal fun Modifier.screenBackground(screen: NativeUINode?): Modifier {
     val bg = if (darkBg != 0) darkBg else (screen?.style?.bgColor ?: 0)
 
     return if (bg != 0) this.background(argbToComposeColor(bg)) else this
+}
+
+/**
+ * The action's icon, or its `image` (e.g. the signed-in user's avatar) as a
+ * small circle when one is set. The icon is drawn first and the image laid
+ * over it, so the icon stays visible while the image loads and if it fails.
+ * Disabled actions fade the image like M3 fades the icon.
+ */
+@Composable
+internal fun TopBarActionGlyph(action: NativeUINode, icon: String, label: String) {
+    val image = action.props.getString("image", "")
+
+    if (image.isEmpty()) {
+        MaterialIcon(name = icon, contentDescription = label)
+        return
+    }
+
+    Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+        MaterialIcon(name = icon, contentDescription = null)
+        AsyncImage(
+            model = image,
+            contentDescription = label,
+            contentScale = ContentScale.Crop,
+            alpha = if (action.props.getBool("disabled")) 0.38f else 1f,
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape),
+        )
+    }
 }

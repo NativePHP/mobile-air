@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Concerns\PreparesBuild;
 use Native\Mobile\Support\BundleFileManager;
 use Tests\TestCase;
@@ -109,6 +110,7 @@ class ReleaseBuildBundleTest extends TestCase
         // The Android artisan.php bootstrap must survive that pass.
         $this->assertFalse($zip->statName('artisan'));
         $this->assertFalse($zip->statName('composer.lock'));
+        $this->assertFalse($zip->statName('auth.json'));
         $this->assertNotFalse($zip->statName('artisan.php'));
         $this->assertNotFalse($zip->statName('.version'));
 
@@ -116,6 +118,44 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertNotFalse($zip->statName('storage/framework/views/'));
 
         $zip->close();
+    }
+
+    public function test_android_bundle_meta_writes_version_code_as_an_int(): void
+    {
+        Process::fake([
+            'composer install*' => Process::result(),
+            'composer dump-autoload*' => Process::result(),
+        ]);
+
+        // .env hands the code over as a string. It is written as a number,
+        // which is what the iOS reader expects.
+        config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
+
+        $this->createAndroidProjectFixture();
+
+        (new ReleaseBuildTester)->testPrepareLaravelBundle();
+
+        $meta = json_decode(File::get($this->testProjectPath.'/nativephp/android/app/src/main/assets/bundle_meta.json'), true);
+
+        $this->assertSame('1.0.0', $meta['version']);
+        $this->assertSame(1, $meta['version_code']);
+    }
+
+    public function test_ios_bundle_meta_writes_version_code_as_an_int(): void
+    {
+        config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
+
+        $zipPath = $this->testProjectPath.'/nativephp/ios/NativePHP/app.zip';
+        File::ensureDirectoryExists(dirname($zipPath));
+
+        $command = app(BuildIosAppCommand::class);
+        $write = new \ReflectionMethod($command, 'createBundledVersionFile');
+        $write->invoke($command, $zipPath);
+
+        $meta = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        $this->assertSame('1.0.0b1', trim(File::get(dirname($zipPath).'/bundled.version')));
+        $this->assertSame(1, $meta['version_code']);
     }
 
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void
@@ -180,6 +220,7 @@ class ReleaseBuildBundleTest extends TestCase
 
         File::put($this->testProjectPath.'/artisan', '#!/usr/bin/env php');
         File::put($this->testProjectPath.'/composer.lock', '{}');
+        File::put($this->testProjectPath.'/auth.json', '{}');
 
         File::ensureDirectoryExists($this->testProjectPath.'/vendor/acme/pkg/src');
         File::put($this->testProjectPath.'/vendor/acme/pkg/src/Pkg.php', '<?php');

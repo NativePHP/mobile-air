@@ -720,7 +720,21 @@ class AppUpdateManager {
     private func bundleMetadata() -> (version: String, versionCode: Int)? {
         guard let json = bundleMetaJson(), let version = json["version"] as? String else { return nil }
 
-        return (version, (json["version_code"] as? NSNumber)?.intValue ?? 0)
+        // version_code comes from .env, so the build has written it as a JSON
+        // string ("1"). Reading only a number turned that into 0, the bundle
+        // id never matched installed.version ("…b1"), and every launch
+        // re-extracted the whole bundle.
+        let code: Int
+        if let number = json["version_code"] as? NSNumber {
+            code = number.intValue
+        } else if let string = json["version_code"] as? String,
+                  let parsed = Int(string.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            code = parsed
+        } else {
+            code = 0
+        }
+
+        return (version, code)
     }
 
     private func bundleMetaJson() -> [String: Any]? {
@@ -777,9 +791,12 @@ class AppUpdateManager {
     private func createInstalledVersionFile() {
         let installedVersionPath = documentsPath + "/app/installed.version"
 
-        // Build composite identity from the extracted .env so the on-disk
-        // identity matches the bundle (same format: "version+b+versionCode" or "DEBUG").
-        guard let id = getInstalledVersionIdFromEnv() else {
+        // Record the bundle's own identity, the same value shouldUpdateFromBundle
+        // compares against (as Android does). Rebuilding it from the extracted
+        // .env gave "…b0" whenever .env had no NATIVEPHP_APP_VERSION_CODE line,
+        // which never matched and re-extracted on every launch. The .env is
+        // only a fallback for shells without bundle metadata.
+        guard let id = getBundledAppVersionFast() ?? getInstalledVersionIdFromEnv() else {
             print("⚠️ Could not determine app version id for installed.version file")
             return
         }

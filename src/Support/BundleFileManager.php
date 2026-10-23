@@ -72,6 +72,91 @@ class BundleFileManager
         }
     }
 
+    /**
+     * Bring an existing staged copy up to date with the source, copying only
+     * what changed and deleting what's gone. The destination ends up the same
+     * as a fresh copy() would make it, except for excluded paths, which rsync
+     * leaves alone (that's how a reused vendor/ survives: pass '/vendor' in
+     * $extraExcludes).
+     *
+     * Returns the paths rsync created, updated or deleted, relative to the
+     * destination. An empty string in the list means rsync printed something
+     * we couldn't parse, which callers treat as "anything may have changed".
+     *
+     * Unix only. Callers fall back to copy() on Windows.
+     *
+     * @param  array<int, string>  $extraExcludes
+     * @return array<int, string>
+     */
+    public static function sync(string $source, string $destination, array $configPaths = [], array $extraExcludes = []): array
+    {
+        $source = rtrim($source, '/');
+        $destination = rtrim($destination, '/');
+
+        File::ensureDirectoryExists($destination);
+
+        // --delete on the wrong directory would be a disaster.
+        if ($destination === '' || realpath($destination) === realpath($source)) {
+            throw new \InvalidArgumentException("Refusing to sync [{$source}] onto itself.");
+        }
+
+        $excludes = array_merge(self::excludes($configPaths, $source), $extraExcludes);
+        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".str_replace("'", "'\\''", $d)."'", $excludes));
+
+        $result = Process::run("rsync -a --copy-links --delete --itemize-changes {$excludeFlags} \"{$source}/\" \"{$destination}/\"");
+
+        if (! $result->successful()) {
+            throw new \Exception('Failed to copy app bundle: '.$result->errorOutput());
+        }
+
+        foreach (BundleExclusions::REQUIRED_DIRECTORIES as $directory) {
+            File::ensureDirectoryExists($destination.'/'.$directory);
+        }
+
+        return self::parseItemizedChanges($result->output());
+    }
+
+    /**
+     * Turn `rsync --itemize-changes` output into a list of changed paths.
+     * Handles both GNU rsync (11-character codes) and macOS openrsync
+     * (9-character codes). Directory attribute-only lines are ignored: a
+     * directory's mtime only moves when an entry inside it was added or
+     * removed, and that entry has its own line.
+     *
+     * @return array<int, string>
+     */
+    public static function parseItemizedChanges(string $output): array
+    {
+        $changes = [];
+
+        foreach (preg_split('/\R/', $output) ?: [] as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+
+            if (str_starts_with($line, '*deleting')) {
+                $changes[] = ltrim(substr($line, strlen('*deleting')));
+
+                continue;
+            }
+
+            if (preg_match('/^([<>ch.*][fdLDS][^ ]{7,9}) (.+)$/', $line, $matches)) {
+                if (str_starts_with($matches[1], '.d')) {
+                    continue;
+                }
+
+                $changes[] = $matches[2];
+
+                continue;
+            }
+
+            // Something we don't recognise: assume everything changed.
+            $changes[] = '';
+        }
+
+        return $changes;
+    }
+
     private static function copyWithRsync(string $source, string $destination, array $configPaths): void
     {
         $excludes = self::excludes($configPaths, $source);
