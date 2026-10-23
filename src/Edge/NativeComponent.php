@@ -2274,10 +2274,12 @@ abstract class NativeComponent
     }
 
     /**
-     * Run the ->on() closures and #[On] listeners of this screen and its
-     * children for one event object. Its public properties are the payload,
-     * and a backed enum among them is given as its backing value, as a
-     * device sends it.
+     * Run this screen's ->on() closures and #[On] listeners for one event
+     * object. Its public properties are the payload, and a backed enum
+     * among them is given as its backing value, as a device sends it.
+     *
+     * Screen only: unlike a device event, an event that PHP fired does
+     * not reach the nested components of the screen.
      */
     private function hearGlobalEvent(object $event): bool
     {
@@ -2286,7 +2288,8 @@ abstract class NativeComponent
             get_object_vars($event),
         );
 
-        [, $closuresRan, $methodsRan] = $this->deliverNativeEventToTree($event::class, $payload);
+        $closuresRan = $this->runNativeEventClosures($event::class, $payload);
+        $methodsRan = $this->runNativeEventListeners($event::class, $payload);
 
         return $closuresRan || $methodsRan;
     }
