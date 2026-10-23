@@ -386,7 +386,7 @@ final class BridgeDispatcher
         error_log("REQUEST FATAL: {$prefix} dispatch error: ".$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
         error_log('REQUEST TRACE: '.$e->getTraceAsString());
 
-        $content = self::showsErrorDetail()
+        $content = Runtime::showsErrorDetail()
             ? "{$prefix} dispatch error: ".$e->getMessage()."\n".$e->getTraceAsString()
             : 'Something went wrong.';
 
@@ -394,23 +394,6 @@ final class BridgeDispatcher
             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: ".strlen($content)."\r\n\r\n",
             $content,
         ];
-    }
-
-    /**
-     * Whether the app the runtime booted is in debug. Runtime keeps the app
-     * even when booting it threw, so a boot that failed after the config
-     * loaded still answers. One that failed before, or never got an app,
-     * can't tell who is looking, so the user wins.
-     */
-    private static function showsErrorDetail(): bool
-    {
-        try {
-            $app = Runtime::getApp();
-
-            return $app !== null && $app->bound('config') && (bool) $app['config']->get('app.debug');
-        } catch (Throwable) {
-            return false;
-        }
     }
 
     private static function isHeaderKey(string $key): bool

@@ -1,7 +1,9 @@
 <?php
 
+use Illuminate\Foundation\Http\Events\RequestHandled;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Native\Mobile\Http\Bridge\BridgeDispatcher;
 use Native\Mobile\Runtime;
@@ -180,6 +182,29 @@ describe('handle()', function () {
         'persistent, debug off' => ['persistent', 'Persistent', false],
         'webview, debug on' => ['webview', 'Webview', true],
         'webview, debug off' => ['webview', 'Webview', false],
+    ]);
+
+    it('keeps a throw out of the kernel itself out of the body unless the app is in debug, and logs it either way', function (bool $debug) {
+        config(['app.debug' => $debug]);
+        Route::get('/handled', fn () => 'fine');
+
+        // The kernel catches what a route throws, but not what a
+        // RequestHandled listener throws, so this gets past it to Runtime.
+        Event::listen(RequestHandled::class, fn () => throw new RuntimeException('Handled blew up'));
+
+        $response = Bridge::parse(BridgeDispatcher::dispatch('ios', 'persistent', 'GET', '/handled', '/native.php'));
+        $log = file_get_contents($this->log);
+
+        expect($response['status'])->toBe(500)
+            ->and($response['headers']['content-type'])->toBe(['text/plain'])
+            ->and($response['headers']['content-length'])->toBe([(string) strlen($response['body'])])
+            ->and(str_starts_with($response['body'], "Error: Handled blew up\n#0 "))->toBe($debug)
+            ->and($response['body'] === 'Something went wrong.')->toBe(! $debug)
+            ->and($log)->toContain('REQUEST FATAL: Handled blew up in '.__FILE__.':')
+            ->and($log)->toContain('REQUEST TRACE: #0 ');
+    })->with([
+        'debug on' => true,
+        'debug off' => false,
     ]);
 
     it('closes output buffers the previous dispatch left open', function () {
