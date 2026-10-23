@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -54,6 +55,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -452,7 +455,26 @@ internal fun TopBarActionView(action: NativeUINode) {
     // Screen-reader name: `a11y_label` (NavAction::a11yLabel()), else the visible label.
     val a11yLabel = action.props.getString("a11y_label").ifEmpty { action.props.getString("label") }
 
+    val label = action.props.getString("label", "")
+    val showLabel = action.props.getBool("show_label") && label.isNotEmpty()
+    val hasIcon = action.props.getString("icon", "").isNotEmpty()
+
     if (subItems.isEmpty()) {
+        if (showLabel) {
+            // Text action ("Edit"-style); with an icon, icon + text.
+            TextButton(modifier = Modifier.semantics { contentDescription = a11yLabel }, enabled = !disabled, onClick = {
+                if (action.onPress != 0) {
+                    NativeElementBridge.sendPressEvent(action.onPress, action.id)
+                }
+            }) {
+                if (hasIcon || action.props.getString("image", "").isNotEmpty()) {
+                    TopBarActionGlyph(action, icon, "")
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(label)
+            }
+            return
+        }
         // `enabled=false` swallows the tap and swaps LocalContentColor for
         // the M3 disabled tone, so the icon greys out on its own.
         IconButton(enabled = !disabled, onClick = {
