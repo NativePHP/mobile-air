@@ -251,9 +251,13 @@ class LaravelEnvironment(private val context: Context) {
         // The OTA marker used to short-circuit step 1 entirely, so a store
         // update silently kept running OTA'd code from the shell before it.
 
-        // Build composite "version+b+versionCode" identity from bundle metadata.
-        // This is what we compare against the extracted .env so a build-number-only
-        // bump still triggers re-extraction.
+        // A bundle is identified by its version number and build number
+        // (NATIVEPHP_APP_VERSION and NATIVEPHP_APP_VERSION_CODE), as "1.0.0b42",
+        // and is only extracted when that differs from the one extracted last.
+        // This is on purpose: two builds with the same pair count as the same
+        // build, so a rebuild installed over the top keeps running the old code
+        // until the build number is bumped. DEBUG always extracts. iOS does the
+        // same in AppUpdateManager.
         val bundleMeta = readBundleMetadata()
         val embeddedId = buildVersionId(bundleMeta.version, bundleMeta.versionCode)
 

@@ -108,8 +108,8 @@ Set env vars **before** `php artisan native:install`:
 ```dotenv
 APP_NAME="My App"                     # the display name on both platforms
 NATIVEPHP_APP_ID=com.yourcompany.yourapp
-NATIVEPHP_APP_VERSION="DEBUG"
-NATIVEPHP_APP_VERSION_CODE="1"
+NATIVEPHP_APP_VERSION="DEBUG"         # the version number, e.g. 1.2.0
+NATIVEPHP_APP_VERSION_CODE="1"        # the build number
 # Optional for iOS:
 NATIVEPHP_DEVELOPMENT_TEAM=XXXXXXXXXX
 ```
@@ -501,9 +501,12 @@ adb -s <SERIAL> install -r -d app-debug.apk && adb -s <SERIAL> shell am start -n
 
 Traps:
 
-- The app re-extracts its bundled Laravel copy only when `NATIVEPHP_APP_VERSION` or `_VERSION_CODE` changes.
-  `DEBUG` re-extracts on every launch. With a fixed version like `1.0.0`, a rebuild installed over the old one
-  keeps showing the old screens: keep `DEBUG`, bump the version, or uninstall first.
+- The app re-extracts its bundled Laravel copy only when the version number (`NATIVEPHP_APP_VERSION`) or the
+  build number (`NATIVEPHP_APP_VERSION_CODE`) differs from the one it extracted last. This is on purpose: the
+  pair identifies a build. `DEBUG` re-extracts on every launch. With a fixed version like `1.0.0`, a rebuild
+  installed over the old one keeps showing the old screens. Keep `DEBUG` while developing; otherwise bump
+  `NATIVEPHP_APP_VERSION_CODE` before each build you install. `native:run` never bumps it (`native:package`
+  does). Uninstalling also works, but wipes the app's data.
 - `native:run android` gives Gradle 600 seconds. A cold first build, especially next to an iOS build, can run
   over and fail. The bundle is ready by then, so finish with `cd nativephp/android && ./gradlew assembleDebug`
   and install the APK as above.
