@@ -12,6 +12,13 @@ use Native\Mobile\Platform;
 
 class TailwindParser
 {
+    /**
+     * Most parsed class strings the cache keeps. The cache lives for the
+     * whole persistent-runtime session, and dynamic classes add an entry
+     * per distinct string, so it has to be bounded.
+     */
+    public const CACHE_LIMIT = 2048;
+
     private static array $cache = [];
 
     /** @var array<string, list<string>> */
@@ -418,6 +425,14 @@ class TailwindParser
                 $result['borderWidth'] ??= $result['borderWidthDefault'];
             }
             unset($result['borderWidthDefault']);
+        }
+
+        if (count(self::$cache) >= self::CACHE_LIMIT) {
+            // Drop the oldest half: entries keep insertion order, so the
+            // strings a screen parsed most recently stay cached.
+            $keep = intdiv(self::CACHE_LIMIT, 2);
+            self::$cache = array_slice(self::$cache, -$keep, null, true);
+            self::$unsupportedCache = array_intersect_key(self::$unsupportedCache, self::$cache);
         }
 
         self::$cache[$classString] = $result;
