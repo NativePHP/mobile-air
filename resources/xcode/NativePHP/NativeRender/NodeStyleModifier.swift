@@ -4,7 +4,7 @@ import UIKit
 // MARK: - Node Style Modifier
 
 /// Applies visual style properties from a NativeUINode to a SwiftUI view.
-/// Handles background color, corner radius, border, shadow, opacity,
+/// Handles background color, corner radius, border, shadow, glow, blur, opacity,
 /// and dark mode overrides from dark_* props.
 struct NodeStyleModifier: ViewModifier {
     let style: NodeStyle?
@@ -13,18 +13,22 @@ struct NodeStyleModifier: ViewModifier {
     /// effects when a plugin renderer handles them internally — currently
     /// only `glass`, but easy to extend.
     let nodeType: String
+    /// Which of the layers below the node uses. A layer outside the set
+    /// isn't built at all.
+    let decorations: NodeDecorations
 
     /// Plugin element types whose own renderer applies the Liquid Glass
     /// material via `.buttonStyle(.glass)` / `.glassEffect(...)` etc. For
     /// these, the outer NodeStyleModifier must NOT also draw a glass plate
     /// behind the rectangular node frame — that produces a ghost rectangle
     /// behind the visible button capsule.
-    private static let glassHandledByRenderer: Set<String> = ["button", "chip", "badge"]
+    static let glassHandledByRenderer: Set<String> = ["button", "chip", "badge"]
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         let dark = colorScheme == .dark
         let radius = cornerRadius
+        let radii = cornerRadii
         let glassFlags = props.getInt("glass", default: 0)
 
         // Defer opacity to `NodeAnimationModifier` when:
@@ -44,25 +48,67 @@ struct NodeStyleModifier: ViewModifier {
             // set, the bg color is visible behind the glass and acts as
             // a tint — that's what you want for `bg-red-500 glass` to
             // produce tinted glass.
-            .background(backgroundFill(dark: dark))
+            .nodeModifier(if: decorations.contains(.fill)) {
+                $0.background(backgroundFill(dark: dark))
+            }
+            // Corner clip BEFORE the glass. `.glassEffect(...)` renders into
+            // its own effect layer and a `.clipShape` applied downstream of it
+            // no longer reaches the view's own drawing: the glass plate came
+            // out correctly rounded while the `bg-*` fill stayed a hard
+            // rectangle. Verified on device — `rounded-full glass` drew a
+            // circular plate behind a square fill. Clipping first rounds the
+            // background and content; the glass below still takes its own
+            // shape from the same radii, so tinted glass is unchanged.
+            .nodeModifier(if: decorations.contains(.clip)) {
+                $0.modifier(ClipRadiusModifier(radius: radius, radii: radii))
+            }
             // Liquid Glass material — iOS 26+ real glass, iOS 18-25 falls
             // back to `.regularMaterial`. Applied AFTER background so the
             // optional bg color tints through. Shape inferred from the
             // element's borderRadius (rounded-full → Capsule, rounded-N →
             // RoundedRectangle, no rounded → Rectangle).
-            .modifier(GlassModifier(
-                flags: Self.glassHandledByRenderer.contains(nodeType) ? 0 : glassFlags,
-                cornerRadius: radius
-            ))
-            .modifier(ClipRadiusModifier(radius: radius))
-            .overlay(borderOverlay(dark: dark, radius: radius))
-            .shadow(
-                color: shadowColor,
-                radius: shadowRadius,
-                x: 0,
-                y: shadowY
-            )
-            .opacity(opacity)
+            .nodeModifier(if: decorations.contains(.glass)) {
+                $0.modifier(GlassModifier(
+                    flags: Self.glassHandledByRenderer.contains(nodeType) ? 0 : glassFlags,
+                    cornerRadius: radius,
+                    cornerRadii: radii
+                ))
+            }
+            // The border is built only when there is one. Inside the overlay,
+            // so a node that keeps state (and so always has this layer) can
+            // gain or lose a border without anything under it being rebuilt.
+            .nodeModifier(if: decorations.contains(.border)) {
+                $0.overlay {
+                    if (style?.borderWidth ?? 0) > 0 {
+                        borderOverlay(dark: dark, radius: radius)
+                    }
+                }
+            }
+            // Elevation `shadow-*` — black, y-offset cast (unchanged).
+            .nodeModifier(if: decorations.contains(.shadow)) {
+                $0.shadow(
+                    color: shadowColor,
+                    radius: shadowRadius,
+                    x: 0,
+                    y: shadowY
+                )
+            }
+            // Colored `glow-*` — stacked zero-offset halos (Slice 1).
+            .nodeModifier(if: decorations.contains(.glow)) {
+                $0.modifier(GlowShadowModifier(
+                    color: glowColor,
+                    radius: glowRadius,
+                    opacity: glowOpacity
+                ))
+            }
+            // Tailwind `blur-*` — Gaussian softens the node's own pixels
+            // (page-bg orbs). Props-bag radius in points.
+            .nodeModifier(if: decorations.contains(.blur)) {
+                $0.modifier(BlurFilterModifier(radius: blurRadius))
+            }
+            .nodeModifier(if: decorations.contains(.opacity)) {
+                $0.opacity(opacity)
+            }
     }
 
     // MARK: - Background Color
@@ -72,12 +118,17 @@ struct NodeStyleModifier: ViewModifier {
     ///
     /// A gradient wins over `bg_color` — matching CSS, where `background-image`
     /// paints over `background-color`.
-    @ViewBuilder
-    private func backgroundFill(dark: Bool) -> some View {
+    ///
+    /// Returned as a ShapeStyle, not a View: `.background(_ style:)` fills
+    /// through the safe areas by default (`ignoresSafeAreaEdges: .all`), so a
+    /// full-screen `bg-*` reaches under the status bar and a floating tab bar.
+    /// The `.background(_ view:)` overload stops at the safe area, which left
+    /// the platform default (black in dark mode) showing in those insets.
+    private func backgroundFill(dark: Bool) -> AnyShapeStyle {
         if let gradient = linearGradient {
-            gradient
+            AnyShapeStyle(gradient)
         } else {
-            backgroundColor(dark: dark)
+            AnyShapeStyle(backgroundColor(dark: dark))
         }
     }
 
@@ -124,17 +175,58 @@ struct NodeStyleModifier: ViewModifier {
         return CGFloat(s.borderRadius)
     }
 
+    /// Per-corner radii (`rounded-br-none`, `rounded-t-2xl`, …), or nil when
+    /// the node uses only the uniform `rounded-*`.
+    ///
+    /// These ride the props bag rather than NodeStyle: the packed binary node
+    /// carries a single `border_radius` float with no room for four. PHP emits
+    /// all four whenever ANY corner is authored — each already resolved
+    /// against the uniform radius — so the presence of `radius_tl` alone is
+    /// the switch, and no per-corner defaulting is needed here.
+    ///
+    /// SwiftUI's `UnevenRoundedRectangle` names its corners leading/trailing,
+    /// which flip under RTL. The Tailwind spellings we accept are physical
+    /// (`tl` = top-LEFT), so leading is mapped to left. That matches the rest
+    /// of this renderer — FlexContainer places everything off `bounds.minX`
+    /// and has no RTL handling either — and is why the parser rejects
+    /// Tailwind's logical `rounded-s-*` / `rounded-ee-*` spellings outright
+    /// rather than pretending to honour them.
+    private var cornerRadii: RectangleCornerRadii? {
+        guard props.has("radius_tl") else { return nil }
+
+        return RectangleCornerRadii(
+            topLeading: CGFloat(props.getFloat("radius_tl", default: 0)),
+            bottomLeading: CGFloat(props.getFloat("radius_bl", default: 0)),
+            bottomTrailing: CGFloat(props.getFloat("radius_br", default: 0)),
+            topTrailing: CGFloat(props.getFloat("radius_tr", default: 0))
+        )
+    }
+
     // MARK: - Border
 
+    /// Only built for a node with a border width (see `body`).
+    @ViewBuilder
     private func borderOverlay(dark: Bool, radius: CGFloat) -> some View {
         let width = CGFloat(style?.borderWidth ?? 0)
         let darkBorder = dark ? props.getColor("dark_border_color", default: 0) : 0
         let argb = darkBorder != 0 ? darkBorder : (style?.borderColor ?? 0)
         let color = colorFromARGB(argb)
 
-        return RoundedRectangle(cornerRadius: radius)
-            .strokeBorder(color, lineWidth: width)
-            .opacity(width > 0 ? 1 : 0)
+        // Both shapes are Insettable, so the border keeps drawing INSIDE the
+        // bounds via strokeBorder — plain `stroke` would straddle the edge and
+        // shift every existing border by half its width. Dashed, dotted and
+        // per-side borders draw inside the bounds the same way (see NodeBorder).
+        if let border = NodeBorder(props: props, width: width, radius: radius, radii: cornerRadii) {
+            NodeBorderShape(border: border)
+                .fill(color)
+                .allowsHitTesting(false)
+        } else if let radii = cornerRadii {
+            UnevenRoundedRectangle(cornerRadii: radii)
+                .strokeBorder(color, lineWidth: width)
+        } else {
+            RoundedRectangle(cornerRadius: radius)
+                .strokeBorder(color, lineWidth: width)
+        }
     }
 
     // MARK: - Shadow
@@ -152,6 +244,32 @@ struct NodeStyleModifier: ViewModifier {
     private var shadowColor: Color {
         guard let s = style, s.elevation > 0 else { return .clear }
         return .black.opacity(0.25)
+    }
+
+    // MARK: - Glow
+
+    /// Soft colored halo from `glow-*` utilities / `glowColor` EDGE props.
+    /// Distinct from elevation — zero offset, stacked twice for density.
+    private var glowColor: Color {
+        // default:0 → transparent sentinel; glow is opt-in.
+        let argb = props.getColor("glow_color", default: 0)
+        return colorFromARGB(argb)
+    }
+
+    private var glowRadius: CGFloat {
+        CGFloat(props.getFloat("glow_radius", default: 0))
+    }
+
+    private var glowOpacity: Double {
+        Double(props.getFloat("glow_opacity", default: 0))
+    }
+
+    // MARK: - Blur
+
+    /// Gaussian blur radius from `blur-*` / `blur-[Npx]` / `blur` EDGE prop.
+    /// Distinct from glow (halo) and elevation shadow (depth cast).
+    private var blurRadius: CGFloat {
+        CGFloat(props.getFloat("blur", default: 0))
     }
 
     // MARK: - Opacity
@@ -177,12 +295,58 @@ func colorFromARGB(_ argb: Int) -> Color {
     return Color(.sRGB, red: r, green: g, blue: b, opacity: a)
 }
 
+/// Stacks two zero-offset colored shadows for a soft `glow-*` halo.
+/// Applied only when a glow color + positive radius are present; no-ops
+/// otherwise so elevation `shadow-*` stays the sole cast when unused.
+private struct GlowShadowModifier: ViewModifier {
+    let color: Color
+    let radius: CGFloat
+    let opacity: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if radius > 0, opacity > 0 {
+            // Two stacked zero-offset shadows: outer (full radius, softer)
+            // and inner (half radius, denser). Both x:0,y:0 so the halo sits
+            // centered on the view rather than casting like elevation.
+            content
+                .shadow(color: color.opacity(opacity * 0.55), radius: radius, x: 0, y: 0)
+                .shadow(color: color.opacity(opacity), radius: max(radius * 0.5, 1), x: 0, y: 0)
+        } else {
+            content
+        }
+    }
+}
+
+/// Applies SwiftUI `.blur(radius:)` when `blur-*` set a positive radius.
+/// Softens the node's own pixels (filled shapes become soft orbs); layout
+/// bounds are unchanged — bloom paints outside the frame like CSS filter.
+private struct BlurFilterModifier: ViewModifier {
+    let radius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if radius > 0 {
+            content.blur(radius: radius)
+        } else {
+            content
+        }
+    }
+}
+
 /// Only clips when corner radius > 0. A zero-radius clipShape clips to a sharp
 /// rectangle which cuts off content that slightly overflows (e.g. Toggle switches).
 private struct ClipRadiusModifier: ViewModifier {
     let radius: CGFloat
+    /// Per-corner radii, when the node used `rounded-<side>-*`. Wins over
+    /// `radius`, which PHP has already folded into each corner.
+    let radii: RectangleCornerRadii?
+
+    @ViewBuilder
     func body(content: Content) -> some View {
-        if radius > 0 {
+        if let radii {
+            content.clipShape(UnevenRoundedRectangle(cornerRadii: radii))
+        } else if radius > 0 {
             content.clipShape(RoundedRectangle(cornerRadius: radius))
         } else {
             content
@@ -211,11 +375,25 @@ private struct ClipRadiusModifier: ViewModifier {
 private struct GlassModifier: ViewModifier {
     let flags: Int
     let cornerRadius: CGFloat
+    /// Per-corner radii when `rounded-<side>-*` was used, so a glass surface
+    /// takes the same asymmetric outline as its clip and border.
+    let cornerRadii: RectangleCornerRadii?
 
     private var enabled: Bool      { (flags & 1) != 0 }
     private var interactive: Bool  { (flags & 4) != 0 }
     private var clear: Bool        { (flags & 8) != 0 }
 
+    /// The `#if` keeps `.glassEffect` out of the compilation entirely on
+    /// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+    /// `LiquidGlassAvailability.swift`.
+    ///
+    /// It gates the whole `body` rather than sitting inside it so that the
+    /// Xcode 26 arm keeps the original `if / else if / else` chain verbatim.
+    /// A `#if` nested in the `else` arm re-nests what ViewBuilder emits —
+    /// `_ConditionalContent<_ConditionalContent<A, B>, C>` becomes
+    /// `_ConditionalContent<A, _ConditionalContent<B, C>>` — which changes
+    /// the view type on builds this fix is supposed to leave alone.
+    #if compiler(>=6.2)
     func body(content: Content) -> some View {
         if !enabled {
             content
@@ -226,21 +404,37 @@ private struct GlassModifier: ViewModifier {
                 content.glassEffect(.regular.interactive(interactive), in: glassShape)
             }
         } else {
-            // Older-iOS fallback can't simulate touch-highlight — drop the
-            // interactive flag silently. `.ultraThinMaterial` is the closest
-            // analogue for `.clear`; `.regularMaterial` for the default.
-            content.background(
-                clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial),
-                in: glassShape
-            )
+            fallback(content)
         }
+    }
+    #else
+    func body(content: Content) -> some View {
+        if !enabled {
+            content
+        } else {
+            fallback(content)
+        }
+    }
+    #endif
+
+    /// Older-iOS fallback can't simulate touch-highlight — drop the
+    /// interactive flag silently. `.ultraThinMaterial` is the closest
+    /// analogue for `.clear`; `.regularMaterial` for the default.
+    @ViewBuilder
+    private func fallback(_ content: Content) -> some View {
+        content.background(
+            clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial),
+            in: glassShape
+        )
     }
 
     /// Infer the glass shape from the element's borderRadius. The
     /// Tailwind parser maps `rounded-full` → 9999, `rounded-{xs..3xl}`
     /// → fixed pt values, no `rounded-*` → 0.
     private var glassShape: AnyShape {
-        if cornerRadius >= 9999 {
+        if let cornerRadii {
+            return AnyShape(UnevenRoundedRectangle(cornerRadii: cornerRadii))
+        } else if cornerRadius >= 9999 {
             return AnyShape(Capsule())
         } else if cornerRadius > 0 {
             return AnyShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -286,13 +480,21 @@ extension UIColor {
 /// Apply this once at the screen root in each root renderer (Stack, Tabs,
 /// etc.) — the container's effects are scoped to the subtree it wraps, so
 /// one container per screen is the right granularity.
+///
+/// The `#if` keeps `GlassEffectContainer` out of the compilation entirely on
+/// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+/// `LiquidGlassAvailability.swift`.
 struct WithGlassContainer: ViewModifier {
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             GlassEffectContainer { content }
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 }
 

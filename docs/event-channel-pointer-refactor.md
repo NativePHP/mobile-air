@@ -193,6 +193,13 @@ Widened (event channel only — render-direction flat/prop buffers untouched):
 4. **Version handshake** — `NPHP_FORMAT_VERSION` (nphp_element.h),
    `expectedFormatVersion` (Swift), `EXPECTED_FORMAT_VERSION` (Kotlin) all → 3.
 
+> These three are on **4** now, not 3. v4 turned the event channel into a FIFO
+> queue: before it, a second post landing before PHP drained the first
+> overwrote it silently, which the async-task lane in #228 hit hard (five
+> posting threads). The per-frame wire format is identical to v3, so nothing
+> in the widening described above changed — only the region's event fields and
+> the version they're guarded by.
+
 `tabChange` keeps its u16 (it's an index, not a length).
 
 Render-direction caps (`npui_write_str` u16, node `prop_size`/`raw_children` u16)

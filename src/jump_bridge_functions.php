@@ -1,6 +1,11 @@
 <?php
 
+use Native\Mobile\Contracts\GatedBridge;
 use Native\Mobile\JumpBridge;
+
+/** How often the Jump runloop re-checks the async spool while tasks are in flight. */
+const ASYNC_JUMP_POLL_MS = 150;
+use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Testing\FakeBridge;
 
 /**
@@ -42,11 +47,21 @@ if (! function_exists('nativephp_can')) {
     /**
      * Check if a native bridge function is available.
      *
-     * In Jump hybrid mode, we assume all functions are available
-     * on the connected device.
+     * When a capability-gated bridge is driving, only what that bridge
+     * actually provides is available, so app code can feature-gate
+     * honestly — and tests can finally exercise the capability-missing
+     * branch. Device behavior is untouched (this file never loads
+     * there); bridges that don't implement the contract keep assuming
+     * everything is available.
      */
     function nativephp_can(string $method): bool
     {
+        $bridge = FakeBridge::current();
+
+        if ($bridge instanceof GatedBridge) {
+            return $bridge->can($method);
+        }
+
         return true;
     }
 }
@@ -89,6 +104,29 @@ if (! function_exists('nativephp_element_wait_event')) {
     {
         if ($fake = FakeBridge::current()) {
             return $fake->elementWaitEvent($timeoutMs);
+        }
+
+        // Async task completions run in a dev-machine subprocess (there's no
+        // device async lane under Jump) and land in a local spool. Surface any
+        // pending completion as a native event before blocking on the TCP poll,
+        // so ->finished()/->failed() fire in the runloop just like on device.
+        if (($completion = AsyncTaskTransport::drainJumpCompletion()) !== null) {
+            return $completion;
+        }
+
+        // Nothing WAKES this wait when a completion spools. On device the
+        // bridge posts an event that unblocks it; under Jump the spool is just
+        // a directory, and a screen with no #[Poll] asks for timeout -1 —
+        // block until the user does something. A task dispatched from such a
+        // screen would therefore sit finished-but-undelivered until an
+        // unrelated tap happened to wake the loop, which looks exactly like a
+        // spinner that never stops. While runners are in flight, clamp the
+        // wait so the loop comes back and re-checks the spool. Costs nothing
+        // when no async task is pending.
+        if (AsyncTaskTransport::hasPendingJumpRunners()) {
+            $timeoutMs = $timeoutMs < 0
+                ? ASYNC_JUMP_POLL_MS
+                : min($timeoutMs, ASYNC_JUMP_POLL_MS);
         }
 
         static $consecutiveErrors = 0;
@@ -221,6 +259,10 @@ if (! function_exists('nativephp_force_full_frame_epoch')) {
      */
     function nativephp_force_full_frame_epoch(): int
     {
+        if ($fake = FakeBridge::current()) {
+            return $fake->forceFullFrameEpoch;
+        }
+
         return 0;
     }
 }

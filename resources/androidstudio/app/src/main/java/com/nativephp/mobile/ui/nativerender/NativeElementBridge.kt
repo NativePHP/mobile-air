@@ -39,6 +39,15 @@ import java.util.concurrent.locks.LockSupport
  * 154: prop_offset       158: prop_size (u16)
  */
 class NativeElementBridge private constructor() {
+
+    /**
+     * Delivery arm for the web surface, implemented by MainActivity.
+     * See sendNativeEvent for why it exists.
+     */
+    fun interface WebEventSink {
+        fun onNativeEvent(eventName: String, payloadJson: String)
+    }
+
     companion object {
         private const val TAG = "NativeElementBridge"
         // Wire-format node stride. Mirrors iOS's `nodeSize` and the
@@ -66,7 +75,7 @@ class NativeElementBridge private constructor() {
         @JvmStatic external fun nativeGetPropBuffer(): java.nio.ByteBuffer?
         @JvmStatic external fun nativeGetTypeTable(): Array<String>?
         @JvmStatic external fun nativeGetNodeCount(): Int
-        @JvmStatic external fun nativeElementWriteEvent(type: Int, callbackId: Int, nodeId: Int, data: ByteArray?)
+        @JvmStatic external fun nativeElementWriteEvent(type: Int, callbackId: Int, nodeId: Int, data: ByteArray?): Boolean
 
         /* Phase 0 — wire-format version + runtime feature flags
          * (NPHP_FORMAT_VERSION / NPHP_FLAG_* in nphp_element.h). */
@@ -84,8 +93,16 @@ class NativeElementBridge private constructor() {
          * v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
          * v3 — event-channel framing widened uint16 → uint32 (header data_size
          *      + body string length prefixes); lifts the 64KB native→PHP cap.
+         * v4 — native→PHP event channel is a FIFO queue instead of a single
+         *      slot, so concurrent posts (async-task pool + watchdog) queue
+         *      instead of overwriting each other. Nothing changes for this
+         *      reader: the per-frame wire format is identical, the flat/prop
+         *      buffers are untouched, and events are still posted through
+         *      nativeElementWriteEvent → nphp_element_post_event. The version
+         *      moved because the region's event fields changed meaning, and a
+         *      stale libphp.a should fail loud rather than be quietly wrong.
          */
-        private const val EXPECTED_FORMAT_VERSION = 3
+        private const val EXPECTED_FORMAT_VERSION = 4
 
         /** Latched at startWatching(). 0 until then. Readable for telemetry. */
         @JvmStatic
@@ -374,7 +391,7 @@ class NativeElementBridge private constructor() {
                             // animation with a slide overlay.
                             if (isFreshStackMount) NavigationCoordinator.reset()
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
-                            NativeUIBridge.currentTree.value = diffedTree
+                            NativeUIBridge.publishTree(diffedTree)
                             // First publish after a hot-reload dismisses
                             // the "Reloading…" pill and clears the
                             // tree-preservation flag. Both are set by
@@ -647,7 +664,10 @@ class NativeElementBridge private constructor() {
                 children.add(child)
             }
 
-            return NativeUINode(id, type, layout, style, props, onPress, onLongPress, children)
+            return NativeUINode(
+                id, type, layout, style, props, onPress, onLongPress, children,
+                NodeVariant.parse(props, layout, style)
+            )
         }
 
         /* ── Props Reader ── */
@@ -833,9 +853,37 @@ class NativeElementBridge private constructor() {
         /**
          * Inject a native event into the element event queue.
          * This wakes up nativephp_element_wait_event() on the PHP side.
-         * Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
+         *
+         * The queue is only drained by an EDGE screen's PHP runloop, so the
+         * event is ALSO offered to the web delivery sink — on a webview
+         * screen nothing else would ever carry it to the page or to PHP.
+         * Internal control signals (`__`-prefixed, e.g. __deeplink) exist
+         * solely to wake the runloop and stay off the web arm.
          */
         fun sendNativeEvent(eventName: String, payloadJson: String) {
+            postNativeEventToQueue(eventName, payloadJson)
+
+            if (!eventName.startsWith("__")) {
+                webEventSink?.get()?.onNativeEvent(eventName, payloadJson)
+            }
+        }
+
+        /**
+         * The queue half of sendNativeEvent: write the event into the element
+         * event queue and offer it to nothing else.
+         * Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
+         *
+         * Returns true when the event is in the queue of a live native screen
+         * session. False means it was dropped: no native screen session is
+         * live. A full queue answers true as well: it takes the event and
+         * drops its oldest frame for it.
+         *
+         * For a native event that PHP hands over itself (Event.Broadcast),
+         * meant for its main runloop alone. The web sink posts to PHP at
+         * /_native/api/events, where PHP would fire it as an event again,
+         * so nothing that came from PHP may go back that way.
+         */
+        fun postNativeEventToQueue(eventName: String, payloadJson: String): Boolean {
             val nameBytes = eventName.toByteArray(Charsets.UTF_8)
             val payloadBytes = payloadJson.toByteArray(Charsets.UTF_8)
             val buf = ByteBuffer.allocate(4 + nameBytes.size + 4 + payloadBytes.size)
@@ -844,7 +892,18 @@ class NativeElementBridge private constructor() {
             buf.put(nameBytes)
             buf.putInt(payloadBytes.size)
             buf.put(payloadBytes)
-            nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+            return nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+        }
+
+        /** Held weakly so a destroyed activity is never kept alive. The
+         *  implementor must therefore be an object with its own lifecycle
+         *  (the activity), not a lambda owned only by this reference.
+         *  Volatile because plugin threads emit events off the main thread. */
+        @Volatile
+        private var webEventSink: java.lang.ref.WeakReference<WebEventSink>? = null
+
+        fun installWebEventSink(sink: WebEventSink) {
+            webEventSink = java.lang.ref.WeakReference(sink)
         }
 
         /* ── Tree Diff — reuse unchanged node references ── */

@@ -28,6 +28,14 @@ final class PHPQueueWorker {
     private var running = false
     private var stopped: DispatchSemaphore?
 
+    /// Signalled by `stopAndWait()` so the idle wait between job passes ends
+    /// immediately. Without it the loop only re-checks `running` after the
+    /// full interval elapses, so every stop request — and therefore every hot
+    /// reload, which stops the worker before rebooting the runtime — waits out
+    /// up to `sleepIdleMs`. That was the dominant and most variable part of a
+    /// reload: ~4.6s measured, versus ~1.0s once the wait is interruptible.
+    private var wake = DispatchSemaphore(value: 0)
+
     private init() {}
 
     /// Start the background queue worker.
@@ -41,6 +49,7 @@ final class PHPQueueWorker {
 
         running = true
         stopped = DispatchSemaphore(value: 0)
+        wake = DispatchSemaphore(value: 0)
 
         let thread = Thread {
             self.workerLoop()
@@ -72,6 +81,7 @@ final class PHPQueueWorker {
 
         NSLog("PHPQueueWorker: stopAndWait — waiting for worker to exit")
         running = false
+        wake.signal()
         stopped?.wait()
         stopped = nil
         workerThread = nil
@@ -116,7 +126,9 @@ final class PHPQueueWorker {
                 sleepMs = sleepIdleMs
             }
 
-            Thread.sleep(forTimeInterval: Double(sleepMs) / 1000.0)
+            // Interruptible idle wait — returns as soon as `stopAndWait()`
+            // signals, rather than sleeping the full interval first.
+            _ = wake.wait(timeout: .now() + Double(sleepMs) / 1000.0)
         }
 
         _worker_php_shutdown()

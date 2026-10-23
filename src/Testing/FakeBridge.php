@@ -3,6 +3,7 @@
 namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
+use Native\Mobile\Contracts\GatedBridge;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 
@@ -32,9 +33,33 @@ use PHPUnit\Framework\Assert;
  * TestableComponent forwards unknown methods here, so macros (and the
  * built-in helpers) chain straight off the harness.
  */
-class FakeBridge
+class FakeBridge implements GatedBridge
 {
     use Macroable;
+
+    /**
+     * Methods this fake claims NOT to support — the seam for testing
+     * nativephp_can()-gated fallback paths, which previously could not
+     * be exercised at all (every bridge answered "available").
+     *
+     *     FakeBridge::enable()->withoutCapability('Camera.GetPhoto');
+     *     expect(nativephp_can('Camera.GetPhoto'))->toBeFalse();
+     *
+     * @var string[]
+     */
+    protected array $unsupported = [];
+
+    public function withoutCapability(string ...$methods): static
+    {
+        array_push($this->unsupported, ...$methods);
+
+        return $this;
+    }
+
+    public function can(string $method): bool
+    {
+        return ! in_array($method, $this->unsupported, true);
+    }
 
     /** Every tree passed to nativephp_element_publish(), oldest first. */
     public array $publishes = [];
@@ -51,12 +76,26 @@ class FakeBridge
     /** Value returned by nativephp_runtime_flags(). 0 = all features off. */
     public int $runtimeFlags = 0;
 
+    /**
+     * Value returned by nativephp_force_full_frame_epoch(). A reset bumps it,
+     * as the C extension's does; a test can bump it to stand in for anything
+     * else that swaps the native tree out.
+     */
+    public int $forceFullFrameEpoch = 0;
+
     /** Counts of element-region lifecycle calls, for completeness. */
     public int $initCount = 0;
 
     public int $resetCount = 0;
 
     public int $shutdownCount = 0;
+
+    /**
+     * Events queueEvent() posted for the next waits.
+     *
+     * @var list<array<string, mixed>>
+     */
+    protected array $queuedEvents = [];
 
     // ── Binding ─────────────────────────────────────
 
@@ -147,16 +186,32 @@ class FakeBridge
 
     /**
      * The runloop never blocks under test — the harness dispatches events
-     * directly — so a wait always behaves as an instant idle tick.
+     * directly — so a wait returns an event queued with queueEvent(), or
+     * behaves as an instant idle tick.
      */
     public function elementWaitEvent(int $timeoutMs): ?array
     {
-        return null;
+        return array_shift($this->queuedEvents);
+    }
+
+    /**
+     * Queue an event for the next wait, as the native side posts one. A reset
+     * drops it, as the C bridge's does.
+     *
+     * @param  array<string, mixed>  $event
+     */
+    public function queueEvent(array $event): static
+    {
+        $this->queuedEvents[] = $event;
+
+        return $this;
     }
 
     public function elementReset(): void
     {
         $this->resetCount++;
+        $this->forceFullFrameEpoch++;
+        $this->queuedEvents = [];
     }
 
     public function elementShutdown(): void

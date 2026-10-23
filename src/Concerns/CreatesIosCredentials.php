@@ -3,6 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\Process;
+use Native\Mobile\Support\EnvValue;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\password;
@@ -276,6 +277,16 @@ trait CreatesIosCredentials
             return;
         }
 
+        if (EnvValue::needsQuoting($p12Password)) {
+            $this->newLine();
+            $this->warn('⚠️  That password contains characters that need quoting.');
+            $this->line('   It will be written to .env double quoted, which is safe, but if you');
+            $this->line('   ever pass it via --certificate-password, wrap it in single quotes so');
+            $this->line('   your shell does not alter it before PHP sees it.');
+            $this->line('   An alphanumeric password avoids the issue entirely.');
+            $this->newLine();
+        }
+
         // Generate P12 file
         $p12FileName = str_replace('.cer', '.p12', $cerFileName);
         $p12Path = $credentialsDir.DIRECTORY_SEPARATOR.$p12FileName;
@@ -417,7 +428,7 @@ trait CreatesIosCredentials
                 if (empty($addedVars)) {
                     $envContent .= PHP_EOL.'# iOS Certificate Configuration (File Path)'.PHP_EOL;
                 }
-                $envContent .= "{$key}={$value}".PHP_EOL;
+                $envContent .= "{$key}=".EnvValue::quote($value).PHP_EOL;
                 $addedVars[] = $key;
             }
         }
@@ -440,6 +451,15 @@ trait CreatesIosCredentials
             $this->info('ℹ️  The following variables already exist in .env (not updated):');
             foreach ($existingVars as $var) {
                 $this->line("  - {$var}");
+            }
+
+            if (in_array($passwordVar, $existingVars, true)) {
+                $this->newLine();
+                $this->warn("⚠️  {$passwordVar} was not overwritten. If your password contains special");
+                $this->line('   characters, make sure the existing value is wrapped in double quotes:');
+                $this->line("       {$passwordVar}=\"your#password\"");
+                $this->line('   An unquoted # is treated as the start of a comment and silently');
+                $this->line('   truncates the password, which fails the keychain import at build time.');
             }
         }
     }

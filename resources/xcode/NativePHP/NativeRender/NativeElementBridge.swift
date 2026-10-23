@@ -48,6 +48,14 @@ final class NativeElementBridge {
         static let nodeCount: Int        = 16
         static let flatBufferSize: Int   = 20
         static let propBufferSize: Int   = 24
+        // Event fields — DEAD, do not use. Kept only because removing them
+        // would make the offsets below look like they'd shifted (they haven't).
+        //
+        // Post events with `nphp_element_post_event()` instead. As of format
+        // v4 the channel is a queue of separately allocated frames: eventBuffer
+        // is never written, eventSize is the head frame's size rather than "the"
+        // event's, and eventCount is a depth rather than a 0/1 flag. Writing
+        // here would be silently ignored; reading would be garbage.
         static let eventMutex: Int       = 144
         static let eventCond: Int        = 208
         static let eventSize: Int        = 256
@@ -73,7 +81,15 @@ final class NativeElementBridge {
     /// v2 (Phase 2) — appended `flags` byte to flat node (stride 161).
     /// v3 — event-channel framing widened uint16 → uint32 (header data_size +
     ///      body string length prefixes); lifts the 64KB native→PHP cap.
-    private static let expectedFormatVersion: UInt32 = 3
+    /// v4 — native→PHP event channel is a FIFO queue instead of a single slot,
+    ///      so concurrent posts (async-task pool + watchdog) queue instead of
+    ///      overwriting each other. Nothing changes for this reader: the
+    ///      per-frame wire format is identical, the flat/prop buffers are
+    ///      untouched, and events are still posted through
+    ///      `nativeElementWriteEvent` → `nphp_element_post_event`. The version
+    ///      moved because the region's event fields changed meaning, and a
+    ///      stale libphp.a should fail loud rather than be quietly wrong.
+    private static let expectedFormatVersion: UInt32 = 4
 
     /// Phase 0 — latched after the one-shot check in `postTreeUpdateFromRegion()`.
     /// NPHP_FLAG_* bitfield in nphp_element.h.
@@ -346,7 +362,7 @@ final class NativeElementBridge {
     /// signals. Grabs the latest pending update atomically (coalescing — any
     /// intermediate frames are dropped). Parses tree, diffs, posts to main thread.
     private static func shadowThreadLoop() {
-        while shadowRunning {
+        func runPass() {
             // Grab latest pending update (atomic swap to nil)
             os_unfair_lock_lock(&pendingLock)
             let update = pendingUpdate
@@ -364,7 +380,7 @@ final class NativeElementBridge {
                     pthread_cond_wait(&shadowCond, &shadowMutex)
                 }
                 pthread_mutex_unlock(&shadowMutex)
-                continue
+                return
             }
 
             // Mark "tree update arrived from PHP" — this is the T1
@@ -378,7 +394,7 @@ final class NativeElementBridge {
                 update.flatData, propData: update.propData,
                 typeTable: update.typeTable, nodeCount: update.nodeCount
             ) else {
-                continue
+                return
             }
 
             // Determine whether this is a continuation within native chrome
@@ -500,6 +516,21 @@ final class NativeElementBridge {
                             }
                         }
                     }
+                    // Shared elements: hand the incoming tree's ref'd nodes to
+                    // the flight store. It already holds the outgoing screen's
+                    // frames (reported while that screen was live), so it can
+                    // pair the two sides and fly a copy of each match in the
+                    // overlay above both screens. Done synchronously here so
+                    // matched elements are hidden before the incoming screen's
+                    // very first layout — otherwise they paint once at their
+                    // destination before taking off.
+                    if bridge.pendingTransition == "morph" {
+                        HeroFlightStore.shared.beginSwap(
+                            incomingNodes: Self.collectRefNodes(finalTree.root)
+                        )
+                    } else {
+                        HeroFlightStore.shared.cancelAll()
+                    }
                     bridge.screenKey += 1
                 }
                 if isFreshStackMount { NavigationCoordinator.shared.reset() }
@@ -511,18 +542,56 @@ final class NativeElementBridge {
                 if bridge.isReloading { bridge.isReloading = false }
             }
         }
+
+        while shadowRunning {
+            // This pthread drains no autorelease pool of its own, so every pass
+            // gets one. Otherwise what parsing and diffing autorelease would
+            // stay behind for as long as the shadow thread keeps running.
+            autoreleasepool { runPass() }
+        }
+    }
+
+    /// Every ref'd node in a tree, keyed by ref. The flight store pairs these
+    /// against the outgoing screen's reported frames and renders a copy of the
+    /// matched ones in flight. Walks the incoming tree once per navigation — the
+    /// trees are already in memory and this runs on the same publish that
+    /// builds them, so it costs a single traversal per swap rather than any
+    /// per-frame work.
+    static func collectRefNodes(_ node: NativeUINode) -> [String: NativeUINode] {
+        var found: [String: NativeUINode] = [:]
+
+        func walk(_ n: NativeUINode) {
+            let ref = n.props.getString("ref", default: "")
+            // First wins. A duplicated ref on one screen is malformed markup —
+            // a name identifies ONE element — and picking deterministically
+            // beats letting the last one silently take over.
+            if !ref.isEmpty, found[ref] == nil { found[ref] = n }
+            for child in n.children { walk(child) }
+        }
+
+        walk(node)
+
+        return found
     }
 
     // MARK: - Event Sending
 
     /// Write event to PHP shared memory event ring buffer.
     /// Event format: [magic:u32][type:u8][callback_id:u32][node_id:u32][timestamp:u64][data_size:u16][data...]
-    static func nativeElementWriteEvent(_ type: Int32, _ callbackId: Int32, _ nodeId: Int32, _ data: UnsafePointer<UInt8>?, _ dataSize: Int32) {
+    @discardableResult
+    static func nativeElementWriteEvent(_ type: Int32, _ callbackId: Int32, _ nodeId: Int32, _ data: UnsafePointer<UInt8>?, _ dataSize: Int32) -> Bool {
         // Hand the body bytes to the PHP extension, which owns the event mutex,
-        // the growable heap buffer, and the header framing
-        // (nphp_element_post_event in nphp_element.c). No more region poking by
-        // offset, no 4KB cap, no hand-rolled framing.
-        nphp_element_post_event(type, callbackId, nodeId, data, UInt32(max(0, dataSize)))
+        // the event queue, and the header framing (nphp_element_post_event in
+        // nphp_element.c). No more region poking by offset, no 4KB cap, no
+        // hand-rolled framing.
+        //
+        // The return value (1 = queued, 0 = dropped) is passed up as a Bool.
+        // The UI senders discard it: a UI event has nothing useful to do
+        // about a drop, and a dropped one is already logged by the extension
+        // with the callback_id it would have woken.
+        // A caller that DOES care should check it, as Event.Broadcast does
+        // (AsyncTask.Complete still discards it).
+        return nphp_element_post_event(type, callbackId, nodeId, data, UInt32(max(0, dataSize))) == 1
     }
 
     static func sendPressEvent(_ callbackId: Int, nodeId: Int) {
@@ -637,7 +706,9 @@ final class NativeElementBridge {
     /// Inject a native event into the element event queue.
     /// Wakes up nativephp_element_wait_event() on the PHP side.
     /// Data format: two length-prefixed UTF-8 strings (event name, payload JSON).
-    static func sendNativeEvent(eventName: String, payloadJson: String) {
+    /// Returns true when the event was queued, false when it was dropped.
+    @discardableResult
+    static func sendNativeEvent(eventName: String, payloadJson: String) -> Bool {
         let nameBytes = Array(eventName.utf8)
         let payloadBytes = Array(payloadJson.utf8)
         var buf = Data(capacity: 4 + nameBytes.count + 4 + payloadBytes.count)
@@ -647,10 +718,11 @@ final class NativeElementBridge {
         var payloadLen = UInt32(payloadBytes.count).littleEndian
         buf.append(Data(bytes: &payloadLen, count: 4))
         buf.append(contentsOf: payloadBytes)
-        writeEvent(type: EventType.native, callbackId: 0, nodeId: 0, data: buf)
+        return writeEvent(type: EventType.native, callbackId: 0, nodeId: 0, data: buf)
     }
 
-    private static func writeEvent(type: Int, callbackId: Int, nodeId: Int, data: Data?) {
+    @discardableResult
+    private static func writeEvent(type: Int, callbackId: Int, nodeId: Int, data: Data?) -> Bool {
         // nodeId carries an FNV-1a 32-bit hash widened to Int — when bit
         // 31 is set the value exceeds Int32.max and the checked
         // `Int32(nodeId)` initializer traps. Use `truncatingIfNeeded`
@@ -660,19 +732,19 @@ final class NativeElementBridge {
         let c = Int32(truncatingIfNeeded: callbackId)
         let n = Int32(truncatingIfNeeded: nodeId)
         if let data, data.count > 0 {
-            data.withUnsafeBytes { ptr in
+            return data.withUnsafeBytes { ptr -> Bool in
                 if let base = ptr.baseAddress {
-                    nativeElementWriteEvent(
+                    return nativeElementWriteEvent(
                         t, c, n,
                         base.assumingMemoryBound(to: UInt8.self),
                         Int32(truncatingIfNeeded: data.count)
                     )
                 } else {
-                    nativeElementWriteEvent(t, c, n, nil, 0)
+                    return nativeElementWriteEvent(t, c, n, nil, 0)
                 }
             }
         } else {
-            nativeElementWriteEvent(t, c, n, nil, 0)
+            return nativeElementWriteEvent(t, c, n, nil, 0)
         }
     }
 
@@ -855,7 +927,8 @@ final class NativeElementBridge {
 
             return NativeUINode(
                 id: id, type: type, layout: layout, style: style,
-                props: props, onPress: onPress, onLongPress: onLongPress, children: children
+                props: props, onPress: onPress, onLongPress: onLongPress, children: children,
+                variants: NodeVariant.parse(props: props, baseLayout: layout, baseStyle: style)
             )
         }
     }
@@ -953,24 +1026,42 @@ final class NativeElementBridge {
 
     // MARK: - Tree Diff
 
+    /// The new tree, with each subtree that didn't change swapped for the old
+    /// tree's object, so NodeView's `===` skips it.
+    ///
+    /// Children are matched by id, not by position. A list that gains rows
+    /// (a page appended, a commit arriving at the top) keeps the rows it had:
+    /// matching by position gave up on any parent whose child count changed,
+    /// so every row of the list came in as a new object and SwiftUI redrew
+    /// all of them. An old node is only reused when it's equal to the new
+    /// one all the way down, so a positional id that now names a different
+    /// node can't put the wrong one on screen.
     private static func diffNode(old: NativeUINode, new: NativeUINode) -> NativeUINode {
-        guard old.id == new.id, old.type == new.type, old.children.count == new.children.count else {
+        guard old.id == new.id, old.type == new.type else {
             return new
         }
 
-        var allChildrenReused = true
-        let diffedChildren: [NativeUINode]
-        if new.children.isEmpty {
-            diffedChildren = new.children
-        } else {
-            var list: [NativeUINode] = []
-            list.reserveCapacity(new.children.count)
-            for i in new.children.indices {
-                let diffed = diffNode(old: old.children[i], new: new.children[i])
-                if diffed !== old.children[i] { allChildrenReused = false }
-                list.append(diffed)
+        let sameCount = old.children.count == new.children.count
+        var allChildrenReused = sameCount
+        var diffedChildren: [NativeUINode] = []
+        if !new.children.isEmpty {
+            // Built the first time a child isn't where it was.
+            var oldById: [Int: NativeUINode]?
+            diffedChildren.reserveCapacity(new.children.count)
+            for (i, child) in new.children.enumerated() {
+                let match: NativeUINode?
+                if i < old.children.count, old.children[i].id == child.id {
+                    match = old.children[i]
+                } else {
+                    if oldById == nil {
+                        oldById = Dictionary(old.children.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                    }
+                    match = oldById?[child.id]
+                }
+                let diffed = match.map { diffNode(old: $0, new: child) } ?? child
+                if !sameCount || diffed !== old.children[i] { allChildrenReused = false }
+                diffedChildren.append(diffed)
             }
-            diffedChildren = list
         }
 
         let fieldsMatch = old.layout == new.layout &&

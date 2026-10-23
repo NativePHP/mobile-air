@@ -20,13 +20,37 @@ final class PerTabNavigationCoordinator: ObservableObject {
     /// only — the root URI is implicit and rendered by the closure body.
     @Published var path: [String] = []
 
+    /// The URI whose cached tree the root level shows. Usually `rootUri`,
+    /// but a screen opened at the tab's path with a query
+    /// (`/home?ref=push` under `/home`) is the tab's root too. Its tree
+    /// stays cached under the URI as navigated, so this points at it.
+    @Published private(set) var rootLevelUri: String
+
     /// Most-recent rendered tree per URI for this tab (root + pushed).
-    /// `@Published` so `PerTabContent` recomposes when the cache fills
-    /// in for an inactive tab — without it, sibling tabs stay at their
-    /// `Color.clear` cache-miss fallback even after their own content
-    /// has been published, since `path` (the only other observable)
-    /// hasn't changed for the cache-only update.
-    @Published var rootNodeCache: [String: NativeUINode] = [:]
+    /// Plain storage, NOT `@Published`. The tabs
+    /// renderer fills it from inside `body` (`cache(uri:node:)`), and a
+    /// published write there is "Publishing changes from within view
+    /// updates" — undefined behaviour that SwiftUI logged as a fault on
+    /// every tab-root publish. Observers still recompose when the cache fills
+    /// in for an inactive tab (sibling tabs would otherwise stay at their
+    /// `Color.clear` cache-miss fallback): every write bumps
+    /// `cacheGeneration` on the next main-queue turn, outside the update.
+    private var nodeCache: [String: NativeUINode] = [:]
+
+    @Published private(set) var cacheGeneration: Int = 0
+
+    var rootNodeCache: [String: NativeUINode] { nodeCache }
+
+    private func storeNode(_ node: NativeUINode?, for uri: String) {
+        if let node {
+            nodeCache[uri] = node
+        } else {
+            nodeCache.removeValue(forKey: uri)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.cacheGeneration &+= 1
+        }
+    }
 
     /// Snapshot of `path` immediately after each PHP-driven mutation.
     /// `onPathChange` compares against this to differentiate PHP changes
@@ -38,23 +62,49 @@ final class PerTabNavigationCoordinator: ObservableObject {
     /// same URI; mirrors the guard in `NavigationCoordinator`.
     private var lastProcessedNode: NativeUINode?
 
+    /// PHP router stack depth observed at this tab's root (a publish
+    /// whose uri == rootUri). Lets pushed-level publishes translate
+    /// absolute depth to a path length; 1 until learned.
+    private var rootDepth: Int = 1
+
     init(rootUri: String) {
         self.rootUri = rootUri
+        self.rootLevelUri = rootUri
+    }
+
+    /// The path a navigation URI addresses, without its query string or
+    /// fragment. Mirrors PHP's `NativeRouter::pathOf()`.
+    static func path(of uri: String) -> String {
+        let withoutFragment = uri.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let path = withoutFragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        return "/" + path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    /// Whether a publish's URI is this tab's root: the tab's URL itself,
+    /// or the tab's path with a query.
+    private func isRoot(_ uri: String) -> Bool {
+        uri == rootUri || Self.path(of: uri) == rootUri
     }
 
     /// Synchronously update the cache for this URI. Safe to call during
-    /// a SwiftUI `body` evaluation since the cache isn't @Published.
+    /// a SwiftUI `body` evaluation: the store is plain and the
+    /// recompose trigger is deferred.
     func cache(uri: String, node: NativeUINode) {
         guard !uri.isEmpty else { return }
-        rootNodeCache[uri] = node
+        storeNode(node, for: uri)
     }
 
     /// Reconcile this tab's path with a PHP publish whose `currentUri`
     /// has been determined to belong to this tab.
-    func receive(uri: String, rootNode: NativeUINode) {
+    ///
+    /// `depth` is the PHP router stack depth (`stack_depth` prop, 0 when
+    /// absent). Depth-based reconciliation distinguishes pushing a NEW
+    /// level whose URI already exists on this tab's stack from popping
+    /// back to that level — see `NavigationCoordinator.receive`.
+    func receive(uri: String, depth: Int = 0, rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
-        rootNodeCache[uri] = rootNode
+        storeNode(rootNode, for: uri)
 
         if lastProcessedNode === rootNode {
             return
@@ -62,7 +112,13 @@ final class PerTabNavigationCoordinator: ObservableObject {
         lastProcessedNode = rootNode
 
         // Re-render of tab root — pop all pushed levels.
-        if uri == rootUri {
+        if isRoot(uri) {
+            if depth > 0 {
+                rootDepth = depth
+            }
+            if rootLevelUri != uri {
+                rootLevelUri = uri
+            }
             if !path.isEmpty {
                 path = []
             }
@@ -70,6 +126,13 @@ final class PerTabNavigationCoordinator: ObservableObject {
             scheduleEviction()
             return
         }
+
+        if depth > 0 {
+            receiveByDepth(uri: uri, depth: depth)
+            return
+        }
+
+        // ── Legacy URI-based reconciliation (no stack_depth prop) ──
 
         // Re-render of the current top-of-stack (state change at pushed level).
         if path.last == uri {
@@ -90,6 +153,45 @@ final class PerTabNavigationCoordinator: ObservableObject {
         let nextPath = path + [uri]
         phpSnapshot = nextPath
         path = nextPath
+        scheduleEviction()
+    }
+
+    /// Depth-authoritative reconciliation for pushed levels; mirrors
+    /// `NavigationCoordinator.receiveByDepth`.
+    private func receiveByDepth(uri: String, depth: Int) {
+        let target = depth - rootDepth
+        guard target > 0 else {
+            // Below/at root depth with a non-root URI — treat as a root
+            // swap within the tab (replace at root); clear pushed levels.
+            if !path.isEmpty {
+                path = []
+            }
+            phpSnapshot = path
+            scheduleEviction()
+            return
+        }
+
+        if path.count == target, path.last == uri {
+            phpSnapshot = path
+            return
+        }
+
+        var next = path
+        if next.count > target {
+            next = Array(next.prefix(target))
+            if next.last != uri {
+                next[target - 1] = uri
+            }
+        } else if next.count == target {
+            next[target - 1] = uri
+        } else {
+            while next.count < target - 1 {
+                next.append(uri)
+            }
+            next.append(uri)
+        }
+        phpSnapshot = next
+        path = next
         scheduleEviction()
     }
 
@@ -124,12 +226,14 @@ final class PerTabNavigationCoordinator: ObservableObject {
     }
 
     /// Drop cache entries whose URI is no longer on this tab's stack.
-    /// `rootUri` is always live; pushed entries are live while present.
+    /// `rootUri` and the root level's URI are always live; pushed entries
+    /// are live while present.
     private func evictStaleCacheEntries() {
         var live = Set(path)
         live.insert(rootUri)
-        for uri in rootNodeCache.keys where !live.contains(uri) {
-            rootNodeCache.removeValue(forKey: uri)
+        live.insert(rootLevelUri)
+        for uri in nodeCache.keys where !live.contains(uri) {
+            storeNode(nil, for: uri)
         }
     }
 }

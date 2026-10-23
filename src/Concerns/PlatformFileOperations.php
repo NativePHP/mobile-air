@@ -7,70 +7,27 @@ use Illuminate\Support\Facades\File;
 trait PlatformFileOperations
 {
     /**
-     * Platform-optimized file copy operation
+     * Platform-optimized full-tree copy. Copies with exclusions moved
+     * to BundleFileManager::copy(), which owns the exclusion sets
+     * for both rsync and robocopy, so this stays a plain copy.
      */
-    protected function platformOptimizedCopy(string $source, string $destination, array $excludedDirs = []): void
+    protected function platformOptimizedCopy(string $source, string $destination): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
-            // Normalize separators: robocopy/xcopy path matching requires backslashes,
-            // but callers build paths with forward slashes (base_path('foo/bar'))
+            // Normalize separators: xcopy path matching requires backslashes,
+            // but callers build paths with forward slashes (base_path('x'))
             $source = str_replace('/', '\\', $source);
             $destination = str_replace('/', '\\', $destination);
 
-            // Use robocopy on Windows
-            if (! empty($excludedDirs)) {
-                $excludeArgs = '';
-                foreach ($excludedDirs as $dir) {
-                    $dir = str_replace('/', '\\', $dir);
-                    $full = "{$source}\\{$dir}";
-                    // /XD only excludes directories; files need /XF (e.g. storage/logs/laravel.log)
-                    $excludeArgs .= is_file($full) ? " /XF \"{$full}\"" : " /XD \"{$full}\"";
-                }
-
-                // Mirror the Unix branch's nested-vendor exclusions: robocopy follows
-                // directory junctions (composer path-repos), and /XD can't express
-                // multi-level wildcards, so expand 'vendor/*/vendor' at PHP level
-                $excludeArgs .= " /XD \"{$source}\\vendor\\nativephp\\mobile\\vendor\"";
-                foreach (glob($source.'/vendor/*/vendor', GLOB_ONLYDIR) ?: [] as $nested) {
-                    $excludeArgs .= ' /XD "'.str_replace('/', '\\', $nested).'"';
-                }
-
-                // Bare names match at any depth (parity with rsync's anywhere-matching
-                // patterns) — keeps a path-repo junction's .git/node_modules out too
-                $excludeArgs .= ' /XD .git /XD node_modules';
-
-                $cmd = "robocopy \"{$source}\" \"{$destination}\" /MIR /NFL /NDL /NJH /NJS /NP /R:0 /W:0{$excludeArgs}";
-            } else {
-                $cmd = "xcopy \"{$source}\\*\" \"{$destination}\\\" /E /I /Y /Q";
-            }
-
-            exec($cmd, $output, $result);
-
-            // Robocopy returns 0-7 as success codes
-            if ($result >= 8 && strpos($cmd, 'robocopy') !== false) {
-                $this->components->warn("robocopy failed with exit code $result");
-            } elseif ($result !== 0 && strpos($cmd, 'xcopy') !== false) {
-                throw new \RuntimeException("File copy failed (exit code {$result}): {$cmd}");
-            }
+            $cmd = "xcopy \"{$source}\\*\" \"{$destination}\\\" /E /I /Y /Q";
         } else {
-            // Use rsync on Unix-like systems
-            if (! empty($excludedDirs)) {
-                // Add specific exclusions for nested vendor directories that cause rsync cycles
-                $excludedDirs[] = 'vendor/*/vendor';
-                $excludedDirs[] = 'vendor/nativephp/mobile/vendor';
-                $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='{$d}'", $excludedDirs));
-                $cmd = "rsync -aL {$excludeFlags} \"{$source}/\" \"{$destination}/\"";
-            } else {
-                $cmd = "cp -a \"{$source}/.\" \"{$destination}/\"";
-            }
-            exec($cmd, $output, $result);
+            $cmd = "cp -a \"{$source}/.\" \"{$destination}/\"";
+        }
 
-            if ($result !== 0) {
-                throw new \RuntimeException(
-                    "File copy failed (exit code {$result}): {$cmd}\n".
-                    'On Linux, ensure rsync is installed (e.g. `apt-get install rsync` or `apk add rsync`).'
-                );
-            }
+        exec($cmd, $output, $result);
+
+        if ($result !== 0) {
+            throw new \RuntimeException("File copy failed (exit code {$result}): {$cmd}");
         }
     }
 

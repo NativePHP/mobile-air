@@ -64,4 +64,16 @@ class PushNotifications
 
         return null;
     }
+
+    /**
+     * Clear the app icon badge number
+     */
+    public function clearBadge(): void
+    {
+        if (! function_exists('nativephp_call')) {
+            return;
+        }
+
+        nativephp_call('PushNotification.ClearBadge', '{}');
+    }
 }

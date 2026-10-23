@@ -12,6 +12,16 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// Per-call bridge tracing (function names, parameter JSON, result JSON).
+// Bridge payloads can carry tokens, keys and user data, and logcat is readable
+// through adb and bug reports, so this tracing is compiled into debug builds
+// only. Release builds (CMake Release/RelWithDebInfo define NDEBUG) keep LOGE.
+#ifdef NDEBUG
+#define LOGT(...) ((void) 0)
+#else
+#define LOGT(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#endif
+
 // Use the shared JavaVM from php_bridge.c
 extern "C" JavaVM* g_jvm;
 
@@ -35,14 +45,17 @@ static jint element_get_node_count(JNIEnv*, jclass);
 static jint element_get_format_version(JNIEnv*, jclass);
 static jint element_get_runtime_flags(JNIEnv*, jclass);
 static void element_set_runtime_flags(JNIEnv*, jclass, jint);
-static void element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
+static jboolean element_write_event(JNIEnv*, jclass, jint, jint, jint, jbyteArray);
 
 // Phase 0 — symbols exported by the PHP nativephp extension (libphp.a)
 // Linked into the same .so as this JNI bridge.
 extern "C" uint32_t nphp_get_format_version(void);
 extern "C" uint32_t nphp_get_runtime_flags(void);
 extern "C" void     nphp_set_runtime_flags(uint32_t flags);
-extern "C" void     nphp_element_post_event(int type, int callback_id, int node_id,
+// Returns 1 if the event was queued, 0 if dropped (no region, or the queue is
+// over its backlog cap because PHP stopped draining). Was void before format
+// v4 — the declaration has to match the definition in nphp_element.c.
+extern "C" int      nphp_element_post_event(int type, int callback_id, int node_id,
                                             const uint8_t *data, uint32_t data_len);
 
 // Phase 3 — active-buffer accessors. These do the acquire-load on the
@@ -102,7 +115,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
         {(char*)"nativeGetFormatVersion",  (char*)"()I",                       (void*)element_get_format_version},
         {(char*)"nativeGetRuntimeFlags",   (char*)"()I",                       (void*)element_get_runtime_flags},
         {(char*)"nativeSetRuntimeFlags",   (char*)"(I)V",                      (void*)element_set_runtime_flags},
-        {(char*)"nativeElementWriteEvent", (char*)"(III[B)V",                  (void*)element_write_event},
+        {(char*)"nativeElementWriteEvent", (char*)"(III[B)Z",                  (void*)element_write_event},
     };
 
     jclass elClass = env->FindClass("com/nativephp/mobile/ui/nativerender/NativeElementBridge");
@@ -203,7 +216,7 @@ extern "C" int NativePHPCan(const char* functionName) {
 
     env->DeleteLocalRef(jFunctionName);
 
-    LOGI("BridgeJNI: NativePHPCan('%s') = %d", functionName, result);
+    LOGT("BridgeJNI: NativePHPCan('%s') = %d", functionName, result);
     return static_cast<int>(result);
 }
 
@@ -215,11 +228,11 @@ extern "C" int NativePHPCan(const char* functionName) {
  * @return JSON string with result or NULL if function doesn't exist
  */
 extern "C" const char* NativePHPCall(const char* functionName, const char* parametersJSON) {
-    LOGI("🚀 BridgeJNI: NativePHPCall called with function='%s'", functionName ? functionName : "NULL");
+    LOGT("🚀 BridgeJNI: NativePHPCall called with function='%s'", functionName ? functionName : "NULL");
     if (parametersJSON) {
-        LOGI("📦 BridgeJNI: Parameters JSON: %s", parametersJSON);
+        LOGT("📦 BridgeJNI: Parameters JSON: %s", parametersJSON);
     } else {
-        LOGI("📦 BridgeJNI: Parameters JSON: NULL");
+        LOGT("📦 BridgeJNI: Parameters JSON: NULL");
     }
 
     if (functionName == nullptr) {
@@ -232,14 +245,14 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
         LOGE("❌ BridgeJNI: Failed to get JNIEnv in NativePHPCall");
         return nullptr;
     }
-    LOGI("✅ BridgeJNI: Got JNIEnv successfully");
+    LOGT("✅ BridgeJNI: Got JNIEnv successfully");
 
     jstring jFunctionName = env->NewStringUTF(functionName);
     if (jFunctionName == nullptr) {
         LOGE("❌ BridgeJNI: Failed to create jstring for function name");
         return nullptr;
     }
-    LOGI("✅ BridgeJNI: Created jstring for function name");
+    LOGT("✅ BridgeJNI: Created jstring for function name");
 
     jstring jParametersJSON = nullptr;
     if (parametersJSON != nullptr) {
@@ -249,10 +262,10 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
             env->DeleteLocalRef(jFunctionName);
             return nullptr;
         }
-        LOGI("✅ BridgeJNI: Created jstring for parameters");
+        LOGT("✅ BridgeJNI: Created jstring for parameters");
     }
 
-    LOGI("🔄 BridgeJNI: Calling Kotlin nativePHPCall method...");
+    LOGT("🔄 BridgeJNI: Calling Kotlin nativePHPCall method...");
     jobject jResult = env->CallStaticObjectMethod(g_bridgeRouterClass, g_nativePHPCallMethod,
                                                     jFunctionName, jParametersJSON);
 
@@ -262,10 +275,10 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
     }
 
     if (jResult == nullptr) {
-        LOGI("⚠️ BridgeJNI: NativePHPCall returned null");
+        LOGT("⚠️ BridgeJNI: NativePHPCall returned null");
         return nullptr;
     }
-    LOGI("✅ BridgeJNI: Got non-null result from Kotlin");
+    LOGT("✅ BridgeJNI: Got non-null result from Kotlin");
 
     // Convert Java String to C string
     const char* resultStr = env->GetStringUTFChars(static_cast<jstring>(jResult), nullptr);
@@ -275,7 +288,7 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
         return nullptr;
     }
 
-    LOGI("📤 BridgeJNI: Result JSON: %s", resultStr);
+    LOGT("📤 BridgeJNI: Result JSON: %s", resultStr);
 
     // We need to make a copy because we're releasing the Java string
     // Note: This memory will be managed by PHP
@@ -284,7 +297,7 @@ extern "C" const char* NativePHPCall(const char* functionName, const char* param
     env->ReleaseStringUTFChars(static_cast<jstring>(jResult), resultStr);
     env->DeleteLocalRef(jResult);
 
-    LOGI("✅ BridgeJNI: NativePHPCall('%s') completed successfully", functionName);
+    LOGT("✅ BridgeJNI: NativePHPCall('%s') completed successfully", functionName);
     return resultCopy;
 }
 
@@ -319,6 +332,13 @@ void NativeUI_UnregisterRegion(void) {
 /*
  * Element region struct — must match nphp_element_region_t in nphp_element.h EXACTLY.
  * Uses void* for zval* since we don't have php.h here.
+ *
+ * Only a prefix of the real struct: everything the extension has appended
+ * since (format_version, runtime_flags, the A/B buffer pair, the event queue)
+ * sits after `current_tree` and is reached through exported accessor functions
+ * instead. That's why appending to nphp_element_region_t doesn't break this
+ * mirror — but inserting a field ANYWHERE above does. If you add one, add it
+ * to both, in the same place, and bump NPHP_FORMAT_VERSION (§5.4).
  */
 struct NphpElementRegion {
     uint32_t magic;
@@ -336,7 +356,11 @@ struct NphpElementRegion {
     pthread_mutex_t event_mutex;
     pthread_cond_t  event_cond;
 
-    /* Events */
+    /* Events — DEAD, do not use. Present only to keep the offsets below
+     * correct. Post events with nphp_element_post_event(). As of format v4
+     * the channel is a queue of separately allocated frames: event_buffer is
+     * never written, event_size is the head frame's size rather than "the"
+     * event's, and event_count is a depth rather than a 0/1 flag. */
     std::atomic<uint32_t> event_size;
     std::atomic<uint32_t> event_count;
     uint8_t event_buffer[4096];
@@ -510,19 +534,25 @@ static void element_set_runtime_flags(JNIEnv*, jclass, jint flags) {
     nphp_set_runtime_flags((uint32_t)flags);
 }
 
-static void element_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
+static jboolean element_write_event(JNIEnv* env, jclass, jint type, jint callback_id, jint node_id, jbyteArray data) {
     // Hand the body bytes to the PHP extension, which owns the event mutex, the
     // growable heap buffer and the header framing (nphp_element_post_event in
     // nphp_element.c). No more inline buffer / truncation here.
     jsize data_len = data ? env->GetArrayLength(data) : 0;
+    int queued;
     if (data_len > 0) {
         jbyte* bytes = env->GetByteArrayElements(data, nullptr);
-        nphp_element_post_event(type, callback_id, node_id,
-                                reinterpret_cast<const uint8_t*>(bytes), (uint32_t)data_len);
+        queued = nphp_element_post_event(type, callback_id, node_id,
+                                         reinterpret_cast<const uint8_t*>(bytes), (uint32_t)data_len);
         env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
     } else {
-        nphp_element_post_event(type, callback_id, node_id, nullptr, 0);
+        queued = nphp_element_post_event(type, callback_id, node_id, nullptr, 0);
     }
+
+    // True only when the extension queued the event. It drops it when no
+    // region is registered. A queue at its backlog cap queues it all the
+    // same, and drops its oldest frame to make room.
+    return queued == 1 ? JNI_TRUE : JNI_FALSE;
 }
 
 /* ═══════════════════════════════════════════════════════════

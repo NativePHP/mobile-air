@@ -170,12 +170,17 @@ export async function GetBatteryInfo() {
     return BridgeCall('Device.GetBatteryInfo', {});
 }
 
+export async function GetThermalState() {
+    return BridgeCall('Device.GetThermalState', {});
+}
+
 export const Device = {
     vibrate: DeviceVibrate,
     flashlight: Flashlight,
     getId: GetId,
     getInfo: GetInfo,
-    getBatteryInfo: GetBatteryInfo
+    getBatteryInfo: GetBatteryInfo,
+    thermalState: GetThermalState
 };
 
 // ============================================================================
@@ -258,8 +263,16 @@ export const Share = {
 // SecureStorage Functions
 // ============================================================================
 
-export async function SecureStorageSet(key, value) {
-    return BridgeCall('SecureStorage.Set', { key, value });
+export async function SecureStorageSet(key, value, accessibility) {
+    const params = { key, value };
+
+    // Omitted unless asked for, so re-setting a key never silently tightens
+    // an accessibility it was deliberately stored with.
+    if (accessibility) {
+        params.accessibility = accessibility;
+    }
+
+    return BridgeCall('SecureStorage.Set', params);
 }
 
 export async function SecureStorageGet(key) {
@@ -994,6 +1007,9 @@ export const Events = {
         PaymentCompleted: 'Native\\Mobile\\Events\\Wallet\\PaymentCompleted',
         PaymentFailed: 'Native\\Mobile\\Events\\Wallet\\PaymentFailed',
         PaymentCancelled: 'Native\\Mobile\\Events\\Wallet\\PaymentCancelled',
+    },
+    Device: {
+        ThermalStateChanged: 'Native\\Mobile\\Events\\Device\\ThermalStateChanged',
     },
 };
 

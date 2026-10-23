@@ -2,6 +2,7 @@ package com.nativephp.mobile.ui.nativerender
 
 import android.util.Log
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 
 /**
@@ -18,6 +19,14 @@ class NativeUIBridge private constructor() {
 
         /** Current parsed tree — observed by the Compose renderer */
         val currentTree = mutableStateOf<NativeUITree?>(null)
+
+        /** Public revision for observing every mounted tree publication, including equal trees. */
+        val treePublicationId = mutableLongStateOf(0L)
+
+        internal fun publishTree(tree: NativeUITree) {
+            currentTree.value = tree
+            treePublicationId.longValue++
+        }
 
         /** Whether the native UI system is active */
         val isActive = mutableStateOf(false)
@@ -39,6 +48,9 @@ class NativeUIBridge private constructor() {
         /** Flag set by UI.SetTransition bridge function, consumed by element bridge */
         @Volatile
         internal var navigationPending = false
+
+        /** Creates this object's Compose state; call on the main thread before the first composition. */
+        fun createState() {}
 
         /**
          * Called by UI.SetTransition bridge function to queue a navigation animation.

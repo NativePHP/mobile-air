@@ -10,6 +10,7 @@ enum FixtureAndroidIcon: string implements AndroidSymbol
     case StarOutline = 'star_outline';
     case Add = 'add';
     case Inbox = 'inbox';
+    case CustomBell = 'custom:bell';
 
     public function variant(): string
     {

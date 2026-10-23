@@ -2,11 +2,13 @@
 
 namespace Native\Mobile\Concerns;
 
+use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Support\PathHelper;
 use Symfony\Component\Process\Process;
 
 trait WatchesAndroid
 {
-    use ManagesPollingWatcher, ManagesWatchman;
+    use InteractsWithWatchTerminal, ManagesPollingWatcher, ManagesWatchman;
 
     private array $androidWatchPaths = ['app', 'resources', 'routes', 'config', 'database', 'public'];
 
@@ -182,19 +184,24 @@ trait WatchesAndroid
 
     private function startAndroidWatching(): void
     {
-        $this->info('Android hot reload active - watching for changes...');
-        $this->line('<fg=yellow>Press Ctrl+C to stop</fg=yellow>');
-
         $watchPaths = $this->getWatchPaths();
         $excludePatterns = $this->getExcludePatterns();
         $onChange = fn (string $filePath) => $this->handleAndroidFileChange($filePath);
         $onTick = fn () => $this->performAndroidPeriodicTasks();
 
-        // Use polling watcher on Windows, Watchman on macOS/Linux
-        if (PHP_OS_FAMILY === 'Windows') {
-            $this->startPollingWatcher($watchPaths, $excludePatterns, $onChange, $onTick);
-        } else {
-            $this->startWatchman($watchPaths, $excludePatterns, $onChange, $onTick);
+        $this->startWatchConsole('android', $this->androidSerial);
+
+        try {
+            // Use polling watcher on Windows, Watchman on macOS/Linux
+            if (PHP_OS_FAMILY === 'Windows') {
+                $this->startPollingWatcher($watchPaths, $excludePatterns, $onChange, $onTick);
+            } else {
+                $this->startWatchman($watchPaths, $excludePatterns, $onChange, $onTick);
+            }
+        } finally {
+            // Reached when the watcher stops on its own (watchman died); the
+            // quit key and signal paths tear the console down themselves.
+            $this->stopWatchConsole();
         }
     }
 
@@ -203,6 +210,9 @@ trait WatchesAndroid
      */
     private function performAndroidPeriodicTasks(): void
     {
+        // Service the interactive terminal (keypresses, activity line)
+        $this->pumpWatchTerminal();
+
         // Check if we should sync public/build
         $this->checkAndSyncPublicBuild();
 
@@ -215,12 +225,34 @@ trait WatchesAndroid
         }
     }
 
+    /**
+     * Make $uri the app's active native screen.
+     *
+     * The intent rides in on the ordinary file-sync path (so it lands under
+     * base_path() on device, where PHP can read it) and the standard reload
+     * trigger makes PHP pick it up — see NativeRouter::takeScreenIntent().
+     */
+    private function navigateAndroidTo(string $uri): bool
+    {
+        $intentFile = $this->writeScreenIntentFile($uri);
+
+        try {
+            if (! $this->syncAndroidFile($intentFile, NativeRouter::SCREEN_INTENT_PATH)) {
+                return false;
+            }
+        } finally {
+            @unlink($intentFile);
+        }
+
+        $this->triggerAndroidReload();
+
+        return true;
+    }
+
     private function handleAndroidFileChange(string $filePath): void
     {
-        // Normalize paths to use forward slashes for consistent comparison across platforms
-        $basePath = str_replace('\\', '/', base_path());
-        $normalizedPath = str_replace('\\', '/', $filePath);
-        $relativePath = str_replace($basePath.'/', '', $normalizedPath);
+        // Forward slashes throughout, so the comparisons below hold on Windows too
+        $relativePath = PathHelper::relativeTo($filePath, base_path());
 
         if (str_starts_with($relativePath, 'public/build')) {
             $this->publicBuildChangeTime = microtime(true);
@@ -235,7 +267,7 @@ trait WatchesAndroid
 
         // Special handling for hot file - sync but don't reload
         if (str_ends_with($relativePath, 'public/android-hot')) {
-            $this->line('<fg=cyan>Vite dev server detected, syncing hot file...</fg=cyan>');
+            $this->watchActivity('Vite dev server detected, syncing hot file…', 'cyan');
             $this->syncAndroidFile($filePath, $relativePath);
 
             return;
@@ -245,9 +277,8 @@ trait WatchesAndroid
             return;
         }
 
-        $this->line("Changed: {$relativePath}");
-
         if ($this->syncAndroidFile($filePath, $relativePath)) {
+            $this->watchSynced($relativePath);
             $this->triggerAndroidReload();
         }
     }
@@ -307,7 +338,7 @@ trait WatchesAndroid
         $pushProcess->run();
 
         if (! $pushProcess->isSuccessful()) {
-            $this->error('Hot reload: adb push failed — '.trim($pushProcess->getErrorOutput()));
+            $this->watchNote('<fg=red>Hot reload: adb push failed —</> '.trim($pushProcess->getErrorOutput()));
 
             return;
         }
@@ -404,20 +435,15 @@ trait WatchesAndroid
         $packageName = config('nativephp.app_id');
         $deviceBasePath = "/data/data/{$packageName}/app_storage/laravel";
 
-        // Fix the relative path calculation for Windows
-        $basePath = str_replace('\\', '/', base_path());
-        $normalizedLocalPath = str_replace('\\', '/', $localPath);
+        // Normalize paths for cross-platform compatibility
+        $localPath = PathHelper::normalize($localPath);
+        $base = PathHelper::normalize(base_path());
 
-        // Calculate proper relative path
-        if (str_starts_with($normalizedLocalPath, $basePath)) {
-            $calculatedRelativePath = substr($normalizedLocalPath, strlen($basePath) + 1); // +1 for trailing slash
-        } else {
-            $calculatedRelativePath = $relativePath;
+        // Outside the project root we keep the relative path the caller worked out.
+        if (str_starts_with($localPath, $base.'/')) {
+            $relativePath = PathHelper::relativeTo($localPath, $base);
         }
 
-        // Normalize paths for cross-platform compatibility
-        $localPath = $normalizedLocalPath;
-        $relativePath = $calculatedRelativePath;
         $devicePath = "{$deviceBasePath}/{$relativePath}";
 
         // Check if the file actually exists and is a file (not directory)
@@ -437,7 +463,7 @@ trait WatchesAndroid
         $pushProcess->run();
 
         if (! $pushProcess->isSuccessful()) {
-            $this->error('Hot reload: adb push failed — '.trim($pushProcess->getErrorOutput()));
+            $this->watchNote('<fg=red>Hot reload: adb push failed —</> '.trim($pushProcess->getErrorOutput()));
 
             return false;
         }
@@ -479,7 +505,7 @@ trait WatchesAndroid
         $pushProcess->run();
 
         if (! $pushProcess->isSuccessful()) {
-            $this->error('Hot reload: adb push failed — '.$pushProcess->getErrorOutput());
+            $this->watchNote('<fg=red>Hot reload: adb push failed —</> '.trim($pushProcess->getErrorOutput()));
 
             @unlink($localTemp);
 
@@ -490,7 +516,7 @@ trait WatchesAndroid
         $copyProcess->run();
 
         if (! $copyProcess->isSuccessful()) {
-            $this->error('Hot reload: run-as cp failed — '.$copyProcess->getErrorOutput());
+            $this->watchNote('<fg=red>Hot reload: run-as cp failed —</> '.trim($copyProcess->getErrorOutput()));
         }
 
         // Touch the file to ensure mtime updates (some Android cp preserves source mtime)

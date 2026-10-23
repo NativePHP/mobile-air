@@ -8,7 +8,16 @@ import Foundation
 /// 2. Checks manual mapping for aliases and special cases
 /// 3. Attempts auto-conversion to SF Symbol naming (e.g., "newspaper" -> "newspaper.fill")
 /// 4. Falls back to default circle icon if not found
+///
+/// A `custom:` prefix (app icons, see `NativeIcon`) is stripped first.
 func getIconForName(_ iconName: String) -> String {
+    // Call sites that can draw a custom icon resolve its asset before
+    // getting here; anything that still passes `custom:<name>` gets the
+    // system symbol for the bare name instead of a garbage name.
+    if iconName.hasPrefix(NativeIcon.customPrefix) {
+        return getIconForName(String(iconName.dropFirst(NativeIcon.customPrefix.count)))
+    }
+
     // If icon contains a dot, assume it's a direct SF Symbol path
     // e.g., "car.side.fill", "airplane.circle", "figure.walk"
     if iconName.contains(".") {
@@ -76,9 +85,11 @@ private func getManualMapping(_ iconName: String) -> String? {
     case "history":
         return "clock.arrow.circlepath"
 
-    // Actions
+    // Actions — "plus" is already a valid bare SF Symbol; only alias the
+    // Material name. (Mapping "plus" to plus.circle.fill hijacked authors
+    // who explicitly asked for the bare glyph, e.g. Ios::Plus.)
     case "add", "plus":
-        return "plus.circle.fill"
+        return "plus"
     case "edit":
         return "pencil"
     case "delete":

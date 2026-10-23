@@ -2,9 +2,13 @@
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\LazyGrid;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
+use Native\Mobile\Edge\NativeTagPrecompiler;
+use Tests\Fixtures\Edge\CustomEventElement;
 
 /**
  * Collector machinery tests — element types used here are the ones core
@@ -18,6 +22,7 @@ beforeEach(function () {
 
 afterEach(function () {
     NativeElementCollector::reset();
+    NativeTagPrecompiler::resetElementEvents();
 });
 
 it('builds a single leaf element', function () {
@@ -215,6 +220,42 @@ it('leaves auto_scroll_to unset when the attribute is absent', function () {
     expect($tree['props'] ?? [])->not->toHaveKey('auto_scroll_to');
 });
 
+it('applies lazy grid scroll-indicator props', function () {
+    // The lazy_grid type is registered by the native-ui plugin's manifest,
+    // but the element class is core-owned — register it explicitly so this
+    // stays testable without the plugin.
+    ElementRegistry::register('lazy_grid', LazyGrid::class);
+
+    NativeElementCollector::open('lazy_grid', [
+        'columns' => 3,
+        'shows-indicators' => true,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Cell']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('lazy_grid');
+    expect($tree['props']['columns'])->toBe(3);
+    expect($tree['props']['shows_indicators'])->toBeTrue();
+
+    ElementRegistry::reset();
+});
+
+it('applies refreshable scroll-indicator props', function () {
+    NativeElementCollector::open('refreshable', [
+        'shows-indicators' => false,
+    ]);
+    NativeElementCollector::leaf('text', ['text' => 'Scrollable']);
+    NativeElementCollector::close();
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('refreshable');
+    expect($tree['props']['shows_indicators'])->toBeFalse();
+    expect($tree['children'])->toHaveCount(1);
+});
+
 it('applies node-level onPress and onLongPress', function () {
     NativeElementCollector::open('column', [
         '_press' => 'tapColumn',
@@ -265,6 +306,49 @@ it('applies dark companion props from programmatic class()', function () {
     expect($tree['style']['bg_color'] ?? $tree['props']['bg_color'] ?? null)->not->toBeNull();
     expect($tree['props']['dark_bg_color'])->toBe('#050714');
     expect($tree['children'][0]['props']['dark_color'])->toBe('#FFFFFF');
+});
+
+it('wires glow-* utilities into props without touching elevation', function () {
+    $el = Column::make()->class('glow-emerald shadow-md');
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['props']['glow_color'])->toBe('#10B981');
+    expect($tree['props']['glow_radius'])->toBe(16.0);
+    expect($tree['props']['glow_opacity'])->toBe(0.55);
+    expect($tree['style']['elevation'])->toBe(6.0);
+});
+
+it('wires EDGE glowColor attrs into the props bag with defaults', function () {
+    $el = Column::make();
+    NativeElementCollector::applyStyle($el, ['glowColor' => '#6366F1']);
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['props']['glow_color'])->toBe('#6366F1');
+    expect($tree['props']['glow_radius'])->toBe(16.0);
+    expect($tree['props']['glow_opacity'])->toBe(0.55);
+});
+
+it('wires blur-* utilities into the props bag without touching elevation', function () {
+    $el = Column::make()->class('blur-3xl shadow-md');
+
+    $tree = $el->toArray(new CallbackRegistry);
+
+    expect($tree['props']['blur'])->toBe(64.0);
+    expect($tree['style']['elevation'])->toBe(6.0);
+});
+
+it('wires EDGE blur attr and Element::blur into the props bag', function () {
+    $el = Column::make();
+    NativeElementCollector::applyStyle($el, ['blur' => 100.0]);
+
+    $tree = $el->toArray(new CallbackRegistry);
+    expect($tree['props']['blur'])->toBe(100.0);
+
+    $el2 = Column::make()->blur(48.0);
+    $tree2 = $el2->toArray(new CallbackRegistry);
+    expect($tree2['props']['blur'])->toBe(48.0);
 });
 
 // ── Callback attribute wiring ────────────
@@ -339,4 +423,85 @@ it('ignores _selectionChange on elements without an onSelectionChange method', f
     $apply->invoke(null, $element, ['_selectionChange' => 'caretMoved']);
 
     expect($element->toArray(new CallbackRegistry))->not->toHaveKey('on_selection_change');
+});
+
+it('wires registered custom events to onLink and onScan', function () {
+    NativeTagPrecompiler::registerElementEvents(['link', 'scan']);
+
+    $element = new CustomEventElement;
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_link' => 'open', '_scan' => 'onScan']);
+
+    expect($element->linkMethod)->toBe('open')
+        ->and($element->scanMethod)->toBe('onScan');
+
+    $props = $element->toArray(new CallbackRegistry)['props'];
+
+    expect($props)->toHaveKey('on_link')
+        ->and($props)->toHaveKey('on_scan');
+});
+
+it('does not wire class-declared events that were never registered globally', function () {
+    NativeTagPrecompiler::resetElementEvents();
+
+    $element = new CustomEventElement;
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_link' => 'open']);
+
+    expect($element->linkMethod)->toBeNull();
+});
+
+it('ignores a custom event attr when the element has no matching onX method', function () {
+    NativeTagPrecompiler::registerElementEvents(['link']);
+
+    $element = new class extends Element
+    {
+        protected string $type = 'column';
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_link' => 'open']);
+
+    expect($element->toArray(new CallbackRegistry)['props'] ?? [])->not->toHaveKey('on_link');
+});
+
+it('strips compiled _event- bindings from plain elements', function () {
+    NativeElementCollector::leaf('spacer', ['_event-link' => 'open']);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree)->not->toHaveKey('_event-link');
+    $props = $tree['props'] ?? [];
+    expect($props)->not->toHaveKey('_event-link');
+});
+
+it('registers Element::elementEvents names with the precompiler', function () {
+    NativeTagPrecompiler::resetElementEvents();
+    ElementRegistry::register('custom_widget', CustomEventElement::class);
+
+    expect(NativeTagPrecompiler::customElementEvents())->toContain('link')
+        ->and(NativeTagPrecompiler::customElementEvents())->toContain('scan');
+});
+
+it('wires a hyphenated custom event to a studly onX method', function () {
+    NativeTagPrecompiler::registerElementEvents(['link-tapped']);
+
+    $element = new class extends Element
+    {
+        protected string $type = 'custom_widget';
+
+        public ?string $tappedMethod = null;
+
+        public function onLinkTapped(string $method): static
+        {
+            $this->tappedMethod = $method;
+
+            return $this;
+        }
+    };
+
+    $apply = new ReflectionMethod(NativeElementCollector::class, 'applyCallbacks');
+    $apply->invoke(null, $element, ['_link-tapped' => 'open']);
+
+    expect($element->tappedMethod)->toBe('open');
 });

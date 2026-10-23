@@ -4,6 +4,9 @@ final class DeepLinkRouter {
     static let shared = DeepLinkRouter()
 
     private var pendingURL: String?
+    /// The https URL behind pendingURL when it came from a universal link,
+    /// so a cold start can still give an unrouted link back to Safari.
+    private var pendingExternalURL: String?
     private var isWebViewReady = false
     private var isPhpReady = false
 
@@ -20,12 +23,25 @@ final class DeepLinkRouter {
     }
 
     private func processePendingURLIfReady() {
-        DebugLogger.shared.log("🔗 processePendingURLIfReady() - WebView: \(isWebViewReady), PHP: \(isPhpReady), Pending: \(pendingURL != nil)")
-        // Only process pending URL when both WebView and PHP are ready
-        if isWebViewReady && isPhpReady, let pendingURL = pendingURL {
+        DebugLogger.shared.log("🔗 processePendingURLIfReady() - WebView: \(isWebViewReady), PHP: \(isPhpReady), NativeUI: \(NativeUIBridge.shared.isActive), Pending: \(pendingURL != nil)")
+        // Native-ui apps never mark the WebView ready (see handle()) — once
+        // PHP is up, replay through the __deeplink event instead of a WebView
+        // load, which would queue behind the blocked native-ui loop.
+        guard isPhpReady, let pendingURL = pendingURL else {
+            return
+        }
+
+        if NativeUIBridge.shared.isActive {
+            let route = pendingURL.replacingOccurrences(of: "php://127.0.0.1", with: "")
+            DebugLogger.shared.log("🔗 Processing pending deep link via native-ui: \(route)")
+            dispatchNativeUIDeepLink(route.isEmpty ? "/" : route, externalURL: pendingExternalURL)
+            self.pendingURL = nil
+            self.pendingExternalURL = nil
+        } else if isWebViewReady {
             DebugLogger.shared.log("🔗 Processing pending URL: \(pendingURL)")
             self.redirectToURL(pendingURL)
             self.pendingURL = nil
+            self.pendingExternalURL = nil
         }
     }
 
@@ -33,9 +49,38 @@ final class DeepLinkRouter {
         return pendingURL != nil
     }
 
+    /// The route of a pending universal link, or nil when nothing is pending
+    /// or the pending link came from a custom scheme (it has no web page to
+    /// go back to).
+    func pendingUniversalLinkRoute() -> String? {
+        guard let pendingURL, pendingExternalURL != nil else {
+            return nil
+        }
+        let route = pendingURL.replacingOccurrences(of: "php://127.0.0.1", with: "")
+        return route.isEmpty ? "/" : route
+    }
+
+    /// Re-attempt delivery of a parked deep link — called when native-ui
+    /// activates, since a cold-start link can arrive before the runtime
+    /// that handles __deeplink events is up.
+    func replayPendingDeepLink() {
+        processePendingURLIfReady()
+    }
+
     func handle(url: URL) {
         DebugLogger.shared.log("🔗 DeepLinkRouter.handle() called with: \(url)")
         DebugLogger.shared.log("🔗 Current state - WebView ready: \(isWebViewReady), PHP ready: \(isPhpReady)")
+
+        // Guard: DeepLinkRouter only handles deep links (custom URL schemes and universal links).
+        // File URLs are delivered to the app when CFBundleDocumentTypes / LSSupportsOpeningDocumentsInPlace
+        // are declared (e.g. when the user picks the app from another app's share sheet or "Open In…").
+        // Without this guard, the file path is treated as a Laravel route and the WebView displays
+        // a 404 like "route /private/var/mobile/.../filename.pdf could not be found". Plugins that
+        // declare document types are responsible for handling file URLs before they reach this router.
+        guard !url.isFileURL else {
+            DebugLogger.shared.log("🔗 Ignoring file URL — DeepLinkRouter only handles deep links: \(url)")
+            return
+        }
 
         // PROTOTYPE: jump://native — leave WebView mode and return to native-ui.
         // The local native runloop kept running underneath (WebView sessions
@@ -103,6 +148,10 @@ final class DeepLinkRouter {
             route = url.path.isEmpty || url.path == "/" ? "/" : url.path
         }
 
+        // Only a real web URL can be handed back to the browser; a custom-scheme
+        // link has nowhere else to go.
+        let externalURL = (url.scheme == "https" || url.scheme == "http") ? url.absoluteString : nil
+
         // Add query parameters if present
         let fullRoute = route + (url.query.map { "?\($0)" } ?? "")
 
@@ -113,25 +162,29 @@ final class DeepLinkRouter {
 
         DebugLogger.shared.log("🔗 Normalized to: \(newURLString)")
 
-        // 3. Either navigate immediately or store for later
-        if isWebViewReady && isPhpReady {
+        // 3. Either navigate immediately or store for later.
+        // Native-UI (edge) apps never mark the WebView ready — it is only the
+        // php:// transport, no page-load callback fires — so gating on
+        // isWebViewReady would park every warm deep link as pending forever
+        // (OAuth auth-session callbacks included). The native-ui dispatch
+        // below goes through NativeElementBridge and never touches the
+        // WebView; PHP readiness is all it needs.
+        if isPhpReady && (isWebViewReady || NativeUIBridge.shared.isActive) {
             // App is already running. How we navigate depends on the runtime:
             if NativeUIBridge.shared.isActive {
-                // Native-UI (edge) app: the WebView is only the php:// transport,
-                // and its single PHP event loop is blocked running the current
-                // screen — a fresh webView.load(php://…) for a Route::native
-                // screen never commits (it queues behind the running loop), so
-                // warm deep/universal links would be silently dropped.
-                // Instead, wake the running loop with a native event carrying the
-                // target route; NativeComponent::dispatchNativeEvent turns it into
-                // a NavigationIntent::NAVIGATE and NativeRouter pushes the screen —
-                // the same path an in-app @tap navigate uses.
-                let escaped = normalizedRoute
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "\"", with: "\\\"")
-                let json = "{\"uri\":\"\(escaped)\"}"
-                DebugLogger.shared.log("🔗 Both ready (native-ui), dispatching __deeplink event: \(normalizedRoute)")
-                NativeElementBridge.sendNativeEvent(eventName: "__deeplink", payloadJson: json)
+                // Native-UI (edge) app: the single PHP event loop is blocked
+                // running the current screen — a fresh webView.load(php://…)
+                // for a Route::native screen never commits (it queues behind
+                // the running loop), so warm deep/universal links would be
+                // silently dropped.
+                // Instead, wake the running loop with a native event carrying
+                // the target route; NativeComponent::dispatchNativeEvent turns
+                // it into a NavigationIntent::NAVIGATE and NativeRouter pushes
+                // the screen — the same path an in-app @tap navigate uses.
+                // Hand the original https URL along; PHP gives it back to
+                // Safari when the app has no route for the path, instead of
+                // exiting to the WebView and serving a local 404.
+                dispatchNativeUIDeepLink(normalizedRoute, externalURL: externalURL)
             } else {
                 // Inertia/WebView SPA: use the SPA router to preserve state.
                 // This prevents Inertia from returning raw JSON on subsequent
@@ -141,9 +194,28 @@ final class DeepLinkRouter {
             }
         } else {
             DebugLogger.shared.log("🔗 Not ready, storing as pending URL")
-            // Store the URL to handle once both WebView and PHP are ready
+            // Store the URL to handle once the runtime is ready
             pendingURL = newURLString
+            pendingExternalURL = externalURL
         }
+    }
+
+    /// Wake the blocked native-ui PHP loop with the deep-link route (the
+    /// same path an in-app @tap navigate uses).
+    private func dispatchNativeUIDeepLink(_ route: String, externalURL: String? = nil) {
+        let escaped = route
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        var urlField = ""
+        if let externalURL {
+            let escapedURL = externalURL
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            urlField = ",\"url\":\"\(escapedURL)\""
+        }
+        let json = "{\"uri\":\"\(escaped)\"\(urlField)}"
+        DebugLogger.shared.log("🔗 native-ui: dispatching __deeplink event: \(route)")
+        NativeElementBridge.sendNativeEvent(eventName: "__deeplink", payloadJson: json)
     }
 
     private func redirectToURL(_ urlString: String) {

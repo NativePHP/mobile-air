@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Facade;
+use Native\Mobile\Support\Lane;
 use Symfony\Component\Console\Output\BufferedOutput;
 
 class Runtime
@@ -165,7 +166,12 @@ class Runtime
             }
         }
 
-        Artisan::call($commandName, array_slice($params, 1), $output);
+        $run = fn () => Artisan::call($commandName, array_slice($params, 1), $output);
+
+        // The queue worker lane runs its jobs in here. What a job
+        // does is marked as work of a background lane, so that
+        // a marked event it fires crosses to the main lane.
+        $commandName === 'queue:work' ? Lane::background($run) : $run();
         $result = $output->fetch();
 
         return $result;

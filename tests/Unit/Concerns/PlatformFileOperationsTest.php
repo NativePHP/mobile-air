@@ -56,22 +56,12 @@ class PlatformFileOperationsTest extends TestCase
         $this->assertEquals('content3', File::get($this->testDestDir.'/subdir/file3.txt'));
     }
 
-    public function test_platform_optimized_copy_with_excluded_dirs()
+    public function test_platform_optimized_copy_throws_when_copy_fails()
     {
-        // Create test files
-        File::put($this->testSourceDir.'/file1.txt', 'content1');
-        File::makeDirectory($this->testSourceDir.'/node_modules');
-        File::put($this->testSourceDir.'/node_modules/package.json', '{}');
-        File::makeDirectory($this->testSourceDir.'/.git');
-        File::put($this->testSourceDir.'/.git/config', 'git config');
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('File copy failed');
 
-        // Execute copy with exclusions
-        $this->platformOptimizedCopy($this->testSourceDir, $this->testDestDir, ['node_modules', '.git']);
-
-        // Assert excluded directories were not copied
-        $this->assertFileExists($this->testDestDir.'/file1.txt');
-        $this->assertDirectoryDoesNotExist($this->testDestDir.'/node_modules');
-        $this->assertDirectoryDoesNotExist($this->testDestDir.'/.git');
+        $this->platformOptimizedCopy($this->testSourceDir.'/does-not-exist', $this->testDestDir);
     }
 
     public function test_remove_directory_removes_directory()

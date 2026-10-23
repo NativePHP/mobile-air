@@ -368,12 +368,21 @@ export async function getBatteryInfo() {
     return bridgeCall('Device.GetBatteryInfo', {});
 }
 
+/**
+ * Get the current device thermal state
+ * @returns {Promise<Object>} Object with state: "normal" | "warm" | "hot" | "critical"
+ */
+export async function thermalState() {
+    return bridgeCall('Device.GetThermalState', {});
+}
+
 export const device = {
     vibrate: deviceVibrate,
     flashlight: flashlight,
     getId: getId,
     getInfo: getInfo,
-    getBatteryInfo: getBatteryInfo
+    getBatteryInfo: getBatteryInfo,
+    thermalState: thermalState
 };
 
 // ============================================================================
@@ -1325,16 +1334,31 @@ export const share = {
  * Store a value securely in the device keychain/keystore
  * @param {string} key - The key to store the value under
  * @param {string|null} value - The value to store securely (null to delete)
+ * @param {'when_unlocked'|'after_first_unlock'|'when_passcode_set'} [accessibility] - When iOS may
+ *        decrypt the item. Defaults to when_unlocked; ignored on Android.
  * @returns {Promise<{success: boolean}>}
  */
-export async function secureStorageSet(key, value) {
-    return bridgeCall('SecureStorage.Set', { key, value });
+export async function secureStorageSet(key, value, accessibility) {
+    const params = { key, value };
+
+    // Omitted unless asked for, so re-setting a key never silently tightens
+    // an accessibility it was deliberately stored with.
+    if (accessibility) {
+        params.accessibility = accessibility;
+    }
+
+    return bridgeCall('SecureStorage.Set', params);
 }
 
 /**
- * Retrieve a value from secure storage
+ * Retrieve a value from secure storage.
+ *
+ * `not_found` and `unavailable` both come back without a value and mean very
+ * different things: nothing is stored, versus the device is locked and the OS
+ * won't decrypt an item that may well be there.
+ *
  * @param {string} key - The key to retrieve
- * @returns {Promise<{value: string|null}>}
+ * @returns {Promise<{status: 'found'|'not_found'|'unavailable'|'error', value: string|null, code?: string, message?: string}>}
  */
 export async function secureStorageGet(key) {
     return bridgeCall('SecureStorage.Get', { key });
@@ -1591,5 +1615,8 @@ export const Events = {
     },
     Scanner: {
         CodeScanned: 'Native\\Mobile\\Events\\Scanner\\CodeScanned',
-    }
+    },
+    Device: {
+        ThermalStateChanged: 'Native\\Mobile\\Events\\Device\\ThermalStateChanged',
+    },
 };

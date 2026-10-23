@@ -27,6 +27,8 @@ class PluginCommandsTest extends TestCase
 
     private string $testPluginPath;
 
+    private ?string $testAppPath = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -38,6 +40,11 @@ class PluginCommandsTest extends TestCase
     protected function tearDown(): void
     {
         $this->files->deleteDirectory($this->testPluginPath);
+
+        if ($this->testAppPath) {
+            $this->files->deleteDirectory($this->testAppPath);
+        }
+
         Mockery::close();
         parent::tearDown();
     }
@@ -644,6 +651,112 @@ class PluginCommandsTest extends TestCase
         ])
             ->assertFailed()
             ->expectsOutputToContain('not installed');
+    }
+
+    /**
+     * @test
+     *
+     * With no argument and no interactivity, it should still explain what to pass.
+     */
+    public function plugin_uninstall_without_argument_errors_when_not_interactive(): void
+    {
+        $this->artisan('native:plugin:uninstall', [
+            '--no-interaction' => true,
+        ])
+            ->assertFailed()
+            ->expectsOutputToContain('Provide a plugin package name');
+    }
+
+    /**
+     * @test
+     *
+     * With no argument it should offer a multiselect of the installed plugins.
+     */
+    public function plugin_uninstall_without_argument_prompts_to_select_plugins(): void
+    {
+        $this->useTestApp([
+            'require' => ['vendor/plugin' => '^1.0'],
+        ]);
+
+        $mockRegistry = Mockery::mock(PluginRegistry::class);
+        $mockRegistry->shouldReceive('allInstalled')->andReturn(collect([
+            $this->createMockPlugin('vendor/plugin', '1.0.0'),
+        ]));
+        $mockRegistry->shouldReceive('isRegistered')->andReturn(true);
+        $this->app->instance(PluginRegistry::class, $mockRegistry);
+
+        $this->artisan('native:plugin:uninstall')
+            ->expectsQuestion('Which plugins would you like to uninstall?', ['vendor/plugin'])
+            ->expectsConfirmation('Are you sure you want to uninstall the selected plugin(s)?', 'no')
+            ->expectsOutputToContain('vendor/plugin')
+            ->expectsOutputToContain('Uninstall cancelled.')
+            ->assertSuccessful();
+    }
+
+    /**
+     * @test
+     *
+     * Selecting nothing should be a no-op rather than an error.
+     */
+    public function plugin_uninstall_without_argument_exits_when_nothing_selected(): void
+    {
+        $this->useTestApp([
+            'require' => ['vendor/plugin' => '^1.0'],
+        ]);
+
+        $mockRegistry = Mockery::mock(PluginRegistry::class);
+        $mockRegistry->shouldReceive('allInstalled')->andReturn(collect([
+            $this->createMockPlugin('vendor/plugin', '1.0.0'),
+        ]));
+        $mockRegistry->shouldReceive('isRegistered')->andReturn(true);
+        $this->app->instance(PluginRegistry::class, $mockRegistry);
+
+        $this->artisan('native:plugin:uninstall')
+            ->expectsQuestion('Which plugins would you like to uninstall?', [])
+            ->expectsOutputToContain('No plugins selected.')
+            ->assertSuccessful();
+    }
+
+    /**
+     * @test
+     *
+     * Plugins pulled in by another package can't be removed here, so they should
+     * be reported rather than offered in the picker.
+     */
+    public function plugin_uninstall_without_argument_reports_transitive_plugins(): void
+    {
+        $this->useTestApp([
+            'require' => ['some/other-package' => '^1.0'],
+        ]);
+
+        $mockRegistry = Mockery::mock(PluginRegistry::class);
+        $mockRegistry->shouldReceive('allInstalled')->andReturn(collect([
+            $this->createMockPlugin('vendor/transitive-plugin', '1.0.0'),
+        ]));
+        $mockRegistry->shouldReceive('isRegistered')->andReturn(false);
+        $this->app->instance(PluginRegistry::class, $mockRegistry);
+
+        $this->artisan('native:plugin:uninstall')
+            ->expectsOutputToContain('No uninstallable NativePHP plugins found')
+            ->expectsOutputToContain('vendor/transitive-plugin')
+            ->assertSuccessful();
+    }
+
+    /**
+     * Point base_path() at a throwaway app skeleton with the given composer.json.
+     */
+    private function useTestApp(array $composerJson): void
+    {
+        $this->testAppPath = sys_get_temp_dir().'/test-app-'.uniqid();
+
+        $this->files->makeDirectory($this->testAppPath.'/vendor/composer', 0755, true);
+        $this->files->put(
+            $this->testAppPath.'/composer.json',
+            json_encode($composerJson, JSON_PRETTY_PRINT)
+        );
+        $this->files->put($this->testAppPath.'/vendor/composer/installed.json', json_encode(['packages' => []]));
+
+        $this->app->setBasePath($this->testAppPath);
     }
 
     /**

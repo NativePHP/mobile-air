@@ -35,10 +35,17 @@ enum JustifyContent {
 }
 
 enum AlignItems {
-    static let start = 0
+    /// No `items-*` / `self-*` class was authored. PHP omits `align_items`
+    /// entirely in that case, so it arrives as 0 and we apply the container
+    /// default (stretch — the CSS default, and what this renderer has always
+    /// done). Distinct from `start`, which the author asked for explicitly.
+    static let unset = 0
     static let center = 1
     static let end = 2
     static let stretch = 3
+    /// Explicitly authored `items-start` / `self-start`. Deliberately NOT 0 —
+    /// see the note on the PHP `AlignItems` enum (mobile-air #309).
+    static let start = 4
 }
 
 enum PositionType {
@@ -97,7 +104,35 @@ struct FlexContainer: Layout {
         /// measurement. Returning the cached size leaves whatever idealSize
         /// the most recent actual measurement set.
         var sizeCache: [ProposalKey: CGSize] = [:]
+        /// The `measurementGeneration` `sizeCache` was filled under.
+        var generation = FlexContainer.measurementGeneration
+        /// The proposal the children's `idealSize`s were last measured for.
+        /// `placeSubviews` reuses those sizes, so it needs to know they match
+        /// the proposal it's placing for (see there).
+        var measuredKey: ProposalKey?
+        /// Each child's size per exact proposal, for this cache's lifetime —
+        /// see `measure`.
+        var childSizes: [ChildSizeKey: CGSize] = [:]
     }
+
+    /// A child (by index) and the exact proposal it was measured with.
+    struct ChildSizeKey: Hashable {
+        let index: Int
+        let width: CGFloat?
+        let height: CGFloat?
+    }
+
+    /// Bumped when the window width changes (rotation, Split View, Stage
+    /// Manager). `sizeCache` outlives a layout pass — SwiftUI only calls
+    /// `updateCache` when the container or its subviews change, and a resize
+    /// changes neither — while a cache hit leaves `idealSize` at whatever the
+    /// last real measurement set. After a resize that pairing goes stale: a
+    /// row whose text wrapped under a narrow window measures `.unspecified`
+    /// again, hits, and `placeSubviews` lays the text out at the old wrapped
+    /// width in a window that now has room for one line. Emptying the cache
+    /// on the first call of a new generation re-measures once per resize.
+    /// Main thread only, like the rest of layout.
+    static var measurementGeneration = 0
 
     /// Quantized proposal hash. CGFloat sizes can drift sub-pixel between
     /// SwiftUI calls; rounding to 1/1000 pt absorbs the noise.
@@ -242,6 +277,42 @@ struct FlexContainer: Layout {
         isRow ? info.marginTop : info.marginLeft
     }
 
+    // MARK: - Child measurement
+
+    /// A child's `sizeThatFits`, asked once per proposal.
+    ///
+    /// One layout pass measures each child several times — Phase A, the grow /
+    /// shrink re-measures, Phase 3, Phase 5's alignment measure, and the whole
+    /// walk again in `placeSubviews` after SwiftUI's probes — mostly with a
+    /// proposal it has already asked. For the
+    /// same exact proposal the answer can't change while this cache lives:
+    /// SwiftUI replaces the cache when the container or a child changes
+    /// (`updateCache`), and a window resize clears it (`measurementGeneration`) —
+    /// the lifetime `sizeCache` already relies on. The key is the exact proposal,
+    /// not a rounded `ProposalKey`, so a hit is what the child itself would answer.
+    private func measure(
+        _ subviews: Subviews,
+        _ i: Int,
+        _ proposal: ProposedViewSize,
+        _ cache: inout CacheData
+    ) -> CGSize {
+        let key = ChildSizeKey(index: i, width: proposal.width, height: proposal.height)
+        if let size = cache.childSizes[key] {
+            return size
+        }
+        let size = subviews[i].sizeThatFits(proposal)
+        cache.childSizes[key] = size
+        return size
+    }
+
+    /// Empties the memos on the first call after a window resize.
+    private func dropStaleMeasurements(_ cache: inout CacheData) {
+        guard cache.generation != Self.measurementGeneration else { return }
+        cache.sizeCache.removeAll(keepingCapacity: true)
+        cache.childSizes.removeAll(keepingCapacity: true)
+        cache.generation = Self.measurementGeneration
+    }
+
     // MARK: - sizeThatFits
 
     func sizeThatFits(
@@ -259,6 +330,7 @@ struct FlexContainer: Layout {
 
         // Memoization: SwiftUI calls sizeThatFits multiple times per layout
         // pass with the same proposal. Skip the full subview walk on repeats.
+        dropStaleMeasurements(&cache)
         let key = ProposalKey(proposal)
         if let cached = cache.sizeCache[key] {
             return cached
@@ -277,7 +349,15 @@ struct FlexContainer: Layout {
         //   - flex_grow > 0       → 0 (Tailwind `flex-1` = `1 1 0%`)
         //   - otherwise           → natural main size from .unspecified measure
         var totalMain: CGFloat = 0
-        var maxCross: CGFloat = 0
+        // Each child's cross size plus margins, from its latest measurement.
+        // Phase B and B2 overwrite a child's entry when they re-measure it,
+        // and the container's cross size is the largest entry at the end.
+        // Taking a running max instead kept the Phase A size of a flexed
+        // child, and under an indefinite cross that's an `.unspecified`
+        // measure: a fit image's natural size. A flex-1 column holding a
+        // 2400x1600 photo made its list row 1,600pt tall while the photo was
+        // drawn 212pt tall at the column's real width.
+        var childCrosses = [CGFloat](repeating: 0, count: subviews.count)
         var hypotheticalMains = [Int: CGFloat]()
         var totalGrow: CGFloat = 0
         var totalShrink: CGFloat = 0
@@ -294,7 +374,7 @@ struct FlexContainer: Layout {
             } else {
                 measureProposal = .unspecified
             }
-            let ideal = subviews[i].sizeThatFits(measureProposal)
+            let ideal = measure(subviews, i, measureProposal, &cache)
             cache.childInfos[i].idealSize = ideal
 
             let childMain: CGFloat
@@ -310,7 +390,7 @@ struct FlexContainer: Layout {
             totalMain += childMain + mainMargin(info)
             totalGrow += grow
             totalShrink += info.flexShrink
-            maxCross = max(maxCross, crossSize(ideal) + crossMargin(info))
+            childCrosses[i] = crossSize(ideal) + crossMargin(info)
         }
 
         let gaps = gap * CGFloat(max(0, cache.flowIndices.count - 1))
@@ -347,14 +427,9 @@ struct FlexContainer: Layout {
                     } else {
                         proposal = ProposedViewSize(width: crossAvail, height: distributedMain)
                     }
-                    let measured = subviews[i].sizeThatFits(proposal)
+                    let measured = measure(subviews, i, proposal, &cache)
                     cache.childInfos[i].idealSize = measured
-                    // maxCross was tracking Phase A measurements — replace this
-                    // child's contribution with the new (constrained) one.
-                    let newCross = crossSize(measured) + crossMargin(info)
-                    if newCross > maxCross {
-                        maxCross = newCross
-                    }
+                    childCrosses[i] = crossSize(measured) + crossMargin(info)
                 }
             }
         }
@@ -409,12 +484,9 @@ struct FlexContainer: Layout {
                     } else {
                         proposal = ProposedViewSize(width: crossAvail, height: reducedMain)
                     }
-                    let measured = subviews[i].sizeThatFits(proposal)
+                    let measured = measure(subviews, i, proposal, &cache)
                     cache.childInfos[i].idealSize = measured
-                    let newCross = crossSize(measured) + crossMargin(info)
-                    if newCross > maxCross {
-                        maxCross = newCross
-                    }
+                    childCrosses[i] = crossSize(measured) + crossMargin(info)
                 }
 
                 // Recompute from the shrunk values so `finalMain` below reports
@@ -443,12 +515,30 @@ struct FlexContainer: Layout {
         if proposedCross.isFinite {
             finalCross = proposedCross
         } else {
-            finalCross = maxCross
+            finalCross = cache.flowIndices.reduce(0) { max($0, childCrosses[$1]) }
         }
 
         let result = makeSize(main: finalMain, cross: finalCross)
         cache.sizeCache[key] = result
+        cache.measuredKey = key
         return result
+    }
+
+    // MARK: - Alignment
+
+    /// A flex container has no alignment guides of its own, and nothing in it
+    /// aligns on a guide. Without these, SwiftUI's default merges every
+    /// subview's guides, which measures the whole subtree again each time a
+    /// parent stack or a list row asks. A list asks every row, for where its
+    /// separator starts, so every row that scrolled in was measured again. The
+    /// separator now starts at the row's leading edge, as Android's divider
+    /// does, rather than under the first text inside the row.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout CacheData) -> CGFloat? {
+        nil
+    }
+
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout CacheData) -> CGFloat? {
+        nil
     }
 
     // MARK: - placeSubviews
@@ -461,6 +551,22 @@ struct FlexContainer: Layout {
     ) {
         let flowCount = cache.flowIndices.count
         guard flowCount > 0 || !cache.absoluteIndices.isEmpty else { return }
+
+        // Phase 1 below reuses each child's `idealSize` from the last full
+        // `sizeThatFits` walk, which is only right if that walk was for THIS
+        // proposal. SwiftUI probes other sizes between measuring and placing
+        // (0 wide, unbounded, …), and a later measure of the real size can be
+        // answered from `sizeCache` without walking the children again. The
+        // ideal sizes left over from the probe then drive placement: after a
+        // 0-wide probe, flex-shrink has zeroed them, and a text is placed 0pt
+        // wide inside a correctly sized row — the label simply disappears.
+        // Re-measure for this proposal (bypassing the memo) when they differ.
+        dropStaleMeasurements(&cache)
+        let placementKey = ProposalKey(proposal)
+        if cache.measuredKey != placementKey {
+            cache.sizeCache[placementKey] = nil
+            _ = sizeThatFits(proposal: proposal, subviews: subviews, cache: &cache)
+        }
 
         let containerMain = mainSize(bounds.size)
         let containerCross = crossSize(bounds.size)
@@ -567,7 +673,7 @@ struct FlexContainer: Layout {
             } else {
                 proposedChild = ProposedViewSize(width: crossAvail, height: nil)
             }
-            let measured = subviews[i].sizeThatFits(proposedChild)
+            let measured = measure(subviews, i, proposedChild, &cache)
             childCrosses[i] = crossSize(measured)
             // Update main size when the cross constraint changes it (e.g. text
             // wrapping that grows height when width is constrained). Skip
@@ -585,9 +691,20 @@ struct FlexContainer: Layout {
             }
         }
 
-        // Phase 4: Compute justify_content offsets
+        // Phase 4: Compute justify_content offsets.
+        //
+        // Recompute the leftover from the POST-Phase-3 childMains: Phase 3
+        // can grow a child's main size past its Phase-1 ideal (stale/zero
+        // cached ideals, cross-constrained re-measures). Using the Phase-1
+        // `remaining` here over-offsets justify-center/end and pushes
+        // content low/right — the "icons sit low in fixed circles" bug.
+        var placedMain: CGFloat = 0
+        for i in cache.flowIndices {
+            placedMain += childMains[i] + mainMargin(cache.childInfos[i])
+        }
+        let placeRemaining = containerMain - placedMain - gaps
         let (startOffset, interItemSpacing) = justifyOffsets(
-            remaining: remaining > 0 && totalGrow <= 0 ? remaining : 0,
+            remaining: placeRemaining > 0 && totalGrow <= 0 ? placeRemaining : 0,
             count: flowCount
         )
 
@@ -622,31 +739,56 @@ struct FlexContainer: Layout {
                 finalCross = containerCross - crossMargin(info)
                 crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
             } else {
+                // Measure the child's natural cross size against the main size
+                // it will actually be placed at, not `.unspecified`. A flexed
+                // child (`flex-1`) is narrower than its unconstrained width, so
+                // an unconstrained measure reports a single-line height for text
+                // that will really wrap. Centring on that stale height places the
+                // child too high and it then overflows downward.
+                let naturalProposal = isRow
+                    ? ProposedViewSize(width: childMain, height: nil)
+                    : ProposedViewSize(width: nil, height: childMain)
+
                 switch effectiveAlign {
-                case AlignItems.stretch:
-                    // No FILL: use natural size, align to start (like Android).
+                case AlignItems.start:
+                    // Explicitly authored `items-start` / `self-start`: the
+                    // child hugs its own content and sits at the leading edge,
+                    // matching ComposeFlexLayout (which simply omits
+                    // `fillMaxWidth()`).
+                    //
                     // We can't reuse childCrosses[i] from Phase 3 here — Phase 3
                     // proposes crossAvail, which makes container children (e.g.
                     // a flex column) fill the cross axis and report container
                     // cross size, not their natural content size.
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(measure(subviews, i, naturalProposal, &cache))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
 
                 case AlignItems.center:
                     // Center: measure natural size, center within container
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(measure(subviews, i, naturalProposal, &cache))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + (containerCross - finalCross) / 2
 
                 case AlignItems.end:
                     // End: measure natural size, align to end
-                    let natural = crossSize(subviews[i].sizeThatFits(.unspecified))
+                    let natural = crossSize(measure(subviews, i, naturalProposal, &cache))
                     finalCross = min(natural, containerCross - crossMargin(info))
                     crossPos = (isRow ? bounds.minY : bounds.minX) + containerCross - finalCross - crossMarginBefore(info)
 
-                default: // start
-                    // Start: use measured cross size (from Phase 3), align to start
+                default: // unset (0) and stretch (3)
+                    // Both take the container's cross extent. Phase 3 already
+                    // measured every child against `crossAvail`, so
+                    // `childCrosses[i]` IS the stretched size: a container child
+                    // reports the full cross axis, while a child with its own
+                    // explicit cross size reports that instead — which is what
+                    // CSS stretch does too.
+                    //
+                    // Unset lands here because stretch is the CSS default for
+                    // `align-items`, and it is what this renderer has always
+                    // done for an unclassed container. Keeping the two together
+                    // is what lets `items-start` be fixed without moving every
+                    // existing layout (mobile-air #309).
                     finalCross = childCrosses[i]
                     crossPos = (isRow ? bounds.minY : bounds.minX) + crossMarginBefore(info)
                 }
@@ -704,27 +846,58 @@ struct FlexContainer: Layout {
         }
     }
 
+    /// Whether an absolute inset edge was authored. The packed node has no
+    /// spare byte for a "set" bitmask, so the wire convention is: +0.0 means
+    /// unset, any non-zero value (including negatives — Tailwind's `-right-8`
+    /// bleed) means set, and IEEE **-0.0** means "the author wrote an explicit
+    /// zero" (`bottom-0`, `inset-0`). The PHP TailwindParser emits -0.0 for
+    /// authored zeros; the sign bit survives the f32 wire bit-exactly.
+    private static func insetIsSet(_ v: CGFloat) -> Bool {
+        v != 0 || v.sign == .minus
+    }
+
     /// Place an absolute-positioned child using position insets.
+    ///
+    /// CSS semantics: one edge set anchors to it; BOTH opposing edges set
+    /// stretches the child between them (`inset-0` fills the container).
+    /// Neither set falls back to the top/leading origin.
     private func placeAbsolute(_ subview: LayoutSubview, info: ChildInfo, in bounds: CGRect) {
-        let ideal = subview.sizeThatFits(.unspecified)
+        let hasLeft = Self.insetIsSet(info.positionLeft)
+        let hasRight = Self.insetIsSet(info.positionRight)
+        let hasTop = Self.insetIsSet(info.positionTop)
+        let hasBottom = Self.insetIsSet(info.positionBottom)
 
-        // Resolve horizontal position. A NON-ZERO right inset (with no left)
-        // anchors to the trailing edge; `!= 0` rather than `> 0` so NEGATIVE
-        // insets work — `-right-8` resolves to maxX - width + 8, deliberately
-        // overhanging the edge (Tailwind's `-right-8` bleed). Zero still means
-        // "no right anchor", since the packed node struct has no spare byte to
-        // distinguish an unset edge from an explicit `right-0`.
-        var x = bounds.minX + info.positionLeft
-        if info.positionRight != 0 && info.positionLeft == 0 {
-            x = bounds.maxX - ideal.width - info.positionRight
+        let stretchWidth: CGFloat? = hasLeft && hasRight
+            ? max(0, bounds.width - info.positionLeft - info.positionRight)
+            : nil
+        let stretchHeight: CGFloat? = hasTop && hasBottom
+            ? max(0, bounds.height - info.positionTop - info.positionBottom)
+            : nil
+
+        // Measure with any stretched dimension proposed, so content that
+        // adapts (text wrapping, maps, images) sizes against the real box.
+        let measured = subview.sizeThatFits(ProposedViewSize(
+            width: stretchWidth, height: stretchHeight
+        ))
+        let size = CGSize(
+            width: stretchWidth ?? measured.width,
+            height: stretchHeight ?? measured.height
+        )
+
+        var x = bounds.minX
+        if hasLeft {
+            x = bounds.minX + info.positionLeft
+        } else if hasRight {
+            x = bounds.maxX - size.width - info.positionRight
         }
 
-        // Resolve vertical position — same convention.
-        var y = bounds.minY + info.positionTop
-        if info.positionBottom != 0 && info.positionTop == 0 {
-            y = bounds.maxY - ideal.height - info.positionBottom
+        var y = bounds.minY
+        if hasTop {
+            y = bounds.minY + info.positionTop
+        } else if hasBottom {
+            y = bounds.maxY - size.height - info.positionBottom
         }
 
-        subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(ideal))
+        subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
     }
 }

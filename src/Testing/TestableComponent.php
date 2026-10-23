@@ -4,10 +4,12 @@ namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\ComponentMethodInvoker;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
+use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
 use Native\Mobile\Platform;
@@ -34,7 +36,7 @@ use PHPUnit\Framework\TestCase;
  *
  * Interactions dispatch through the same code paths the on-device runloop
  * uses: taps resolve a callback id from the published tree and go through
- * NativeComponent::dispatch(); native events go through
+ * NativeComponent::dispatchUiEvent(); native events go through
  * dispatchNativeEvent(); after every interaction the component re-renders,
  * mirroring the render → wait → dispatch loop. Exceptions thrown by the
  * component bubble to the test instead of painting the error screen; a
@@ -44,6 +46,12 @@ use PHPUnit\Framework\TestCase;
  * destination while the current screen stays alive underneath; goBack()
  * pops back onto it, firing onResume() and re-rendering with preserved
  * state — exactly what NativeRouter::loop() does on device.
+ *
+ * The screen under test is the live screen, as the one in a runloop is.
+ * An event marked BroadcastsGlobally that PHP fires with event() waits
+ * for the end of the interaction it was fired in, and then runs the
+ * screen's #[On] listeners on a turn of its own. Fired from the
+ * body of a test, it is delivered at once and renders once.
  */
 class TestableComponent
 {
@@ -86,7 +94,7 @@ class TestableComponent
     protected const EVENT_CALLBACK_KEYS = [
         self::EVENT_PRESS => ['on_press'],
         self::EVENT_LONG_PRESS => ['on_long_press'],
-        self::EVENT_TEXT_CHANGE => ['on_change', 'on_swipe'],
+        self::EVENT_TEXT_CHANGE => ['on_change', 'on_swipe', 'on_drag_end'],
         self::EVENT_TOGGLE_CHANGE => ['on_change'],
         self::EVENT_SUBMIT => ['on_submit'],
         self::EVENT_SLIDER_CHANGE => ['on_change', 'on_pinch_end'],
@@ -96,6 +104,9 @@ class TestableComponent
         self::EVENT_TAB_CHANGE => ['on_change'],
         self::EVENT_SHEET_DISMISS => ['on_dismiss'],
     ];
+
+    /** Turns one interaction may take before a listener that keeps firing events fails the test. */
+    protected const MAX_TURNS = 100;
 
     protected NativeComponent $component;
 
@@ -118,6 +129,9 @@ class TestableComponent
 
     /** Frame count snapshot taken when the last interaction started. */
     protected int $framesBeforeInteraction = 0;
+
+    /** How deep the harness is in component code. Above zero, an interaction is in progress. */
+    protected int $guardDepth = 0;
 
     /** Per-test snapshot sequence numbers, keyed by file+test. */
     protected static array $snapshotSequence = [];
@@ -143,7 +157,7 @@ class TestableComponent
 
     /**
      * Mount the component registered for a native route URI, with the
-     * route's params and layout resolved exactly as navigation would.
+     * route's params, query and layout resolved exactly as navigation would.
      * Requires the app's Route::native() registrations to be loaded.
      */
     public static function visit(string $uri, array $data = [], ?string $platform = null): static
@@ -155,10 +169,16 @@ class TestableComponent
             "No native route registered for [{$uri}]. Register it with Route::native() or test the component class directly."
         );
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri);
+        // Run the route's middleware exactly as in-app navigation does, so a
+        // screen guarded by `->middleware('auth')` is testable — mounting the
+        // component class directly bypasses this, which is how a middleware
+        // regression can hide from an otherwise thorough suite.
+        $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
+
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
@@ -186,6 +206,9 @@ class TestableComponent
         $this->component = $component;
         $component->setParams($params);
         $component->setData($data);
+        // From the URI, as the router does: visit('/search?q=x') and a followed
+        // navigate('/search?q=x') both give the screen query('q').
+        $component->setQuery($uri !== null ? NativeRouter::queryOf($uri) : []);
 
         if ($layout !== null) {
             $component->setLayout($layout);
@@ -210,21 +233,58 @@ class TestableComponent
             $this->registerNativeEventListeners();
         });
 
-        $this->guard(function () use ($component) {
+        // The router marks a screen as the live one before its mount(), and
+        // so does the harness. An event that PHP fires with event() then
+        // lands in the inbox of this screen, and the harness is told,
+        // weakly, so that the screen can go when the test ends.
+        $harness = \WeakReference::create($this);
+        $watcher = static fn () => $harness->get()?->globalEventArrived();
+
+        $this->scoped(function () use ($watcher) {
+            /** @var NativeComponent $this */
+            $this->nativeEventInboxWatcher = $watcher;
+        });
+
+        NativeComponent::markActive($component);
+
+        $this->guard(function () use ($component, $denial) {
+            // Middleware refused this navigation — the router turns that into
+            // an intent and never mounts, so neither do we.
+            if ($denial !== null) {
+                $component->setNavigationIntent($denial);
+                $this->lastTree = $this->bridge->lastPublish();
+
+                return;
+            }
+
             // #[Lazy] components paint a placeholder before mount() on
             // device; keep that behavior so the publish is observable.
             $component->publishPlaceholder();
 
-            $component->mount();
+            $component->mountComponent();
+            $component->flushDispatchedEvents();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
             // render, exactly like runLoop() honoring a pre-set intent.
             if ($component->getNavigationIntent() === null) {
-                $this->renderFrame();
+                $this->takeTurns(render: true);
             } else {
                 $this->lastTree = $this->bridge->lastPublish();
             }
         });
+
+        $this->endLoopIfStopped();
+    }
+
+    /**
+     * A screen stops being the live one when its test lets go of the harness,
+     * so that an event a later test fires does not land in its inbox.
+     */
+    public function __destruct()
+    {
+        if (isset($this->component) && NativeComponent::active() === $this->component) {
+            NativeComponent::restoreActive(null);
+        }
     }
 
     // ── State & interaction ─────────────────────────
@@ -238,9 +298,11 @@ class TestableComponent
     {
         $this->startInteraction();
 
+        $rootProperty = explode('.', $property, 2)[0];
+
         Assert::assertTrue(
-            property_exists($this->component, $property),
-            'Public property [$'.$property.'] does not exist on '.get_class($this->component).'.'
+            property_exists($this->component, $rootProperty),
+            'Public property [$'.$rootProperty.'] does not exist on '.get_class($this->component).'.'
         );
 
         $this->guard(fn () => $this->component->__syncProperty($property, $value));
@@ -253,12 +315,9 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        Assert::assertTrue(
-            method_exists($this->component, $method),
-            'Method ['.$method.'] does not exist on '.get_class($this->component).'.'
-        );
-
-        $this->guard(fn () => $this->component->{$method}(...$args));
+        // Same entry point the device runloop uses, so a template-callable
+        // method such as navigate() is callable from a test too.
+        $this->guard(fn () => $this->component->__invokeInteraction($method, $args));
 
         return $this->afterInteraction();
     }
@@ -430,6 +489,19 @@ class TestableComponent
         return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $scale]);
     }
 
+    /**
+     * Fire a gesture-area drag-end bound to `@dragEnd`, delivering the
+     * final pan translation as two floats — packed as "x,y" text, exactly
+     * as the device sends it.
+     */
+    public function dragEnd(string $target, float $x, float $y = 0.0): static
+    {
+        // Drag-end shares the TEXT_CHANGE wire type with @swipe, so a ref
+        // must resolve to `on_drag_end` specifically — an area with both
+        // handlers would otherwise hand the coordinates to its swipe one.
+        return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $x.','.$y], ['on_drag_end']);
+    }
+
     public function selectRadio(string $target, string $value): static
     {
         return $this->fireEvent($target, self::EVENT_RADIO_CHANGE, ['value' => $value]);
@@ -456,12 +528,12 @@ class TestableComponent
      * model-bound property name, or an element `ref`. This is the generic
      * primitive behind the input/toggle/slide/... sugar.
      */
-    public function fireEvent(string $target, int $type, array $fields = []): static
+    public function fireEvent(string $target, int $type, array $fields = [], ?array $refKeys = null): static
     {
         $this->startInteraction();
 
         $callbackId = $this->callbackIdFor($target)
-            ?? $this->callbackIdByRef($this->tree(), $target, $type);
+            ?? $this->callbackIdByRef($this->tree(), $target, $refKeys ?? self::EVENT_CALLBACK_KEYS[$type] ?? []);
 
         Assert::assertNotNull(
             $callbackId,
@@ -476,7 +548,9 @@ class TestableComponent
      * Deliver a native event (wire type 20) — what the device sends when a
      * bridge API completes or a plugin pushes an event. Fires #[On]
      * listeners, fluent ->on() closures, and pending then()/catch()
-     * callbacks, then re-renders.
+     * callbacks, then re-renders. No re-render follows an event that the
+     * screen listens for when none of its `when` filters matched and no
+     * Laravel listener ran for it.
      *
      *     ->emitNative(LocationUpdated::class, ['latitude' => 40.7, ...])
      */
@@ -484,12 +558,18 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $this->guard(fn () => $this->scoped(function () use ($event, $payload) {
+        $unheard = $this->guard(fn () => $this->scoped(function () use ($event, $payload) {
             /** @var NativeComponent $this */
             $this->dispatchNativeEvent(['event' => $event, 'payload' => $payload]);
+
+            return $this->nativeEventUnheard;
         }));
 
-        return $this->afterInteraction();
+        // The runloop skips the render after a native event that ran
+        // nothing here: no `when` filter of the screen matched it
+        // and no Laravel listener ran. The harness leaves the
+        // frame and its count as they were in that case.
+        return $this->afterInteraction(render: ! $unheard);
     }
 
     /** Simulate the system back gesture / hardware back button. */
@@ -497,7 +577,7 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $this->guard(fn () => $this->component->onBackPressed());
+        $this->guard(fn () => $this->component->handleSystemBack());
 
         return $this->afterInteraction();
     }
@@ -516,7 +596,7 @@ class TestableComponent
             /** @var NativeComponent $this */
             foreach ($this->pollDefinitions() as $def) {
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    $this->{$def['method']}();
+                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
                 }
             }
         }));
@@ -540,7 +620,7 @@ class TestableComponent
             "No #[Poll] method [{$method}] on ".get_class($this->component).'. Declared: '.(implode(', ', $defined) ?: '(none)')
         );
 
-        $this->guard(fn () => $this->component->{$method}());
+        $this->guard(fn () => ComponentMethodInvoker::invokeLifecycle($this->component, $method));
 
         return $this->afterInteraction();
     }
@@ -647,7 +727,7 @@ class TestableComponent
     public function goBack(): TestableComponent
     {
         if ($this->component->getNavigationIntent() === null) {
-            $this->guard(fn () => $this->component->onBackPressed());
+            $this->guard(fn () => $this->component->handleSystemBack());
         }
 
         $intent = $this->component->getNavigationIntent();
@@ -695,10 +775,15 @@ class TestableComponent
             $this->nativeRunning = true;
         });
 
+        NativeComponent::markActive($this->component);
+
         $this->guard(function () {
             $this->component->onResume();
-            $this->renderFrame();
+            $this->component->flushDispatchedEvents();
+            $this->takeTurns(render: true);
         });
+
+        $this->endLoopIfStopped();
     }
 
     // ── Assertions ──────────────────────────────────
@@ -924,6 +1009,64 @@ class TestableComponent
         return $this;
     }
 
+    // ── Component event assertions ──────────────────
+
+    public function assertDispatched(string $event, mixed ...$params): static
+    {
+        Assert::assertTrue(
+            $this->testDispatched($event, $params),
+            "Failed asserting that an event [{$event}] was dispatched."
+        );
+
+        return $this;
+    }
+
+    public function assertNotDispatched(string $event, mixed ...$params): static
+    {
+        Assert::assertFalse(
+            $this->testDispatched($event, $params),
+            "Failed asserting that an event [{$event}] was not dispatched."
+        );
+
+        return $this;
+    }
+
+    public function assertDispatchedTo(string $target, string $event, mixed ...$params): static
+    {
+        Assert::assertTrue(
+            $this->testDispatched($event, $params, $target),
+            "Failed asserting that event [{$event}] was dispatched to [{$target}]."
+        );
+
+        return $this;
+    }
+
+    private function testDispatched(string $event, array $params, ?string $target = null): bool
+    {
+        $events = collect($this->component->dispatchedEvents())
+            ->where('name', $event);
+
+        if ($target !== null) {
+            $events = $events->where('component', $target);
+        }
+
+        if ($params === []) {
+            return $events->isNotEmpty();
+        }
+
+        if (isset($params[0]) && is_callable($params[0]) && ! is_string($params[0])) {
+            return $events->contains(fn (array $dispatch) => (bool) $params[0]($event, $dispatch['params']));
+        }
+
+        return $events->contains(function (array $dispatch) use ($params) {
+            $common = array_intersect_key($dispatch['params'], $params);
+            ksort($common);
+            ksort($params);
+
+            return $common === $params;
+        });
+    }
+
     // ── Chrome assertions ───────────────────────────
 
     /** Assert the navigation bar title, across all chrome paths. */
@@ -951,14 +1094,28 @@ class TestableComponent
         return $this;
     }
 
+    /**
+     * Assert the tab bar is hidden on this screen (`$hidesTabBar` /
+     * `tabBarOptions()->hidden()`), across both chrome paths: on the
+     * native-chrome path the sentinel carries `hide_tab_bar`; on the
+     * custom-Column path the bar is simply not rendered.
+     */
     public function assertTabBarHidden(): static
     {
         $tabs = $this->findElement($this->tree(), 'native_root_tabs');
 
-        Assert::assertNotNull($tabs, 'No native tab chrome rendered — nothing to be hidden.');
-        Assert::assertTrue(
-            (bool) ($tabs['props']['hide_tab_bar'] ?? false),
-            'Expected the tab bar to be hidden on this screen, but hide_tab_bar is not set.'
+        if ($tabs !== null) {
+            Assert::assertTrue(
+                (bool) ($tabs['props']['hide_tab_bar'] ?? false),
+                'Expected the tab bar to be hidden on this screen, but hide_tab_bar is not set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNull(
+            $this->findElement($this->tree(), 'bottom_nav'),
+            'Expected the tab bar to be hidden on this screen, but a bottom_nav element was rendered.'
         );
 
         return $this;
@@ -968,10 +1125,18 @@ class TestableComponent
     {
         $tabs = $this->findElement($this->tree(), 'native_root_tabs');
 
-        Assert::assertNotNull($tabs, 'No native tab chrome rendered.');
-        Assert::assertFalse(
-            (bool) ($tabs['props']['hide_tab_bar'] ?? false),
-            'Expected the tab bar to be visible, but hide_tab_bar is set.'
+        if ($tabs !== null) {
+            Assert::assertFalse(
+                (bool) ($tabs['props']['hide_tab_bar'] ?? false),
+                'Expected the tab bar to be visible, but hide_tab_bar is set.'
+            );
+
+            return $this;
+        }
+
+        Assert::assertNotNull(
+            $this->findElement($this->tree(), 'bottom_nav'),
+            'Expected the tab bar to be visible, but no bottom_nav element was rendered.'
         );
 
         return $this;
@@ -1283,7 +1448,7 @@ class TestableComponent
     /** Read a public or #[Computed] property. */
     public function get(string $property): mixed
     {
-        return $this->component->{$property};
+        return data_get($this->component, $property);
     }
 
     /** The most recently published wire tree. */
@@ -1363,12 +1528,16 @@ class TestableComponent
      */
     protected function guard(\Closure $fn): mixed
     {
+        $this->guardDepth++;
+
         try {
             return $fn();
         } catch (NativeDumpException $e) {
             Assert::fail(
                 'Component called dd() at '.$e->getSourceFile().':'.$e->getSourceLine()."\n".$e->getFormattedDumps()
             );
+        } finally {
+            $this->guardDepth--;
         }
     }
 
@@ -1393,9 +1562,9 @@ class TestableComponent
             $this->resetComputedCache();
 
             $element = $this->renderToElement();
-            $tree = $this->memoizedToArray($element);
+            $tree = $this->memoizedToArray($element, $fingerprint);
 
-            nativephp_element_publish($tree);
+            $this->publishRenderedFrame($tree, $fingerprint);
 
             return $tree;
         });
@@ -1403,12 +1572,12 @@ class TestableComponent
         $this->frameCount++;
     }
 
-    /** Dispatch a UI event through NativeComponent::dispatch(). */
+    /** Dispatch a UI event through NativeComponent::dispatchUiEvent(). */
     protected function dispatchUiEvent(array $event): static
     {
         $this->guard(fn () => $this->scoped(function () use ($event) {
             /** @var NativeComponent $this */
-            $this->dispatch($event);
+            $this->dispatchUiEvent($event);
         }));
 
         return $this->afterInteraction();
@@ -1419,22 +1588,122 @@ class TestableComponent
     {
         $this->ensureActive();
         $this->framesBeforeInteraction = $this->frameCount;
+
+        // The screen that a test interacts with is the live one, as in its runloop.
+        NativeComponent::markActive($this->component);
     }
 
     /**
      * Post-interaction re-render, mirroring the runloop: a component that
      * set a navigation intent has stopped (its final state was already
      * published by publishFinalState()); otherwise render the next frame.
+     * Pass false after an interaction that the runloop does not render for.
      */
-    protected function afterInteraction(): static
+    protected function afterInteraction(bool $render = true): static
     {
-        if ($this->component->getNavigationIntent() === null && $this->isRunning()) {
-            $this->guard(fn () => $this->renderFrame());
-        } else {
+        $this->guard(fn () => $this->component->flushDispatchedEvents());
+
+        if (! $this->hasStopped()) {
+            $this->takeTurns($render);
+        }
+
+        if ($this->component->getNavigationIntent() !== null) {
             $this->lastTree = $this->bridge->lastPublish() ?? $this->lastTree;
         }
 
+        $this->endLoopIfStopped();
+
         return $this;
+    }
+
+    /**
+     * Take the turns the runloop takes once an interaction is over. Each
+     * turn delivers the events that PHP fired with event() since the
+     * one before, and renders when the interaction or a handler of
+     * such an event ran. What a handler fires is a turn more.
+     */
+    protected function takeTurns(bool $render): void
+    {
+        $turns = 0;
+
+        do {
+            if (++$turns > self::MAX_TURNS) {
+                Assert::fail(
+                    'A listener keeps firing events marked BroadcastsGlobally: '.get_class($this->component).
+                    ' took '.self::MAX_TURNS.' turns in a row and its inbox still was not empty.'
+                );
+            }
+
+            $heard = $this->guard(fn () => $this->scoped(function () {
+                /** @var NativeComponent $this */
+                return $this->deliverGlobalEvents(guarded: false);
+            }));
+
+            // A handler that navigated has ended the loop before its frame.
+            if ($heard && $this->hasStopped()) {
+                break;
+            }
+
+            if ($render || $heard) {
+                $this->guard(fn () => $this->renderFrame());
+            }
+
+            $render = false;
+        } while ($this->hasWaitingEvents());
+    }
+
+    /**
+     * An event that PHP fired with event() has landed in the inbox of the
+     * screen. During an interaction it waits for afterInteraction(). In
+     * the body of a test it is settled at once, which stands for the
+     * next turn of a loop: on a device nothing fires in between.
+     *
+     * @internal Called by the component, through the watcher set on it.
+     */
+    protected function globalEventArrived(): void
+    {
+        // A harness that an earlier test left behind takes no turns in this one.
+        if ($this->guardDepth > 0 || FakeBridge::current() !== $this->bridge) {
+            return;
+        }
+
+        $this->framesBeforeInteraction = $this->frameCount;
+
+        $this->afterInteraction(render: false);
+    }
+
+    /**
+     * Do what the end of a runloop does for a screen that navigated or
+     * stopped: it is not the live screen any more, and what waits
+     * in its inbox is dropped, so nothing arrives on its return.
+     */
+    protected function endLoopIfStopped(): void
+    {
+        if (! $this->hasStopped()) {
+            return;
+        }
+
+        $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $this->nativeEventInbox = [];
+        });
+
+        if (NativeComponent::active() === $this->component) {
+            NativeComponent::restoreActive(null);
+        }
+    }
+
+    protected function hasStopped(): bool
+    {
+        return $this->component->getNavigationIntent() !== null || ! $this->isRunning();
+    }
+
+    protected function hasWaitingEvents(): bool
+    {
+        return $this->scoped(function () {
+            /** @var NativeComponent $this */
+            return $this->nativeEventInbox !== [];
+        });
     }
 
     protected function isRunning(): bool
@@ -1518,7 +1787,7 @@ class TestableComponent
     /** Press callback id of the node with the given ref, if any. */
     protected function pressableIdByRef(array $node, string $ref): ?int
     {
-        return $this->callbackIdByRef($node, $ref, self::EVENT_PRESS);
+        return $this->callbackIdByRef($node, $ref, self::EVENT_CALLBACK_KEYS[self::EVENT_PRESS]);
     }
 
     /**
@@ -1548,10 +1817,13 @@ class TestableComponent
      * event type dispatches through — node-level (on_press/on_long_press)
      * or in the props map, wherever the element put it.
      */
-    protected function callbackIdByRef(array $node, string $ref, int $type): ?int
+    /**
+     * @param  array<int, string>  $keys  wire prop keys to try on the ref'd node, in order
+     */
+    protected function callbackIdByRef(array $node, string $ref, array $keys): ?int
     {
         if (($node['ref'] ?? null) === $ref) {
-            foreach (self::EVENT_CALLBACK_KEYS[$type] ?? [] as $key) {
+            foreach ($keys as $key) {
                 $id = $node[$key] ?? $node['props'][$key] ?? null;
                 if (is_int($id)) {
                     return $id;
@@ -1562,7 +1834,7 @@ class TestableComponent
         }
 
         foreach ($node['children'] ?? [] as $child) {
-            if (($id = $this->callbackIdByRef($child, $ref, $type)) !== null) {
+            if (($id = $this->callbackIdByRef($child, $ref, $keys)) !== null) {
                 return $id;
             }
         }
@@ -1700,7 +1972,29 @@ class TestableComponent
         return false;
     }
 
-    /** Every string prop value in the subtree (visible text, titles, …). */
+    /**
+     * Prop keys whose values are user-visible / announced text. collectText()
+     * harvests only these, so string props that merely configure appearance
+     * (colors, icon names, font names) don't count as "visible text" for
+     * assertSee(), tap()-by-text, or the a11y audit — a styled icon-only
+     * pressable used to slip past the audit because its `dark_bg_color`
+     * string satisfied the visible-text check.
+     *
+     * The *_json keys carry serialized swipe-action / badge specs whose
+     * `label` fields are user-visible; the whole blob is searched so
+     * assertSee('Archive') keeps matching swipe actions.
+     *
+     * @var list<string>
+     */
+    protected const TEXT_PROP_KEYS = [
+        'text', 'label', 'title', 'subtitle', 'placeholder', 'value',
+        'alt', 'a11y_label', 'a11y_hint', 'headline', 'supporting',
+        'overline', 'heading', 'options', 'leading_value', 'trailing_value',
+        'nav_title', 'nav_subtitle', 'search_placeholder', 'nav_search_placeholder',
+        'leading_actions_json', 'trailing_actions_json', 'trailing_badges_json',
+    ];
+
+    /** Every announced-text prop value in the subtree (visible text, titles, …). */
     protected function collectText(array $node, array &$found = []): array
     {
         $walkProps = function ($value) use (&$walkProps, &$found): void {
@@ -1713,7 +2007,11 @@ class TestableComponent
             }
         };
 
-        $walkProps($node['props'] ?? []);
+        foreach (self::TEXT_PROP_KEYS as $key) {
+            if (isset($node['props'][$key])) {
+                $walkProps($node['props'][$key]);
+            }
+        }
 
         foreach ($node['children'] ?? [] as $child) {
             $this->collectText($child, $found);

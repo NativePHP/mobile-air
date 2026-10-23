@@ -50,6 +50,10 @@ class LazyGrid extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        // `grid-cols-N` class first so an explicit `:columns` attribute wins.
+        if (isset($attrs['gridColumns'])) {
+            $this->columns((int) $attrs['gridColumns']);
+        }
         if (isset($attrs['columns'])) {
             $this->columns((int) $attrs['columns']);
         }
@@ -58,6 +62,9 @@ class LazyGrid extends Element
         }
         if (isset($attrs['horizontal'])) {
             $this->horizontal((bool) $attrs['horizontal']);
+        }
+        if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
+            $this->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
         }
     }
 
@@ -83,6 +90,18 @@ class LazyGrid extends Element
     public function horizontal(bool $value = true): static
     {
         $this->gridProps['horizontal'] = $value;
+
+        return $this;
+    }
+
+    /**
+     * Same contract as scroll-view, but the grid's historical default is
+     * HIDDEN — pass true to opt long grids into a scroll-position cue.
+     * iOS-only in effect: Compose's lazy grids draw no indicators anyway.
+     */
+    public function showsIndicators(bool $value = true): static
+    {
+        $this->gridProps['shows_indicators'] = $value;
 
         return $this;
     }
