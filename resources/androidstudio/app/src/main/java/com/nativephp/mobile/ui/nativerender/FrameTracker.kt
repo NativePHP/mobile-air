@@ -45,6 +45,9 @@ object FrameTracker {
     val jankCount: MutableState<Int> = mutableStateOf(0)
     val frameCount: MutableState<Int> = mutableStateOf(0)
 
+    /** Creates this object's Compose state; call on the main thread before the first composition. */
+    fun createState() {}
+
     /** Ring buffer of last N frame intervals in ms. 120 entries ≈ 2s
      *  at 60Hz, 1s at 120Hz. Long enough to smooth instantaneous noise,
      *  short enough to reflect current state. */

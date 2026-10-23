@@ -11,6 +11,7 @@ use Native\Mobile\Edge\Enums\AlignItems;
 use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
+use Native\Mobile\Edge\Exceptions\UnknownElementException;
 
 class NativeElementCollector
 {
@@ -57,6 +58,17 @@ class NativeElementCollector
         'column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas',
         'spacer', 'divider', 'bottom_bar', 'virtual_list',
         'text', 'button', 'webview',
+    ];
+
+    /**
+     * Wire prop for each side's border width, keyed to the TailwindParser
+     * attribute that sets it. Clockwise from the top, as the renderers walk them.
+     */
+    protected const BORDER_SIDES = [
+        'border_t' => 'borderTopWidth',
+        'border_r' => 'borderRightWidth',
+        'border_b' => 'borderBottomWidth',
+        'border_l' => 'borderLeftWidth',
     ];
 
     /**
@@ -358,7 +370,9 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -394,7 +408,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -409,6 +423,7 @@ class NativeElementCollector
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
@@ -455,7 +470,9 @@ class NativeElementCollector
             $props = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
+                + static::buildHeroProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -486,7 +503,7 @@ class NativeElementCollector
             // Plugin element — instantiate for resolveProps/applyAttributes
             $element = ElementRegistry::resolve($type);
             if (! $element) {
-                throw new \RuntimeException("Unknown native element type: {$type}");
+                throw UnknownElementException::forType($type);
             }
 
             $element->applyAttributes($attrs);
@@ -501,6 +518,7 @@ class NativeElementCollector
             $darkProps = static::buildDarkProps($attrs)
                 + static::buildGradientProps($attrs)
                 + static::buildCornerRadiusProps($attrs)
+                + static::buildBorderProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
@@ -675,8 +693,8 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $style['border_radius'] = (float) $attrs['borderRadius'];
         }
-        if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
-            $style['border_width'] = (float) $attrs['borderWidth'];
+        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
+            $style['border_width'] = $borderWidth;
             $style['border_color'] = $attrs['borderColor'];
         }
         if (isset($attrs['opacity'])) {
@@ -775,6 +793,33 @@ class NativeElementCollector
     }
 
     /**
+     * Shared-element identity + motion props for the builtin streaming path.
+     *
+     * `ref` is the public identity (test handle AND morph id). Morph shape/timing
+     * ride alongside it. The Element-tree path already applies these via
+     * applyCallbacks/applyStyle; streaming builtins used to drop them.
+     */
+    public static function buildHeroProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['ref']) && $attrs['ref'] !== '') {
+            $props['ref'] = (string) $attrs['ref'];
+        }
+        if (isset($attrs['morph'])) {
+            $props['morph'] = (string) $attrs['morph'];
+        }
+        if (isset($attrs['morph-duration'])) {
+            $props['morph_duration'] = (float) $attrs['morph-duration'];
+        }
+        if (isset($attrs['morph-easing'])) {
+            $props['morph_easing'] = (string) $attrs['morph-easing'];
+        }
+
+        return $props;
+    }
+
+    /**
      * Build linear-gradient props from the `gradient` attribute key
      * (`bg-gradient-to-* from-* via-* to-*`).
      *
@@ -862,6 +907,63 @@ class NativeElementCollector
         }
 
         return $props;
+    }
+
+    /**
+     * Border style and per-side border widths (`border-dashed`, `border-l`,
+     * `border-y-2`, …), on the prop bag beside the corner radii: the packed
+     * node carries one `border_width` float and no style.
+     *
+     * `border_style` is 0 solid, 1 dashed, 2 dotted, and is emitted whenever
+     * one was authored, solid included, so `md:border-solid` can undo a
+     * dashed base. The sides follow buildCornerRadiusProps: all four
+     * whenever ANY is authored, each resolved against the uniform `border-*`
+     * width (0 when there is none), so `border-l` alone is a left border
+     * and `border border-l-0` is a box missing its left side.
+     *
+     * @return array{border_style?: int, border_t?: float, border_r?: float, border_b?: float, border_l?: float}
+     */
+    public static function buildBorderProps(array $attrs): array
+    {
+        $props = [];
+
+        if (isset($attrs['borderStyle'])) {
+            $props['border_style'] = (int) $attrs['borderStyle'];
+        }
+
+        if (! TailwindParser::hasSideBorderWidth($attrs)) {
+            return $props;
+        }
+
+        $uniform = isset($attrs['borderWidth']) ? (float) $attrs['borderWidth'] : 0.0;
+
+        foreach (self::BORDER_SIDES as $prop => $attr) {
+            $props[$prop] = isset($attrs[$attr]) ? (float) $attrs[$attr] : $uniform;
+        }
+
+        return $props;
+    }
+
+    /**
+     * The `border_width` the style block carries: the uniform width, or the
+     * widest side when sides were authored. Renderers that read the sides
+     * from buildBorderProps only use it to tell that there is a border;
+     * older ones draw a full border of that width. Null when no width was
+     * authored, which leaves the node without a border.
+     */
+    protected static function borderWidth(array $attrs): ?float
+    {
+        $widths = [];
+
+        foreach (self::BORDER_SIDES as $attr) {
+            if (isset($attrs[$attr])) {
+                $widths[] = (float) $attrs[$attr];
+            } elseif (isset($attrs['borderWidth'])) {
+                $widths[] = (float) $attrs['borderWidth'];
+            }
+        }
+
+        return $widths === [] ? null : max($widths);
     }
 
     /**
@@ -954,7 +1056,7 @@ class NativeElementCollector
         static::applyStyle($element, $attrs);
         static::applyElementProps($element, $attrs);
         $element->mergeDarkProps(static::buildDarkProps($attrs));
-        foreach (static::buildGradientProps($attrs) + static::buildCornerRadiusProps($attrs) as $key => $value) {
+        foreach (static::buildGradientProps($attrs) + static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
             $element->setProp($key, $value);
         }
 
@@ -1564,7 +1666,7 @@ class NativeElementCollector
         }
 
         $element = static::makeElement($type)
-            ?? throw new \RuntimeException("Unknown native element type: {$type}");
+            ?? throw UnknownElementException::forType($type);
 
         if ($rawClass !== null) {
             $element->setProp(static::$capturedAttributes['class'], $rawClass);
@@ -1630,8 +1732,9 @@ class NativeElementCollector
         }
 
         // Per-corner radius rides the prop bag for the same reason — the
-        // packed node has only one `border_radius` float.
-        foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
+        // packed node has only one `border_radius` float. Per-side border
+        // widths and the border style likewise.
+        foreach (static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
             $element->setProp($key, $value);
         }
         // Responsive variants (`md:` / `lg:` classes) ride the prop bag as
@@ -1796,8 +1899,8 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $element->borderRadius((float) $attrs['borderRadius']);
         }
-        if (isset($attrs['borderWidth'], $attrs['borderColor'])) {
-            $element->border((float) $attrs['borderWidth'], $attrs['borderColor']);
+        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
+            $element->border($borderWidth, $attrs['borderColor']);
         }
         if (isset($attrs['opacity']) && ! ($attrs['opacity'] instanceof SharedValue)) {
             // SharedValue-bound opacity is routed through the prop bag
@@ -1853,6 +1956,32 @@ class NativeElementCollector
         // auto-scrolls on new content when the user is already near the bottom.
         if (isset($attrs['scroll-anchor'])) {
             $element->setProp('scroll_anchor', (string) $attrs['scroll-anchor']);
+        }
+        // Shared-element motion controls. The element's IDENTITY is its
+        // `ref` (applied generically in applyCallbacks → Element::ref), so
+        // these only shape HOW a matched pair travels.
+        //
+        // Here rather than in `buildAnimationProps()` because that helper only
+        // runs on the builtin path, which would leave plugin elements
+        // (`<image>`, `<text>`) unable to be tuned.
+        //
+        //   morph          — frame (default: travel + resize) | position
+        //                    (travel, keep own size) | size (resize in place)
+        //                    | none (opt out; keeps `ref` as a plain handle)
+        //   morph-duration — ms; overrides the shared 350ms morph pace
+        //   morph-easing   — linear | ease-in | ease-out | ease-in-out | spring
+        //
+        // Deliberately distinct from `animate-duration` / `animate-easing`,
+        // which drive state-change transforms: an element may want a 200ms
+        // press response and a 600ms morph.
+        if (isset($attrs['morph'])) {
+            $element->setProp('morph', (string) $attrs['morph']);
+        }
+        if (isset($attrs['morph-duration'])) {
+            $element->setProp('morph_duration', (float) $attrs['morph-duration']);
+        }
+        if (isset($attrs['morph-easing'])) {
+            $element->setProp('morph_easing', (string) $attrs['morph-easing']);
         }
     }
 

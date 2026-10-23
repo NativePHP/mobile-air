@@ -35,11 +35,13 @@ use Native\Mobile\Edge\Layouts\NativeLayout;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
+use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Exceptions\AsyncTaskException;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\PendingAsyncTask;
 use Native\Mobile\Platform;
 use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\System;
 use Symfony\Component\VarDumper\Cloner\VarCloner;
@@ -85,8 +87,17 @@ abstract class NativeComponent
 
     private array $overlayCallbackIds = [];
 
-    /** @var array<string, string> event name → method name */
+    /** @var array<string, list<array{method: string, when: array<array-key, mixed>}>> event name → listeners, in declared order */
     private array $nativeEventListeners = [];
+
+    /** Whether the last native event ran nothing here, so no render has to follow: no #[On] filter matched it or it only woke the loop for an event of another lane, and no Laravel listener ran for it. */
+    private bool $nativeEventUnheard = false;
+
+    /** @var list<object> Events that PHP fired with event(), waiting for the next turn of this screen's loop. */
+    private array $nativeEventInbox = [];
+
+    /** Called when an event lands in the inbox. Only the test harness sets it, to take the turn a loop would. */
+    private ?\Closure $nativeEventInboxWatcher = null;
 
     /** #[Computed] map: property name → ['method' => string, 'persist' => bool]. Null until reflected. */
     private ?array $computedMeta = null;
@@ -117,6 +128,9 @@ abstract class NativeComponent
 
     protected ?NavigationIntent $nativeNavigationIntent = null;
 
+    /** True while dispatching a system back (type 8) from native navigation. */
+    protected bool $nativeAnsweringSystemBack = false;
+
     protected ?NativeRouter $nativeRouter = null;
 
     protected array $nativeParams = [];
@@ -127,6 +141,13 @@ abstract class NativeComponent
     private array $nativePendingComponentEvents = [];
 
     /** @var list<array{name: string, params: array, self?: bool, component?: string}> */
+    /**
+     * How many dispatched events are kept for test assertions. The list is
+     * only ever read by TestableComponent's assertDispatched(), which looks for
+     * one specific dispatch — never the whole history — so a window is enough.
+     */
+    private const MAX_RECORDED_DISPATCHES = 500;
+
     private array $nativeDispatchedComponentEvents = [];
 
     private bool $nativeFlushingComponentEvents = false;
@@ -181,6 +202,21 @@ abstract class NativeComponent
     /** Heartbeat period — every Nth publish, drop the hash store so the
      *  next frame re-validates the whole tree. ~2s at 60fps publish rate. */
     private const NPHP_FORCE_FULL_FRAME_EVERY = 120;
+
+    /**
+     * Fingerprint of the last frame the runloop published (see
+     * memoizedToArray()), and the force_full_frame epoch it went out under.
+     * The next frame is not published when it has the same fingerprint and
+     * the epoch hasn't moved: the native side already has it.
+     *
+     * Null at the start of every runloop session, on the memo heartbeat,
+     * and whenever this component draws something else (error or dump
+     * screen, placeholder, final state, streamed frame), so the next frame
+     * always goes out.
+     */
+    private ?string $publishedFrame = null;
+
+    private int $publishedFrameEpoch = 0;
 
     public function render(): Element|View
     {
@@ -242,7 +278,11 @@ abstract class NativeComponent
         return (nativephp_runtime_flags() & 0x02) !== 0;
     }
 
-    private function memoizedToArray(Element $element): array
+    /**
+     * @param  ?string  $fingerprint  Set to what the frame looks like to the
+     *                                native side, see frameFingerprint().
+     */
+    private function memoizedToArray(Element $element, ?string &$fingerprint = null): array
     {
         $this->publishCount++;
 
@@ -258,7 +298,10 @@ abstract class NativeComponent
             // correctness while the keyed/positional REUSE desync is unsolved.
             $throwaway = [];
 
-            return $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
+            $tree = $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
+            $fingerprint = self::frameFingerprint($tree, $emitted);
+
+            return $tree;
         }
 
         // Explicit invalidation: when the C extension bumps the region's
@@ -281,6 +324,10 @@ abstract class NativeComponent
         // amortized across frames and self-heals any stale entries.
         if ($this->publishCount % self::NPHP_FORCE_FULL_FRAME_EVERY === 1) {
             $this->lastNodeHashes = [];
+
+            // The heartbeat re-sends the whole tree, so it must not be held
+            // back as unchanged.
+            $this->publishedFrame = null;
         }
 
         $tree = $element->toArray(
@@ -302,7 +349,65 @@ abstract class NativeComponent
         // frame guarantees a remounting node always re-emits FULL.
         $this->lastNodeHashes = array_intersect_key($this->lastNodeHashes, $emitted);
 
+        $fingerprint = self::frameFingerprint($tree, $emitted);
+
         return $tree;
+    }
+
+    /**
+     * What a built frame looks like to the native side, cheaply. toArray()
+     * folds every node's type, layout, style, props, callbacks and children
+     * into the root's `_hash`; node ids aren't in it, so they are added in
+     * emit order. Two frames with the same fingerprint publish the same tree.
+     *
+     * @param  array<string, mixed>  $tree
+     * @param  array<int, true>  $emittedIds
+     */
+    private static function frameFingerprint(array $tree, array $emittedIds): ?string
+    {
+        if (! isset($tree['_hash'])) {
+            return null;
+        }
+
+        return $tree['_hash'].':'.hash('xxh3', implode(',', array_keys($emittedIds)));
+    }
+
+    /**
+     * Publish a frame the runloop rendered, unless the native side already
+     * has it: same fingerprint as the last frame published, and nothing has
+     * reset the region or bumped its force_full_frame epoch since (a reset,
+     * a refused frame, nativephp_force_full_frame()). Returns whether the
+     * frame was published.
+     *
+     * The C extension already drops a frame whose bytes match the last one
+     * it published, before the native side sees it. Holding it back here
+     * also saves building those bytes: a walk of the whole tree, a few ms
+     * on a long list.
+     *
+     * Not under Jump: the epoch there is a constant 0, so PHP can't see
+     * the phone drop its tree, and every frame is sent as before.
+     *
+     * @param  array<string, mixed>  $tree
+     */
+    private function publishRenderedFrame(array $tree, ?string $fingerprint): bool
+    {
+        // Read before publishing: a frame the extension refuses bumps the
+        // epoch, so the next one goes out even if it is the same.
+        $epoch = nativephp_force_full_frame_epoch();
+
+        if ($fingerprint !== null
+            && $fingerprint === $this->publishedFrame
+            && $epoch === $this->publishedFrameEpoch
+            && ! System::runningInJump()) {
+            return false;
+        }
+
+        nativephp_element_publish($tree);
+
+        $this->publishedFrame = $fingerprint;
+        $this->publishedFrameEpoch = $epoch;
+
+        return true;
     }
 
     /**
@@ -869,6 +974,11 @@ abstract class NativeComponent
             // Active tab's screen URI — used by the iOS bridge's per-URI
             // diff to keep tab-switch animations smooth.
             $attrs['currentUri'] = $this->nativeRouter?->currentUri() ?? '';
+            // Router stack depth — lets the native coordinators reconcile
+            // push/pop by LEVEL instead of URI membership, so revisiting a
+            // URI that is already on the stack pushes a new level rather
+            // than being misread as a pop back to the earlier one.
+            $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
 
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
@@ -998,6 +1108,9 @@ abstract class NativeComponent
             // NavigationCoordinator can route push / pop / no-op
             // correctly across publishes.
             $attrs['currentUri'] = $this->nativeRouter?->currentUri() ?? '';
+            // Router stack depth — depth-based reconciliation (see the
+            // tabs sentinel above for rationale).
+            $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
             // Per-screen nav-bar opt-out — the sentinel (and its
             // NavigationStack) survives; only the toolbar hides.
             if ($this->shouldHideNavBar()) {
@@ -1616,10 +1729,31 @@ abstract class NativeComponent
      * (block indefinitely) when there are no polls (class #[Poll] or Blade
      * native:poll); otherwise the time until the soonest-due timer,
      * floored at 1ms.
+     *
+     * One exception comes first. While the error screen is up, runDuePolls()
+     * is deliberately skipped (see the runloop) so a throwing callback cannot
+     * repaint the overlay on every tick. Nothing then advances the poll
+     * deadlines, so they all sit permanently in the past — and the floor below
+     * hands back 1ms, forever. On any screen with a poll that was ~1000
+     * wake-ups a second, for as long as the overlay showed, to do nothing at
+     * all. Block instead: everything the overlay needs — its own controls, hot
+     * reload, shutdown — arrives as an event, which is already how a screen
+     * with no polls at all behaves.
      */
     private function nextEventTimeout(): int
     {
-        $deadlines = array_map(fn ($def) => $def['next'], $this->pollDefinitions());
+        // Prime the timers before the early exit: a screen whose mount() or
+        // first render failed enters the loop with nativeHasError already set,
+        // and returning without priming would stamp the deadlines only once the
+        // user dismisses the overlay — so a #[Poll(30000)] that IS that
+        // screen's refresh would idle another 30s after recovery.
+        $definitions = $this->pollDefinitions();
+
+        if ($this->nativeHasError) {
+            return -1;
+        }
+
+        $deadlines = array_map(fn ($def) => $def['next'], $definitions);
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
         }
@@ -1628,7 +1762,25 @@ abstract class NativeComponent
             return -1;
         }
 
-        return max(1, (int) ceil(min($deadlines) - microtime(true) * 1000));
+        $soonest = min($deadlines);
+        $now = microtime(true) * 1000;
+
+        // Already due: run it now rather than sleeping first. The 1ms floor was
+        // applied even to a deadline that had already passed — so a screen whose
+        // frame costs 5ms and asked for a 1ms poll, already 4ms behind before it
+        // starts, got another millisecond of sleep in front of the work it was
+        // late for. Only screens polling faster than they can render were ever
+        // affected; a 1-second poll on a 4ms frame is never late.
+        //
+        // This cannot spin without doing work: every pass renders and publishes,
+        // and runDuePolls() advances both the #[Poll] deadlines and the Blade
+        // native:poll ones past `now` on the same pass, using this same
+        // comparison — so a deadline reported due here is one that pass services.
+        if ($soonest <= $now) {
+            return 0;
+        }
+
+        return max(1, (int) ceil($soonest - $now));
     }
 
     /**
@@ -1725,6 +1877,7 @@ abstract class NativeComponent
             $element = $result instanceof View
                 ? $this->fromView($result)
                 : $result;
+            $this->publishedFrame = null;
             nativephp_element_publish($this->memoizedToArray($element));
         } catch (\Throwable $e) {
             NativeRouter::debugLog('placeholder() FAILED in '.static::class.': '.$e->getMessage());
@@ -1733,10 +1886,14 @@ abstract class NativeComponent
 
     /**
      * Scan this component's methods for #[OnNative] attributes
-     * and build the event name → method map.
+     * and build the event name → listeners map.
      */
     private function registerNativeEventListeners(): void
     {
+        // Each scan starts from an empty map, so that a screen which
+        // is scanned twice still lists every listener only once.
+        $this->nativeEventListeners = [];
+
         $reflect = new \ReflectionClass($this);
 
         foreach ($reflect->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
@@ -1756,7 +1913,14 @@ abstract class NativeComponent
 
             foreach ($attributes as $attribute) {
                 $instance = $attribute->newInstance();
-                $this->nativeEventListeners[$instance->event] = $method->getName();
+
+                // Two filters on one method are two listeners, and the dispatch
+                // runs their method once. Without a filter, as on the legacy
+                // attribute, the listener gets an empty one and hears all.
+                $this->nativeEventListeners[$instance->event][] = [
+                    'method' => $method->getName(),
+                    'when' => $instance->when ?? [],
+                ];
             }
         }
     }
@@ -1823,12 +1987,39 @@ abstract class NativeComponent
     }
 
     /**
+     * Give a deep link back to the browser.
+     *
+     * Android goes through the core System.OpenInBrowser. A plain
+     * Browser::open() there resolves the app's own verified App Link straight
+     * back to the app, which delivers the link here again, in a loop that never
+     * reaches the browser. iOS sends an app's own universal link to Safari when
+     * the app opens it, so there the browser plugin's open() is enough. Android
+     * projects installed before System.OpenInBrowser existed take that path
+     * too, and keep the old behaviour until the native project is reinstalled.
+     */
+    protected static function openDeepLinkInBrowser(string $url): bool
+    {
+        if (function_exists('nativephp_call')) {
+            $result = nativephp_call('System.OpenInBrowser', json_encode(['url' => $url]));
+
+            // Null means the platform doesn't have it, not that it failed.
+            if ($result !== null) {
+                return (json_decode($result, true)['success'] ?? false) === true;
+            }
+        }
+
+        // A no-op when the app doesn't ship the browser plugin.
+        return (new Browser)->open($url);
+    }
+
+    /**
      * Handle a native event (type 20) by looking up #[OnNative] listeners.
      */
     protected function dispatchNativeEvent(array $event): void
     {
         $eventName = $event['event'] ?? '';
         $payload = $event['payload'] ?? [];
+        $this->nativeEventUnheard = false;
 
         // Deep link / universal link arriving while the app is already running.
         // The native shell (DeepLinkRouter) posts this to wake the blocked event
@@ -1846,13 +2037,12 @@ abstract class NativeComponent
                 // serves a local 404 — a dead end the user can't back out of. The
                 // link belongs to the site we took it from, so give it back to the
                 // browser and leave the current screen alone.
-                // open() is a no-op when the app doesn't ship a browser handler,
-                // so only swallow the link if it was actually handed off —
-                // otherwise fall through and behave exactly as before.
+                // Only swallow the link if it was actually handed off — otherwise
+                // fall through and behave exactly as before.
                 if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
                     NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
 
-                    if ((new Browser)->open($url)) {
+                    if (static::openDeepLinkInBrowser($url)) {
                         return;
                     }
 
@@ -1863,6 +2053,15 @@ abstract class NativeComponent
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri);
                 $this->stop();
             }
+
+            return;
+        }
+
+        // An event marked BroadcastsGlobally that another lane has fired. This
+        // frame carries it, serialized and signed with the key of the app.
+        // It is fired here as if this lane had fired it to begin with.
+        if ($eventName === GlobalEventTransport::EVENT_NAME) {
+            $this->fireEventOfAnotherLane($payload);
 
             return;
         }
@@ -1880,12 +2079,73 @@ abstract class NativeComponent
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
-        $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
+        $callbackFired = $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
 
         // Fluent closure listeners registered via ->on('Event', fn) — persistent
         // and keyed by event name, so they fire every time the event arrives
         // (unlike the one-shot camera callbacks above). The payload is exposed as
         // a plain object so handlers can read $event->someField.
+        $closuresRan = $this->runNativeEventClosures($eventName, $payload);
+
+        // System-level events tagged BroadcastsGlobally are ALSO pushed through
+        // Laravel's dispatcher so listeners anywhere in the app react — not just
+        // this component's #[On] handlers. Those listeners run first, and they
+        // run even when this component declares no listener for the event.
+        $laravelHeard = $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
+
+        $methodsRan = $this->runNativeEventListeners($eventName, $payload);
+
+        // The screen listens for this event, yet none of its filters matched
+        // and no callback, closure or Laravel listener ran for it. Nothing
+        // here changed, so the loops keep the frame that is on screen.
+        // A component event that still waits to be delivered by the
+        // flush after this one is a change, and needs its frame.
+        $this->nativeEventUnheard = $this->nativeListenersFor($eventName) !== []
+            && ! $methodsRan && ! $callbackFired && ! $closuresRan && ! $laravelHeard
+            && $this->nativePendingComponentEvents === [];
+    }
+
+    /**
+     * Fire the event that another lane sent to this one, which the
+     * payload of its frame carries. Laravel's listeners run in
+     * here, and the screen hears it on its next loop turn.
+     */
+    private function fireEventOfAnotherLane(mixed $payload): void
+    {
+        $event = GlobalEventTransport::receive($payload);
+        $laravelHeard = $event !== null && $this->fireThroughLaravel($event);
+
+        // The arrival changed nothing on the screen, so the loops keep the
+        // frame. A handler that runs for the event on the next turn gets
+        // its frame there. A Laravel listener that ran for the event
+        // is a change and needs a frame, and so does a component
+        // event that still waits for the flush after this one.
+        $this->nativeEventUnheard = ! $laravelHeard && $this->nativePendingComponentEvents === [];
+    }
+
+    /**
+     * Fire an event through Laravel's event(), and answer whether a listener
+     * was registered for it there. Such a listener may have changed what
+     * a render reads, as this package's own do for the theme, so the
+     * frame that is on screen is drawn again once it has run.
+     */
+    private function fireThroughLaravel(object $event): bool
+    {
+        // Asked before the event is fired, as a listener may take itself off.
+        $heard = GlobalEventDispatcher::laravelListensFor($event);
+
+        event($event);
+
+        return $heard;
+    }
+
+    /**
+     * Run the ->on() closures that this screen holds for an event name.
+     * Each is bound to the screen and gets the payload as an object.
+     * Answers whether the screen had a closure for the event.
+     */
+    private function runNativeEventClosures(string $eventName, mixed $payload): bool
+    {
         $closures = $this->nativeEventClosures[$eventName]
             ?? $this->nativeEventClosures['native:'.$eventName]
             ?? [];
@@ -1900,18 +2160,198 @@ abstract class NativeComponent
             }
         }
 
-        // System-level events tagged BroadcastsGlobally are ALSO pushed through
-        // Laravel's dispatcher so listeners anywhere in the app react — not just
-        // this component's #[On] handlers. Runs before the (early-returning)
-        // #[On] lookup below so it fires even when this component declares no
-        // listener for the event.
-        $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
+        return $closures !== [];
+    }
 
-        $method = $this->nativeEventListeners[$eventName]
+    /**
+     * Run the #[On] listeners of this screen whose filter a payload passes.
+     * Answers whether any method ran. None ran when no filter matched,
+     * and none when the screen declares no listener for the event.
+     */
+    private function runNativeEventListeners(string $eventName, mixed $payload): bool
+    {
+        $methods = $this->matchingListenerMethods($this->nativeListenersFor($eventName), $payload);
+
+        foreach ($methods as $method) {
+            $this->invokeNativeEventListener($method, $payload);
+        }
+
+        return $methods !== [];
+    }
+
+    /**
+     * The #[On] listeners that this screen declares for an event name.
+     * The attribute stores a name with the `native:` prefix, so the
+     * name is looked up as it came in, and then with the prefix.
+     *
+     * @return list<array{method: string, when: array<array-key, mixed>}>
+     */
+    private function nativeListenersFor(string $eventName): array
+    {
+        return $this->nativeEventListeners[$eventName]
             ?? $this->nativeEventListeners['native:'.$eventName]
-            ?? null;
+            ?? [];
+    }
 
-        if ($method === null || ! method_exists($this, $method)) {
+    /**
+     * @internal Put an event that PHP fired with event() in this screen's inbox.
+     *           The loop of the screen delivers it on its next turn, so that
+     *           no handler runs inside event() and a burst is one render.
+     */
+    public function receiveGlobalEvent(object $event): void
+    {
+        $this->nativeEventInbox[] = $event;
+
+        if ($this->nativeEventInboxWatcher !== null) {
+            ($this->nativeEventInboxWatcher)();
+        }
+    }
+
+    /**
+     * Deliver the events that wait in the inbox, and answer whether any
+     * closure or listener ran for them. A failing handler shows the
+     * overlay of a failing native event, and the rest still follow.
+     * The harness passes false, so that its tests see the failure.
+     */
+    private function deliverGlobalEvents(bool $guarded = true): bool
+    {
+        $events = $this->nativeEventInbox;
+        $this->nativeEventInbox = [];
+        $heard = false;
+
+        foreach ($events as $event) {
+            // A handler that navigated has ended the loop, and what is
+            // left of this turn is dropped with the rest of the inbox.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            $deliver = function () use ($event, &$heard) {
+                $heard = $this->hearGlobalEvent($event) || $heard;
+                $this->flushDispatchedEvents();
+            };
+
+            $guarded ? $this->runGuardedInteraction('deliverGlobalEvents()', $deliver) : $deliver();
+        }
+
+        return $heard;
+    }
+
+    /**
+     * Run this screen's ->on() closures and #[On] listeners for one event
+     * object. Its public properties are the payload, and a backed enum
+     * among them is given as its backing value, as a device sends it.
+     */
+    private function hearGlobalEvent(object $event): bool
+    {
+        $payload = array_map(
+            fn (mixed $value) => $value instanceof \BackedEnum ? $value->value : $value,
+            get_object_vars($event),
+        );
+
+        $closuresRan = $this->runNativeEventClosures($event::class, $payload);
+        $methodsRan = $this->runNativeEventListeners($event::class, $payload);
+
+        return $closuresRan || $methodsRan;
+    }
+
+    /**
+     * Pick the methods to run for one event out of its #[On] listeners.
+     * A listener is used when its `when` filter matches the payload,
+     * and its method is picked once, also when two filters match.
+     *
+     * @param  list<array{method: string, when: array<array-key, mixed>}>  $listeners
+     * @return list<string>
+     */
+    private function matchingListenerMethods(array $listeners, mixed $payload): array
+    {
+        $methods = [];
+
+        foreach ($listeners as ['method' => $method, 'when' => $when]) {
+            if (! in_array($method, $methods, true) && $this->listenerFilterMatches($when, $payload)) {
+                $methods[] = $method;
+            }
+        }
+
+        return $methods;
+    }
+
+    /**
+     * Tell whether a payload passes the `when` filter of an #[On] listener.
+     * Every key of the filter has to be in the payload and has to hold
+     * its value. An empty filter lets all payloads pass, of any type.
+     */
+    private function listenerFilterMatches(array $when, mixed $payload): bool
+    {
+        if ($when === []) {
+            return true;
+        }
+
+        if (! is_array($payload)) {
+            return false;
+        }
+
+        foreach ($when as $key => $expected) {
+            if (! $this->payloadHolds($payload, (string) $key, $expected)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Tell whether a payload holds the expected value under a filter key.
+     * A key that the payload has as it is written wins. Otherwise, its
+     * dots lead into nested arrays and into the values of objects.
+     */
+    private function payloadHolds(array $payload, string $key, mixed $expected): bool
+    {
+        $segments = array_key_exists($key, $payload) ? [$key] : explode('.', $key);
+        $actual = $payload;
+
+        foreach ($segments as $segment) {
+            $public = is_object($actual) ? get_mangled_object_vars($actual) : $actual;
+
+            // An object without that public property is asked for an item,
+            // and then for a magic property. That is how a collection
+            // and a model hold values, and a null reads as missing.
+            if (is_array($public) && array_key_exists($segment, $public)) {
+                $actual = $public[$segment];
+            } elseif ($actual instanceof \ArrayAccess && isset($actual[$segment])) {
+                $actual = $actual[$segment];
+            } elseif (is_object($actual) && isset($actual->{$segment})) {
+                $actual = $actual->{$segment};
+            } else {
+                return false;
+            }
+        }
+
+        // A backed enum on either side stands for its own backing value,
+        // and a pure enum only matches its own case. This runs before
+        // a type hint of the handler has coerced the payload.
+        $actual = $actual instanceof \BackedEnum ? $actual->value : $actual;
+        $expected = $expected instanceof \BackedEnum ? $expected->value : $expected;
+
+        // Two numbers match when they are equal as numbers, as JSON has
+        // one number type: a device sends a whole float as an int,
+        // and an event that PHP fired holds the float itself.
+        if ((is_int($actual) || is_float($actual)) && (is_int($expected) || is_float($expected))) {
+            return $actual == $expected;
+        }
+
+        // Every other pair is compared strictly: 1 is not '1', nor true.
+        return $actual === $expected;
+    }
+
+    /**
+     * Invoke one #[On] listener method with a native event payload.
+     * An array payload is bound to the parameters by their name,
+     * and any other payload is passed as the single argument.
+     */
+    private function invokeNativeEventListener(string $method, mixed $payload): void
+    {
+        if (! method_exists($this, $method)) {
             return;
         }
 
@@ -1942,6 +2382,13 @@ abstract class NativeComponent
             return $value;
         }
 
+        // A null stays a null for a parameter that allows one. An event
+        // that PHP fired holds a null for a property it left empty,
+        // and its listener has to tell such a null from a zero.
+        if ($value === null && $type->allowsNull()) {
+            return null;
+        }
+
         return match ($type->getName()) {
             'int' => (int) $value,
             'float' => (float) $value,
@@ -1955,20 +2402,28 @@ abstract class NativeComponent
      * If the event class implements BroadcastsGlobally, rebuild it from the
      * payload and dispatch it through Laravel's event() so app-wide listeners
      * (Event::listen / subscribers) react — in addition to component #[On].
+     * Answers whether a Laravel listener ran for it, which asks for a frame.
      */
-    private function dispatchGloballyIfMarked(string $eventName, array $payload): void
+    private function dispatchGloballyIfMarked(string $eventName, array $payload): bool
     {
         $class = str_starts_with($eventName, 'native:') ? substr($eventName, 7) : $eventName;
 
         if (! class_exists($class)
             || ! is_subclass_of($class, BroadcastsGlobally::class)) {
-            return;
+            return false;
         }
 
         $instance = $this->buildEventInstance($class, $payload);
-        if ($instance !== null) {
-            event($instance);
+        if ($instance === null) {
+            return false;
         }
+
+        // The screen hears this event right here, on its way in. The
+        // mark keeps the dispatcher from handing the same object
+        // to the screen a second time when event() runs it.
+        GlobalEventDispatcher::markFromNative($instance);
+
+        return $this->fireThroughLaravel($instance);
     }
 
     /**
@@ -2016,6 +2471,13 @@ abstract class NativeComponent
         }
 
         if ($type->isBuiltin()) {
+            // A null stays a null for a parameter that allows one, so that
+            // a listener can tell it from a zero or an empty string. A
+            // parameter that allows none still has the null cast.
+            if ($value === null && $type->allowsNull()) {
+                return null;
+            }
+
             return match ($type->getName()) {
                 'int' => (int) $value,
                 'float' => (float) $value,
@@ -2036,9 +2498,10 @@ abstract class NativeComponent
     /**
      * Resolve and invoke a fluent callback (then()/catch()) correlated by the
      * event's `id`. Fires once, then drops the registration. Runs in the active
-     * component's event loop, so the component re-renders afterward.
+     * component's event loop, so the component re-renders afterward. Returns
+     * whether a callback fired.
      */
-    private function fireNativeCallback(string $eventName, array $payload): void
+    private function fireNativeCallback(string $eventName, array $payload): bool
     {
         $id = $payload['id'] ?? null;
 
@@ -2049,7 +2512,7 @@ abstract class NativeComponent
             : $eventName;
 
         if (! class_exists($eventClass)) {
-            return;
+            return false;
         }
 
         // Exact correlation by id (camera). If that misses — either no id came
@@ -2063,7 +2526,7 @@ abstract class NativeComponent
         }
 
         if ($callback === null) {
-            return;
+            return false;
         }
 
         if (is_string($callback) && class_exists($callback)) {
@@ -2083,6 +2546,8 @@ abstract class NativeComponent
             // One outcome per capture — drop success/cancel/denied siblings too.
             NativeCallbacks::forget($id, $eventClass);
         }
+
+        return true;
     }
 
     /**
@@ -2414,6 +2879,12 @@ abstract class NativeComponent
 
         // Drop fluent ->on() listeners so they don't leak onto the next screen.
         $this->nativeEventClosures = [];
+
+        // An unmounted screen is not the live one, so an event that PHP
+        // fires from here on is not put in its inbox any more.
+        if (self::active() === $this) {
+            self::$nativeActiveComponent = null;
+        }
     }
 
     public function onResume(): void
@@ -2434,6 +2905,23 @@ abstract class NativeComponent
     public function onBackPressed(): void
     {
         $this->back();
+    }
+
+    /**
+     * Dispatch a system back — the hardware button, the system back
+     * chevron, or an edge-swipe pop. While it runs, back() knows the
+     * event came from native navigation and skips its farewell publish;
+     * see back() for why that matters.
+     */
+    public function handleSystemBack(): void
+    {
+        $this->nativeAnsweringSystemBack = true;
+
+        try {
+            $this->onBackPressed();
+        } finally {
+            $this->nativeAnsweringSystemBack = false;
+        }
     }
 
     public static function registerDumpHandler(): void
@@ -2492,6 +2980,7 @@ abstract class NativeComponent
         // reader's perspective; discard any prior memo hashes.
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
+        $this->publishedFrame = null;
 
         nativephp_element_init();
 
@@ -2515,24 +3004,49 @@ abstract class NativeComponent
             $this->renderErrorScreen($e);
         }
 
+        $skipRender = false;
+
         while ($this->nativeRunning) {
             self::markActive($this);
+
+            // What PHP fired with event() since the last turn is delivered
+            // first. A handler that ran for it gets its frame, also
+            // when the turn before this one kept the frame.
+            if ($this->deliverGlobalEvents()) {
+                $skipRender = false;
+            }
+
+            // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
             $this->runGuardedInteraction(
                 'flushDispatchedEvents()',
                 fn () => $this->flushDispatchedEvents(),
             );
-            $this->nativeCallbacks->reset();
-            $this->resetComputedCache();
 
-            if (! $this->nativeHasError) {
+            // A native event that went unheard leaves the frame on screen
+            // as it is. Its callback ids and computed values are still
+            // in use, so both remain until the next frame is drawn.
+            if (! $skipRender) {
+                $this->nativeCallbacks->reset();
+                $this->resetComputedCache();
+            }
+
+            if (! $this->nativeHasError && ! $skipRender) {
                 try {
-                    if (! $this->renderStreaming()) {
+                    if ($this->renderStreaming()) {
+                        $this->publishedFrame = null;
+                    } else {
                         $element = $this->renderToElement();
-                        $tree = $this->memoizedToArray($element);
-                        nativephp_element_publish($tree);
-                        TreeObservers::tree(
-                            $tree, $this->nativeRouter?->currentUri() ?? '/'
-                        );
+                        $tree = $this->memoizedToArray($element, $fingerprint);
+
+                        if ($this->publishRenderedFrame($tree, $fingerprint)) {
+                            TreeObservers::tree(
+                                $tree, $this->nativeRouter?->currentUri() ?? '/'
+                            );
+                        }
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
@@ -2542,7 +3056,22 @@ abstract class NativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event($this->nextEventTimeout());
+            $skipRender = false;
+            $timeout = $this->nextEventTimeout();
+
+            // An event in the inbox does not wait for a tap or a poll. The
+            // wait is cut to its floor of one millisecond, which still
+            // lets a device event in first. When none came, the next
+            // turn keeps this frame, unless a component event waits
+            // to be delivered or a handler of the inbox runs.
+            $inboxWaits = $this->nativeEventInbox !== [] && $timeout !== 1;
+            $event = nativephp_element_wait_event($inboxWaits ? 1 : $timeout);
+
+            if ($event === null && $inboxWaits) {
+                $skipRender = $this->nativePendingComponentEvents === [];
+
+                continue;
+            }
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
@@ -2596,6 +3125,7 @@ abstract class NativeComponent
                 try {
                     $this->dispatchNativeEvent($event);
                     $this->flushDispatchedEvents();
+                    $skipRender = $this->nativeEventUnheard;
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -2625,6 +3155,10 @@ abstract class NativeComponent
         // Hand the baton back: this screen is done driving the runloop, so it
         // must stop being what a later AsyncTask::dispatch() scopes itself to.
         self::restoreActive($previousActiveComponent);
+
+        // What still waits in the inbox was meant for the turn that will
+        // not come, so it is dropped here and never arrives later on.
+        $this->nativeEventInbox = [];
 
         $this->unmount();
 
@@ -2671,6 +3205,8 @@ abstract class NativeComponent
         // $this->replace('/login') — must be honored: don't clear it and don't
         // enter the loop, so the router navigates immediately.
         if ($this->nativeNavigationIntent !== null) {
+            $this->nativeEventInbox = [];
+
             return;
         }
 
@@ -2684,12 +3220,14 @@ abstract class NativeComponent
         // of this session can't emit REUSE.
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
+        $this->publishedFrame = null;
 
         if (empty($this->nativeEventListeners)) {
             $this->registerNativeEventListeners();
         }
 
         $previousActiveComponent = self::markActive($this);
+        $skipRender = false;
 
         while ($this->nativeRunning) {
             // Superseded by a newer Jump native session — this runloop is an
@@ -2707,45 +3245,74 @@ abstract class NativeComponent
             }
 
             self::markActive($this);
+
+            // What PHP fired with event() since the last turn is delivered
+            // first. A handler that ran for it gets its frame, also
+            // when the turn before this one kept the frame.
+            if ($this->deliverGlobalEvents()) {
+                $skipRender = false;
+            }
+
+            // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
             $this->runGuardedInteraction(
                 'flushDispatchedEvents()',
                 fn () => $this->flushDispatchedEvents(),
             );
-            $this->nativeCallbacks->reset();
-            $this->resetComputedCache();
 
-            if (! $this->nativeHasError) {
+            // A native event that went unheard leaves the frame on screen
+            // as it is. Its callback ids and computed values are still
+            // in use, so both remain until the next frame is drawn.
+            if (! $skipRender) {
+                $this->nativeCallbacks->reset();
+                $this->resetComputedCache();
+            }
+
+            if (! $this->nativeHasError && ! $skipRender) {
                 try {
-                    $t0 = microtime(true);
+                    // Resolved once per tick: when the edge-nav log is off, the
+                    // PERF sprintf() is skipped along with the write.
+                    $perf = NativeRouter::debugLoggingEnabled();
+                    $t0 = $perf ? microtime(true) : 0.0;
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
+                        $this->publishedFrame = null;
                         $this->nativeRouter?->flushDeferredTransition();
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] streaming total=%.1fms',
-                            static::class, ($t3 - $t0) * 1000
-                        ));
+                        if ($perf) {
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] streaming total=%.1fms',
+                                static::class, (microtime(true) - $t0) * 1000
+                            ));
+                        }
                     } else {
                         $element = $this->renderToElement();
 
-                        $t1 = microtime(true);
-                        $tree = $this->memoizedToArray($element);
-                        $t2 = microtime(true);
+                        $t1 = $perf ? microtime(true) : 0.0;
+                        $tree = $this->memoizedToArray($element, $fingerprint);
+                        $t2 = $perf ? microtime(true) : 0.0;
 
                         $this->nativeRouter?->flushDeferredTransition();
 
-                        nativephp_element_publish($tree);
-                        TreeObservers::tree(
-                            $tree, $this->nativeRouter?->currentUri() ?? '/'
-                        );
+                        $published = $this->publishRenderedFrame($tree, $fingerprint);
+                        if ($published) {
+                            TreeObservers::tree(
+                                $tree, $this->nativeRouter?->currentUri() ?? '/'
+                            );
+                        }
 
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms',
-                            static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                            ($t3 - $t2) * 1000, ($t3 - $t0) * 1000
-                        ));
+                        if ($perf) {
+                            $t3 = microtime(true);
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms%s',
+                                static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
+                                ($t3 - $t2) * 1000, ($t3 - $t0) * 1000,
+                                $published ? '' : ' unchanged, not published'
+                            ));
+                        }
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
@@ -2755,7 +3322,22 @@ abstract class NativeComponent
                 }
             }
 
-            $event = nativephp_element_wait_event($this->nextEventTimeout());
+            $skipRender = false;
+            $timeout = $this->nextEventTimeout();
+
+            // An event in the inbox does not wait for a tap or a poll. The
+            // wait is cut to its floor of one millisecond, which still
+            // lets a device event in first. When none came, the next
+            // turn keeps this frame, unless a component event waits
+            // to be delivered or a handler of the inbox runs.
+            $inboxWaits = $this->nativeEventInbox !== [] && $timeout !== 1;
+            $event = $this->nativeRouter?->takeCarriedEvent() ?? nativephp_element_wait_event($inboxWaits ? 1 : $timeout);
+
+            if ($event === null && $inboxWaits) {
+                $skipRender = $this->nativePendingComponentEvents === [];
+
+                continue;
+            }
 
             if ($event === null) {
                 // Idle tick (poll interval elapsed, or no event yet) —
@@ -2816,7 +3398,7 @@ abstract class NativeComponent
                     continue;
                 }
                 $this->runGuardedInteraction('onBackPressed()', function () {
-                    $this->onBackPressed();
+                    $this->handleSystemBack();
                     $this->flushDispatchedEvents();
                 });
 
@@ -2828,6 +3410,7 @@ abstract class NativeComponent
                 try {
                     $this->dispatchNativeEvent($event);
                     $this->flushDispatchedEvents();
+                    $skipRender = $this->nativeEventUnheard;
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -2857,6 +3440,10 @@ abstract class NativeComponent
         // Hand the baton back to whatever was driving before this hot-swapped
         // loop took over, so a later dispatch scopes to the right screen.
         self::restoreActive($previousActiveComponent);
+
+        // What still waits in the inbox was meant for the turn that will
+        // not come. A covered screen gets none of it when it returns.
+        $this->nativeEventInbox = [];
     }
 
     public function getNavigationIntent(): ?NavigationIntent
@@ -2945,6 +3532,10 @@ abstract class NativeComponent
 
     public function navigate(string $uri, array $data = []): static
     {
+        if ($this->openedExternally($uri)) {
+            return $this;
+        }
+
         // Navigation is a screen-level concern: a nested child forwards to
         // the screen so the intent lands where the runloop reads it (and
         // publishFinalState renders the full screen, not the child alone).
@@ -2955,7 +3546,7 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, static::appPath($uri), $data);
         $this->publishFinalState();
         $this->stop();
 
@@ -2988,7 +3579,18 @@ abstract class NativeComponent
 
         $this->flushDispatchedEvents();
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
-        $this->publishFinalState();
+
+        // The farewell frame keeps a PHP-initiated pop looking fresh while
+        // the native side animates it. Answering a SYSTEM back is the
+        // opposite situation: native navigation may already have removed
+        // this screen and shrunk its path, so a farewell frame reaches the
+        // coordinator as an unknown URI — which its reconciliation can only
+        // read as a brand-new push. Skip it to avoid reintroducing a screen
+        // that native navigation is backing away from.
+        if (! $this->nativeAnsweringSystemBack) {
+            $this->publishFinalState();
+        }
+
         $this->stop();
 
         return $this;
@@ -2996,6 +3598,10 @@ abstract class NativeComponent
 
     public function replace(string $uri, array $data = []): static
     {
+        if ($this->openedExternally($uri)) {
+            return $this;
+        }
+
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
             $this->rootScreen()->replace($uri, $data);
@@ -3004,7 +3610,7 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, static::appPath($uri), $data);
         $this->publishFinalState();
         $this->stop();
 
@@ -3040,6 +3646,7 @@ abstract class NativeComponent
         try {
             $element = $this->renderToElement();
             $tree = $element->toArray($this->nativeCallbacks);
+            $this->publishedFrame = null;
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             // Render failure on the way out — outgoing component is
@@ -3071,6 +3678,10 @@ abstract class NativeComponent
 
     public function exitToWeb(string $uri): void
     {
+        if ($this->openedExternally($uri)) {
+            return;
+        }
+
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
             $this->rootScreen()->exitToWeb($uri);
@@ -3078,7 +3689,7 @@ abstract class NativeComponent
             return;
         }
 
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, static::appPath($uri));
         $this->stop();
     }
 
@@ -3092,6 +3703,70 @@ abstract class NativeComponent
     public function route(string $name, mixed $parameters = []): string
     {
         return URL::route($name, $parameters, absolute: false);
+    }
+
+    /**
+     * Reduce an absolute URL on the app's own host to its path, so the
+     * global route() / url() helpers work anywhere a URI is accepted. They
+     * prefix the request root (or APP_URL), which never matches a native
+     * route and would exit to the WebView with a URL it can't load.
+     */
+    protected static function appPath(string $uri): string
+    {
+        $parts = parse_url($uri);
+
+        if ($parts === false || ! isset($parts['scheme'], $parts['host']) || static::isExternalUrl($uri)) {
+            return $uri;
+        }
+
+        return '/'.ltrim($parts['path'] ?? '', '/')
+            .(isset($parts['query']) ? '?'.$parts['query'] : '')
+            .(isset($parts['fragment']) ? '#'.$parts['fragment'] : '');
+    }
+
+    /**
+     * A URL with a scheme that doesn't point at the app: another host, or a
+     * hostless scheme like mailto: or tel:.
+     */
+    protected static function isExternalUrl(string $uri): bool
+    {
+        $parts = parse_url($uri);
+
+        if ($parts === false || ! isset($parts['scheme'])) {
+            return false;
+        }
+
+        if (! isset($parts['host'])) {
+            return true;
+        }
+
+        $appHosts = array_filter([
+            parse_url(URL::to('/'), PHP_URL_HOST),
+            parse_url((string) config('app.url'), PHP_URL_HOST),
+        ]);
+
+        return ! in_array(strtolower($parts['host']), array_map('strtolower', $appHosts), true);
+    }
+
+    /**
+     * Hand an external URL to the system browser and keep the current screen.
+     * Exiting to the WebView can't show it: the shells load only the path of
+     * an exit URL, so the native UI would be torn down for a blank page — the
+     * same dead end deep links avoid by opening the browser. Browser::open()
+     * needs the nativephp/mobile-browser plugin; without it the tap is a
+     * no-op rather than a broken screen.
+     */
+    protected function openedExternally(string $uri): bool
+    {
+        if (! static::isExternalUrl($uri)) {
+            return false;
+        }
+
+        if (! (new Browser)->open($uri)) {
+            NativeRouter::debugLog("NAVIGATE: no browser handler for $uri — is nativephp/mobile-browser installed?");
+        }
+
+        return true;
     }
 
     // ── Parameter / data access ─────────────────────
@@ -3247,6 +3922,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
+            $this->publishedFrame = null;
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Error screen render failed: '.$renderError->getMessage());
@@ -3309,6 +3985,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
+            $this->publishedFrame = null;
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Dump screen render failed: '.$renderError->getMessage());
@@ -3817,6 +4494,16 @@ abstract class NativeComponent
                 $event = $queued['event'];
 
                 $this->nativeDispatchedComponentEvents[] = $event->serialize();
+
+                // Nothing ever cleared this, and a native screen holds one PHP
+                // request open for its whole life — so on a screen somebody
+                // leaves open it is every payload ever delivered, held for
+                // hours. A #[Poll(1)] dispatching once a tick reaches it in
+                // minutes. Keep a bounded window instead.
+                if (count($this->nativeDispatchedComponentEvents) > self::MAX_RECORDED_DISPATCHES) {
+                    array_shift($this->nativeDispatchedComponentEvents);
+                }
+
                 $this->deliverComponentEvent($source, $event);
             }
         } finally {
@@ -3924,17 +4611,18 @@ abstract class NativeComponent
     }
 
     /**
-     * Fire this component's `#[On('event-name')]` listener for a component
-     * event, if one is declared. The attribute stores string names with the
+     * Fire this component's `#[On('event-name')]` listeners for a component
+     * event, if any are declared. The attribute stores string names with the
      * `native:` prefix (see Attributes\On), so both spellings are checked.
+     * A `when` filter is matched against the named arguments of the event.
      */
     protected function invokeComponentEventListener(string $event, array $args): void
     {
-        $method = $this->nativeEventListeners[$event]
-            ?? $this->nativeEventListeners['native:'.$event]
-            ?? null;
+        foreach ($this->matchingListenerMethods($this->nativeListenersFor($event), $args) as $method) {
+            if (! method_exists($this, $method)) {
+                continue;
+            }
 
-        if ($method !== null && method_exists($this, $method)) {
             // An #[On] listener names itself through the attribute, so it is
             // never remote input. Skip the callable guard that protects
             // template- and device-supplied method names: a listener may be

@@ -100,7 +100,7 @@ enum DeviceFunctions {
     /// Parameters: none
     /// Returns:
     ///   - info: JSON string with device details (name, model, platform, osVersion,
-    ///     memUsed, memTotal, processorCount, activeProcessorCount, systemUptime, etc.)
+    ///     timezone, memUsed, memTotal, processorCount, activeProcessorCount, systemUptime, etc.)
     class GetInfo: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
             print("Device.GetInfo called")
@@ -123,6 +123,10 @@ enum DeviceFunctions {
             // Language (BCP 47 tag, e.g. "en-US")
             let language = Locale.current.identifier(.bcp47)
 
+            // Timezone (IANA name, e.g. "Europe/Lisbon"). autoupdatingCurrent
+            // follows the phone into a new zone while the app is running.
+            let timezone = TimeZone.autoupdatingCurrent.identifier
+
             let deviceInfo: [String: Any] = [
                 "name": device.name,
                 "model": device.model,
@@ -132,6 +136,7 @@ enum DeviceFunctions {
                 "iOSVersion": iOSVersionNumber,
                 "manufacturer": "Apple",
                 "language": language,
+                "timezone": timezone,
                 "isVirtual": isVirtual,
                 "memUsed": NSNumber(value: memUsed),
                 "memTotal": NSNumber(value: processInfo.physicalMemory),

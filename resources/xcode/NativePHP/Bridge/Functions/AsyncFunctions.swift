@@ -36,7 +36,7 @@ enum AsyncFunctions {
 
             let timeout = (parameters["timeout"] as? NSNumber)?.intValue ?? 0
             let timeoutEvent = parameters["timeoutEvent"] as? String
-            let timeoutPayload = (parameters["timeoutPayload"] as? [String: Any]).map(jsonString)
+            let timeoutPayload = (parameters["timeoutPayload"] as? [String: Any]).map(bridgeJsonString)
 
             let accepted = AsyncTaskExecutor.shared.dispatch(
                 taskId: id,
@@ -69,14 +69,16 @@ enum AsyncFunctions {
 
             // Thread-safe: sendNativeEvent is the event producer and may be
             // called from any thread (here, an async slot's queue).
-            NativeElementBridge.sendNativeEvent(eventName: event, payloadJson: jsonString(payload))
+            NativeElementBridge.sendNativeEvent(eventName: event, payloadJson: bridgeJsonString(payload))
             return ["success": true]
         }
     }
 }
 
 /// Re-serialize a decoded bridge parameter back to a JSON object string.
-private func jsonString(_ value: [String: Any]) -> String {
+/// It is shared with `EventFunctions` and prefixed, as plugin sources
+/// are compiled into this module and may bring a `jsonString` too.
+func bridgeJsonString(_ value: [String: Any]) -> String {
     guard let data = try? JSONSerialization.data(withJSONObject: value),
           let json = String(data: data, encoding: .utf8) else {
         return "{}"
