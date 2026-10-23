@@ -14,7 +14,7 @@ use Native\Mobile\Icon\IosSymbol;
  * override (IosSymbol enum case or raw string), an Android override
  * (AndroidSymbol enum case or raw string).
  *
- * Resolution happens at PHP-side serialization via [Platform::current]
+ * Resolution happens at PHP-side serialization via [System::platform]
  * — the wire only ever carries one resolved string per icon prop, plus
  * a `material_variant` companion when the Android override is an
  * `AndroidSymbol` enum (so the Compose `MaterialIcon` composable knows

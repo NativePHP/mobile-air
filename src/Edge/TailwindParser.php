@@ -8,7 +8,7 @@ use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\ImageFit;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Enums\TextAlign;
-use Native\Mobile\Platform;
+use Native\Mobile\Facades\System;
 
 class TailwindParser
 {
@@ -126,18 +126,18 @@ class TailwindParser
 
     /**
      * Test seam — force the parser's view of the current platform.
-     * Delegates to [Platform::set] and clears the parsed-class cache so
-     * platform-variant classes are re-evaluated.
+     * Delegates to [\Native\Mobile\System::rememberPlatform] and clears the
+     * parsed-class cache so platform-variant classes are re-evaluated.
      */
     public static function setPlatform(?string $platform): void
     {
-        Platform::set($platform);
+        \Native\Mobile\System::rememberPlatform($platform);
         static::clearCache();
     }
 
     private static function currentPlatform(): ?string
     {
-        return Platform::current();
+        return System::platform();
     }
 
     private const COLORS = [

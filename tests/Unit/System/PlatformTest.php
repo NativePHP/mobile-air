@@ -6,7 +6,7 @@ use Native\Mobile\Testing\FakeBridge;
 
 afterEach(function () {
     putenv('NATIVEPHP_PLATFORM');
-    Platform::set(null);
+    System::rememberPlatform(null);
     FakeBridge::disable();
 });
 
@@ -24,13 +24,34 @@ it('takes the platform from the env the shell sets, without asking the device', 
     $bridge->assertNotCalled('Device.GetInfo');
 })->with(['ios', 'android']);
 
-it('asks the device under Jump, where nothing sets the env', function () {
+it('asks the device once under Jump, where nothing sets the env', function () {
     $bridge = FakeBridge::enable()->respondTo('Device.GetInfo', [
         'info' => json_encode(['platform' => 'android']),
     ]);
 
-    expect((new System)->isAndroid())->toBeTrue()
+    $system = new System;
+
+    expect($system->isAndroid())->toBeTrue()
+        ->and($system->isMobile())->toBeTrue()
         ->and($bridge->callsTo('Device.GetInfo'))->toHaveCount(1);
+});
+
+it('does not keep a failed probe, but waits before asking again', function () {
+    $bridge = FakeBridge::enable();
+    $system = new System;
+
+    expect($system->platform())->toBeNull();
+
+    // The device attaches a moment later. Within the throttle window the
+    // answer is still null, without another round-trip.
+    $bridge->respondTo('Device.GetInfo', ['info' => json_encode(['platform' => 'ios'])]);
+
+    expect($system->platform())->toBeNull()
+        ->and($bridge->callsTo('Device.GetInfo'))->toHaveCount(1);
+
+    System::rememberPlatform(null);
+
+    expect($system->platform())->toBe('ios');
 });
 
 it('is not mobile with no env and no device', function () {
@@ -49,11 +70,32 @@ it('ignores an env value that is not a platform', function () {
     expect((new System)->platform())->toBeNull();
 });
 
-it('hands Platform the env value on its first read', function () {
+it('lets the env win over a remembered platform', function () {
+    System::rememberPlatform('android');
     putenv('NATIVEPHP_PLATFORM=ios');
-    $bridge = FakeBridge::enable();
 
-    expect(Platform::current())->toBe('ios');
+    expect((new System)->platform())->toBe('ios');
+});
 
-    $bridge->assertNotCalled('Device.GetInfo');
+it('forgets the last fake device when a new test enables its bridge', function () {
+    FakeBridge::enable()->respondTo('Device.GetInfo', ['info' => json_encode(['platform' => 'android'])]);
+    expect((new System)->platform())->toBe('android');
+
+    FakeBridge::disable();
+    FakeBridge::enable()->respondTo('Device.GetInfo', ['info' => json_encode(['platform' => 'ios'])]);
+
+    expect((new System)->platform())->toBe('ios');
+});
+
+it('keeps the deprecated Platform class working on top of System', function () {
+    putenv('NATIVEPHP_PLATFORM=ios');
+
+    expect(Platform::current())->toBe('ios')
+        ->and(Platform::isIos())->toBeTrue()
+        ->and(Platform::isAndroid())->toBeFalse();
+
+    Platform::set('android');
+    putenv('NATIVEPHP_PLATFORM');
+
+    expect(Platform::current())->toBe('android');
 });

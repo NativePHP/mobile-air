@@ -10,7 +10,7 @@ class System
      * Process-cached current appearance. Seeded on first read via a bridge
      * probe (`System.GetAppearance`) and kept fresh by the AppearanceChanged
      * event — a listener registered in NativeServiceProvider calls
-     * rememberAppearance() when the OS flips the theme. Mirrors the Platform
+     * rememberAppearance() when the OS flips the theme. Mirrors the platform
      * caching pattern so hot-path reads (isDark() in render logic) avoid a
      * bridge round-trip per call.
      */
@@ -24,16 +24,35 @@ class System
     private static ?string $orientation = null;
 
     /**
+     * The platform the device reported under `native:jump`, or the one a test
+     * is pretending to be on (see rememberPlatform()). Unused on device, where
+     * the env answers first.
+     */
+    private static ?string $platform = null;
+
+    /** Throttle re-probing after a failed attempt (see platform()). */
+    private static ?float $lastFailedProbe = null;
+
+    /**
      * 'ios' or 'android', or null off the device.
      *
      * On device the iOS and Android shells export NATIVEPHP_PLATFORM before
      * PHP starts, so this is an env read with no bridge round-trip. That
-     * matters because @ios, @android, @mobile, @web and the isIos() helpers
-     * all land here, once per evaluation.
+     * matters because @ios, @android, @mobile, @web, the isIos() helpers,
+     * Tailwind's ios:/android: variants and platform icons all land here.
      *
      * Under `native:jump` PHP runs on the developer's machine and nothing sets
-     * the variable, so ask the connected device instead. Hot paths that can't
-     * pay for that on every call go through Platform, which caches it.
+     * the variable, so ask the connected device (Device.GetInfo) and keep the
+     * answer: one PHP process always talks to one platform.
+     *
+     * A failed probe is deliberately NOT kept: the first render of a Jump
+     * session can race the device's WebSocket attach, and a remembered failure
+     * would poison this long-lived `php -S` worker (and the element runloop
+     * request, which lives for the whole screen) so every platform-resolved
+     * icon/variant it ever renders comes out blank. Failed probes are retried
+     * instead, at most once every 2s, so hot paths never pay a bridge timeout
+     * per call. Off device and outside Jump (tests, a web server) the probe
+     * finds no device and this returns null.
      */
     public function platform(): ?string
     {
@@ -43,10 +62,48 @@ class System
             return $platform;
         }
 
-        $info = json_decode(Device::getInfo() ?? '', true);
-        $platform = is_array($info) ? ($info['platform'] ?? null) : null;
+        if (self::$platform !== null) {
+            return self::$platform;
+        }
 
-        return $platform === 'ios' || $platform === 'android' ? $platform : null;
+        if (self::$lastFailedProbe !== null
+            && (microtime(true) - self::$lastFailedProbe) < 2.0) {
+            return null;
+        }
+
+        try {
+            $info = json_decode(Device::getInfo() ?? '', true);
+            $platform = is_array($info) ? ($info['platform'] ?? null) : null;
+        } catch (\Throwable) {
+            // The bridge or the container wasn't ready. Try again later.
+            $platform = null;
+        }
+
+        if ($platform === 'ios' || $platform === 'android') {
+            self::$lastFailedProbe = null;
+
+            return self::$platform = $platform;
+        }
+
+        self::$lastFailedProbe = microtime(true);
+
+        return null;
+    }
+
+    /**
+     * Test seam behind `Native::test(..., platform:)`: pretend to be on a
+     * platform without touching NATIVEPHP_PLATFORM, which would leak into the
+     * next test's app boot. Pass null to forget it, and anything the Jump
+     * probe remembered, so the next read asks again.
+     *
+     * Ignored wherever NATIVEPHP_PLATFORM is set, so it can't move a device.
+     *
+     * @internal
+     */
+    public static function rememberPlatform(?string $platform): void
+    {
+        self::$platform = $platform;
+        self::$lastFailedProbe = null;
     }
 
     public function isIos(): bool
