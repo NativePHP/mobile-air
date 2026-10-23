@@ -38,6 +38,7 @@ it('gives every context 128M in php.ini', function (string $writer) {
 })->with([
     'xcode/NativePHP/Bridge/PersistentPHPRuntime.swift',
     'xcode/NativePHP/NativePHPApp.swift',
+    'androidstudio/app/src/main/java/com/nativephp/mobile/bridge/LaravelEnvironment.kt',
 ]);
 
 it('raises the limit to 512M in the persistent runtime only', function (string $bridge, string $persistentBoot) {
@@ -48,4 +49,5 @@ it('raises the limit to 512M in the persistent runtime only', function (string $
         ->and(memoryLimitFunctionBody($source, $persistentBoot))->toContain('raise_persistent_memory_limit();');
 })->with([
     'iOS' => ['xcode/Include/Bridge/PHP.c', 'static void *php_worker_main(void *arg)'],
+    'Android' => ['androidstudio/app/src/main/cpp/php_bridge.c', 'JNIEXPORT jint JNICALL native_persistent_boot('],
 ]);

@@ -932,17 +932,16 @@ class LaravelEnvironment(private val context: Context) {
                 // match the bridge's 16MB capture cap; PHP's defaults (8M
                 // post, 2M per file) would reject uploads the bridge carries.
                 //
-                // memory_limit: PHP's 128M default is sized for one web
-                // request, but a native session is a single request that
-                // lives as long as the app, holding every screen's state. A
-                // screen with a long list reached it, and the fatal error
-                // ended the session. Apps can ini_set() their own.
+                // memory_limit: 128M for every context. The persistent
+                // runtime, which runs the native session, raises its own to
+                // 512M when it boots (see raise_persistent_memory_limit in
+                // php_bridge.c).
                 val phpIni = """
 curl.cainfo="${context.filesDir.absolutePath}/$CACERT_FILE"
 openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
 post_max_size=16M
 upload_max_filesize=16M
-memory_limit=512M
+memory_limit=128M
 """
                 File(context.filesDir, PHP_INI_FILE).writeText(phpIni)
                 Log.d(TAG, "✅ PHP ini configured with certificate path")

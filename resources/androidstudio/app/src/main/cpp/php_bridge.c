@@ -650,6 +650,20 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
 
 static int persistent_initialized = 0;
 
+// php.ini gives every context PHP's 128M. The persistent runtime gets 512M:
+// the native session runs in it as a single request that lives as long as the
+// app, holding every screen's state, and a screen with a long list reached
+// 128M. The queue worker, the async lane and webview contexts keep 128M, so a
+// runaway there fails on its own instead of growing alongside the UI until
+// the OS kills the whole app. Apps can still ini_set() their own.
+static void raise_persistent_memory_limit(void) {
+    zend_string *name = zend_string_init("memory_limit", sizeof("memory_limit") - 1, 0);
+    if (zend_alter_ini_entry_chars(name, "512M", sizeof("512M") - 1, PHP_INI_SYSTEM, PHP_INI_STAGE_RUNTIME) != SUCCESS) {
+        LOGE("persistent_boot: could not raise memory_limit to 512M");
+    }
+    zend_string_release(name);
+}
+
 /**
  * Boot the persistent PHP interpreter once.
  * Initializes php_embed, registers native functions, and executes the
@@ -690,6 +704,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     sapi_module.header_handler = android_header_handler;
     // nativephp extension self-registers via static linking
     php_initialized = 1;
+    raise_persistent_memory_limit();
 
     // Execute the persistent bootstrap script (boots Laravel, stores kernel globally)
     zend_first_try {
