@@ -2,9 +2,9 @@
 
 namespace Native\Mobile\Concerns;
 
-use GuzzleHttp\Client;
 use GuzzleHttp\Exception\TransferException;
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
 use ZipArchive;
@@ -114,6 +114,9 @@ trait InstallsAndroid
 
     private function installPHPAndroid(): void
     {
+        // See installPHPIos(): no record survives an install that stops partway.
+        InstalledBinaries::forget(base_path('nativephp/android'));
+
         // Fail early: ZipArchive validates (and on Linux/macOS extracts) the
         // downloaded archive, but ext-zip is not guaranteed on stock Linux or
         // Windows PHP installs — better to error now than after a multi-MB download.
@@ -138,7 +141,7 @@ trait InstallsAndroid
         }
 
         if (! isset($versions['versions'][$phpVersion])) {
-            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::VERSION);
+            $this->failInstall("PHP {$phpVersion} binaries are not part of release ".PhpBinaries::release());
 
             return;
         }
@@ -175,11 +178,21 @@ trait InstallsAndroid
         $this->components->twoColumnDetail('PHP version', $fullVersion);
         $this->components->twoColumnDetail('ICU support', $includeIcu ? 'Enabled' : 'Disabled');
 
+        $expected = PhpBinaries::expectedFile($versions, $phpVersion, 'android', $url);
+
+        // A cached archive is only reused while it's still the file the
+        // manifest describes. A cut-off download or a damaged disk would
+        // otherwise be installed again on every run.
+        if (file_exists($zipFile) && $expected !== null && PhpBinaries::fileMismatch($zipFile, $expected) !== null) {
+            note("The cached {$zipFilename} doesn't match the release manifest, so it will be downloaded again.");
+            unlink($zipFile);
+        }
+
         if (file_exists($zipFile)) {
             $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
             $this->components->twoColumnDetail('Cached binary', "{$zipFilename} ({$sizeMB}MB)");
         } else {
-            $client = new Client;
+            $client = $this->binariesClient();
             $downloadFailed = null;
 
             try {
@@ -218,6 +231,14 @@ trait InstallsAndroid
                 return;
             }
 
+            if ($expected !== null && ($mismatch = PhpBinaries::fileMismatch($zipFile, $expected)) !== null) {
+                unlink($zipFile);
+                $this->failInstall("The downloaded {$zipFilename} doesn't match the release manifest: {$mismatch}."
+                    ."\n".'Run the install again. If it keeps happening, something between here and bin.nativephp.com is changing the download.');
+
+                return;
+            }
+
             // Verify the downloaded file is actually a ZIP
             $zip = new ZipArchive;
             if ($zip->open($zipFile, ZipArchive::RDONLY) !== true) {
@@ -230,6 +251,10 @@ trait InstallsAndroid
 
             $sizeMB = round(filesize($zipFile) / 1024 / 1024, 1);
             $this->components->twoColumnDetail('Download size', "{$sizeMB}MB");
+        }
+
+        if ($expected !== null) {
+            $this->components->twoColumnDetail('SHA-256', 'Matches the release manifest');
         }
 
         File::ensureDirectoryExists($extractPath);
@@ -309,6 +334,8 @@ trait InstallsAndroid
                 $this->platformOptimizedCopy($includeSrc, $includeDst);
             }
         });
+
+        InstalledBinaries::record(base_path('nativephp/android'));
 
         try {
             $this->removeDirectory($extractPath);

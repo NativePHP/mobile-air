@@ -259,6 +259,10 @@ if (! function_exists('nativephp_force_full_frame_epoch')) {
      */
     function nativephp_force_full_frame_epoch(): int
     {
+        if ($fake = FakeBridge::current()) {
+            return $fake->forceFullFrameEpoch;
+        }
+
         return 0;
     }
 }

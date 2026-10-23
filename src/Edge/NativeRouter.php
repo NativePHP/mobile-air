@@ -4,6 +4,8 @@ namespace Native\Mobile\Edge;
 
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route as IlluminateRoute;
+use Native\Mobile\Events\Async\AsyncTaskFailed;
+use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -32,12 +34,39 @@ class NativeRouter
      */
     protected const SCREEN_INTENT_TTL = 60;
 
+    /** Memoized once per process; see debugLoggingEnabled(). */
+    private static ?bool $debugLogging = null;
+
+    /**
+     * Whether the edge-nav log is being written.
+     *
+     * This log is a development aid, but the runloop calls debugLog() at least
+     * twice per tick — and a screen with `native:poll="1ms"` ticks up to 1000
+     * times a second. Left on, that is an unbounded append-only file growing
+     * by ~110 bytes a frame (megabytes per minute on a polling screen) plus an
+     * open/write/close syscall in the middle of every frame. So it follows
+     * APP_DEBUG: on while you're developing, off in a release build.
+     *
+     * Hot-path callers should check this before building their message, so the
+     * sprintf() is skipped too — not just the write.
+     */
+    public static function debugLoggingEnabled(): bool
+    {
+        return static::$debugLogging ??= function_exists('config')
+            ? (bool) config('app.debug', false)
+            : false;
+    }
+
     /**
      * File-based debug logging — error_log() doesn't reach Android logcat,
      * so we write to a file on device instead.
      */
     public static function debugLog(string $msg): void
     {
+        if (! static::debugLoggingEnabled()) {
+            return;
+        }
+
         $logPath = function_exists('storage_path')
             ? storage_path('logs/edge-nav.log')
             : sys_get_temp_dir().'/edge-nav.log';
@@ -115,10 +144,24 @@ class NativeRouter
     protected ?Transition $deferredTransition = null;
 
     /**
+     * Async completions kept from the reset in flushDeferredTransition(), for
+     * the runloop of the screen that's showing to handle next.
+     *
+     * @var list<array<string, mixed>>
+     */
+    protected array $carriedEvents = [];
+
+    /**
      * Flush the deferred transition — resets buffers and signals the
      * transition type to Kotlin. Called just before the first publish()
      * of a new component so the old tree stays visible until the new
      * one is ready.
+     *
+     * The reset drops every queued event, which is right for taps on the
+     * screen going away. But a task the new screen dispatched from mount()
+     * can finish before that first frame, and its completion would be
+     * dropped with them. Its timeout is disarmed once it finishes, so the
+     * screen would wait for it forever. Those completions are kept.
      */
     public function flushDeferredTransition(): void
     {
@@ -129,8 +172,44 @@ class NativeRouter
         $t = $this->deferredTransition;
         $this->deferredTransition = null;
 
+        $this->carriedEvents = [...$this->carriedEvents, ...static::takeAsyncCompletions()];
+
         static::signalTransition($t);
         static::resetBuffers();
+    }
+
+    /**
+     * The next async completion kept from a transition reset, if any.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function takeCarriedEvent(): ?array
+    {
+        return array_shift($this->carriedEvents);
+    }
+
+    /**
+     * Drain the event queue, keeping only async task completions. Each carries
+     * its task id, and NativeComponent checks which screen dispatched it, so
+     * handing it to the next runloop can't wake the wrong screen.
+     *
+     * @return list<array<string, mixed>>
+     */
+    protected static function takeAsyncCompletions(): array
+    {
+        $completions = [];
+
+        while (($event = nativephp_element_wait_event(0)) !== null) {
+            $name = (string) ($event['event'] ?? '');
+            $name = str_starts_with($name, 'native:') ? substr($name, 7) : $name;
+
+            if (($event['type'] ?? null) === NativeComponent::EVENT_NATIVE
+                && ($name === AsyncTaskFinished::class || $name === AsyncTaskFailed::class)) {
+                $completions[] = $event;
+            }
+        }
+
+        return $completions;
     }
 
     // ── Static registry ─────────────────────────────

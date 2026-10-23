@@ -105,6 +105,62 @@ class KeyboardFocusPolicyTest {
         assertEquals(1, clearFocusCalls)
     }
 
+    @Test
+    fun interactiveTapFlushesPendingTextBeforeClearingFocusAndSendingPress() {
+        val events = mutableListOf<String>()
+        var draft = "initial"
+        KeyboardFocusPolicy.fieldFocused(fieldA, keepsFocus = false) { events += "change:$draft" }
+        KeyboardFocusPolicy.clearFocus = {
+            events += "blur"
+            KeyboardFocusPolicy.fieldBlurred(fieldA)
+        }
+        draft = "latest token"
+
+        KeyboardFocusPolicy.dismissForInteractiveTap()
+        events += "press"
+
+        assertEquals(listOf("change:latest token", "blur", "press"), events)
+    }
+
+    @Test
+    fun interactiveTapFlushesEvenWhenTheFieldKeepsFocus() {
+        val events = mutableListOf<String>()
+        registerClearFocus()
+        KeyboardFocusPolicy.fieldFocused(fieldA, keepsFocus = true) { events += "change" }
+
+        KeyboardFocusPolicy.dismissForInteractiveTap()
+        events += "press"
+
+        assertEquals(listOf("change", "press"), events)
+        assertTrue(KeyboardFocusPolicy.focusedFieldKeepsFocus)
+        assertEquals(0, clearFocusCalls)
+    }
+
+    @Test
+    fun lateBlurCannotRemoveTheNewFieldsFlush() {
+        val events = mutableListOf<String>()
+        KeyboardFocusPolicy.fieldFocused(fieldA, keepsFocus = true) { events += "old" }
+        KeyboardFocusPolicy.fieldFocused(fieldB, keepsFocus = true) { events += "new" }
+        KeyboardFocusPolicy.fieldBlurred(fieldA)
+
+        KeyboardFocusPolicy.dismissForInteractiveTap()
+
+        assertEquals(listOf("new"), events)
+    }
+
+    @Test
+    fun releasedFieldDoesNotLeaveAStaleFlushForTheNextPress() {
+        val events = mutableListOf<String>()
+        KeyboardFocusPolicy.fieldFocused(fieldA, keepsFocus = true) { events += "stale" }
+        KeyboardFocusPolicy.fieldBlurred(fieldA)
+
+        KeyboardFocusPolicy.dismissForInteractiveTap()
+        KeyboardFocusPolicy.fieldFocused(fieldB, keepsFocus = true)
+        KeyboardFocusPolicy.dismissForInteractiveTap()
+
+        assertTrue(events.isEmpty())
+    }
+
     private fun registerClearFocus() {
         KeyboardFocusPolicy.clearFocus = { clearFocusCalls++ }
     }

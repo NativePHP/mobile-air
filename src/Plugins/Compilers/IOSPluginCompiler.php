@@ -190,6 +190,7 @@ class IOSPluginCompiler
 
         // Merge Info.plist entries (for any plugins with iOS permissions)
         $this->mergeInfoPlistEntries($allPlugins);
+        $this->warnWhenSceneManifestIsGenerated($allPlugins);
 
         // Merge entitlements from plugins
         $this->mergeEntitlements($allPlugins);
@@ -474,6 +475,39 @@ class IOSPluginCompiler
 
             $this->files->put($plistPath, $plist->toXml());
         }
+    }
+
+    /**
+     * Projects installed before the Info.plist templates carried the scene
+     * manifest still let Xcode generate it, and a generated manifest replaces
+     * the merged one wholesale — dropping every plugin's scene configuration.
+     */
+    protected function warnWhenSceneManifestIsGenerated(Collection $plugins): void
+    {
+        $projectPath = $this->iosProjectPath.'/NativePHP.xcodeproj/project.pbxproj';
+
+        if (! $this->files->exists($projectPath)
+            || ! str_contains($this->files->get($projectPath), 'INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;')) {
+            return;
+        }
+
+        $plugins
+            ->filter(fn (Plugin $plugin) => $this->contributesSceneManifest($plugin))
+            ->each(fn (Plugin $plugin) => $this->warn(
+                "Plugin '{$plugin->name}' declares UIApplicationSceneManifest entries, but this iOS project generates its scene manifest, which overrides them. Re-run `php artisan native:install ios` to update the project."
+            ));
+    }
+
+    protected function contributesSceneManifest(Plugin $plugin): bool
+    {
+        if (array_key_exists('UIApplicationSceneManifest', $plugin->getIosInfoPlist())) {
+            return true;
+        }
+
+        $pluginPlistPath = $plugin->path.'/resources/ios/Info.plist';
+
+        return $this->files->exists($pluginPlistPath)
+            && array_key_exists('UIApplicationSceneManifest', $this->openPlist($pluginPlistPath)->all());
     }
 
     /**

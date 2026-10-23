@@ -26,6 +26,18 @@ class AsyncTaskRunner
      */
     public static function run(string $id): void
     {
+        // An async lane runs its task in here, as does the subprocess
+        // that stands in for one under Jump. The task is marked as
+        // the work of a background lane for as long as it runs.
+        Lane::background(fn () => static::runTask($id));
+    }
+
+    /**
+     * Read the payload of a task, run its work, and tell the main
+     * lane how it ended: with a result, or with what it threw.
+     */
+    protected static function runTask(string $id): void
+    {
         $payload = AsyncTaskTransport::readPayload($id);
 
         if ($payload === null) {
