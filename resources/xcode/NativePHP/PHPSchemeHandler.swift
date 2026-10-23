@@ -639,7 +639,13 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 // exit envelope. If that lands after the task died, honor
                 // an EXIT_WEB anyway or the user is stranded on a frozen
                 // native screen with a runloop that no longer exists.
-                if case .success(let data) = result,
+                //
+                // An embedded php-mode webview never carries a native
+                // session. Its cancelled request (the user navigated on, or
+                // the screen holding it closed) is just a page load, and a
+                // redirect from it must not move the whole app to the web.
+                if self.dedicatedRuntime == nil,
+                   case .success(let data) = result,
                    let parsed = PHPRawResponse(data) {
                     self.handleOrphanedNativeExit(parsed.head)
                 }
