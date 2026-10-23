@@ -370,14 +370,22 @@ struct NativeRootTabsRenderer: View {
     /// whose URL is the longest prefix of `currentUri`. Returns nil if
     /// no tab claims the URI; the caller should fall back to PHP's
     /// `BottomNavItem.active` flag.
+    ///
+    /// Matches on the path, so a screen opened with a query
+    /// (`/home?ref=push`) still belongs to the `/home` tab. A tab whose
+    /// own URL carries a query (`/remotes?tab=closed`) matches the full
+    /// URI, and being longer, wins. Same rule as `TabBar::highlight()`.
     private func owningTabIndex(for currentUri: String, tabs: [NativeUINode]) -> Int? {
         guard !currentUri.isEmpty else { return nil }
+        let currentPath = PerTabNavigationCoordinator.path(of: currentUri)
         var bestIdx: Int? = nil
         var bestLen: Int = -1
         for (idx, tab) in tabs.enumerated() {
             let tabUrl = tab.props.getString("url", default: "")
             guard !tabUrl.isEmpty else { continue }
-            let isMatch = (currentUri == tabUrl) || currentUri.hasPrefix(tabUrl + "/")
+            let isMatch = currentUri == tabUrl
+                || currentPath == tabUrl
+                || currentPath.hasPrefix(tabUrl + "/")
             if isMatch && tabUrl.count > bestLen {
                 bestIdx = idx
                 bestLen = tabUrl.count
@@ -422,7 +430,7 @@ private struct PerTabContent: View {
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
-                levelView(uri: coordinator.rootUri, isRoot: true)
+                levelView(uri: coordinator.rootLevelUri, isRoot: true)
                     .navigationDestination(for: String.self) { uri in
                         levelView(uri: uri, isRoot: false)
                     }
@@ -432,7 +440,7 @@ private struct PerTabContent: View {
                 coordinator.onPathChange(newPath: newPath)
             }
         } else {
-            levelContent(for: coordinator.rootNodeCache[coordinator.rootUri])
+            levelContent(for: coordinator.rootNodeCache[coordinator.rootLevelUri])
         }
     }
 
