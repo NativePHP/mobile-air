@@ -95,10 +95,11 @@ struct NativeRootTabsRenderer: View {
         // async since `path` is @Published.
         if !currentUri.isEmpty, owningIdx < tabs.count {
             let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
+            let stackDepth = node.props.getInt("stack_depth", default: 0)
             let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
             coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
-                coord.receive(uri: currentUri, rootNode: node)
+                coord.receive(uri: currentUri, depth: stackDepth, rootNode: node)
             }
         }
 
@@ -136,7 +137,9 @@ struct NativeRootTabsRenderer: View {
         // bar even with no string title / back button — otherwise a layout that
         // sets only `titleView()` gets no nav bar and the logo never renders.
         let hasTitleView = node.children.contains { $0.type == "top_bar_title" }
-        let hasNavBar = navBack || !navTitleText.isEmpty || hasTitleView
+        // a bar carrying only actions must still render.
+        let hasNavActions = node.children.contains { $0.type == "top_bar_action" }
+        let hasNavBar = navBack || !navTitleText.isEmpty || hasTitleView || hasNavActions
 
         // Search-tab plumbing for iOS 26's `Tab(role: .search)` floating
         // Liquid Glass capsule. `SearchTabContainer` owns the query state
@@ -227,7 +230,7 @@ struct NativeRootTabsRenderer: View {
                     }
                 }()
 
-                Tab(label, systemImage: getIconForName(icon), value: tabId) {
+                Tab(label, nativeIcon: icon, value: tabId) {
                     PerTabContent(
                         coordinator: coord,
                         hasNavBar: hasNavBar,
@@ -250,7 +253,7 @@ struct NativeRootTabsRenderer: View {
                 let searchTab = tabs[searchIdx]
                 let searchLabel = searchTab.props.getString("label", default: "Search")
                 let searchIcon = searchTab.props.getString("icon", default: "magnifyingglass")
-                Tab(searchLabel, systemImage: getIconForName(searchIcon), value: searchId, role: .search) {
+                Tab(searchLabel, nativeIcon: searchIcon, value: searchId, role: .search) {
                     SearchTabContainer(
                         placeholder: searchPlaceholder,
                         itemNodes: searchItemNodes,
@@ -438,6 +441,10 @@ private struct PerTabContent: View {
         if let cached = coordinator.rootNodeCache[uri] {
             renderLevel(cached, isRoot: isRoot)
         } else {
+            // Nothing cached for this level yet. `levelContent` backgrounds
+            // the rendered path; this branch never reaches it, so it takes
+            // the window background itself rather than flashing the
+            // TabView's container on the first tap of a fresh tab.
             Color.clear
                 .navigationTitle(fallbackTitle)
                 .navigationBarTitleDisplayMode(.inline)
@@ -449,6 +456,7 @@ private struct PerTabContent: View {
                     textArgb: fallbackTextArgb,
                     bgArgb: fallbackBgArgb
                 ))
+                .modifier(WindowBackgroundModifier())
         }
     }
 
@@ -561,17 +569,31 @@ private struct PerTabContent: View {
                 && $0.type != "top_bar_title"
                 && !NativeRootHostRegistry.shared.consumes($0.type)
         }
-        if let content {
-            NodeView(node: content)
-                // Tapping outside a focused field dismisses the keyboard, the
-                // same as on a chrome-less screen. Attached to the screen
-                // content, not the TabView — a tap on the tab bar is the bar's
-                // business, and wrapping the TabView risks iOS 26's search
-                // capsule (mobile-air #308).
-                .dismissesKeyboardOnTap()
-        } else {
-            Color.clear
+        Group {
+            if let content {
+                NodeView(node: content)
+                    // Tapping outside a focused field dismisses the keyboard, the
+                    // same as on a chrome-less screen. Attached to the screen
+                    // content, not the TabView — a tap on the tab bar is the bar's
+                    // business, and wrapping the TabView risks iOS 26's search
+                    // capsule (mobile-air #308).
+                    .dismissesKeyboardOnTap()
+            } else {
+                // Placeholder until this level's tree publishes.
+                Color.clear
+            }
         }
+        // TabView hosts its screens on its own container background
+        // (systemBackground — white in light mode) with no SwiftUI
+        // override hook, so a themed app shows a system-background band
+        // wherever the safe-area-inset screen content cannot reach:
+        // behind the nav bar and behind the tab bar. Paint the PHP-set
+        // window background (`UI.SetBackground`) there, extended through
+        // the safe areas — the same treatment the stack renderer gives
+        // its screens. Wraps both branches so a tab's first frame, before
+        // its tree publishes, doesn't flash the container through. No-op
+        // when unset, preserving the stock appearance.
+        .modifier(WindowBackgroundModifier())
     }
 }
 
@@ -607,6 +629,13 @@ private struct TabsToolbarModifier: ViewModifier {
                             Image(systemName: "chevron.backward")
                                 .font(.system(size: 17, weight: .semibold))
                                 .foregroundColor(textColor)
+                                // the tappable region
+                                // must cover the 44pt glass pill, not just the
+                                // glyph — edge taps otherwise only highlight.
+                                // 32pt wide keeps the pill a circle (it grows
+                                // with the label + 12pt); the inset covers the rest.
+                                .frame(minWidth: 32, minHeight: 44)
+                                .contentShape(Rectangle().inset(by: -6))
                         }
                     }
                 }
@@ -643,6 +672,7 @@ private struct TabsActionView: View {
 
     var body: some View {
         let icon = action.props.getString("icon", default: "ellipsis")
+        let disabled = action.props.getBool("disabled")
         let subItems = action.children.filter { $0.type == "top_bar_action" }
 
         if subItems.isEmpty {
@@ -651,10 +681,22 @@ private struct TabsActionView: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    // Explicit dim: the hard-set foregroundColor above keeps
+                    // SwiftUI's automatic disabled greying from showing.
+                    .opacity(disabled ? 0.4 : 1)
+                    // same pill-sized hit region for
+                    // the trailing actions (plain Button and Menu labels alike).
+                    .frame(minWidth: 32, minHeight: 44)
+                    .contentShape(Rectangle().inset(by: -6))
             }
+            .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         } else {
             Menu {
                 ForEach(subItems) { item in
@@ -670,22 +712,37 @@ private struct TabsActionView: View {
                             }
                         } label: {
                             if !itemIcon.isEmpty {
-                                Label(itemLabel, systemImage: getIconForName(itemIcon))
+                                Label {
+                                    Text(itemLabel)
+                                } icon: {
+                                    NativeIcon.image(itemIcon)
+                                }
                             } else {
                                 Text(itemLabel)
                             }
                         }
+                        .disabled(item.props.getBool("disabled"))
                         // See NativeRootStackRenderer.swift for the rationale —
                         // .tint on the Button is what SwiftUI's Menu actually
-                        // routes to the Label's systemImage in destructive rows.
+                        // routes to the Label's icon in destructive rows.
                         .tint(isDestructive ? .red : nil)
                     }
                 }
             } label: {
-                Image(systemName: getIconForName(icon))
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
+                    .opacity(disabled ? 0.4 : 1)
+                    // same pill-sized hit region for
+                    // the trailing actions (plain Button and Menu labels alike).
+                    .frame(minWidth: 32, minHeight: 44)
+                    .contentShape(Rectangle().inset(by: -6))
             }
+            .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         }
     }
 }
@@ -905,10 +962,15 @@ private struct TabBarLabelVisibilityModifier: ViewModifier {
     }
 }
 
+/// The `#if` keeps `.tabViewBottomAccessory` out of the compilation entirely
+/// on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
+/// `LiquidGlassAvailability.swift`. This is the call site that broke the
+/// build outright on Xcode 16 ("has no member 'tabViewBottomAccessory'").
 private struct TabBarAccessoryModifier: ViewModifier {
     let accessory: NativeUINode?
 
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             if let inner = accessory?.children.first {
                 content
@@ -921,6 +983,9 @@ private struct TabBarAccessoryModifier: ViewModifier {
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 }
 
@@ -1000,6 +1065,12 @@ private struct SearchTabContainer: View {
     var body: some View {
         NavigationStack {
             NativeSearchTabRoot(query: query, itemNodes: itemNodes, mode: mode)
+                // The search tab is declared as a sibling of the `ForEach`,
+                // so it never passes through `PerTabContent` and needs the
+                // window background applied here. Inside the NavigationStack,
+                // matching the other renderers: outside it, the stack's own
+                // container would cover the paint.
+                .modifier(WindowBackgroundModifier())
         }
         .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
         .onChange(of: query) { _, newValue in
@@ -1042,6 +1113,8 @@ private struct NativeSearchTabRoot: View {
     let itemNodes: [NativeUINode]
     let mode: String
 
+    @ObservedObject private var windowBackground = WindowBackgroundState.shared
+
     /// Plain-text representation of an item for client-side filtering.
     /// Element-kind items aren't filtered (no generic text extraction)
     /// — they always pass through.
@@ -1083,6 +1156,11 @@ private struct NativeSearchTabRoot: View {
         List(displayed) { item in
             rowView(for: item)
         }
+        // A List paints its own `systemGroupedBackground`, which would
+        // cover the window background painted behind it and leave the
+        // search tab light in a themed app. Hidden only while an override
+        // is set, so the stock appearance is untouched without one.
+        .scrollContentBackground(windowBackground.color == nil ? .automatic : .hidden)
         .overlay {
             if itemNodes.isEmpty {
                 if mode == "dynamic" {
@@ -1160,9 +1238,11 @@ private struct ObjectResultRow: View {
                 // an SF Symbol) get mapped to their SF equivalent.
                 // Using the raw name with `Image(systemName:)` for an
                 // unknown symbol leaves a 24pt empty gap on the left —
-                // that's what the visible padding was.
+                // that's what the visible padding was. NativeIconView
+                // also draws `custom:` icons, scaled with the body text
+                // like the symbols.
                 if let leading, !leading.isEmpty {
-                    Image(systemName: getIconForName(leading))
+                    NativeIconView(leading, pointSize: 17, relativeTo: .body)
                         .foregroundStyle(.secondary)
                         .frame(width: 24)
                 }
@@ -1177,7 +1257,7 @@ private struct ObjectResultRow: View {
                 }
                 Spacer(minLength: 0)
                 if let trailing, !trailing.isEmpty {
-                    Image(systemName: getIconForName(trailing))
+                    NativeIconView(trailing, pointSize: 17, relativeTo: .body)
                         .foregroundStyle(.tertiary)
                 }
             }

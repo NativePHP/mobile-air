@@ -34,11 +34,15 @@ abstract class Element
     protected ?string $key = null;
 
     /**
-     * Test-targeting handle, set via `->ref('save-btn')` or a Blade
-     * `ref="save-btn"` attribute. Emitted on the wire node so the
-     * testing harness can locate elements without depending on visible
-     * text or method names (the `data-testid` equivalent). Renderers
-     * ignore it.
+     * The element's name, set via `->ref('save-btn')` or a Blade
+     * `ref="save-btn"` attribute. Emitted on the wire node so the testing
+     * harness can locate elements without depending on visible text or method
+     * names (the `data-testid` equivalent).
+     *
+     * It is ALSO the shared-element identity: two elements on different
+     * screens sharing a ref morph into each other during a `morph`
+     * navigation (see NodeHeroModifier on iOS). A ref that exists purely as a
+     * test handle and must never travel can opt out with `morph="none"`.
      */
     protected ?string $elementRef = null;
 
@@ -129,6 +133,16 @@ abstract class Element
         // No-op by default — built-in elements use applyElementProps()
     }
 
+    /**
+     * Extra Blade `@event` names this element accepts (`@link`, `@scan`, …).
+     *
+     * @return string[]
+     */
+    public static function elementEvents(): array
+    {
+        return [];
+    }
+
     // ── Tree building ─────────────────────────────────
 
     public function addChild(Element $child): static
@@ -167,6 +181,10 @@ abstract class Element
      * `NativeElementCollector` uses for blade-driven elements, so the
      * resolved keys map to the same node fields with no behavioural
      * drift between blade and programmatic construction.
+     *
+     * One exception: `whitespace-*` is a capture-time policy that only
+     * blade-authored text passes through. Programmatic text strings
+     * ship verbatim, the way code-built values are literal.
      */
     public function class(string $classes): static
     {
@@ -187,6 +205,13 @@ abstract class Element
         // programmatically built elements silently dropped ALL dark-mode
         // styling (light hexes rendered in both modes).
         $this->mergeDarkProps(NativeElementCollector::buildDarkProps($attrs));
+        // Responsive variants — same JSON prop the collector emits for
+        // blade elements, so `->class('md:flex-row')` re-flows too. Built
+        // against this class string only: styling set fluently before the
+        // call isn't part of the base a breakpoint builds on.
+        foreach (NativeElementCollector::buildVariantProps($attrs, fn () => new static) as $key => $value) {
+            $this->setProp($key, $value);
+        }
 
         return $this;
     }
@@ -512,6 +537,53 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Colored zero-offset glow halo. Programmatic twin of `glow-*`
+     * utilities — rides the props bag (`glow_color` / `glow_radius` /
+     * `glow_opacity`), not the packed NodeStyle elevation slot.
+     */
+    public function glow(string $color, float $radius = 16.0, float $opacity = 0.55): static
+    {
+        $this->extraProps['glow_color'] = $color;
+        $this->extraProps['glow_radius'] = $radius;
+        $this->extraProps['glow_opacity'] = $opacity;
+
+        return $this;
+    }
+
+    public function glowColor(string $color): static
+    {
+        $this->extraProps['glow_color'] = $color;
+
+        return $this;
+    }
+
+    public function glowRadius(float $radius): static
+    {
+        $this->extraProps['glow_radius'] = $radius;
+
+        return $this;
+    }
+
+    public function glowOpacity(float $opacity): static
+    {
+        $this->extraProps['glow_opacity'] = $opacity;
+
+        return $this;
+    }
+
+    /**
+     * Gaussian blur filter. Programmatic twin of `blur-*` / `blur-[Npx]`
+     * — rides the props bag (`blur` radius in points), not NodeStyle.
+     * Softens the node's own pixels (page-bg orbs); distinct from glow/shadow.
+     */
+    public function blur(float $radius): static
+    {
+        $this->extraProps['blur'] = $radius;
+
+        return $this;
+    }
+
     // ── Node-level events ────────────────────────────
 
     public function onPress(string $method): static
@@ -729,11 +801,17 @@ abstract class Element
      * the docblock on `$key` and Phase 1 in the perf refactor doc.
      */
     /**
-     * Set the test-targeting ref for this node (see $elementRef).
+     * Name this node (see $elementRef).
      */
     public function ref(string $ref): static
     {
         $this->elementRef = $ref;
+
+        // Also carried as a generic prop. The node-level `ref` field is NOT
+        // serialized — no native node model parses it — so the prop bag is
+        // what actually reaches the renderer, and the shared-element morph
+        // reads it from there. Same value, two carriers, one authored name.
+        $this->setProp('ref', $ref);
 
         return $this;
     }

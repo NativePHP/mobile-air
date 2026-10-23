@@ -4,6 +4,7 @@ namespace Native\Mobile\Validation;
 
 use Illuminate\Filesystem\Filesystem;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Support\PathHelper;
 
 class NativeComponentAnalyzer
 {
@@ -213,6 +214,12 @@ class NativeComponentAnalyzer
             if (preg_match('/\$this\s*->\s*view\s*\(\s*[\'"]([^\'"]+)[\'"]/', $methodBody, $matches)) {
                 return $matches[1];
             }
+
+            // Match the view('native.name') helper, which the starter kit
+            // and native:make use. Names are kept relative to native/.
+            if (preg_match('/(?<![\w>:])view\s*\(\s*[\'"]native\.([^\'"]+)[\'"]/', $methodBody, $matches)) {
+                return $matches[1];
+            }
         } catch (\ReflectionException $e) {
             // Fall through
         }
@@ -230,7 +237,7 @@ class NativeComponentAnalyzer
 
     protected function resolveClassName(string $filePath, string $basePath): ?string
     {
-        $relative = str_replace($basePath.'/', '', $filePath);
+        $relative = PathHelper::relativeTo($filePath, $basePath);
         $relative = substr($relative, 0, -4); // Remove .php
         $relative = str_replace('/', '\\', $relative);
 
@@ -239,8 +246,6 @@ class NativeComponentAnalyzer
 
     protected function relativePath(string $path): string
     {
-        $base = base_path().'/';
-
-        return str_starts_with($path, $base) ? substr($path, strlen($base)) : $path;
+        return PathHelper::relativeTo($path, base_path());
     }
 }

@@ -5,6 +5,7 @@ namespace Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Icon\AndroidSymbol;
+use Native\Mobile\Icon\Icon;
 use Native\Mobile\Icon\IconResolver;
 use Native\Mobile\Icon\IosSymbol;
 
@@ -34,7 +35,7 @@ class TopBarAction extends Element
             $attrs['material_variant'] = $attrs['material-variant'];
         }
 
-        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }
@@ -44,6 +45,9 @@ class TopBarAction extends Element
         $this->androidIcon = $attrs['android-icon'] ?? $attrs['androidIcon'] ?? $attrs['android'] ?? $this->androidIcon;
         if (isset($attrs['destructive'])) {
             $this->props['destructive'] = (bool) $attrs['destructive'];
+        }
+        if (isset($attrs['disabled'])) {
+            $this->props['disabled'] = (bool) $attrs['disabled'];
         }
         if (isset($attrs['divider'])) {
             $this->props['divider'] = (bool) $attrs['divider'];
@@ -62,6 +66,10 @@ class TopBarAction extends Element
             if ($resolved['variant'] !== null && ! isset($this->props['material_variant'])) {
                 $this->props['material_variant'] = $resolved['variant'];
             }
+        }
+        // An explicit `material-variant` attr means nothing to a custom icon.
+        if (Icon::isCustom($this->props['icon'] ?? null)) {
+            unset($this->props['material_variant']);
         }
 
         if (! empty($this->props['url']) && $this->pressMethod === null) {

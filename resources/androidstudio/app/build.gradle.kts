@@ -4,11 +4,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val googleServicesJson = file("google-services.json")
-if (googleServicesJson.exists()) {
-    apply(plugin = "com.google.gms.google-services")
-}
-
 android {
     namespace = "com.nativephp.mobile"
     compileSdk = REPLACE_COMPILE_SDK
@@ -214,8 +209,12 @@ dependencies {
     implementation(libs.androidx.browser)
 
     testImplementation(libs.junit)
+    // The android.jar on the unit test classpath only stubs org.json, so
+    // JVM tests that build or parse JSON need the real implementation.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.androidx.ui.test.junit4)
 
     // AndroidX Security for encrypted storage
     implementation(libs.androidx.security.crypto)

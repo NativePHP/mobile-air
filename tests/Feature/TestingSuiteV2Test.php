@@ -12,6 +12,7 @@ use Tests\Fixtures\Edge\DetailScreen;
 use Tests\Fixtures\Edge\GateScreen;
 use Tests\Fixtures\Edge\HiddenNavOptionsScreen;
 use Tests\Fixtures\Edge\HiddenNavScreen;
+use Tests\Fixtures\Edge\HiddenTabOptionsScreen;
 use Tests\Fixtures\Edge\HiddenTabScreen;
 use Tests\Fixtures\Edge\PingReceived;
 use Tests\Fixtures\Edge\PlatformScreen;
@@ -121,6 +122,12 @@ it('fires a single poll method by name', function () {
         ->firePoll('tick')
         ->assertSet('ticks', 2)
         ->assertSet('slowTicks', 0);
+});
+
+it('injects dependencies into protected poll methods through the internal invocation path', function () {
+    Native::test(PollScreen::class)
+        ->firePoll('injectedTick')
+        ->assertSet('injectedTicks', 3);
 });
 
 it('rejects unknown poll methods', function () {
@@ -247,6 +254,25 @@ it('drops the top bar entirely on the custom-Column chrome path', function () {
     Native::test(ChromeScreen::class, layout: ChromeColumnLayout::class)
         ->assertNavBarVisible()
         ->assertNavTitle('Chrome Demo');
+});
+
+it('hides the tab bar via the tabBarOptions builder', function () {
+    Native::test(HiddenTabOptionsScreen::class, layout: ChromeTabsLayout::class)
+        ->assertTabBarHidden();
+});
+
+it('drops the tab bar entirely on the custom-Column chrome path', function () {
+    // Both spellings — the $hidesTabBar shortcut and the tabBarOptions()
+    // builder — must hide the bar here, exactly as they do on the native
+    // chrome path.
+    Native::test(HiddenTabScreen::class, layout: ChromeColumnLayout::class)
+        ->assertTabBarHidden();
+
+    Native::test(HiddenTabOptionsScreen::class, layout: ChromeColumnLayout::class)
+        ->assertTabBarHidden();
+
+    Native::test(ChromeScreen::class, layout: ChromeColumnLayout::class)
+        ->assertTabBarVisible();
 });
 
 it('fails nav title assertions helpfully', function () {

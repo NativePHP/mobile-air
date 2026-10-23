@@ -46,6 +46,41 @@ it('applies the opacity modifier to the dark companion too', function () {
         ->and($parsed['dark']['bg'])->toBe('#80FFA85C');
 });
 
+it('lets an explicit border width beat the one a theme border implies', function () {
+    // A theme border needs *a* width to be visible at all, but asserting one made the
+    // outcome depend on class order: `border-2 border-theme-primary` rendered 1px while
+    // `border-theme-primary border-2` rendered 2px, with nothing on screen to explain it.
+    expect(TailwindParser::parse('border-2 border-theme-primary'))
+        ->toMatchArray(['borderColor' => '#FF6B00', 'borderWidth' => 2])
+        ->and(TailwindParser::parse('border-theme-primary border-2'))
+        ->toMatchArray(['borderColor' => '#FF6B00', 'borderWidth' => 2]);
+});
+
+it('still gives a bare theme border a width of its own', function () {
+    expect(TailwindParser::parse('border-theme-success'))
+        ->toBe(['borderColor' => '#00E475', 'borderWidth' => 1]);
+});
+
+it('lets a theme border on one side stay on that side', function () {
+    // The implied width is uniform, so applying it beside `border-l` would draw a box.
+    expect(TailwindParser::parse('border-l border-dashed border-theme-primary'))
+        ->toEqual(['borderLeftWidth' => 1, 'borderStyle' => 1, 'borderColor' => '#FF6B00', 'dark' => ['borderColor' => '#FFA85C']])
+        ->and(TailwindParser::parse('border-theme-success border-b-2'))
+        ->toBe(['borderColor' => '#00E475', 'borderBottomWidth' => 2]);
+});
+
+it('gives a dashed theme border the implied width', function () {
+    expect(TailwindParser::parse('border-dashed border-theme-success'))
+        ->toBe(['borderStyle' => 1, 'borderColor' => '#00E475', 'borderWidth' => 1]);
+});
+
+it('never leaks the internal default-width key into the parsed output', function () {
+    // parse() resolves it at the end; the renderers read this array directly, so a
+    // leftover key would reach the wire as an unknown style prop.
+    expect(TailwindParser::parse('border-theme-primary'))->not->toHaveKey('borderWidthDefault')
+        ->and(TailwindParser::parse('border-4 border-theme-primary'))->not->toHaveKey('borderWidthDefault');
+});
+
 it('leaves unknown theme tokens unresolved rather than guessing', function () {
     expect(TailwindParser::parse('bg-theme-nonexistent'))->toBe([]);
 });

@@ -16,6 +16,13 @@ class System
      */
     private static ?string $appearance = null;
 
+    /**
+     * Process-cached current app-window orientation. Same lifecycle as $appearance:
+     * seeded on first read via `System.GetOrientation`, kept fresh by the
+     * OrientationChanged event.
+     */
+    private static ?string $orientation = null;
+
     public function isIos(): bool
     {
         $info = Device::getInfo();
@@ -46,6 +53,31 @@ class System
         }
 
         return false;
+    }
+
+    /**
+     * Is this process running under `native:jump`?
+     *
+     * In Jump hybrid mode PHP runs on the DEVELOPER'S MACHINE and only bridge
+     * calls cross to the phone. Anything the app hands the device that resolves
+     * locally — a filesystem path, a `localhost` URL — is meaningless over
+     * there, because "there" is a different computer. Code that builds
+     * device-bound values (core and plugins alike) checks this to hand over
+     * something the device can actually reach.
+     *
+     * Gated on `JUMP_BRIDGE_PORT`, which `native:jump` exports into the Laravel
+     * server it spawns. NOT on `function_exists('nativephp_call')` — in Jump
+     * mode the PHP fallback DEFINES that function (see
+     * NativeServiceProvider::registerJumpBridgeFallback()), so it exists on the
+     * dev server as well as on device and would report true everywhere.
+     *
+     * Static, and a bare env read, because callers include per-element render
+     * paths that also run on device, where this must not cost a facade resolve
+     * or a bridge round-trip.
+     */
+    public static function runningInJump(): bool
+    {
+        return getenv('JUMP_BRIDGE_PORT') !== false;
     }
 
     /**
@@ -87,6 +119,50 @@ class System
     {
         if ($mode === 'light' || $mode === 'dark') {
             self::$appearance = $mode;
+        }
+    }
+
+    /**
+     * Current app-window orientation: 'portrait' or 'landscape'. This describes
+     * the window aspect rather than the physical device, which matters in
+     * multi-window modes. Off device (tests, web preview), the bridge is absent
+     * and this returns 'portrait'.
+     */
+    public function orientation(): string
+    {
+        if (self::$orientation !== null) {
+            return self::$orientation;
+        }
+
+        if (function_exists('nativephp_call')) {
+            $result = nativephp_call('System.GetOrientation', '{}');
+            $orientation = json_decode($result ?: '{}', true)['orientation'] ?? null;
+            if ($orientation === 'portrait' || $orientation === 'landscape') {
+                return self::$orientation = $orientation;
+            }
+        }
+
+        return 'portrait';
+    }
+
+    public function isPortrait(): bool
+    {
+        return $this->orientation() === 'portrait';
+    }
+
+    public function isLandscape(): bool
+    {
+        return $this->orientation() === 'landscape';
+    }
+
+    /**
+     * Update the process-cached orientation. Called by the OrientationChanged
+     * listener so `orientation()` stays fresh without re-probing the bridge.
+     */
+    public static function rememberOrientation(string $orientation): void
+    {
+        if ($orientation === 'portrait' || $orientation === 'landscape') {
+            self::$orientation = $orientation;
         }
     }
 

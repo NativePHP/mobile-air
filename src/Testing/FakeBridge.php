@@ -76,12 +76,26 @@ class FakeBridge implements GatedBridge
     /** Value returned by nativephp_runtime_flags(). 0 = all features off. */
     public int $runtimeFlags = 0;
 
+    /**
+     * Value returned by nativephp_force_full_frame_epoch(). A reset bumps it,
+     * as the C extension's does; a test can bump it to stand in for anything
+     * else that swaps the native tree out.
+     */
+    public int $forceFullFrameEpoch = 0;
+
     /** Counts of element-region lifecycle calls, for completeness. */
     public int $initCount = 0;
 
     public int $resetCount = 0;
 
     public int $shutdownCount = 0;
+
+    /**
+     * Events queueEvent() posted for the next waits.
+     *
+     * @var list<array<string, mixed>>
+     */
+    protected array $queuedEvents = [];
 
     // ── Binding ─────────────────────────────────────
 
@@ -172,16 +186,32 @@ class FakeBridge implements GatedBridge
 
     /**
      * The runloop never blocks under test — the harness dispatches events
-     * directly — so a wait always behaves as an instant idle tick.
+     * directly — so a wait returns an event queued with queueEvent(), or
+     * behaves as an instant idle tick.
      */
     public function elementWaitEvent(int $timeoutMs): ?array
     {
-        return null;
+        return array_shift($this->queuedEvents);
+    }
+
+    /**
+     * Queue an event for the next wait, as the native side posts one. A reset
+     * drops it, as the C bridge's does.
+     *
+     * @param  array<string, mixed>  $event
+     */
+    public function queueEvent(array $event): static
+    {
+        $this->queuedEvents[] = $event;
+
+        return $this;
     }
 
     public function elementReset(): void
     {
         $this->resetCount++;
+        $this->forceFullFrameEpoch++;
+        $this->queuedEvents = [];
     }
 
     public function elementShutdown(): void
