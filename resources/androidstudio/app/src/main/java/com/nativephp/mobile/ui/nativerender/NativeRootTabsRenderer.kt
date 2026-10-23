@@ -49,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nativephp.mobile.ui.MaterialIcon
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Compose port of iOS's `NativeRootTabsRenderer`. Renders the
@@ -136,6 +138,17 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // Android keeps no per-tab tree cache to hold the selected tab's content.)
     var pendingTabId by remember { mutableStateOf<String?>(null) }
     val supersededTabIds = remember { mutableSetOf<String>() }
+
+    // Scope for the native scroll-to-top animation a bottom-tab
+    // reselect launches — cancelled automatically when this renderer
+    // leaves composition, which also cancels an in-flight scroll.
+    val scope = rememberCoroutineScope()
+
+    // True while a reselect scroll-to-top is animating. Re-taps during
+    // the scroll must not re-read isAtTop() on its final frames and
+    // accidentally fire the refresh callback — the scroll settles
+    // instead (see decideBottomTabTap).
+    var scrollInFlight by remember { mutableStateOf(false) }
 
     LaunchedEffect(activeTabIdx) {
         val pending = pendingTabId
@@ -356,18 +369,59 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                 // press — except while another tab's
                                 // navigation is in flight: PHP is
                                 // already navigating away and must be
-                                // told to come back.
+                                // told to come back. A re-tap of the
+                                // settled active tab dispatches the
+                                // tab's optional `on_reselect` callback
+                                // (Tab::onReselect) instead — possibly
+                                // only after its scroll target is back
+                                // at exact top (see decideBottomTabTap
+                                // for the exact branch order).
                                 selection = actualIdx
-                                val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
-                                if (!isSearchTab && tapNavigates && tab.onPress != 0) {
-                                    if (tab.props.getString("url", "").isNotEmpty()) {
-                                        val tappedId = tabIds.getOrElse(actualIdx) { "" }
-                                        pendingTabId?.let { prev ->
-                                            if (prev != tappedId) supersededTabIds.add(prev)
+                                val reselectCbId = tab.props.getCallbackId("on_reselect")
+                                val scrollTargetKey = tab.props.getString("reselect_scroll_target", "")
+                                val scrollTarget =
+                                    if (scrollTargetKey.isEmpty()) null
+                                    else NativeScrollTargetRegistry.get(scrollTargetKey)
+                                when (decideBottomTabTap(
+                                    actualIdx = actualIdx,
+                                    activeTabIdx = activeTabIdx,
+                                    hasPendingNavigation = pendingTabId != null,
+                                    isSearchTab = isSearchTab,
+                                    urlPressId = tab.onPress,
+                                    reselectCbId = reselectCbId,
+                                    scrollTargetKey = scrollTargetKey,
+                                    scrollTarget = scrollTarget,
+                                    scrollInFlight = scrollInFlight,
+                                )) {
+                                    BottomTabTapAction.NavigateUrl -> {
+                                        if (tab.props.getString("url", "").isNotEmpty()) {
+                                            val tappedId = tabIds.getOrElse(actualIdx) { "" }
+                                            pendingTabId?.let { prev ->
+                                                if (prev != tappedId) supersededTabIds.add(prev)
+                                            }
+                                            pendingTabId = tappedId
                                         }
-                                        pendingTabId = tappedId
+                                        NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
                                     }
-                                    NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
+                                    BottomTabTapAction.FireReselectCallback ->
+                                        // Same PRESS transport as the URL
+                                        // press; the callback id alone
+                                        // routes to the reselect handler.
+                                        NativeElementBridge.sendPressEvent(reselectCbId, tab.id)
+                                    BottomTabTapAction.ScrollTargetToTop -> {
+                                        val target = scrollTarget
+                                        if (target != null) {
+                                            scrollInFlight = true
+                                            scope.launch {
+                                                try {
+                                                    target.scrollToTop()
+                                                } finally {
+                                                    scrollInFlight = false
+                                                }
+                                            }
+                                        }
+                                    }
+                                    BottomTabTapAction.Noop -> {}
                                 }
                             },
                             icon = {
