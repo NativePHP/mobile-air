@@ -21,6 +21,22 @@ private struct AvailableHeightKey: EnvironmentKey {
 private struct WindowWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
+/// True for the screen being covered during a router-level swap. Its frame
+/// reports are ignored, so a shared element's geometry always comes from the
+/// screen that will be left showing. See `NodeHeroModifier`.
+private struct HeroIsOutgoingKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+/// True only inside `HeroFlightOverlay`'s copy of a travelling element.
+///
+/// The copy is rendered with the same `NodeView` as the original, so it runs
+/// through `NodeHeroModifier` as well — and would obediently hide itself,
+/// because its ref is exactly the one currently in flight. It must also not
+/// report frames, or it would overwrite the real element's geometry with its
+/// own mid-flight position.
+private struct HeroIsFlyingCopyKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
 
 extension EnvironmentValues {
     var nativeSafeAreaTop: CGFloat {
@@ -42,6 +58,14 @@ extension EnvironmentValues {
     var windowWidth: CGFloat {
         get { self[WindowWidthKey.self] }
         set { self[WindowWidthKey.self] = newValue }
+    }
+    var heroIsOutgoing: Bool {
+        get { self[HeroIsOutgoingKey.self] }
+        set { self[HeroIsOutgoingKey.self] = newValue }
+    }
+    var heroIsFlyingCopy: Bool {
+        get { self[HeroIsFlyingCopyKey.self] }
+        set { self[HeroIsFlyingCopyKey.self] = newValue }
     }
 }
 
@@ -479,6 +503,13 @@ struct ResolvedNodeView: View, Equatable {
                 .nodeModifier(if: decorations.contains(.animation)) {
                     $0.modifier(NodeAnimationModifier(style: node.style, props: node.props))
                 }
+                // Shared-element morph (`ref`). Sits AFTER style and layout so
+                // the frame it reports is the node's final one, padding and
+                // background included, rather than its bare content box, which
+                // would make the element visibly jump as it lands.
+                .nodeModifier(if: decorations.contains(.ref)) {
+                    $0.modifier(NodeHeroModifier(props: node.props))
+                }
                 // Gesture FIRST (inner) — onTapGesture must be attached
                 // before any simultaneousGesture wrapper or the tap is
                 // starved by SwiftUI's gesture composition.
@@ -495,6 +526,13 @@ struct ResolvedNodeView: View, Equatable {
                 // makes covers the whole tappable surface.
                 .nodeModifier(if: decorations.contains(.accessibility)) {
                     $0.modifier(NodeAccessibilityModifier(node: node))
+                }
+                // Test-targeting identity. Same `ref` the morph pairs on, so a
+                // Maestro `id:` selector and a shared element name the same
+                // thing. Outside accessibility, so it names the element that
+                // modifier makes rather than being folded into it.
+                .nodeModifier(if: decorations.contains(.ref)) {
+                    $0.modifier(NodeIdentityModifier(node: node))
                 }
                 // Hidden (`display: none`) outside everything above, so the
                 // background and border go with the content. FlexContainer never
@@ -593,6 +631,7 @@ struct NodeDecorations: OptionSet {
     static let pressFeedback = NodeDecorations(rawValue: 1 << 12)
     static let hidden = NodeDecorations(rawValue: 1 << 13)
     static let accessibility = NodeDecorations(rawValue: 1 << 14)
+    static let ref = NodeDecorations(rawValue: 1 << 15)
 
     /// The layers whose changes never rebuilt a node, kept on every node
     /// that keeps state.
@@ -672,6 +711,9 @@ struct NodeDecorations: OptionSet {
         }
         if NodeAccessibility.applies(to: node) {
             insert(.accessibility)
+        }
+        if !props.getString("ref", default: "").isEmpty {
+            insert(.ref)
         }
     }
 }

@@ -31,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.unit.dp
 
 /**
@@ -256,6 +258,8 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         // ── Modifier chain ───────────────────────────────────────────
         // Outer to inner:
         //   base (sizing)
+        //   → heroMorph                     (shared-element bounds; must wrap
+        //                                    the background, not sit inside it)
         //   → press feedback graphicsLayer  (wraps everything for visual scale/alpha on press)
         //   → animation graphicsLayer       (wraps bg too so translate/alpha affect the box, not just inner content)
         //   → nodeStyle                     (background + border)
@@ -264,6 +268,20 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         //   → nodeAccessibility             (a11y-label replaces the children's semantics, inside the clickable so its action survives)
         //   → nodeLayout                    (padding)
         var modifier: Modifier = base
+
+        // Shared-element morph goes FIRST, i.e. outermost.
+        //
+        // Compose modifiers wrap outer→inner, so anything applied before
+        // `sharedBounds` is measured and drawn OUTSIDE the animated bounds.
+        // Applied last it moved only the node's children: on the three-hop
+        // chain the number travelled while its coloured box stayed put.
+        // Outermost, the background, border, clip, padding and content all
+        // ride the animated bounds together.
+        //
+        // Note this is the OPPOSITE order from iOS, where the equivalent
+        // modifier sits late in the chain — SwiftUI applies modifiers
+        // outward, so "last" there means the same thing "first" means here.
+        modifier = modifier.heroMorph(node)
 
         if (hasPressFeedback) {
             modifier = modifier.graphicsLayer {
@@ -298,8 +316,26 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         if (hasPress && (radius > 0f || node.props.has("radius_tl"))) {
             modifier = modifier.clip(nodeShape(radius, node.props))
         }
+        modifier = modifier.nodeGestures(node, interactionSource)
+
+        // `ref` is both the test-targeting handle (Maestro / Compose UI tests)
+        // AND the shared-element identity: two screens naming an element the
+        // same thing morph it between them under a `morph` transition.
+        val ref = node.props.getString("ref", "")
+        if (ref.isNotEmpty()) {
+            // testTag ONLY — deliberately not contentDescription. Overwriting
+            // the description with an internal handle makes TalkBack announce
+            // "photo-1" in place of whatever the element actually is, which
+            // trades a real accessibility affordance for a test convenience.
+            // The tag reaches UiAutomator (and therefore Maestro `id:`) via
+            // `testTagsAsResourceId` set once at the root in NativeUIContent.
+            //
+            // Outside `nodeAccessibility`: an `a11y-label` there clears every
+            // semantics modifier inside it, which would drop the tag.
+            modifier = modifier.semantics { testTag = ref }
+        }
+
         modifier = modifier
-            .nodeGestures(node, interactionSource)
             .nodeAccessibility(node)
             .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
 
