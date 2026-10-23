@@ -202,7 +202,21 @@ class LaravelEnvironment(private val context: Context) {
             // baseArtisanRanThisProcess, and boots the persistent runtime
             // while THIS thread is still cycling classic embeds — see the
             // extractionLock comment for the failure that causes.
-            extractionLock.withLock {
+            //
+            // The run-under-lock helper re-checks the persistent runtime
+            // INSIDE the lock: the fast-path check above races
+            // bootPersistentRuntime(), which holds this same lock and flips
+            // the flags before releasing it. A queued initializer that read
+            // false can wake up holding the lock AFTER another one already
+            // extracted and booted — without the inside-lock check it would
+            // re-extract (DEBUG always extracts), deleting vendor/ under the
+            // live runtime and breaking the first PHP includes on files that
+            // exist in the APK.
+            runUnderLockUnlessPersistent(
+                extractionLock,
+                { phpBridge.isPersistentMode() },
+                { Log.d(TAG, "⚡ Persistent runtime booted while this initializer waited for the lock — skipping extraction") }
+            ) {
                 val didBundle = extractLaravelBundleUnlocked()
                 val didPending = applyPendingUpdatesUnlocked()
                 val didExtract = didBundle || didPending
@@ -1031,7 +1045,17 @@ upload_max_filesize=16M
             // embed cycle running beside a persistent boot is what the extractionLock
             // comment above describes. Releasing after extraction alone would let
             // MainActivity boot straight into that overlap.
-            extractionLock.withLock {
+            //
+            // And, as in initialize(), the persistent-runtime check inside the
+            // helper is the authoritative one: this worker's fast-path read
+            // above can precede MainActivity's boot completing; once the lock
+            // is ours, bootPersistentRuntime has either finished (flags true,
+            // nothing to do) or not started it yet (safe to extract now).
+            runUnderLockUnlessPersistent(
+                extractionLock,
+                { phpBridge.isPersistentMode() },
+                { Log.d(TAG, "⚡ Persistent runtime booted while this worker waited for the lock — skipping background extraction") }
+            ) {
                 val didExtract = extractLaravelBundleUnlocked()
 
                 setupEnvironment(didExtract)
