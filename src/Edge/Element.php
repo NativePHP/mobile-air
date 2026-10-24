@@ -741,7 +741,9 @@ abstract class Element
 
     public function getStyle(): array
     {
-        return array_merge($this->styleDefaults(), $this->style);
+        return NativeElementCollector::withDefaultBorderColor(
+            array_merge($this->styleDefaults(), $this->style)
+        );
     }
 
     public function getPressCallbackId(CallbackRegistry $registry): int

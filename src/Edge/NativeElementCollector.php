@@ -714,6 +714,23 @@ class NativeElementCollector
             $style['elevation'] = (float) $attrs['elevation'];
         }
 
+        return static::withDefaultBorderColor($style);
+    }
+
+    /**
+     * A style block with no border gets a transparent `border_color`.
+     *
+     * The packer fills a missing colour with opaque black, and dividers and
+     * lines treat any colour other than 0 as one that was set, so `bg-*`,
+     * `opacity-*` or `rounded` alone turned a divider's rule black. A block
+     * with a width but no colour is left as it was.
+     */
+    public static function withDefaultBorderColor(array $style): array
+    {
+        if ($style !== [] && ! isset($style['border_color']) && ! isset($style['border_width'])) {
+            $style['border_color'] = '#00000000';
+        }
+
         return $style;
     }
 

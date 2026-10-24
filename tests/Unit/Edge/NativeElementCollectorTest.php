@@ -192,6 +192,41 @@ it('sends a border colour without a width from programmatic class()', function (
     expect($tree['style'])->toBe(['border_color' => '#FF0000']);
 });
 
+// The packer fills a missing border_color with opaque black, which a
+// divider then draws as its rule.
+
+it('sends a transparent border colour with a style that has no border', function (string $type, string $class, array $style) {
+    NativeElementCollector::leaf($type, ['class' => $class]);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['style'])->toBe($style + ['border_color' => '#00000000']);
+})->with(['column', 'divider'])->with([
+    'bg' => ['bg-[#FF0000]', ['bg_color' => '#FF0000']],
+    'opacity' => ['opacity-50', ['opacity' => 0.5]],
+    'rounded' => ['rounded', ['border_radius' => 4.0]],
+]);
+
+it('sends a transparent border colour from the streaming style builder', function () {
+    expect(NativeElementCollector::buildStyleArray(['bg' => '#FF0000']))
+        ->toBe(['bg_color' => '#FF0000', 'border_color' => '#00000000'])
+        ->and(NativeElementCollector::buildStyleArray([]))->toBe([]);
+});
+
+it('leaves a border width without a colour to the packer default', function () {
+    $element = new class extends Element
+    {
+        protected string $type = 'divider';
+
+        public function __construct()
+        {
+            $this->style['border_width'] = 2.0;
+        }
+    };
+
+    expect($element->getStyle())->toBe(['border_width' => 2.0]);
+});
+
 it('applies text-specific props', function () {
     NativeElementCollector::leaf('text', [
         'text' => 'Hello World',

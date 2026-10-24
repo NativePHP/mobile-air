@@ -109,8 +109,10 @@ it('ships variants as one _variants prop of per-breakpoint deltas sorted by min 
     $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
 
     expect($tree['layout']['padding'])->toBe(8.0);
+    // md: is the first style block this node has, so it carries the
+    // transparent border colour every style block without a border gets.
     expect(collectedVariants($tree))->toEqual([
-        ['min' => 768.0, 'layout' => ['flex_direction' => 1], 'style' => ['bg_color' => '#FF0000']],
+        ['min' => 768.0, 'layout' => ['flex_direction' => 1], 'style' => ['bg_color' => '#FF0000', 'border_color' => '#00000000']],
         ['min' => 1024.0, 'layout' => ['padding' => 32.0]],
     ]);
 });
