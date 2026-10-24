@@ -1,0 +1,136 @@
+name: iOS Build
+
+# Builds the iOS project the way an app gets it. A fresh Laravel app requires
+# this checkout and mobile-ui main, native:install ios copies in the Xcode
+# project and the PHP binaries, native:build compiles mobile-ui's renderers in
+# and builds Debug for the simulator, and then Release is built for devices.
+#
+# Release needs its own build. It compiles the whole module at once with
+# optimisation, and Swift that builds fine in Debug can still fail there.
+# That's how main went from #372 to #602 without a working Release build.
+
+on:
+  push:
+    branches: [main, 'ci/ios-release-compile**']
+  pull_request:
+    branches: [main]
+    paths:
+      - 'resources/xcode/**'
+      - 'src/**'
+      - 'composer.json'
+      - '.github/workflows/ios-build.yml'
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: xcode-27
+            xcode: '27.0'
+          - runner: macos-26
+            xcode: '26.6'
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    name: iOS Build - Xcode ${{ matrix.xcode }}
+
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+      # CocoaPods refuses to run without a UTF-8 locale.
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+
+    steps:
+      - name: Checkout mobile-air
+        uses: actions/checkout@v4
+        with:
+          path: mobile-air
+
+      - name: Checkout mobile-ui
+        uses: actions/checkout@v4
+        with:
+          repository: NativePHP/mobile-ui
+          path: mobile-ui
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          extensions: dom, simplexml, mbstring, zip, sodium
+          coverage: none
+
+      - name: Show versions
+        run: |
+          xcodebuild -version
+          php --version
+          pod --version
+          git -C mobile-ui log -1 --format='mobile-ui %h %s'
+
+      # The app lives outside the workspace: native:build copies the app into
+      # the Xcode project, and vendor/nativephp/mobile is a symlink back here.
+      - name: Create an app that requires this checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          composer create-project laravel/laravel app --prefer-dist --no-interaction --no-scripts --quiet
+          cd app
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+          echo "NATIVEPHP_APP_ID=com.nativephp.ci" >> .env
+
+          # A PR checkout has no version Composer can work out, and mobile-ui
+          # requires nativephp/mobile ^4.6, so both get one here.
+          composer config repositories.mobile '{"type": "path", "url": "${{ github.workspace }}/mobile-air", "options": {"versions": {"nativephp/mobile": "4.99.0"}}}'
+          composer config repositories.mobile-ui '{"type": "path", "url": "${{ github.workspace }}/mobile-ui", "options": {"versions": {"nativephp/mobile-ui": "dev-main"}}}'
+          composer require nativephp/mobile:4.99.0 nativephp/mobile-ui:dev-main --no-interaction
+
+          php artisan vendor:publish --tag=nativephp-plugins-provider --no-interaction
+          php artisan native:plugin:register nativephp/mobile-ui --no-interaction
+
+      - name: Install the iOS project
+        working-directory: ${{ runner.temp }}/app
+        run: php artisan native:install ios --no-interaction
+
+      - name: Build Debug for the simulator
+        working-directory: ${{ runner.temp }}/app
+        run: php artisan native:build --simulated --no-tty --no-interaction
+
+      # native:build --release archives and signs, which needs an Apple
+      # account, so this calls xcodebuild itself. NATIVEPHP_CLI_BUILD stops
+      # the project's build phase running native:build again.
+      - name: Build Release for devices
+        if: ${{ !cancelled() }}
+        working-directory: ${{ runner.temp }}/app/nativephp/ios
+        env:
+          NATIVEPHP_CLI_BUILD: 1
+        run: |
+          log="$RUNNER_TEMP/ios-release.log"
+
+          if ! xcodebuild -workspace NativePHP.xcworkspace -scheme NativePHP -configuration Release \
+              -destination 'generic/platform=iOS' -derivedDataPath build-release \
+              CODE_SIGNING_ALLOWED=NO build > "$log" 2>&1; then
+            # A type substitution abort dumps hundreds of thousands of lines,
+            # so only print the ones that say what failed. The whole log is
+            # uploaded below.
+            grep -E 'error:|Abort:|Possible non-terminating|While (evaluating|silgen)|\*\* BUILD FAILED' "$log" \
+              | grep -vE '^ *\|' | head -n 50
+            exit 1
+          fi
+
+          grep -F '** BUILD SUCCEEDED **' "$log"
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs-xcode-${{ matrix.xcode }}
+          path: |
+            ${{ runner.temp }}/ios-release.log
+            ${{ runner.temp }}/app/nativephp/ios-build.log
+          if-no-files-found: ignore
+          retention-days: 7
