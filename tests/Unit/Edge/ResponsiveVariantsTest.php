@@ -109,8 +109,10 @@ it('ships variants as one _variants prop of per-breakpoint deltas sorted by min 
     $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
 
     expect($tree['layout']['padding'])->toBe(8.0);
+    // md: is the first style block this node has, so it carries the
+    // transparent border colour every style block without a border gets.
     expect(collectedVariants($tree))->toEqual([
-        ['min' => 768.0, 'layout' => ['flex_direction' => 1], 'style' => ['bg_color' => '#FF0000']],
+        ['min' => 768.0, 'layout' => ['flex_direction' => 1], 'style' => ['bg_color' => '#FF0000', 'border_color' => '#00000000']],
         ['min' => 1024.0, 'layout' => ['padding' => 32.0]],
     ]);
 });
@@ -189,6 +191,17 @@ it('widens a border without restating the base border colour', function () {
     expect(collectedVariants(collectColumn('border border-[#FF0000] md:border-2')))->toEqual([
         ['min' => 768.0, 'style' => ['border_width' => 2.0]],
     ]);
+});
+
+it('gives a bare border colour a width at a breakpoint', function () {
+    // The base already carries the colour on its own, so the breakpoint
+    // only adds the width and the fold draws the border in that colour.
+    $tree = collectColumn('border-[#FF0000] md:border-2');
+
+    expect($tree['style'])->toBe(['border_color' => '#FF0000'])
+        ->and(collectedVariants($tree))->toEqual([
+            ['min' => 768.0, 'style' => ['border_width' => 2.0]],
+        ]);
 });
 
 it('ships only what each breakpoint changes over the narrower ones', function () {
