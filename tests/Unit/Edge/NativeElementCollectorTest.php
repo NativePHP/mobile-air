@@ -4,6 +4,7 @@ use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\Column;
+use Native\Mobile\Edge\Elements\Divider;
 use Native\Mobile\Edge\Elements\LazyGrid;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
@@ -146,6 +147,49 @@ it('applies style attributes correctly', function () {
         'opacity' => 0.8,
         'elevation' => 4.0,
     ]);
+});
+
+// Column goes through buildStyleArray, divider through applyStyle.
+
+it('sends a border colour without a width', function (string $type) {
+    NativeElementCollector::leaf($type, ['class' => 'border-[#FF0000]']);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    // Nothing strokes a border without a width, but a divider takes the
+    // colour for its rule.
+    expect($tree['style'])->toBe(['border_color' => '#FF0000']);
+})->with(['column', 'divider']);
+
+it('sends a border width and colour together', function (string $type) {
+    NativeElementCollector::leaf($type, ['class' => 'border-2 border-[#FF0000]']);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['style'])->toBe(['border_width' => 2.0, 'border_color' => '#FF0000']);
+})->with(['column', 'divider']);
+
+it('still sends nothing for a border width without a colour', function (string $type) {
+    NativeElementCollector::leaf($type, ['class' => 'border-2']);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree)->not->toHaveKey('style');
+})->with(['column', 'divider']);
+
+it('sends a dark border colour as a prop, as before', function (string $type) {
+    NativeElementCollector::leaf($type, ['class' => 'dark:border-[#00FF00]']);
+
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props'])->toMatchArray(['dark_border_color' => '#00FF00'])
+        ->and($tree)->not->toHaveKey('style');
+})->with(['column', 'divider']);
+
+it('sends a border colour without a width from programmatic class()', function () {
+    $tree = Divider::make()->class('border-[#FF0000]')->toArray(new CallbackRegistry);
+
+    expect($tree['style'])->toBe(['border_color' => '#FF0000']);
 });
 
 it('applies text-specific props', function () {

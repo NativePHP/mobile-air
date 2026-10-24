@@ -693,8 +693,13 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $style['border_radius'] = (float) $attrs['borderRadius'];
         }
-        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
-            $style['border_width'] = $borderWidth;
+        // The colour travels without a width: nothing strokes a border until
+        // border_width is above 0, but a divider or line takes it as its own
+        // colour. A width without a colour still sends nothing.
+        if (isset($attrs['borderColor'])) {
+            if (($borderWidth = static::borderWidth($attrs)) !== null) {
+                $style['border_width'] = $borderWidth;
+            }
             $style['border_color'] = $attrs['borderColor'];
         }
         if (isset($attrs['opacity'])) {
@@ -1899,8 +1904,13 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $element->borderRadius((float) $attrs['borderRadius']);
         }
-        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
-            $element->border($borderWidth, $attrs['borderColor']);
+        // As in buildStyleArray: the colour goes with or without a width.
+        if (isset($attrs['borderColor'])) {
+            if (($borderWidth = static::borderWidth($attrs)) !== null) {
+                $element->border($borderWidth, $attrs['borderColor']);
+            } else {
+                $element->borderColor($attrs['borderColor']);
+            }
         }
         if (isset($attrs['opacity']) && ! ($attrs['opacity'] instanceof SharedValue)) {
             // SharedValue-bound opacity is routed through the prop bag

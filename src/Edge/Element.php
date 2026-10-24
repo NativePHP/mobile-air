@@ -523,6 +523,17 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * A border colour with no width. It draws no border on its own, but a
+     * divider or line uses it as the colour of its rule.
+     */
+    public function borderColor(string $color): static
+    {
+        $this->style['border_color'] = $color;
+
+        return $this;
+    }
+
     public function opacity(float $value): static
     {
         $this->style['opacity'] = $value;

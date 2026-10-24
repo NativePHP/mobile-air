@@ -191,6 +191,17 @@ it('widens a border without restating the base border colour', function () {
     ]);
 });
 
+it('gives a bare border colour a width at a breakpoint', function () {
+    // The base already carries the colour on its own, so the breakpoint
+    // only adds the width and the fold draws the border in that colour.
+    $tree = collectColumn('border-[#FF0000] md:border-2');
+
+    expect($tree['style'])->toBe(['border_color' => '#FF0000'])
+        ->and(collectedVariants($tree))->toEqual([
+            ['min' => 768.0, 'style' => ['border_width' => 2.0]],
+        ]);
+});
+
 it('ships only what each breakpoint changes over the narrower ones', function () {
     expect(collectedVariants(collectColumn('p-2 sm:p-4 sm:flex-row md:p-4 lg:flex-col')))->toEqual([
         ['min' => 640.0, 'layout' => ['padding' => 16.0, 'flex_direction' => 1]],
