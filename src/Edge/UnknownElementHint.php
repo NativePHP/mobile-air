@@ -26,7 +26,7 @@ class UnknownElementHint
             'list', 'list_item', 'list_section', 'modal', 'native_drawer',
             'outlined_text_input', 'pager', 'progress_bar', 'radio', 'radio_group',
             'select', 'sheet_pane', 'slider', 'tab', 'tab_row', 'toggle',
-            'virtual_list', 'webview',
+            'virtual_list',
         ],
     ];
 

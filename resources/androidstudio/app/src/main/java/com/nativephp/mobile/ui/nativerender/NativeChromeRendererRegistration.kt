@@ -19,4 +19,10 @@ fun registerNativeChromeRenderers() {
     // Marker elements consumed by the parent renderers — register as
     // no-ops so they don't fall through to the default container.
     NativeRendererRegistry.register("tab_accessory", NodeRenderer { _, _ -> })
+    // The one in-body element the shell renders itself, because php mode
+    // needs the shell's own webview plumbing. iOS twin:
+    // Bridge/BridgeFunctionRegistration.swift.
+    NativeRendererRegistry.register("webview", NodeRenderer { node, modifier ->
+        NativeWebviewRenderer.Render(node, modifier)
+    })
 }

@@ -707,6 +707,14 @@ struct WebView: UIViewRepresentable {
     }
 
     func addNativeHelper(webView: WKWebView) {
+        Self.installNativeHelpers(on: webView)
+    }
+
+    /// The safe-area CSS variables, the request body shim and `window.Native`.
+    /// Static so a php-mode `<webview>` element can install them on its own
+    /// WKWebView. The instance method above stays because older
+    /// nativephp/mobile-ui renderers call it through a throwaway `WebView`.
+    static func installNativeHelpers(on webView: WKWebView) {
         let contentController = webView.configuration.userContentController
 
         // Inject safe area CSS FIRST at document start to prevent layout jump
