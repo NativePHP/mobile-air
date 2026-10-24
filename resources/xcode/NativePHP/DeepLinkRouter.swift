@@ -144,21 +144,26 @@ final class DeepLinkRouter {
         // 1. Normalise the URL (strip scheme, keep host/path/query)
         var route = ""
 
+        // Keep the path percent-encoded, like the query. PHP decodes it once;
+        // url.path is already decoded, so a literal %41 in a path segment
+        // would reach PHP as "A" and an encoded / would split the segment.
+        let path = url.path(percentEncoded: true)
+
         // For custom schemes, we need to handle the host + path
         if url.scheme != "https" && url.scheme != "http" {
             // For custom schemes like native://test/, the "test" becomes the host
             // We want to treat it as a path instead
             if let host = url.host, !host.isEmpty {
                 route = "/\(host)"
-                if !url.path.isEmpty && url.path != "/" {
-                    route += url.path
+                if !path.isEmpty && path != "/" {
+                    route += path
                 }
             } else {
-                route = url.path.isEmpty || url.path == "/" ? "/" : url.path
+                route = path.isEmpty || path == "/" ? "/" : path
             }
         } else {
             // For universal links, just use the path
-            route = url.path.isEmpty || url.path == "/" ? "/" : url.path
+            route = path.isEmpty || path == "/" ? "/" : path
         }
 
         // Only a real web URL can be handed back to the browser; a custom-scheme
