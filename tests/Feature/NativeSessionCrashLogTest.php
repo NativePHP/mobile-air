@@ -15,6 +15,13 @@ beforeEach(function () {
     $this->crashOutput = storage_path(NativeRouter::CRASH_OUTPUT_PATH);
     File::ensureDirectoryExists(dirname($this->crashOutput));
     File::delete($this->crashOutput);
+
+    $this->spool = storage_path('framework/devtools/spool.jsonl');
+    File::delete($this->spool);
+});
+
+afterEach(function () {
+    File::delete($this->spool);
 });
 
 it('logs why the last native session died, once', function () {
@@ -29,6 +36,23 @@ it('logs why the last native session died, once', function () {
         ['output' => 'PHP Fatal error: Allowed memory size of 134217728 bytes exhausted (tried to allocate 1310720 bytes) in Element.php on line 856'],
     );
     expect($this->crashOutput)->not->toBeFile();
+});
+
+it('hands the fatal to the devtools spool', function () {
+    require_once __DIR__.'/../../bootstrap/shared/devtools-boot-report.php';
+    Log::spy();
+    File::put($this->crashOutput, "<partial render>\nPHP Fatal error: Allowed memory size of 134217728 bytes exhausted (tried to allocate 1310720 bytes) in /app/Devnull/CachedRow.php on line 66\n");
+
+    NativeRouter::logRestartAfterCrash();
+
+    $event = json_decode(trim(File::get($this->spool)), true);
+
+    expect($event['kind'])->toBe('fatal')
+        ->and($event['exception'])->toMatchArray([
+            'message' => 'Allowed memory size of 134217728 bytes exhausted (tried to allocate 1310720 bytes)',
+            'file' => '/app/Devnull/CachedRow.php',
+            'line' => 66,
+        ]);
 });
 
 it('reads the file iOS writes', function () {

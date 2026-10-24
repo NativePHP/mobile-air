@@ -105,6 +105,20 @@ class NativeRouter
         } catch (\Throwable) {
             // A broken log channel mustn't stop the screen from starting.
         }
+
+        // The restarted session runs in a fresh interpreter, so the devtools
+        // check at the top of start() can't find this fatal in
+        // error_get_last(). Spool it here instead, for native:tail --fatals.
+        if (function_exists('nativephp_devtools_write_event')
+            && preg_match('/PHP Fatal error: (.*) in (.*?) on line (\d+)$/s', $output, $fatal)) {
+            nativephp_devtools_write_event('fatal', 'dispatch', [
+                'class' => 'PHP Fatal Error',
+                'message' => $fatal[1],
+                'file' => $fatal[2],
+                'line' => (int) $fatal[3],
+                'trace' => [],
+            ], storage_path());
+        }
     }
 
     /**
