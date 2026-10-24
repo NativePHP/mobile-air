@@ -9,6 +9,11 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
     /// parked in the screen's event-loop dispatch and would never answer.
     var dedicatedRuntime: WebviewPHPRuntime?
 
+    /// The webview an embedded handler serves, so a redirect it can't follow
+    /// itself is loaded there and not in the root webview. Only kept when
+    /// `dedicatedRuntime` is set; each embedded webview has its own handler.
+    private weak var embeddedWebView: WKWebView?
+
     // Shared session for Jump WebView-mode forwards. Reused across requests so
     // HTTP keep-alive / connection pooling kicks in — a fresh session per
     // request re-did the TCP handshake every time and made navigation crawl.
@@ -26,6 +31,9 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     // This method is called when the web view starts loading a request with your custom scheme
     func webView(_ webView: WKWebView, start schemeTask: WKURLSchemeTask) {
+        if dedicatedRuntime != nil {
+            embeddedWebView = webView
+        }
         taskLock.lock()
         activeTasks[ObjectIdentifier(schemeTask)] = schemeTask
         taskLock.unlock()
@@ -510,12 +518,13 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
               !loc.isEmpty
         else { return }
 
+        // Keep the query, as handleNativeSessionExit does.
         let path = (loc.hasPrefix("http") || loc.hasPrefix("php:"))
-            ? (URL(string: loc)?.path ?? "/")
+            ? (URL(string: loc).map { url in url.path + (url.query.map { "?" + $0 } ?? "") } ?? "/")
             : loc
 
         DispatchQueue.main.async {
-            NSLog("[NativeBoot] ⇄ orphaned EXIT_WEB → \(path) (scheme task was cancelled)")
+            NSLog("%@", "[NativeBoot] ⇄ orphaned EXIT_WEB → \(path) (scheme task was cancelled)")
             if SharedWebView.shared.webView != nil {
                 // WebView exists (detached while native was active): load the
                 // destination into it, then unmount the native branch so it
@@ -638,7 +647,13 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 // exit envelope. If that lands after the task died, honor
                 // an EXIT_WEB anyway or the user is stranded on a frozen
                 // native screen with a runloop that no longer exists.
-                if case .success(let data) = result,
+                //
+                // An embedded php-mode webview never carries a native
+                // session. Its cancelled request (the user navigated on, or
+                // the screen holding it closed) is just a page load, and a
+                // redirect from it must not move the whole app to the web.
+                if self.dedicatedRuntime == nil,
+                   case .success(let data) = result,
                    let parsed = PHPRawResponse(data) {
                     self.handleOrphanedNativeExit(parsed.head)
                 }
@@ -699,6 +714,22 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                         let absoluteURL = trimmedLocation.hasPrefix("/")
                             ? "php://\(self.domain)\(trimmedLocation)"
                             : trimmedLocation
+
+                        // The notification drives the root webview. An embedded
+                        // webview loads the URL itself, the way redirectToURL
+                        // does for the root one, and its own navigation
+                        // delegate decides what happens to it.
+                        if self.dedicatedRuntime != nil {
+                            DispatchQueue.main.async { [weak self] in
+                                guard let webView = self?.embeddedWebView,
+                                      let url = URL(string: absoluteURL) else { return }
+                                if webView.isLoading {
+                                    webView.stopLoading()
+                                }
+                                webView.load(URLRequest(url: url))
+                            }
+                            return
+                        }
 
                         NotificationCenter.default.post(name: .redirectToURLNotification, object: nil, userInfo: ["url": absoluteURL])
                         return

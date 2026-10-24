@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Facade;
+use Native\Mobile\Support\Lane;
 use Symfony\Component\Console\Output\BufferedOutput;
 
 class Runtime
@@ -58,6 +59,12 @@ class Runtime
             throw new \RuntimeException('Runtime not booted. Call Runtime::boot() first.');
         }
 
+        // A fatal in a previous dispatch bails out past PHP catch while the
+        // persistent host survives — report it on this next entry.
+        if (function_exists('nativephp_devtools_report_last_fatal')) {
+            nativephp_devtools_report_last_fatal(function_exists('storage_path') ? storage_path() : null);
+        }
+
         // Reset state from previous dispatch
         static::reset();
 
@@ -73,8 +80,21 @@ class Runtime
         try {
             $response = static::$kernel->handle($request);
         } catch (\Throwable $e) {
+            // Laravel's HTTP kernel reports what it catches, so an ordinary
+            // request exception never reaches here. What does is a throwable
+            // that unwound the EDGE runtime past its own catch sites — those
+            // have been reported by nobody.
+            try {
+                report($e);
+            } catch (\Throwable) {
+                // Never turn one failure into two on the error path.
+            }
+
+            error_log('REQUEST FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
+            error_log('REQUEST TRACE: '.$e->getTraceAsString());
+
             $response = new Response(
-                'Error: '.$e->getMessage()."\n".$e->getTraceAsString(),
+                static::showsErrorDetail() ? 'Error: '.$e->getMessage()."\n".$e->getTraceAsString() : 'Something went wrong.',
                 500,
                 ['Content-Type' => 'text/plain']
             );
@@ -165,7 +185,12 @@ class Runtime
             }
         }
 
-        Artisan::call($commandName, array_slice($params, 1), $output);
+        $run = fn () => Artisan::call($commandName, array_slice($params, 1), $output);
+
+        // The queue worker lane runs its jobs in here. What a job
+        // does is marked as work of a background lane, so that
+        // a marked event it fires crosses to the main lane.
+        $commandName === 'queue:work' ? Lane::background($run) : $run();
         $result = $output->fetch();
 
         return $result;
@@ -199,5 +224,24 @@ class Runtime
     public static function getApp(): ?Application
     {
         return static::$app;
+    }
+
+    /**
+     * Whether an error's message and trace may go in front of whoever is
+     * looking: only when the app is in debug, as on the EDGE error screen.
+     *
+     * boot() keeps the app even when booting it threw, so a boot that failed
+     * after the config loaded still answers. One that failed before, or never
+     * got an app, can't tell a developer from a user, so the user wins.
+     */
+    public static function showsErrorDetail(): bool
+    {
+        try {
+            return static::$app !== null
+                && static::$app->bound('config')
+                && (bool) static::$app['config']->get('app.debug');
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }

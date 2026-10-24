@@ -11,6 +11,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -82,7 +84,9 @@ private fun rememberCustomIconId(bare: String): Int {
  * drawable is missing.
  *
  * @param name The Material Icon ligature name (e.g., "settings", "qr_code_2", "home")
- * @param contentDescription Accessibility description (matches Icon API)
+ * @param contentDescription Accessibility description (matches Icon API). Null or
+ *   empty marks the icon decorative: TalkBack skips it instead of reading the
+ *   ligature name ("arrow_back").
  * @param modifier Modifier for the icon
  * @param tint Icon color (defaults to LocalContentColor)
  */
@@ -101,6 +105,17 @@ fun MaterialIcon(
         tint = tint
     )
 }
+
+/**
+ * The glyph is a ligature `Text`, so without this TalkBack would read the
+ * icon's machine name. Replace it with the description, or with nothing.
+ */
+private fun iconSemantics(contentDescription: String?): Modifier =
+    if (contentDescription.isNullOrEmpty()) {
+        Modifier.clearAndSetSemantics {}
+    } else {
+        Modifier.clearAndSetSemantics { this.contentDescription = contentDescription }
+    }
 
 /**
  * Overload with custom size support
@@ -130,7 +145,7 @@ fun MaterialIcon(
     }
 
     Box(
-        modifier = modifier.size(size),
+        modifier = modifier.size(size).then(iconSemantics(contentDescription)),
         contentAlignment = Alignment.Center
     ) {
         Text(

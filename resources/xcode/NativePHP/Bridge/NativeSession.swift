@@ -47,7 +47,9 @@ enum NativeSession {
 
             let output = String(decoding: response.prefix(8 * 1024), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            NSLog("[NativeSession] PHP stopped part-way through the native session at \(uri): \(output)")
+            // Through %@, never NSLog's format string: the URI and PHP's
+            // output can both hold %s, and enough of them crash the app.
+            NSLog("%@", "[NativeSession] PHP stopped part-way through the native session at \(uri): \(output)")
 
             guard mayRestart() else {
                 NSLog("[NativeSession] The native session died \(maxRestarts) times in \(Int(restartWindow))s, not restarting it again")
@@ -58,7 +60,7 @@ enum NativeSession {
             rebootRuntime()
 
             uri = NativePHPApp.getStartURL()
-            NSLog("[NativeSession] Restarting the native session at \(uri)")
+            NSLog("%@", "[NativeSession] Restarting the native session at \(uri)")
         }
     }
 

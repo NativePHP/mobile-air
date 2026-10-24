@@ -321,11 +321,10 @@ class InstallCommand extends Command
             ));
         }
 
+        $client = $this->binariesClient();
+
         try {
-            $this->versionsManifest = json_decode(
-                (new Client)->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
+            $body = $client->get($versionsUrl)->getBody()->getContents();
         } catch (TransferException $e) {
             // A 404 here is specific: the manifest is named for the binary
             // release this package pins, so a missing one means that release
@@ -363,7 +362,98 @@ class InstallCommand extends Command
 
             $this->failInstall("Failed to fetch the PHP binaries manifest from: {$versionsUrl}"
                 ."\n".TransferFailure::describe($e));
+
+            return;
         }
+
+        $body = $this->verifiedManifest($client, $versionsUrl, $body);
+
+        if ($body !== null) {
+            $this->versionsManifest = json_decode($body, true);
+        }
+    }
+
+    /**
+     * The manifest, once its signature checks out against one of
+     * {@see manifestKeys()}. Null after failing the install.
+     *
+     * The manifest lists the SHA-256 of every zip, and the installers check
+     * downloads against those. That only proves a zip matches the manifest.
+     * The signature proves the manifest came from php-bin-mobile's workflow,
+     * so someone who can write to the bucket can't swap a zip and its
+     * checksum together.
+     *
+     * php-bin-mobile uploads the manifest and then its signature, so a fetch
+     * in the second between the two can pair a new manifest with the old
+     * signature. Fetching both once more covers that. A second mismatch is
+     * real.
+     */
+    protected function verifiedManifest(Client $client, string $url, string $body): ?string
+    {
+        $keys = $this->manifestKeys();
+
+        if ($keys === []) {
+            return $body;
+        }
+
+        if (! function_exists('sodium_crypto_sign_verify_detached')) {
+            warning("The PHP binaries manifest's signature can't be checked, because the sodium extension isn't enabled.");
+            note('Downloads are still checked against the checksums in the manifest. Enable extension=sodium in your php.ini to check the signature too.');
+
+            return $body;
+        }
+
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            if ($attempt > 1) {
+                try {
+                    $body = $client->get($url)->getBody()->getContents();
+                } catch (TransferException $e) {
+                    $this->failInstall("Failed to fetch the PHP binaries manifest from: {$url}"
+                        ."\n".TransferFailure::describe($e));
+
+                    return null;
+                }
+            }
+
+            try {
+                $signature = $client->get($url.'.sig')->getBody()->getContents();
+            } catch (TransferException $e) {
+                $statusCode = method_exists($e, 'getResponse') ? $e->getResponse()?->getStatusCode() : null;
+
+                $this->failInstall($statusCode === 404
+                    ? "The PHP binaries manifest at {$url} isn't signed, so nothing in it will be installed."
+                    : "Failed to fetch the signature of the PHP binaries manifest from: {$url}.sig"
+                        ."\n".TransferFailure::describe($e));
+
+                return null;
+            }
+
+            if (PhpBinaries::signatureIsValid($body, $signature, $keys)) {
+                return $body;
+            }
+        }
+
+        $this->failInstall(
+            "The PHP binaries manifest at {$url} doesn't match its signature, so nothing in it will be installed."
+            ."\n".'Something between here and bin.nativephp.com changed it, or it was replaced on the server. Please report this to NativePHP.'
+        );
+
+        return null;
+    }
+
+    /**
+     * Public keys the manifest's signature is checked against.
+     *
+     * @return list<string>
+     */
+    protected function manifestKeys(): array
+    {
+        return PhpBinaries::MANIFEST_KEYS;
+    }
+
+    protected function binariesClient(): Client
+    {
+        return new Client;
     }
 
     /**

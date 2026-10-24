@@ -11,6 +11,10 @@ func registerBridgeFunctions() {
     registry.register("AsyncTask.Dispatch", function: AsyncFunctions.Dispatch())
     registry.register("AsyncTask.Complete", function: AsyncFunctions.Complete())
 
+    // Event.*: wakes the native screen loop for BroadcastsGlobally events fired
+    // on other PHP threads. Android twin: bridge/functions/EventFunctions.kt.
+    registry.register("Event.Broadcast", function: EventFunctions.Broadcast())
+
     // Device.* — core built-in (migrated from the nativephp/mobile-device
     // plugin). Android twin: bridge/functions/DeviceFunctions.kt.
     registry.register("Device.Vibrate",         function: DeviceFunctions.Vibrate())

@@ -582,6 +582,106 @@ class NestedClass {}');
     /**
      * @test
      *
+     * Scene configurations (external displays, CarPlay) live inside the
+     * template's scene manifest, so a plugin's role must merge alongside the
+     * app's own keys rather than replace the manifest.
+     */
+    public function it_merges_plugin_scene_configurations_into_the_template_scene_manifest(): void
+    {
+        $this->files->copy(
+            dirname(__DIR__, 3).'/resources/xcode/NativePHP/Info.plist',
+            $this->testBasePath.'/ios/NativePHP/Info.plist'
+        );
+
+        $plugin = $this->createTestPlugin([
+            'ios' => [
+                'info_plist' => [
+                    'UIApplicationSceneManifest' => [
+                        'UISceneConfigurations' => [
+                            'UIWindowSceneSessionRoleExternalDisplayNonInteractive' => [
+                                [
+                                    'UISceneConfigurationName' => 'External Display',
+                                    'UISceneDelegateClassName' => 'ExternalDisplaySceneDelegate',
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifest = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'))
+            ->get('UIApplicationSceneManifest');
+
+        $this->assertTrue($manifest['UIApplicationSupportsMultipleScenes']);
+        $this->assertSame(
+            [['UISceneConfigurationName' => 'External Display', 'UISceneDelegateClassName' => 'ExternalDisplaySceneDelegate']],
+            $manifest['UISceneConfigurations']['UIWindowSceneSessionRoleExternalDisplayNonInteractive']
+        );
+    }
+
+    /**
+     * @test
+     *
+     * A project installed before the templates carried the scene manifest
+     * still has Xcode generate one, which silently drops plugin scenes.
+     */
+    public function it_warns_when_the_project_still_generates_the_scene_manifest(): void
+    {
+        $this->files->ensureDirectoryExists($this->testBasePath.'/ios/NativePHP.xcodeproj');
+        $this->files->put(
+            $this->testBasePath.'/ios/NativePHP.xcodeproj/project.pbxproj',
+            'INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;'
+        );
+
+        $warnings = $this->captureWarnings();
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([
+            $this->createTestPlugin([
+                'name' => 'test/external-display',
+                'ios' => ['info_plist' => ['UIApplicationSceneManifest' => ['UISceneConfigurations' => []]]],
+            ]),
+            $this->createTestPlugin(['name' => 'test/unrelated', 'ios' => ['info_plist' => ['NSCameraUsageDescription' => 'Camera']]]),
+        ]));
+
+        $this->compiler->compile();
+
+        $this->assertCount(1, $warnings->messages);
+        $this->assertStringContainsString("'test/external-display'", $warnings->messages[0]);
+        $this->assertStringContainsString('native:install ios', $warnings->messages[0]);
+    }
+
+    /**
+     * @test
+     *
+     * The shipped Xcode template leaves the scene manifest to Info.plist.
+     */
+    public function it_does_not_warn_for_projects_installed_from_the_current_template(): void
+    {
+        $this->files->ensureDirectoryExists($this->testBasePath.'/ios/NativePHP.xcodeproj');
+        $this->files->copy(
+            dirname(__DIR__, 3).'/resources/xcode/NativePHP.xcodeproj/project.pbxproj',
+            $this->testBasePath.'/ios/NativePHP.xcodeproj/project.pbxproj'
+        );
+
+        $warnings = $this->captureWarnings();
+
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([
+            $this->createTestPlugin(['ios' => ['info_plist' => ['UIApplicationSceneManifest' => ['UISceneConfigurations' => []]]]]),
+        ]));
+
+        $this->compiler->compile();
+
+        $this->assertSame([], $warnings->messages);
+    }
+
+    /**
+     * @test
+     *
      * Should clean generated plugin files.
      */
     public function it_cleans_generated_files(): void
@@ -1632,6 +1732,23 @@ class NestedClass {}');
 
         $plist = PlistDocument::fromXml($this->files->get($this->testBasePath.'/ios/NativePHP/Info.plist'));
         $this->assertSame(['en'], $plist->get('CFBundleLocalizations'));
+    }
+
+    private function captureWarnings(): object
+    {
+        $warnings = new class
+        {
+            public array $messages = [];
+
+            public function warn(string $message): void
+            {
+                $this->messages[] = $message;
+            }
+        };
+
+        $this->compiler->setOutput($warnings);
+
+        return $warnings;
     }
 
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin

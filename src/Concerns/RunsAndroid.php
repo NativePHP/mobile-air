@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
@@ -19,7 +20,7 @@ use function Laravel\Prompts\warning;
 
 trait RunsAndroid
 {
-    use DeclaresReleaseAudience, PreparesBuild, WatchesAndroid;
+    use DeclaresReleaseAudience, PreparesBuild, ReportsRunOutcome, WatchesAndroid;
 
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
@@ -60,6 +61,7 @@ trait RunsAndroid
 
         if (! is_dir($androidPath)) {
             $this->logToFile('ERROR: No Android project found at [nativephp/android]');
+            $this->failRun('validate', 'No Android project found at [nativephp/android].');
             error('No Android project found at [nativephp/android].');
             note('Run `php artisan native:install` or ensure you have the correct folder structure.');
 
@@ -69,12 +71,15 @@ trait RunsAndroid
         $this->logToFile('Android project path: '.$androidPath);
 
         if (! $this->validateBuildEnvironment()) {
+            $this->failRun('validate', 'Android build environment validation failed.', ['buildLog' => $this->androidLogPath]);
+
             return false;
         }
 
         $minSdk = (int) config('nativephp.android.min_sdk', 26);
         if ($minSdk < 26) {
             $this->logToFile("ERROR: NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26");
+            $this->failRun('validate', "NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
             error("NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk, but must be at least 26.");
             note('Android API level 26 (Android 8.0 Oreo) is the minimum version required by NativePHP. Please update your .env or config/nativephp.php.');
 
@@ -86,6 +91,7 @@ trait RunsAndroid
             $pluginMinSdk = $plugin->getAndroidMinVersion();
             if ($pluginMinSdk !== null && $minSdk < $pluginMinSdk) {
                 $this->logToFile("ERROR: Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but NATIVEPHP_ANDROID_MIN_SDK is set to $minSdk");
+                $this->failRun('validate', "Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
                 error("Plugin '{$plugin->name}' requires Android API level $pluginMinSdk, but your min SDK is $minSdk.");
                 note("Your app may crash on devices running Android API levels $minSdk-".($pluginMinSdk - 1).'. Either raise NATIVEPHP_ANDROID_MIN_SDK to at least '.$pluginMinSdk.' in your .env, or remove the plugin.');
 
@@ -104,6 +110,7 @@ trait RunsAndroid
             $this->logToFile('Checking ADB availability...');
             if (! $this->canRunCommand('adb version')) {
                 $this->logToFile('ERROR: ADB is not installed or not in PATH');
+                $this->failRun('validate', 'ADB is not installed or not in your PATH.');
                 error('ADB is not installed or not in your PATH.');
 
                 return false;
@@ -125,10 +132,14 @@ trait RunsAndroid
         $this->prepareAndroidBuild($cleanCache, $excludeDevDependencies, $reuseUnchanged);
 
         if (! $this->compileAndroidPlugins()) {
+            $this->failRun('build', 'Android plugin compilation failed.', ['buildLog' => $this->androidLogPath]);
+
             return false;
         }
 
         if (! $this->runTheAndroidBuild($target)) {
+            $this->failRun('build', 'Android build failed.', ['buildLog' => $this->androidLogPath]);
+
             return false;
         }
 
@@ -455,8 +466,11 @@ XML;
      *
      * A value ending in `/` becomes a `pathPrefix` claiming everything beneath
      * it — note that `/docs/` claims `/docs/x` but NOT `/docs` itself, since
-     * Android matches the prefix literally. Anything else becomes an exact
-     * `path`, so `/orders` doesn't also swallow `/orders-faq`.
+     * Android matches the prefix literally. A value ending in `*` claims every
+     * path that starts with what comes before it, for a prefix that isn't a
+     * whole segment: `/@*` claims `/@taylor` and `/@taylor/posts`. Anything
+     * else becomes an exact `path`, so `/orders` doesn't also swallow
+     * `/orders-faq`.
      *
      * Returns the whole-domain claim when nothing is configured (what apps got
      * before this was configurable), or null when paths were configured but
@@ -467,7 +481,7 @@ XML;
      */
     private function deepLinkPathData(string $host, array $paths): ?string
     {
-        $prefixes = [];
+        $claims = [];
 
         foreach ($paths as $path) {
             $path = trim((string) $path);
@@ -481,17 +495,23 @@ XML;
             // Reject anything that can't sit in an XML attribute unescaped, or
             // that would quietly widen the claim back out to the whole domain.
             // /u so a non-breaking space is caught as whitespace rather than
-            // sailing through into a prefix that can never match.
-            if ($path === '/' || preg_match('/[\s"\'<>&]/u', $path)) {
+            // sailing through into a prefix that can never match. A `*` only
+            // means something at the end; Android would match any other one
+            // literally.
+            if ($path === '/' || $path === '/*' || preg_match('/[\s"\'<>&]|\*./u', $path)) {
                 continue;
             }
 
-            $prefixes[$path] = true;
+            $claims[match (true) {
+                str_ends_with($path, '*') => 'pathPrefix="'.substr($path, 0, -1).'"',
+                str_ends_with($path, '/') => 'pathPrefix="'.$path.'"',
+                default => 'path="'.$path.'"',
+            }] = true;
         }
 
         $prefix = '                <data android:scheme="https" android:host="'.$host.'" ';
 
-        if ($prefixes === []) {
+        if ($claims === []) {
             // Nothing configured: whole domain, as before. Something configured
             // but all of it rejected: refuse, so a typo can't hand the app the
             // whole domain by accident.
@@ -500,9 +520,8 @@ XML;
 
         $lines = [];
 
-        foreach (array_keys($prefixes) as $path) {
-            $attribute = str_ends_with($path, '/') ? 'pathPrefix' : 'path';
-            $lines[] = $prefix.'android:'.$attribute.'="'.$path.'" />';
+        foreach (array_keys($claims) as $claim) {
+            $lines[] = $prefix.'android:'.$claim.' />';
         }
 
         return implode("\n", $lines);
@@ -613,20 +632,27 @@ XML;
             $this->logToFile("Windows build exit code: $exitCode");
             $buildSuccessful = ($exitCode === 0);
         } else {
-            $process = Process::path($androidPath)
-                ->timeout(600);
+            $process = $this->gradleProcess($androidPath);
 
             // TTY needs a real terminal; Symfony throws on Docker/CI/piped output
             if (! $this->option('no-tty') && SymfonyProcess::isTtySupported()) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
-                file_put_contents($this->androidLogPath, $output, FILE_APPEND);
-            });
+            try {
+                $result = $process->run("$gradleWrapper $gradleTask", function ($type, $output) {
+                    file_put_contents($this->androidLogPath, $output, FILE_APPEND);
+                });
+            } catch (ProcessTimedOutException) {
+                $this->logToFile('ERROR: Gradle build timed out after '.$this->gradleTimeout().' seconds');
+                $this->reportGradleTimeout($gradleTask);
+
+                return false;
+            }
 
             if (! $result->successful()) {
                 $this->logToFile('ERROR: Gradle build failed with exit code: '.$result->exitCode());
+                $this->failRun('build', 'Gradle build failed.', ['buildLog' => $this->androidLogPath]);
                 error('Gradle build failed');
                 note("Check the build log for details: {$this->androidLogPath}");
 
@@ -682,6 +708,7 @@ XML;
                 $this->logToFile('ERROR: APK installation failed');
                 $this->logToFile($installResult->output());
                 $this->logToFile($installResult->errorOutput());
+                $this->failRun('install', 'APK installation failed: '.trim($installResult->errorOutput() ?: $installResult->output()));
                 error('APK installation failed');
                 note($installResult->errorOutput() ?: $installResult->output());
                 note('Try freeing up space on the device or uninstalling old apps.');
@@ -690,6 +717,9 @@ XML;
             }
 
             $this->logToFile('APK installed on device');
+            // A plain line, since twoColumnDetail truncates long paths and
+            // scripts driving native:run want the whole thing.
+            $this->line("  <fg=gray>APK</> {$apkPath}");
 
             $launchCmd = "$adbCommand -s $targetDeviceId shell am start -n $appId/$mainActivity";
             $this->logToFile("Launching app: $launchCmd");
@@ -698,6 +728,7 @@ XML;
             if (! $launchResult->successful()) {
                 $this->logToFile('ERROR: App launch failed');
                 $this->logToFile($launchResult->errorOutput());
+                $this->failRun('launch', 'App launch failed: '.trim($launchResult->errorOutput() ?: $launchResult->output()));
                 error('App launch failed');
                 note($launchResult->errorOutput() ?: $launchResult->output());
 

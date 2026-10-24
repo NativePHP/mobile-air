@@ -6,6 +6,10 @@
  * the other lanes. /inspect reports what the request looked like to Laravel,
  * /bytes answers with every byte value, and a 413 reports what the request
  * held when Laravel's ValidatePostSize refused it.
+ *
+ * For the error path, BRIDGE_TEST_STORAGE_PATH moves storage somewhere the
+ * test can read and clean up, and BRIDGE_TEST_THROW_ON_TERMINATE makes every
+ * request throw after the kernel has handled it, where nothing catches it.
  */
 
 use Illuminate\Contracts\Debug\ExceptionHandler;
@@ -53,5 +57,13 @@ $app->make(ExceptionHandler::class)->renderable(fn (PostTooLargeException $e, Re
     'files' => $_FILES,
     'peakMemory' => memory_get_peak_usage(),
 ], 413));
+
+if ($storage = getenv('BRIDGE_TEST_STORAGE_PATH')) {
+    $app->useStoragePath($storage);
+}
+
+if (getenv('BRIDGE_TEST_THROW_ON_TERMINATE')) {
+    $app->terminating(fn () => throw new RuntimeException('Terminate blew up'));
+}
 
 return $app;

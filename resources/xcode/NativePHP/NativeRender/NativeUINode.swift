@@ -201,6 +201,25 @@ final class NativeUINode: Identifiable, Equatable {
     /// keeps short-circuiting between resizes.
     private var resolvedCache: [String: NativeUINode] = [:]
 
+    /// Whether this node or one under it draws something that keeps SwiftUI
+    /// state of its own: a field's focus and text, a loaded image, a scroll
+    /// position, an open menu. Rebuilding such a node's views loses that, so
+    /// `ResolvedNodeView` keeps it on one view structure whatever its style
+    /// does (see `NodeDecorations`). Worked out on first use, on the main
+    /// thread; a node doesn't change once built.
+    lazy var keepsState: Bool = !Self.statelessTypes.contains(type)
+        || props.getBool("has_menu")
+        || children.contains { $0.keepsState }
+
+    /// Types whose views hold nothing but what the node says, so building
+    /// them again is invisible. Anything else, including every plugin type,
+    /// is assumed to keep state. A pressable with a `:menu` is a SwiftUI
+    /// `Menu`, which knows whether it's open, hence `has_menu` above.
+    private static let statelessTypes: Set<String> = [
+        "text", "icon", "spacer", "divider", "column", "row", "stack", "pressable",
+        "rect", "circle", "line", "canvas", "top_bar_action",
+    ]
+
     init(
         id: Int,
         type: String,

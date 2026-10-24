@@ -5,6 +5,7 @@ namespace Native\Mobile\Http\Bridge;
 use Illuminate\Http\Request;
 use InvalidArgumentException;
 use Native\Mobile\Runtime;
+use Native\Mobile\Support\Lane;
 use Throwable;
 
 /**
@@ -345,6 +346,13 @@ final class BridgeDispatcher
         try {
             $parsed = self::prepareGlobals($platform, $lane, $method, $uri, $scriptPath, $cookie, $contentType, $headers, $body, $length);
 
+            // A web view lane only answers the web view inside a native
+            // screen, and nothing else. Its first request marks this
+            // interpreter as such a lane for as long as it lives.
+            if ($lane === 'webview') {
+                Lane::dedicateToWebView();
+            }
+
             // Built from the superglobals just set, as Request::capture() did.
             $request = RequestFactory::make($_GET, $parsed, $_COOKIE, $_SERVER, $body);
 
@@ -364,12 +372,23 @@ final class BridgeDispatcher
     /**
      * The plain-text 500 the old eval printed, now with a content-length.
      *
+     * The message and trace are for whoever is building the app, never for
+     * whoever is using it, as in the classic bootstraps. They go to the log
+     * (logcat, the Xcode console) in every build, and into the body only
+     * when the app is in debug.
+     *
      * @return array{string, string}
      */
     private static function errorResponse(string $lane, Throwable $e): array
     {
         $prefix = $lane === 'webview' ? 'Webview' : 'Persistent';
-        $content = "{$prefix} dispatch error: ".$e->getMessage()."\n".$e->getTraceAsString();
+
+        error_log("REQUEST FATAL: {$prefix} dispatch error: ".$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
+        error_log('REQUEST TRACE: '.$e->getTraceAsString());
+
+        $content = Runtime::showsErrorDetail()
+            ? "{$prefix} dispatch error: ".$e->getMessage()."\n".$e->getTraceAsString()
+            : 'Something went wrong.';
 
         return [
             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: ".strlen($content)."\r\n\r\n",
