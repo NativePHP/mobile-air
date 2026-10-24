@@ -202,20 +202,13 @@ struct NativePHPApp: App {
     /// Android's executeNativeRoute). The dispatch blocks its queue for the
     /// life of the native session; the eventual response is the session's
     /// exit envelope: 3xx+Location = EXIT_WEB, 204 = hot-restart, else the
-    /// stack emptied.
+    /// stack emptied. If PHP dies part-way, NativeSession restarts it.
     private func startNativeSession(_ uri: String) {
         DispatchQueue.global(qos: .userInitiated).async {
             // URIs go through %@, never into NSLog's format string: a deep
             // link's query can hold %s, and enough of them crash the app.
             NSLog("%@", "[NativeBoot] 🚀 Direct native dispatch: \(uri)")
-            let request = RequestData(
-                method: "GET",
-                uri: uri,
-                data: nil,
-                query: nil,
-                headers: [:]
-            )
-            let raw = PersistentPHPRuntime.shared.dispatch(request: request)
+            let raw = NativeSession.run(uri: uri)
             handleNativeSessionExit(raw)
         }
     }
@@ -391,6 +384,7 @@ struct NativePHPApp: App {
         openssl.cafile="\(caPath)"
         upload_max_filesize=16M
         post_max_size=16M
+        memory_limit=128M
         """
 
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!

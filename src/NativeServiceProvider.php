@@ -456,6 +456,8 @@ class NativeServiceProvider extends PackageServiceProvider
                     }
                 }
 
+                NativeRouter::logRestartAfterCrash();
+
                 // Hand the launch screen its query the way a warm link does: in
                 // the URI, parsed by the router. request()->query() has been
                 // through TrimStrings and ConvertEmptyStringsToNull by now.
