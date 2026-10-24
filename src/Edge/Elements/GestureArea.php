@@ -47,6 +47,23 @@ use Native\Mobile\Edge\SharedValue;
  *         <native:image :scale="$zoom" ... />
  *     </native:gesture-area>
  *
+ * Bounded — a zoomable picture that can't be lost off screen. With
+ * `bounded`, pan stops where the zoomed content's edges meet the area's
+ * edges, and an axis on which the zoomed content fits stays centred, so
+ * at 1x the content can't be moved at all. A drag past an edge moves
+ * with resistance and springs back into place when released, and so
+ * does a pinch that ends with the content out of place. A pinch zooms
+ * around the point between the fingers. The content is the area itself,
+ * or, with `content-ratio` (width over height), that ratio fitted
+ * inside the area, which is where an image with `fit="contain"` draws.
+ * Bind both pan axes and the pinch, and bind the content's transform to
+ * the same values:
+ *
+ *     <native:gesture-area :pinch="$zoom" pinch-min="1" pinch-max="4" :pan-x="$x" :pan-y="$y"
+ *         bounded :content-ratio="$width / $height">
+ *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
+ *     </native:gesture-area>
+ *
  * Swipe — discrete directional flick. `swipe-fingers` sets how many
  * touches must participate (e.g. 3 for a Jump-style three-finger
  * swipe; defaults to 1). The callback receives the direction as a
@@ -84,6 +101,13 @@ class GestureArea extends Element
     private ?float $pinchMax = null;
 
     private int $swipeFingers = 1;
+
+    /** Keep the zoomed content inside the area's edges. */
+    private bool $bounded = false;
+
+    /** The content's width over height, fitted inside the area. Null =
+     *  the content fills the area. */
+    private ?float $contentRatio = null;
 
     protected ?string $swipeMethod = null;
 
@@ -123,6 +147,32 @@ class GestureArea extends Element
         if (isset($attrs['swipe-fingers'])) {
             $this->swipeFingers = max(1, (int) $attrs['swipe-fingers']);
         }
+
+        if (isset($attrs['bounded'])) {
+            $this->bounded = filter_var($attrs['bounded'], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        if (isset($attrs['content-ratio'])) {
+            $this->contentRatio((float) $attrs['content-ratio']);
+        }
+    }
+
+    /** Keep the zoomed content inside the area's edges (see the class
+     *  docblock). */
+    public function bounded(bool $bounded = true): static
+    {
+        $this->bounded = $bounded;
+
+        return $this;
+    }
+
+    /** The content's width over height, fitted inside the area, for
+     *  `bounded`. Zero or less means the content fills the area. */
+    public function contentRatio(float $ratio): static
+    {
+        $this->contentRatio = $ratio > 0 ? $ratio : null;
+
+        return $this;
     }
 
     /** Swipe handler. Receives the direction ("left" / "right" / "up" /
@@ -179,6 +229,14 @@ class GestureArea extends Element
         }
         if ($this->pinchMax !== null) {
             $props['pinch-max'] = $this->pinchMax;
+        }
+
+        if ($this->bounded) {
+            $props['bounded'] = true;
+
+            if ($this->contentRatio !== null) {
+                $props['content-ratio'] = $this->contentRatio;
+            }
         }
 
         if ($this->swipeMethod !== null) {
