@@ -387,6 +387,23 @@ class NativeRouter
     }
 
     /**
+     * Ask the native screen on show to open a native route, for a lane that
+     * cannot run one itself, and answer whether native took the request.
+     *
+     * Only the main lane can run a native screen. There is one element tree
+     * per app and the main lane's thread made it, so another lane that
+     * publishes into it frees memory of a Zend heap that is not its own,
+     * and Zend aborts the app. The route goes as the `__deeplink` signal
+     * the shell sends for a link, which the loop of the screen on show
+     * turns into a navigation to it.
+     */
+    public static function openOnMainLane(string $uri): bool
+    {
+        return function_exists('nativephp_post_event')
+            && nativephp_post_event('__deeplink', ['uri' => $uri]) === true;
+    }
+
+    /**
      * Consume a screen change requested from the `native:watch` terminal UI.
      * Returns the target URI, or null when nothing usable is waiting.
      *
