@@ -24,6 +24,7 @@ import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
+import com.nativephp.mobile.ui.nativerender.FrameTracker
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
@@ -88,6 +89,12 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     // WebViewManager only exists when a WebRenderer does.
     @Volatile private var bootReady = false
     private var pendingDeepLink: String? = null
+    // The https URL behind pendingDeepLink when it came from an app link, so a
+    // cold start can still give an unrouted link back to the browser.
+    private var pendingDeepLinkUrl: String? = null
+    // An app link that launched the app (route to URL), held until the start
+    // screen's native loop is running and PHP can decide where it goes.
+    private var coldAppLink: Pair<String, String>? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
 
@@ -186,6 +193,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         handleDeepLinkIntent(intent)
 
+        NativeUIBridge.createState()
+        NativeUIThemeProvider.createState()
+        FrameTracker.createState()
+
         // Set up Compose UI and PAINT THE SPLASH FIRST, from a minimal onCreate, so the
         // first frame is on screen ASAP (TTID). Everything heavy — WebView (Chromium)
         // init and the PHP boot — is deferred to AFTER the first frame (below), so neither
@@ -236,10 +247,41 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 showContent = true
                 bootReady = true
 
-                val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
-                pendingDeepLink = null
+                val startUrl = LaravelEnvironment.getStartURL(this)
+                var target = pendingDeepLink ?: startUrl
+                var plan = BootPlanner.plan(this, target)
 
-                when (BootPlanner.plan(this, target)) {
+                // An app link to a path with no native screen could be a web
+                // route or nothing at all, and only PHP can tell. Loading it
+                // straight into the WebView shows a local 404 for the second
+                // kind. Boot the start screen instead and hand the link over
+                // once its native loop is running, the same as a link that
+                // arrives while the app is open: PHP navigates to it or gives it
+                // back to the browser.
+                val appLinkUrl = pendingDeepLinkUrl
+                if (pendingDeepLink != null && appLinkUrl != null &&
+                    plan == BootPlanner.Entry.WEB_LEGACY &&
+                    BootPlanner.plan(this, startUrl) == BootPlanner.Entry.NATIVE_DIRECT) {
+                    Log.d("DeepLink", "⏳ No native screen for $target, booting $startUrl and handing the link to PHP")
+                    coldAppLink = target to appLinkUrl
+                    target = startUrl
+                    plan = BootPlanner.Entry.NATIVE_DIRECT
+                }
+
+                pendingDeepLink = null
+                pendingDeepLinkUrl = null
+
+                // Async task lane (AsyncTask::dispatch()). Started BEFORE the first
+                // route runs, not with the deferred queue worker below: a screen may
+                // dispatch while it mounts, and a dispatch with no executor fails.
+                // Pool threads boot their PHP context lazily on first task, so this
+                // costs nothing until work is dispatched.
+                if (!isFinishing && !isDestroyed &&
+                    phpBridge.isPersistentMode() && asyncExecutor == null) {
+                    asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+                }
+
+                when (plan) {
                     BootPlanner.Entry.NATIVE_DIRECT -> {
                         // Direct JNI dispatch into the native runloop — the WebView
                         // is not involved. Splash dismissal + reportFullyDrawn fire
@@ -267,14 +309,6 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         phpBridge.isPersistentMode() && queueWorker == null) {
                         Log.d("MainActivity", "▶️ Starting deferred background queue worker")
                         queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
-                    }
-
-                    // Async task lane (AsyncTask::dispatch()). Pool threads boot
-                    // their PHP context lazily on first task, so starting the
-                    // executor now costs nothing until work is dispatched.
-                    if (!isFinishing && !isDestroyed &&
-                        phpBridge.isPersistentMode() && asyncExecutor == null) {
-                        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                     }
                 }, WORKER_START_DELAY_MS)
 
@@ -381,8 +415,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         when {
             status in 300..399 && !location.isNullOrEmpty() -> {
+                // Keep the query, still encoded. The web route reads it from
+                // request()->query(), and PHPWebViewClient's redirects keep it too.
                 val path = if (location.startsWith("http")) {
-                    android.net.Uri.parse(location).encodedPath ?: "/"
+                    val parsed = android.net.Uri.parse(location)
+                    val encodedPath = parsed.encodedPath ?: "/"
+                    val query = parsed.encodedQuery
+                    if (!query.isNullOrEmpty()) "$encodedPath?$query" else encodedPath
                 } else {
                     location
                 }
@@ -451,6 +490,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         } catch (t: Throwable) {
             Log.w("MainActivity", "reportFullyDrawn failed: ${t.message}")
         }
+
+        // The start screen has published, so its loop is waiting for events.
+        coldAppLink?.let { (route, url) -> navigateWarm(route, url) }
     }
 
     /**
@@ -697,6 +739,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             ensureWebRenderer().webView.loadUrl(fullUrl)
         }
         pendingDeepLink = null
+        pendingDeepLinkUrl = null
+        // Delivered, or overtaken by a newer link.
+        coldAppLink = null
     }
 
     private fun handleDeepLinkIntent(intent: Intent?) {
@@ -705,6 +750,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         if (!notificationUrl.isNullOrEmpty()) {
             Log.d("DeepLink", "🔔 Notification URL: $notificationUrl")
             pendingDeepLink = notificationUrl
+            pendingDeepLinkUrl = null
             if (::laravelEnv.isInitialized && bootReady) {
                 navigateWarm(notificationUrl)
             }
@@ -720,12 +766,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             val route = if (scheme != null && scheme != "http" && scheme != "https") {
                 val host = uri.host ?: ""
                 val path = uri.path ?: ""
-                val query = uri.query?.let { "?$it" } ?: ""
+                val query = uri.encodedQuery?.let { "?$it" } ?: ""
                 if (host.isNotEmpty()) "/$host$path$query" else "$path$query"
             } else {
                 fcmUrl
             }
             pendingDeepLink = route
+            pendingDeepLinkUrl = null
             if (::laravelEnv.isInitialized && bootReady) {
                 navigateWarm(route)
             }
@@ -758,7 +805,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             }
         }
 
-        val query = uri.query
+        // Keep the query percent-encoded, as iOS does. PHP decodes it once;
+        // uri.query is already decoded, so a code like a%2Bb would reach
+        // PHP as "a b" and an encoded & would split the parameter.
+        val query = uri.encodedQuery
         val laravelUrl = if (uri.scheme != "http" && uri.scheme != "https") {
             // Custom scheme (e.g., myapp://profile/settings): treat host as first path segment
             // This matches iOS behavior where the entire URI after scheme:// is the path
@@ -783,6 +833,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
         pendingDeepLink = laravelUrl
+        pendingDeepLinkUrl = externalUrl
         if (::laravelEnv.isInitialized && bootReady) {
             // Only navigate immediately once the boot pipeline is ready
             navigateWarm(laravelUrl, externalUrl)

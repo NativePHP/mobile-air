@@ -5,6 +5,7 @@ namespace Native\Mobile\Testing;
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Contracts\GatedBridge;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\System;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -76,6 +77,13 @@ class FakeBridge implements GatedBridge
     /** Value returned by nativephp_runtime_flags(). 0 = all features off. */
     public int $runtimeFlags = 0;
 
+    /**
+     * Value returned by nativephp_force_full_frame_epoch(). A reset bumps it,
+     * as the C extension's does; a test can bump it to stand in for anything
+     * else that swaps the native tree out.
+     */
+    public int $forceFullFrameEpoch = 0;
+
     /** Counts of element-region lifecycle calls, for completeness. */
     public int $initCount = 0;
 
@@ -105,6 +113,10 @@ class FakeBridge implements GatedBridge
         // First bridge of this test: drop pending fluent callbacks left in
         // NativeCallbacks' static tier by earlier tests in this process.
         NativeCallbacks::flush();
+
+        // Likewise the platform an earlier test's fake device reported: this
+        // is a new device, so System should ask it.
+        System::rememberPlatform(null);
 
         $bridge = new static;
         app()->instance(static::class, $bridge);
@@ -203,6 +215,7 @@ class FakeBridge implements GatedBridge
     public function elementReset(): void
     {
         $this->resetCount++;
+        $this->forceFullFrameEpoch++;
         $this->queuedEvents = [];
     }
 

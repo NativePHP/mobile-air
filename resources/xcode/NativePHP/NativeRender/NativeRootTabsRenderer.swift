@@ -95,10 +95,11 @@ struct NativeRootTabsRenderer: View {
         // async since `path` is @Published.
         if !currentUri.isEmpty, owningIdx < tabs.count {
             let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
+            let stackDepth = node.props.getInt("stack_depth", default: 0)
             let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
             coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
-                coord.receive(uri: currentUri, rootNode: node)
+                coord.receive(uri: currentUri, depth: stackDepth, rootNode: node)
             }
         }
 
@@ -136,7 +137,9 @@ struct NativeRootTabsRenderer: View {
         // bar even with no string title / back button — otherwise a layout that
         // sets only `titleView()` gets no nav bar and the logo never renders.
         let hasTitleView = node.children.contains { $0.type == "top_bar_title" }
-        let hasNavBar = navBack || !navTitleText.isEmpty || hasTitleView
+        // a bar carrying only actions must still render.
+        let hasNavActions = node.children.contains { $0.type == "top_bar_action" }
+        let hasNavBar = navBack || !navTitleText.isEmpty || hasTitleView || hasNavActions
 
         // Search-tab plumbing for iOS 26's `Tab(role: .search)` floating
         // Liquid Glass capsule. `SearchTabContainer` owns the query state
@@ -367,14 +370,22 @@ struct NativeRootTabsRenderer: View {
     /// whose URL is the longest prefix of `currentUri`. Returns nil if
     /// no tab claims the URI; the caller should fall back to PHP's
     /// `BottomNavItem.active` flag.
+    ///
+    /// Matches on the path, so a screen opened with a query
+    /// (`/home?ref=push`) still belongs to the `/home` tab. A tab whose
+    /// own URL carries a query (`/remotes?tab=closed`) matches the full
+    /// URI, and being longer, wins. Same rule as `TabBar::highlight()`.
     private func owningTabIndex(for currentUri: String, tabs: [NativeUINode]) -> Int? {
         guard !currentUri.isEmpty else { return nil }
+        let currentPath = PerTabNavigationCoordinator.path(of: currentUri)
         var bestIdx: Int? = nil
         var bestLen: Int = -1
         for (idx, tab) in tabs.enumerated() {
             let tabUrl = tab.props.getString("url", default: "")
             guard !tabUrl.isEmpty else { continue }
-            let isMatch = (currentUri == tabUrl) || currentUri.hasPrefix(tabUrl + "/")
+            let isMatch = currentUri == tabUrl
+                || currentPath == tabUrl
+                || currentPath.hasPrefix(tabUrl + "/")
             if isMatch && tabUrl.count > bestLen {
                 bestIdx = idx
                 bestLen = tabUrl.count
@@ -419,7 +430,7 @@ private struct PerTabContent: View {
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
-                levelView(uri: coordinator.rootUri, isRoot: true)
+                levelView(uri: coordinator.rootLevelUri, isRoot: true)
                     .navigationDestination(for: String.self) { uri in
                         levelView(uri: uri, isRoot: false)
                     }
@@ -429,7 +440,7 @@ private struct PerTabContent: View {
                 coordinator.onPathChange(newPath: newPath)
             }
         } else {
-            levelContent(for: coordinator.rootNodeCache[coordinator.rootUri])
+            levelContent(for: coordinator.rootNodeCache[coordinator.rootLevelUri])
         }
     }
 
@@ -678,7 +689,10 @@ private struct TabsActionView: View {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                NativeIconView(icon, pointSize: 17)
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     // Explicit dim: the hard-set foregroundColor above keeps
@@ -690,6 +704,7 @@ private struct TabsActionView: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         } else {
             Menu {
                 ForEach(subItems) { item in
@@ -722,7 +737,10 @@ private struct TabsActionView: View {
                     }
                 }
             } label: {
-                NativeIconView(icon, pointSize: 17)
+                TopBarActionGlyph(
+                    icon: icon,
+                    image: action.props.getString("image", default: "")
+                )
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(textColor)
                     .opacity(disabled ? 0.4 : 1)
@@ -732,6 +750,7 @@ private struct TabsActionView: View {
                     .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
+            .modifier(TopBarActionA11yLabelModifier(action: action))
         }
     }
 }

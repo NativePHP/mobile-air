@@ -99,28 +99,29 @@ struct NativePHPApp: App {
         }
 
         // 4. Now that PHP is booted, decide the boot transport (native-first).
-        // NATIVE_DIRECT: dispatch the start route straight into the persistent
+        // NATIVE_DIRECT: dispatch the first route straight into the persistent
         // runtime — no WKWebView, no WebContent/Networking processes — and let
         // the first published native tree dismiss the splash (honest first
         // content; ContentView flips it via onChange(isActive)). WEB_LEGACY:
         // byte-identical to the old flow.
-        let startPath = NativePHPApp.getStartURL()
-        let hasPendingDeepLink = DeepLinkRouter.shared.hasPendingURL()
-        let plan: BootPlanner.Entry = hasPendingDeepLink
-            ? .webLegacy // cold deep links keep the proven WebView path for now
-            : BootPlanner.plan(startPath: startPath)
+        let boot = planBoot(startPath: NativePHPApp.getStartURL())
 
-        switch plan {
+        switch boot.plan {
         case .nativeDirect:
             DispatchQueue.main.async {
                 NSLog("TRACE[15]: native-direct boot — WebView withheld")
                 BootState.shared.webViewAllowed = false
+                // Forget the link this boot opens before PHP counts as ready,
+                // or the replay would push its screen a second time.
+                if boot.opensLink {
+                    DeepLinkRouter.shared.clearPendingURL()
+                }
                 DeepLinkRouter.shared.markPhpReady()
                 AppState.shared.markReadyToLoad()
                 // markInitialized deliberately NOT called here — the splash
                 // dismisses on first native content, or via the watchdog.
             }
-            startNativeSession(startPath)
+            startNativeSession(boot.path)
             startFirstContentWatchdog()
         case .webLegacy:
             DispatchQueue.main.async {
@@ -166,7 +167,37 @@ struct NativePHPApp: App {
         NSLog("[NativePHP] Deferred initialization completed")
     }
 
-    /// Native-first boot: dispatch the start route directly into the
+    /// Picks how the first screen boots and which route it opens.
+    ///
+    /// A cold deep link to a native screen boots straight into that screen,
+    /// query included, the same as Android. It is the only screen on the
+    /// stack, as it was when cold links went through the WebView.
+    private func planBoot(startPath: String) -> (plan: BootPlanner.Entry, path: String, opensLink: Bool) {
+        guard let linkRoute = DeepLinkRouter.shared.pendingRoute() else {
+            return (BootPlanner.plan(startPath: startPath), startPath, false)
+        }
+
+        if BootPlanner.plan(startPath: linkRoute) == .nativeDirect {
+            return (.nativeDirect, linkRoute, true)
+        }
+
+        if DeepLinkRouter.shared.pendingUniversalLinkRoute() != nil,
+           BootPlanner.plan(startPath: startPath) == .nativeDirect {
+            // A universal link to a path with no native screen could be a web
+            // route or nothing at all, and only PHP can tell. Loading it in the
+            // WebView shows a local 404 for the second kind. Boot the start
+            // screen instead: the link is replayed as __deeplink with its URL
+            // once native-ui is active, so PHP navigates to it or gives it back
+            // to Safari, the same as a link that arrives while the app is open.
+            return (.nativeDirect, startPath, false)
+        }
+
+        // A custom-scheme or notification link to a web route loads it in the
+        // WebView, as does any link when the start route isn't native either.
+        return (.webLegacy, startPath, false)
+    }
+
+    /// Native-first boot: dispatch the first route directly into the
     /// persistent runtime (same entry hot reload uses — the iOS analog of
     /// Android's executeNativeRoute). The dispatch blocks its queue for the
     /// life of the native session; the eventual response is the session's
@@ -174,7 +205,9 @@ struct NativePHPApp: App {
     /// stack emptied. If PHP dies part-way, NativeSession restarts it.
     private func startNativeSession(_ uri: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            NSLog("[NativeBoot] 🚀 Direct native dispatch: \(uri)")
+            // URIs go through %@, never into NSLog's format string: a deep
+            // link's query can hold %s, and enough of them crash the app.
+            NSLog("%@", "[NativeBoot] 🚀 Direct native dispatch: \(uri)")
             let raw = NativeSession.run(uri: uri)
             handleNativeSessionExit(raw)
         }
@@ -191,14 +224,16 @@ struct NativePHPApp: App {
             .components(separatedBy: ":").dropFirst().joined(separator: ":")
             .trimmingCharacters(in: .whitespaces)
 
-        NSLog("[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
+        NSLog("%@", "[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
 
         if (300...399).contains(status), let location, !location.isEmpty {
+            // Keep the query. The web route reads it from request()->query(),
+            // and Foundation's `query` is still percent-encoded.
             let path = location.hasPrefix("http") || location.hasPrefix("php:")
-                ? (URL(string: location)?.path ?? "/")
+                ? (URL(string: location).map { url in url.path + (url.query.map { "?" + $0 } ?? "") } ?? "/")
                 : location
             DispatchQueue.main.async {
-                NSLog("[NativeBoot] ⇄ EXIT_WEB → \(path)")
+                NSLog("%@", "[NativeBoot] ⇄ EXIT_WEB → \(path)")
                 BootState.shared.allowWebView(loading: path)
                 // Drop the native branch explicitly. The usual clearers can't
                 // run here: didCommit needs the WebView to load, but the

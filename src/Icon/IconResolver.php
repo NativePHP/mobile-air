@@ -2,7 +2,7 @@
 
 namespace Native\Mobile\Icon;
 
-use Native\Mobile\Platform;
+use Native\Mobile\Facades\System;
 
 /**
  * Stateless helper that resolves a `(name, ios, android)` triple to the
@@ -37,11 +37,11 @@ class IconResolver
         IosSymbol|string|null $ios,
         AndroidSymbol|string|null $android,
     ): array {
-        $platform = Platform::current();
+        $platform = System::platform();
 
         $override = match ($platform) {
-            Platform::IOS => $ios,
-            Platform::ANDROID => $android,
+            'ios' => $ios,
+            'android' => $android,
             default => null,
         };
 
@@ -53,7 +53,7 @@ class IconResolver
             $icon = $override->value;
         }
 
-        $variant = ($platform === Platform::ANDROID && $android instanceof AndroidSymbol && ! Icon::isCustom($icon))
+        $variant = ($platform === 'android' && $android instanceof AndroidSymbol && ! Icon::isCustom($icon))
             ? $android->variant()
             : null;
 

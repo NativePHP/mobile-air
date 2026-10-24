@@ -1,13 +1,21 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older that API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    What Android backs up on Android 11 (API 30) and older. Newer versions read
+    data_extraction_rules.xml instead, so change both files together. That file
+    explains why each path is left out.
+
+    See https://developer.android.com/identity/data/autobackup
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="root" path="app_storage/laravel/" />
+    <exclude domain="root" path="app_storage/persisted_data/storage/framework/" />
+    <exclude domain="root" path="app_storage/persisted_data/storage/logs/" />
+    <exclude domain="root" path="app_storage/php_sessions/" />
+    <exclude domain="file" path="cacert.pem" />
+    <exclude domain="file" path="php.ini" />
+    <exclude domain="root" path="app_webview/" />
+    <exclude domain="sharedpref" path="laravel_cookies.xml" />
+    <exclude domain="root" path="app_storage/updates/" />
+    <exclude domain="file" path="ota/" />
+    <exclude domain="sharedpref" path="nativephp_ota.xml" />
 </full-backup-content>

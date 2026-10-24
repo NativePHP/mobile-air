@@ -56,13 +56,10 @@ struct NodeContentTransitionModifier: ViewModifier {
         let durationMs = props.getFloat("animate-duration", default: 0)
         guard durationMs > 0 else { return .default }
 
-        let duration = Double(durationMs) / 1000.0
-        switch props.getString("animate-easing", default: "ease-in-out") {
-        case "linear":      return .linear(duration: duration)
-        case "ease-in":     return .easeIn(duration: duration)
-        case "ease-out":    return .easeOut(duration: duration)
-        case "spring":      return .spring(duration: duration)
-        default:            return .easeInOut(duration: duration)
-        }
+        // Shared table — see nativeEasedAnimation in ScreenTransitions.swift.
+        return nativeEasedAnimation(
+            props.getString("animate-easing", default: "ease-in-out"),
+            durationMs: Double(durationMs)
+        )
     }
 }

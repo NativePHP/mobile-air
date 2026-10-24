@@ -96,7 +96,18 @@ struct NodeAnimationModifier: ViewModifier {
             .rotationEffect(.degrees(appliedRotate))
             .offset(x: appliedTx, y: appliedTy)
             .animation(animate ? anim : nil, value: snapshot)
-            .onAppear { if loop && !loopActive { loopActive = true } }
+            .onAppear {
+                // Start the loop once this node has drawn at identity, so
+                // the `.animation` above has a value to animate from. A
+                // List row appears before its cell first draws, and a
+                // flip one main-queue turn later can still land in that
+                // first frame. Flip without withAnimation: its repeating
+                // animation would also take any other change in that
+                // update (an image elsewhere arriving and resizing) and
+                // repeat it forever.
+                guard loop, !loopActive else { return }
+                NextFrame.run { loopActive = true }
+            }
 
         return AnyView(view)
     }
@@ -119,15 +130,34 @@ struct NodeAnimationModifier: ViewModifier {
         !props.getString("\(prop)_sv", default: "").isEmpty
     }
 
+    /// Delegates to the shared table in ScreenTransitions.swift so the
+    /// easing vocabulary cannot drift between animation, content transitions
+    /// and shared-element morphs.
     private func animationFor(easing: String, durationMs: Float) -> Animation {
-        let duration = Double(durationMs) / 1000.0
-        switch easing {
-        case "linear":        return .linear(duration: duration)
-        case "ease-in":       return .easeIn(duration: duration)
-        case "ease-out":      return .easeOut(duration: duration)
-        case "ease-in-out":   return .easeInOut(duration: duration)
-        case "spring":        return .spring(duration: duration)
-        default:              return .easeInOut(duration: duration)
+        nativeEasedAnimation(easing, durationMs: Double(durationMs))
+    }
+
+    /// Runs a block once, on the next screen refresh. Nested so the name
+    /// can't clash with a plugin's type in the same module.
+    private final class NextFrame: NSObject {
+        private let block: () -> Void
+        private var link: CADisplayLink?
+
+        private init(_ block: @escaping () -> Void) {
+            self.block = block
+        }
+
+        static func run(_ block: @escaping () -> Void) {
+            let next = NextFrame(block)
+            let link = CADisplayLink(target: next, selector: #selector(fire))
+            next.link = link
+            link.add(to: .main, forMode: .common)
+        }
+
+        @objc private func fire() {
+            link?.invalidate()
+            link = nil
+            block()
         }
     }
 }

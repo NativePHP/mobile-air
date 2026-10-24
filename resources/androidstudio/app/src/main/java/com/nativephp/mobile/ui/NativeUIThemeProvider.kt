@@ -57,6 +57,9 @@ object NativeUIThemeProvider {
     var fontFamilyResolver: ((String) -> androidx.compose.ui.text.font.FontFamily?)? by
         mutableStateOf<((String) -> androidx.compose.ui.text.font.FontFamily?)?>(null)
 
+    /** Creates this object's Compose state; call on the main thread before the first composition. */
+    fun createState() {}
+
     /** Resolve a chrome font token via the plugin, or null. */
     fun resolveChromeFontFamily(name: String): androidx.compose.ui.text.font.FontFamily? =
         if (name.isEmpty()) null else fontFamilyResolver?.invoke(name)
