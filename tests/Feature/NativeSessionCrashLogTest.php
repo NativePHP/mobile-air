@@ -6,9 +6,9 @@ use Native\Mobile\Edge\NativeRouter;
 
 /**
  * When PHP dies part-way through a native session (a fatal error, most often
- * the memory limit), iOS reboots it and restarts the session, and leaves what
- * PHP printed in storage for the new session to log. PHP can't log it as it
- * dies: Laravel reports fatal errors from a shutdown function, and the
+ * the memory limit), the app reboots it and restarts the session, and leaves
+ * what PHP printed in storage for the new session to log. PHP can't log it as
+ * it dies: Laravel reports fatal errors from a shutdown function, and the
  * persistent runtime's request never shuts down.
  */
 beforeEach(function () {
@@ -59,4 +59,10 @@ it('reads the file iOS writes', function () {
     $swift = File::get(__DIR__.'/../../resources/xcode/NativePHP/Bridge/NativeSession.swift');
 
     expect($swift)->toContain('static let crashOutputPath = "storage/'.NativeRouter::CRASH_OUTPUT_PATH.'"');
+});
+
+it('reads the file Android writes', function () {
+    $kotlin = File::get(__DIR__.'/../../resources/androidstudio/app/src/main/java/com/nativephp/mobile/bridge/NativeSession.kt');
+
+    expect($kotlin)->toContain('const val CRASH_OUTPUT_PATH = "persisted_data/storage/'.NativeRouter::CRASH_OUTPUT_PATH.'"');
 });

@@ -76,15 +76,16 @@ class NativeRouter
     }
 
     /**
-     * Where iOS leaves what PHP printed when a native session died part-way
-     * (a fatal error, most often the memory limit), relative to
-     * storage_path(). Must match `NativeSession.crashOutputPath`.
+     * Where iOS and Android leave what PHP printed when a native session
+     * died part-way (a fatal error, most often the memory limit), relative
+     * to storage_path(). Must match `NativeSession.crashOutputPath` (iOS)
+     * and `NativeSession.CRASH_OUTPUT_PATH` (Android).
      */
     public const CRASH_OUTPUT_PATH = 'framework/.native_session_crash';
 
     /**
-     * Log why the last native session died, if iOS restarted it after PHP
-     * stopped part-way. PHP couldn't report it then: Laravel reports fatal
+     * Log why the last native session died, if the app restarted it after
+     * PHP stopped part-way. PHP couldn't report it then: Laravel reports fatal
      * errors from a shutdown function, and the persistent runtime's request
      * never shuts down.
      */
