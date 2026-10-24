@@ -798,7 +798,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             val scheme = uri.scheme
             val route = if (scheme != null && scheme != "http" && scheme != "https") {
                 val host = uri.host ?: ""
-                val path = uri.path ?: ""
+                val path = uri.encodedPath ?: ""
                 val query = uri.encodedQuery?.let { "?$it" } ?: ""
                 if (host.isNotEmpty()) "/$host$path$query" else "$path$query"
             } else {
@@ -838,24 +838,26 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             }
         }
 
-        // Keep the query percent-encoded, as iOS does. PHP decodes it once;
-        // uri.query is already decoded, so a code like a%2Bb would reach
-        // PHP as "a b" and an encoded & would split the parameter.
+        // Keep the path and query percent-encoded, as iOS does. PHP decodes
+        // them once; uri.query is already decoded, so a code like a%2Bb would
+        // reach PHP as "a b" and an encoded & would split the parameter.
+        // uri.path is decoded too, so a literal %41 in a path segment would
+        // reach PHP as "A" and an encoded / would split the segment.
+        val path = uri.encodedPath
         val query = uri.encodedQuery
         val laravelUrl = if (uri.scheme != "http" && uri.scheme != "https") {
             // Custom scheme (e.g., myapp://profile/settings): treat host as first path segment
             // This matches iOS behavior where the entire URI after scheme:// is the path
             val host = uri.host ?: ""
-            val path = uri.path ?: ""
             buildString {
                 if (host.isNotEmpty()) append("/$host")
-                if (path.isNotEmpty()) append(path) else if (host.isEmpty()) append("/")
+                if (!path.isNullOrEmpty()) append(path) else if (host.isEmpty()) append("/")
                 if (!query.isNullOrBlank()) append("?$query")
             }
         } else {
             // HTTP(S) app links: just use the path (host is the verified domain)
             buildString {
-                append(uri.path ?: "/")
+                append(path ?: "/")
                 if (!query.isNullOrBlank()) append("?$query")
             }
         }
