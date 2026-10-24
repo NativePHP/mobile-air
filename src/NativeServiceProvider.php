@@ -60,7 +60,9 @@ use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
+use Native\Mobile\Support\Lane;
 use Native\Mobile\Support\PathHelper;
+use RuntimeException;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -365,6 +367,23 @@ class NativeServiceProvider extends PackageServiceProvider
 
         Route::macro('native', function (string $uri, string $componentClass) {
             $route = Route::get($uri, function () use ($componentClass) {
+                // A lane other than the main one asked for a native screen,
+                // most often a link or redirect in a php web view inside a
+                // native screen. It must never enter the runloop (see
+                // NativeRouter::openOnMainLane()), so the screen on show
+                // opens the route instead and the web view keeps its page.
+                if (! Lane::isMain()) {
+                    $path = '/'.ltrim(request()->path(), '/');
+                    $queryString = (string) request()->server('QUERY_STRING', '');
+                    $target = $queryString === '' ? $path : "$path?$queryString";
+
+                    if (! NativeRouter::openOnMainLane($target)) {
+                        throw new RuntimeException("Native screen [{$target}] can only run on the main lane, and native did not take the request to open it there.");
+                    }
+
+                    return response()->noContent();
+                }
+
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these

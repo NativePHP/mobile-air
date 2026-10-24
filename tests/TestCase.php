@@ -5,6 +5,7 @@ namespace Tests;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\NativeServiceProvider;
 use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\Lane;
 use Native\Mobile\Support\NativeCallbacks;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
@@ -24,6 +25,11 @@ abstract class TestCase extends BaseTestCase
         AsyncTask::clearFake();
         AsyncTaskRegistry::flush();
         NativeCallbacks::flush();
+
+        // A request on the web view lane marks the interpreter for good, as
+        // on a device. Left marked, the next test's native routes would be
+        // handed to a screen instead of answering.
+        Lane::reset();
 
         parent::tearDown();
     }
