@@ -52,10 +52,26 @@ enum FileFunctions {
         !root.isEmpty && (path == root || path.hasPrefix(root + "/"))
     }
 
-    /// The app's own storage area (`Documents/app/storage/app`) — where a
-    /// dispatched file may legitimately be written.
+    /// The app's own storage area — where a dispatched file may legitimately be
+    /// written, and where `storage_path('app')` resolves.
+    ///
+    /// On iOS `storage_path()` is NOT under the extracted app. Swift points
+    /// Laravel at Application Support via `LARAVEL_STORAGE_PATH` (set in
+    /// `NativePHPApp.setupEnvironment`), which the framework reads in
+    /// `Application::storagePath()`. That directory is persistent — the updater
+    /// swaps the whole `Documents/app` extract on every update, so a root under
+    /// it would be both wrong (a legitimate `storage_path('app')` destination
+    /// would be rejected) and ephemeral. Derive the root from the same env, and
+    /// fall back to the extract only if it is somehow unset.
     private static var storageAppRoot: String {
-        canonical(AppUpdateManager.shared.getAppPath() + "/storage/app")
+        if let raw = getenv("LARAVEL_STORAGE_PATH") {
+            let storage = String(cString: raw)
+            if !storage.isEmpty {
+                return canonical(storage + "/app")
+            }
+        }
+
+        return canonical(AppUpdateManager.shared.getAppPath() + "/storage/app")
     }
 
     /// Scratch areas a source file may come from, plus the storage area.

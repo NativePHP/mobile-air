@@ -46,24 +46,24 @@ object FileFunctions {
         path == root || path.startsWith(root + File.separator)
 
     /**
-     * The app's own storage area(s). Laravel's `storage/app` inside the app
-     * tree is a symlink onto `persisted_data/storage/app`; both canonicalise to
-     * the same real path when the link exists, and both are listed in case it
-     * does not yet.
+     * The app's own storage area — where a dispatched file may legitimately be
+     * written, and where `storage_path('app')` resolves.
+     *
+     * `storage_path()` is NOT under the Laravel app tree. `LaravelEnvironment`
+     * points Laravel at `getDir("storage")/persisted_data/storage` via
+     * `LARAVEL_STORAGE_PATH`, which is deliberately outside `…/laravel` so it
+     * survives an OTA that swaps the `laravel` extract. This mirrors that exact
+     * path, so a legitimate `storage_path('app')` destination is accepted and
+     * stays on persistent storage.
      */
-    private fun storageAppRoots(context: Context): List<String> {
-        val laravel = File(context.getDir("storage", Context.MODE_PRIVATE), "laravel")
-        return listOf(
-            canonical(File(laravel, "persisted_data/storage/app").path),
-            canonical(File(laravel, "storage/app").path),
-        )
-    }
+    private fun storageAppRoot(context: Context): String =
+        canonical(File(context.getDir("storage", Context.MODE_PRIVATE), "persisted_data/storage/app").path)
 
-    /** Scratch roots a source may come from, plus the storage roots. */
+    /** Scratch roots a source may come from, plus the storage root. */
     private fun sourceRoots(context: Context): List<String> {
         val roots = mutableListOf(canonical(context.cacheDir.path))
         context.externalCacheDir?.let { roots.add(canonical(it.path)) }
-        roots.addAll(storageAppRoots(context))
+        roots.add(storageAppRoot(context))
         return roots
     }
 
@@ -80,7 +80,7 @@ object FileFunctions {
             return mapOf("success" to false, "error" to "Source path is not allowed")
         }
 
-        if (storageAppRoots(context).none { isInside(toReal, it) }) {
+        if (!isInside(toReal, storageAppRoot(context))) {
             Log.w("FileFunctions", "File op refused: destination outside app storage")
             return mapOf("success" to false, "error" to "Destination path is not allowed")
         }

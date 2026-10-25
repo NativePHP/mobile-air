@@ -44,5 +44,17 @@ it('confines the destination to app storage on both platforms', function (string
     expect(fileFunctionsSource($path))->toContain($needle);
 })->with([
     'iOS' => [$ios, 'storageAppRoot'],
-    'Android' => [$android, 'storageAppRoots'],
+    'Android' => [$android, 'storageAppRoot'],
+]);
+
+it('anchors the storage root to the real storage_path, not the ephemeral app extract', function (string $path, string $needle) {
+    // storage_path() on both platforms points outside the swappable app tree
+    // (iOS: Application Support via LARAVEL_STORAGE_PATH; Android:
+    // persisted_data/storage). Anchoring the destination root anywhere under the
+    // extracted app would both reject legitimate storage_path('app') moves and
+    // write to storage that an update wipes. Pin the real source of truth.
+    expect(fileFunctionsSource($path))->toContain($needle);
+})->with([
+    'iOS reads LARAVEL_STORAGE_PATH' => [$ios, 'getenv("LARAVEL_STORAGE_PATH")'],
+    'Android uses persisted_data/storage' => [$android, 'persisted_data/storage/app'],
 ]);
