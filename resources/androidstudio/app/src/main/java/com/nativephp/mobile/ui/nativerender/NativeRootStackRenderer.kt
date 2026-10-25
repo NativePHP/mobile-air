@@ -47,7 +47,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
@@ -389,24 +388,6 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         if (levelNodes.size > 16) {
             levelNodes.keys.retainAll((path + listOfNotNull(rootUri, activeUri)).toSet())
         }
-        // A level leaves composition when another is pushed over it, which
-        // drops everything it remembered: a list came back at the top after
-        // a detail screen was popped. Each level saves its state under its
-        // URI instead, the way Navigation Compose keeps a back stack entry's,
-        // so a list's `rememberLazyListState()` (and any other
-        // `rememberSaveable`) is restored when the level shows again.
-        val levelState = rememberSaveableStateHolder()
-        val savedLevels = remember { HashSet<String>() }
-        val liveLevels = (path + listOfNotNull(rootUri, activeUri)).toSet()
-        // A popped level's state goes with it, so pushing the same URI
-        // again starts fresh. Deferred to an effect: the popped level is
-        // still sliding out on this frame.
-        LaunchedEffect(liveLevels) {
-            savedLevels.filter { it !in liveLevels }.forEach { uri ->
-                levelState.removeState(uri)
-                savedLevels.remove(uri)
-            }
-        }
         AnimatedContent(
             targetState = activeUri,
             transitionSpec = {
@@ -466,22 +447,19 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 }
             }
 
-            savedLevels.add(uri)
-            levelState.SaveableStateProvider(uri) {
-                CompositionLocalProvider(LocalChromeScrollController provides chromeScrollController) {
-                    Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
-                        val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
-                        val levelContent = levelNode?.children?.firstOrNull {
-                            it.type != "top_bar_action" && it.type != "top_bar_title" &&
-                                it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
-                        }
-                        if (levelContent != null) {
-                            NodeView(node = levelContent)
-                        } else if (uri == currentUri && screenContent != null) {
-                            NodeView(node = screenContent)
-                        } else {
-                            Box(modifier = Modifier.fillMaxSize())
-                        }
+            CompositionLocalProvider(LocalChromeScrollController provides chromeScrollController) {
+                Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
+                    val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
+                    val levelContent = levelNode?.children?.firstOrNull {
+                        it.type != "top_bar_action" && it.type != "top_bar_title" &&
+                            it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
+                    }
+                    if (levelContent != null) {
+                        NodeView(node = levelContent)
+                    } else if (uri == currentUri && screenContent != null) {
+                        NodeView(node = screenContent)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize())
                     }
                 }
             }
