@@ -243,9 +243,11 @@ class PendingAsyncTask
 
     /**
      * The timeout contract handed to the background lane's watchdog: the
-     * deadline plus the exact completion to post if it passes. Native holds
-     * these verbatim and posts them as-is, so it never has to know how a
-     * failure event is shaped.
+     * deadline plus the completion to post if it passes. Native holds the
+     * payload and posts it, so it never has to know how a failure event is
+     * shaped. It posts under the name of AsyncTaskFailed and with this
+     * task's id whatever the call says, as a page can make the call too.
+     * The name is still sent for native projects installed before that.
      *
      * @return array{timeout: int, timeoutEvent: string, timeoutPayload: array}|array{}
      */

@@ -419,12 +419,23 @@ class AsyncTaskTransport
             return;
         }
 
-        if (function_exists('nativephp_call')) {
-            nativephp_call('AsyncTask.Complete', static::encodeCompletion([
-                'id' => $id,
-                'event' => $event,
-                'payload' => $payload,
-            ], $id));
+        if (! function_exists('nativephp_call')) {
+            return;
+        }
+
+        $result = nativephp_call('AsyncTask.Complete', static::encodeCompletion([
+            'id' => $id,
+            'event' => $event,
+            'payload' => $payload,
+        ], $id));
+
+        // Native takes this call only from a thread of the async lane, as a
+        // page in a web view can make it too. A refusal here means no UI
+        // hears of the task until its watchdog fires, if it has one.
+        $decoded = is_string($result) ? json_decode($result, true) : null;
+
+        if (is_array($decoded) && ($decoded['success'] ?? null) === false) {
+            Log::warning("Native refused the outcome of async task [{$id}]: ".($decoded['error'] ?? 'no reason given').'. The screen that dispatched it hears nothing until the task times out, if it has a timeout.');
         }
     }
 
