@@ -65,8 +65,21 @@ class PHPWebViewClient(
             // Log all paths we're trying
             Log.d(TAG, "🔍 Checking paths: ${possiblePaths.joinToString()}")
 
+            // Confine every candidate to public/. The path comes from the
+            // request URL, and a `..` left in it (e.g. `/_assets/../.env`, or
+            // its percent-encoded form) would otherwise resolve to any file the
+            // app process can read — `.env`, the SQLite database, PHP source.
+            // canonicalPath resolves symlinks and `..`; require the result to
+            // stay inside public/. A miss falls through to the PHP handler,
+            // which 404s, exactly like any other unknown asset.
+            val publicRoot = File(laravelPublicPath).canonicalPath
+            val withinPublic = { candidate: String ->
+                val real = try { File(candidate).canonicalPath } catch (e: Exception) { "" }
+                real == publicRoot || real.startsWith(publicRoot + File.separator)
+            }
+
             // Try each path
-            val assetFile = possiblePaths.firstOrNull { File(it).exists() }?.let { File(it) }
+            val assetFile = possiblePaths.firstOrNull { withinPublic(it) && File(it).exists() }?.let { File(it) }
 
             if (assetFile != null && assetFile.exists()) {
                 Log.d(TAG, "✅ Found asset at: ${assetFile.absolutePath}")
