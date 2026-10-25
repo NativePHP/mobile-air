@@ -10,11 +10,11 @@ import android.net.Uri
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.security.LaravelCookieStore
 import com.nativephp.mobile.security.LaravelSecurity
+import com.nativephp.mobile.security.LogRedaction
 
 
 /**
- * PHPWebViewClient that extends RequestInspectorWebViewClient to handle PHP requests
- * while also getting the benefit of request inspection.
+ * Serves the WebView's 127.0.0.1 requests (pages and assets) from PHP.
  */
 class PHPWebViewClient(
     private val phpBridge: PHPBridge,
@@ -139,7 +139,7 @@ class PHPWebViewClient(
 
                 val response = phpBridge.handleLaravelRequest(phpRequest)
                 val (responseHeaders, body, statusCode) = parseResponse(response)
-                Log.d(TAG, "RESPONSE HEADERS: ${responseHeaders}")
+                Log.d(TAG, "RESPONSE HEADERS: ${LogRedaction.headers(responseHeaders)}")
 
                 if (statusCode == 200) {
                     Log.d(TAG, "✅ Asset served via PHP: ${responseHeaders["Content-Type"]}")
@@ -183,7 +183,7 @@ class PHPWebViewClient(
         headers["Cookie"] = LaravelCookieStore.asCookieHeader()
         LaravelCookieStore.logAll()
 
-        Log.d(TAG, "📤 Final request headers: $headers")
+        Log.d(TAG, "📤 Final request headers: ${LogRedaction.headers(headers)}")
 
         val normalizedPath = when {
             path.startsWith("//") -> path.substring(1)
@@ -216,7 +216,7 @@ class PHPWebViewClient(
         responseHeaders.entries
             .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
             .forEach { (_, value) ->
-                Log.d(TAG, "🍪 Setting cookie from response: $value")
+                Log.d(TAG, "🍪 Setting cookie from response: ${LogRedaction.cookieName(value)}")
                 CookieManager.getInstance().setCookie("http://127.0.0.1", value)
             }
 
@@ -274,7 +274,7 @@ class PHPWebViewClient(
 
        val parts = rawResponse.split("\r\n\r\n", limit = 2)
        if (parts.size < 2) {
-           Log.w(TAG, "⚠️ Could not split response into headers/body. Raw: ${rawResponse.take(200)}")
+           Log.w(TAG, "⚠️ Could not split response into headers/body (${rawResponse.length} chars)")
            return Triple(headers, rawResponse.trim(), statusCode)
        }
 
@@ -320,7 +320,7 @@ class PHPWebViewClient(
            .forEach { cookie ->
                LaravelCookieStore.storeFromSetCookieHeader(cookie)
                CookieManager.getInstance().setCookie("http://127.0.0.1", cookie)
-               Log.d(TAG, "🍪 Stored cookie from Set-Cookie header: $cookie")
+               Log.d(TAG, "🍪 Stored cookie from Set-Cookie header: ${LogRedaction.cookieName(cookie)}")
            }
 
        CookieManager.getInstance().flush()

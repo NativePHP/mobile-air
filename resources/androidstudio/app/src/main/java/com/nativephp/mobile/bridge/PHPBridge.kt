@@ -358,8 +358,8 @@ class PHPBridge(private val context: Context) {
     }
 
     fun processRawPHPResponse(response: String): String {
-        // Log the first 200 characters to understand the response format
-        Log.d(TAG, "Response first 200 chars: ${response.take(200)}")
+        // Only the first line: the headers below it can carry Set-Cookie values
+        Log.d(TAG, "Response first line: ${response.substringBefore("\r\n").take(200)}")
 
         // Check for Set-Cookie headers regardless of response format
         if (response.contains("Set-Cookie:", ignoreCase = true)) {
@@ -370,15 +370,13 @@ class PHPBridge(private val context: Context) {
                 .filter { it.startsWith("Set-Cookie:", ignoreCase = true) }
 
             setCookieLines.forEach { cookieLine ->
-                Log.d(TAG, "Cookie line: $cookieLine")
-
                 // Extract the cookie value (after "Set-Cookie:")
                 val cookieValue = cookieLine.substringAfter(":", "").trim()
                 if (cookieValue.isNotEmpty()) {
                     // Manually set this cookie
                     val cookieManager = CookieManager.getInstance()
                     cookieManager.setCookie("http://127.0.0.1", cookieValue)
-                    Log.d(TAG, "Manually set cookie: $cookieValue")
+                    Log.d(TAG, "Manually set cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}")
                 }
             }
 

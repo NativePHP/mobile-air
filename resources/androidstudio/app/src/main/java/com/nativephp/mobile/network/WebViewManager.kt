@@ -12,12 +12,12 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.content.pm.ActivityInfo
 import android.app.Activity
-import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
 import com.nativephp.mobile.ui.NativeUIState
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
+import com.nativephp.mobile.security.LogRedaction
 
 class WebViewManager(
     private val context: Context,
@@ -126,7 +126,6 @@ class WebViewManager(
 
     private fun createCustomWebViewClient(): WebViewClient {
         return object : WebViewClient() {
-            private val requestInspector = RequestInspectorWebViewClient(webView)
             private val phpHandler = PHPWebViewClient(phpBridge, context as MainActivity)
 
             override fun shouldOverrideUrlLoading(
@@ -203,10 +202,8 @@ class WebViewManager(
                 Log.d(TAG, "🔄 Intercepting $method request to $url")
 
                 request.requestHeaders.forEach { (key, value) ->
-                    Log.d("$TAG-Headers", "📋 $key: $value")
+                    Log.d("$TAG-Headers", "📋 $key: ${LogRedaction.header(key, value)}")
                 }
-
-                val inspectorResponse = requestInspector.shouldInterceptRequest(view, request)
 
                 if (url.startsWith("http://") && !url.contains(".") && !url.contains("127.0.0.1") && !url.contains("localhost")) {
                     val host = url.substring("http://".length).substringBefore("/")
@@ -281,7 +278,7 @@ class WebViewManager(
                     }
                     else -> {
                         Log.d(TAG, "↪️ Delegating to system handler: $url")
-                        inspectorResponse
+                        null
                     }
                 }
             }
@@ -553,7 +550,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
 
     @JavascriptInterface
     fun storeCsrfToken(token: String) {
-        Log.d("$TAG-CSRF", "🔑 JS provided token: $token")
+        Log.d("$TAG-CSRF", "🔑 JS provided a CSRF token")
         LaravelSecurity.set(token)
     }
 
@@ -568,7 +565,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
                 // Look for _token field
                 if (jsonObj.has("_token")) {
                     val token = jsonObj.getString("_token")
-                    Log.d("$TAG-CSRF", "🔑 Extracted token from POST data: $token")
+                    Log.d("$TAG-CSRF", "🔑 Extracted token from POST data")
                     LaravelSecurity.set(token)
                 }
             }
@@ -578,7 +575,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
                 for (part in parts) {
                     if (part.startsWith("_token=")) {
                         val token = part.substring("_token=".length)
-                        Log.d("$TAG-CSRF", "🔑 Extracted token from form data: $token")
+                        Log.d("$TAG-CSRF", "🔑 Extracted token from form data")
                         LaravelSecurity.set(token)
                         break
                     }

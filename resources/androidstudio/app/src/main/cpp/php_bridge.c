@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <string.h>
 #include "php_embed.h"
 #include "PHP.h"
 #include <zend_exceptions.h>
@@ -259,7 +260,17 @@ void jni_output_callback(const char *output) {
 }
 
 int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers) {
-    LOGI("SAPI header: %s", sapi_header->header);
+    // PHP passes an uninitialised header for header_remove() with no arguments.
+    if (op == SAPI_HEADER_DELETE_ALL) {
+        LOGI("SAPI header: remove all");
+        return 0;
+    }
+
+    // Log the header name only. The value can be a session cookie or a token,
+    // and logcat leaves the device in bug reports and crash tools.
+    const char *colon = memchr(sapi_header->header, ':', sapi_header->header_len);
+    int name_len = (int) (colon ? (size_t) (colon - sapi_header->header) : sapi_header->header_len);
+    LOGI("SAPI header: %.*s", name_len, sapi_header->header);
     return 0;
 }
 

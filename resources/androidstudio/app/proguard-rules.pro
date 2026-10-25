@@ -47,6 +47,15 @@
 -keep class io.reactivex.** { *; }
 -dontwarn io.reactivex.**
 
+# Drop verbose, debug and info logging from minified builds. Logcat ends up in
+# bug reports and crash tools, so request-level chatter has no place in a
+# release. Warnings and errors stay.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}
+
 # Debug information preservation (configurable)
 REPLACE_KEEP_LINE_NUMBERS
 REPLACE_KEEP_SOURCE_FILE
