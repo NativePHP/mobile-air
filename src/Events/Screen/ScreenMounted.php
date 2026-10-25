@@ -3,6 +3,7 @@
 namespace Native\Mobile\Events\Screen;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
 /**
  * A screen was pushed onto the stack and mounted.
@@ -16,7 +17,7 @@ use Illuminate\Foundation\Events\Dispatchable;
  * breadcrumbs — that need the screen lifecycle without competing with the
  * app for the `mount()` / `onResume()` / `unmount()` overrides.
  */
-class ScreenMounted
+class ScreenMounted implements DispatchableFromNative
 {
     use Dispatchable;
 

@@ -4,6 +4,7 @@ namespace Native\Mobile\Events\Microphone;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
 /**
  * Microphone recording completed event
@@ -11,7 +12,7 @@ use Illuminate\Queue\SerializesModels;
  * This event is dispatched from native code (Kotlin/Swift) via JavaScript injection,
  * directly triggering Livewire listeners with #[On('native:Native\Mobile\Events\Microphone\MicrophoneRecorded')]
  */
-class MicrophoneRecorded
+class MicrophoneRecorded implements DispatchableFromNative
 {
     use Dispatchable, SerializesModels;
 

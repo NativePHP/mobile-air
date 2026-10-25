@@ -1,12 +1,60 @@
 <?php
 
+use Illuminate\Encryption\Encrypter;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
+use Native\Mobile\AsyncTask;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
+use Native\Mobile\Exceptions\AsyncTaskException;
 use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Testing\FakeBridge;
 use Symfony\Component\Process\Process;
+
+/**
+ * What anything able to write to the spool could leave there: an object whose
+ * magic methods run the moment unserialize() reads it.
+ */
+class PlantedTaskGadget
+{
+    public static bool $woken = false;
+
+    public function __wakeup(): void
+    {
+        static::$woken = true;
+    }
+}
+
+beforeEach(function () {
+    // Payloads are sealed with the app key, which every app on a device has.
+    config(['app.key' => 'base64:'.base64_encode(Encrypter::generateKey('AES-256-CBC'))]);
+
+    PlantedTaskGadget::$woken = false;
+});
+
+/** Where the spool keeps the payload of a task id. */
+function payloadPath(string $id): string
+{
+    return AsyncTaskTransport::directory('payload').DIRECTORY_SEPARATOR.$id.'.task';
+}
+
+/** Seal a payload for a task id and spool it, as a dispatch does. */
+function spoolPayload(string $id, string $payload): void
+{
+    $writer = (new ReflectionClass(AsyncTaskTransport::class))->getMethod('writePayload');
+    $writer->setAccessible(true);
+    $writer->invoke(null, $id, $payload);
+}
+
+/** Put bytes in the spool for a task id without sealing them. */
+function plantPayload(string $id, string $contents): void
+{
+    File::ensureDirectoryExists(AsyncTaskTransport::directory('payload'));
+    file_put_contents(payloadPath($id), $contents);
+}
 
 afterEach(function () {
     FakeBridge::disable();
@@ -21,18 +69,87 @@ afterEach(function () {
 });
 
 it('round-trips a payload through the temp spool and consumes it on read', function () {
-    $id = 'task-'.uniqid();
-    $payload = serialize(['kind' => 'closure']);
+    $id = (string) Str::uuid();
+    $payload = serialize(['kind' => 'closure', 'secret' => 'captured-value']);
 
-    // writePayload is protected; go through the public dispatch path but stub the
-    // trigger by faking Jump off — instead call the reflected writer directly.
-    $writer = (new ReflectionClass(AsyncTaskTransport::class))->getMethod('writePayload');
-    $writer->setAccessible(true);
-    $writer->invoke(null, $id, $payload);
+    spoolPayload($id, $payload);
+
+    // The file on disk is encrypted, so what the closure captured isn't readable there.
+    expect(file_get_contents(payloadPath($id)))->not->toContain('captured-value');
 
     expect(AsyncTaskTransport::readPayload($id))->toBe($payload)
         // Second read is null — readPayload deletes the file (consume-once).
         ->and(AsyncTaskTransport::readPayload($id))->toBeNull();
+});
+
+it('runs no task file that this app did not seal', function () {
+    $bridge = FakeBridge::enable();
+    $id = (string) Str::uuid();
+
+    plantPayload($id, serialize(new PlantedTaskGadget));
+
+    Artisan::call('native:async:run', ['--id' => $id]);
+
+    $completion = $bridge->callsTo('AsyncTask.Complete')[0]['params'];
+
+    // Never unserialized, and the run still reports an outcome for the id.
+    expect(PlantedTaskGadget::$woken)->toBeFalse()
+        ->and($completion['event'])->toBe(AsyncTaskFailed::class)
+        ->and($completion['payload']['message'])->toContain('not sealed by this app')
+        ->and(is_file(payloadPath($id)))->toBeFalse();
+});
+
+it('does not open a sealed payload under another task id', function () {
+    $sealedFor = (string) Str::uuid();
+    $movedTo = (string) Str::uuid();
+
+    spoolPayload($sealedFor, serialize(['kind' => 'closure']));
+    rename(payloadPath($sealedFor), payloadPath($movedTo));
+
+    expect(AsyncTaskTransport::readPayload($movedTo))->toBeNull();
+});
+
+it('does not open something else the app key encrypted as a task', function () {
+    // The app key also encrypts cookies and `encrypted` casts, which can hold
+    // text a user typed. None of that may open as a task payload.
+    $id = (string) Str::uuid();
+
+    plantPayload($id, Crypt::encryptString(serialize(new PlantedTaskGadget)));
+
+    expect(AsyncTaskTransport::readPayload($id))->toBeNull()
+        ->and(PlantedTaskGadget::$woken)->toBeFalse();
+});
+
+it('looks up no file for an id that is not a task id', function () {
+    // Native takes the id from any bridge call, a web view page's included,
+    // and the id becomes part of a path.
+    File::ensureDirectoryExists(AsyncTaskTransport::directory());
+    $outside = AsyncTaskTransport::directory('outside.task');
+    file_put_contents($outside, 'not a task');
+
+    expect(AsyncTaskTransport::readPayload('../outside'))->toBeNull()
+        ->and(is_file($outside))->toBeTrue();
+
+    unlink($outside);
+});
+
+it('fails the dispatch when the app has no key to seal the task with', function () {
+    config(['app.key' => null]);
+    app()->forgetInstance('encrypter');
+
+    $bridge = FakeBridge::enable()->respondTo('AsyncTask.Dispatch', ['success' => true]);
+    $error = null;
+
+    AsyncTask::dispatch(static fn () => 'never runs')
+        ->failed(function (AsyncTaskException $e) use (&$error) {
+            $error = $e;
+        })
+        ->start();
+
+    expect($error)->toBeInstanceOf(AsyncTaskException::class)
+        ->and($error->getMessage())->toContain('need an app key')
+        ->and($bridge->callsTo('AsyncTask.Dispatch'))->toBe([])
+        ->and(glob(AsyncTaskTransport::directory('payload').DIRECTORY_SEPARATOR.'*') ?: [])->toBe([]);
 });
 
 it('drains the oldest jump completion as a native event and removes it', function () {
