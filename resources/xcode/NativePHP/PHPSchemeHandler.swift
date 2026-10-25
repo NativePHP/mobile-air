@@ -54,7 +54,27 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     let appPath = AppUpdateManager.shared.getAppPath()
                     let localPath = appPath + "/public/" + relativeAssetPath
 
-                    if FileManager.default.fileExists(atPath: localPath) {
+                    // Confine the resolved path to public/. The components come
+                    // from the request URL, and a `..` smuggled through (e.g.
+                    // `/_assets/..%2f.env`, which WebKit leaves as a `..`
+                    // component) would otherwise walk `localPath` out of public/
+                    // and hand back any file the app process can read — `.env`,
+                    // the SQLite database, PHP source. Resolve symlinks and `..`
+                    // on both the target and the public root, then require the
+                    // target to stay inside the root. A miss falls through to
+                    // PHP, which 404s, exactly like any other unknown asset.
+                    let publicRoot = URL(fileURLWithPath: appPath + "/public")
+                        .resolvingSymlinksInPath().standardizedFileURL.path
+                    let resolvedPath = URL(fileURLWithPath: localPath)
+                        .resolvingSymlinksInPath().standardizedFileURL.path
+                    let withinPublic = resolvedPath == publicRoot
+                        || resolvedPath.hasPrefix(publicRoot + "/")
+
+                    if !withinPublic {
+                        print("⚠️ Refused asset outside public/: \(relativeAssetPath)")
+                    }
+
+                    if withinPublic, FileManager.default.fileExists(atPath: localPath) {
 
                         do {
                             let fileURL = URL(fileURLWithPath: localPath)
