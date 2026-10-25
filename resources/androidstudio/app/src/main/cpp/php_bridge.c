@@ -1705,6 +1705,28 @@ static void set_async_thread_booted(int booted) {
     pthread_setspecific(g_async_booted_key, booted ? (void *) 1 : NULL);
 }
 
+// Whether a task id has the shape of the one PHP makes for a task with
+// Str::uuid(): hex digits in groups of 8-4-4-4-12, split by hyphens.
+static int async_task_id_is_uuid(const char *id) {
+    if (id == NULL || strlen(id) != 36) {
+        return 0;
+    }
+
+    for (int i = 0; i < 36; i++) {
+        char c = id[i];
+
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') {
+                return 0;
+            }
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 // Allocate + initialize a PHP context for THIS async pool thread. Same shape as
 // worker_embed_init — TSRM is already started by the persistent runtime.
 static int async_embed_init(void) {
@@ -1782,9 +1804,19 @@ JNIEXPORT jstring JNICALL native_async_run(JNIEnv *env, jobject thiz, jstring jT
         return (*env)->NewStringUTF(env, "async context not booted");
     }
 
-    // taskId is a framework-generated UUID (Str::uuid()), so it's safe to embed
-    // in the eval below; no user input reaches this string.
     const char *taskId = (*env)->GetStringUTFChars(env, jTaskId, NULL);
+
+    // The id is spliced into the PHP evaluated below, and it comes from the
+    // AsyncTask.Dispatch bridge call, which JavaScript in a web view can make
+    // with any string. Only the UUID that PHP made for the task gets this far.
+    if (!async_task_id_is_uuid(taskId)) {
+        LOGE("async_run: refused a task id that is not a UUID");
+        if (taskId != NULL) {
+            (*env)->ReleaseStringUTFChars(env, jTaskId, taskId);
+        }
+        return (*env)->NewStringUTF(env, "");
+    }
+
     LOGI("async_run: task %s", taskId);
 
     clear_collected_output();

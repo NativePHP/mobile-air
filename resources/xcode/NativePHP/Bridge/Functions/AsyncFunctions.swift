@@ -13,8 +13,38 @@ import Foundation
 /// The task payload itself moves via a temp file on the shared filesystem
 /// (`Native\Mobile\Support\AsyncTaskTransport`), so no payload crosses here.
 ///
+/// JavaScript in a web view can make both calls too, through
+/// `/_native/api/call`. So Dispatch takes only a UUID for an id, and posts a
+/// timeout under one fixed name, and Complete answers only the async lane.
+///
 /// Android twin: `bridge/functions/AsyncFunctions.kt`.
 enum AsyncFunctions {
+
+    /// The event posted when a task outruns its deadline. It must equal
+    /// `AsyncTaskFailed::class` on the PHP side.
+    static let timeoutEvent = "Native\\Mobile\\Events\\Async\\AsyncTaskFailed"
+
+    /// Whether a task id has the shape of the one PHP makes for a task with
+    /// `Str::uuid()`: hex digits in groups of 8-4-4-4-12, split by hyphens.
+    static func isTaskId(_ id: String) -> Bool {
+        let bytes = Array(id.utf8)
+
+        guard bytes.count == 36 else {
+            return false
+        }
+
+        for (i, byte) in bytes.enumerated() {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                guard byte == UInt8(ascii: "-") else { return false }
+            } else {
+                guard (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                    || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+                    || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "F")) else { return false }
+            }
+        }
+
+        return true
+    }
 
     // MARK: - AsyncTask.Dispatch
 
@@ -22,8 +52,13 @@ enum AsyncFunctions {
     /// Parameters:
     ///   - id: string — the dispatched task id (payload already spooled to disk)
     ///   - timeout: number (optional) — seconds before the task is treated as hung
-    ///   - timeoutEvent: string (optional) — event FQCN to post on timeout
-    ///   - timeoutPayload: object (optional) — event data to post on timeout
+    ///   - timeoutEvent: string (optional) — not read; a timeout always posts
+    ///     `timeoutEvent` above. Older native projects read it, so PHP sends it.
+    ///   - timeoutPayload: object (optional) — event data to post on timeout,
+    ///     posted with this task's id whatever `id` it holds
+    ///
+    /// The id ends up spliced into PHP that the async lane evaluates (see
+    /// `do_async_run` in PHP.c), so anything but a UUID is refused here.
     ///
     /// The `success` flag in the reply is load-bearing: PHP fails the dispatch
     /// (and fires `->failed()`) when it isn't true, so a task that never started
@@ -34,15 +69,20 @@ enum AsyncFunctions {
                 return ["success": false, "error": "missing id"]
             }
 
+            guard AsyncFunctions.isTaskId(id) else {
+                return ["success": false, "error": "invalid id"]
+            }
+
             let timeout = (parameters["timeout"] as? NSNumber)?.intValue ?? 0
-            let timeoutEvent = parameters["timeoutEvent"] as? String
-            let timeoutPayload = (parameters["timeoutPayload"] as? [String: Any]).map(jsonString)
+
+            var timeoutPayload = parameters["timeoutPayload"] as? [String: Any]
+            timeoutPayload?["id"] = id
 
             let accepted = AsyncTaskExecutor.shared.dispatch(
                 taskId: id,
                 timeout: timeout,
-                timeoutEvent: timeoutEvent,
-                timeoutPayloadJson: timeoutPayload
+                timeoutEvent: AsyncFunctions.timeoutEvent,
+                timeoutPayloadJson: timeoutPayload.map(jsonString)
             )
 
             guard accepted else {
@@ -59,8 +99,16 @@ enum AsyncFunctions {
     /// Parameters:
     ///   - event: string — the outcome event FQCN (AsyncTaskFinished / AsyncTaskFailed)
     ///   - payload: object — event data (always carries `id`)
+    ///
+    /// Only a call from the thread of an async slot is taken. The event goes
+    /// to the runloop of a native screen under the name the call gives, so
+    /// a call from anywhere else, such as a page, would post any event.
     class Complete: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
+            guard AsyncTaskExecutor.onLaneThread else {
+                return ["success": false, "error": "not called from the async lane"]
+            }
+
             guard let event = parameters["event"] as? String else {
                 return ["success": false, "error": "missing event"]
             }

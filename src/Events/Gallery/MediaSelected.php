@@ -4,8 +4,9 @@ namespace Native\Mobile\Events\Gallery;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
-class MediaSelected
+class MediaSelected implements DispatchableFromNative
 {
     use Dispatchable, SerializesModels;
 

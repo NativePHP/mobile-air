@@ -32,7 +32,7 @@ class AsyncTaskRunner
             AsyncTaskTransport::complete($id, AsyncTaskFailed::class, [
                 'id' => $id,
                 'exceptionClass' => 'RuntimeException',
-                'message' => "Async task payload for [{$id}] was missing.",
+                'message' => "Async task payload for [{$id}] was missing, or was not sealed by this app.",
                 'trace' => null,
             ]);
 
