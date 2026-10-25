@@ -76,6 +76,11 @@ the real picture. Roughly:
   marker itself (`Contracts\BroadcastsGlobally`) and the contract a platform answers the
   dispatcher through (`Contracts\RoutesGlobalEvents`). Mobile keeps `Lane`,
   `GlobalEventTransport` and its `GlobalEventRouter`.
+- The classes that read a webview request's body (`Http\Bridge`: `RequestBodyParser`,
+  `MultipartParser`, `RequestFactory`, `ParsedBody`, `RawHttpResponse`, `OutputCapture`).
+  Mobile keeps `BridgeDispatcher`, which the shells call by name.
+- `ThermalState`, the thermal enum. Mobile aliases its old name as soon as its autoload file
+  runs, because other packages hand out core's enum.
 
 One thing is in core without having moved. Core has its own `AsyncTask`: `AsyncTask`,
 `PendingAsyncTask`, `Exceptions\AsyncTaskException`, `Events\Async`, `Testing\FakeAsyncTask`,
@@ -101,8 +106,8 @@ The part that bites: PHP does not autoload when it checks a parameter or return 
 only `Element` were aliased, mobile-ui's `make(View|Element $content)` would throw a
 TypeError that looks impossible. The shim therefore aliases the whole moved set the first
 time any old Edge name is used. It finds that set by walking core's `src/Edge`, so a class
-you move into core's `Edge` is covered without editing the shim. A class moved under a
-prefix the shim doesn't list yet needs a new entry.
+you move into core's `Edge` is covered without editing the shim. `Http\Bridge` gets the same
+sweep. A class moved under a prefix the shim doesn't list yet needs a new entry.
 
 One old name is not an alias. `Native\Mobile\Events\Concerns\BroadcastsGlobally` is a real
 interface in mobile that extends core's. Laravel keeps a listener under the name it was given
@@ -143,6 +148,15 @@ gh pr list -R NativePHP/mobile-air --state merged --base main --limit 200 \
 
 The PR list can include one or two from the day of the last sync that are already in.
 Read each PR with `gh pr view`, not just its title, and note which ones add a feature.
+
+List the core PRs merged since the last sync too. A core PR that moves something out of
+mobile, or adds a copy of something mobile has, can leave mobile a half to do. Its text says
+so, and desktop's `docs/roadmap-notes.md` lists such work items as well.
+
+```sh
+gh pr list -R NativePHP/core --state merged --base main --limit 100 \
+  --search "merged:>=$(git log -1 --format=%cs $base)"
+```
 
 **2. Sort the changes against what moved.**
 
@@ -187,6 +201,9 @@ sync", however many syncs there have been.
   Port what is platform-neutral into core's classes by hand, and run desktop's `test:php`,
   which is where core's AsyncTask classes are tested. `AsyncTaskTransport`,
   `RunAsyncTaskCommand` and `AsyncTaskRunner::run()` are mobile's own and have no twin in core.
+- **A core PR left mobile a half.** Do it on the refactor branch as a commit of its own.
+  Mostly that means deleting mobile's copy, adding its old name to `src/edge_aliases.php`
+  and keeping mobile's tests on the old name, so they test the alias.
 - **Reverts.** Look at the final state, not each commit. Some PRs were reverted and landed
   again later (#333 was reverted and came back as #391).
 
