@@ -77,3 +77,35 @@ jobs:
 
       - name: Run Pint
         run: vendor/bin/pint --test
+
+  # The one test in the suite that talks to the network, so it gets its own
+  # job: a CDN blip should read as "couldn't check the binaries manifest",
+  # not take the whole test run down with it.
+  binary-manifest:
+    runs-on: ubuntu-latest
+
+    name: Binary Manifest Signature
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          extensions: dom, simplexml, mbstring, sodium
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      # Asserts main/versions.json is signed with a key in
+      # BinaryIntegrity::MANIFEST_KEYS. native:install refuses it otherwise,
+      # so shipping a key the manifest isn't signed with breaks every install.
+      - name: Check the manifest signature
+        env:
+          # Locally the test skips when the manifest is unreachable, so being
+          # offline doesn't fail the suite. Here it has to actually run.
+          NATIVEPHP_ENFORCE_BINARY_MANIFEST: 1
+        run: vendor/bin/pest --filter=ManifestSignatureSyncTest

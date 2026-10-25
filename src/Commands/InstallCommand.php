@@ -5,6 +5,7 @@ namespace Native\Mobile\Commands;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\TransferException;
 use Illuminate\Console\Command;
+use Native\Mobile\Support\BinaryIntegrity;
 use Native\Mobile\Traits\DisplaysMarketingBanners;
 use Native\Mobile\Traits\InstallsAndroid;
 use Native\Mobile\Traits\InstallsIos;
@@ -16,6 +17,7 @@ use function Laravel\Prompts\intro;
 use function Laravel\Prompts\note;
 use function Laravel\Prompts\outro;
 use function Laravel\Prompts\text;
+use function Laravel\Prompts\warning;
 
 class InstallCommand extends Command
 {
@@ -280,14 +282,100 @@ class InstallCommand extends Command
         $branch = $this->getBinaryBranch();
         $versionsUrl = "https://bin.nativephp.com/{$branch}/versions.json";
 
+        $client = $this->binariesClient();
+
         try {
-            $this->versionsManifest = json_decode(
-                (new Client)->get($versionsUrl)->getBody()->getContents(),
-                true
-            );
+            $body = $client->get($versionsUrl)->getBody()->getContents();
         } catch (TransferException) {
             error("Failed to fetch versions manifest from: {$versionsUrl}");
+
+            return;
         }
+
+        $body = $this->verifiedManifest($client, $versionsUrl, $body);
+
+        if ($body !== null) {
+            $this->versionsManifest = json_decode($body, true);
+        }
+    }
+
+    /**
+     * The manifest, once its signature checks out against one of
+     * {@see manifestKeys()}. Null, with the reason printed, when it doesn't.
+     *
+     * The manifest lists the SHA-256 of every zip, and the installers check
+     * downloads against those. That only proves a zip matches the manifest.
+     * The signature proves the manifest came from php-bin-mobile's workflow,
+     * so someone who can write to the bucket can't swap a zip and its
+     * checksum together.
+     *
+     * php-bin-mobile uploads the manifest and then its signature, so a fetch
+     * in the second between the two can pair a new manifest with the old
+     * signature. Fetching both once more covers that. A second mismatch is
+     * real.
+     */
+    protected function verifiedManifest(Client $client, string $url, string $body): ?string
+    {
+        $keys = $this->manifestKeys();
+
+        if ($keys === []) {
+            return $body;
+        }
+
+        if (! function_exists('sodium_crypto_sign_verify_detached')) {
+            warning("The PHP binaries manifest's signature can't be checked, because the sodium extension isn't enabled.");
+            note('Downloads are still checked against the checksums in the manifest. Enable extension=sodium in your php.ini to check the signature too.');
+
+            return $body;
+        }
+
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            if ($attempt > 1) {
+                try {
+                    $body = $client->get($url)->getBody()->getContents();
+                } catch (TransferException) {
+                    error("Failed to fetch versions manifest from: {$url}");
+
+                    return null;
+                }
+            }
+
+            try {
+                $signature = $client->get($url.'.sig')->getBody()->getContents();
+            } catch (TransferException $e) {
+                $statusCode = method_exists($e, 'getResponse') ? $e->getResponse()?->getStatusCode() : null;
+
+                error($statusCode === 404
+                    ? "The PHP binaries manifest at {$url} isn't signed, so nothing in it will be installed."
+                    : "Failed to fetch the signature of the PHP binaries manifest from: {$url}.sig");
+
+                return null;
+            }
+
+            if (BinaryIntegrity::signatureIsValid($body, $signature, $keys)) {
+                return $body;
+            }
+        }
+
+        error("The PHP binaries manifest at {$url} doesn't match its signature, so nothing in it will be installed.");
+        note('Something between here and bin.nativephp.com changed it, or it was replaced on the server. Please report this to NativePHP.');
+
+        return null;
+    }
+
+    /**
+     * Public keys the manifest's signature is checked against.
+     *
+     * @return list<string>
+     */
+    protected function manifestKeys(): array
+    {
+        return BinaryIntegrity::MANIFEST_KEYS;
+    }
+
+    protected function binariesClient(): Client
+    {
+        return new Client;
     }
 
     protected function detectPhpVersion(): string
