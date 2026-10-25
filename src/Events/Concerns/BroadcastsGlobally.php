@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Events\Concerns;
 
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
+
 /**
  * Marks a native event that, when it arrives over the bridge, should ALSO be
  * pushed through Laravel's global event dispatcher (`event()`) — not only
@@ -16,4 +18,4 @@ namespace Native\Mobile\Events\Concerns;
  * present, rebuilds the event from its payload and dispatches it globally in
  * addition to the normal component routing.
  */
-interface BroadcastsGlobally {}
+interface BroadcastsGlobally extends DispatchableFromNative {}
