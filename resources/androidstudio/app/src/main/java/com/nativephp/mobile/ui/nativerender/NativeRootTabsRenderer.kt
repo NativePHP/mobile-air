@@ -49,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -470,6 +471,23 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // snap to the destination's content before the slide/fade ran —
         // the "new page flashes, then the transition kicks in" stutter.
         val paneNodes = remember { HashMap<String, Pair<NativeUINode?, NativeUINode?>>() }
+        // A pane leaves composition when another screen is pushed over it
+        // or another tab is shown, dropping what it remembered: a list came
+        // back at the top. Each pane saves its state under its key instead,
+        // as NativeRootStackRenderer does for its levels. A tab's saved
+        // levels at or below the depth now showing were popped or replaced,
+        // so theirs is dropped and pushing the same screen again starts fresh.
+        val paneState = rememberSaveableStateHolder()
+        val paneDepths = remember { HashMap<String, Int>() }
+        val stackDepth = node.props.getInt("stack_depth", 0)
+        LaunchedEffect(targetKey, stackDepth) {
+            val tab = targetKey.substringBefore('|')
+            paneDepths.entries.removeAll { (key, depth) ->
+                (key != targetKey && key.substringBefore('|') == tab && depth >= stackDepth)
+                    .also { gone -> if (gone) paneState.removeState(key) }
+            }
+            paneDepths[targetKey] = stackDepth
+        }
         AnimatedContent(
             targetState = targetKey,
             transitionSpec = {
@@ -501,21 +519,23 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 paneNodes[key] ?: Pair(screenContent, bottomBarNode)
             }
-            Box(modifier = Modifier.fillMaxSize().padding(screenPadding)) {
-                if (paneBottomBar != null) {
-                    // Screen content fills the space above the pinned bar; the
-                    // bar sits at the bottom. Root `imePadding` shrinks this
-                    // column when the keyboard opens so the bar rides above it.
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                            if (paneScreen != null) NodeView(node = paneScreen)
+            paneState.SaveableStateProvider(key) {
+                Box(modifier = Modifier.fillMaxSize().padding(screenPadding)) {
+                    if (paneBottomBar != null) {
+                        // Screen content fills the space above the pinned bar; the
+                        // bar sits at the bottom. Root `imePadding` shrinks this
+                        // column when the keyboard opens so the bar rides above it.
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                if (paneScreen != null) NodeView(node = paneScreen)
+                            }
+                            paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
                         }
-                        paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
+                    } else if (paneScreen != null) {
+                        NodeView(node = paneScreen)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize())
                     }
-                } else if (paneScreen != null) {
-                    NodeView(node = paneScreen)
-                } else {
-                    Box(modifier = Modifier.fillMaxSize())
                 }
             }
         }
