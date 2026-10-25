@@ -49,15 +49,28 @@ final class DeepLinkRouter {
         return pendingURL != nil
     }
 
-    /// The route of a pending universal link, or nil when nothing is pending
-    /// or the pending link came from a custom scheme (it has no web page to
-    /// go back to).
-    func pendingUniversalLinkRoute() -> String? {
-        guard let pendingURL, pendingExternalURL != nil else {
+    /// The route of the pending link, query included, or nil when nothing is
+    /// pending. Covers custom schemes, universal links and notification taps.
+    func pendingRoute() -> String? {
+        guard let pendingURL else {
             return nil
         }
         let route = pendingURL.replacingOccurrences(of: "php://127.0.0.1", with: "")
         return route.isEmpty ? "/" : route
+    }
+
+    /// The route of a pending universal link, or nil when nothing is pending
+    /// or the pending link came from a custom scheme (it has no web page to
+    /// go back to).
+    func pendingUniversalLinkRoute() -> String? {
+        pendingExternalURL == nil ? nil : pendingRoute()
+    }
+
+    /// Forget the pending link. A cold start calls this when it boots straight
+    /// into the link's screen, so the link isn't replayed on top of it.
+    func clearPendingURL() {
+        pendingURL = nil
+        pendingExternalURL = nil
     }
 
     /// Re-attempt delivery of a parked deep link — called when native-ui

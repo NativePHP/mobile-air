@@ -1086,8 +1086,8 @@ class BuildIosAppCommand extends Command
             return;
         }
 
-        // Look for the main NativePHP target Release configuration and add PROVISIONING_PROFILE_SPECIFIER
-        // We need to find the Release config that has CODE_SIGN_ENTITLEMENTS (which is the main app target)
+        // Add PROVISIONING_PROFILE_SPECIFIER to every configuration that signs with NativePHP.entitlements.
+        // The simulator target's configurations match too, but simulator builds ignore provisioning profiles.
         $sedScript = '/CODE_SIGN_ENTITLEMENTS = NativePHP\\/NativePHP\\.entitlements;/a\\
 				PROVISIONING_PROFILE_SPECIFIER = "'.$profileIdentifier.'";';
 

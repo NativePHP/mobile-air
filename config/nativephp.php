@@ -7,9 +7,13 @@ return [
     | App Version Name
     |--------------------------------------------------------------------------
     |
-    | This is the human-readable version of your app (e.g. "1.0.0"). It is
-    | used as the versionName in Android builds and may be displayed in
-    | the app or console to determine the current app release version.
+    | This is the human-readable version number of your app (e.g. "1.0.0").
+    | It is used as CFBundleShortVersionString on iOS and versionName on
+    | Android, and is what users see in the stores and device settings.
+    |
+    | Leave it as "DEBUG" while developing. A DEBUG build extracts its
+    | bundled Laravel app on every launch, so it always runs your latest
+    | code. See the build number below for how other versions behave.
     |
     */
 
@@ -17,12 +21,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | App Version Code
+    | App Version Code (Build Number)
     |--------------------------------------------------------------------------
     |
-    | This is the internal numeric version code used for Play Store builds.
-    | It must increase with every release. This is used as versionCode in
-    | Android builds and is required for publishing updates to the store.
+    | This is the internal build number of your app. It is used as
+    | CFBundleVersion on iOS and versionCode on Android, and both stores
+    | require it to increase with every upload. `native:package` bumps it.
+    |
+    | Outside DEBUG, the app only extracts its bundled Laravel app when the
+    | version number or the build number differs from the one it extracted
+    | last. A new build installed with the same pair keeps running the old
+    | code, so bump the build number for every build you put on a device.
     |
     */
 

@@ -28,6 +28,10 @@ $_timing['autoload'] = microtime(true);
 $app = require_once $_SERVER['LARAVEL_BOOTSTRAP_PATH'].'/app.php';
 $_timing['bootstrap'] = microtime(true);
 
+// Catch uncaught throwables and PHP fatals this request can't trap.
+require_once __DIR__.'/../shared/devtools-boot-report.php';
+nativephp_devtools_install_handlers($app->storagePath());
+
 /*
 |--------------------------------------------------------------------------
 | Handle Laravel request
@@ -95,7 +99,31 @@ try {
     $response->sendContent();
 
 } catch (Throwable $e) {
-    echo 'DEBUG: Request handling error: '.$e->getMessage()."\n";
-    echo 'DEBUG: Error type: '.get_class($e)."\n";
-    echo "DEBUG: Trace:\n".$e->getTraceAsString()."\n";
+    require_once __DIR__.'/../shared/devtools-boot-report.php';
+    nativephp_devtools_boot_report($e, isset($app) ? $app->storagePath() : null);
+
+    error_log('REQUEST FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
+    error_log('REQUEST TRACE: '.$e->getTraceAsString());
+
+    // The message and trace are for whoever is building the app, never for
+    // whoever is using it, as on the EDGE error screen. Before the config has
+    // loaded there's no telling which this is, so the user wins. Logcat and
+    // the spool get the crash either way.
+    $showDetail = false;
+
+    try {
+        $showDetail = $app->bound('config') && (bool) $app['config']->get('app.debug');
+    } catch (Throwable) {
+    }
+
+    $body = $showDetail
+        ? 'Error: '.$e->getMessage()."\n".$e->getTraceAsString()
+        : 'Something went wrong.';
+
+    // A whole HTTP response, so PHPBridge passes it through as a 500 instead
+    // of wrapping it as an incomplete one.
+    echo "HTTP/1.1 500 Internal Server Error\r\n";
+    echo "content-type: text/plain\r\n";
+    echo 'content-length: '.strlen($body)."\r\n\r\n";
+    echo $body;
 }

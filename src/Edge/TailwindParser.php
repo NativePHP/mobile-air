@@ -8,10 +8,17 @@ use Native\Mobile\Edge\Enums\AlignSelf;
 use Native\Mobile\Edge\Enums\ImageFit;
 use Native\Mobile\Edge\Enums\JustifyContent;
 use Native\Mobile\Edge\Enums\TextAlign;
-use Native\Mobile\Platform;
+use Native\Mobile\Facades\System;
 
 class TailwindParser
 {
+    /**
+     * Most parsed class strings the cache keeps. The cache lives for the
+     * whole persistent-runtime session, and dynamic classes add an entry
+     * per distinct string, so it has to be bounded.
+     */
+    public const CACHE_LIMIT = 2048;
+
     private static array $cache = [];
 
     /** @var array<string, list<string>> */
@@ -119,18 +126,18 @@ class TailwindParser
 
     /**
      * Test seam — force the parser's view of the current platform.
-     * Delegates to [Platform::set] and clears the parsed-class cache so
-     * platform-variant classes are re-evaluated.
+     * Delegates to [\Native\Mobile\System::rememberPlatform] and clears the
+     * parsed-class cache so platform-variant classes are re-evaluated.
      */
     public static function setPlatform(?string $platform): void
     {
-        Platform::set($platform);
+        \Native\Mobile\System::rememberPlatform($platform);
         static::clearCache();
     }
 
     private static function currentPlatform(): ?string
     {
-        return Platform::current();
+        return System::platform();
     }
 
     private const COLORS = [
@@ -418,6 +425,14 @@ class TailwindParser
                 $result['borderWidth'] ??= $result['borderWidthDefault'];
             }
             unset($result['borderWidthDefault']);
+        }
+
+        if (count(self::$cache) >= self::CACHE_LIMIT) {
+            // Drop the oldest half: entries keep insertion order, so the
+            // strings a screen parsed most recently stay cached.
+            $keep = intdiv(self::CACHE_LIMIT, 2);
+            self::$cache = array_slice(self::$cache, -$keep, null, true);
+            self::$unsupportedCache = array_intersect_key(self::$unsupportedCache, self::$cache);
         }
 
         self::$cache[$classString] = $result;
@@ -833,6 +848,14 @@ class TailwindParser
             str_starts_with($class, 'to-') => self::parseGradientStop('to', substr($class, 3)),
 
             str_starts_with($class, 'bg-') => self::parseBgColor(substr($class, 3)),
+
+            // Outlined text: the glyphs drawn hollow, as an outline of this
+            // width in points in the text's own colour. The web's transparent
+            // fill with `-webkit-text-stroke`. Arbitrary widths
+            // (`text-outline-[1.5]`) are handled in parseArbitrary.
+            $class === 'text-outline' => ['textOutline' => 1.0],
+            str_starts_with($class, 'text-outline-') && ctype_digit(substr($class, 13)) => ['textOutline' => (float) substr($class, 13)],
+
             str_starts_with($class, 'text-') => self::parseText(substr($class, 5)),
 
             // Display. `hidden` takes the node out of layout (Display.none);
@@ -1667,6 +1690,7 @@ class TailwindParser
             'max-h' => str_ends_with($value, '%') ? null : ['maxHeight' => (float) $value],
             'bg' => $isColor ? self::arbitraryColor('bg', $value) : null,
             'text' => $isColor ? self::arbitraryColor('color', $value) : ['fontSize' => (float) $value],
+            'text-outline' => is_numeric(rtrim($value, 'px')) ? ['textOutline' => (float) $value] : null,
             'rounded' => ['borderRadius' => (float) $value],
             // `rounded-br-[4px]` etc. The arbitrary regex is non-greedy up to
             // the final `-[`, so the whole `rounded-<side>` arrives as prefix.

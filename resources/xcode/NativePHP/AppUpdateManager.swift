@@ -618,6 +618,14 @@ class AppUpdateManager {
         return isDebugIdentity(getBundledAppVersion())
     }
 
+    /// Whether the bundled Laravel app should replace the extracted one.
+    ///
+    /// A bundle is identified by its version number and build number
+    /// (NATIVEPHP_APP_VERSION and NATIVEPHP_APP_VERSION_CODE), as "1.0.0b42",
+    /// and is only extracted when that differs from the one extracted last.
+    /// This is on purpose: two builds with the same pair count as the same
+    /// build, so a rebuild installed over the top keeps running the old code
+    /// until the build number is bumped. Android does the same.
     private func shouldUpdateWithVersion(_ bundledId: String) -> Bool {
         // DEBUG is what native:run ships. Always re-extract so developers see
         // PHP changes without bumping a version (same as Android).

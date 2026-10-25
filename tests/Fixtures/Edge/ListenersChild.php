@@ -11,8 +11,8 @@ use Native\Mobile\Edge\NativeComponent;
 
 /**
  * Nested fixture that emits a component event to its screen, and
- * listens for a marked event of its own. Such an event stops
- * at the screen, so the count it shows stays at zero.
+ * listens for a marked event of its own. Such an event fired with
+ * event() stops at the screen, so the count it shows stays at zero.
  */
 class ListenersChild extends NativeComponent
 {

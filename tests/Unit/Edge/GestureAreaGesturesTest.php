@@ -99,6 +99,35 @@ it('registers on_drag_end with the drag_end kind so dispatch decodes "x,y"', fun
     expect(GestureArea::make()->getResolvedProps(new CallbackRegistry))->not->toHaveKey('on_drag_end');
 });
 
+// ── Bounded ─────────────────────────────────────────
+
+it('carries bounded and content-ratio to the wire', function () {
+    $area = GestureArea::make();
+    $area->applyAttributes(['bounded' => true, 'content-ratio' => '1.5']);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props['bounded'])->toBeTrue()
+        ->and($props['content-ratio'])->toBe(1.5);
+});
+
+it('leaves content-ratio off a bounded area that fills it', function () {
+    $props = GestureArea::make()->bounded()->contentRatio(0)->getResolvedProps(new CallbackRegistry);
+
+    expect($props['bounded'])->toBeTrue()
+        ->and($props)->not->toHaveKey('content-ratio');
+});
+
+it('omits bounded and content-ratio unless bounded is set', function () {
+    $area = GestureArea::make();
+    $area->applyAttributes(['bounded' => 'false', 'content-ratio' => '1.5']);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props)->not->toHaveKey('bounded')
+        ->and($props)->not->toHaveKey('content-ratio');
+});
+
 // ── Swipe ───────────────────────────────────────────
 
 it('registers on_swipe with the finger count from swipe-fingers', function () {

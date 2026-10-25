@@ -221,14 +221,7 @@ class HotReloadCoordinator {
                 // Native element mode: re-execute the route directly through
                 // the persistent runtime (same as Android's executeNativeRoute).
                 // PHP re-registers the mmap region and publishes a new tree.
-                let request = RequestData(
-                    method: "GET",
-                    uri: hotRestartUri ?? currentPath,
-                    data: nil,
-                    query: nil,
-                    headers: [:]
-                )
-                _ = PersistentPHPRuntime.shared.dispatch(request: request)
+                _ = NativeSession.run(uri: hotRestartUri ?? currentPath)
             } else {
                 // WebView mode: reload with cache-bust
                 DispatchQueue.main.async {

@@ -9,10 +9,11 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
+use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
-use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\System;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
 
@@ -159,7 +160,7 @@ class TestableComponent
 
     /**
      * Mount the component registered for a native route URI, with the
-     * route's params and layout resolved exactly as navigation would.
+     * route's params, query and layout resolved exactly as navigation would.
      * Requires the app's Route::native() registrations to be loaded.
      */
     public static function visit(string $uri, array $data = [], ?string $platform = null): static
@@ -171,10 +172,16 @@ class TestableComponent
             "No native route registered for [{$uri}]. Register it with Route::native() or test the component class directly."
         );
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri);
+        // Run the route's middleware exactly as in-app navigation does, so a
+        // screen guarded by `->middleware('auth')` is testable — mounting the
+        // component class directly bypasses this, which is how a middleware
+        // regression can hide from an otherwise thorough suite.
+        $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
+
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
@@ -188,10 +195,10 @@ class TestableComponent
         TailwindParser::setPlatform($platform);
         TailwindParser::clearCache();
 
-        // Same for platform-resolved icons (IconResolver & friends read
-        // Platform::current()) — `platform:` means "pretend we're on that
+        // Same for platform-resolved icons, @ios and friends (all read
+        // System::platform()) — `platform:` means "pretend we're on that
         // OS" everywhere, not just for Tailwind variants.
-        Platform::set($platform);
+        System::rememberPlatform($platform);
 
         $component = new $componentClass;
 
@@ -202,6 +209,9 @@ class TestableComponent
         $this->component = $component;
         $component->setParams($params);
         $component->setData($data);
+        // From the URI, as the router does: visit('/search?q=x') and a followed
+        // navigate('/search?q=x') both give the screen query('q').
+        $component->setQuery($uri !== null ? NativeRouter::queryOf($uri) : []);
 
         if ($layout !== null) {
             $component->setLayout($layout);
@@ -243,7 +253,16 @@ class TestableComponent
 
         NativeComponent::markActive($component);
 
-        $this->guard(function () use ($component) {
+        $this->guard(function () use ($component, $denial) {
+            // Middleware refused this navigation — the router turns that into
+            // an intent and never mounts, so neither do we.
+            if ($denial !== null) {
+                $component->setNavigationIntent($denial);
+                $this->lastTree = $this->bridge->lastPublish();
+
+                return;
+            }
+
             // #[Lazy] components paint a placeholder before mount() on
             // device; keep that behavior so the publish is observable.
             $component->publishPlaceholder();
