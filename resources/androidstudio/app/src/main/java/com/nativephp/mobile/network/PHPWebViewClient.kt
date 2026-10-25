@@ -14,11 +14,11 @@ import android.os.Looper
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.security.LaravelCookieStore
 import com.nativephp.mobile.security.LaravelSecurity
+import com.nativephp.mobile.security.LogRedaction
 
 
 /**
- * PHPWebViewClient that extends RequestInspectorWebViewClient to handle PHP requests
- * while also getting the benefit of request inspection.
+ * Serves the WebView's 127.0.0.1 requests (pages and assets) from PHP.
  */
 class PHPWebViewClient(
     private val phpBridge: PHPBridge,
@@ -144,7 +144,7 @@ class PHPWebViewClient(
                 )
 
                 val response = parseRawResponse(phpBridge.handleLaravelRequestBytes(phpRequest))
-                Log.d(TAG, "RESPONSE HEADERS: ${response.headers}")
+                Log.d(TAG, "RESPONSE HEADERS: ${LogRedaction.headers(response.headers)}")
 
                 if (response.status == 200) {
                     val (mime, charset) = mimeAndCharset(response.headers["Content-Type"], guessMimeType(cleanPath))
@@ -206,7 +206,7 @@ class PHPWebViewClient(
         headers["Cookie"] = LaravelCookieStore.asCookieHeader()
         LaravelCookieStore.logAll()
 
-        Log.d(TAG, "📤 Final request headers: $headers")
+        Log.d(TAG, "📤 Final request headers: ${LogRedaction.headers(headers)}")
 
         val normalizedPath = when {
             path.startsWith("//") -> path.substring(1)
@@ -244,7 +244,7 @@ class PHPWebViewClient(
         responseHeaders.entries
             .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
             .forEach { (_, value) ->
-                Log.d(TAG, "🍪 Setting cookie from response: $value")
+                Log.d(TAG, "🍪 Setting cookie from response: ${LogRedaction.cookieName(value)}")
                 com.nativephp.mobile.security.WebCookieMirror.set(value)
             }
 
