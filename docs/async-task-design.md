@@ -253,6 +253,24 @@ calls:
 - `AsyncTask.Complete` `{id, event, payload}` → relay `sendNativeEvent(event,
   payload)` into the UI runloop (this is what wakes the C `wait_event`).
 
+JavaScript in a web view can call both through `/_native/api/call`, so neither
+trusts what it is sent:
+
+- Dispatch refuses an `id` that is not a UUID, and so does the C lane before it
+  splices the id into the PHP it evaluates. A quote in an id would otherwise
+  end the string in that PHP and run whatever follows it.
+- A timeout always posts under `AsyncTaskFailed`'s name, and with the task's own
+  id in its payload. `timeoutEvent` is not read. PHP still sends it, for native
+  projects installed before this.
+- Complete answers only a call made on a thread of the async lane. A bridge
+  call runs on the thread of the PHP that made it, and a page's call runs on
+  another, so a page cannot post an event of its choosing to a native screen.
+  PHP logs a warning when native refuses an outcome it reports.
+
+`/_native/api/call` refuses the `AsyncTask.` prefix too. Updating the package
+leaves an app's native project as it was installed, so this is the check that
+an app gets without reinstalling it.
+
 Both executors **stop synchronously**: `stop()` drains in-flight tasks and shuts
 each context down before returning, because callers stop the pool immediately
 before a persistent-runtime reboot and `php_embed_shutdown` frees Zend module
