@@ -218,9 +218,18 @@ class PendingAsyncTask
             );
         }
 
-        // A refused dispatch (no executor, no free slot, no bridge) has to fail
-        // HERE — nothing else will ever report on a task that never started.
-        if (! AsyncTaskTransport::dispatch($this->id, $payload, $this->watchdog())) {
+        // A refused dispatch (no executor, no free slot, no bridge, no app key
+        // to seal the payload with) has to fail HERE — nothing else will ever
+        // report on a task that never started.
+        try {
+            $dispatched = AsyncTaskTransport::dispatch($this->id, $payload, $this->watchdog());
+        } catch (Throwable $e) {
+            $this->failLocally($e->getMessage(), $e::class);
+
+            return false;
+        }
+
+        if (! $dispatched) {
             $this->failLocally(
                 'The async task could not be started — the background lane is not available.',
                 'RuntimeException',

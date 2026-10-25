@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Encryption\Encrypter;
 use Illuminate\Support\Facades\Cache;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\Attributes\On;
@@ -221,6 +222,9 @@ it('registers async callbacks in memory only, so a dispatch costs no cache write
     // passes durable: false, and hand-registering would pass whatever the test
     // itself chose no matter what the dispatch path does.
     FakeBridge::enable()->respondTo('AsyncTask.Dispatch', ['success' => true]);
+
+    // The payload is sealed with the app key, which every app on a device has.
+    config(['app.key' => 'base64:'.base64_encode(Encrypter::generateKey('AES-256-CBC'))]);
 
     $pending = AsyncTask::dispatch(static fn () => 'x')->finished(static fn () => null);
     $pending->start();
