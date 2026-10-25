@@ -72,7 +72,7 @@ UI PHP thread (component runloop)          Async PHP thread (own interpreter)
 ────────────────────────────────           ──────────────────────────────────
 handler: AsyncTask::dispatch($work)
   → serialize $work (SerializableClosure)
-  → write payload → storage/framework/async/payload/<id>.task
+  → seal with the app key, write → storage/framework/async/payload/<id>.task
   → NativeCallbacks::register(id, …)        (finished/failed stored, screen-tagged)
   → AsyncTaskRegistry::register(id, origin)
   → nativephp_call('AsyncTask.Dispatch', {id})  ─┐  native assigns a booted async
@@ -80,6 +80,7 @@ handler: AsyncTask::dispatch($work)
                                                  ▼
                                     artisan native:async:run --id=<id>
                                       → read + delete payload/<id>.task
+                                      → unseal (refuse if it doesn't open)
                                       → unserialize + run $work → $result
                                       → AsyncTask.Complete(id, event, payload) ─┐
                                                                                 │
@@ -93,6 +94,14 @@ No PHP value ever crosses a thread directly — everything is serialized. The
 and async contexts share it), so the native side never touches it: it just
 assigns an async-lane context to run the task and relays the completion event.
 It never interprets either.
+
+The payload file is **sealed with the app key** (Laravel's encrypter, so it is
+encrypted and carries a MAC), bound to its task id and to a purpose prefix. The
+runner unserializes what it reads, and `unserialize()` runs the code of whatever
+classes the bytes name, so a file that doesn't open is dropped unread. That
+covers a file planted in the spool, and an id handed to `AsyncTask.Dispatch`
+by a web view page. An app with no key can't dispatch: `->failed()` fires at
+the call site.
 
 ---
 
