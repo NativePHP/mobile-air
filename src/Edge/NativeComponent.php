@@ -9,7 +9,7 @@ use Native\Mobile\Edge\Concerns\InteractsWithAppShell;
 use Native\Mobile\Edge\Concerns\RestartsOnHotReload;
 use Native\Mobile\Edge\Concerns\RunsAsyncTasks;
 use Native\Mobile\Edge\Concerns\WrapsScreensInNativeChrome;
-use Native\Mobile\Platform;
+use Native\Mobile\Facades\System as SystemFacade;
 use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\System;
 use SupaNative\Core\Edge\CallbackRegistry;
@@ -93,7 +93,7 @@ abstract class NativeComponent extends CoreNativeComponent
      *
      * The re-push is not redundant. Detection can legitimately fail and
      * later succeed: in Jump dev mode the first probe of a session races
-     * the device's WebSocket attach (see Platform's docblock — failures are
+     * the device's WebSocket attach (see System::platform() — failures are
      * deliberately not cached, and retried on a 2s throttle). A runloop
      * request stays open for the whole life of a screen, so a one-shot feed
      * at boot would leave `ios:` / `android:` variant classes silently dead
@@ -105,7 +105,7 @@ abstract class NativeComponent extends CoreNativeComponent
      */
     protected function syncTailwindPlatform(): void
     {
-        $platform = Platform::current();
+        $platform = SystemFacade::platform();
 
         if ($platform !== TailwindParser::platform()) {
             TailwindParser::setPlatform($platform);
@@ -388,23 +388,27 @@ abstract class NativeComponent extends CoreNativeComponent
 
             if (! $this->nativeHasError && ! $skipRender) {
                 try {
-                    $t0 = microtime(true);
+                    // Resolved once per tick: when the edge-nav log is off, the
+                    // PERF sprintf() is skipped along with the write.
+                    $perf = NativeRouter::debugLoggingEnabled();
+                    $t0 = $perf ? microtime(true) : 0.0;
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
                         $this->publishedFrame = null;
                         $this->flushDeferredTransition();
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] streaming total=%.1fms',
-                            static::class, ($t3 - $t0) * 1000
-                        ));
+                        if ($perf) {
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] streaming total=%.1fms',
+                                static::class, (microtime(true) - $t0) * 1000
+                            ));
+                        }
                     } else {
                         $element = $this->renderToElement();
 
-                        $t1 = microtime(true);
+                        $t1 = $perf ? microtime(true) : 0.0;
                         $tree = $this->memoizedToArray($element, $fingerprint);
-                        $t2 = microtime(true);
+                        $t2 = $perf ? microtime(true) : 0.0;
 
                         $this->flushDeferredTransition();
 
@@ -415,13 +419,15 @@ abstract class NativeComponent extends CoreNativeComponent
                             );
                         }
 
-                        $t3 = microtime(true);
-                        NativeRouter::debugLog(sprintf(
-                            'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms%s',
-                            static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
-                            ($t3 - $t2) * 1000, ($t3 - $t0) * 1000,
-                            $published ? '' : ' unchanged, not published'
-                        ));
+                        if ($perf) {
+                            $t3 = microtime(true);
+                            NativeRouter::debugLog(sprintf(
+                                'PERF [%s] render=%.1fms toArray=%.1fms publish=%.1fms total=%.1fms%s',
+                                static::class, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000,
+                                ($t3 - $t2) * 1000, ($t3 - $t0) * 1000,
+                                $published ? '' : ' unchanged, not published'
+                            ));
+                        }
                     }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);

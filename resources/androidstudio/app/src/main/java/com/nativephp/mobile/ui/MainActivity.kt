@@ -17,6 +17,7 @@ import androidx.activity.compose.setContent
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.bridge.PHPQueueWorker
 import com.nativephp.mobile.bridge.LaravelEnvironment
+import com.nativephp.mobile.bridge.NativeSession
 import com.nativephp.mobile.bridge.registerBridgeFunctions
 import com.nativephp.mobile.bridge.plugins.registerPluginRenderers
 import com.nativephp.mobile.ui.nativerender.registerNativeChromeRenderers
@@ -24,6 +25,7 @@ import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.addCallback
+import com.nativephp.mobile.ui.nativerender.FrameTracker
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIBridge
 import com.nativephp.mobile.ui.nativerender.NativeUIContent
@@ -88,6 +90,12 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     // WebViewManager only exists when a WebRenderer does.
     @Volatile private var bootReady = false
     private var pendingDeepLink: String? = null
+    // The https URL behind pendingDeepLink when it came from an app link, so a
+    // cold start can still give an unrouted link back to the browser.
+    private var pendingDeepLinkUrl: String? = null
+    // An app link that launched the app (route to URL), held until the start
+    // screen's native loop is running and PHP can decide where it goes.
+    private var coldAppLink: Pair<String, String>? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
 
@@ -186,6 +194,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         handleDeepLinkIntent(intent)
 
+        NativeUIBridge.createState()
+        NativeUIThemeProvider.createState()
+        FrameTracker.createState()
+
         // Set up Compose UI and PAINT THE SPLASH FIRST, from a minimal onCreate, so the
         // first frame is on screen ASAP (TTID). Everything heavy — WebView (Chromium)
         // init and the PHP boot — is deferred to AFTER the first frame (below), so neither
@@ -236,8 +248,29 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 showContent = true
                 bootReady = true
 
-                val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
+                val startUrl = LaravelEnvironment.getStartURL(this)
+                var target = pendingDeepLink ?: startUrl
+                var plan = BootPlanner.plan(this, target)
+
+                // An app link to a path with no native screen could be a web
+                // route or nothing at all, and only PHP can tell. Loading it
+                // straight into the WebView shows a local 404 for the second
+                // kind. Boot the start screen instead and hand the link over
+                // once its native loop is running, the same as a link that
+                // arrives while the app is open: PHP navigates to it or gives it
+                // back to the browser.
+                val appLinkUrl = pendingDeepLinkUrl
+                if (pendingDeepLink != null && appLinkUrl != null &&
+                    plan == BootPlanner.Entry.WEB_LEGACY &&
+                    BootPlanner.plan(this, startUrl) == BootPlanner.Entry.NATIVE_DIRECT) {
+                    Log.d("DeepLink", "⏳ No native screen for $target, booting $startUrl and handing the link to PHP")
+                    coldAppLink = target to appLinkUrl
+                    target = startUrl
+                    plan = BootPlanner.Entry.NATIVE_DIRECT
+                }
+
                 pendingDeepLink = null
+                pendingDeepLinkUrl = null
 
                 // Async task lane (AsyncTask::dispatch()). Started BEFORE the first
                 // route runs, not with the deferred queue worker below: a screen may
@@ -249,7 +282,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                     asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
                 }
 
-                when (BootPlanner.plan(this, target)) {
+                when (plan) {
                     BootPlanner.Entry.NATIVE_DIRECT -> {
                         // Direct JNI dispatch into the native runloop — the WebView
                         // is not involved. Splash dismissal + reportFullyDrawn fire
@@ -342,19 +375,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
      *   3xx + Location  → EXIT_WEB: create the renderer, load the web page
      *   204             → hot-restart: the watcher re-executes; nothing to do
      *   anything else   → session ended: nothing left to show → finish()
+     * If PHP dies part-way, NativeSession restarts it.
      */
     private fun startNativeSession(uri: String) {
         val sessionThread = Thread({
             try {
                 Log.d("NativeBoot", "🚀 Direct native dispatch: $uri")
-                val request = com.nativephp.mobile.network.PHPRequest(
-                    url = uri,
-                    method = "GET",
-                    body = "",
-                    headers = mapOf("Accept" to "text/html"),
-                    getParameters = emptyMap()
-                )
-                val raw = phpBridge.handleLaravelRequest(request)
+                val raw = runNativeSession(uri)
                 handleNativeSessionExit(raw)
             } catch (e: Exception) {
                 Log.e("NativeBoot", "Native session failed: ${e.message}", e)
@@ -370,6 +397,44 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         sessionThread.start()
     }
 
+    /**
+     * Dispatch [uri] as a native session and block until it ends. A session
+     * PHP died in is restarted on a rebooted runtime, keeping the dead
+     * session's last frame on screen until the new one publishes its first.
+     */
+    private fun runNativeSession(uri: String): String =
+        NativeSession.run(this, phpBridge, uri) {
+            NativeElementBridge.preserveTreeOnStop = true
+            rebootPersistentRuntime()
+            NativeElementBridge.preserveTreeOnStop = false
+
+            NativeUIBridge.startWatching()
+            NativeElementBridge.startWatching()
+        }
+
+    /**
+     * Reboot the persistent runtime, for hot reload and for a native session
+     * PHP died in. php_embed_shutdown() frees the Zend module state the queue
+     * worker and the async lane run on, so they stop first. Embedded php-mode
+     * webviews own contexts with the same hazard; shutdownPersistentRuntime()
+     * suspends those itself.
+     */
+    private fun rebootPersistentRuntime() {
+        queueWorker?.stop()
+
+        // Blocks until the async pool has drained: the shutdown below
+        // destroys Zend state its live contexts reference.
+        if (asyncExecutor?.stop() == false) {
+            Log.e("MainActivity", "Async pool did not drain before runtime reboot")
+        }
+
+        phpBridge.shutdownPersistentRuntime()
+        phpBridge.bootPersistentRuntime()
+
+        queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+    }
+
     private fun handleNativeSessionExit(rawResponse: String) {
         // Parse just the status line + Location header from the raw response.
         val head = rawResponse.substringBefore("\r\n\r\n")
@@ -383,8 +448,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         when {
             status in 300..399 && !location.isNullOrEmpty() -> {
+                // Keep the query, still encoded. The web route reads it from
+                // request()->query(), and PHPWebViewClient's redirects keep it too.
                 val path = if (location.startsWith("http")) {
-                    android.net.Uri.parse(location).encodedPath ?: "/"
+                    val parsed = android.net.Uri.parse(location)
+                    val encodedPath = parsed.encodedPath ?: "/"
+                    val query = parsed.encodedQuery
+                    if (!query.isNullOrEmpty()) "$encodedPath?$query" else encodedPath
                 } else {
                     location
                 }
@@ -453,6 +523,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         } catch (t: Throwable) {
             Log.w("MainActivity", "reportFullyDrawn failed: ${t.message}")
         }
+
+        // The start screen has published, so its loop is waiting for events.
+        coldAppLink?.let { (route, url) -> navigateWarm(route, url) }
     }
 
     /**
@@ -699,6 +772,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             ensureWebRenderer().webView.loadUrl(fullUrl)
         }
         pendingDeepLink = null
+        pendingDeepLinkUrl = null
+        // Delivered, or overtaken by a newer link.
+        coldAppLink = null
     }
 
     private fun handleDeepLinkIntent(intent: Intent?) {
@@ -707,6 +783,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         if (!notificationUrl.isNullOrEmpty()) {
             Log.d("DeepLink", "🔔 Notification URL: $notificationUrl")
             pendingDeepLink = notificationUrl
+            pendingDeepLinkUrl = null
             if (::laravelEnv.isInitialized && bootReady) {
                 navigateWarm(notificationUrl)
             }
@@ -722,12 +799,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             val route = if (scheme != null && scheme != "http" && scheme != "https") {
                 val host = uri.host ?: ""
                 val path = uri.path ?: ""
-                val query = uri.query?.let { "?$it" } ?: ""
+                val query = uri.encodedQuery?.let { "?$it" } ?: ""
                 if (host.isNotEmpty()) "/$host$path$query" else "$path$query"
             } else {
                 fcmUrl
             }
             pendingDeepLink = route
+            pendingDeepLinkUrl = null
             if (::laravelEnv.isInitialized && bootReady) {
                 navigateWarm(route)
             }
@@ -760,7 +838,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             }
         }
 
-        val query = uri.query
+        // Keep the query percent-encoded, as iOS does. PHP decodes it once;
+        // uri.query is already decoded, so a code like a%2Bb would reach
+        // PHP as "a b" and an encoded & would split the parameter.
+        val query = uri.encodedQuery
         val laravelUrl = if (uri.scheme != "http" && uri.scheme != "https") {
             // Custom scheme (e.g., myapp://profile/settings): treat host as first path segment
             // This matches iOS behavior where the entire URI after scheme:// is the path
@@ -785,6 +866,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
         pendingDeepLink = laravelUrl
+        pendingDeepLinkUrl = externalUrl
         if (::laravelEnv.isInitialized && bootReady) {
             // Only navigate immediately once the boot pipeline is ready
             navigateWarm(laravelUrl, externalUrl)
@@ -1014,27 +1096,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                             if (phpBridge.isPersistentMode()) {
                                 val rebootStart = System.currentTimeMillis()
                                 Log.d("HotReload", "HMR#$gen rebooting persistent runtime...")
-
-                                // Stop queue worker before shutdown — its TSRM context
-                                // will be destroyed by php_module_shutdown.
-                                // Embedded php-mode webviews own contexts with the
-                                // same hazard; shutdownPersistentRuntime() suspends
-                                // those itself.
-                                queueWorker?.stop()
-
-                                // Blocks until the async pool has drained: the
-                                // shutdown below destroys Zend state its live
-                                // contexts reference.
-                                if (asyncExecutor?.stop() == false) {
-                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
-                                }
-
-                                phpBridge.shutdownPersistentRuntime()
-                                phpBridge.bootPersistentRuntime()
-
-                                // Restart queue worker + async lane with fresh runtime
-                                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
-                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+                                rebootPersistentRuntime()
                                 Log.d("HotReload", "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms")
                             }
 
@@ -1048,7 +1110,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                                 try {
                                     Log.d("HotReload", "HMR#$gen executing PHP for $restartUri")
                                     val execStart = System.currentTimeMillis()
-                                    phpBridge.executeNativeRoute(restartUri)
+                                    runNativeSession(restartUri)
                                     Log.d("HotReload", "HMR#$gen PHP execution returned after ${System.currentTimeMillis() - execStart}ms")
                                 } catch (e: Exception) {
                                     Log.e("HotReload", "HMR#$gen execution failed: ${e.message}", e)
@@ -1107,26 +1169,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                             if (phpBridge.isPersistentMode()) {
                                 Log.d("HotReload", "Rebooting persistent runtime for hot reload...")
                                 val rebootStart = System.currentTimeMillis()
-
-                                // Stop queue worker before shutdown — its TSRM context
-                                // will be destroyed by php_module_shutdown, causing SIGABRT
-                                // if still active
-                                queueWorker?.stop()
-
-                                // Blocks until the async pool has drained: the
-                                // shutdown below destroys Zend state its live
-                                // contexts reference.
-                                if (asyncExecutor?.stop() == false) {
-                                    Log.e("HotReload", "Async pool did not drain before runtime reboot")
-                                }
-
-                                phpBridge.shutdownPersistentRuntime()
-                                phpBridge.bootPersistentRuntime()
-
-                                // Restart queue worker + async lane with fresh runtime
-                                queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
-                                asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
-
+                                rebootPersistentRuntime()
                                 Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
                             }
 

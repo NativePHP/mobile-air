@@ -618,6 +618,14 @@ class AppUpdateManager {
         return isDebugIdentity(getBundledAppVersion())
     }
 
+    /// Whether the bundled Laravel app should replace the extracted one.
+    ///
+    /// A bundle is identified by its version number and build number
+    /// (NATIVEPHP_APP_VERSION and NATIVEPHP_APP_VERSION_CODE), as "1.0.0b42",
+    /// and is only extracted when that differs from the one extracted last.
+    /// This is on purpose: two builds with the same pair count as the same
+    /// build, so a rebuild installed over the top keeps running the old code
+    /// until the build number is bumped. Android does the same.
     private func shouldUpdateWithVersion(_ bundledId: String) -> Bool {
         // DEBUG is what native:run ships. Always re-extract so developers see
         // PHP changes without bumping a version (same as Android).
@@ -720,7 +728,21 @@ class AppUpdateManager {
     private func bundleMetadata() -> (version: String, versionCode: Int)? {
         guard let json = bundleMetaJson(), let version = json["version"] as? String else { return nil }
 
-        return (version, (json["version_code"] as? NSNumber)?.intValue ?? 0)
+        // version_code comes from .env, so the build has written it as a JSON
+        // string ("1"). Reading only a number turned that into 0, the bundle
+        // id never matched installed.version ("…b1"), and every launch
+        // re-extracted the whole bundle.
+        let code: Int
+        if let number = json["version_code"] as? NSNumber {
+            code = number.intValue
+        } else if let string = json["version_code"] as? String,
+                  let parsed = Int(string.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            code = parsed
+        } else {
+            code = 0
+        }
+
+        return (version, code)
     }
 
     private func bundleMetaJson() -> [String: Any]? {
@@ -777,9 +799,12 @@ class AppUpdateManager {
     private func createInstalledVersionFile() {
         let installedVersionPath = documentsPath + "/app/installed.version"
 
-        // Build composite identity from the extracted .env so the on-disk
-        // identity matches the bundle (same format: "version+b+versionCode" or "DEBUG").
-        guard let id = getInstalledVersionIdFromEnv() else {
+        // Record the bundle's own identity, the same value shouldUpdateFromBundle
+        // compares against (as Android does). Rebuilding it from the extracted
+        // .env gave "…b0" whenever .env had no NATIVEPHP_APP_VERSION_CODE line,
+        // which never matched and re-extracted on every launch. The .env is
+        // only a fallback for shells without bundle metadata.
+        guard let id = getBundledAppVersionFast() ?? getInstalledVersionIdFromEnv() else {
             print("⚠️ Could not determine app version id for installed.version file")
             return
         }

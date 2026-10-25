@@ -6,7 +6,7 @@ use Illuminate\Http\Request;
 use Native\Mobile\Browser;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
-use Native\Mobile\Platform;
+use Native\Mobile\Facades\System as SystemFacade;
 
 /**
  * The conversation between a screen and the native app shell wrapped around
@@ -58,7 +58,7 @@ trait InteractsWithAppShell
         }
 
         $this->runGuardedInteraction('onBackPressed()', function () {
-            $this->onBackPressed();
+            $this->handleSystemBack();
             $this->flushDispatchedEvents();
         });
 
@@ -72,20 +72,46 @@ trait InteractsWithAppShell
      * WebView underneath: on Android the system back button backgrounds the
      * app; on iOS the press is ignored.
      *
-     * The Platform probe is null under `Native::test()` (no bridge), so
+     * The platform is null under `Native::test()` (no device), so
      * returning false there keeps the harness's BACK-intent assertions.
      */
     protected function handleBackAtRoot(): bool
     {
-        if (($platform = Platform::current()) === null) {
+        if (($platform = SystemFacade::platform()) === null) {
             return false;
         }
 
-        if ($platform === Platform::ANDROID && function_exists('nativephp_call')) {
+        if ($platform === 'android' && function_exists('nativephp_call')) {
             nativephp_call('System.MinimizeApp', '{}');
         }
 
         return true;
+    }
+
+    /**
+     * Give a deep link back to the browser.
+     *
+     * Android goes through the core System.OpenInBrowser. A plain
+     * Browser::open() there resolves the app's own verified App Link straight
+     * back to the app, which delivers the link here again, in a loop that never
+     * reaches the browser. iOS sends an app's own universal link to Safari when
+     * the app opens it, so there the browser plugin's open() is enough. Android
+     * projects installed before System.OpenInBrowser existed take that path
+     * too, and keep the old behaviour until the native project is reinstalled.
+     */
+    protected static function openDeepLinkInBrowser(string $url): bool
+    {
+        if (function_exists('nativephp_call')) {
+            $result = nativephp_call('System.OpenInBrowser', json_encode(['url' => $url]));
+
+            // Null means the platform doesn't have it, not that it failed.
+            if ($result !== null) {
+                return (json_decode($result, true)['success'] ?? false) === true;
+            }
+        }
+
+        // A no-op when the app doesn't ship the browser plugin.
+        return (new Browser)->open($url);
     }
 
     /**
@@ -111,13 +137,12 @@ trait InteractsWithAppShell
             // serves a local 404 — a dead end the user can't back out of. The
             // link belongs to the site we took it from, so give it back to the
             // browser and leave the current screen alone.
-            // open() is a no-op when the app doesn't ship a browser handler,
-            // so only swallow the link if it was actually handed off —
-            // otherwise fall through and behave exactly as before.
+            // Only swallow the link if it was actually handed off — otherwise
+            // fall through and behave exactly as before.
             if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
                 NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
 
-                if ((new Browser)->open($url)) {
+                if (static::openDeepLinkInBrowser($url)) {
                     return true;
                 }
 
@@ -162,6 +187,10 @@ trait InteractsWithAppShell
 
     public function exitToWeb(string $uri): void
     {
+        if ($this->openedExternally($uri)) {
+            return;
+        }
+
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
             $this->rootScreen()->exitToWeb($uri);
@@ -169,7 +198,28 @@ trait InteractsWithAppShell
             return;
         }
 
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, static::appPath($uri));
         $this->stop();
+    }
+
+    /**
+     * Hand an external URL to the system browser and keep the current screen.
+     * Exiting to the WebView can't show it: the shells load only the path of
+     * an exit URL, so the native UI would be torn down for a blank page — the
+     * same dead end deep links avoid by opening the browser. Browser::open()
+     * needs the nativephp/mobile-browser plugin; without it the tap is a
+     * no-op rather than a broken screen.
+     */
+    protected function openedExternally(string $uri): bool
+    {
+        if (! static::isExternalUrl($uri)) {
+            return false;
+        }
+
+        if (! (new Browser)->open($uri)) {
+            NativeRouter::debugLog("NAVIGATE: no browser handler for $uri — is nativephp/mobile-browser installed?");
+        }
+
+        return true;
     }
 }

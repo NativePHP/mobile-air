@@ -377,12 +377,23 @@ final class BridgeDispatcher
     /**
      * The plain-text 500 the old eval printed, now with a content-length.
      *
+     * The message and trace are for whoever is building the app, never for
+     * whoever is using it, as in the classic bootstraps. They go to the log
+     * (logcat, the Xcode console) in every build, and into the body only
+     * when the app is in debug.
+     *
      * @return array{string, string}
      */
     private static function errorResponse(string $lane, Throwable $e): array
     {
         $prefix = $lane === 'webview' ? 'Webview' : 'Persistent';
-        $content = "{$prefix} dispatch error: ".$e->getMessage()."\n".$e->getTraceAsString();
+
+        error_log("REQUEST FATAL: {$prefix} dispatch error: ".$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
+        error_log('REQUEST TRACE: '.$e->getTraceAsString());
+
+        $content = Runtime::showsErrorDetail()
+            ? "{$prefix} dispatch error: ".$e->getMessage()."\n".$e->getTraceAsString()
+            : 'Something went wrong.';
 
         return [
             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: ".strlen($content)."\r\n\r\n",

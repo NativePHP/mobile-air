@@ -516,6 +516,21 @@ final class NativeElementBridge {
                             }
                         }
                     }
+                    // Shared elements: hand the incoming tree's ref'd nodes to
+                    // the flight store. It already holds the outgoing screen's
+                    // frames (reported while that screen was live), so it can
+                    // pair the two sides and fly a copy of each match in the
+                    // overlay above both screens. Done synchronously here so
+                    // matched elements are hidden before the incoming screen's
+                    // very first layout — otherwise they paint once at their
+                    // destination before taking off.
+                    if bridge.pendingTransition == "morph" {
+                        HeroFlightStore.shared.beginSwap(
+                            incomingNodes: Self.collectRefNodes(finalTree.root)
+                        )
+                    } else {
+                        HeroFlightStore.shared.cancelAll()
+                    }
                     bridge.screenKey += 1
                 }
                 if isFreshStackMount { NavigationCoordinator.shared.reset() }
@@ -534,6 +549,29 @@ final class NativeElementBridge {
             // stay behind for as long as the shadow thread keeps running.
             autoreleasepool { runPass() }
         }
+    }
+
+    /// Every ref'd node in a tree, keyed by ref. The flight store pairs these
+    /// against the outgoing screen's reported frames and renders a copy of the
+    /// matched ones in flight. Walks the incoming tree once per navigation — the
+    /// trees are already in memory and this runs on the same publish that
+    /// builds them, so it costs a single traversal per swap rather than any
+    /// per-frame work.
+    static func collectRefNodes(_ node: NativeUINode) -> [String: NativeUINode] {
+        var found: [String: NativeUINode] = [:]
+
+        func walk(_ n: NativeUINode) {
+            let ref = n.props.getString("ref", default: "")
+            // First wins. A duplicated ref on one screen is malformed markup —
+            // a name identifies ONE element — and picking deterministically
+            // beats letting the last one silently take over.
+            if !ref.isEmpty, found[ref] == nil { found[ref] = n }
+            for child in n.children { walk(child) }
+        }
+
+        walk(node)
+
+        return found
     }
 
     // MARK: - Event Sending
@@ -988,24 +1026,42 @@ final class NativeElementBridge {
 
     // MARK: - Tree Diff
 
+    /// The new tree, with each subtree that didn't change swapped for the old
+    /// tree's object, so NodeView's `===` skips it.
+    ///
+    /// Children are matched by id, not by position. A list that gains rows
+    /// (a page appended, a commit arriving at the top) keeps the rows it had:
+    /// matching by position gave up on any parent whose child count changed,
+    /// so every row of the list came in as a new object and SwiftUI redrew
+    /// all of them. An old node is only reused when it's equal to the new
+    /// one all the way down, so a positional id that now names a different
+    /// node can't put the wrong one on screen.
     private static func diffNode(old: NativeUINode, new: NativeUINode) -> NativeUINode {
-        guard old.id == new.id, old.type == new.type, old.children.count == new.children.count else {
+        guard old.id == new.id, old.type == new.type else {
             return new
         }
 
-        var allChildrenReused = true
-        let diffedChildren: [NativeUINode]
-        if new.children.isEmpty {
-            diffedChildren = new.children
-        } else {
-            var list: [NativeUINode] = []
-            list.reserveCapacity(new.children.count)
-            for i in new.children.indices {
-                let diffed = diffNode(old: old.children[i], new: new.children[i])
-                if diffed !== old.children[i] { allChildrenReused = false }
-                list.append(diffed)
+        let sameCount = old.children.count == new.children.count
+        var allChildrenReused = sameCount
+        var diffedChildren: [NativeUINode] = []
+        if !new.children.isEmpty {
+            // Built the first time a child isn't where it was.
+            var oldById: [Int: NativeUINode]?
+            diffedChildren.reserveCapacity(new.children.count)
+            for (i, child) in new.children.enumerated() {
+                let match: NativeUINode?
+                if i < old.children.count, old.children[i].id == child.id {
+                    match = old.children[i]
+                } else {
+                    if oldById == nil {
+                        oldById = Dictionary(old.children.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                    }
+                    match = oldById?[child.id]
+                }
+                let diffed = match.map { diffNode(old: $0, new: child) } ?? child
+                if !sameCount || diffed !== old.children[i] { allChildrenReused = false }
+                diffedChildren.append(diffed)
             }
-            diffedChildren = list
         }
 
         let fieldsMatch = old.layout == new.layout &&

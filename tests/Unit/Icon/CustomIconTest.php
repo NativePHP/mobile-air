@@ -8,7 +8,7 @@ use Native\Mobile\Edge\Layouts\Builders\NavAction;
 use Native\Mobile\Edge\Layouts\Builders\Tab;
 use Native\Mobile\Icon\Icon;
 use Native\Mobile\Icon\IconResolver;
-use Native\Mobile\Platform;
+use Native\Mobile\System;
 use Tests\Fixtures\Edge\FixtureAndroidIcon;
 use Tests\Fixtures\Edge\FixtureIosIcon;
 
@@ -18,7 +18,7 @@ use Tests\Fixtures\Edge\FixtureIosIcon;
  * picks up a `material_variant`.
  */
 afterEach(function () {
-    Platform::set(null);
+    System::rememberPlatform(null);
 });
 
 it('builds the custom icon wire string', function () {
@@ -49,7 +49,7 @@ it('recognises custom icon strings', function () {
 });
 
 it('resolves custom icons through every slot combination', function (?string $platform, ?string $name, mixed $ios, mixed $android, ?string $icon, ?string $variant) {
-    Platform::set($platform);
+    System::rememberPlatform($platform);
 
     expect(IconResolver::resolve($name, $ios, $android))->toBe(['icon' => $icon, 'variant' => $variant]);
 })->with([
@@ -66,13 +66,13 @@ it('resolves custom icons through every slot combination', function (?string $pl
 ]);
 
 it('keeps material variants for non-custom android enums', function () {
-    Platform::set('android');
+    System::rememberPlatform('android');
 
     expect(IconResolver::resolve('bell', null, FixtureAndroidIcon::Inbox))->toBe(['icon' => 'inbox', 'variant' => 'outlined']);
 });
 
 it('serializes custom icons on tabs and nav actions without a variant', function () {
-    Platform::set('android');
+    System::rememberPlatform('android');
 
     $tab = Tab::link('Bell', '/bell', icon: 'bell', android: Icon::custom('bell'))->toElement()->toArray(new CallbackRegistry)['props'];
     $action = NavAction::make('bell')->icon('bell', android: FixtureAndroidIcon::CustomBell)->toElement()->toArray(new CallbackRegistry)['props'];
@@ -82,7 +82,7 @@ it('serializes custom icons on tabs and nav actions without a variant', function
 });
 
 it('draws the material glyph on android when only ios is custom', function () {
-    Platform::set('android');
+    System::rememberPlatform('android');
 
     $props = Tab::link('Bell', '/bell', icon: Icon::custom('bell'), android: FixtureAndroidIcon::Inbox)->toElement()->toArray(new CallbackRegistry)['props'];
 
@@ -90,7 +90,7 @@ it('draws the material glyph on android when only ios is custom', function () {
 });
 
 it('serializes a custom <icon> element without a variant', function () {
-    Platform::set('android');
+    System::rememberPlatform('android');
 
     $props = IconElement::make('bell', android: FixtureAndroidIcon::CustomBell)->toArray(new CallbackRegistry)['props'];
 
@@ -98,7 +98,7 @@ it('serializes a custom <icon> element without a variant', function () {
 });
 
 it('drops an explicit material variant from custom chrome icons', function (string $element) {
-    Platform::set('android');
+    System::rememberPlatform('android');
 
     $node = $element::make();
     $node->applyAttributes([
@@ -114,7 +114,7 @@ it('drops an explicit material variant from custom chrome icons', function (stri
 })->with([TopBarAction::class, BottomNavItem::class]);
 
 it('keeps an explicit material variant when the resolved icon is not custom', function () {
-    Platform::set('android');
+    System::rememberPlatform('android');
 
     $node = TopBarAction::make();
     $node->applyAttributes(['id' => 'bell', 'icon' => 'custom:bell', 'android-icon' => 'notifications', 'material-variant' => 'outlined']);

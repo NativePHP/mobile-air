@@ -11,63 +11,97 @@ $_timing = ['start' => microtime(true)];
 
 define('LARAVEL_START', microtime(true));
 
-// Register the Composer autoloader...
-require __DIR__.'/../../../../autoload.php';
-$_timing['autoload'] = microtime(true);
+try {
+    // Register the Composer autoloader...
+    require __DIR__.'/../../../../autoload.php';
+    $_timing['autoload'] = microtime(true);
 
-// Bootstrap Laravel and handle the request...
-$app = require_once __DIR__.'/../../../../../bootstrap/app.php';
-$_timing['bootstrap'] = microtime(true);
+    // Bootstrap Laravel and handle the request...
+    $app = require_once __DIR__.'/../../../../../bootstrap/app.php';
+    $_timing['bootstrap'] = microtime(true);
 
-$kernel = $app->make(Kernel::class);
-$_timing['kernel'] = microtime(true);
+    // Catch uncaught throwables and PHP fatals this request can't trap.
+    require_once __DIR__.'/../shared/devtools-boot-report.php';
+    nativephp_devtools_install_handlers($app->storagePath());
 
-// Query params, cookies, and the body from php://input parsed into $_POST,
-// $_FILES and $request->file(), the way PHP-FPM would. Not Request::capture():
-// on the embed SAPI it never fills $_FILES, and on Symfony 8 it calls
-// request_parse_body(). Upload temp files the app didn't move are deleted when
-// the request ends, as PHP does.
-[$request, $parsedBody] = BridgeDispatcher::classicRequest(Request::class);
-register_shutdown_function(fn () => $parsedBody->cleanup());
-$_timing['capture'] = microtime(true);
+    $kernel = $app->make(Kernel::class);
+    $_timing['kernel'] = microtime(true);
 
-// Bind request so service providers can resolve it during bootstrap
-$app->instance('request', $request);
+    // Query params, cookies, and the body from php://input parsed into $_POST,
+    // $_FILES and $request->file(), the way PHP-FPM would. Not Request::capture():
+    // on the embed SAPI it never fills $_FILES, and on Symfony 8 it calls
+    // request_parse_body(). Upload temp files the app didn't move are deleted when
+    // the request ends, as PHP does.
+    [$request, $parsedBody] = BridgeDispatcher::classicRequest(Request::class);
+    register_shutdown_function(fn () => $parsedBody->cleanup());
+    $_timing['capture'] = microtime(true);
 
-$kernel->bootstrap();
+    // Bind request so service providers can resolve it during bootstrap
+    $app->instance('request', $request);
 
-// Bind originalRequest AFTER bootstrap — Filament's SupportServiceProvider
-// registers a scoped('originalRequest') during boot that would overwrite
-// an earlier instance() call. This must come after to take precedence.
-$app->instance('originalRequest', $request);
+    $kernel->bootstrap();
 
-// Anything echoed outside the response (a stray echo, dump()) is kept for the
-// body instead of landing in front of the status line.
-/** @var Response $response */
-$response = OutputCapture::run(fn () => $kernel->handle($request), $stray);
-$_timing['handle'] = microtime(true);
+    // Bind originalRequest AFTER bootstrap — Filament's SupportServiceProvider
+    // registers a scoped('originalRequest') during boot that would overwrite
+    // an earlier instance() call. This must come after to take precedence.
+    $app->instance('originalRequest', $request);
 
-OutputCapture::run(fn () => $kernel->terminate($request, $response), $late);
-$_timing['terminate'] = microtime(true);
+    // Anything echoed outside the response (a stray echo, dump()) is kept for the
+    // body instead of landing in front of the status line.
+    /** @var Response $response */
+    $response = OutputCapture::run(fn () => $kernel->handle($request), $stray);
+    $_timing['handle'] = microtime(true);
 
-// Calculate timing breakdown (in ms)
-$autoloadMs = round(($_timing['autoload'] - $_timing['start']) * 1000, 1);
-$bootstrapMs = round(($_timing['bootstrap'] - $_timing['autoload']) * 1000, 1);
-$kernelMs = round(($_timing['kernel'] - $_timing['bootstrap']) * 1000, 1);
-$captureMs = round(($_timing['capture'] - $_timing['kernel']) * 1000, 1);
-$handleMs = round(($_timing['handle'] - $_timing['capture']) * 1000, 1);
-$terminateMs = round(($_timing['terminate'] - $_timing['handle']) * 1000, 1);
-$totalMs = round(($_timing['terminate'] - $_timing['start']) * 1000, 1);
+    OutputCapture::run(fn () => $kernel->terminate($request, $response), $late);
+    $_timing['terminate'] = microtime(true);
 
-// Log timing (shows in Xcode console)
-error_log("PerfTiming: PHP autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
+    // Calculate timing breakdown (in ms)
+    $autoloadMs = round(($_timing['autoload'] - $_timing['start']) * 1000, 1);
+    $bootstrapMs = round(($_timing['bootstrap'] - $_timing['autoload']) * 1000, 1);
+    $kernelMs = round(($_timing['kernel'] - $_timing['bootstrap']) * 1000, 1);
+    $captureMs = round(($_timing['capture'] - $_timing['kernel']) * 1000, 1);
+    $handleMs = round(($_timing['handle'] - $_timing['capture']) * 1000, 1);
+    $terminateMs = round(($_timing['terminate'] - $_timing['handle']) * 1000, 1);
+    $totalMs = round(($_timing['terminate'] - $_timing['start']) * 1000, 1);
 
-// Raw HTTP/1.1, as the persistent and webview lanes write it: status line,
-// headers, a blank line, then the body byte for byte with an exact
-// content-length.
-$response->headers->set('X-PHP-Timing', "autoload={$autoloadMs}ms,bootstrap={$bootstrapMs}ms,handle={$handleMs}ms,total={$totalMs}ms");
+    // Log timing (shows in Xcode console)
+    error_log("PerfTiming: PHP autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
 
-$content = $stray.RawHttpResponse::content($response).$late;
+    // Raw HTTP/1.1, as the persistent and webview lanes write it: status line,
+    // headers, a blank line, then the body byte for byte with an exact
+    // content-length.
+    $response->headers->set('X-PHP-Timing', "autoload={$autoloadMs}ms,bootstrap={$bootstrapMs}ms,handle={$handleMs}ms,total={$totalMs}ms");
 
-echo RawHttpResponse::head($response, strlen($content));
-echo $content;
+    $content = $stray.RawHttpResponse::content($response).$late;
+
+    echo RawHttpResponse::head($response, strlen($content));
+    echo $content;
+} catch (Throwable $e) {
+    require_once __DIR__.'/../shared/devtools-boot-report.php';
+    nativephp_devtools_boot_report(
+        $e,
+        isset($app) ? $app->storagePath() : __DIR__.'/../../../../../storage'
+    );
+
+    error_log('REQUEST FATAL: '.$e->getMessage().' in '.$e->getFile().':'.$e->getLine());
+
+    // The message and trace are for whoever is building the app, never for
+    // whoever is using it, as on the EDGE error screen. Before the config has
+    // loaded there's no telling which this is, so the user wins. The crash is
+    // recorded in the spool either way, which `native:tail --fatals` reads.
+    $showDetail = false;
+
+    try {
+        $showDetail = isset($app) && $app->bound('config') && (bool) $app['config']->get('app.debug');
+    } catch (Throwable) {
+    }
+
+    $body = $showDetail
+        ? 'Error: '.$e->getMessage()."\n".$e->getTraceAsString()
+        : 'Something went wrong.';
+
+    echo "HTTP/1.1 500 Internal Server Error\r\n";
+    echo "content-type: text/plain\r\n";
+    echo 'content-length: '.strlen($body)."\r\n\r\n";
+    echo $body;
+}

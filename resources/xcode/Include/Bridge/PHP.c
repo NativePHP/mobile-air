@@ -449,6 +449,21 @@ static void setup_persistent_sapi(void) {
     php_embed_module.header_handler  = ios_header_handler;
 }
 
+// php.ini gives every context PHP's 128M. The persistent runtime gets 512M:
+// the native session runs in it as a single request that lives as long as the
+// app, holding every screen's state, and a screen with a long list reached
+// 128M. The queue worker, the async lane and webview contexts keep 128M, so a
+// runaway there fails on its own instead of growing alongside the UI until
+// the OS kills the whole app. Apps can still ini_set() their own.
+static void raise_persistent_memory_limit(void) {
+    zend_string *name = zend_string_init("memory_limit", sizeof("memory_limit") - 1, 0);
+    if (zend_alter_ini_entry_chars(name, "512M", sizeof("512M") - 1, PHP_INI_SYSTEM, PHP_INI_STAGE_RUNTIME) != SUCCESS) {
+        fprintf(stderr, "PHP-WORKER: could not raise memory_limit to 512M\n");
+        fflush(stderr);
+    }
+    zend_string_release(name);
+}
+
 // ── Worker thread ───────────────────────────────────
 // Boots PHP, then loops processing work items.
 
@@ -482,6 +497,7 @@ static void *php_worker_main(void *arg) {
     fflush(stderr);
 
     sapi_module.header_handler = ios_header_handler;
+    raise_persistent_memory_limit();
 
     zend_first_try {
         zend_activate_modules();
@@ -577,6 +593,25 @@ static void *php_worker_main(void *arg) {
 
 // ── Work handlers (all run on the PHP worker thread) ──
 
+// After PHP bails out of a dispatch, add the fatal error that stopped it to
+// what it printed. Laravel turns display_errors off and reports fatal errors
+// from a shutdown function, which never runs here (the persistent runtime's
+// request doesn't end), so otherwise nothing would say why PHP stopped.
+static void append_last_fatal_error(void) {
+    int fatal = E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_PARSE;
+    if (!PG(last_error_message) || !(PG(last_error_type) & fatal)) return;
+
+    char *line = NULL;
+    int n = asprintf(&line, "\nPHP Fatal error: %s in %s on line %d\n",
+                     ZSTR_VAL(PG(last_error_message)),
+                     PG(last_error_file) ? ZSTR_VAL(PG(last_error_file)) : "Unknown",
+                     PG(last_error_lineno));
+    if (n > 0) {
+        append_output(line, (size_t)n);
+    }
+    free(line);
+}
+
 static void do_dispatch(const dispatch_params_t *params) {
     if (!persistent_initialized) {
         php_work_str_result = bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.", &php_work_result_len);
@@ -614,11 +649,18 @@ static void do_dispatch(const dispatch_params_t *params) {
         return;
     }
 
+    int bailed_out = 0;
     zend_first_try {
         zend_eval_string(code, NULL, "persistent_dispatch");
+    } zend_catch {
+        bailed_out = 1;
     } zend_end_try();
 
     free(code);
+
+    if (bailed_out) {
+        append_last_fatal_error();
+    }
 
     php_work_str_result = bridge_collect_response("persistent_dispatch", &php_work_result_len);
 }
@@ -656,6 +698,18 @@ static void do_shutdown(void) {
     if (!persistent_initialized) return;
 
     clear_output_buffer();
+
+    // A native session that died part-way (a fatal error) never shut its
+    // element region down. The extension's module shutdown would then free
+    // the last tree it kept after this request's memory is gone, and hang
+    // there. So shut it down while the request is still alive. A no-op when
+    // the session ended normally and did it itself. Only this lane may: the
+    // region belongs to the native session, which runs here.
+    zend_first_try {
+        zend_eval_string(
+            "if (function_exists('nativephp_element_shutdown')) { nativephp_element_shutdown(); }",
+            NULL, "persistent_element_shutdown");
+    } zend_end_try();
 
     zend_first_try {
         zend_eval_string(

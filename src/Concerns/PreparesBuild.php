@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
+use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
@@ -440,7 +442,7 @@ trait PreparesBuild
 
             $bundleMeta = json_encode([
                 'version' => $version,
-                'version_code' => $versionCode,
+                'version_code' => (int) $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
                 'entry_mode' => $entryMode,
@@ -679,14 +681,19 @@ trait PreparesBuild
             passthru($cmd, $exitCode);
             $buildSuccessful = ($exitCode === 0);
         } else {
-            $process = Process::path($androidPath)
-                ->timeout(600);
+            $process = $this->gradleProcess($androidPath);
 
             if (! $this->option('no-tty')) {
                 $process->tty();
             }
 
-            $result = $process->run("$gradleWrapper $gradleTask");
+            try {
+                $result = $process->run("$gradleWrapper $gradleTask");
+            } catch (ProcessTimedOutException) {
+                $this->reportGradleTimeout($gradleTask);
+
+                return false;
+            }
 
             if (! $result->successful()) {
                 \Laravel\Prompts\error('Gradle build failed');
@@ -708,6 +715,50 @@ trait PreparesBuild
         }
 
         return $buildSuccessful;
+    }
+
+    /**
+     * Seconds Gradle may run before it is stopped, or null for no limit.
+     *
+     * There is no limit by default. A cold first build downloads Gradle, the
+     * Android plugin and every dependency, and can take 15 minutes or more on
+     * a slow connection or a busy machine. Set NATIVEPHP_GRADLE_TIMEOUT to a
+     * number of seconds to cap it, e.g. on CI.
+     */
+    protected function gradleTimeout(): ?int
+    {
+        $timeout = config('nativephp.android.gradle_timeout');
+
+        if (! is_numeric($timeout) || (int) $timeout <= 0) {
+            return null;
+        }
+
+        return (int) $timeout;
+    }
+
+    protected function gradleProcess(string $androidPath): PendingProcess
+    {
+        $process = Process::path($androidPath);
+        $timeout = $this->gradleTimeout();
+
+        return $timeout === null ? $process->forever() : $process->timeout($timeout);
+    }
+
+    /**
+     * Gradle was stopped by NATIVEPHP_GRADLE_TIMEOUT. The generated project is
+     * complete at this point, so the build can be finished by hand.
+     */
+    protected function reportGradleTimeout(string $gradleTask): void
+    {
+        $timeout = $this->gradleTimeout();
+        $wrapper = PHP_OS_FAMILY === 'Windows' ? 'gradlew.bat' : './gradlew';
+
+        \Laravel\Prompts\error("Gradle did not finish within {$timeout} seconds and was stopped.");
+        \Laravel\Prompts\note(
+            "A first build can take much longer while Gradle downloads its dependencies.\n".
+            "Finish it by running `cd nativephp/android && {$wrapper} {$gradleTask}`,\n".
+            'or raise or remove NATIVEPHP_GRADLE_TIMEOUT in your .env and run this command again.'
+        );
     }
 
     /**
@@ -994,7 +1045,10 @@ trait PreparesBuild
         $gradleContent = str_replace('REPLACE_SHRINK_RESOURCES', $shrinkResources, $gradleContent);
         $gradleContent = str_replace('REPLACE_DEBUG_SYMBOLS', $debugSymbols, $gradleContent);
 
-        $gradleContent = preg_replace('/isMinifyEnabled\s*=\s*(true|false)/', "isMinifyEnabled = $minifyEnabled", $gradleContent);
+        // minify_enabled only applies to the release build type. The profileable build type
+        // always minifies so profiles measure the same R8 output users get.
+        $gradleContent = $this->replaceInGradleBlock($gradleContent, '\brelease', '/isMinifyEnabled\s*=\s*(true|false)/', "isMinifyEnabled = $minifyEnabled");
+        $gradleContent = $this->replaceInGradleBlock($gradleContent, 'create\("profileable"\)', '/isMinifyEnabled\s*=\s*(true|false)/', 'isMinifyEnabled = true');
         $gradleContent = preg_replace('/isShrinkResources\s*=\s*(true|false)/', "isShrinkResources = $shrinkResources", $gradleContent);
         $gradleContent = preg_replace('/debugSymbolLevel\s*=\s*"[^"]*"/', "debugSymbolLevel = \"$debugSymbols\"", $gradleContent);
 
@@ -1033,6 +1087,18 @@ trait PreparesBuild
         }
 
         File::put($proguardPath, $proguardContent);
+    }
+
+    /**
+     * Apply a replacement only inside the brace-delimited Gradle block whose opening matches $blockPattern
+     */
+    protected function replaceInGradleBlock(string $gradleContent, string $blockPattern, string $pattern, string $replacement): string
+    {
+        return preg_replace_callback(
+            '/'.$blockPattern.'\s*(\{(?:[^{}]++|(?1))*\})/',
+            fn (array $block) => preg_replace($pattern, $replacement, $block[0]),
+            $gradleContent
+        );
     }
 
     /**

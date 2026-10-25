@@ -2,7 +2,7 @@
 
 namespace Native\Mobile\Icon;
 
-use Native\Mobile\Platform;
+use Native\Mobile\Facades\System;
 use SupaNative\Core\Platform as RenderPlatform;
 
 /**
@@ -58,10 +58,10 @@ use SupaNative\Core\Platform as RenderPlatform;
  *
  * ## Which platform is "current"
  *
- * Mobile's own [Platform] answers first, because on a device it is the truth
- * and in a test it is the seam `Native::test(..., platform: 'ios')` sets.
- * It only knows how to say `ios`, `android` or "don't know", and the way it
- * finds out is a bridge probe — so on a Mac it says "don't know". The
+ * Mobile's own [System::platform()] answers first, because on a device it is
+ * the truth and in a test it is the seam `Native::test(..., platform: 'ios')`
+ * sets. It only knows how to say `ios`, `android` or "don't know", so on a
+ * Mac it says "don't know". The
  * declared platform from `supanative/core` answers then: every shell exports
  * `NATIVEPHP_PLATFORM` before the interpreter starts, so `macos` is available
  * without a bridge round-trip and without this class having to know how a Mac
@@ -84,11 +84,11 @@ class IconResolver
         AndroidSymbol|string|null $android,
         WindowsSymbol|string|null $windows = null,
     ): array {
-        $platform = Platform::current() ?? RenderPlatform::current();
+        $platform = System::platform() ?? RenderPlatform::current();
 
         $override = match ($platform) {
-            Platform::IOS, RenderPlatform::MACOS => $ios,
-            Platform::ANDROID => $android,
+            'ios', RenderPlatform::MACOS => $ios,
+            'android' => $android,
             RenderPlatform::WINDOWS => $windows ?? $name ?? $ios,
             default => null,
         };
@@ -101,7 +101,7 @@ class IconResolver
             $icon = $override->value;
         }
 
-        $variant = ($platform === Platform::ANDROID && $android instanceof AndroidSymbol && ! Icon::isCustom($icon))
+        $variant = ($platform === 'android' && $android instanceof AndroidSymbol && ! Icon::isCustom($icon))
             ? $android->variant()
             : null;
 

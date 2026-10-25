@@ -7,9 +7,13 @@ return [
     | App Version Name
     |--------------------------------------------------------------------------
     |
-    | This is the human-readable version of your app (e.g. "1.0.0"). It is
-    | used as the versionName in Android builds and may be displayed in
-    | the app or console to determine the current app release version.
+    | This is the human-readable version number of your app (e.g. "1.0.0").
+    | It is used as CFBundleShortVersionString on iOS and versionName on
+    | Android, and is what users see in the stores and device settings.
+    |
+    | Leave it as "DEBUG" while developing. A DEBUG build extracts its
+    | bundled Laravel app on every launch, so it always runs your latest
+    | code. See the build number below for how other versions behave.
     |
     */
 
@@ -17,12 +21,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | App Version Code
+    | App Version Code (Build Number)
     |--------------------------------------------------------------------------
     |
-    | This is the internal numeric version code used for Play Store builds.
-    | It must increase with every release. This is used as versionCode in
-    | Android builds and is required for publishing updates to the store.
+    | This is the internal build number of your app. It is used as
+    | CFBundleVersion on iOS and versionCode on Android, and both stores
+    | require it to increase with every upload. `native:package` bumps it.
+    |
+    | Outside DEBUG, the app only extracts its bundled Laravel app when the
+    | version number or the build number differs from the one it extracted
+    | last. A new build installed with the same pair keeps running the old
+    | code, so bump the build number for every build you put on a device.
     |
     */
 
@@ -80,6 +89,11 @@ return [
     | List the path prefixes your app actually handles to claim only those:
     |
     |     'deeplink_paths' => ['/docs/', '/orders/'],
+    |
+    | A path ending in `/` claims everything beneath it, but not itself. One
+    | ending in `*` claims every path that starts with what comes before it,
+    | so `/@*` claims `/@taylor` and `/@taylor/posts`. Any other path is
+    | matched exactly.
     |
     | On iOS this is already handled server-side by the `components` block of
     | your apple-app-site-association file, so these values are Android-only:
@@ -299,6 +313,11 @@ return [
 
     'android' => [
         'gradle_jdk_path' => env('NATIVEPHP_GRADLE_PATH'),
+
+        // Seconds a Gradle build may run before it is stopped. Empty or 0 means
+        // no limit, which is the default: a cold first build that downloads
+        // every dependency can take well over 10 minutes.
+        'gradle_timeout' => env('NATIVEPHP_GRADLE_TIMEOUT'),
         'android_sdk_path' => env('NATIVEPHP_ANDROID_SDK_LOCATION'),
         'emulator_path' => env('ANDROID_EMULATOR'),
         '7zip-location' => env('NATIVEPHP_7ZIP_LOCATION', 'C:\\Program Files\\7-Zip\\7z.exe'),

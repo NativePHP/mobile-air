@@ -14,12 +14,14 @@ use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
 use Native\Mobile\Commands\CredentialsCommand;
 use Native\Mobile\Commands\DebugCommand;
+use Native\Mobile\Commands\DevicesCommand;
 use Native\Mobile\Commands\InstallCommand;
 use Native\Mobile\Commands\JumpCommand;
 use Native\Mobile\Commands\LaunchEmulatorCommand;
 use Native\Mobile\Commands\MakeNativeComponentCommand;
 use Native\Mobile\Commands\MakeNativeTestCommand;
 use Native\Mobile\Commands\OpenProjectCommand;
+use Native\Mobile\Commands\OpenUrlCommand;
 use Native\Mobile\Commands\PackageCommand;
 use Native\Mobile\Commands\PluginBoostCommand;
 use Native\Mobile\Commands\PluginCreateCommand;
@@ -33,7 +35,9 @@ use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunAsyncTaskCommand;
 use Native\Mobile\Commands\RunCommand;
+use Native\Mobile\Commands\ScreenshotCommand;
 use Native\Mobile\Commands\SimCommand;
+use Native\Mobile\Commands\StatusCommand;
 use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
@@ -41,6 +45,7 @@ use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\Elements as ChromeElements;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\UnknownElementHint;
 use Native\Mobile\Events\Device\ThermalStateChanged;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
@@ -52,11 +57,14 @@ use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\GlobalEventRouter;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
+use Native\Mobile\Support\Lane;
+use RuntimeException;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use SupaNative\Core\Contracts\RoutesGlobalEvents;
 use SupaNative\Core\Edge\EdgeLog;
 use SupaNative\Core\Edge\ElementRegistry;
+use SupaNative\Core\Edge\Exceptions\UnknownElementException;
 use SupaNative\Core\Edge\ImageSource;
 use SupaNative\Core\Edge\NativeTagPrecompiler;
 use SupaNative\Core\Edge\ScreenRoutes;
@@ -94,6 +102,10 @@ class NativeServiceProvider extends PackageServiceProvider
                 JumpCommand::class,
                 WatchCommand::class,
                 TailCommand::class,
+                DevicesCommand::class,
+                OpenUrlCommand::class,
+                ScreenshotCommand::class,
+                StatusCommand::class,
                 VersionCommand::class,
                 PluginBoostCommand::class,
                 PluginCreateCommand::class,
@@ -305,10 +317,12 @@ class NativeServiceProvider extends PackageServiceProvider
 
     public function packageBooted()
     {
+        $this->reinstallDevtoolsExceptionHandler();
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->feedPlatformToTailwindParser();
         $this->resolveImageSourcesUnderJump();
+        $this->hintUnknownElements();
         $this->registerChromeElements();
         $this->registerUiPluginComponents();
         $this->registerFilesystems();
@@ -345,6 +359,23 @@ class NativeServiceProvider extends PackageServiceProvider
         // ->name() and ->layout() chain exactly as before.
         ScreenRoutes::servedBy(function (string $uri, string $componentClass) {
             $route = Route::get($uri, function () use ($componentClass) {
+                // A lane other than the main one asked for a native screen,
+                // most often a link or redirect in a php web view inside a
+                // native screen. It must never enter the runloop (see
+                // NativeRouter::openOnMainLane()), so the screen on show
+                // opens the route instead and the web view keeps its page.
+                if (! Lane::isMain()) {
+                    $path = '/'.ltrim(request()->path(), '/');
+                    $queryString = (string) request()->server('QUERY_STRING', '');
+                    $target = $queryString === '' ? $path : "$path?$queryString";
+
+                    if (! NativeRouter::openOnMainLane($target)) {
+                        throw new RuntimeException("Native screen [{$target}] can only run on the main lane, and native did not take the request to open it there.");
+                    }
+
+                    return response()->noContent();
+                }
+
                 // Native route reached without a native runtime — a shared
                 // app link opened in a plain browser, a crawler, a
                 // misconfigured deploy. The runloop can never satisfy these
@@ -392,11 +423,12 @@ class NativeServiceProvider extends PackageServiceProvider
                     // restores onto it — otherwise the entry screen ("/") gets
                     // pushed on top of the restored stack and the user is dumped
                     // back at root. Leave .hot_restart in place; the target
-                    // route is the sole consumer. Normalize for a stable compare
-                    // so we can't redirect-loop.
+                    // route is the sole consumer. Compare paths alone so we can't
+                    // redirect-loop: the saved top keeps its query string and
+                    // $path never has one.
                     $savedTop = is_array($data) ? ($data['uri'] ?? null) : null;
                     $savedTopNorm = $savedTop !== null ? '/'.ltrim($savedTop, '/') : null;
-                    if ($age <= 30 && $savedTopNorm && $savedTopNorm !== $path) {
+                    if ($age <= 30 && $savedTopNorm && NativeRouter::pathOf($savedTopNorm) !== $path) {
                         return redirect($savedTopNorm);
                     }
 
@@ -406,7 +438,8 @@ class NativeServiceProvider extends PackageServiceProvider
                     // `start()` will push that as the top itself.
                     if ($age <= 30 && ! empty($stack)) {
                         $last = end($stack);
-                        if (is_array($last) && ($last['uri'] ?? null) === $path) {
+                        if (is_array($last) && is_string($last['uri'] ?? null)
+                            && NativeRouter::pathOf($last['uri']) === $path) {
                             array_pop($stack);
                         }
                         if (! empty($stack)) {
@@ -415,7 +448,13 @@ class NativeServiceProvider extends PackageServiceProvider
                     }
                 }
 
-                $exitUri = $router->start($componentClass, $params, $path);
+                NativeRouter::logRestartAfterCrash();
+
+                // Hand the launch screen its query the way a warm link does: in
+                // the URI, parsed by the router. request()->query() has been
+                // through TrimStrings and ConvertEmptyStringsToNull by now.
+                $queryString = (string) request()->server('QUERY_STRING', '');
+                $exitUri = $router->start($componentClass, $params, $queryString === '' ? $path : "$path?$queryString");
 
                 if ($exitUri !== null) {
                     return redirect($exitUri);
@@ -698,6 +737,22 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->app->make(HttpKernel::class)->pushMiddleware(HonorsRequestedNativeScreen::class);
     }
 
+    /**
+     * The device bootstraps install a devtools exception handler before the
+     * framework boots, but Laravel's HandleExceptions bootstrapper calls
+     * set_exception_handler() — which replaces rather than chains — so that
+     * early install is discarded and uncaught throwables would never be
+     * reported. Put it back now that Laravel's handler is the one to chain.
+     *
+     * No-op off-device: the helper only exists when a bootstrap loaded it.
+     */
+    private function reinstallDevtoolsExceptionHandler(): void
+    {
+        if (function_exists('nativephp_devtools_install_exception_handler')) {
+            nativephp_devtools_install_exception_handler(storage_path());
+        }
+    }
+
     private function setupComposerPostUpdateScript()
     {
         // Temporarily disabled for testing
@@ -834,7 +889,7 @@ class NativeServiceProvider extends PackageServiceProvider
      * list already defaults to ios/android, so nothing else is needed.
      *
      * Boot-time detection is best-effort by design: outside the mobile
-     * runtime (tests, web preview) there is no bridge and Platform::current()
+     * runtime (tests, web preview) there is no bridge and System::platform()
      * returns null, which is exactly the "platform unknown → drop variant
      * classes" behaviour the parser had before. In Jump dev mode the first
      * probe can lose a race with the device's WebSocket attach, so this feed
@@ -844,7 +899,7 @@ class NativeServiceProvider extends PackageServiceProvider
      */
     protected function feedPlatformToTailwindParser(): void
     {
-        TailwindParser::setPlatform(Platform::current());
+        TailwindParser::setPlatform(Facades\System::platform());
     }
 
     /**
@@ -857,6 +912,16 @@ class NativeServiceProvider extends PackageServiceProvider
         ImageSource::resolveRelativeUsing(static fn (string $src): string => System::runningInJump()
             ? asset(str_starts_with($src, './') ? substr($src, 2) : $src)
             : $src);
+    }
+
+    /**
+     * Name the plugin behind an element tag no one has registered. Core
+     * throws the error, but only this package knows its plugins, and
+     * the elements of mobile-ui, so this package gives the hints.
+     */
+    protected function hintUnknownElements(): void
+    {
+        UnknownElementException::hintUsing(static fn (string $type): ?string => UnknownElementHint::for($type));
     }
 
     /**

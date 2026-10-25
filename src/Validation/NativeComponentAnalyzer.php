@@ -5,6 +5,7 @@ namespace Native\Mobile\Validation;
 use Illuminate\Filesystem\Filesystem;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Support\PathHelper;
+use SupaNative\Core\Edge\NativeComponent as CoreNativeComponent;
 
 class NativeComponentAnalyzer
 {
@@ -198,7 +199,7 @@ class NativeComponentAnalyzer
 
             // If render() is not overridden (uses the default convention-based view),
             // infer the view name from the class name
-            if ($method->getDeclaringClass()->getName() === NativeComponent::class) {
+            if (in_array($method->getDeclaringClass()->getName(), [NativeComponent::class, CoreNativeComponent::class], true)) {
                 return $className::inferViewName();
             }
 
@@ -212,6 +213,12 @@ class NativeComponentAnalyzer
 
             // Match $this->view('name') pattern
             if (preg_match('/\$this\s*->\s*view\s*\(\s*[\'"]([^\'"]+)[\'"]/', $methodBody, $matches)) {
+                return $matches[1];
+            }
+
+            // Match the view('native.name') helper, which the starter kit
+            // and native:make use. Names are kept relative to native/.
+            if (preg_match('/(?<![\w>:])view\s*\(\s*[\'"]native\.([^\'"]+)[\'"]/', $methodBody, $matches)) {
                 return $matches[1];
             }
         } catch (\ReflectionException $e) {

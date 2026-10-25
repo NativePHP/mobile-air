@@ -8,6 +8,7 @@ use PHPUnit\Framework\AssertionFailedError;
 use Tests\Fixtures\Edge\CounterScreen;
 use Tests\Fixtures\Edge\DetailScreen;
 use Tests\Fixtures\Edge\GateScreen;
+use Tests\Fixtures\Edge\NavigateRouteScreen;
 use Tests\Fixtures\Edge\NavScreen;
 use Tests\Fixtures\Edge\PingReceived;
 
@@ -193,6 +194,64 @@ it('resolves a named route for navigation', function () {
     Native::test(NavScreen::class)
         ->tap('Push named')
         ->assertNavigatedTo('/listing/5');
+});
+
+it('navigates to a named route built with the global route() helper', function () {
+    app('view')->addLocation(__DIR__.'/../Fixtures/views');
+    Route::native('/listing/{id}', DetailScreen::class)->name('listing.show');
+
+    Native::test(NavigateRouteScreen::class)
+        ->tap('open-listing')
+        ->assertNavigatedTo('/listing/5');
+
+    Native::test(NavigateRouteScreen::class)
+        ->tap('replace-listing')
+        ->assertReplacedWith('/listing/6?tab=reviews')
+        ->followNavigation()
+        ->assertSee('Detail 6');
+});
+
+it('reduces absolute app URLs to a path when exiting to the web', function () {
+    app('view')->addLocation(__DIR__.'/../Fixtures/views');
+    Route::native('/listing/{id}', DetailScreen::class)->name('listing.show');
+
+    Native::test(NavigateRouteScreen::class)
+        ->tap('open-settings')
+        ->assertExitedToWeb('/settings');
+});
+
+it('opens URLs on other hosts in the browser and stays on the screen', function (string $ref, string $url) {
+    app('view')->addLocation(__DIR__.'/../Fixtures/views');
+    Route::native('/listing/{id}', DetailScreen::class)->name('listing.show');
+    $bridge = Native::fakeBridge()->respondTo('Browser.Open', ['success' => true]);
+
+    Native::test(NavigateRouteScreen::class)
+        ->tap($ref)
+        ->assertNoNavigation()
+        ->assertSee('Open listing');
+
+    $bridge->assertCalled('Browser.Open', fn (array $params) => $params['url'] === $url);
+})->with([
+    'navigate' => ['open-external', 'https://nativephp.com'],
+    'exitToWeb' => ['open-terms', 'https://example.com/terms'],
+    'custom scheme' => ['send-mail', 'mailto:hello@example.com'],
+]);
+
+it('stays on the screen when no browser handler can open an external URL', function () {
+    app('view')->addLocation(__DIR__.'/../Fixtures/views');
+    Route::native('/listing/{id}', DetailScreen::class)->name('listing.show');
+    Native::fakeBridge();
+
+    Native::test(NavigateRouteScreen::class)
+        ->tap('open-external')
+        ->assertNoNavigation()
+        ->assertSee('Open listing');
+});
+
+it('reduces an absolute app URL passed to navigate() in PHP', function () {
+    Native::test(NavScreen::class)
+        ->call('navigate', url('/detail/9'))
+        ->assertNavigatedTo('/detail/9');
 });
 
 it('pops the stack on a default device-back press', function () {

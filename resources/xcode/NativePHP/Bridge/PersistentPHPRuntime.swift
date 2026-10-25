@@ -228,11 +228,16 @@ final class PersistentPHPRuntime {
         // response cap instead of PHP's 2MB/8MB defaults; BridgeDispatcher
         // applies them to request bodies the way PHP does. They go here, not
         // in the embed SAPI's ini_entries: php_embed_init() replaces those.
+        //
+        // memory_limit: 128M for every context. The persistent runtime, which
+        // runs the native session, raises its own to 512M when it boots (see
+        // raise_persistent_memory_limit in PHP.c).
         let phpIni = """
         curl.cainfo="\(caPath)"
         openssl.cafile="\(caPath)"
         upload_max_filesize=16M
         post_max_size=16M
+        memory_limit=128M
         """
 
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

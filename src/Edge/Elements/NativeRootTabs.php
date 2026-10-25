@@ -101,6 +101,11 @@ class NativeRootTabs extends Element
         if (isset($attrs['currentUri'])) {
             $this->props['current_uri'] = $attrs['currentUri'];
         }
+        // Router stack depth — same depth-based push/pop reconciliation
+        // signal as NativeRootStack, consumed per-tab on the device side.
+        if (isset($attrs['stackDepth'])) {
+            $this->props['stack_depth'] = (int) $attrs['stackDepth'];
+        }
 
         // Per-screen tab-bar overrides folded in by `wrapWithNativeChrome`.
         // `hide_tab_bar` is the explicit signal renderers use to hide the

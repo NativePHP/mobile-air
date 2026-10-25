@@ -13,13 +13,16 @@ struct NodeStyleModifier: ViewModifier {
     /// effects when a plugin renderer handles them internally — currently
     /// only `glass`, but easy to extend.
     let nodeType: String
+    /// Which of the layers below the node uses. A layer outside the set
+    /// isn't built at all.
+    let decorations: NodeDecorations
 
     /// Plugin element types whose own renderer applies the Liquid Glass
     /// material via `.buttonStyle(.glass)` / `.glassEffect(...)` etc. For
     /// these, the outer NodeStyleModifier must NOT also draw a glass plate
     /// behind the rectangular node frame — that produces a ghost rectangle
     /// behind the visible button capsule.
-    private static let glassHandledByRenderer: Set<String> = ["button", "chip", "badge"]
+    static let glassHandledByRenderer: Set<String> = ["button", "chip", "badge"]
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
@@ -45,7 +48,9 @@ struct NodeStyleModifier: ViewModifier {
             // set, the bg color is visible behind the glass and acts as
             // a tint — that's what you want for `bg-red-500 glass` to
             // produce tinted glass.
-            .background(backgroundFill(dark: dark))
+            .nodeModifier(if: decorations.contains(.fill)) {
+                $0.background(backgroundFill(dark: dark))
+            }
             // Corner clip BEFORE the glass. `.glassEffect(...)` renders into
             // its own effect layer and a `.clipShape` applied downstream of it
             // no longer reaches the view's own drawing: the glass plate came
@@ -54,35 +59,56 @@ struct NodeStyleModifier: ViewModifier {
             // circular plate behind a square fill. Clipping first rounds the
             // background and content; the glass below still takes its own
             // shape from the same radii, so tinted glass is unchanged.
-            .modifier(ClipRadiusModifier(radius: radius, radii: radii))
+            .nodeModifier(if: decorations.contains(.clip)) {
+                $0.modifier(ClipRadiusModifier(radius: radius, radii: radii))
+            }
             // Liquid Glass material — iOS 26+ real glass, iOS 18-25 falls
             // back to `.regularMaterial`. Applied AFTER background so the
             // optional bg color tints through. Shape inferred from the
             // element's borderRadius (rounded-full → Capsule, rounded-N →
             // RoundedRectangle, no rounded → Rectangle).
-            .modifier(GlassModifier(
-                flags: Self.glassHandledByRenderer.contains(nodeType) ? 0 : glassFlags,
-                cornerRadius: radius,
-                cornerRadii: radii
-            ))
-            .overlay(borderOverlay(dark: dark, radius: radius))
+            .nodeModifier(if: decorations.contains(.glass)) {
+                $0.modifier(GlassModifier(
+                    flags: Self.glassHandledByRenderer.contains(nodeType) ? 0 : glassFlags,
+                    cornerRadius: radius,
+                    cornerRadii: radii
+                ))
+            }
+            // The border is built only when there is one. Inside the overlay,
+            // so a node that keeps state (and so always has this layer) can
+            // gain or lose a border without anything under it being rebuilt.
+            .nodeModifier(if: decorations.contains(.border)) {
+                $0.overlay {
+                    if (style?.borderWidth ?? 0) > 0 {
+                        borderOverlay(dark: dark, radius: radius)
+                    }
+                }
+            }
             // Elevation `shadow-*` — black, y-offset cast (unchanged).
-            .shadow(
-                color: shadowColor,
-                radius: shadowRadius,
-                x: 0,
-                y: shadowY
-            )
+            .nodeModifier(if: decorations.contains(.shadow)) {
+                $0.shadow(
+                    color: shadowColor,
+                    radius: shadowRadius,
+                    x: 0,
+                    y: shadowY
+                )
+            }
             // Colored `glow-*` — stacked zero-offset halos (Slice 1).
-            .modifier(GlowShadowModifier(
-                color: glowColor,
-                radius: glowRadius,
-                opacity: glowOpacity
-            ))
+            .nodeModifier(if: decorations.contains(.glow)) {
+                $0.modifier(GlowShadowModifier(
+                    color: glowColor,
+                    radius: glowRadius,
+                    opacity: glowOpacity
+                ))
+            }
             // Tailwind `blur-*` — Gaussian softens the node's own pixels
-            // (page-bg orbs). Props-bag radius in points; no-op at 0.
-            .modifier(BlurFilterModifier(radius: blurRadius))
-            .opacity(opacity)
+            // (page-bg orbs). Props-bag radius in points.
+            .nodeModifier(if: decorations.contains(.blur)) {
+                $0.modifier(BlurFilterModifier(radius: blurRadius))
+            }
+            .nodeModifier(if: decorations.contains(.opacity)) {
+                $0.opacity(opacity)
+            }
     }
 
     // MARK: - Background Color
@@ -178,6 +204,7 @@ struct NodeStyleModifier: ViewModifier {
 
     // MARK: - Border
 
+    /// Only built for a node with a border width (see `body`).
     @ViewBuilder
     private func borderOverlay(dark: Bool, radius: CGFloat) -> some View {
         let width = CGFloat(style?.borderWidth ?? 0)
@@ -192,16 +219,13 @@ struct NodeStyleModifier: ViewModifier {
         if let border = NodeBorder(props: props, width: width, radius: radius, radii: cornerRadii) {
             NodeBorderShape(border: border)
                 .fill(color)
-                .opacity(width > 0 ? 1 : 0)
                 .allowsHitTesting(false)
         } else if let radii = cornerRadii {
             UnevenRoundedRectangle(cornerRadii: radii)
                 .strokeBorder(color, lineWidth: width)
-                .opacity(width > 0 ? 1 : 0)
         } else {
             RoundedRectangle(cornerRadius: radius)
                 .strokeBorder(color, lineWidth: width)
-                .opacity(width > 0 ? 1 : 0)
         }
     }
 

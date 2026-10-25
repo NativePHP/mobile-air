@@ -117,7 +117,7 @@ object DeviceFunctions {
      * Parameters: none
      * Returns:
      *   - JSON string with device details (name, model, platform, osVersion,
-     *     memUsed, memTotal, processorCount, activeProcessorCount, systemUptime, etc.)
+     *     timezone, memUsed, memTotal, processorCount, activeProcessorCount, systemUptime, etc.)
      */
     class GetInfo(private val context: Context) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
@@ -157,6 +157,10 @@ object DeviceFunctions {
 
                     // Language (BCP 47 tag, e.g. "en-US")
                     put("language", java.util.Locale.getDefault().toLanguageTag())
+
+                    // Timezone (IANA name, e.g. "Europe/Lisbon"). Android resets the
+                    // default when the phone changes zone, so this is always current.
+                    put("timezone", java.util.TimeZone.getDefault().id)
 
                     // Virtual device detection
                     put("isVirtual", isEmulator())
