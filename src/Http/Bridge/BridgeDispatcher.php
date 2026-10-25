@@ -6,6 +6,11 @@ use Illuminate\Http\Request;
 use InvalidArgumentException;
 use Native\Mobile\Runtime;
 use Native\Mobile\Support\Lane;
+use SupaNative\Core\Http\Bridge\OutputCapture;
+use SupaNative\Core\Http\Bridge\ParsedBody;
+use SupaNative\Core\Http\Bridge\RawHttpResponse;
+use SupaNative\Core\Http\Bridge\RequestBodyParser;
+use SupaNative\Core\Http\Bridge\RequestFactory;
 use Throwable;
 
 /**

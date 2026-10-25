@@ -30,6 +30,13 @@
  *
  *     Native\Mobile\Events\GlobalEventDispatcher → SupaNative\Core\Support\GlobalEventDispatcher
  *
+ * The request body classes came next, under a prefix of
+ * their own. BridgeDispatcher stays here, as all the
+ * shells call it by name, and the probe skips it:
+ *
+ *     Native\Mobile\Http\Bridge\RequestBodyParser → SupaNative\Core\Http\Bridge\RequestBodyParser
+ *     ... and the rest of `Http\Bridge` but BridgeDispatcher
+ *
  * The thermal enum came last. It sits at the root of the
  * namespace, beside no prefix, so it is listed whole,
  * and it is aliased right away, as the file loads:
@@ -129,7 +136,11 @@
  * actually used), but once it fires, every old name exists and load order
  * stops mattering.
  *
- * The set is discovered by walking core's own `src/Edge` directory rather
+ * The request body classes get the same sweep, as mobile's own tests
+ * showed: RequestBodyParser hands back a ParsedBody, and any code
+ * that types it by its old name need not have loaded the name.
+ *
+ * Each set is discovered by walking core's own folder for it rather
  * than from a list kept here, which would silently drift the first time
  * core gains, renames, or moves back an element. A name that also exists in
  * this package is left alone — see the ownership check below, which is not
@@ -194,9 +205,9 @@ $nativePhpMobileOwnsClass = static function (string $class): bool {
 };
 
 spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): void {
-    static $aliasedWholeSet = false;
+    static $swept = [];
 
-    // Every prefix that moved, old → new. Only the Edge one gets the
+    // Every prefix that moved, old → new. Only Edge and Http\Bridge get the
     // whole-set treatment below: the type-declaration hazard it exists for
     // needs a class to appear in a signature, and neither an attribute (read
     // back through reflection, which resolves the literal name) nor a
@@ -207,6 +218,7 @@ spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): 
         'Native\\Mobile\\Support\\' => 'SupaNative\\Core\\Support\\',
         'Native\\Mobile\\Concerns\\' => 'SupaNative\\Core\\Concerns\\',
         'Native\\Mobile\\Exceptions\\' => 'SupaNative\\Core\\Exceptions\\',
+        'Native\\Mobile\\Http\\Bridge\\' => 'SupaNative\\Core\\Http\\Bridge\\',
 
         // A whole name and not a prefix, as this class changed folder as well.
         'Native\\Mobile\\Events\\GlobalEventDispatcher' => 'SupaNative\\Core\\Support\\GlobalEventDispatcher',
@@ -245,25 +257,28 @@ spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): 
         class_alias($target, $class);
     }
 
-    // The whole-set sweep is the Edge namespace's alone — see the note on
-    // $prefixes above.
-    if ($aliasedWholeSet || $oldPrefix !== 'Native\\Mobile\\Edge\\') {
+    // The whole-set sweep, for the prefixes whose classes show up in
+    // signatures. Each folder in core is found via a class at its
+    // root, and with no core installed there is nothing to do.
+    $sweeps = [
+        'Native\\Mobile\\Edge\\' => 'Element',
+        'Native\\Mobile\\Http\\Bridge\\' => 'RequestBodyParser',
+    ];
+
+    if (! isset($sweeps[$oldPrefix]) || isset($swept[$oldPrefix])) {
         return;
     }
 
-    $aliasedWholeSet = true;
+    $swept[$oldPrefix] = true;
 
-    // Core's Edge root, from core's own Element (a root-level Edge class, so
-    // one dirname lands exactly on src/Edge). If core isn't installed there
-    // is nothing to alias and nothing to do.
-    if (! class_exists($newPrefix.'Element')) {
+    if (! class_exists($newPrefix.$sweeps[$oldPrefix])) {
         return;
     }
 
-    $edgeRoot = dirname((new \ReflectionClass($newPrefix.'Element'))->getFileName());
+    $root = dirname((new \ReflectionClass($newPrefix.$sweeps[$oldPrefix]))->getFileName());
 
     $files = new \RecursiveIteratorIterator(
-        new \RecursiveDirectoryIterator($edgeRoot, \FilesystemIterator::SKIP_DOTS)
+        new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
     );
 
     foreach ($files as $file) {
@@ -271,7 +286,7 @@ spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): 
             continue;
         }
 
-        $relative = substr($file->getPathname(), strlen($edgeRoot) + 1, -4);
+        $relative = substr($file->getPathname(), strlen($root) + 1, -4);
         $name = $oldPrefix.str_replace(DIRECTORY_SEPARATOR, '\\', $relative);
 
         if ($name === $class) {
