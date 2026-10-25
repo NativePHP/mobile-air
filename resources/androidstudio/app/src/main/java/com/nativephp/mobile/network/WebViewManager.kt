@@ -40,6 +40,11 @@ class WebViewManager(
 
     companion object {
         var shared: WebViewManager? = null
+
+        /** php-mode `<webview>` elements, which show app pages inside a native screen. Main thread only. */
+        private val embeddedWebViews = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
+
+        fun embeddedWebViews(): List<WebView> = embeddedWebViews.toList()
     }
 
     fun setup() {
@@ -48,7 +53,9 @@ class WebViewManager(
         setupWebViewClient()
         setupJavaScriptInterfaces()
         installRequestBodyShimAtDocumentStart()
-        if (!embedded) {
+        if (embedded) {
+            embeddedWebViews.add(webView)
+        } else {
             WebViewManager.shared = this // 👈 make this instance globally accessible
         }
     }
