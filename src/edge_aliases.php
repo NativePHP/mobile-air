@@ -30,6 +30,12 @@
  *
  *     Native\Mobile\Events\GlobalEventDispatcher → SupaNative\Core\Support\GlobalEventDispatcher
  *
+ * The thermal enum came last. It sits at the root of the
+ * namespace, beside no prefix, so it is listed whole,
+ * and it is aliased right away, as the file loads:
+ *
+ *     Native\Mobile\ThermalState → SupaNative\Core\ThermalState
+ *
  * The marker `Events\Concerns\BroadcastsGlobally` moved to core as well, and
  * is not aliased here. The old name is an interface of this package which
  * extends core's, so an event that names it carries core's marker too.
@@ -80,7 +86,8 @@
  * would pull the whole element layer into memory on every request —
  * including plain web requests that never render a native screen. This
  * registers an autoloader instead, so an app that never touches the old
- * namespace pays nothing at all.
+ * namespace pays nothing at all. The thermal enum is the one exception, for
+ * the reason given where it is aliased, at the end of this file.
  *
  * The `Native\Mobile\` PSR-4 prefix maps to `src/`, so Composer's
  * autoloader looks for `src/Edge/Element.php`, doesn't find it, and PHP
@@ -203,6 +210,9 @@ spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): 
 
         // A whole name and not a prefix, as this class changed folder as well.
         'Native\\Mobile\\Events\\GlobalEventDispatcher' => 'SupaNative\\Core\\Support\\GlobalEventDispatcher',
+
+        // A whole name as well, as no prefix here covers the namespace's root.
+        'Native\\Mobile\\ThermalState' => 'SupaNative\\Core\\ThermalState',
     ];
 
     $oldPrefix = null;
@@ -282,3 +292,8 @@ spl_autoload_register(function (string $class) use ($nativePhpMobileOwnsClass): 
         class_exists($name);
     }
 });
+
+// Other packages on core hand out core's ThermalState, as desktop's
+// System does, and a type check never autoloads, so the old name
+// is aliased here, before anything can be checked against it.
+class_exists('Native\\Mobile\\ThermalState');

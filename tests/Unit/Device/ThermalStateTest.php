@@ -8,12 +8,34 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\Events\Device\ThermalStateChanged;
 use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\ThermalState;
+use SupaNative\Core\ThermalState as CoreThermalState;
+use Symfony\Component\Process\Process;
 
 beforeEach(fn () => Device::forgetThermalState());
 
 afterEach(function () {
     Device::forgetThermalState();
     FakeBridge::disable();
+});
+
+// The enum lives in supanative/core now, and its old name
+// is an alias, made as mobile's autoload file runs, so
+// all the tests in this file run through the alias.
+
+describe('The old name', function () {
+    it('is the enum in core', function () {
+        expect((new ReflectionEnum(ThermalState::class))->getName())->toBe(CoreThermalState::class)
+            ->and(ThermalState::Hot)->toBe(CoreThermalState::Hot);
+    });
+
+    it('takes a case of the enum in core where it is the type, in a PHP that never named it', function () {
+        $autoload = var_export(dirname(__DIR__, 3).'/vendor/autoload.php', true);
+
+        $process = new Process([PHP_BINARY, '-r', "require {$autoload}; echo (fn (Native\\Mobile\\ThermalState \$state) => \$state->value)(SupaNative\\Core\\ThermalState::Hot);"]);
+        $process->mustRun();
+
+        expect($process->getOutput())->toBe('hot');
+    });
 });
 
 describe('ThermalState helpers', function () {
