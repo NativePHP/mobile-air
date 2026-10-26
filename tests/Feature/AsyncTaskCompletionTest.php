@@ -297,3 +297,26 @@ it('keeps a completion that lands before the new screen has drawn its first fram
 
     FakeBridge::disable();
 });
+
+it('keeps a completion that lands while the transition is being signalled', function () {
+    $bridge = FakeBridge::enable();
+    $router = new NativeRouter;
+    (new ReflectionProperty(NativeRouter::class, 'deferredTransition'))->setValue($router, Transition::Fade);
+
+    $completion = ['type' => 20, 'event' => 'native:'.AsyncTaskFinished::class, 'payload' => ['id' => 't2', 'result' => 'done']];
+
+    // iOS stages the transition on the main thread and the call waits for it, so a task can finish meanwhile.
+    $bridge->respondTo('NativeUI.Transition.Set', function () use ($bridge, $completion): array {
+        $bridge->queueEvent($completion);
+
+        return ['success' => true];
+    });
+
+    $router->flushDeferredTransition();
+
+    expect($router->takeCarriedEvent())->toBe($completion)
+        ->and($router->takeCarriedEvent())->toBeNull()
+        ->and($bridge->resetCount)->toBe(1);
+
+    FakeBridge::disable();
+});

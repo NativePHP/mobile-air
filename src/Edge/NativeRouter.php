@@ -211,6 +211,10 @@ class NativeRouter
      * can finish before that first frame, and its completion would be
      * dropped with them. Its timeout is disarmed once it finishes, so the
      * screen would wait for it forever. Those completions are kept.
+     *
+     * They're taken after the transition is signalled, right before the
+     * reset. On iOS the signal waits for the main thread, which is busy
+     * with the outgoing screen, and a task can finish in that wait.
      */
     public function flushDeferredTransition(): void
     {
@@ -221,9 +225,10 @@ class NativeRouter
         $t = $this->deferredTransition;
         $this->deferredTransition = null;
 
+        static::signalTransition($t);
+
         $this->carriedEvents = [...$this->carriedEvents, ...static::takeAsyncCompletions()];
 
-        static::signalTransition($t);
         static::resetBuffers();
     }
 
