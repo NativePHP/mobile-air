@@ -26,9 +26,31 @@ trait HasVirtualListWindow
      */
     public int $virtualWindowTo = 79;
 
+    /**
+     * The row the list was last asked to show, for the list's
+     * `:auto-scroll-to`. Null until scrollVirtualListTo() is called.
+     */
+    public ?int $virtualScrollTo = null;
+
     public function setVirtualWindow(int $from, int $to): void
     {
         $this->virtualWindowFrom = max(0, $from);
         $this->virtualWindowTo = max($this->virtualWindowFrom, $to);
+    }
+
+    /**
+     * Show absolute row $index: move the window so it starts a little above
+     * the row, keeping its size, and remember the row for the list's
+     * `:auto-scroll-to="$virtualScrollTo"`. The row is in the very render
+     * that scrolls to it, so it draws in place of a placeholder.
+     */
+    public function scrollVirtualListTo(int $index): void
+    {
+        $index = max(0, $index);
+        $size = max(0, $this->virtualWindowTo - $this->virtualWindowFrom);
+        $from = max(0, $index - intdiv($size, 4));
+
+        $this->setVirtualWindow($from, $from + $size);
+        $this->virtualScrollTo = $index;
     }
 }
