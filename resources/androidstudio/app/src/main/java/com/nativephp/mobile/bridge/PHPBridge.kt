@@ -573,25 +573,29 @@ class PHPBridge(private val context: Context) {
         consumePostBody(key)?.let { String(it.bytes, Charsets.UTF_8) }
 
     /**
-     * Re-execute a native route with a fresh PHP process.
-     * Used by hot reload to restart native UI with updated class definitions.
-     * Blocks the calling thread for the duration of the native UI session.
+     * Dispatch a native route as a native session. Blocks the calling thread
+     * for the life of the session, until navigation leaves it. Returns what
+     * the persistent runtime wrote, untouched: the session's exit response,
+     * or whatever PHP printed before it died part-way. Run it through
+     * [NativeSession], which restarts a session that died.
+     *
+     * Classic mode runs it as an ordinary request, which always comes back
+     * as a complete response.
      */
-    fun executeNativeRoute(uri: String) {
-        val future = phpExecutor.submit<Unit> {
-            if (persistentMode && persistentBooted) {
-                nativePersistentDispatchBytes(
-                    "GET", uri, null, "",
-                    LaravelCookieStore.asCookieHeader(),
-                    "Accept: text/html".toByteArray(Charsets.UTF_8),
-                    nativePhpScript
-                )
-            } else {
-                ensureRuntimeInitialized()
-                nativeHandleRequest("GET", uri, null, nativePhpScript)
-            }
+    fun executeNativeRoute(uri: String): ByteArray {
+        if (!(persistentMode && persistentBooted)) {
+            return handleLaravelRequestBytes(PHPRequest(url = uri, headers = mapOf("Accept" to "text/html")))
         }
-        future.get()  // Block caller — native UI route runs until navigation exits
+
+        val future = phpExecutor.submit<ByteArray> {
+            nativePersistentDispatchBytes(
+                "GET", uri, null, "",
+                LaravelCookieStore.asCookieHeader(),
+                "Accept: text/html".toByteArray(Charsets.UTF_8),
+                nativePhpScript
+            ) ?: ByteArray(0)
+        }
+        return future.get()  // Block caller — native UI route runs until navigation exits
     }
 
     fun getLastPostData(): String? {
@@ -610,12 +614,7 @@ class PHPBridge(private val context: Context) {
      * what was captured. Only the head is ever decoded; the body is untouched.
      */
     fun processRawPHPResponse(response: ByteArray): ByteArray {
-        val split = indexOfHeadEnd(response)
-        val prefix = "HTTP/1.1 ".toByteArray(Charsets.US_ASCII)
-        val startsWithStatus = response.size >= prefix.size &&
-            prefix.indices.all { response[it] == prefix[it] }
-
-        if (!startsWithStatus || split < 0) {
+        if (!isCompleteResponse(response)) {
             Log.e(TAG, "Bridge returned an incomplete response (${response.size} bytes)")
             val captured = String(response, 0, minOf(response.size, 64 * 1024), Charsets.UTF_8)
             val body = ("The PHP bridge did not get a complete HTTP response back. " +
@@ -626,7 +625,7 @@ class PHPBridge(private val context: Context) {
             return head.toByteArray(Charsets.UTF_8) + body
         }
 
-        val head = String(response, 0, split, Charsets.UTF_8)
+        val head = String(response, 0, indexOfHeadEnd(response), Charsets.UTF_8)
         val setCookies = head.split("\r\n")
             .filter { it.startsWith("Set-Cookie:", ignoreCase = true) }
             .map { it.substringAfter(":", "").trim() }
@@ -638,12 +637,24 @@ class PHPBridge(private val context: Context) {
                 // mirror (no-op until a WebRenderer exists).
                 com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
                 com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
-                Log.d(TAG, "Stored cookie: $cookieValue")
+                Log.d(TAG, "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}")
             }
             com.nativephp.mobile.security.WebCookieMirror.flush()
         }
 
         return response
+    }
+
+    /**
+     * Whether [response] is a whole HTTP response: a status line and a head
+     * that ends. PHP always writes one when it finishes a request.
+     */
+    fun isCompleteResponse(response: ByteArray): Boolean {
+        val prefix = "HTTP/1.1 ".toByteArray(Charsets.US_ASCII)
+        val startsWithStatus = response.size >= prefix.size &&
+            prefix.indices.all { response[it] == prefix[it] }
+
+        return startsWithStatus && indexOfHeadEnd(response) >= 0
     }
 
     /** Offset of the first CRLF CRLF in [raw], or -1. */
@@ -660,8 +671,8 @@ class PHPBridge(private val context: Context) {
     }
 
     fun processRawPHPResponse(response: String): String {
-        // Log the first 200 characters to understand the response format
-        Log.d(TAG, "Response first 200 chars: ${response.take(200)}")
+        // Only the first line: the headers below it can carry Set-Cookie values
+        Log.d(TAG, "Response first line: ${response.substringBefore("\r\n").take(200)}")
 
         // Check for Set-Cookie headers regardless of response format
         if (response.contains("Set-Cookie:", ignoreCase = true)) {
@@ -672,8 +683,6 @@ class PHPBridge(private val context: Context) {
                 .filter { it.startsWith("Set-Cookie:", ignoreCase = true) }
 
             setCookieLines.forEach { cookieLine ->
-                Log.d(TAG, "Cookie line: $cookieLine")
-
                 // Extract the cookie value (after "Set-Cookie:")
                 val cookieValue = cookieLine.substringAfter(":", "").trim()
                 if (cookieValue.isNotEmpty()) {
@@ -682,7 +691,7 @@ class PHPBridge(private val context: Context) {
                     // native-only boot never loads the Chromium provider).
                     com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
                     com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
-                    Log.d(TAG, "Stored cookie: $cookieValue")
+                    Log.d(TAG, "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}")
                 }
             }
 

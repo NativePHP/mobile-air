@@ -6,6 +6,7 @@ use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Commands\BuildIosAppCommand;
+use ReflectionClass;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
@@ -78,6 +79,60 @@ class IosSimulatorBuildTest extends TestCase
             $this->testProjectPath.'/nativephp/ios/build/Build/Products/Debug-iphonesimulator/NativePHP-simulator.app',
             $this->commandWith(['--simulated' => true])->simulatorAppPath()
         );
+    }
+
+    /**
+     * The simulator target signed with no entitlements, so the `applinks:`
+     * domain the build writes never reached a simulator app and universal
+     * links could only be tried on a device.
+     */
+    public function test_simulator_app_is_signed_with_the_entitlements_the_build_writes(): void
+    {
+        config(['nativephp.deeplink_host' => 'example.com?mode=developer']);
+        File::ensureDirectoryExists($this->testProjectPath.'/nativephp/ios/NativePHP');
+
+        $entitlements = $this->simulatorEntitlementsSettings();
+
+        $this->assertSame([
+            'Debug' => 'NativePHP/NativePHP.entitlements',
+            'Release' => 'NativePHP/NativePHP.entitlements',
+        ], $entitlements);
+
+        $command = new BuildIosAppCommand;
+        $reflection = new ReflectionClass($command);
+        $reflection->getProperty('containerPath')->setValue($command, $this->testProjectPath.'/nativephp/ios/NativePHP/');
+        $reflection->getMethod('updateEntitlementsFile')->invoke($command);
+
+        $this->assertStringContainsString(
+            '<string>applinks:example.com?mode=developer</string>',
+            File::get($this->testProjectPath.'/nativephp/ios/'.$entitlements['Debug'])
+        );
+    }
+
+    /**
+     * CODE_SIGN_ENTITLEMENTS for each build configuration of the simulator
+     * target, in the Xcode project `native:install ios` copies into an app.
+     *
+     * @return array<string, string|null>
+     */
+    private function simulatorEntitlementsSettings(): array
+    {
+        $pbxproj = File::get(dirname(__DIR__, 2).'/resources/xcode/NativePHP.xcodeproj/project.pbxproj');
+
+        preg_match_all('/\t\t\w+ \/\* (\w+) \*\/ = \{\n\t\t\tisa = XCBuildConfiguration;.*?\n\t\t\};/s', $pbxproj, $configurations, PREG_SET_ORDER);
+
+        $settings = [];
+
+        foreach ($configurations as [$configuration, $name]) {
+            if (! str_contains($configuration, 'INFOPLIST_FILE = "NativePHP-simulator-Info.plist";')) {
+                continue;
+            }
+
+            preg_match('/CODE_SIGN_ENTITLEMENTS = (.+?);/', $configuration, $entitlements);
+            $settings[$name] = $entitlements[1] ?? null;
+        }
+
+        return $settings;
     }
 
     private function commandWith(array $options): IosSimulatorBuildProbe

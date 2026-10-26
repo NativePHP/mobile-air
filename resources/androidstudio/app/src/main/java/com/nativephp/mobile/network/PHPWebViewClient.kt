@@ -4,17 +4,21 @@ import android.util.Log
 import android.webkit.*
 import java.io.ByteArrayInputStream
 import java.io.BufferedInputStream
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import java.io.File
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.security.LaravelCookieStore
 import com.nativephp.mobile.security.LaravelSecurity
+import com.nativephp.mobile.security.LogRedaction
 
 
 /**
- * PHPWebViewClient that extends RequestInspectorWebViewClient to handle PHP requests
- * while also getting the benefit of request inspection.
+ * Serves the WebView's 127.0.0.1 requests (pages and assets) from PHP.
  */
 class PHPWebViewClient(
     private val phpBridge: PHPBridge,
@@ -61,8 +65,21 @@ class PHPWebViewClient(
             // Log all paths we're trying
             Log.d(TAG, "🔍 Checking paths: ${possiblePaths.joinToString()}")
 
+            // Confine every candidate to public/. The path comes from the
+            // request URL, and a `..` left in it (e.g. `/_assets/../.env`, or
+            // its percent-encoded form) would otherwise resolve to any file the
+            // app process can read — `.env`, the SQLite database, PHP source.
+            // canonicalPath resolves symlinks and `..`; require the result to
+            // stay inside public/. A miss falls through to the PHP handler,
+            // which 404s, exactly like any other unknown asset.
+            val publicRoot = File(laravelPublicPath).canonicalPath
+            val withinPublic = { candidate: String ->
+                val real = try { File(candidate).canonicalPath } catch (e: Exception) { "" }
+                real == publicRoot || real.startsWith(publicRoot + File.separator)
+            }
+
             // Try each path
-            val assetFile = possiblePaths.firstOrNull { File(it).exists() }?.let { File(it) }
+            val assetFile = possiblePaths.firstOrNull { withinPublic(it) && File(it).exists() }?.let { File(it) }
 
             if (assetFile != null && assetFile.exists()) {
                 Log.d(TAG, "✅ Found asset at: ${assetFile.absolutePath}")
@@ -127,7 +144,7 @@ class PHPWebViewClient(
                 )
 
                 val response = parseRawResponse(phpBridge.handleLaravelRequestBytes(phpRequest))
-                Log.d(TAG, "RESPONSE HEADERS: ${response.headers}")
+                Log.d(TAG, "RESPONSE HEADERS: ${LogRedaction.headers(response.headers)}")
 
                 if (response.status == 200) {
                     val (mime, charset) = mimeAndCharset(response.headers["Content-Type"], guessMimeType(cleanPath))
@@ -189,7 +206,7 @@ class PHPWebViewClient(
         headers["Cookie"] = LaravelCookieStore.asCookieHeader()
         LaravelCookieStore.logAll()
 
-        Log.d(TAG, "📤 Final request headers: $headers")
+        Log.d(TAG, "📤 Final request headers: ${LogRedaction.headers(headers)}")
 
         val normalizedPath = when {
             path.startsWith("//") -> path.substring(1)
@@ -227,7 +244,7 @@ class PHPWebViewClient(
         responseHeaders.entries
             .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
             .forEach { (_, value) ->
-                Log.d(TAG, "🍪 Setting cookie from response: $value")
+                Log.d(TAG, "🍪 Setting cookie from response: ${LogRedaction.cookieName(value)}")
                 com.nativephp.mobile.security.WebCookieMirror.set(value)
             }
 
@@ -237,6 +254,12 @@ class PHPWebViewClient(
         if (statusCode in 300..399) {
             val location = responseHeaders["Location"]
             if (!location.isNullOrEmpty()) {
+                // Another host, such as redirect()->away() to an OAuth or
+                // payment page, is nothing PHP can serve.
+                if (isOffHost(location)) {
+                    return leaveForOffHostRedirect(request, location)
+                }
+
                 // An absolute Location carries its query too, and Laravel writes
                 // absolute URLs by default. Taking the path alone drops every
                 // parameter the redirect was meant to hand on.
@@ -540,6 +563,43 @@ class PHPWebViewClient(
             Log.e(TAG, "❌ [JUMP-FORWARD] $urlString failed: ${e.message}")
             return errorResponse(502, "Jump dev server unreachable")
         }
+    }
+
+    /**
+     * An absolute Location that isn't the app's own 127.0.0.1 or localhost.
+     */
+    private fun isOffHost(location: String): Boolean {
+        val uri = Uri.parse(location)
+        if (uri.scheme == null) return false
+
+        val host = uri.host?.lowercase()
+        return host != "127.0.0.1" && host != "localhost"
+    }
+
+    /**
+     * Open an off-host redirect outside the app, the way WebViewManager opens
+     * an external link, and answer the WebView with a 204 so it stays on the
+     * page it was showing. Only a page navigation does this: a fetch or XHR
+     * gets an error rather than sending the user to the browser.
+     */
+    private fun leaveForOffHostRedirect(request: WebResourceRequest, location: String): WebResourceResponse {
+        if (!request.isForMainFrame) {
+            Log.d(TAG, "↪️ Not following a subresource redirect to another host: $location")
+            return errorResponse(502, "Redirect to another host")
+        }
+
+        Log.d(TAG, "🌍 Redirect to another host, opening it outside the app: $location")
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(location))
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(intent)
+            } catch (e: ActivityNotFoundException) {
+                Log.e(TAG, "No app can open $location")
+            }
+        }
+
+        return WebResourceResponse("text/plain", "UTF-8", 204, "No Content", emptyMap(), ByteArrayInputStream(ByteArray(0)))
     }
 
     private fun errorResponse(code: Int, message: String): WebResourceResponse {

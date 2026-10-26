@@ -27,13 +27,13 @@ object LaravelCookieStore {
             val value = parts[1].trim()
             cookies[name] = value
             prefs.edit().putString(name, value).apply()
-            Log.d(TAG, "🍪 Stored cookie: $name=$value")
+            Log.d(TAG, "🍪 Stored cookie: $name")
         }
     }
 
     fun asCookieHeader(): String {
         val cookieString = cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-        Log.d(TAG, "📤 Cookie header: $cookieString")
+        Log.d(TAG, "📤 Cookie header: ${cookies.keys.joinToString(", ")}")
         return cookieString
     }
 
@@ -52,8 +52,8 @@ object LaravelCookieStore {
 
     fun logAll() {
         Log.d(TAG, "📦 Stored cookies:")
-        cookies.forEach { (key, value) ->
-            Log.d(TAG, "   → $key = $value")
+        cookies.keys.forEach { key ->
+            Log.d(TAG, "   → $key")
         }
     }
 }

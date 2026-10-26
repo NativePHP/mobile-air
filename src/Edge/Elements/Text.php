@@ -35,6 +35,7 @@ class Text extends Element
             'line-through' => 'lineThrough',
             'text-transform' => 'textTransform',
             'letter-spacing' => 'letterSpacing',
+            'text-outline' => 'textOutline',
             'line-height' => 'lineHeight',
             'line-height-px' => 'lineHeightPx',
             'text-align' => 'textAlign',
@@ -78,6 +79,12 @@ class Text extends Element
         }
         if (isset($attrs['letterSpacing'])) {
             $this->textProps['letter_spacing'] = (float) $attrs['letterSpacing'];
+        }
+        // Outlined text: the glyphs drawn hollow, as an outline this many
+        // points wide in the text colour. Inherited by nested runs; 0 turns
+        // it off again.
+        if (isset($attrs['textOutline'])) {
+            $this->textProps['text_outline'] = (float) $attrs['textOutline'];
         }
         // Line height (leading). `line_height` is a unitless multiplier of the
         // font size; `line_height_px` is an absolute override. Renderers apply

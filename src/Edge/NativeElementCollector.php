@@ -693,8 +693,13 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $style['border_radius'] = (float) $attrs['borderRadius'];
         }
-        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
-            $style['border_width'] = $borderWidth;
+        // The colour travels without a width: nothing strokes a border until
+        // border_width is above 0, but a divider or line takes it as its own
+        // colour. A width without a colour still sends nothing.
+        if (isset($attrs['borderColor'])) {
+            if (($borderWidth = static::borderWidth($attrs)) !== null) {
+                $style['border_width'] = $borderWidth;
+            }
             $style['border_color'] = $attrs['borderColor'];
         }
         if (isset($attrs['opacity'])) {
@@ -707,6 +712,23 @@ class NativeElementCollector
         }
         if (isset($attrs['elevation'])) {
             $style['elevation'] = (float) $attrs['elevation'];
+        }
+
+        return static::withDefaultBorderColor($style);
+    }
+
+    /**
+     * A style block with no border gets a transparent `border_color`.
+     *
+     * The packer fills a missing colour with opaque black, and dividers and
+     * lines treat any colour other than 0 as one that was set, so `bg-*`,
+     * `opacity-*` or `rounded` alone turned a divider's rule black. A block
+     * with a width but no colour is left as it was.
+     */
+    public static function withDefaultBorderColor(array $style): array
+    {
+        if ($style !== [] && ! isset($style['border_color']) && ! isset($style['border_width'])) {
+            $style['border_color'] = '#00000000';
         }
 
         return $style;
@@ -1899,8 +1921,13 @@ class NativeElementCollector
         if (isset($attrs['borderRadius'])) {
             $element->borderRadius((float) $attrs['borderRadius']);
         }
-        if (($borderWidth = static::borderWidth($attrs)) !== null && isset($attrs['borderColor'])) {
-            $element->border($borderWidth, $attrs['borderColor']);
+        // As in buildStyleArray: the colour goes with or without a width.
+        if (isset($attrs['borderColor'])) {
+            if (($borderWidth = static::borderWidth($attrs)) !== null) {
+                $element->border($borderWidth, $attrs['borderColor']);
+            } else {
+                $element->borderColor($attrs['borderColor']);
+            }
         }
         if (isset($attrs['opacity']) && ! ($attrs['opacity'] instanceof SharedValue)) {
             // SharedValue-bound opacity is routed through the prop bag
@@ -2083,6 +2110,16 @@ class NativeElementCollector
             // verbatim, and the rest of the API takes either form.
             if (isset($attrs['showsIndicators']) || isset($attrs['shows-indicators'])) {
                 $element->showsIndicators((bool) ($attrs['showsIndicators'] ?? $attrs['shows-indicators']));
+            }
+
+            // Bring a child index into view: `:auto-scroll-to="$unreadIndex"`.
+            // Indexes the scroll-view's OWN children, so content wrapped in a
+            // <column> addresses the column, not the rows inside it. Takes
+            // precedence over `scroll-anchor="bottom"` when both are set — the
+            // author named a specific child. Mirrors the fluent
+            // ScrollView::autoScrollTo() so both authoring styles behave alike.
+            if (isset($attrs['autoScrollTo']) || isset($attrs['auto-scroll-to'])) {
+                $element->autoScrollTo((int) ($attrs['autoScrollTo'] ?? $attrs['auto-scroll-to']));
             }
         }
 

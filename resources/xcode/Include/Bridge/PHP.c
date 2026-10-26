@@ -449,6 +449,21 @@ static void setup_persistent_sapi(void) {
     php_embed_module.header_handler  = ios_header_handler;
 }
 
+// php.ini gives every context PHP's 128M. The persistent runtime gets 512M:
+// the native session runs in it as a single request that lives as long as the
+// app, holding every screen's state, and a screen with a long list reached
+// 128M. The queue worker, the async lane and webview contexts keep 128M, so a
+// runaway there fails on its own instead of growing alongside the UI until
+// the OS kills the whole app. Apps can still ini_set() their own.
+static void raise_persistent_memory_limit(void) {
+    zend_string *name = zend_string_init("memory_limit", sizeof("memory_limit") - 1, 0);
+    if (zend_alter_ini_entry_chars(name, "512M", sizeof("512M") - 1, PHP_INI_SYSTEM, PHP_INI_STAGE_RUNTIME) != SUCCESS) {
+        fprintf(stderr, "PHP-WORKER: could not raise memory_limit to 512M\n");
+        fflush(stderr);
+    }
+    zend_string_release(name);
+}
+
 // ── Worker thread ───────────────────────────────────
 // Boots PHP, then loops processing work items.
 
@@ -482,6 +497,7 @@ static void *php_worker_main(void *arg) {
     fflush(stderr);
 
     sapi_module.header_handler = ios_header_handler;
+    raise_persistent_memory_limit();
 
     zend_first_try {
         zend_activate_modules();
@@ -577,6 +593,25 @@ static void *php_worker_main(void *arg) {
 
 // ── Work handlers (all run on the PHP worker thread) ──
 
+// After PHP bails out of a dispatch, add the fatal error that stopped it to
+// what it printed. Laravel turns display_errors off and reports fatal errors
+// from a shutdown function, which never runs here (the persistent runtime's
+// request doesn't end), so otherwise nothing would say why PHP stopped.
+static void append_last_fatal_error(void) {
+    int fatal = E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_PARSE;
+    if (!PG(last_error_message) || !(PG(last_error_type) & fatal)) return;
+
+    char *line = NULL;
+    int n = asprintf(&line, "\nPHP Fatal error: %s in %s on line %d\n",
+                     ZSTR_VAL(PG(last_error_message)),
+                     PG(last_error_file) ? ZSTR_VAL(PG(last_error_file)) : "Unknown",
+                     PG(last_error_lineno));
+    if (n > 0) {
+        append_output(line, (size_t)n);
+    }
+    free(line);
+}
+
 static void do_dispatch(const dispatch_params_t *params) {
     if (!persistent_initialized) {
         php_work_str_result = bridge_text_response("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.", &php_work_result_len);
@@ -614,11 +649,18 @@ static void do_dispatch(const dispatch_params_t *params) {
         return;
     }
 
+    int bailed_out = 0;
     zend_first_try {
         zend_eval_string(code, NULL, "persistent_dispatch");
+    } zend_catch {
+        bailed_out = 1;
     } zend_end_try();
 
     free(code);
+
+    if (bailed_out) {
+        append_last_fatal_error();
+    }
 
     php_work_str_result = bridge_collect_response("persistent_dispatch", &php_work_result_len);
 }
@@ -656,6 +698,18 @@ static void do_shutdown(void) {
     if (!persistent_initialized) return;
 
     clear_output_buffer();
+
+    // A native session that died part-way (a fatal error) never shut its
+    // element region down. The extension's module shutdown would then free
+    // the last tree it kept after this request's memory is gone, and hang
+    // there. So shut it down while the request is still alive. A no-op when
+    // the session ended normally and did it itself. Only this lane may: the
+    // region belongs to the native session, which runs here.
+    zend_first_try {
+        zend_eval_string(
+            "if (function_exists('nativephp_element_shutdown')) { nativephp_element_shutdown(); }",
+            NULL, "persistent_element_shutdown");
+    } zend_end_try();
 
     zend_first_try {
         zend_eval_string(
@@ -1354,17 +1408,55 @@ typedef struct {
 static async_php_slot_t async_slots[ASYNC_PHP_MAX_SLOTS];
 static pthread_mutex_t async_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Set on the thread of each async slot and on no other. Only a task that this
+// lane runs may report its outcome through AsyncTask.Complete, and JavaScript in
+// a web view makes the same bridge call from a thread of its own.
+static __thread int async_lane_thread = 0;
+
+int async_php_on_lane_thread(void) {
+    return async_lane_thread;
+}
+
+// Whether a task id has the shape of the one PHP makes for a task with
+// Str::uuid(): hex digits in groups of 8-4-4-4-12, split by hyphens.
+static int async_task_id_is_uuid(const char *id) {
+    if (id == NULL || strlen(id) != 36) {
+        return 0;
+    }
+
+    for (int i = 0; i < 36; i++) {
+        char c = id[i];
+
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') {
+                return 0;
+            }
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 static void do_async_run(async_php_slot_t *slot) {
     clear_output_buffer();
+
+    // The id is spliced into the PHP evaluated below, and it comes from the
+    // AsyncTask.Dispatch bridge call, which JavaScript in a web view can make
+    // with any string. Only the UUID that PHP made for the task gets this far.
+    if (!async_task_id_is_uuid(slot->task_id)) {
+        fprintf(stderr, "ASYNC-PHP: refused a task id that is not a UUID\n");
+        fflush(stderr);
+        slot->result = strdup("");
+        return;
+    }
 
     // No setenv() here. This lane is CONCURRENT: several slots run at once, and
     // setenv()/getenv() are neither thread-safe nor per-thread — the value one
     // slot sets is the value every other slot (and the UI lane) sees. The eval
     // below sets the per-thread $_SERVER values instead, which is what Laravel
     // reads anyway.
-    //
-    // task_id is a framework-generated UUID (Str::uuid()), so it's safe to
-    // embed directly; no user input reaches this string.
     char eval_code[1024];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
@@ -1374,7 +1466,7 @@ static void do_async_run(async_php_slot_t *slot) {
         "} catch (\\Throwable $e) {\n"
         "    error_log('async run error: ' . $e->getMessage());\n"
         "}\n",
-        slot->task_id ? slot->task_id : "");
+        slot->task_id);
 
     zend_first_try {
         zend_eval_string(eval_code, NULL, "async_run");
@@ -1389,6 +1481,8 @@ static void *async_thread_main(void *arg) {
 
     fprintf(stderr, "ASYNC-PHP: thread started tid=%p\n", (void *)pthread_self());
     fflush(stderr);
+
+    async_lane_thread = 1;
 
     clear_output_buffer();
 

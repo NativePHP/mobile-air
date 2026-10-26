@@ -484,64 +484,7 @@ struct ResolvedNodeView: View, Equatable {
         if decorations.isEmpty {
             laidOut
         } else {
-            laidOut
-                .modifier(NodeStyleModifier(style: node.style, props: node.props, nodeType: node.type, decorations: decorations))
-                // Opt-in text selection (`select-text` / `select-none`). Applied at
-                // the node level so it propagates to descendant Text (SwiftUI's
-                // `.textSelection` is inherited) — container-scoped like Android's
-                // SelectionContainer.
-                .nodeModifier(if: decorations.contains(.textSelection)) {
-                    $0.modifier(NodeTextSelectionModifier(props: node.props))
-                }
-                // Content transition (numeric roll / crossfade) for in-place
-                // text changes. Environment-propagating like text selection.
-                .nodeModifier(if: decorations.contains(.contentTransition)) {
-                    $0.modifier(NodeContentTransitionModifier(props: node.props))
-                }
-                // Animation modifier runs AFTER style so it sees the resolved
-                // opacity.
-                .nodeModifier(if: decorations.contains(.animation)) {
-                    $0.modifier(NodeAnimationModifier(style: node.style, props: node.props))
-                }
-                // Shared-element morph (`ref`). Sits AFTER style and layout so
-                // the frame it reports is the node's final one, padding and
-                // background included, rather than its bare content box, which
-                // would make the element visibly jump as it lands.
-                .nodeModifier(if: decorations.contains(.ref)) {
-                    $0.modifier(NodeHeroModifier(props: node.props))
-                }
-                // Gesture FIRST (inner) — onTapGesture must be attached
-                // before any simultaneousGesture wrapper or the tap is
-                // starved by SwiftUI's gesture composition.
-                .nodeModifier(if: decorations.contains(.gesture)) {
-                    $0.modifier(NodeGestureModifier(node: node))
-                }
-                // Press feedback LAST (outer) — simultaneousGesture wraps
-                // the tap and runs alongside it for press-in/press-out
-                // tracking.
-                .nodeModifier(if: decorations.contains(.pressFeedback)) {
-                    $0.modifier(NodePressFeedbackModifier(props: node.props))
-                }
-                // Accessibility outside the gestures, so the one element it
-                // makes covers the whole tappable surface.
-                .nodeModifier(if: decorations.contains(.accessibility)) {
-                    $0.modifier(NodeAccessibilityModifier(node: node))
-                }
-                // Test-targeting identity. Same `ref` the morph pairs on, so a
-                // Maestro `id:` selector and a shared element name the same
-                // thing. Outside accessibility, so it names the element that
-                // modifier makes rather than being folded into it.
-                .nodeModifier(if: decorations.contains(.ref)) {
-                    $0.modifier(NodeIdentityModifier(node: node))
-                }
-                // Hidden (`display: none`) outside everything above, so the
-                // background and border go with the content. FlexContainer never
-                // places a hidden child and SwiftUI centres it at the container's
-                // size, so hiding only the content painted its `bg-*` over its
-                // siblings (`xl:hidden` in a row showed an empty bar).
-                .nodeModifier(if: decorations.contains(.hidden)) {
-                    $0.opacity(node.layout?.display == Display.none ? 0 : 1)
-                }
+            laidOut.modifier(NodeDecorationsModifier(node: node, decorations: decorations))
         }
     }
 
@@ -722,6 +665,8 @@ extension View {
     /// `transform(self)` when `condition` holds, otherwise the view as it is.
     /// Flipping `condition` changes the view's structure, which rebuilds
     /// everything under it, so this is only for what `NodeDecorations` picks.
+    /// The result's type holds `Self` twice, so keep long chains of these in
+    /// a `ViewModifier` (see `NodeDecorationsModifier`).
     @ViewBuilder
     func nodeModifier<V: View>(if condition: Bool, _ transform: (Self) -> V) -> some View {
         if condition {
@@ -729,6 +674,81 @@ extension View {
         } else {
             self
         }
+    }
+}
+
+/// Puts a node through the modifiers its `NodeDecorations` pick, in order.
+///
+/// This is a modifier, not a chain in `ResolvedNodeView.body`, so that
+/// Release builds compile. Each `nodeModifier(if:)` names the view it is
+/// called on in both of its branches, so the chain's type doubles with every
+/// step. Here the chain starts from SwiftUI's small `Content` placeholder.
+/// Started from the laid-out node, nine steps went past the compiler's type
+/// substitution limit under whole-module optimisation and swift-frontend
+/// aborted ("Possible non-terminating type substitution detected").
+private struct NodeDecorationsModifier: ViewModifier {
+    let node: NativeUINode
+    let decorations: NodeDecorations
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(NodeStyleModifier(style: node.style, props: node.props, nodeType: node.type, decorations: decorations))
+            // Opt-in text selection (`select-text` / `select-none`). Applied at
+            // the node level so it propagates to descendant Text (SwiftUI's
+            // `.textSelection` is inherited) — container-scoped like Android's
+            // SelectionContainer.
+            .nodeModifier(if: decorations.contains(.textSelection)) {
+                $0.modifier(NodeTextSelectionModifier(props: node.props))
+            }
+            // Content transition (numeric roll / crossfade) for in-place
+            // text changes. Environment-propagating like text selection.
+            .nodeModifier(if: decorations.contains(.contentTransition)) {
+                $0.modifier(NodeContentTransitionModifier(props: node.props))
+            }
+            // Animation modifier runs AFTER style so it sees the resolved
+            // opacity.
+            .nodeModifier(if: decorations.contains(.animation)) {
+                $0.modifier(NodeAnimationModifier(style: node.style, props: node.props))
+            }
+            // Shared-element morph (`ref`). Sits AFTER style and layout so
+            // the frame it reports is the node's final one, padding and
+            // background included, rather than its bare content box, which
+            // would make the element visibly jump as it lands.
+            .nodeModifier(if: decorations.contains(.ref)) {
+                $0.modifier(NodeHeroModifier(props: node.props))
+            }
+            // Gesture FIRST (inner) — onTapGesture must be attached
+            // before any simultaneousGesture wrapper or the tap is
+            // starved by SwiftUI's gesture composition.
+            .nodeModifier(if: decorations.contains(.gesture)) {
+                $0.modifier(NodeGestureModifier(node: node))
+            }
+            // Press feedback LAST (outer) — simultaneousGesture wraps
+            // the tap and runs alongside it for press-in/press-out
+            // tracking.
+            .nodeModifier(if: decorations.contains(.pressFeedback)) {
+                $0.modifier(NodePressFeedbackModifier(props: node.props))
+            }
+            // Accessibility outside the gestures, so the one element it
+            // makes covers the whole tappable surface.
+            .nodeModifier(if: decorations.contains(.accessibility)) {
+                $0.modifier(NodeAccessibilityModifier(node: node))
+            }
+            // Test-targeting identity. Same `ref` the morph pairs on, so a
+            // Maestro `id:` selector and a shared element name the same
+            // thing. Outside accessibility, so it names the element that
+            // modifier makes rather than being folded into it.
+            .nodeModifier(if: decorations.contains(.ref)) {
+                $0.modifier(NodeIdentityModifier(node: node))
+            }
+            // Hidden (`display: none`) outside everything above, so the
+            // background and border go with the content. FlexContainer never
+            // places a hidden child and SwiftUI centres it at the container's
+            // size, so hiding only the content painted its `bg-*` over its
+            // siblings (`xl:hidden` in a row showed an empty bar).
+            .nodeModifier(if: decorations.contains(.hidden)) {
+                $0.opacity(node.layout?.display == Display.none ? 0 : 1)
+            }
     }
 }
 

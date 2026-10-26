@@ -370,14 +370,22 @@ struct NativeRootTabsRenderer: View {
     /// whose URL is the longest prefix of `currentUri`. Returns nil if
     /// no tab claims the URI; the caller should fall back to PHP's
     /// `BottomNavItem.active` flag.
+    ///
+    /// Matches on the path, so a screen opened with a query
+    /// (`/home?ref=push`) still belongs to the `/home` tab. A tab whose
+    /// own URL carries a query (`/remotes?tab=closed`) matches the full
+    /// URI, and being longer, wins. Same rule as `TabBar::highlight()`.
     private func owningTabIndex(for currentUri: String, tabs: [NativeUINode]) -> Int? {
         guard !currentUri.isEmpty else { return nil }
+        let currentPath = PerTabNavigationCoordinator.path(of: currentUri)
         var bestIdx: Int? = nil
         var bestLen: Int = -1
         for (idx, tab) in tabs.enumerated() {
             let tabUrl = tab.props.getString("url", default: "")
             guard !tabUrl.isEmpty else { continue }
-            let isMatch = (currentUri == tabUrl) || currentUri.hasPrefix(tabUrl + "/")
+            let isMatch = currentUri == tabUrl
+                || currentPath == tabUrl
+                || currentPath.hasPrefix(tabUrl + "/")
             if isMatch && tabUrl.count > bestLen {
                 bestIdx = idx
                 bestLen = tabUrl.count
@@ -422,7 +430,7 @@ private struct PerTabContent: View {
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
-                levelView(uri: coordinator.rootUri, isRoot: true)
+                levelView(uri: coordinator.rootLevelUri, isRoot: true)
                     .navigationDestination(for: String.self) { uri in
                         levelView(uri: uri, isRoot: false)
                     }
@@ -432,7 +440,7 @@ private struct PerTabContent: View {
                 coordinator.onPathChange(newPath: newPath)
             }
         } else {
-            levelContent(for: coordinator.rootNodeCache[coordinator.rootUri])
+            levelContent(for: coordinator.rootNodeCache[coordinator.rootLevelUri])
         }
     }
 
@@ -675,25 +683,41 @@ private struct TabsActionView: View {
         let disabled = action.props.getBool("disabled")
         let subItems = action.children.filter { $0.type == "top_bar_action" }
 
+        let label = action.props.getString("label", default: "")
+        let showLabel = action.props.getBool("show_label") && !label.isEmpty
+        let hasIcon = !action.props.getString("icon", default: "").isEmpty
+        let image = action.props.getString("image", default: "")
+
         if subItems.isEmpty {
             Button {
                 if action.onPress != 0 {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                TopBarActionGlyph(
-                    icon: icon,
-                    image: action.props.getString("image", default: "")
-                )
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(textColor)
-                    // Explicit dim: the hard-set foregroundColor above keeps
-                    // SwiftUI's automatic disabled greying from showing.
-                    .opacity(disabled ? 0.4 : 1)
-                    // same pill-sized hit region for
-                    // the trailing actions (plain Button and Menu labels alike).
-                    .frame(minWidth: 32, minHeight: 44)
-                    .contentShape(Rectangle().inset(by: -6))
+                Group {
+                    if showLabel && (hasIcon || !image.isEmpty) {
+                        // Toolbars collapse a Label to icon-only by default.
+                        Label {
+                            Text(label)
+                        } icon: {
+                            TopBarActionGlyph(icon: icon, image: image)
+                        }
+                        .labelStyle(.titleAndIcon)
+                    } else if showLabel {
+                        Text(label)
+                    } else {
+                        TopBarActionGlyph(icon: icon, image: image)
+                    }
+                }
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(textColor)
+                // Explicit dim: the hard-set foregroundColor above keeps
+                // SwiftUI's automatic disabled greying from showing.
+                .opacity(disabled ? 0.4 : 1)
+                // same pill-sized hit region for
+                // the trailing actions (plain Button and Menu labels alike).
+                .frame(minWidth: 32, minHeight: 44)
+                .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
             .modifier(TopBarActionA11yLabelModifier(action: action))

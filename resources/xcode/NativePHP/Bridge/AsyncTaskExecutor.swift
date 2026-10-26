@@ -10,6 +10,9 @@ private func _async_php_run(_ handle: Int32, _ taskId: UnsafePointer<CChar>?) ->
 @_silgen_name("async_php_stop")
 private func _async_php_stop(_ handle: Int32)
 
+@_silgen_name("async_php_on_lane_thread")
+private func _async_php_on_lane_thread() -> Int32
+
 /// Runs dispatched async tasks immediately on a small pool of background PHP
 /// contexts — the lane behind `AsyncTask::dispatch()`.
 ///
@@ -63,6 +66,14 @@ final class AsyncTaskExecutor {
         lock.lock()
         defer { lock.unlock() }
         return running
+    }
+
+    /// Whether the calling thread is the thread of an async slot, where a
+    /// dispatched task runs. A bridge call that PHP makes runs on the thread
+    /// of the PHP that made it, so this tells a call from a task apart
+    /// from the same call made by JavaScript in a web view.
+    static var onLaneThread: Bool {
+        _async_php_on_lane_thread() != 0
     }
 
     /// Boot the slot pool and begin accepting dispatches. Slots boot their PHP

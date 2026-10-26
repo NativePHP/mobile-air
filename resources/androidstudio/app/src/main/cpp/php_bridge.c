@@ -286,7 +286,17 @@ void jni_output_callback(const char *output) {
 }
 
 int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers) {
-    LOGI("SAPI header: %s", sapi_header->header);
+    // PHP passes an uninitialised header for header_remove() with no arguments.
+    if (op == SAPI_HEADER_DELETE_ALL) {
+        LOGI("SAPI header: remove all");
+        return 0;
+    }
+
+    // Log the header name only. The value can be a session cookie or a token,
+    // and logcat leaves the device in bug reports and crash tools.
+    const char *colon = memchr(sapi_header->header, ':', sapi_header->header_len);
+    int name_len = (int) (colon ? (size_t) (colon - sapi_header->header) : sapi_header->header_len);
+    LOGI("SAPI header: %.*s", name_len, sapi_header->header);
     return 0;
 }
 
@@ -650,6 +660,20 @@ char* run_php_script_once(const char* scriptPath, const char* method, const char
 
 static int persistent_initialized = 0;
 
+// php.ini gives every context PHP's 128M. The persistent runtime gets 512M:
+// the native session runs in it as a single request that lives as long as the
+// app, holding every screen's state, and a screen with a long list reached
+// 128M. The queue worker, the async lane and webview contexts keep 128M, so a
+// runaway there fails on its own instead of growing alongside the UI until
+// the OS kills the whole app. Apps can still ini_set() their own.
+static void raise_persistent_memory_limit(void) {
+    zend_string *name = zend_string_init("memory_limit", sizeof("memory_limit") - 1, 0);
+    if (zend_alter_ini_entry_chars(name, "512M", sizeof("512M") - 1, PHP_INI_SYSTEM, PHP_INI_STAGE_RUNTIME) != SUCCESS) {
+        LOGE("persistent_boot: could not raise memory_limit to 512M");
+    }
+    zend_string_release(name);
+}
+
 /**
  * Boot the persistent PHP interpreter once.
  * Initializes php_embed, registers native functions, and executes the
@@ -690,6 +714,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     sapi_module.header_handler = android_header_handler;
     // nativephp extension self-registers via static linking
     php_initialized = 1;
+    raise_persistent_memory_limit();
 
     // Execute the persistent bootstrap script (boots Laravel, stores kernel globally)
     zend_first_try {
@@ -741,6 +766,25 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
     pthread_mutex_unlock(&g_php_request_mutex);
     return 0;
+}
+
+// After PHP bails out of a dispatch, add the fatal error that stopped it to
+// what it printed. Laravel turns display_errors off and reports fatal errors
+// from a shutdown function, which never runs here (the persistent runtime's
+// request doesn't end), so otherwise nothing would say why PHP stopped.
+static void append_last_fatal_error(void) {
+    int fatal = E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_PARSE;
+    if (!PG(last_error_message) || !(PG(last_error_type) & fatal)) return;
+
+    char *line = NULL;
+    int n = asprintf(&line, "\nPHP Fatal error: %s in %s on line %d\n",
+                     ZSTR_VAL(PG(last_error_message)),
+                     PG(last_error_file) ? ZSTR_VAL(PG(last_error_file)) : "Unknown",
+                     PG(last_error_lineno));
+    if (n > 0) {
+        append_output(line, (size_t)n);
+    }
+    free(line);
 }
 
 /**
@@ -798,10 +842,16 @@ static jbyteArray persistent_dispatch_core(JNIEnv *env,
                                       cookie, content_type,
                                       headers, headers_len);
     if (code) {
+        int bailed_out = 0;
         zend_first_try {
             zend_eval_string(code, NULL, "persistent_dispatch");
+        } zend_catch {
+            bailed_out = 1;
         } zend_end_try();
         free(code);
+        if (bailed_out) {
+            append_last_fatal_error();
+        }
         result = bridge_take_response(env);
     } else {
         result = bridge_text_response(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to build persistent dispatch.");
@@ -934,6 +984,18 @@ JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
     }
 
     LOGI("persistent_shutdown: shutting down persistent interpreter");
+
+    // A native session that died part-way (a fatal error) never shut its
+    // element region down. The extension's module shutdown would then free
+    // the last tree it kept after this request's memory is gone, and hang
+    // there. So shut it down while the request is still alive. A no-op when
+    // the session ended normally and did it itself. Only this lane may: the
+    // region belongs to the native session, which runs here.
+    zend_first_try {
+        zend_eval_string(
+            "if (function_exists('nativephp_element_shutdown')) { nativephp_element_shutdown(); }",
+            NULL, "persistent_element_shutdown");
+    } zend_end_try();
 
     // Call Runtime::shutdown() to let PHP clean up
     zend_first_try {
@@ -1705,6 +1767,28 @@ static void set_async_thread_booted(int booted) {
     pthread_setspecific(g_async_booted_key, booted ? (void *) 1 : NULL);
 }
 
+// Whether a task id has the shape of the one PHP makes for a task with
+// Str::uuid(): hex digits in groups of 8-4-4-4-12, split by hyphens.
+static int async_task_id_is_uuid(const char *id) {
+    if (id == NULL || strlen(id) != 36) {
+        return 0;
+    }
+
+    for (int i = 0; i < 36; i++) {
+        char c = id[i];
+
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') {
+                return 0;
+            }
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 // Allocate + initialize a PHP context for THIS async pool thread. Same shape as
 // worker_embed_init — TSRM is already started by the persistent runtime.
 static int async_embed_init(void) {
@@ -1782,9 +1866,19 @@ JNIEXPORT jstring JNICALL native_async_run(JNIEnv *env, jobject thiz, jstring jT
         return (*env)->NewStringUTF(env, "async context not booted");
     }
 
-    // taskId is a framework-generated UUID (Str::uuid()), so it's safe to embed
-    // in the eval below; no user input reaches this string.
     const char *taskId = (*env)->GetStringUTFChars(env, jTaskId, NULL);
+
+    // The id is spliced into the PHP evaluated below, and it comes from the
+    // AsyncTask.Dispatch bridge call, which JavaScript in a web view can make
+    // with any string. Only the UUID that PHP made for the task gets this far.
+    if (!async_task_id_is_uuid(taskId)) {
+        LOGE("async_run: refused a task id that is not a UUID");
+        if (taskId != NULL) {
+            (*env)->ReleaseStringUTFChars(env, jTaskId, taskId);
+        }
+        return (*env)->NewStringUTF(env, "");
+    }
+
     LOGI("async_run: task %s", taskId);
 
     clear_collected_output();

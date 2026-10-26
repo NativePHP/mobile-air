@@ -91,6 +91,7 @@ int  ephemeral_php_is_booted(void);
 int  async_php_boot(const char *bootstrapPath);           // → slot handle ≥ 0, or negative error
 const char *async_php_run(int handle, const char *taskId); // run native:async:run --id=<taskId> on this slot
 void async_php_stop(int handle);
+int  async_php_on_lane_thread(void);                       // → 1 on the thread of an async slot, else 0
 
 // Webview PHP Runtimes — one dedicated thread + TSRM context per embedded
 // php-mode webview. The persistent lane is parked inside a native screen's

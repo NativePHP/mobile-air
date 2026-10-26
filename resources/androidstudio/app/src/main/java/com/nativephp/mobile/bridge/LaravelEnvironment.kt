@@ -251,9 +251,13 @@ class LaravelEnvironment(private val context: Context) {
         // The OTA marker used to short-circuit step 1 entirely, so a store
         // update silently kept running OTA'd code from the shell before it.
 
-        // Build composite "version+b+versionCode" identity from bundle metadata.
-        // This is what we compare against the extracted .env so a build-number-only
-        // bump still triggers re-extraction.
+        // A bundle is identified by its version number and build number
+        // (NATIVEPHP_APP_VERSION and NATIVEPHP_APP_VERSION_CODE), as "1.0.0b42",
+        // and is only extracted when that differs from the one extracted last.
+        // This is on purpose: two builds with the same pair count as the same
+        // build, so a rebuild installed over the top keeps running the old code
+        // until the build number is bumped. DEBUG always extracts. iOS does the
+        // same in AppUpdateManager.
         val bundleMeta = readBundleMetadata()
         val embeddedId = buildVersionId(bundleMeta.version, bundleMeta.versionCode)
 
@@ -931,11 +935,17 @@ class LaravelEnvironment(private val context: Context) {
                 // module's ini_entries with its own list. The upload limits
                 // match the bridge's 16MB capture cap; PHP's defaults (8M
                 // post, 2M per file) would reject uploads the bridge carries.
+                //
+                // memory_limit: 128M for every context. The persistent
+                // runtime, which runs the native session, raises its own to
+                // 512M when it boots (see raise_persistent_memory_limit in
+                // php_bridge.c).
                 val phpIni = """
 curl.cainfo="${context.filesDir.absolutePath}/$CACERT_FILE"
 openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
 post_max_size=16M
 upload_max_filesize=16M
+memory_limit=128M
 """
                 File(context.filesDir, PHP_INI_FILE).writeText(phpIni)
                 Log.d(TAG, "✅ PHP ini configured with certificate path")

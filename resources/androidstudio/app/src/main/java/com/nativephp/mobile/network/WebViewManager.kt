@@ -15,11 +15,11 @@ import android.app.Activity
 import android.os.Message
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
-import com.acsbendi.requestinspectorwebview.RequestInspectorWebViewClient
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
+import com.nativephp.mobile.security.LogRedaction
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 
@@ -29,8 +29,9 @@ class WebViewManager(
     private val phpBridge: PHPBridge,
     // An embedded webview lives INSIDE the native tree (php-mode <webview>
     // element). It must never drive app-level state: no native/web mode
-    // flips, no chrome updates from response headers — those belong to the
-    // root webview alone.
+    // flips, no chrome updates from response headers, no safe-area
+    // injection into the root page, and no claim on [shared] — those
+    // belong to the root webview alone.
     private val embedded: Boolean = false
 ) {
     private val TAG = "PHPMonitor"
@@ -47,7 +48,9 @@ class WebViewManager(
         setupWebViewClient()
         setupJavaScriptInterfaces()
         installRequestBodyShimAtDocumentStart()
-        WebViewManager.shared = this // 👈 make this instance globally accessible
+        if (!embedded) {
+            WebViewManager.shared = this // 👈 make this instance globally accessible
+        }
     }
 
     /**
@@ -205,7 +208,6 @@ class WebViewManager(
 
     private fun createCustomWebViewClient(): WebViewClient {
         return object : WebViewClient() {
-            private val requestInspector = RequestInspectorWebViewClient(webView)
             private val phpHandler = PHPWebViewClient(phpBridge, context as MainActivity)
 
             override fun shouldOverrideUrlLoading(
@@ -299,10 +301,8 @@ class WebViewManager(
                 Log.d(TAG, "🔄 Intercepting $method request to $url")
 
                 request.requestHeaders.forEach { (key, value) ->
-                    Log.d("$TAG-Headers", "📋 $key: $value")
+                    Log.d("$TAG-Headers", "📋 $key: ${LogRedaction.header(key, value)}")
                 }
-
-                val inspectorResponse = requestInspector.shouldInterceptRequest(view, request)
 
                 if (url.startsWith("http://") && !url.contains(".") && !url.contains("127.0.0.1") && !url.contains("localhost")) {
                     val host = url.substring("http://".length).substringBefore("/")
@@ -388,7 +388,7 @@ class WebViewManager(
                     }
                     else -> {
                         Log.d(TAG, "↪️ Delegating to system handler: $url")
-                        inspectorResponse
+                        null
                     }
                 }
             }
@@ -438,8 +438,11 @@ class WebViewManager(
                 super.onPageFinished(view, url)
                 Log.d(TAG, "✅ Page finished loading: $url")
 
-                // Inject safe area insets again to ensure they're set
-                (context as? MainActivity)?.injectSafeAreaInsetsToWebView()
+                // Inject safe area insets again to ensure they're set. This
+                // writes to the root webview, so an embedded one leaves it be.
+                if (!embedded) {
+                    (context as? MainActivity)?.injectSafeAreaInsetsToWebView()
+                }
 
                 // Inject JavaScript to capture form submissions and AJAX requests
                 injectJavaScript(view)
@@ -636,7 +639,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
 
     @JavascriptInterface
     fun storeCsrfToken(token: String) {
-        Log.d("$TAG-CSRF", "🔑 JS provided token: $token")
+        Log.d("$TAG-CSRF", "🔑 JS provided a CSRF token")
         LaravelSecurity.set(token)
     }
 
@@ -651,7 +654,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
                 // Look for _token field
                 if (jsonObj.has("_token")) {
                     val token = jsonObj.getString("_token")
-                    Log.d("$TAG-CSRF", "🔑 Extracted token from POST data: $token")
+                    Log.d("$TAG-CSRF", "🔑 Extracted token from POST data")
                     LaravelSecurity.set(token)
                 }
             }
@@ -661,7 +664,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
                 for (part in parts) {
                     if (part.startsWith("_token=")) {
                         val token = part.substring("_token=".length)
-                        Log.d("$TAG-CSRF", "🔑 Extracted token from form data: $token")
+                        Log.d("$TAG-CSRF", "🔑 Extracted token from form data")
                         LaravelSecurity.set(token)
                         break
                     }

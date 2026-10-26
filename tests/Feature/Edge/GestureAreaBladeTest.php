@@ -107,3 +107,29 @@ it('renders a horizontal pan binding with a drag-end handler from Blade', functi
     expect($child['props']['translate-x_sv'])->toBe("__sv:{$dx->id}")
         ->and($child['props']['rotate_sv'])->toBe("__sv:{$dx->id}|interp:-300,300:-15,15");
 });
+
+it('renders a bounded zoom and pan area from Blade', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-bounded.blade.php',
+        '<native:gesture-area :pinch="$zoom" pinch-min="1" pinch-max="4" :pan-x="$x" :pan-y="$y" bounded :content-ratio="$ratio">'
+        .'<native:image src="https://example.com/a.png" :scale="$zoom" :translate-x="$x" :translate-y="$y" />'
+        .'</native:gesture-area>'
+    );
+
+    $zoom = SharedValue::make(1.0);
+    $x = SharedValue::make();
+    $y = SharedValue::make();
+
+    NativeElementCollector::reset();
+    view('gesture-bounded', ['zoom' => $zoom, 'x' => $x, 'y' => $y, 'ratio' => 4 / 3])->render();
+    $element = NativeElementCollector::collect();
+
+    $tree = $element->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('gesture_area')
+        ->and($tree['props']['bounded'])->toBeTrue()
+        ->and($tree['props']['content-ratio'])->toBe(4 / 3)
+        ->and($tree['props']['pan-x-id'])->toBe($x->id)
+        ->and($tree['props']['pan-y-id'])->toBe($y->id)
+        ->and($tree['props']['pinch-id'])->toBe($zoom->id);
+});

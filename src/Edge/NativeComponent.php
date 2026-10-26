@@ -37,9 +37,9 @@ use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Exceptions\AsyncTaskException;
+use Native\Mobile\Facades\System as SystemFacade;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\PendingAsyncTask;
-use Native\Mobile\Platform;
 use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\Support\NativeCallbacks;
@@ -50,6 +50,13 @@ use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
 {
+    /**
+     * The hardware back button, the back chevron, or an edge-swipe pop.
+     * On iOS native navigation has usually popped the screen already, and
+     * PHP pops to match.
+     */
+    const EVENT_SYSTEM_BACK = 8;
+
     const EVENT_HOT_RELOAD = 15;
 
     /**
@@ -136,6 +143,8 @@ abstract class NativeComponent
     protected array $nativeParams = [];
 
     protected array $nativeNavigationData = [];
+
+    protected array $nativeQuery = [];
 
     /** @var list<array{source: NativeComponent, event: ComponentEvent}> */
     private array $nativePendingComponentEvents = [];
@@ -2079,30 +2088,64 @@ abstract class NativeComponent
         // Fire any fluent callback registered for this event
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
+        //
+        // Screen-level only: NativeCallbacks is a global registry keyed by
+        // id + event class with no record of the component that registered the
+        // callback, so firing it per component would run a one-shot callback
+        // once per component in the tree.
         $callbackFired = $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
-
-        // Fluent closure listeners registered via ->on('Event', fn) — persistent
-        // and keyed by event name, so they fire every time the event arrives
-        // (unlike the one-shot camera callbacks above). The payload is exposed as
-        // a plain object so handlers can read $event->someField.
-        $closuresRan = $this->runNativeEventClosures($eventName, $payload);
 
         // System-level events tagged BroadcastsGlobally are ALSO pushed through
         // Laravel's dispatcher so listeners anywhere in the app react — not just
-        // this component's #[On] handlers. Those listeners run first, and they
-        // run even when this component declares no listener for the event.
+        // component #[On] handlers. Runs once per event, before component
+        // delivery, so it fires even when no component declares a listener.
         $laravelHeard = $this->dispatchGloballyIfMarked($eventName, is_array($payload) ? $payload : []);
 
-        $methodsRan = $this->runNativeEventListeners($eventName, $payload);
+        // Deliver to this screen AND every nested child component, so an #[On]
+        // listener works wherever it's declared — a child that owns a piece of
+        // state (a Logo tracking the system appearance) reacts without the
+        // screen having to relay the event down to it.
+        [$listening, $closuresRan, $methodsRan] = $this->deliverNativeEventToTree($eventName, $payload);
 
-        // The screen listens for this event, yet none of its filters matched
+        // A component listens for this event, yet none of its filters matched
         // and no callback, closure or Laravel listener ran for it. Nothing
         // here changed, so the loops keep the frame that is on screen.
         // A component event that still waits to be delivered by the
         // flush after this one is a change, and needs its frame.
-        $this->nativeEventUnheard = $this->nativeListenersFor($eventName) !== []
+        $this->nativeEventUnheard = $listening
             && ! $methodsRan && ! $callbackFired && ! $closuresRan && ! $laravelHeard
             && $this->nativePendingComponentEvents === [];
+    }
+
+    /**
+     * Run every component's listeners for a native event, this screen first
+     * and then its children, depth first. Each component runs its fluent
+     * ->on('Event', fn) closures, then its #[On] listeners. Every listening
+     * component receives it; there is no stopPropagation, matching how
+     * emit() reaches every listening ancestor.
+     *
+     * The tree is snapshotted because a handler may mount or unmount children
+     * mid-walk; this event still reaches the tree as it stood on arrival.
+     *
+     * @return array{bool, bool, bool} whether any component listens, whether
+     *                                 a closure ran, and whether a listener ran
+     */
+    private function deliverNativeEventToTree(string $eventName, mixed $payload): array
+    {
+        $listening = $closuresRan = $methodsRan = false;
+
+        foreach (iterator_to_array($this->componentTree(), false) as $component) {
+            $listening = $listening || $component->nativeListenersFor($eventName) !== [];
+
+            // Fluent closure listeners registered via ->on('Event', fn) — persistent
+            // and keyed by event name, so they fire every time the event arrives
+            // (unlike the one-shot camera callbacks above). The payload is exposed as
+            // a plain object so handlers can read $event->someField.
+            $closuresRan = $component->runNativeEventClosures($eventName, $payload) || $closuresRan;
+            $methodsRan = $component->runNativeEventListeners($eventName, $payload) || $methodsRan;
+        }
+
+        return [$listening, $closuresRan, $methodsRan];
     }
 
     /**
@@ -2241,6 +2284,9 @@ abstract class NativeComponent
      * Run this screen's ->on() closures and #[On] listeners for one event
      * object. Its public properties are the payload, and a backed enum
      * among them is given as its backing value, as a device sends it.
+     *
+     * Screen only: unlike a device event, an event that PHP fired does
+     * not reach the nested components of the screen.
      */
     private function hearGlobalEvent(object $event): bool
     {
@@ -3389,8 +3435,8 @@ abstract class NativeComponent
                 continue;
             }
 
-            // System back button (type 8)
-            if (($event['type'] ?? -1) === 8) {
+            // System back button
+            if (($event['type'] ?? -1) === self::EVENT_SYSTEM_BACK) {
                 if ($this->nativeHasError) {
                     // Dismiss error/dump screen and re-render the component
                     $this->clearOverlayState();
@@ -3449,6 +3495,21 @@ abstract class NativeComponent
     public function getNavigationIntent(): ?NavigationIntent
     {
         return $this->nativeNavigationIntent;
+    }
+
+    public function hasNavigationIntent(): bool
+    {
+        return $this->nativeNavigationIntent !== null;
+    }
+
+    /**
+     * Set the navigation intent from outside the component — the router uses
+     * this to turn a middleware denial into a redirect BEFORE mount() runs,
+     * so a guarded screen never executes its data loading.
+     */
+    public function setNavigationIntent(NavigationIntent $intent): void
+    {
+        $this->nativeNavigationIntent = $intent;
     }
 
     /**
@@ -3566,11 +3627,11 @@ abstract class NativeComponent
         // runloop, and strand the user on the blank WebView underneath.
         // Follow platform convention instead: on Android the system back
         // button backgrounds the app; on iOS the press is ignored. The
-        // Platform probe is null under Native::test() (no bridge), so the
+        // platform is null under Native::test() (no device), so the
         // harness keeps its BACK-intent assertions.
         if ($this->nativeRouter?->isRootScreen()
-            && ($platform = Platform::current()) !== null) {
-            if ($platform === Platform::ANDROID && function_exists('nativephp_call')) {
+            && ($platform = SystemFacade::platform()) !== null) {
+            if ($platform === 'android' && function_exists('nativephp_call')) {
                 nativephp_call('System.MinimizeApp', '{}');
             }
 
@@ -3781,6 +3842,19 @@ abstract class NativeComponent
         return $this->nativeNavigationData[$key] ?? $default;
     }
 
+    /**
+     * The query string the screen was opened with, from a deep link, a cold
+     * launch or a navigate('/search?q=x'). Reads like `$request->query()`:
+     * no key gives them all, and dot notation reaches into arrays.
+     *
+     * Anyone who can open a link to the app controls these values, so treat
+     * them as user input. data() only ever holds what the app passed itself.
+     */
+    protected function query(?string $key = null, mixed $default = null): mixed
+    {
+        return data_get($this->nativeQuery, $key, $default);
+    }
+
     // ── Injection (called by NativeRouter) ──────────
 
     public function setRouter(NativeRouter $router): void
@@ -3796,6 +3870,11 @@ abstract class NativeComponent
     public function setData(array $data): void
     {
         $this->nativeNavigationData = $data;
+    }
+
+    public function setQuery(array $query): void
+    {
+        $this->nativeQuery = $query;
     }
 
     // ── Element resolution helper ──────────────────

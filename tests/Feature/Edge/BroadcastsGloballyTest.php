@@ -270,7 +270,7 @@ it('does not reach a covered screen, and delivers nothing when it comes back', f
     $orders->assertSet('log', ['shipped:9:back']);
 });
 
-it('does not reach a nested component, as a native event does not', function () {
+it('does not reach a nested component, unlike a device event', function () {
     $screen = Native::test(ListenersHostScreen::class)->assertSee('Child heard 0');
 
     event(new OrderShipped(42, 'shipped'));

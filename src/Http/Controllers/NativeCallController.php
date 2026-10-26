@@ -3,9 +3,19 @@
 namespace Native\Mobile\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class NativeCallController
 {
+    /**
+     * Bridge functions that the lanes of an app call among themselves and a
+     * page never does. AsyncTask.Dispatch hands its id to PHP that the async
+     * lane evaluates, and AsyncTask.Complete posts an event of any name to a
+     * native screen. Native checks both calls, but an app keeps the native
+     * project it installed until it reinstalls one, so they stop here too.
+     */
+    protected const INTERNAL_PREFIXES = ['AsyncTask.'];
+
     public function __invoke(Request $request)
     {
         $method = $request->input('method');
@@ -18,6 +28,14 @@ class NativeCallController
                 'code' => 'MISSING_METHOD',
                 'message' => 'Method parameter is required',
             ], 400);
+        }
+
+        if (is_string($method) && Str::startsWith($method, static::INTERNAL_PREFIXES)) {
+            return response()->json([
+                'status' => 'error',
+                'code' => 'INTERNAL_METHOD',
+                'message' => "Method '{$method}' is internal to NativePHP and cannot be called from a web view",
+            ], 403);
         }
 
         // Check if nativephp_call function exists

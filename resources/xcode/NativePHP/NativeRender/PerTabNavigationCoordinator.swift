@@ -20,6 +20,12 @@ final class PerTabNavigationCoordinator: ObservableObject {
     /// only — the root URI is implicit and rendered by the closure body.
     @Published var path: [String] = []
 
+    /// The URI whose cached tree the root level shows. Usually `rootUri`,
+    /// but a screen opened at the tab's path with a query
+    /// (`/home?ref=push` under `/home`) is the tab's root too. Its tree
+    /// stays cached under the URI as navigated, so this points at it.
+    @Published private(set) var rootLevelUri: String
+
     /// Most-recent rendered tree per URI for this tab (root + pushed).
     /// Plain storage, NOT `@Published`. The tabs
     /// renderer fills it from inside `body` (`cache(uri:node:)`), and a
@@ -63,6 +69,21 @@ final class PerTabNavigationCoordinator: ObservableObject {
 
     init(rootUri: String) {
         self.rootUri = rootUri
+        self.rootLevelUri = rootUri
+    }
+
+    /// The path a navigation URI addresses, without its query string or
+    /// fragment. Mirrors PHP's `NativeRouter::pathOf()`.
+    static func path(of uri: String) -> String {
+        let withoutFragment = uri.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let path = withoutFragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        return "/" + path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    /// Whether a publish's URI is this tab's root: the tab's URL itself,
+    /// or the tab's path with a query.
+    private func isRoot(_ uri: String) -> Bool {
+        uri == rootUri || Self.path(of: uri) == rootUri
     }
 
     /// Synchronously update the cache for this URI. Safe to call during
@@ -91,9 +112,12 @@ final class PerTabNavigationCoordinator: ObservableObject {
         lastProcessedNode = rootNode
 
         // Re-render of tab root — pop all pushed levels.
-        if uri == rootUri {
+        if isRoot(uri) {
             if depth > 0 {
                 rootDepth = depth
+            }
+            if rootLevelUri != uri {
+                rootLevelUri = uri
             }
             if !path.isEmpty {
                 path = []
@@ -202,10 +226,12 @@ final class PerTabNavigationCoordinator: ObservableObject {
     }
 
     /// Drop cache entries whose URI is no longer on this tab's stack.
-    /// `rootUri` is always live; pushed entries are live while present.
+    /// `rootUri` and the root level's URI are always live; pushed entries
+    /// are live while present.
     private func evictStaleCacheEntries() {
         var live = Set(path)
         live.insert(rootUri)
+        live.insert(rootLevelUri)
         for uri in nodeCache.keys where !live.contains(uri) {
             storeNode(nil, for: uri)
         }

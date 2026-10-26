@@ -5,6 +5,7 @@ namespace Native\Mobile\Testing;
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Contracts\GatedBridge;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\System;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -112,6 +113,10 @@ class FakeBridge implements GatedBridge
         // First bridge of this test: drop pending fluent callbacks left in
         // NativeCallbacks' static tier by earlier tests in this process.
         NativeCallbacks::flush();
+
+        // Likewise the platform an earlier test's fake device reported: this
+        // is a new device, so System should ask it.
+        System::rememberPlatform(null);
 
         $bridge = new static;
         app()->instance(static::class, $bridge);

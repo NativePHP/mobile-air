@@ -17,7 +17,7 @@ object LaravelSecurity {
                 val json = JSONObject(body)
                 if (json.has("_token")) {
                     csrfToken = json.getString("_token")
-                    Log.d(TAG, "🔑 Extracted CSRF token from JSON: $csrfToken")
+                    Log.d(TAG, "🔑 Extracted CSRF token from JSON")
                 }
             } else if (body.contains("_token=")) {
                 val token = body.split("&")
@@ -25,7 +25,7 @@ object LaravelSecurity {
                     ?.substringAfter("=")
                 if (!token.isNullOrEmpty()) {
                     csrfToken = token
-                    Log.d(TAG, "🔑 Extracted CSRF token from form: $csrfToken")
+                    Log.d(TAG, "🔑 Extracted CSRF token from form")
                 }
             }
         } catch (e: Exception) {
@@ -45,7 +45,7 @@ object LaravelSecurity {
 
     fun set(token: String) {
         csrfToken = token
-        Log.d(TAG, "📥 Stored CSRF token manually: $token")
+        Log.d(TAG, "📥 Stored CSRF token manually")
     }
 
     fun clear() {
