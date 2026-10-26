@@ -50,6 +50,13 @@ use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
 {
+    /**
+     * The hardware back button, the back chevron, or an edge-swipe pop.
+     * On iOS native navigation has usually popped the screen already, and
+     * PHP pops to match.
+     */
+    const EVENT_SYSTEM_BACK = 8;
+
     const EVENT_HOT_RELOAD = 15;
 
     /**
@@ -3428,8 +3435,8 @@ abstract class NativeComponent
                 continue;
             }
 
-            // System back button (type 8)
-            if (($event['type'] ?? -1) === 8) {
+            // System back button
+            if (($event['type'] ?? -1) === self::EVENT_SYSTEM_BACK) {
                 if ($this->nativeHasError) {
                     // Dismiss error/dump screen and re-render the component
                     $this->clearOverlayState();
