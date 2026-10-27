@@ -7,6 +7,7 @@ use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Native\Mobile\Commands\BuildIosAppCommand;
+use Native\Mobile\Exceptions\AppStoreConnectLookupFailed;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\BufferedOutput;
@@ -118,6 +119,21 @@ class IosBuildNumberBeforeBundleTest extends TestCase
         $this->assertStringContainsString('NATIVEPHP_APP_VERSION_CODE=42', $command->envWhenBundled);
     }
 
+    public function test_a_failed_store_lookup_stops_the_build_before_anything_is_bundled(): void
+    {
+        // Falling back to the local number here is how Bifrost builds ended up
+        // uploading a build number App Store Connect had already seen.
+        $command = $this->makeCommand(storeLatestBuild: null);
+        $command->storeLookupFails = true;
+
+        $result = $this->resolveWith($command, ['--release' => true, '--upload-to-app-store' => true], viaHandle: true);
+
+        $this->assertSame(1, $result);
+        $this->assertNull($command->versionCodeWhenBundled);
+        $this->assertStringContainsString('NATIVEPHP_APP_VERSION_CODE=0', File::get($this->testProjectPath.'/.env'));
+        $this->assertSame(1, $command->storeLookups);
+    }
+
     public function test_xcode_driven_builds_keep_their_own_build_number(): void
     {
         // Xcode's build phase runs `native:build --release` with this set.
@@ -162,6 +178,8 @@ class IosBuildNumberProbe extends BuildIosAppCommand
 
     public int $storeLookups = 0;
 
+    public bool $storeLookupFails = false;
+
     public mixed $versionCodeWhenBundled = null;
 
     public string $envWhenBundled = '';
@@ -186,6 +204,10 @@ class IosBuildNumberProbe extends BuildIosAppCommand
     public function getLatestBuildNumberFromStore(string $platform): ?int
     {
         $this->storeLookups++;
+
+        if ($this->storeLookupFails) {
+            throw new AppStoreConnectLookupFailed('Failed to search for app in App Store Connect: HTTP 401');
+        }
 
         return $this->storeLatestBuild;
     }
