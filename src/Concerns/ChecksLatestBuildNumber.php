@@ -2,7 +2,10 @@
 
 namespace Native\Mobile\Concerns;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Native\Mobile\Exceptions\AppStoreConnectLookupFailed;
 
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
@@ -96,6 +99,8 @@ trait ChecksLatestBuildNumber
                 return null;
             }
 
+        } catch (AppStoreConnectLookupFailed $e) {
+            throw $e;
         } catch (\Exception $e) {
             warning("Could not check App Store Connect: {$e->getMessage()}");
 
@@ -224,6 +229,8 @@ trait ChecksLatestBuildNumber
 
             return $maxBuildNumber > 0 ? $maxBuildNumber : null;
 
+        } catch (AppStoreConnectLookupFailed $e) {
+            throw $e;
         } catch (\Exception $e) {
             warning("Error accessing App Store Connect API: {$e->getMessage()}");
 
@@ -264,12 +271,16 @@ trait ChecksLatestBuildNumber
                 'typ' => 'JWT',
             ];
 
+            // Apple rejects a token that expires more than 20 minutes ahead of its
+            // own clock, so one that lasts exactly 20 minutes fails with a 401
+            // whenever the build machine's clock runs even a second fast. Backdate
+            // the issue time and stay well inside the limit to absorb clock drift.
             $now = time();
             $payload = [
                 'iss' => $apiIssuerId,
                 'aud' => 'appstoreconnect-v1',
-                'iat' => $now,
-                'exp' => $now + 1200, // 20 minutes
+                'iat' => $now - 60,
+                'exp' => $now + 600,
             ];
 
             $headerEncoded = rtrim(strtr(base64_encode(json_encode($header)), '+/', '-_'), '=');
@@ -306,131 +317,121 @@ trait ChecksLatestBuildNumber
         }
     }
 
-    private function findAppStoreAppId(string $jwt, string $bundleId): ?string
+    /**
+     * GET from App Store Connect, retrying once, and throw if it still fails.
+     *
+     * A failed request must not read as "no builds yet": that sends the build
+     * on with a guessed number that App Store Connect rejects at upload.
+     */
+    private function appStoreConnectGet(string $jwt, string $url, array $query, string $failure): Response
     {
         try {
-            $this->components->twoColumnDetail('Bundle ID', $bundleId);
-
             $response = Http::withToken($jwt)
-                ->get('https://api.appstoreconnect.apple.com/v1/apps', [
-                    'filter[bundleId]' => $bundleId,
-                ]);
+                ->retry(2, 2000, throw: false)
+                ->get($url, $query);
+        } catch (ConnectionException $e) {
+            error($failure);
+            error($e->getMessage());
 
-            if (! $response->successful()) {
-                error('Failed to search for app in App Store Connect');
-                error('Response: '.$response->body());
+            throw new AppStoreConnectLookupFailed($failure.': '.$e->getMessage(), $e);
+        }
 
-                return null;
-            }
+        if (! $response->successful()) {
+            error($failure);
+            error("HTTP Status: {$response->status()}");
+            error('Response: '.$response->body());
 
-            $data = $response->json();
-            if (empty($data['data'])) {
-                warning("App with bundle ID {$bundleId} not found in App Store Connect");
+            throw new AppStoreConnectLookupFailed("{$failure}: HTTP {$response->status()}");
+        }
 
-                return null;
-            }
+        return $response;
+    }
 
-            $appId = $data['data'][0]['id'];
-            $this->components->twoColumnDetail('App Store Connect ID', $appId);
+    private function findAppStoreAppId(string $jwt, string $bundleId): ?string
+    {
+        $this->components->twoColumnDetail('Bundle ID', $bundleId);
 
-            return $appId;
+        $response = $this->appStoreConnectGet($jwt, 'https://api.appstoreconnect.apple.com/v1/apps', [
+            'filter[bundleId]' => $bundleId,
+        ], 'Failed to search for app in App Store Connect');
 
-        } catch (\Exception $e) {
-            error("Error finding app: {$e->getMessage()}");
+        $data = $response->json();
+        if (empty($data['data'])) {
+            warning("App with bundle ID {$bundleId} not found in App Store Connect");
 
             return null;
         }
+
+        $appId = $data['data'][0]['id'];
+        $this->components->twoColumnDetail('App Store Connect ID', $appId);
+
+        return $appId;
     }
 
     private function getBuildsForVersion(string $jwt, string $appStoreAppId, string $appVersion): array
     {
-        try {
-            // First, get all preReleaseVersions for this app to find the matching version
-            $preReleaseVersionId = $this->findPreReleaseVersionId($jwt, $appStoreAppId, $appVersion);
+        // First, get all preReleaseVersions for this app to find the matching version
+        $preReleaseVersionId = $this->findPreReleaseVersionId($jwt, $appStoreAppId, $appVersion);
 
-            if (! $preReleaseVersionId) {
-                note("No preReleaseVersion found for {$appVersion}");
-
-                return [];
-            }
-
-            $this->components->twoColumnDetail('PreRelease version ID', $preReleaseVersionId);
-
-            // Now get builds for this specific preReleaseVersion
-            $response = Http::withToken($jwt)
-                ->get("https://api.appstoreconnect.apple.com/v1/preReleaseVersions/{$preReleaseVersionId}/builds", [
-                    'limit' => 200,
-                ]);
-
-            if (! $response->successful()) {
-                error('Failed to get builds for preReleaseVersion');
-                error("HTTP Status: {$response->status()}");
-                error('Response: '.$response->body());
-
-                return [];
-            }
-
-            $data = $response->json();
-            $builds = $data['data'] ?? [];
-            $this->components->twoColumnDetail('Builds found', count($builds)." for version {$appVersion}");
-
-            return $builds;
-
-        } catch (\Exception $e) {
-            error("Error getting builds for version: {$e->getMessage()}");
+        if (! $preReleaseVersionId) {
+            note("No preReleaseVersion found for {$appVersion}");
 
             return [];
         }
+
+        $this->components->twoColumnDetail('PreRelease version ID', $preReleaseVersionId);
+
+        // Now get builds for this specific preReleaseVersion
+        $response = $this->appStoreConnectGet(
+            $jwt,
+            "https://api.appstoreconnect.apple.com/v1/preReleaseVersions/{$preReleaseVersionId}/builds",
+            ['limit' => 200],
+            'Failed to get builds for preReleaseVersion',
+        );
+
+        $data = $response->json();
+        $builds = $data['data'] ?? [];
+        $this->components->twoColumnDetail('Builds found', count($builds)." for version {$appVersion}");
+
+        return $builds;
     }
 
     private function findPreReleaseVersionId(string $jwt, string $appStoreAppId, string $appVersion): ?string
     {
-        try {
-            // Get all preReleaseVersions for this app
-            $response = Http::withToken($jwt)
-                ->get("https://api.appstoreconnect.apple.com/v1/apps/{$appStoreAppId}/preReleaseVersions", [
-                    'limit' => 50,
-                ]);
+        // Get all preReleaseVersions for this app
+        $response = $this->appStoreConnectGet(
+            $jwt,
+            "https://api.appstoreconnect.apple.com/v1/apps/{$appStoreAppId}/preReleaseVersions",
+            ['limit' => 50],
+            'Could not get preReleaseVersions',
+        );
 
-            if (! $response->successful()) {
-                warning("Could not get preReleaseVersions: HTTP {$response->status()}");
-                warning('Response: '.$response->body());
+        $data = $response->json();
+        $versions = $data['data'] ?? [];
 
-                return null;
-            }
+        $this->components->twoColumnDetail('PreRelease versions', count($versions).' found');
 
-            $data = $response->json();
-            $versions = $data['data'] ?? [];
-
-            $this->components->twoColumnDetail('PreRelease versions', count($versions).' found');
-
-            // Debug: Show all available preRelease versions
-            $availableVersions = [];
-            foreach ($versions as $version) {
-                $versionString = $version['attributes']['version'] ?? 'unknown';
-                $availableVersions[] = $versionString;
-            }
-
-            $this->components->twoColumnDetail('Available versions', implode(', ', array_slice($availableVersions, 0, 10)));
-            $this->components->twoColumnDetail('Looking for', $appVersion);
-
-            // Look for matching version
-            foreach ($versions as $version) {
-                $versionString = $version['attributes']['version'] ?? null;
-                if ($versionString === $appVersion) {
-                    $this->components->twoColumnDetail('Match found', $versionString);
-
-                    return $version['id'];
-                }
-            }
-
-            return null;
-
-        } catch (\Exception $e) {
-            warning("Error finding preReleaseVersion: {$e->getMessage()}");
-
-            return null;
+        // Debug: Show all available preRelease versions
+        $availableVersions = [];
+        foreach ($versions as $version) {
+            $versionString = $version['attributes']['version'] ?? 'unknown';
+            $availableVersions[] = $versionString;
         }
+
+        $this->components->twoColumnDetail('Available versions', implode(', ', array_slice($availableVersions, 0, 10)));
+        $this->components->twoColumnDetail('Looking for', $appVersion);
+
+        // Look for matching version
+        foreach ($versions as $version) {
+            $versionString = $version['attributes']['version'] ?? null;
+            if ($versionString === $appVersion) {
+                $this->components->twoColumnDetail('Match found', $versionString);
+
+                return $version['id'];
+            }
+        }
+
+        return null;
     }
 
     private function findAppStoreVersionId(string $jwt, string $appStoreAppId, string $appVersion): ?string
