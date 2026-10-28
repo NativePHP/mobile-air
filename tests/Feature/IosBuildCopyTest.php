@@ -278,6 +278,72 @@ class IosBuildCopyTest extends TestCase
         $this->assertFileExists($destination.'/vendor/acme/pkg/src/Pkg.php');
     }
 
+    /**
+     * Claude Code worktrees are whole copies of a project. One CoW clone of an
+     * app bundled 123 MB of them, and a framework checkout used as a path
+     * repository brought over a gigabyte, because --copy-links follows the
+     * vendor symlink into it.
+     */
+    public function test_copy_leaves_out_claude_worktrees_in_the_app_and_path_repositories(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Behavioral rsync test requires a Unix-like OS.');
+        }
+
+        $source = $this->testProjectPath.'/app-source';
+        $pathRepository = $this->testProjectPath.'/framework-checkout';
+
+        $this->createDirectoryStructure($source, [
+            '.claude' => [
+                'settings.local.json' => '{}',
+                'worktrees' => ['old-branch' => ['app' => ['Stale.php' => '<?php']]],
+            ],
+            'app' => ['Models' => ['User.php' => '<?php']],
+            'vendor' => ['acme' => ['pkg' => [
+                '.claude' => ['settings.json' => '{}'],
+                'src' => ['Pkg.php' => '<?php'],
+            ]]],
+        ]);
+
+        $this->createDirectoryStructure($pathRepository, [
+            '.claude' => ['worktrees' => ['other-branch' => ['src' => ['Stale.php' => '<?php']]]],
+            'src' => ['Framework.php' => '<?php'],
+        ]);
+
+        File::ensureDirectoryExists($source.'/vendor/nativephp');
+        symlink($pathRepository, $source.'/vendor/nativephp/mobile');
+
+        $destination = $this->testProjectPath.'/bundle';
+
+        BundleFileManager::copy($source, $destination);
+
+        $this->assertFileExists($destination.'/app/Models/User.php');
+        $this->assertFileExists($destination.'/vendor/acme/pkg/src/Pkg.php');
+        $this->assertFileExists($destination.'/vendor/nativephp/mobile/src/Framework.php');
+
+        $this->assertDirectoryDoesNotExist($destination.'/.claude');
+        $this->assertDirectoryDoesNotExist($destination.'/vendor/acme/pkg/.claude');
+        $this->assertDirectoryDoesNotExist($destination.'/vendor/nativephp/mobile/.claude');
+    }
+
+    /**
+     * Laravel stops a process after 60 seconds unless told otherwise, and
+     * copying a large app on a busy machine takes longer than that.
+     * Robocopy already ran without a limit.
+     */
+    public function test_rsync_runs_without_a_timeout(): void
+    {
+        $appPath = $this->fakeRsyncAndGetAppPath();
+
+        BundleFileManager::copy(base_path(), $appPath);
+        BundleFileManager::sync(base_path(), $appPath);
+
+        Process::assertRanTimes(
+            fn ($process) => str_starts_with($process->command, 'rsync') && $process->timeout === null,
+            2
+        );
+    }
+
     public function test_remove_deletes_standard_directories(): void
     {
         $appPath = $this->createAppPath([
