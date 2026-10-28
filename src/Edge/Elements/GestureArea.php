@@ -191,8 +191,6 @@ class GestureArea extends Element
         }
     }
 
-    /** Keep the zoomed content inside the area's edges (see the class
-     *  docblock). */
     /** Points the horizontal pan settles on (see the class docblock).
      *  Fewer than two points means no snapping. */
     public function snapX(array $points): static
@@ -231,6 +229,8 @@ class GestureArea extends Element
         return is_array($value) ? $value : array_filter(array_map(trim(...), explode(',', (string) $value)), fn (string $point): bool => $point !== '');
     }
 
+    /** Keep the zoomed content inside the area's edges (see the class
+     *  docblock). */
     public function bounded(bool $bounded = true): static
     {
         $this->bounded = $bounded;
