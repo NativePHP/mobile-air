@@ -753,6 +753,9 @@ class PendingMicrophone {
     constructor() {
         this._id = null;
         this._event = null;
+        this._format = null;
+        this._sampleRate = null;
+        this._maxDuration = null;
         this._started = false;
     }
 
@@ -766,6 +769,17 @@ class PendingMicrophone {
         return this;
     }
 
+    wav(sampleRate = 16000) {
+        this._format = 'wav';
+        this._sampleRate = sampleRate;
+        return this;
+    }
+
+    maxDuration(seconds) {
+        this._maxDuration = seconds;
+        return this;
+    }
+
     then(resolve, reject) {
         if (this._started) {
             return resolve();
@@ -776,6 +790,9 @@ class PendingMicrophone {
         const params = {};
         if (this._id) params.id = this._id;
         if (this._event) params.event = this._event;
+        if (this._format) params.format = this._format;
+        if (this._sampleRate) params.sampleRate = this._sampleRate;
+        if (this._maxDuration) params.maxDuration = this._maxDuration;
 
         return BridgeCall('Microphone.Start', params).then(resolve, reject);
     }
@@ -787,6 +804,7 @@ export const Microphone = {
     pause: () => BridgeCall('Microphone.Pause', {}),
     resume: () => BridgeCall('Microphone.Resume', {}),
     getStatus: () => BridgeCall('Microphone.GetStatus', {}),
+    getLevel: () => BridgeCall('Microphone.GetLevel', {}),
     getRecording: () => BridgeCall('Microphone.GetRecording', {})
 };
 

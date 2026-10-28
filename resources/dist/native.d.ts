@@ -316,6 +316,10 @@ export class PendingMicrophone implements PromiseLike<void> {
     constructor();
     id(id: string): PendingMicrophone;
     event(event: string): PendingMicrophone;
+    /** Record mono 16-bit PCM WAV at this sample rate (16000 by default) instead of AAC. */
+    wav(sampleRate?: number): PendingMicrophone;
+    /** Stop by itself after this many seconds, as if stop() was called. */
+    maxDuration(seconds: number): PendingMicrophone;
     then<TResult1 = void, TResult2 = never>(
         onfulfilled?: ((value: void) => TResult1 | PromiseLike<TResult1>) | null,
         onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
@@ -328,6 +332,8 @@ export const Microphone: {
     pause(): Promise<any>;
     resume(): Promise<any>;
     getStatus(): Promise<any>;
+    /** How loud the microphone has been since the last call: { level: 0 - 1 }. */
+    getLevel(): Promise<any>;
     getRecording(): Promise<any>;
 };
 
