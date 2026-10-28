@@ -952,12 +952,18 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
     /**
      * Web delivery arm for device events (NativeElementBridge.WebEventSink).
-     * While an EDGE screen owns the UI its runloop already drains the queue,
-     * and injecting into the page behind it would deliver the same event a
-     * second time when that page returns. Skips when no WebView exists yet.
+     * php-mode `<webview>` elements always get the event: their pages are
+     * part of the EDGE screen. The root page doesn't while an EDGE screen
+     * owns the UI: its runloop already drains the queue, and injecting into
+     * the page behind it would deliver the same event a second time when
+     * that page returns. Skips when no WebView exists yet.
      */
     override fun onNativeEvent(eventName: String, payloadJson: String) {
         runOnUiThread {
+            WebViewManager.embeddedWebViews().forEach {
+                NativeActionCoordinator.dispatchToWebView(it, eventName, payloadJson)
+            }
+
             if (NativeUIBridge.isActive.value) return@runOnUiThread
 
             webRenderer?.webView?.let {
