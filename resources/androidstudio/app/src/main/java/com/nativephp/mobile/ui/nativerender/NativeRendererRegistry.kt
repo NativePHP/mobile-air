@@ -6,8 +6,10 @@ import kotlin.concurrent.write
 
 /**
  * Thread-safe registry mapping type strings to Compose-based node renderers.
- * All component renderers (including core types like text, button, image)
+ * Component renderers (including core types like text, button, image)
  * are registered here by the native-ui plugin via registerPluginRenderers().
+ * The shell's own renderers (chrome and `webview`) register first, in
+ * registerNativeChromeRenderers().
  */
 object NativeRendererRegistry {
 

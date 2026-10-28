@@ -901,6 +901,10 @@ class NativeServiceProvider extends PackageServiceProvider
             'text' => Elements\Text::class,
             'image' => Elements\Image::class,
             'icon' => Elements\Icon::class,
+            // Rendered by the shells themselves, not by a UI plugin. Older
+            // nativephp/mobile-ui releases also declare it; their class is
+            // skipped because this registration comes first.
+            'webview' => Elements\Webview::class,
 
             // Input (core primitive only)
             'pressable' => Elements\Pressable::class,
