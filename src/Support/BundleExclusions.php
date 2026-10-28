@@ -8,8 +8,6 @@ class BundleExclusions
     public const ANY_DEPTH = [
         '.git',
         '.github',
-        // Claude Code keeps its worktrees in here, each a full copy of the
-        // project. A path repository's checkout can carry them too.
         '.claude',
         '.idea',
         '.vscode',
