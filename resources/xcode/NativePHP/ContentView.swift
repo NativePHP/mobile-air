@@ -147,6 +147,12 @@ struct ContentView: View {
                         lastOrientation = SystemFunctions.currentWindowOrientation()
                     }
                     .onChange(of: geometry.size) { _, _ in
+                        // Rotation and resizes change the safe area, and the root
+                        // web view otherwise only re-reads it on navigation.
+                        if let webView = SharedWebView.shared.webView {
+                            SharedWebView.shared.coordinator?.injectSafeAreaInsets(webView)
+                        }
+
                         let orientation = SystemFunctions.currentWindowOrientation()
                         guard orientation != lastOrientation else { return }
                         lastOrientation = orientation
@@ -377,16 +383,18 @@ struct WebView: UIViewRepresentable {
             injectSafeAreaInsets(webView)
         }
 
-        private func injectSafeAreaInsets(_ webView: WKWebView) {
-            // Get insets from window scene (more reliable than webView.window which can be nil)
-            let windowScene = UIApplication.shared.connectedScenes
+        func injectSafeAreaInsets(_ webView: WKWebView) {
+            // The web view's own window, so an external display's scene can't supply
+            // the insets. The first scene's window covers the first commit, before the
+            // web view is in a window.
+            let window = webView.window ?? UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
-                .first
+                .first?.windows.first
 
-            let insets = windowScene?.windows.first?.safeAreaInsets ?? webView.window?.safeAreaInsets ?? .zero
+            let insets = window?.safeAreaInsets ?? .zero
 
             // Also get color scheme for CSS variable
-            let isDarkMode = windowScene?.windows.first?.traitCollection.userInterfaceStyle == .dark
+            let isDarkMode = window?.traitCollection.userInterfaceStyle == .dark
             let colorScheme = isDarkMode ? "dark" : "light"
 
             let js = """
