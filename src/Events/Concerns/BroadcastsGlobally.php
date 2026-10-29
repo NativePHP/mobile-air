@@ -2,6 +2,8 @@
 
 namespace Native\Mobile\Events\Concerns;
 
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
+
 /**
  * Marks an event that is heard in both places at once: by the `#[On]` handlers
  * of the live native screen, and by the listeners of Laravel's dispatcher.
@@ -60,5 +62,10 @@ namespace Native\Mobile\Events\Concerns;
  * Under Jump an async task cannot tell whether a screen is live,
  * so its event leaves all the same: its listeners do not run
  * in the task, and it waits in the spool file for a loop.
+ *
+ * A globally broadcast event is, by definition, one the native side delivers
+ * across lanes, so this extends {@see DispatchableFromNative}: the
+ * `/_native/api/events` endpoint accepts it without a separate opt-in, and an
+ * app's own global events keep working there with no change.
  */
-interface BroadcastsGlobally {}
+interface BroadcastsGlobally extends DispatchableFromNative {}

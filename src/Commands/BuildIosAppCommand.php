@@ -13,6 +13,7 @@ use Native\Mobile\Concerns\InstallsCustomIcons;
 use Native\Mobile\Concerns\InstallsSplashScreen;
 use Native\Mobile\Concerns\ValidatesAppConfig;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Exceptions\AppStoreConnectLookupFailed;
 use Native\Mobile\Icon\Svg\SvgConversionException;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
@@ -94,7 +95,13 @@ class BuildIosAppCommand extends Command
         // re-extracts. Xcode-driven builds manage their own build number and
         // must not have .env bumped underneath them, so they keep the boot value.
         if (! getenv('NATIVEPHP_XCODE_BUILD')) {
-            $this->resolveBuildNumber();
+            try {
+                $this->resolveBuildNumber();
+            } catch (AppStoreConnectLookupFailed $e) {
+                error($e->getMessage());
+
+                return Command::FAILURE;
+            }
         }
 
         $this->bundleLaravelApp();

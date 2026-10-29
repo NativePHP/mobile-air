@@ -147,6 +147,12 @@ struct ContentView: View {
                         lastOrientation = SystemFunctions.currentWindowOrientation()
                     }
                     .onChange(of: geometry.size) { _, _ in
+                        // Rotation and resizes change the safe area, and the root
+                        // web view otherwise only re-reads it on navigation.
+                        if let webView = SharedWebView.shared.webView {
+                            SharedWebView.shared.coordinator?.injectSafeAreaInsets(webView)
+                        }
+
                         let orientation = SystemFunctions.currentWindowOrientation()
                         guard orientation != lastOrientation else { return }
                         lastOrientation = orientation
@@ -377,16 +383,18 @@ struct WebView: UIViewRepresentable {
             injectSafeAreaInsets(webView)
         }
 
-        private func injectSafeAreaInsets(_ webView: WKWebView) {
-            // Get insets from window scene (more reliable than webView.window which can be nil)
-            let windowScene = UIApplication.shared.connectedScenes
+        func injectSafeAreaInsets(_ webView: WKWebView) {
+            // The web view's own window, so an external display's scene can't supply
+            // the insets. The first scene's window covers the first commit, before the
+            // web view is in a window.
+            let window = webView.window ?? UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
-                .first
+                .first?.windows.first
 
-            let insets = windowScene?.windows.first?.safeAreaInsets ?? webView.window?.safeAreaInsets ?? .zero
+            let insets = window?.safeAreaInsets ?? .zero
 
             // Also get color scheme for CSS variable
-            let isDarkMode = windowScene?.windows.first?.traitCollection.userInterfaceStyle == .dark
+            let isDarkMode = window?.traitCollection.userInterfaceStyle == .dark
             let colorScheme = isDarkMode ? "dark" : "light"
 
             let js = """
@@ -403,81 +411,6 @@ struct WebView: UIViewRepresentable {
             """
 
             webView.evaluateJavaScript(js, completionHandler: nil)
-        }
-
-        @MainActor
-        func notifyLaravel(
-            event: String,
-            payload: [String: Any]
-        ) {
-            let rawEventName = event
-            let event: String = {
-                let data = try! JSONSerialization.data(withJSONObject: [event])
-                var literal = String(data: data, encoding: .utf8)!
-                literal.removeFirst()
-                literal.removeLast()
-                return literal
-            }()
-
-            // 1. Inject JS event into the current web page
-            if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-
-                let js = """
-                (function() {
-                    const event = new CustomEvent(
-                        "native-event",
-                        {
-                            detail: {
-                                event: \(event),
-                                payload: \(jsonString),
-                            },
-                        }
-                    );
-                    document.dispatchEvent(event);
-
-                    fetch('/_native/api/events', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
-                        },
-                        body: JSON.stringify({
-                            event: \(event),
-                            payload: \(jsonString),
-                        })
-                    }).then(response => response.json())
-                      .then(data => console.log("API Event Dispatch Success:", JSON.stringify(data, null, 2)))
-                      .catch(error => console.error("API Event Dispatch Error:", error));
-                })();
-                """
-
-                self.webView?.evaluateJavaScript(js) { result, error in
-                    if let error = error {
-                        print("JavaScript injection error injecting event '\(event)': \(error)")
-                    } else {
-                        print("JavaScript event '\(event)' dispatched.")
-                    }
-                }
-
-                // FUTURE: Send a request to Laravel backend directly
-//                let request = RequestData(
-//                    method: "POST",
-//                    uri: "php://127.0.0.1/_native/api/events",
-//                    data: jsonString,
-//                    headers: [
-//                        "Content-Type": "application/json"
-//                    ])
-//
-//                _ = NativePHPApp.laravel(request: request)
-
-            }
-
-            // Also inject into the element event queue for #[OnNative] listeners
-            if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-                NativeElementBridge.sendNativeEvent(eventName: rawEventName, payloadJson: jsonString)
-            }
         }
 
         // Swipe gestures disabled for back/forward navigation
@@ -634,17 +567,6 @@ struct WebView: UIViewRepresentable {
             }
         }
 
-        // Setup Laravel bridge - use shared coordinator so it persists.
-        // Upgrade the LOCAL delivery channel rather than overwriting `send`:
-        // `send` may be wrapped (Jump's remote-session fork), and wrappers
-        // fall back to localSend at dispatch time — so events reach the
-        // WebView the moment it materializes, even mid-session.
-        LaravelBridge.shared.localSend = { [weak shared] event, payload in
-            Task { @MainActor in
-                shared?.coordinator?.notifyLaravel(event: event, payload: payload as [String : Any])
-            }
-        }
-
         // Register NotificationCenter observers
         // (reloadWebViewNotification is handled app-wide by HotReloadCoordinator,
         // registered at launch — a native-direct boot never runs makeUIView, so
@@ -707,6 +629,8 @@ struct WebView: UIViewRepresentable {
     }
 
     func addNativeHelper(webView: WKWebView) {
+        LaravelBridge.shared.registerPageWebView(webView)
+
         let contentController = webView.configuration.userContentController
 
         // Inject safe area CSS FIRST at document start to prevent layout jump

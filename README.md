@@ -30,11 +30,11 @@ Join the [Discord community](https://discord.gg/nativephp) to ask questions and 
 
 ## Contributing
 
-Thank you for considering contributing to NativePHP for Mobile! The contribution guide can be found in the [NativePHP documentation](https://nativephp.com/docs/mobile/contributing).
+Thank you for considering contributing to NativePHP for Mobile! The contribution guide can be found in the [NativePHP documentation](https://nativephp.com/docs/mobile/getting-started/contributing).
 
 ## Code of Conduct
 
-In order to ensure that the NativePHP community is welcoming to all, please review and abide by the [Code of Conduct](https://nativephp.com/docs/mobile/contributing#code-of-conduct).
+In order to ensure that the NativePHP community is welcoming to all, please review and abide by the [Code of Conduct](https://nativephp.com/docs/mobile/getting-started/contributing#code-of-conduct).
 
 ## Security Vulnerabilities
 

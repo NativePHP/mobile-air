@@ -64,6 +64,26 @@ use Native\Mobile\Edge\SharedValue;
  *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
  *     </native:gesture-area>
  *
+ * Snapping — a pan that settles on set points, the swipe-to-reveal
+ * pattern. With `snap-x` (or `snap-y`) the bound axis moves with the
+ * finger between the lowest and highest point, with growing resistance
+ * past them, and on release springs to the point nearest where the
+ * fling would carry it. `@dragEnd` reports the point it settles on, so
+ * PHP learns the outcome without deciding it. Setting the SharedValue
+ * from PHP (`setValue()`) on a snapping axis springs it there too, the
+ * way a tap elsewhere closes a revealed row:
+ *
+ *     $dx = SharedValue::make();   // kept on the component across renders
+ *
+ *     <native:gesture-area :pan-x="$dx" :snap-x="[-96, 0]" @dragEnd="settled">
+ *         <native:row :translate-x="$dx">…</native:row>
+ *     </native:gesture-area>
+ *
+ *     public function settled(float $x, float $y): void   // $x is -96 or 0
+ *
+ * A pan bound on one axis only takes drags along that axis, so an
+ * enclosing scroll view still scrolls the other way.
+ *
  * Swipe — discrete directional flick. `swipe-fingers` sets how many
  * touches must participate (e.g. 3 for a Jump-style three-finger
  * swipe; defaults to 1). The callback receives the direction as a
@@ -101,6 +121,12 @@ class GestureArea extends Element
     private ?float $pinchMax = null;
 
     private int $swipeFingers = 1;
+
+    /** The points a snapping pan settles on, per axis (see the class
+     *  docblock). Null = the pan rests wherever the finger leaves it. */
+    private ?array $snapX = null;
+
+    private ?array $snapY = null;
 
     /** Keep the zoomed content inside the area's edges. */
     private bool $bounded = false;
@@ -144,6 +170,14 @@ class GestureArea extends Element
             $this->pinchMax = (float) $attrs['pinch-max'];
         }
 
+        if (isset($attrs['snap-x'])) {
+            $this->snapX(self::points($attrs['snap-x']));
+        }
+
+        if (isset($attrs['snap-y'])) {
+            $this->snapY(self::points($attrs['snap-y']));
+        }
+
         if (isset($attrs['swipe-fingers'])) {
             $this->swipeFingers = max(1, (int) $attrs['swipe-fingers']);
         }
@@ -155,6 +189,44 @@ class GestureArea extends Element
         if (isset($attrs['content-ratio'])) {
             $this->contentRatio((float) $attrs['content-ratio']);
         }
+    }
+
+    /** Points the horizontal pan settles on (see the class docblock).
+     *  Fewer than two points means no snapping. */
+    public function snapX(array $points): static
+    {
+        $this->snapX = self::sortedPoints($points);
+
+        return $this;
+    }
+
+    /** Points the vertical pan settles on. */
+    public function snapY(array $points): static
+    {
+        $this->snapY = self::sortedPoints($points);
+
+        return $this;
+    }
+
+    /**
+     * @return list<float>|null
+     */
+    private static function sortedPoints(array $points): ?array
+    {
+        $points = array_values(array_unique(array_map(floatval(...), $points), SORT_REGULAR));
+        sort($points);
+
+        return count($points) >= 2 ? $points : null;
+    }
+
+    /**
+     * Snap points from Blade: an array, or a comma-separated string.
+     *
+     * @return list<mixed>
+     */
+    private static function points(mixed $value): array
+    {
+        return is_array($value) ? $value : array_filter(array_map(trim(...), explode(',', (string) $value)), fn (string $point): bool => $point !== '');
     }
 
     /** Keep the zoomed content inside the area's edges (see the class
@@ -208,11 +280,21 @@ class GestureArea extends Element
         if ($this->panXId !== null) {
             $props['pan-x-id'] = $this->panXId;
             $props['pan-x-initial'] = $this->panXInitial;
+
+            // A comma-separated string, so both platforms read it with
+            // their plain string getter.
+            if ($this->snapX !== null) {
+                $props['pan-x-snap'] = implode(',', $this->snapX);
+            }
         }
 
         if ($this->panYId !== null) {
             $props['pan-y-id'] = $this->panYId;
             $props['pan-y-initial'] = $this->panYInitial;
+
+            if ($this->snapY !== null) {
+                $props['pan-y-snap'] = implode(',', $this->snapY);
+            }
         }
 
         if ($this->pinchId !== null) {

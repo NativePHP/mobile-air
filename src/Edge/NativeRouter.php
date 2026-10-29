@@ -211,6 +211,10 @@ class NativeRouter
      * can finish before that first frame, and its completion would be
      * dropped with them. Its timeout is disarmed once it finishes, so the
      * screen would wait for it forever. Those completions are kept.
+     *
+     * They're taken after the transition is signalled, right before the
+     * reset. On iOS the signal waits for the main thread, which is busy
+     * with the outgoing screen, and a task can finish in that wait.
      */
     public function flushDeferredTransition(): void
     {
@@ -221,9 +225,10 @@ class NativeRouter
         $t = $this->deferredTransition;
         $this->deferredTransition = null;
 
-        $this->carriedEvents = [...$this->carriedEvents, ...static::takeAsyncCompletions()];
-
         static::signalTransition($t);
+
+        $this->carriedEvents = [...$this->carriedEvents, ...static::drainEvents()['completions']];
+
         static::resetBuffers();
     }
 
@@ -238,17 +243,44 @@ class NativeRouter
     }
 
     /**
-     * Drain the event queue, keeping only async task completions. Each carries
-     * its task id, and NativeComponent checks which screen dispatched it, so
-     * handing it to the next runloop can't wake the wrong screen.
+     * Count the system backs queued behind the one that just popped a screen,
+     * carrying any async completions on to the next runloop.
      *
-     * @return list<array<string, mixed>>
+     * Picking an entry from the iOS back button's history menu pops several
+     * screens at once, and native navigation posts one system back for each.
+     * The first ends the top screen's runloop. The rest would be dropped with
+     * every other queued event when the next screen draws its first frame,
+     * leaving PHP one screen down while native navigation is several.
      */
-    protected static function takeAsyncCompletions(): array
+    protected function takeQueuedSystemBacks(): int
+    {
+        ['completions' => $completions, 'system_backs' => $backs] = static::drainEvents();
+
+        $this->carriedEvents = [...$this->carriedEvents, ...$completions];
+
+        return $backs;
+    }
+
+    /**
+     * Drain the event queue, keeping only async task completions and a count
+     * of system backs. Each completion carries its task id, and
+     * NativeComponent checks which screen dispatched it, so handing it to the
+     * next runloop can't wake the wrong screen.
+     *
+     * @return array{completions: list<array<string, mixed>>, system_backs: int}
+     */
+    protected static function drainEvents(): array
     {
         $completions = [];
+        $backs = 0;
 
         while (($event = nativephp_element_wait_event(0)) !== null) {
+            if (($event['type'] ?? null) === NativeComponent::EVENT_SYSTEM_BACK) {
+                $backs++;
+
+                continue;
+            }
+
             $name = (string) ($event['event'] ?? '');
             $name = str_starts_with($name, 'native:') ? substr($name, 7) : $name;
 
@@ -258,7 +290,7 @@ class NativeRouter
             }
         }
 
-        return $completions;
+        return ['completions' => $completions, 'system_backs' => $backs];
     }
 
     // ── Static registry ─────────────────────────────
@@ -693,10 +725,12 @@ class NativeRouter
     {
         $freshPush = true;
         $reenterCurrentScreen = false;
+        $queuedSystemBacks = 0;
 
         while (! empty($this->stack)) {
             $entry = &$this->stack[count($this->stack) - 1];
             $component = $entry['component'];
+            $poppedByQueuedBack = false;
 
             static::debugLog('loop: top, component='.get_class($component).' freshPush='.($freshPush ? 'Y' : 'N').' stack='.count($this->stack));
 
@@ -732,9 +766,22 @@ class NativeRouter
                     $component->mountComponent();
                     $this->announce(new ScreenMounted(get_class($component), $entry['uri'] ?? null));
                 } elseif (! $freshPush && ! $reenterCurrentScreen) {
-                    static::debugLog('loop: calling onResume() on '.get_class($component));
-                    $component->onResume();
-                    $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
+                    // Native navigation already popped past this screen too, so
+                    // answer its system back before it resumes and draws a frame
+                    // nobody will see. The root is never popped this way: native
+                    // navigation can't pop it, and answering a back there would
+                    // end the session.
+                    if ($queuedSystemBacks > 0 && count($this->stack) > 1) {
+                        static::debugLog('loop: answering a queued system back on '.get_class($component));
+                        $component->handleSystemBack();
+                        $poppedByQueuedBack = $component->getNavigationIntent()?->type === NavigationIntent::BACK;
+                    }
+
+                    if (! $component->hasNavigationIntent()) {
+                        static::debugLog('loop: calling onResume() on '.get_class($component));
+                        $component->onResume();
+                        $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
+                    }
                 }
             } catch (NativeDumpException $e) {
                 $component->renderDumpScreen($e);
@@ -758,6 +805,10 @@ class NativeRouter
             // intent set during mount()" path would re-fire it on resume and
             // bounce the user forward again.
             $component->resetNavigationIntent();
+
+            // The rest of a history pop carries on only while each screen
+            // answers its queued back by going back.
+            $queuedSystemBacks = $poppedByQueuedBack ? $queuedSystemBacks - 1 : 0;
 
             if ($intent === null) {
                 static::debugLog('loop: no intent, popping '.get_class($component));
@@ -940,6 +991,7 @@ class NativeRouter
 
                     static::debugLog('BACK: deferring transition, stack='.count($this->stack));
                     $this->deferredTransition = $intent->transition ?? Transition::SlideFromLeft;
+                    $queuedSystemBacks += $this->takeQueuedSystemBacks();
                     break;
 
                 case NavigationIntent::REPLACE:

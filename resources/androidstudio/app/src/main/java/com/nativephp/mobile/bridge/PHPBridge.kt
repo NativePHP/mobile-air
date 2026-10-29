@@ -637,7 +637,7 @@ class PHPBridge(private val context: Context) {
                 // mirror (no-op until a WebRenderer exists).
                 com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
                 com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
-                Log.d(TAG, "Stored cookie: $cookieValue")
+                Log.d(TAG, "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}")
             }
             com.nativephp.mobile.security.WebCookieMirror.flush()
         }
@@ -671,8 +671,8 @@ class PHPBridge(private val context: Context) {
     }
 
     fun processRawPHPResponse(response: String): String {
-        // Log the first 200 characters to understand the response format
-        Log.d(TAG, "Response first 200 chars: ${response.take(200)}")
+        // Only the first line: the headers below it can carry Set-Cookie values
+        Log.d(TAG, "Response first line: ${response.substringBefore("\r\n").take(200)}")
 
         // Check for Set-Cookie headers regardless of response format
         if (response.contains("Set-Cookie:", ignoreCase = true)) {
@@ -683,8 +683,6 @@ class PHPBridge(private val context: Context) {
                 .filter { it.startsWith("Set-Cookie:", ignoreCase = true) }
 
             setCookieLines.forEach { cookieLine ->
-                Log.d(TAG, "Cookie line: $cookieLine")
-
                 // Extract the cookie value (after "Set-Cookie:")
                 val cookieValue = cookieLine.substringAfter(":", "").trim()
                 if (cookieValue.isNotEmpty()) {
@@ -693,7 +691,7 @@ class PHPBridge(private val context: Context) {
                     // native-only boot never loads the Chromium provider).
                     com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
                     com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
-                    Log.d(TAG, "Stored cookie: $cookieValue")
+                    Log.d(TAG, "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}")
                 }
             }
 

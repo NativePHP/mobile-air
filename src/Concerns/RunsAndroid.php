@@ -25,6 +25,14 @@ trait RunsAndroid
     protected string $androidLogPath = 'nativephp'.DIRECTORY_SEPARATOR.'android-build.log';
 
     /**
+     * Seconds adb gets to install the APK. A 100 MB+ debug build on an
+     * emulator sharing a busy machine can take several minutes. It stays
+     * bounded because an emulator whose system services have stopped
+     * never answers, and native:run would wait on it forever.
+     */
+    protected int $adbInstallTimeout = 600;
+
+    /**
      * Write a message to the Android build log file
      */
     protected function logToFile(string $message): void
@@ -684,35 +692,8 @@ XML;
             $apkPath = $this->buildType === 'profileable'
                 ? base_path('nativephp/android/app/build/outputs/apk/profileable/app-profileable.apk')
                 : base_path('nativephp/android/app/build/outputs/apk/debug/app-debug.apk');
-            // -d allows version-code downgrades on debuggable builds, e.g. a
-            // NATIVEPHP_APP_VERSION=DEBUG build (code 1) over a versioned install.
-            $installCmd = "$adbCommand -s $targetDeviceId install -r -d \"$apkPath\"";
-            $this->logToFile("Installing APK: $installCmd");
-            // Debug APKs are large (~200MB+); a cold emulator can exceed the
-            // default 60s Process timeout mid-install. Give it room.
-            $installResult = Process::timeout(300)->run($installCmd);
 
-            // A previously-installed release-key-signed build blocks an -r update
-            // (signature mismatch), and -d can't downgrade a non-debuggable
-            // (profileable) build. Uninstall and retry so switching builds
-            // "just works".
-            if (! $installResult->successful()
-                && Str::contains($installResult->errorOutput().$installResult->output(),
-                    ['INSTALL_FAILED_UPDATE_INCOMPATIBLE', 'INSTALL_FAILED_VERSION_DOWNGRADE'])) {
-                $this->logToFile('Incompatible installed build (signature or version downgrade); uninstalling and retrying install');
-                Process::timeout(120)->run("$adbCommand -s $targetDeviceId uninstall $appId");
-                $installResult = Process::timeout(300)->run($installCmd);
-            }
-
-            if (! $installResult->successful()) {
-                $this->logToFile('ERROR: APK installation failed');
-                $this->logToFile($installResult->output());
-                $this->logToFile($installResult->errorOutput());
-                $this->failRun('install', 'APK installation failed: '.trim($installResult->errorOutput() ?: $installResult->output()));
-                error('APK installation failed');
-                note($installResult->errorOutput() ?: $installResult->output());
-                note('Try freeing up space on the device or uninstalling old apps.');
-
+            if (! $this->installApk($adbCommand, $targetDeviceId, $apkPath, $appId)) {
                 return false;
             }
 
@@ -781,6 +762,56 @@ XML;
 
             return true;
         }
+    }
+
+    /**
+     * Install a debug-signed APK on one device, replacing whatever build is
+     * already there. Reports the failure and returns false when it can't.
+     */
+    private function installApk(string $adbCommand, string $targetDeviceId, string $apkPath, string $appId): bool
+    {
+        // -d allows version-code downgrades on debuggable builds, e.g. a
+        // NATIVEPHP_APP_VERSION=DEBUG build (code 1) over a versioned install.
+        $installCmd = "$adbCommand -s $targetDeviceId install -r -d \"$apkPath\"";
+        $this->logToFile("Installing APK: $installCmd");
+
+        try {
+            $installResult = Process::timeout($this->adbInstallTimeout)->run($installCmd);
+
+            // A previously-installed release-key-signed build blocks an -r update
+            // (signature mismatch), and -d can't downgrade a non-debuggable
+            // (profileable) build. Uninstall and retry so switching builds
+            // "just works".
+            if (! $installResult->successful()
+                && Str::contains($installResult->errorOutput().$installResult->output(),
+                    ['INSTALL_FAILED_UPDATE_INCOMPATIBLE', 'INSTALL_FAILED_VERSION_DOWNGRADE'])) {
+                $this->logToFile('Incompatible installed build (signature or version downgrade); uninstalling and retrying install');
+                Process::timeout(120)->run("$adbCommand -s $targetDeviceId uninstall $appId");
+                $installResult = Process::timeout($this->adbInstallTimeout)->run($installCmd);
+            }
+        } catch (ProcessTimedOutException $e) {
+            $this->logToFile('ERROR: '.$e->getMessage());
+            $this->failRun('install', 'APK installation timed out: '.$e->getMessage());
+            error('APK installation timed out');
+            note('The device may be overloaded, or its system services may have stopped.');
+            note("Check it responds with `$adbCommand -s $targetDeviceId shell pm path android`, restart it if not, then run again.");
+
+            return false;
+        }
+
+        if (! $installResult->successful()) {
+            $this->logToFile('ERROR: APK installation failed');
+            $this->logToFile($installResult->output());
+            $this->logToFile($installResult->errorOutput());
+            $this->failRun('install', 'APK installation failed: '.trim($installResult->errorOutput() ?: $installResult->output()));
+            error('APK installation failed');
+            note($installResult->errorOutput() ?: $installResult->output());
+            note('Try freeing up space on the device or uninstalling old apps.');
+
+            return false;
+        }
+
+        return true;
     }
 
     private function promptForAndroidTarget(): string

@@ -50,6 +50,13 @@ use Symfony\Component\VarDumper\VarDumper;
 
 abstract class NativeComponent
 {
+    /**
+     * The hardware back button, the back chevron, or an edge-swipe pop.
+     * On iOS native navigation has usually popped the screen already, and
+     * PHP pops to match.
+     */
+    const EVENT_SYSTEM_BACK = 8;
+
     const EVENT_HOT_RELOAD = 15;
 
     /**
@@ -3447,8 +3454,8 @@ abstract class NativeComponent
                 continue;
             }
 
-            // System back button (type 8)
-            if (($event['type'] ?? -1) === 8) {
+            // System back button
+            if (($event['type'] ?? -1) === self::EVENT_SYSTEM_BACK) {
                 if ($this->nativeHasError) {
                     // Dismiss error/dump screen and re-render the component
                     $this->clearOverlayState();
@@ -3799,7 +3806,7 @@ abstract class NativeComponent
         }
         try {
             $element = $this->renderToElement();
-            $tree = $element->toArray($this->nativeCallbacks);
+            $tree = self::closeSheetsAndModals($element->toArray($this->nativeCallbacks));
             $this->publishedFrame = null;
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
@@ -3807,6 +3814,26 @@ abstract class NativeComponent
             // about to unmount anyway, swallow.
             NativeRouter::debugLog('publishFinalState failed in '.static::class.': '.$e->getMessage());
         }
+    }
+
+    /**
+     * Close every bottom sheet and modal in the farewell frame, child
+     * components' too. Both are presented over the whole window, so one
+     * still open would cover the next screen until its first frame
+     * arrives. The frame is a full emit (no REUSE markers), so each of
+     * them is in it with all of its props.
+     */
+    private static function closeSheetsAndModals(array $node): array
+    {
+        if (in_array($node['type'], ['bottom_sheet', 'modal'], true)) {
+            $node['props']['visible'] = false;
+        }
+
+        foreach ($node['children'] ?? [] as $index => $child) {
+            $node['children'][$index] = self::closeSheetsAndModals($child);
+        }
+
+        return $node;
     }
 
     public function transition(Transition $type): static

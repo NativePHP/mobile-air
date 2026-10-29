@@ -191,10 +191,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
-    // Android Request Inspector WebView library
-    implementation("com.github.acsbendi:Android-Request-Inspector-WebView:1.0.3")
-
-    // RxJava dependencies needed for the Request Inspector
+    // RxJava. These came in with the request inspector, which has gone (it
+    // logged every request's cookies). Nothing here uses them now, but plugins
+    // may expect them on the classpath.
     implementation("io.reactivex.rxjava2:rxjava:2.2.21")
     implementation("io.reactivex.rxjava2:rxandroid:2.1.1")
     implementation("io.reactivex.rxjava3:rxjava:3.1.5")

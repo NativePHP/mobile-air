@@ -27,6 +27,8 @@ class BottomNav extends Element
             'text-color' => 'textColor',
             'font-name' => 'fontName',
             'minimize-on-scroll' => 'minimizeOnScroll',
+            'tab-presentation-id' => 'tabPresentationId',
+            'tab-presentation-configuration' => 'tabPresentationConfiguration',
         ] as $kebab => $camel) {
             if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
                 $attrs[$camel] = $attrs[$kebab];
@@ -59,6 +61,14 @@ class BottomNav extends Element
 
         if (isset($attrs['minimizeOnScroll'])) {
             $this->props['minimize_on_scroll'] = filter_var($attrs['minimizeOnScroll'], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        if (isset($attrs['tabPresentationId'])) {
+            $this->props['tab_presentation_id'] = $attrs['tabPresentationId'];
+        }
+
+        if (isset($attrs['tabPresentationConfiguration'])) {
+            $this->props['tab_presentation_configuration'] = $attrs['tabPresentationConfiguration'];
         }
 
         if (! empty($attrs['custom'])) {
