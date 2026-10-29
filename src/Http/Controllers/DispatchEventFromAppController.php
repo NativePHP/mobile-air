@@ -14,8 +14,8 @@ class DispatchEventFromAppController
 {
     public function __invoke(Request $request)
     {
-        $eventClass = $request->get('event');
-        $payload = $request->get('payload', []);
+        $eventClass = $request->input('event');
+        $payload = $request->input('payload', []);
 
         // This endpoint constructs the named class and fires it, and JavaScript
         // in a web view can reach it (the `api` routes carry no middleware). So
