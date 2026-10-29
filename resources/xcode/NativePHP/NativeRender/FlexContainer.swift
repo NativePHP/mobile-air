@@ -343,6 +343,19 @@ struct FlexContainer: Layout {
         let proposedMain = mainSize(proposed)
         let proposedCross = crossSize(proposed)
 
+        if wrapsLines(main: proposedMain) {
+            let lines = wrapLines(main: proposedMain, subviews: subviews, cache: &cache)
+            let contentCross = lines.reduce(0) { $0 + $1.cross }
+                + gap * CGFloat(max(0, lines.count - 1))
+            let result = makeSize(
+                main: proposedMain,
+                cross: proposedCross.isFinite ? proposedCross : contentCross
+            )
+            cache.sizeCache[key] = result
+            cache.measuredKey = key
+            return result
+        }
+
         // Phase A: hypothetical main size + first-pass cross measurement.
         // Each child's "hypothetical main" follows CSS flex-base-size semantics:
         //   - explicit flex_basis → that value
@@ -562,6 +575,10 @@ struct FlexContainer: Layout {
         // wide inside a correctly sized row — the label simply disappears.
         // Re-measure for this proposal (bypassing the memo) when they differ.
         dropStaleMeasurements(&cache)
+        if wrapsLines(main: mainSize(bounds.size)) {
+            placeWrapped(in: bounds, subviews: subviews, cache: &cache)
+            return
+        }
         let placementKey = ProposalKey(proposal)
         if cache.measuredKey != placementKey {
             cache.sizeCache[placementKey] = nil
@@ -816,6 +833,130 @@ struct FlexContainer: Layout {
         }
 
         // Phase 6: Place absolute children
+        for i in cache.absoluteIndices {
+            placeAbsolute(subviews[i], info: cache.childInfos[i], in: bounds)
+        }
+    }
+
+    // MARK: - flex-wrap
+
+    /// One line of a wrapping row: its children, each child's main size on
+    /// the line, and the line's cross size (its tallest child plus margins).
+    struct WrapLine {
+        var indices: [Int] = []
+        var mains: [CGFloat] = []
+        var used: CGFloat = 0
+        var cross: CGFloat = 0
+    }
+
+    /// `flex-wrap` / `flex-wrap-reverse` on a row with a definite width.
+    /// Like Android's `FlowRow`: columns and indefinite widths keep the
+    /// single-line layout, and reverse wraps forwards.
+    private func wrapsLines(main: CGFloat) -> Bool {
+        wrap != 0 && isRow && main.isFinite
+    }
+
+    /// Breaks the flow children into lines no wider than `main`.
+    ///
+    /// Each child starts at its natural width (or its flex basis), capped at
+    /// the line width, and moves to a new line when it doesn't fit after the
+    /// previous child plus `gap`. Children never shrink to stay on a line; a
+    /// line's leftover width goes to its own `flex-grow` children. Each child
+    /// is then measured at its final width, so a capped text reports its
+    /// wrapped height.
+    private func wrapLines(main: CGFloat, subviews: Subviews, cache: inout CacheData) -> [WrapLine] {
+        var lines: [WrapLine] = []
+        var line = WrapLine()
+
+        for i in cache.flowIndices {
+            let info = cache.childInfos[i]
+            let margin = mainMargin(info)
+            let base = info.flexBasis >= 0
+                ? info.flexBasis
+                : mainSize(measure(subviews, i, .unspecified, &cache))
+            let childMain = max(0, min(base, main - margin))
+            let needed = (line.indices.isEmpty ? 0 : gap) + childMain + margin
+            if !line.indices.isEmpty && line.used + needed > main {
+                lines.append(line)
+                line = WrapLine()
+            }
+            line.used += (line.indices.isEmpty ? 0 : gap) + childMain + margin
+            line.indices.append(i)
+            line.mains.append(childMain)
+        }
+        if !line.indices.isEmpty {
+            lines.append(line)
+        }
+
+        for l in lines.indices {
+            let leftover = main - lines[l].used
+            let totalGrow = lines[l].indices.reduce(0) {
+                $0 + effectiveGrow(cache.childInfos[$1], index: $1, finiteMain: true)
+            }
+            for (k, i) in lines[l].indices.enumerated() {
+                let info = cache.childInfos[i]
+                if leftover > 0 && totalGrow > 0 {
+                    lines[l].mains[k] += leftover * effectiveGrow(info, index: i, finiteMain: true) / totalGrow
+                }
+                let measured = measure(subviews, i, ProposedViewSize(width: lines[l].mains[k], height: nil), &cache)
+                cache.childInfos[i].idealSize = measured
+                lines[l].cross = max(lines[l].cross, crossSize(measured) + crossMargin(info))
+            }
+        }
+        return lines
+    }
+
+    /// Places a wrapping row line by line. `justify` spreads each line's
+    /// leftover width; `items-*` / `self-*` align a child within its line,
+    /// and stretch (the default) gives it the line's height. Lines stack from
+    /// the top, `gap` apart.
+    private func placeWrapped(in bounds: CGRect, subviews: Subviews, cache: inout CacheData) {
+        let lines = wrapLines(main: bounds.width, subviews: subviews, cache: &cache)
+        var lineY = bounds.minY
+
+        for line in lines {
+            let lineGrows = line.indices.contains {
+                effectiveGrow(cache.childInfos[$0], index: $0, finiteMain: true) > 0
+            }
+            let (startOffset, spacing) = justifyOffsets(
+                remaining: lineGrows ? 0 : bounds.width - line.used,
+                count: line.indices.count
+            )
+            var x = bounds.minX + startOffset
+
+            for (k, i) in line.indices.enumerated() {
+                let info = cache.childInfos[i]
+                let width = line.mains[k]
+                let available = line.cross - crossMargin(info)
+                let natural = min(crossSize(cache.childInfos[i].idealSize), available)
+                let crossFill = i < childNodes.count && childNodes[i].layout?.heightMode == SizeMode.fill
+
+                let height: CGFloat
+                let y: CGFloat
+                switch crossFill ? AlignItems.stretch : (info.alignSelf > 0 ? info.alignSelf : align) {
+                case AlignItems.start:
+                    height = natural
+                    y = lineY + info.marginTop
+                case AlignItems.center:
+                    height = natural
+                    y = lineY + (line.cross - height) / 2
+                case AlignItems.end:
+                    height = natural
+                    y = lineY + line.cross - height - info.marginBottom
+                default: // unset and stretch
+                    height = available
+                    y = lineY + info.marginTop
+                }
+
+                subviews[i].place(
+                    at: CGPoint(x: x + info.marginLeft, y: y),
+                    proposal: ProposedViewSize(width: width, height: height)
+                )
+                x += width + mainMargin(info) + gap + spacing
+            }
+            lineY += line.cross + gap
+        }
+
         for i in cache.absoluteIndices {
             placeAbsolute(subviews[i], info: cache.childInfos[i], in: bounds)
         }
