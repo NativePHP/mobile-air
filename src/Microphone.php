@@ -66,6 +66,26 @@ class Microphone
     }
 
     /**
+     * How loud the microphone has been since this was last called, from 0 (silence, or nothing
+     * recording) to 1 (the loudest a sample can be), for drawing a level meter while recording.
+     * Needs a microphone plugin that reports levels; older ones read as 0.
+     */
+    public function level(): float
+    {
+        if (function_exists('nativephp_call')) {
+            $result = nativephp_call('Microphone.GetLevel', json_encode([]));
+
+            if ($result) {
+                $decoded = json_decode($result, true);
+
+                return is_numeric($decoded['level'] ?? null) ? max(0.0, min(1.0, (float) $decoded['level'])) : 0.0;
+            }
+        }
+
+        return 0.0;
+    }
+
+    /**
      * Get the path to the last recorded audio file
      *
      * @return string|null Path to the last recording, or null if none exists

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static void pause()
  * @method static void resume()
  * @method static string getStatus()
+ * @method static float level()
  * @method static string|null getRecording()
  */
 class Microphone extends Facade
