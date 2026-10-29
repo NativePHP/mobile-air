@@ -907,9 +907,11 @@ struct FlexContainer: Layout {
     }
 
     /// Places a wrapping row line by line. `justify` spreads each line's
-    /// leftover width; `items-*` / `self-*` align a child within its line,
-    /// and stretch (the default) gives it the line's height. Lines stack from
-    /// the top, `gap` apart.
+    /// leftover width. A child keeps its natural height at the top of its
+    /// line, as in Android's FlowRow, so a short pill next to a taller chip
+    /// isn't stretched; `items-center` / `items-end` (or `self-*`) move it
+    /// within the line, and `h-full` gives it the line's height. Lines stack
+    /// from the top, `gap` apart.
     private func placeWrapped(in bounds: CGRect, subviews: Subviews, cache: inout CacheData) {
         let lines = wrapLines(main: bounds.width, subviews: subviews, cache: &cache)
         var lineY = bounds.minY
@@ -933,9 +935,9 @@ struct FlexContainer: Layout {
 
                 let height: CGFloat
                 let y: CGFloat
-                switch crossFill ? AlignItems.stretch : (info.alignSelf > 0 ? info.alignSelf : align) {
-                case AlignItems.start:
-                    height = natural
+                switch info.alignSelf > 0 ? info.alignSelf : align {
+                case _ where crossFill:
+                    height = available
                     y = lineY + info.marginTop
                 case AlignItems.center:
                     height = natural
@@ -943,8 +945,8 @@ struct FlexContainer: Layout {
                 case AlignItems.end:
                     height = natural
                     y = lineY + line.cross - height - info.marginBottom
-                default: // unset and stretch
-                    height = available
+                default: // unset, start and stretch: natural height at the line's top, as FlowRow
+                    height = natural
                     y = lineY + info.marginTop
                 }
 
