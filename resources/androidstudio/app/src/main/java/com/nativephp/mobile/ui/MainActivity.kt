@@ -106,6 +106,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     // Last appearance pushed to PHP, so onConfigurationChanged (which also fires
     // on rotation) only emits AppearanceChanged when the theme actually flips.
     private var lastAppearance: String? = null
+    // Last system font scale seen, so onConfigurationChanged only touches the
+    // WebView's textZoom when the font size really changed (not on rotation
+    // or a theme flip, which would undo a textZoom an app set itself).
+    private var lastFontScale: Float = 1f
 
     private var showSplash by mutableStateOf(true)
     // Gates composition of the heavy MainScreen tree (Scaffold + WebView)
@@ -148,6 +152,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // only emits AppearanceChanged when the theme genuinely differs.
         lastAppearance = if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
+        lastFontScale = resources.configuration.fontScale
 
         // Compare before reseeding: some multi-window changes recreate the
         // activity rather than calling onConfigurationChanged. The companion
@@ -562,11 +567,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // Font size changes no longer recreate the activity (fontScale is in
         // configChanges), and a WebView only reads the system font scale into
         // textZoom when it is created. Keep web screens in step with it.
-        webRenderer?.webView?.settings?.let { settings ->
-            val textZoom = kotlin.math.round(newConfig.fontScale * 100).toInt()
-            if (settings.textZoom != textZoom) {
-                settings.textZoom = textZoom
-            }
+        if (newConfig.fontScale != lastFontScale) {
+            lastFontScale = newConfig.fontScale
+            webRenderer?.webView?.settings?.textZoom = kotlin.math.round(newConfig.fontScale * 100).toInt()
         }
 
         // Push a native AppearanceChanged event to PHP when the theme flips.
