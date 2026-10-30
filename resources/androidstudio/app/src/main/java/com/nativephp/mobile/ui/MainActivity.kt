@@ -559,6 +559,16 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             configureStatusBar()
         }
 
+        // Font size changes no longer recreate the activity (fontScale is in
+        // configChanges), and a WebView only reads the system font scale into
+        // textZoom when it is created. Keep web screens in step with it.
+        webRenderer?.webView?.settings?.let { settings ->
+            val textZoom = kotlin.math.round(newConfig.fontScale * 100).toInt()
+            if (settings.textZoom != textZoom) {
+                settings.textZoom = textZoom
+            }
+        }
+
         // Push a native AppearanceChanged event to PHP when the theme flips.
         // onConfigurationChanged also fires on rotation, so guard on an actual
         // change. Drives reactive System::appearance() / #[On(AppearanceChanged)].
