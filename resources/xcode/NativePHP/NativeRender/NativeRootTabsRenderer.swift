@@ -312,6 +312,14 @@ struct NativeRootTabsRenderer: View {
                     .modifier(SystemTabBarSuppressionModifier(
                         suppressed: customPresenter != nil
                     ))
+                    .background {
+                        if customPresenter == nil, tabId == selection, tabId == owningId,
+                           pendingTabId == nil, tab.props.getCallbackId("on_reselect") != 0 {
+                            NativeTabReselectObserver {
+                                requestTabReselection(at: idx, tabs: tabs, owningId: owningId)
+                            }
+                        }
+                    }
 
                 }
                 .badge(badgeFor(tab))
@@ -425,10 +433,26 @@ struct NativeRootTabsRenderer: View {
     private func requestTabActivation(at index: Int, tabs: [NativeUINode], owningId: String) {
         guard tabs.indices.contains(index) else { return }
         let identifier = tabs[index].props.getString("id", default: "tab_\(index)")
+        if selection == identifier, identifier == owningId, pendingTabId == nil {
+            requestTabReselection(at: index, tabs: tabs, owningId: owningId)
+            return
+        }
         if selection == identifier {
             activateTab(at: index, tabs: tabs, owningId: owningId)
         } else {
             selection = identifier
+        }
+    }
+
+    private func requestTabReselection(at index: Int, tabs: [NativeUINode], owningId: String) {
+        guard pendingTabId == nil, tabs.indices.contains(index) else { return }
+        let tab = tabs[index]
+        let identifier = tab.props.getString("id", default: "tab_\(index)")
+        guard identifier == selection, identifier == owningId,
+              !tab.props.getBool("search"), !tab.props.getString("url", default: "").isEmpty else { return }
+        let callback = tab.props.getCallbackId("on_reselect")
+        if callback != 0 {
+            NativeElementBridge.sendPressEvent(callback, nodeId: tab.id)
         }
     }
 
