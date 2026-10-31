@@ -49,7 +49,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -63,7 +67,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nativephp.mobile.ui.MaterialIcon
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Compose port of iOS's `NativeRootTabsRenderer`. Renders the
@@ -136,6 +142,41 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // Android keeps no per-tab tree cache to hold the selected tab's content.)
     var pendingTabId by remember { mutableStateOf<String?>(null) }
     val supersededTabIds = remember { mutableSetOf<String>() }
+
+    // Scope for the native scroll-to-top animation a bottom-tab
+    // reselect launches — cancelled automatically when this renderer
+    // leaves composition, which also cancels an in-flight scroll.
+    val scope = rememberCoroutineScope()
+
+    // True while a reselect scroll-to-top is animating. Re-taps during
+    // the scroll coalesce into the running scroll+refresh — one scroll,
+    // one callback (see decideBottomTabTap).
+    var scrollInFlight by remember { mutableStateOf(false) }
+
+    // Ownership for the in-flight reselect scroll. `scrollJob` cancels
+    // the animation the moment a cross-tab tap navigates away, and the
+    // generation keeps a CANCELLED job's `finally` from clearing the
+    // flag of a scroll a later tap started — only the newest
+    // generation may reset `scrollInFlight`.
+    var scrollJob by remember { mutableStateOf<Job?>(null) }
+    var scrollGeneration by remember { mutableIntStateOf(0) }
+
+    // Latest-tree mirrors for the post-scroll reselect gate. FlatBuffer
+    // nodes are per-publish snapshots: the `tab` / `activeTabIdx` values
+    // an onClick captures belong to the tree that was on screen WHEN the
+    // user tapped. The scroll-then-refresh coroutine must instead verify
+    // against — and fire into — the tree that is live AFTER the scroll
+    // settles, so keep the newest tabs/ids where the coroutine can read
+    // them (SideEffect runs after every successful composition; nothing
+    // in composition reads these back, so no recomposition loop).
+    var latestTabs by remember { mutableStateOf(tabs) }
+    var latestTabIds by remember { mutableStateOf(tabIds) }
+    var latestActiveTabId by remember { mutableStateOf(activeTabId) }
+    SideEffect {
+        latestTabs = tabs
+        latestTabIds = tabIds
+        latestActiveTabId = activeTabId
+    }
 
     LaunchedEffect(activeTabIdx) {
         val pending = pendingTabId
@@ -246,19 +287,123 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val activateTabAt: (Int) -> Unit = activate@{ actualIdx ->
         if (actualIdx < 0 || actualIdx >= tabs.size) return@activate
         val tab = tabs[actualIdx]
-        val requestedId = tabIds[actualIdx]
         val isSearchTab = tab.props.getBool("search")
+        // Local selection updates instantly so
+        // the ripple / selection indicator
+        // responds; for the search tab, no PHP
+        // navigation fires (it's an iOS-/Android-
+        // side overlay). For regular tabs, the
+        // BottomNavItem-auto-wired `replace`
+        // press handler fires here. A tap back
+        // to the active tab normally needs no
+        // press — except while another tab's
+        // navigation is in flight: PHP is
+        // already navigating away and must be
+        // told to come back. A re-tap of the
+        // settled active tab dispatches the
+        // tab's optional `on_reselect` callback
+        // (Tab::onReselect) instead — one tap:
+        // at exact top it fires immediately,
+        // scrolled down it scrolls to top first
+        // and fires once the scroll completes
+        // (see decideBottomTabTap and
+        // shouldFireReselectAfterScroll).
         selection = actualIdx
-        val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
-        if (!isSearchTab && tapNavigates && tab.onPress != 0) {
-            if (tab.props.getString("url", "").isNotEmpty()) {
-                pendingTabId?.let { previous ->
-                    if (previous != requestedId) supersededTabIds.add(previous)
+        val reselectCbId = tab.props.getCallbackId("on_reselect")
+        val scrollTargetKey = tab.props.getString("reselect_scroll_target", "")
+        val scrollTarget =
+            if (scrollTargetKey.isEmpty()) null
+            else NativeScrollTargetRegistry.get(scrollTargetKey)
+        when (decideBottomTabTap(
+            actualIdx = actualIdx,
+            activeTabIdx = activeTabIdx,
+            hasPendingNavigation = pendingTabId != null,
+            isSearchTab = isSearchTab,
+            urlPressId = tab.onPress,
+            reselectCbId = reselectCbId,
+            scrollTargetKey = scrollTargetKey,
+            scrollTarget = scrollTarget,
+            scrollInFlight = scrollInFlight,
+        )) {
+            BottomTabTapAction.NavigateUrl -> {
+                if (tab.props.getString("url", "").isNotEmpty()) {
+                    val tappedId = tabIds.getOrElse(actualIdx) { "" }
+                    pendingTabId?.let { prev ->
+                        if (prev != tappedId) supersededTabIds.add(prev)
+                    }
+                    pendingTabId = tappedId
                 }
-                pendingTabId = requestedId
+                // Navigation away abandons the feed:
+                // stop animating its scroll now
+                // rather than letting it run out
+                // under the incoming screen.
+                scrollJob?.cancel()
+                NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
             }
-            NativeElementBridge.sendPressEvent(tab.onPress, tab.id)
+            BottomTabTapAction.FireReselectCallback ->
+                // Same PRESS transport as the URL
+                // press; the callback id alone
+                // routes to the reselect handler.
+                NativeElementBridge.sendPressEvent(reselectCbId, tab.id)
+            BottomTabTapAction.ScrollThenReselect -> {
+                val target = scrollTarget
+                val tappedTabId = tabIds.getOrElse(actualIdx) { "" }
+                if (target != null) {
+                    scrollInFlight = true
+                    // This scroll owns the flag until
+                    // a newer scroll bumps the
+                    // generation — a cancelled job's
+                    // finally then leaves the flag
+                    // (and any newer scroll) alone.
+                    scrollGeneration++
+                    val generation = scrollGeneration
+                    scrollJob = scope.launch {
+                        try {
+                            target.scrollToTop()
+                            // One-tap contract: refresh
+                            // after the scroll settles —
+                            // but only if the world still
+                            // matches the tap. A canceled
+                            // scroll never gets here; a
+                            // tab switch, a navigation
+                            // still in flight
+                            // (pendingTabId, read LIVE —
+                            // the published tree lags the
+                            // press), a same-key entry
+                            // replacement, or a tree that
+                            // switched target keys must
+                            // not refresh the wrong or an
+                            // abandoned view. The fire
+                            // uses ids re-read from the
+                            // CURRENT tree, never the
+                            // tap-time capture.
+                            val freshTab = latestTabs.getOrNull(
+                                latestTabIds.indexOf(tappedTabId),
+                            )
+                            val freshCbId = freshTab?.props?.getCallbackId("on_reselect") ?: 0
+                            if (shouldFireReselectAfterScroll(
+                                    activeTabStillTapped = tappedTabId.isNotEmpty()
+                                        && latestActiveTabId == tappedTabId
+                                        && selection == actualIdx,
+                                    noPendingNavigation = pendingTabId == null,
+                                    scrollEntryUnchanged = NativeScrollTargetRegistry.get(scrollTargetKey) === target,
+                                    tabStillDeclaresTarget = freshTab?.props?.getString("reselect_scroll_target", "") == scrollTargetKey,
+                                    freshReselectCallbackId = freshCbId,
+                                )
+                            ) {
+                                NativeElementBridge.sendPressEvent(freshCbId, freshTab?.id ?: tab.id)
+                            }
+                        } finally {
+                            if (scrollGeneration == generation) {
+                                scrollInFlight = false
+                            }
+                        }
+                    }
+                }
+            }
+            BottomTabTapAction.Noop -> {}
         }
+
     }
 
     val descriptorEntries = if (customPresenter != null) visibleTabEntries.map { (actualIdx, tab) ->
@@ -501,7 +646,49 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // free via per-tab NavigationStack; Compose lacks that, so we
         // drive both off `pendingTransition` and the (tabIdx, uri) key.
         val pendingTransition by NativeUIBridge.pendingTransition
-        val targetKey = "$activeTabIdx|$currentUri"
+
+        // Per-mount saveable panes. PHP's `screen_tokens` (bottom-up,
+        // top screen last) is the AUTHORITATIVE liveness list; tokens
+        // leaving it are exactly the mounts that died (pop/replace/
+        // unwind) and their saved state is dropped, while buried live
+        // mounts keep theirs — so a popTo back to the feed restores the
+        // SAME feed's scroll state (ListState/PagerState are saveable
+        // internally and scope to the provider key). The ledger itself
+        // is rememberSaveable: after a process restart Android hands
+        // back the old bundles, the fresh process's all-new random
+        // tokens evict them on the first frame, and nothing stale is
+        // ever restored into an unrelated screen.
+        val screenTokens = node.props.getStringList("screen_tokens")
+        val saveableHolder = rememberSaveableStateHolder()
+        val savedTokenLedger = rememberSaveable { mutableStateOf(ArrayList<String>()) }
+        SideEffect {
+            if (screenTokens.isNotEmpty()) {
+                ScreenTokens.evicted(savedTokenLedger.value, screenTokens).forEach { saveableHolder.removeState(it) }
+                savedTokenLedger.value = ArrayList(screenTokens)
+            }
+        }
+
+        // Pane identity is the TOP screen token — screen-MOUNT identity,
+        // never URI/node id (per-frame wire ids regenerate; a fresh
+        // REPLACE of the same URI must not alias the previous mount's
+        // pane or its saved state). Old frames without tokens keep the
+        // legacy (tab|uri) key and skip saveable scoping entirely. The
+        // tab index rides along as transition metadata only.
+        val topToken = screenTokens.lastOrNull()
+        val targetKey = topToken ?: "$activeTabIdx|$currentUri"
+
+        // Context cancel at the screen-ownership boundary: the VISIBLE
+        // mount changed (top token) — a row push, a programmatic
+        // replace, a deep link, not just a bottom cross-tab tap. A
+        // feed reselect scroll still animating when a child pushes
+        // (and the user returns before it ends) must not complete and
+        // fire the old callback: after A→B→A the gate's world checks
+        // legitimately read "same A" again, and `pendingTabId` only
+        // covers BOTTOM tab navigation. The generation guard keeps the
+        // cancelled job's finally from touching a newer scroll.
+        LaunchedEffect(topToken) {
+            scrollJob?.cancel()
+        }
 
         // Scaffold padding follows the current screen's bars (nav bar
         // presence, hidden tab bar), which swap instantly on navigation.
@@ -519,11 +706,12 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // the "new page flashes, then the transition kicks in" stutter.
         val paneNodes = remember { HashMap<String, Pair<NativeUINode?, NativeUINode?>>() }
         AnimatedContent(
-            targetState = targetKey,
+            targetState = TabPaneIdentity(key = targetKey, tabIdx = activeTabIdx),
             transitionSpec = {
-                val initialIdx = initialState.substringBefore('|')
-                val targetIdx = targetState.substringBefore('|')
-                if (initialIdx != targetIdx) {
+                // Cross-tab fade vs within-tab slide, decided by the tab
+                // metadata — never by the pane identity (a token), which
+                // changes on every mount.
+                if (initialState.tabIdx != targetState.tabIdx) {
                     fadeIn(tween(180)) togetherWith fadeOut(tween(180))
                 } else {
                     transitionFor(pendingTransition)
@@ -531,7 +719,8 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             },
             label = "tab-content",
             modifier = Modifier.fillMaxSize()
-        ) { key ->
+        ) { pane ->
+            val key = pane.key
             DisposableEffect(key) {
                 onDispose {
                     paneNodes.remove(key)
@@ -549,26 +738,46 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 paneNodes[key] ?: Pair(screenContent, bottomBarNode)
             }
-            Box(modifier = Modifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
-                if (paneBottomBar != null) {
-                    // Screen content fills the space above the pinned bar; the
-                    // bar sits at the bottom. Root `imePadding` shrinks this
-                    // column when the keyboard opens so the bar rides above it.
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                            if (paneScreen != null) NodeView(node = paneScreen)
+            // Saveable scope per pane identity — the key each pane ENTERED
+            // with (a token, or the legacy key on old frames where the
+            // scope is inert). Exiting panes therefore keep their own
+            // token, never the live top token.
+            val paneBody: @Composable () -> Unit = {
+                Box(modifier = Modifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
+                    if (paneBottomBar != null) {
+                        // Screen content fills the space above the pinned bar; the
+                        // bar sits at the bottom. Root `imePadding` shrinks this
+                        // column when the keyboard opens so the bar rides above it.
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                if (paneScreen != null) NodeView(node = paneScreen)
+                            }
+                            paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
                         }
-                        paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
+                    } else if (paneScreen != null) {
+                        NodeView(node = paneScreen)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize())
                     }
-                } else if (paneScreen != null) {
-                    NodeView(node = paneScreen)
-                } else {
-                    Box(modifier = Modifier.fillMaxSize())
                 }
+            }
+            if (screenTokens.isNotEmpty()) {
+                saveableHolder.SaveableStateProvider(key) { paneBody() }
+            } else {
+                paneBody()
             }
         }
     }
 }
+
+/**
+ * AnimatedContent state for a tab pane: the pane's identity [key] (the
+ * per-mount screen token when the frame carries one, else the legacy
+ * tab|uri key) plus the tab index as transition metadata. The identity
+ * must stay a single opaque string — SaveableStateProvider keys and the
+ * pane caches all hang off it.
+ */
+private data class TabPaneIdentity(val key: String, val tabIdx: Int)
 
 /**
  * Compose mirror of iOS's `NativeSearchTabRoot`. Replaces the active

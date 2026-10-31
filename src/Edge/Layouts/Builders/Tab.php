@@ -68,6 +68,10 @@ class Tab
 
     private ?string $pressMethod = null;
 
+    private ?string $reselectMethod = null;
+
+    private ?string $reselectScrollTarget = null;
+
     private function __construct(string $id, string $label, string $url)
     {
         $this->id = $id;
@@ -158,6 +162,31 @@ class Tab
     public function press(string $method): self
     {
         $this->pressMethod = $method;
+
+        return $this;
+    }
+
+    /**
+     * Handler fired when the user taps the tab that is already active
+     * (Android only — iOS ignores the prop). Never replaces `->press()`
+     * or the default URL navigation: cross-tab taps keep navigating
+     * exactly as before.
+     *
+     * With no `$scrollTarget` the handler fires on every active
+     * reselect. With one, native first checks the scroll container
+     * registered under that key (see the Android
+     * `NativeScrollTargetRegistry`): at exact top the handler fires
+     * immediately; scrolled down, native scrolls the container to top
+     * locally and then fires the handler once after the scroll
+     * completes — one tap means top AND refresh (no PHP round trip
+     * before the scroll, no remount).
+     *
+     *   Tab::link('Log', '/log')->onReselect('refreshLog', 'log-feed')
+     */
+    public function onReselect(string $method, ?string $scrollTarget = null): self
+    {
+        $this->reselectMethod = $method;
+        $this->reselectScrollTarget = $scrollTarget;
 
         return $this;
     }
@@ -282,6 +311,13 @@ class Tab
         // is already attached, so this cleanly overrides the default.
         if ($this->pressMethod !== null) {
             $item->onPress($this->pressMethod);
+        }
+
+        // Wire the active-tab reselect handler if set. It rides the
+        // props dict (`on_reselect` + optional `reselect_scroll_target`),
+        // so the URL tab's auto-wired `on_press` navigation stays live.
+        if ($this->reselectMethod !== null) {
+            $item->onReselect($this->reselectMethod, $this->reselectScrollTarget);
         }
 
         return $item;

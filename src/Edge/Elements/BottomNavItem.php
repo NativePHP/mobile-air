@@ -39,6 +39,15 @@ class BottomNavItem extends Element
      */
     private ?array $rawSearchItems = null;
 
+    /**
+     * Active-tab reselect handler, injected by `Tab::onReselect()`.
+     * Kept off `$props` until `resolveProps` registers it, so it is
+     * absent from the wire entirely when unused.
+     */
+    private ?string $reselectMethod = null;
+
+    private ?string $reselectScrollTarget = null;
+
     public static function make(): static
     {
         return new static;
@@ -156,6 +165,25 @@ class BottomNavItem extends Element
         return $this;
     }
 
+    /**
+     * Handler for a tap on the already-active tab (Android). Serialized
+     * as an `on_reselect` prop carrying a registered callback id — the
+     * PRESS event transports it — plus an optional
+     * `reselect_scroll_target` prop naming a scroll container registered
+     * in the Android `NativeScrollTargetRegistry`. When a target is set,
+     * native scrolls it to top first and then invokes PHP once the
+     * scroll completes — unless it is already at exact top (first item
+     * AND zero pixel offset), in which case PHP is invoked immediately.
+     * Never suppresses the URL tab's auto-wired `on_press` navigation.
+     */
+    public function onReselect(string $method, ?string $scrollTarget = null): static
+    {
+        $this->reselectMethod = $method;
+        $this->reselectScrollTarget = $scrollTarget;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         // Resolve the platform icon triple down to the single wire icon.
@@ -199,6 +227,17 @@ class BottomNavItem extends Element
                 'data' => [],
                 'transition' => 'none',
             ]);
+        }
+
+        // Active-tab reselect handler — rides the props dict like
+        // `on_double_tap`, so no wire-format node field changes and the
+        // id alone routes the PRESS event to the handler. Registered
+        // fresh each resolve; omitted entirely when no handler is set.
+        if ($this->reselectMethod !== null) {
+            $this->props['on_reselect'] = $registry->register($this->reselectMethod);
+            if ($this->reselectScrollTarget !== null) {
+                $this->props['reselect_scroll_target'] = $this->reselectScrollTarget;
+            }
         }
 
         return $this->props;
