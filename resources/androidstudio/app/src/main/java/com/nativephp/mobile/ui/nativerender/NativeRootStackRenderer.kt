@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.animation.core.animate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -425,30 +426,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 levelPaddings[uri] ?: padding
             }
-            // Expose the bar's collapse state to scrolling content. Only when
-            // the bar actually reacts to scroll — a pinned bar stays put, and
-            // handing content a controller that silently does nothing would be
-            // worse than handing it null.
-            val chromeScrollController = remember(scrollBehavior, barReactsToScroll) {
-                if (!barReactsToScroll) {
-                    null
-                } else {
-                    object : ChromeScrollController {
-                        override suspend fun collapse() {
-                            val state = scrollBehavior.state
-                            val target = state.heightOffsetLimit
-                            if (target >= 0f || state.heightOffset <= target) {
-                                return
-                            }
-                            animate(
-                                initialValue = state.heightOffset,
-                                targetValue = target,
-                                animationSpec = tween(durationMillis = 250),
-                            ) { value, _ -> state.heightOffset = value }
-                        }
-                    }
-                }
-            }
+            val chromeScrollController = rememberChromeScrollController(scrollBehavior, barReactsToScroll)
 
             CompositionLocalProvider(LocalChromeScrollController provides chromeScrollController) {
                 val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
@@ -490,6 +468,38 @@ interface ChromeScrollController {
 
 /** Null when the screen has no collapsible chrome (pinned bar, or no bar). */
 val LocalChromeScrollController = compositionLocalOf<ChromeScrollController?> { null }
+
+/**
+ * Exposes the bar's collapse state to scrolling content. Only when the bar
+ * actually reacts to scroll — a pinned bar stays put, and handing content a
+ * controller that silently does nothing would be worse than handing it null.
+ * Shared by the stack and tabs renderers.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun rememberChromeScrollController(
+    scrollBehavior: TopAppBarScrollBehavior,
+    barReactsToScroll: Boolean,
+): ChromeScrollController? = remember(scrollBehavior, barReactsToScroll) {
+    if (!barReactsToScroll) {
+        null
+    } else {
+        object : ChromeScrollController {
+            override suspend fun collapse() {
+                val state = scrollBehavior.state
+                val target = state.heightOffsetLimit
+                if (target >= 0f || state.heightOffset <= target) {
+                    return
+                }
+                animate(
+                    initialValue = state.heightOffset,
+                    targetValue = target,
+                    animationSpec = tween(durationMillis = 250),
+                ) { value, _ -> state.heightOffset = value }
+            }
+        }
+    }
+}
 
 /**
  * Renders a single trailing toolbar action — plain IconButton when no

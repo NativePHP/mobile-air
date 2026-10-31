@@ -493,7 +493,9 @@ private struct StackBottomBarInsetModifier: ViewModifier {
 /// `.visible` and get their band back. Pre-18 still needs the pair
 /// unconditionally — without it the color is applied to a hidden bar and
 /// never shows.
-private struct StackBarBackgroundModifier: ViewModifier {
+///
+/// Module-internal so the tabs renderer can use it for large-title bars.
+struct StackBarBackgroundModifier: ViewModifier {
     let argb: Int
     let inline: Bool
 

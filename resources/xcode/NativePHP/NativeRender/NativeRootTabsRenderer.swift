@@ -299,6 +299,7 @@ struct NativeRootTabsRenderer: View {
                         coordinator: coord,
                         hasNavBar: hasNavBar,
                         fallbackTitle: navTitleText,
+                        fallbackDisplayMode: node.props.getString("nav_display_mode", default: "inline"),
                         fallbackShowBack: navBack,
                         fallbackTextArgb: navTextArgb,
                         fallbackBgArgb: navBgArgb,
@@ -519,6 +520,7 @@ private struct PerTabContent: View {
     @ObservedObject var coordinator: PerTabNavigationCoordinator
     let hasNavBar: Bool
     let fallbackTitle: String
+    let fallbackDisplayMode: String
     let fallbackShowBack: Bool
     let fallbackTextArgb: Int
     let fallbackBgArgb: Int
@@ -561,16 +563,18 @@ private struct PerTabContent: View {
             // the rendered path; this branch never reaches it, so it takes
             // the window background itself rather than flashing the
             // TabView's container on the first tap of a fresh tab.
+            let titleDisplayMode = tabsTitleDisplayMode(fallbackDisplayMode, hasTitleView: false)
             Color.clear
                 .navigationTitle(fallbackTitle)
-                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarTitleDisplayMode(titleDisplayMode)
                 .modifier(TabsToolbarModifier(
                     showBack: fallbackShowBack && isRoot,
                     title: fallbackTitle,
                     titleNode: nil,
                     actions: [],
                     textArgb: fallbackTextArgb,
-                    bgArgb: fallbackBgArgb
+                    bgArgb: fallbackBgArgb,
+                    inline: titleDisplayMode == .inline
                 ))
                 .modifier(WindowBackgroundModifier())
         }
@@ -639,6 +643,10 @@ private struct PerTabContent: View {
             : root.props.getString("nav_search_placeholder", default: "")
         let searchOnQueryCb = Int(root.props.getCallbackId("nav_search_on_query"))
         let searchDebounceMs = root.props.getInt("nav_search_debounce_ms", default: 300)
+        let titleDisplayMode = tabsTitleDisplayMode(
+            root.props.getString("nav_display_mode", default: fallbackDisplayMode),
+            hasTitleView: titleNode != nil
+        )
 
         levelContent(for: root, screenContent: screenContent)
             // Always set the string title, even when a titleView lockup owns
@@ -647,21 +655,26 @@ private struct PerTabContent: View {
             // accessibility label this level from `navigationTitle` —
             // blanking it renders those entries as empty glass pills.
             .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(titleDisplayMode)
             .modifier(TabsToolbarModifier(
                 showBack: manualBack,
                 title: title,
                 titleNode: titleNode,
                 actions: actions,
                 textArgb: textArgb,
-                bgArgb: bgArgb
+                bgArgb: bgArgb,
+                inline: titleDisplayMode == .inline
             ))
             .modifier(HideNavBarModifier(hidden: hideNavBar))
             .modifier(SearchableNavBarModifier(
                 placeholder: searchPlaceholder,
                 callbackId: searchOnQueryCb,
                 nodeId: root.id,
-                debounceMs: searchDebounceMs
+                debounceMs: searchDebounceMs,
+                // Same mapping as the stack renderer.
+                alwaysVisible: ["collapse", "pinned"].contains(
+                    root.props.getString("nav_scroll_behavior", default: "")
+                )
             ))
             // Hide the parent TabView's tab bar on any pushed level
             // FIRST — matches Apple's iMessage / Music / Mail pattern
@@ -723,6 +736,7 @@ private struct TabsToolbarModifier: ViewModifier {
     let actions: [NativeUINode]
     let textArgb: Int
     let bgArgb: Int
+    let inline: Bool
 
     func body(content: Content) -> some View {
         let textColor: Color = textArgb != 0 ? Color(argb: textArgb) : .primary
@@ -773,10 +787,36 @@ private struct TabsToolbarModifier: ViewModifier {
                 }
             }
             .toolbarColorScheme(toolbarScheme, for: .navigationBar)
-            .modifier(ExplicitBarBackgroundModifier(
-                argb: bgArgb,
-                placement: .navigationBar
-            ))
+            .modifier(TabsNavBarBackgroundModifier(argb: bgArgb, inline: inline))
+    }
+}
+
+/// Inline bars keep the tabs renderer's existing background treatment.
+/// Large and automatic bars use the stack renderer's, which doesn't force
+/// the bar background visible: under Liquid Glass that drops the large
+/// title row (see `StackBarBackgroundModifier`).
+private struct TabsNavBarBackgroundModifier: ViewModifier {
+    let argb: Int
+    let inline: Bool
+
+    func body(content: Content) -> some View {
+        if inline {
+            content.modifier(ExplicitBarBackgroundModifier(argb: argb, placement: .navigationBar))
+        } else {
+            content.modifier(StackBarBackgroundModifier(argb: argb, inline: false))
+        }
+    }
+}
+
+/// Maps the folded `nav_display_mode` prop the same way the stack renderer
+/// maps `display_mode`. A custom title view lives in the centered
+/// `.principal` slot, which only reads right inline.
+private func tabsTitleDisplayMode(_ mode: String, hasTitleView: Bool) -> NavigationBarItem.TitleDisplayMode {
+    if hasTitleView { return .inline }
+    switch mode {
+    case "large":     return .large
+    case "automatic": return .automatic
+    default:          return .inline
     }
 }
 

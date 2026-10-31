@@ -227,6 +227,14 @@ it('lets an inline top-bar win its slot while the layout still supplies the tab 
         });
 });
 
+it('folds an inline top-bar display mode and scroll behavior into the tabs root', function () {
+    Native::test(InlineTopBarScreen::class, layout: ChromeTabsLayout::class)
+        ->assertElement('native_root_tabs', function (array $n) {
+            return ($n['props']['nav_display_mode'] ?? null) === 'large'
+                && ($n['props']['nav_scroll_behavior'] ?? null) === 'collapse';
+        });
+});
+
 it('lets an inline bottom-nav win its slot while the layout still supplies the nav bar', function () {
     Native::test(InlineBottomNavScreen::class, layout: ChromeTabsLayout::class)
         ->assertHasTabBar()
