@@ -137,7 +137,7 @@ struct NativeRootStackRenderer: View {
 
         // Map the PHP-side string to SwiftUI's NavigationBarItem.TitleDisplayMode.
         //   `large`     — iOS-native big title, left-aligned, collapses on scroll
-        //   `automatic` — iOS picks (large at root, inline after a push)
+        //   `automatic` — iOS picks (large at root; a push inherits the previous mode)
         //   else        — small centered title (previous default)
         let titleDisplayMode: NavigationBarItem.TitleDisplayMode = {
             // A custom title view lives in the centered `.principal` slot,
