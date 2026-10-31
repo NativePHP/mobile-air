@@ -471,8 +471,10 @@ it('adds, pins and removes notes', function () {
 ```
 
 Other helpers: `toggle()`, `select()`, `longPress()`, `swipe()`, `pressBack()`, `get('prop')`,
-`assertNavigatedTo()`, `assertNavTitle()`, `assertMissingElement()`, `assertAccessible()`, `tree()` (the wire tree
-as an array; node types are snake_case, like `list_item` and `outlined_text_input`) and `dumpTree()`. Run with
+`assertNavigatedTo()`, `assertNavTitle()`, `assertNavAction()`, `assertMissingElement()`, `assertAccessible()`,
+`tree()` (the wire tree as an array; node types are snake_case, like `list_item` and `outlined_text_input`) and
+`dumpTree()`. `:menu` items are `top_bar_action` nodes too, so check the nav bar with `assertNavAction()` and
+`assertMissingNavAction()`, not `assertElement('top_bar_action')`. Run with
 `php artisan test`. `native:validate` warns "Could not determine view name" for components that
 `return view('native.x')`, so rely on tests instead.
 
