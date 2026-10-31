@@ -570,14 +570,17 @@ trait PreparesBuild
     {
         $source = rtrim(str_replace('\\', '/', $source), '/').'/';
 
+        // composer install in the staged app symlinks path repository
+        // packages back into vendor/. Follow them, and name each entry by
+        // its path under the link, so they ship like they do on iOS.
         $files = iterator_to_array(new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS),
+            new \RecursiveDirectoryIterator($source, \RecursiveDirectoryIterator::SKIP_DOTS | \RecursiveDirectoryIterator::FOLLOW_SYMLINKS),
             \RecursiveIteratorIterator::LEAVES_ONLY
         ));
 
         foreach ($files as $file) {
             $filePath = str_replace('\\', '/', $file->getRealPath());
-            $relativePath = ltrim(str_replace('\\', '/', substr($filePath, strlen($source))), '/');
+            $relativePath = ltrim(str_replace('\\', '/', substr($file->getPathname(), strlen($source))), '/');
 
             // Check against configured exclusions first
             $shouldExclude = false;
