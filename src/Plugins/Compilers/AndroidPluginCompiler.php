@@ -1163,6 +1163,13 @@ class AndroidPluginCompiler
     protected function buildMetaDataEntry(array $metaData): string
     {
         $name = $metaData['name'];
+
+        // Resource references (e.g. @drawable/icon) must use android:resource,
+        // matching component-level meta-data
+        if (isset($metaData['resource'])) {
+            return "<meta-data android:name=\"{$name}\" android:resource=\"{$metaData['resource']}\" />";
+        }
+
         $value = $metaData['value'];
 
         // Handle different value types
