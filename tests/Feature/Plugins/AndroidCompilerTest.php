@@ -1093,6 +1093,40 @@ object TestFunctions {
     /**
      * @test
      *
+     * Application-level meta-data should support the resource attribute, like
+     * component-level meta-data does. SDKs such as Firebase read some keys
+     * (default_notification_icon) as resource IDs.
+     */
+    public function it_adds_application_meta_data_with_resource(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'android' => [
+                'permissions' => [],
+                'dependencies' => [],
+                'meta_data' => [
+                    ['name' => 'com.google.firebase.messaging.default_notification_icon', 'resource' => '@drawable/ic_notification'],
+                    ['name' => 'com.example.API_KEY', 'value' => 'abc123'],
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $manifestPath = $this->testBasePath.'/android/app/src/main/AndroidManifest.xml';
+        $content = $this->files->get($manifestPath);
+
+        $this->assertStringContainsString('<meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/ic_notification" />', $content);
+        $this->assertStringNotContainsString('android:value="@drawable/ic_notification"', $content);
+        $this->assertStringContainsString('<meta-data android:name="com.example.API_KEY" android:value="abc123" />', $content);
+    }
+
+    /**
+     * @test
+     *
      * Component-level (service) meta-data values should also have ${ENV_VAR}
      * placeholders substituted from the environment.
      */
