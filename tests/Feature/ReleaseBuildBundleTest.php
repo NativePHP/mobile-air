@@ -18,9 +18,6 @@ class ReleaseBuildBundleTest extends TestCase
     {
         parent::setUp();
 
-        // realpath() matters: sys_get_temp_dir() is a symlink on macOS and
-        // addDirectoryToZip() derives archive paths from getRealPath(), so
-        // an unresolved base path would mangle every entry in the zip.
         $this->testProjectPath = realpath(sys_get_temp_dir()).'/nativephp_release_bundle_test_'.uniqid();
 
         File::ensureDirectoryExists($this->testProjectPath);
@@ -116,6 +113,43 @@ class ReleaseBuildBundleTest extends TestCase
 
         // Runtime dirs are re-added as empty entries after cleanup strips them.
         $this->assertNotFalse($zip->statName('storage/framework/views/'));
+
+        $zip->close();
+    }
+
+    public function test_android_bundle_ships_path_repository_packages_that_composer_symlinks(): void
+    {
+        $staged = $this->testProjectPath.'/nativephp/android/laravel';
+
+        // rsync --copy-links stages the package as a real directory, and
+        // composer install puts the path repository's symlink back when it
+        // installs or updates the package.
+        Process::fake([
+            'composer install*' => function () use ($staged) {
+                File::deleteDirectory($staged.'/vendor/acme/plugin');
+                symlink('../../packages/acme/plugin', $staged.'/vendor/acme/plugin');
+
+                return Process::result();
+            },
+            'composer dump-autoload*' => Process::result(),
+        ]);
+
+        $this->createAndroidProjectFixture();
+
+        File::ensureDirectoryExists($this->testProjectPath.'/packages/acme/plugin/src');
+        File::put($this->testProjectPath.'/packages/acme/plugin/src/PluginServiceProvider.php', '<?php');
+        symlink('../../packages/acme/plugin', $this->testProjectPath.'/vendor/acme/plugin');
+
+        (new ReleaseBuildTester)->testPrepareLaravelBundle();
+
+        $this->assertTrue(is_link($staged.'/vendor/acme/plugin'));
+
+        $zip = new ZipArchive;
+        $this->assertTrue($zip->open($this->testProjectPath.'/nativephp/android/app/src/main/assets/laravel_bundle.zip'));
+
+        $this->assertNotFalse($zip->statName('vendor/acme/plugin/src/PluginServiceProvider.php'));
+        $this->assertNotFalse($zip->statName('packages/acme/plugin/src/PluginServiceProvider.php'));
+        $this->assertNotFalse($zip->statName('vendor/acme/pkg/src/Pkg.php'));
 
         $zip->close();
     }
