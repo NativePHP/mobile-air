@@ -28,6 +28,28 @@ We also publish weekly livestreams and tutorials on our [YouTube channel](https:
 
 Join the [Discord community](https://discord.gg/nativephp) to ask questions and share what you're building.
 
+## Handling a selected tab being tapped again
+
+Use `onReselect()` to run a component method when the user taps the navigation
+tab they are already on, on iOS or Android:
+
+```php
+Tab::link('Home', '/home', icon: 'home')->onReselect('backToTop');
+```
+
+For inline chrome, use `on-reselect` on the item:
+
+```blade
+<native:bottom-nav-item id="home" label="Home" url="/home" icon="home"
+    on-reselect="backToTop" />
+```
+
+The handler is separate from the ordinary press handler: selecting another tab
+still navigates to its URL. Programmatic selection does not fire it. Search
+and action tabs do not send reselect callbacks. Without a handler, existing tab
+behavior is unchanged. The callback does not scroll or refresh automatically;
+your component decides what a reselect does.
+
 ## Contributing
 
 Thank you for considering contributing to NativePHP for Mobile! The contribution guide can be found in the [NativePHP documentation](https://nativephp.com/docs/mobile/getting-started/contributing).
