@@ -248,7 +248,19 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         val tab = tabs[actualIdx]
         val requestedId = tabIds[actualIdx]
         val isSearchTab = tab.props.getBool("search")
+        val reselects = nativeTabCanReselect(
+            selectedIndex = selection,
+            activeIndex = activeTabIdx,
+            requestedIndex = actualIdx,
+            hasPendingNavigation = pendingTabId != null,
+            isNavigationTab = !isSearchTab && tab.props.getString("url", "").isNotEmpty(),
+        )
         selection = actualIdx
+        if (reselects) {
+            val callback = tab.props.getCallbackId("on_reselect")
+            if (callback != 0) NativeElementBridge.sendPressEvent(callback, tab.id)
+            return@activate
+        }
         val tapNavigates = actualIdx != activeTabIdx || pendingTabId != null
         if (!isSearchTab && tapNavigates && tab.onPress != 0) {
             if (tab.props.getString("url", "").isNotEmpty()) {
