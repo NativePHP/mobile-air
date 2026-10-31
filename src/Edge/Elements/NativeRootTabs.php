@@ -100,6 +100,12 @@ class NativeRootTabs extends Element
         if (isset($attrs['navElevation'])) {
             $this->props['nav_elevation'] = (int) $attrs['navElevation'];
         }
+        if (isset($attrs['navDisplayMode'])) {
+            $this->props['nav_display_mode'] = $attrs['navDisplayMode'];
+        }
+        if (isset($attrs['navScrollBehavior'])) {
+            $this->props['nav_scroll_behavior'] = $attrs['navScrollBehavior'];
+        }
 
         // The URI of the active tab's screen. The iOS bridge keys its
         // per-URI tree diff off this so tab-switch publishes reuse

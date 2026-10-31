@@ -31,6 +31,7 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarDefaults
@@ -42,7 +43,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.TopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -190,6 +194,27 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val hasNavBar = navBack || navTitle.isNotEmpty() || titleNode != null || hasNavActions
     val reservesNavigationBarSlot = NativeRootHostRegistry.reservesNavigationBarSlot(node)
 
+    // `nav_display_mode` / `nav_scroll_behavior` map the same way the stack
+    // renderer maps `display_mode` / `scroll_behavior`: `large` gets
+    // Material's `LargeTopAppBar`, and an unset scroll behavior collapses
+    // large titles and pins everything else.
+    val useLargeTitle = node.props.getString("nav_display_mode", "") == "large" &&
+        (navTitle.isNotEmpty() || navSubtitle.isNotEmpty())
+    val scrollMode = node.props.getString("nav_scroll_behavior", "")
+        .ifEmpty { if (useLargeTitle) "collapse" else "pinned" }
+    // Each screen starts with its bar expanded, so a large title collapsed
+    // on one tab doesn't arrive collapsed on the next.
+    val topAppBarState = remember(activeTabIdx, currentUri) {
+        TopAppBarState(-Float.MAX_VALUE, 0f, 0f)
+    }
+    val scrollBehavior = when (scrollMode) {
+        "enterAlways" -> TopAppBarDefaults.enterAlwaysScrollBehavior(topAppBarState)
+        "pinned"      -> TopAppBarDefaults.pinnedScrollBehavior(topAppBarState)
+        else          -> TopAppBarDefaults.exitUntilCollapsedScrollBehavior(topAppBarState)
+    }
+    val barReactsToScroll = hasNavBar && !hideNavBar && scrollMode != "pinned"
+    val chromeScrollController = rememberChromeScrollController(scrollBehavior, barReactsToScroll)
+
     // Per-layout / per-bar chrome fonts, resolved through the plugin seam.
     // `font_name` = the tab bar's font; `nav_font_name` = the folded nav
     // bar's font (falls back to the tab bar's). Null → inherit the ambient
@@ -318,52 +343,71 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         },
         topBar = {
             if (hasNavBar && !hideNavBar && !isOnSearchTab) {
-                TopAppBar(
-                    title = {
-                        if (titleNode != null) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                titleNode.children.forEach { child -> NodeView(node = child) }
-                            }
-                        } else if (navSubtitle.isNotEmpty()) {
-                            Column {
+                val titleContent: @Composable () -> Unit = {
+                    if (titleNode != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            titleNode.children.forEach { child -> NodeView(node = child) }
+                        }
+                    } else if (navSubtitle.isNotEmpty()) {
+                        Column {
+                            // Large mode lets the bar drive the headline title
+                            // style, like the stack renderer.
+                            if (useLargeTitle) {
+                                Text(navTitle, fontWeight = FontWeight.SemiBold, fontFamily = navChromeFontFamily)
+                            } else {
                                 Text(navTitle, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium, fontFamily = navChromeFontFamily)
-                                Text(navSubtitle, style = MaterialTheme.typography.labelSmall, fontFamily = navChromeFontFamily)
                             }
-                        } else {
-                            Text(navTitle, fontWeight = FontWeight.SemiBold, fontFamily = navChromeFontFamily)
+                            Text(navSubtitle, style = MaterialTheme.typography.labelSmall, fontFamily = navChromeFontFamily)
                         }
-                    },
-                    navigationIcon = {
-                        if (navBack) {
-                            IconButton(onClick = { NativeElementBridge.sendSystemBackEvent() }) {
-                                // Font glyphs don't auto-mirror like AutoMirrored ImageVectors; flip for RTL.
-                                val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
-                                MaterialIcon(
-                                    name = "arrow_back",
-                                    contentDescription = "Back",
-                                    modifier = if (rtl) Modifier.scale(scaleX = -1f, scaleY = 1f) else Modifier
-                                )
-                            }
-                        } else if (reservesNavigationBarSlot) {
-                            Spacer(modifier = Modifier.width(48.dp))
-                        }
-                    },
-                    actions = {
-                        actions.forEach { action -> TopBarActionView(action) }
-                    },
-                    colors = if (navBgArgb != 0) {
-                        val bg = argbToComposeColor(navBgArgb)
-                        val fg = if (navTextArgb != 0) argbToComposeColor(navTextArgb) else Color.White
-                        TopAppBarDefaults.topAppBarColors(
-                            containerColor = bg,
-                            titleContentColor = fg,
-                            navigationIconContentColor = fg,
-                            actionIconContentColor = fg
-                        )
                     } else {
-                        TopAppBarDefaults.topAppBarColors()
+                        Text(navTitle, fontWeight = FontWeight.SemiBold, fontFamily = navChromeFontFamily)
                     }
-                )
+                }
+                val navIconContent: @Composable () -> Unit = {
+                    if (navBack) {
+                        IconButton(onClick = { NativeElementBridge.sendSystemBackEvent() }) {
+                            // Font glyphs don't auto-mirror like AutoMirrored ImageVectors; flip for RTL.
+                            val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+                            MaterialIcon(
+                                name = "arrow_back",
+                                contentDescription = "Back",
+                                modifier = if (rtl) Modifier.scale(scaleX = -1f, scaleY = 1f) else Modifier
+                            )
+                        }
+                    } else if (reservesNavigationBarSlot) {
+                        Spacer(modifier = Modifier.width(48.dp))
+                    }
+                }
+                val barColors = if (navBgArgb != 0) {
+                    val bg = argbToComposeColor(navBgArgb)
+                    val fg = if (navTextArgb != 0) argbToComposeColor(navTextArgb) else Color.White
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = bg,
+                        scrolledContainerColor = bg,
+                        titleContentColor = fg,
+                        navigationIconContentColor = fg,
+                        actionIconContentColor = fg
+                    )
+                } else {
+                    TopAppBarDefaults.topAppBarColors()
+                }
+                if (useLargeTitle) {
+                    LargeTopAppBar(
+                        title = titleContent,
+                        navigationIcon = navIconContent,
+                        actions = { actions.forEach { action -> TopBarActionView(action) } },
+                        colors = barColors,
+                        scrollBehavior = scrollBehavior,
+                    )
+                } else {
+                    TopAppBar(
+                        title = titleContent,
+                        navigationIcon = navIconContent,
+                        actions = { actions.forEach { action -> TopBarActionView(action) } },
+                        colors = barColors,
+                        scrollBehavior = scrollBehavior,
+                    )
+                }
             }
         },
         bottomBar = bottomBar@{
@@ -549,21 +593,35 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 paneNodes[key] ?: Pair(screenContent, bottomBarNode)
             }
-            Box(modifier = Modifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
-                if (paneBottomBar != null) {
-                    // Screen content fills the space above the pinned bar; the
-                    // bar sits at the bottom. Root `imePadding` shrinks this
-                    // column when the keyboard opens so the bar rides above it.
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                            if (paneScreen != null) NodeView(node = paneScreen)
+            // The bar's nested-scroll connection wraps the screen content
+            // directly, inside AnimatedContent, for the same reason as the
+            // stack renderer: outside it, the list's scroll deltas never reach
+            // the bar. Only the entering pane drives the bar.
+            val drivesBar = barReactsToScroll && key == targetKey
+            val scrollModifier = if (drivesBar) {
+                Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
+            } else {
+                Modifier
+            }
+            CompositionLocalProvider(
+                LocalChromeScrollController provides if (drivesBar) chromeScrollController else null
+            ) {
+                Box(modifier = scrollModifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
+                    if (paneBottomBar != null) {
+                        // Screen content fills the space above the pinned bar; the
+                        // bar sits at the bottom. Root `imePadding` shrinks this
+                        // column when the keyboard opens so the bar rides above it.
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                if (paneScreen != null) NodeView(node = paneScreen)
+                            }
+                            paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
                         }
-                        paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
+                    } else if (paneScreen != null) {
+                        NodeView(node = paneScreen)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize())
                     }
-                } else if (paneScreen != null) {
-                    NodeView(node = paneScreen)
-                } else {
-                    Box(modifier = Modifier.fillMaxSize())
                 }
             }
         }

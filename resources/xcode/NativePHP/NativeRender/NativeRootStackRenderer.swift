@@ -137,7 +137,7 @@ struct NativeRootStackRenderer: View {
 
         // Map the PHP-side string to SwiftUI's NavigationBarItem.TitleDisplayMode.
         //   `large`     — iOS-native big title, left-aligned, collapses on scroll
-        //   `automatic` — iOS picks (large at root, inline after a push)
+        //   `automatic` — iOS picks (large at root; a push inherits the previous mode)
         //   else        — small centered title (previous default)
         let titleDisplayMode: NavigationBarItem.TitleDisplayMode = {
             // A custom title view lives in the centered `.principal` slot,
@@ -493,7 +493,9 @@ private struct StackBottomBarInsetModifier: ViewModifier {
 /// `.visible` and get their band back. Pre-18 still needs the pair
 /// unconditionally — without it the color is applied to a hidden bar and
 /// never shows.
-private struct StackBarBackgroundModifier: ViewModifier {
+///
+/// Module-internal so the tabs renderer can use it for large-title bars.
+struct StackBarBackgroundModifier: ViewModifier {
     let argb: Int
     let inline: Bool
 
