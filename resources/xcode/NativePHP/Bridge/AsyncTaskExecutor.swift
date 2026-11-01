@@ -22,6 +22,12 @@ private func _async_php_on_lane_thread() -> Int32
 /// is pinned to a dedicated serial `DispatchQueue`, so a slot is only ever driven
 /// by one thread and its context stays thread-local.
 ///
+/// A task goes to an IDLE slot, and waits in one shared FIFO only when every slot
+/// is busy — the slot that frees up first takes it. Never to a slot by turn: a
+/// slot's queue is serial, so a task handed to a busy slot waits out whatever is
+/// running there even while the other slots sit idle. Android's executor gets the
+/// same behaviour from its threads sharing one blocking queue.
+///
 /// The task payload and result travel via the PHP temp-file transport plus the
 /// `AsyncTask.Complete` bridge function (which wakes the UI runloop).
 ///
@@ -38,9 +44,14 @@ final class AsyncTaskExecutor {
     private var slotHandles: [Int32] = []
     private var queues: [DispatchQueue] = []
 
-    /// Round-robins dispatched tasks across the slot queues.
-    private var nextSlot = 0
     private let lock = NSLock()
+
+    /// Indices of booted slots with no task running or queued on them.
+    private var idleSlots: [Int] = []
+
+    /// Tasks dispatched while every slot was busy, oldest first. A slot takes the
+    /// next one as it finishes, so a long task delays only itself.
+    private var waiting: [String] = []
 
     /// All mutable state below is guarded by `lock`.
     private var running = false
@@ -114,6 +125,7 @@ final class AsyncTaskExecutor {
                     continue
                 }
                 self.lock.lock()
+                self.idleSlots.append(self.slotHandles.count)
                 self.slotHandles.append(handle)
                 self.queues.append(DispatchQueue(label: "nativephp-async-\(handle)", qos: .utility))
                 self.lock.unlock()
@@ -173,7 +185,8 @@ final class AsyncTaskExecutor {
         return true
     }
 
-    /// Hand a task to a slot, or hold it if the pool is still booting.
+    /// Hand a task to an idle slot, or hold it until one is free — or until the
+    /// pool has booted.
     private func submit(taskId: String) -> Bool {
         lock.lock()
 
@@ -183,18 +196,35 @@ final class AsyncTaskExecutor {
             return true
         }
 
-        let slotCount = slotHandles.count
-        guard running, slotCount > 0 else {
+        guard running, !slotHandles.isEmpty else {
             lock.unlock()
             NSLog("AsyncTaskExecutor: dispatch(%@) dropped — no booted slots", taskId)
             return false
         }
-        let index = nextSlot % slotCount
-        nextSlot = (nextSlot + 1) % slotCount
+
+        guard let index = idleSlots.popLast() else {
+            // Never silently over-subscribe: surface when tasks are queueing
+            // behind a saturated pool, as Android does.
+            let ahead = waiting.count
+            waiting.append(taskId)
+            let slotCount = slotHandles.count
+            lock.unlock()
+            NSLog("AsyncTaskExecutor: task %@ queued behind %d others (pool=%d)", taskId, ahead, slotCount)
+            return true
+        }
+
         let handle = slotHandles[index]
         let queue = queues[index]
         lock.unlock()
 
+        run(taskId: taskId, slot: index, handle: handle, on: queue)
+
+        return true
+    }
+
+    /// Run one task on its slot, then give the slot the next waiting task — or
+    /// mark it idle when there is none.
+    private func run(taskId: String, slot index: Int, handle: Int32, on queue: DispatchQueue) {
         queue.async {
             if let resultPtr = _async_php_run(handle, taskId) {
                 free(UnsafeMutableRawPointer(mutating: resultPtr))
@@ -202,9 +232,29 @@ final class AsyncTaskExecutor {
             // The run is over either way — a completion (or a failure) has
             // already been posted from PHP.
             self.disarmWatchdog(taskId: taskId)
-        }
 
-        return true
+            self.lock.lock()
+
+            // Stopping: the slot arrays are about to be cleared, so this index
+            // means nothing any more, and nothing new may start.
+            guard self.running else {
+                self.lock.unlock()
+                return
+            }
+
+            guard !self.waiting.isEmpty else {
+                self.idleSlots.append(index)
+                self.lock.unlock()
+                return
+            }
+
+            let next = self.waiting.removeFirst()
+            self.lock.unlock()
+
+            // Lands on this slot's own serial queue behind the block now
+            // finishing, so the slot is still only ever driven by one thread.
+            self.run(taskId: next, slot: index, handle: handle, on: queue)
+        }
     }
 
     /// Fail a task that has outrun its deadline. The PHP interpreter running it
@@ -265,12 +315,13 @@ final class AsyncTaskExecutor {
         let handles = slotHandles
         let slotQueues = queues
         let pendingWatchdogs = watchdogs
-        let dropped = pending
+        let dropped = pending + waiting
         slotHandles.removeAll()
         queues.removeAll()
         watchdogs.removeAll()
         pending.removeAll()
-        nextSlot = 0
+        waiting.removeAll()
+        idleSlots.removeAll()
         running = false
         lock.unlock()
 
