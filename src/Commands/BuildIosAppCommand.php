@@ -9,6 +9,7 @@ use Native\Mobile\Concerns\ChecksLatestBuildNumber;
 use Native\Mobile\Concerns\CleansEnvFile;
 use Native\Mobile\Concerns\DisplaysMarketingBanners;
 use Native\Mobile\Concerns\InstallsAppIcon;
+use Native\Mobile\Concerns\InstallsCaBundle;
 use Native\Mobile\Concerns\InstallsCustomIcons;
 use Native\Mobile\Concerns\InstallsSplashScreen;
 use Native\Mobile\Concerns\ValidatesAppConfig;
@@ -27,7 +28,7 @@ use function Laravel\Prompts\error;
 
 class BuildIosAppCommand extends Command
 {
-    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsCustomIcons, InstallsSplashScreen, ValidatesAppConfig;
+    use ChecksLatestBuildNumber, CleansEnvFile, DisplaysMarketingBanners, InstallsAppIcon, InstallsCaBundle, InstallsCustomIcons, InstallsSplashScreen, ValidatesAppConfig;
 
     private bool $verbose;
 
@@ -105,6 +106,11 @@ class BuildIosAppCommand extends Command
         }
 
         $this->bundleLaravelApp();
+
+        // Xcode's own builds pass here as well, so each build ships the
+        // CA bundle core has now, not the copy made when the project
+        // was installed, which may be several months out of date.
+        $this->installIosCaBundle();
 
         if (! getenv('NATIVEPHP_XCODE_BUILD')) {
             // We can't configure inside of Xcode as changing the project files will interrupt the build process
