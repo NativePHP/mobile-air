@@ -3,6 +3,8 @@
 namespace Tests\Unit\Concerns;
 
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Process;
+use Laravel\Prompts\Prompt;
 use Mockery;
 use Native\Mobile\Concerns\RunsAndroid;
 use Orchestra\Testbench\TestCase;
@@ -368,6 +370,50 @@ class RunsAndroidTest extends TestCase
 
         // Configured but unusable (a non-breaking space is still whitespace).
         $this->assertNull($this->deepLinkPathData('app.example.com', ["/docs\u{00a0}x/", '/']));
+    }
+
+    public function test_apk_install_gets_ten_minutes_including_the_retry_after_an_incompatible_build()
+    {
+        // A 110 MB debug APK took two minutes to install on an emulator
+        // sharing a busy machine, and debug builds can be twice that size.
+        Process::fake([
+            'adb -s emulator-5554 install*' => Process::sequence()
+                ->push(Process::result(errorOutput: 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]', exitCode: 1))
+                ->push(Process::result('Success')),
+            'adb -s emulator-5554 uninstall*' => Process::result('Success'),
+        ]);
+
+        $this->assertTrue($this->installApk('adb', 'emulator-5554', '/tmp/app-debug.apk', 'com.example.app'));
+
+        Process::assertRanTimes(
+            fn ($process) => str_contains($process->command, ' install -r -d ') && $process->timeout === 600,
+            2
+        );
+    }
+
+    public function test_an_apk_install_that_times_out_fails_with_a_way_forward()
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Uses a shell script as adb.');
+        }
+
+        // An emulator whose system services have stopped never answers adb.
+        // This used to escape as an uncaught exception and a stack trace.
+        $adb = $this->testProjectPath.'/adb';
+        File::put($adb, "#!/bin/sh\nsleep 10\n");
+        chmod($adb, 0755);
+
+        $this->adbInstallTimeout = 1;
+        Prompt::fake();
+        $started = microtime(true);
+
+        $this->assertFalse($this->installApk($adb, 'emulator-5554', '/tmp/app-debug.apk', 'com.example.app'));
+
+        $this->assertLessThan(8, microtime(true) - $started);
+        $this->assertSame('install', $this->runFailure['stage']);
+        $this->assertStringContainsString('exceeded the timeout of 1 seconds', $this->runFailure['error']);
+        Prompt::assertOutputContains('APK installation timed out');
+        Prompt::assertOutputContains('shell pm path android');
     }
 
     private function writeBareManifest(): string

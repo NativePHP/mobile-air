@@ -3,8 +3,9 @@
 namespace Native\Mobile\Events\Geolocation;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
-class LocationReceived
+class LocationReceived implements DispatchableFromNative
 {
     use Dispatchable;
 

@@ -72,7 +72,7 @@ UI PHP thread (component runloop)          Async PHP thread (own interpreter)
 ────────────────────────────────           ──────────────────────────────────
 handler: AsyncTask::dispatch($work)
   → serialize $work (SerializableClosure)
-  → write payload → storage/framework/async/payload/<id>.task
+  → seal with the app key, write → storage/framework/async/payload/<id>.task
   → NativeCallbacks::register(id, …)        (finished/failed stored, screen-tagged)
   → AsyncTaskRegistry::register(id, origin)
   → nativephp_call('AsyncTask.Dispatch', {id})  ─┐  native assigns a booted async
@@ -80,6 +80,7 @@ handler: AsyncTask::dispatch($work)
                                                  ▼
                                     artisan native:async:run --id=<id>
                                       → read + delete payload/<id>.task
+                                      → unseal (refuse if it doesn't open)
                                       → unserialize + run $work → $result
                                       → AsyncTask.Complete(id, event, payload) ─┐
                                                                                 │
@@ -93,6 +94,14 @@ No PHP value ever crosses a thread directly — everything is serialized. The
 and async contexts share it), so the native side never touches it: it just
 assigns an async-lane context to run the task and relays the completion event.
 It never interprets either.
+
+The payload file is **sealed with the app key** (Laravel's encrypter, so it is
+encrypted and carries a MAC), bound to its task id and to a purpose prefix. The
+runner unserializes what it reads, and `unserialize()` runs the code of whatever
+classes the bytes name, so a file that doesn't open is dropped unread. That
+covers a file planted in the spool, and an id handed to `AsyncTask.Dispatch`
+by a web view page. An app with no key can't dispatch: `->failed()` fires at
+the call site.
 
 ---
 
@@ -243,6 +252,24 @@ calls:
   to post if it passes, so it still never interprets a task or builds an event.
 - `AsyncTask.Complete` `{id, event, payload}` → relay `sendNativeEvent(event,
   payload)` into the UI runloop (this is what wakes the C `wait_event`).
+
+JavaScript in a web view can call both through `/_native/api/call`, so neither
+trusts what it is sent:
+
+- Dispatch refuses an `id` that is not a UUID, and so does the C lane before it
+  splices the id into the PHP it evaluates. A quote in an id would otherwise
+  end the string in that PHP and run whatever follows it.
+- A timeout always posts under `AsyncTaskFailed`'s name, and with the task's own
+  id in its payload. `timeoutEvent` is not read. PHP still sends it, for native
+  projects installed before this.
+- Complete answers only a call made on a thread of the async lane. A bridge
+  call runs on the thread of the PHP that made it, and a page's call runs on
+  another, so a page cannot post an event of its choosing to a native screen.
+  PHP logs a warning when native refuses an outcome it reports.
+
+`/_native/api/call` refuses the `AsyncTask.` prefix too. Updating the package
+leaves an app's native project as it was installed, so this is the check that
+an app gets without reinstalling it.
 
 Both executors **stop synchronously**: `stop()` drains in-flight tasks and shuts
 each context down before returning, because callers stop the pool immediately

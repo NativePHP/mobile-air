@@ -14,6 +14,8 @@ use Tests\Fixtures\Edge\HiddenNavOptionsScreen;
 use Tests\Fixtures\Edge\HiddenNavScreen;
 use Tests\Fixtures\Edge\HiddenTabOptionsScreen;
 use Tests\Fixtures\Edge\HiddenTabScreen;
+use Tests\Fixtures\Edge\InlineTopBarScreen;
+use Tests\Fixtures\Edge\NavActionScreen;
 use Tests\Fixtures\Edge\PingReceived;
 use Tests\Fixtures\Edge\PlatformScreen;
 use Tests\Fixtures\Edge\PollScreen;
@@ -255,6 +257,34 @@ it('drops the top bar entirely on the custom-Column chrome path', function () {
         ->assertNavBarVisible()
         ->assertNavTitle('Chrome Demo');
 });
+
+it('asserts nav actions and their menu items, but not inline menu items', function (string $layout) {
+    Native::test(NavActionScreen::class, layout: $layout)
+        ->assertNavAction('share')
+        ->assertNavAction('more')
+        ->assertNavAction('mute')
+        ->assertNavAction('delete')
+        ->assertMissingNavAction('divider')
+        ->assertElement('top_bar_action', fn (array $n) => ($n['props']['id'] ?? null) === 'pin')
+        ->assertMissingNavAction('pin')
+        ->assertMissingNavAction('archive');
+})->with([ChromeTabsLayout::class, ChromeColumnLayout::class]);
+
+it('asserts inline top-bar actions on the native stack', function () {
+    Native::test(InlineTopBarScreen::class)
+        ->assertElement('native_root_stack')
+        ->assertNavAction('save');
+});
+
+it('lists the nav actions present when one is missing', function () {
+    Native::test(NavActionScreen::class, layout: ChromeTabsLayout::class)
+        ->assertNavAction('pin');
+})->throws(AssertionFailedError::class, 'Nav action [pin] not found. Actions present: share, more, mute, delete');
+
+it('fails when an unexpected nav action is present', function () {
+    Native::test(NavActionScreen::class, layout: ChromeTabsLayout::class)
+        ->assertMissingNavAction('mute');
+})->throws(AssertionFailedError::class, 'Unexpected nav action [mute] found in the nav bar.');
 
 it('hides the tab bar via the tabBarOptions builder', function () {
     Native::test(HiddenTabOptionsScreen::class, layout: ChromeTabsLayout::class)

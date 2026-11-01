@@ -28,16 +28,6 @@ struct NodeLayoutModifier: ViewModifier {
         content
             // NOTE: LayoutValueKeys are set in NodeView.body (outermost level)
             // because keys set inside ViewModifier.body don't propagate to parent Layouts.
-            // Apply size constraints — single .frame() to avoid stacking proposal issues
-            .frame(
-                minWidth: minWidth ?? 0,
-                idealWidth: fixedWidth,
-                maxWidth: resolvedMaxWidth,
-                minHeight: minHeight ?? 0,
-                idealHeight: fixedHeight,
-                maxHeight: resolvedMaxHeight,
-                alignment: .topLeading
-            )
             // Base padding (explicit padding from PHP, no safe area).
             // Combined into a single EdgeInsets-based call so each NodeView
             // adds one _PaddingLayout to the SwiftUI graph instead of four,
@@ -50,6 +40,19 @@ struct NodeLayoutModifier: ViewModifier {
                     trailing: CGFloat(layout?.paddingRight ?? 0)
                 ))
             }
+            // Apply size constraints — single .frame() to avoid stacking proposal issues.
+            // The frame sits outside the padding so sizes include it, like CSS
+            // `box-sizing: border-box` and like Android: `min-h-12 py-3` is
+            // 48pt tall, not 72.
+            .frame(
+                minWidth: minWidth ?? 0,
+                idealWidth: fixedWidth,
+                maxWidth: resolvedMaxWidth,
+                minHeight: minHeight ?? 0,
+                idealHeight: fixedHeight,
+                maxHeight: resolvedMaxHeight,
+                alignment: .topLeading
+            )
             // Safe area as safeAreaPadding — view extends behind notch,
             // content insets below it, scrollable content flows under it.
             // Only for nodes that opt in (the unconditional version showed up

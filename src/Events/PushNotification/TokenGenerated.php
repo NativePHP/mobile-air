@@ -4,8 +4,9 @@ namespace Native\Mobile\Events\PushNotification;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
-class TokenGenerated
+class TokenGenerated implements DispatchableFromNative
 {
     use Dispatchable, SerializesModels;
 

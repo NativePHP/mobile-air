@@ -99,6 +99,26 @@ it('registers on_drag_end with the drag_end kind so dispatch decodes "x,y"', fun
     expect(GestureArea::make()->getResolvedProps(new CallbackRegistry))->not->toHaveKey('on_drag_end');
 });
 
+it('carries snap points for a bound pan axis, lowest first, as a comma-separated string', function () {
+    $area = GestureArea::make();
+    $area->applyAttributes(['pan-x' => SharedValue::make(), 'snap-x' => [0, -96.5], 'pan-y' => SharedValue::make(), 'snap-y' => '120, 0, 0']);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props['pan-x-snap'])->toBe('-96.5,0')
+        ->and($props['pan-y-snap'])->toBe('0,120');
+});
+
+it('leaves snap points off an axis with no pan bound, or fewer than two points', function () {
+    $area = GestureArea::make();
+    $area->applyAttributes(['snap-x' => [-96, 0], 'pan-y' => SharedValue::make(), 'snap-y' => [40]]);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props)->not->toHaveKey('pan-x-snap')
+        ->and($props)->not->toHaveKey('pan-y-snap');
+});
+
 // ── Bounded ─────────────────────────────────────────
 
 it('carries bounded and content-ratio to the wire', function () {

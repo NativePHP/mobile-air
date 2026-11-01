@@ -875,7 +875,8 @@ class NativeElementBridge private constructor() {
          *
          * Returns true when the event is in the queue of a live native screen
          * session. False means it was dropped: no native screen session is
-         * live. A full queue answers true as well: it takes the event and
+         * live, or the JNI bridge is not available yet. A full queue answers
+         * true as well: it takes the event and
          * drops its oldest frame for it.
          *
          * For a native event that PHP hands over itself (Event.Broadcast),
@@ -892,7 +893,15 @@ class NativeElementBridge private constructor() {
             buf.put(nameBytes)
             buf.putInt(payloadBytes.size)
             buf.put(payloadBytes)
-            return nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+            // Configuration changes can arrive before the lazily loaded JNI
+            // bridge is available. Skip only the queue write: sendNativeEvent
+            // must still offer public events to the independent web sink.
+            return try {
+                nativeElementWriteEvent(EventType.NATIVE, 0, 0, buf.array())
+            } catch (e: UnsatisfiedLinkError) {
+                Log.w(TAG, "Could not queue $eventName: native event bridge unavailable", e)
+                false
+            }
         }
 
         /** Held weakly so a destroyed activity is never kept alive. The

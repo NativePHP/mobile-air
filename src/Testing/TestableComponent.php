@@ -1192,6 +1192,31 @@ class TestableComponent
         return $this;
     }
 
+    /** Assert the nav bar has an action with the given id, across all chrome paths. Inline `:menu` items don't count. */
+    public function assertNavAction(string $id): static
+    {
+        $ids = $this->navActionIds($this->tree());
+
+        Assert::assertContains(
+            $id,
+            $ids,
+            "Nav action [{$id}] not found. Actions present: ".(implode(', ', $ids) ?: '(none)')
+        );
+
+        return $this;
+    }
+
+    public function assertMissingNavAction(string $id): static
+    {
+        Assert::assertNotContains(
+            $id,
+            $this->navActionIds($this->tree()),
+            "Unexpected nav action [{$id}] found in the nav bar."
+        );
+
+        return $this;
+    }
+
     /** Assert a tab with the given label exists in the tab bar. */
     public function assertHasTab(string $label): static
     {
@@ -2054,6 +2079,21 @@ class TestableComponent
         }
 
         return $titles;
+    }
+
+    protected function navActionIds(array $node, bool $inNavBar = false, array &$ids = []): array
+    {
+        if ($inNavBar && ! ($node['props']['divider'] ?? false) && is_string($node['props']['id'] ?? null)) {
+            $ids[] = $node['props']['id'];
+        }
+
+        $holdsNavActions = $inNavBar || in_array($node['type'] ?? null, ['native_root_stack', 'native_root_tabs', 'top_bar'], true);
+
+        foreach ($node['children'] ?? [] as $child) {
+            $this->navActionIds($child, $holdsNavActions && ($child['type'] ?? null) === 'top_bar_action', $ids);
+        }
+
+        return $ids;
     }
 
     protected function tabLabels(): array

@@ -3,13 +3,14 @@
 namespace Native\Mobile\Events\Geolocation;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
 /**
  * A single position update from a location watch (Geolocation::watchPosition()).
  * Fired repeatedly — once per native location fix — until the watch is cleared.
  * `id` is the watch id, for correlating multiple concurrent watches.
  */
-class LocationUpdated
+class LocationUpdated implements DispatchableFromNative
 {
     use Dispatchable;
 

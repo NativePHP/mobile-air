@@ -209,12 +209,15 @@ final class NativeUINode: Identifiable, Equatable {
     /// thread; a node doesn't change once built.
     lazy var keepsState: Bool = !Self.statelessTypes.contains(type)
         || props.getBool("has_menu")
+        || props.getBool("has_context_menu")
         || children.contains { $0.keepsState }
 
     /// Types whose views hold nothing but what the node says, so building
     /// them again is invisible. Anything else, including every plugin type,
     /// is assumed to keep state. A pressable with a `:menu` is a SwiftUI
-    /// `Menu`, which knows whether it's open, hence `has_menu` above.
+    /// `Menu`, which knows whether it's open, hence `has_menu` above. One
+    /// with a `:context-menu` carries `.contextMenu`, whose menu closes if
+    /// a frame rebuilds the view under it, hence `has_context_menu`.
     private static let statelessTypes: Set<String> = [
         "text", "icon", "spacer", "divider", "column", "row", "stack", "pressable",
         "rect", "circle", "line", "canvas", "top_bar_action",

@@ -61,6 +61,7 @@ struct NativeRootTabsRenderer: View {
     // stable across publishes for the same tab.
     @State private var selection: String = ""
     @StateObject private var tabBag = TabCoordinatorBag()
+    @State private var customPresentationHiddenForPush = false
 
     /// The tab the user most recently tapped, while its `replace`
     /// navigation is still in flight PHP-side. Cleared when a publish
@@ -191,6 +192,69 @@ struct NativeRootTabsRenderer: View {
             || !searchItemNodes.isEmpty
             || selection == searchTabIdString
 
+        let visibleTabEntries = tabs.enumerated().compactMap { index, tab in
+            (!tab.props.getBool("search") || shouldShowSearchTab) ? (index, tab) : nil
+        }
+        let presentationIdentifier = node.props.getString("tab_presentation_id", default: "")
+        let requestsCustomPresentation = !presentationIdentifier.isEmpty && presentationIdentifier != "system"
+        let presentationJSON = requestsCustomPresentation
+            ? node.props.getString("tab_presentation_configuration", default: "")
+            : ""
+        let presentationConfiguration = requestsCustomPresentation
+            ? NativeTabPresentationConfiguration(json: presentationJSON)
+            : nil
+        let customPresenter = NativeTabPresentationRegistry.shared.resolve(
+            identifier: presentationIdentifier,
+            configuration: presentationConfiguration
+        )
+        let descriptorEntries: [(index: Int, descriptor: NativeTabDescriptor)] = customPresenter == nil
+            ? []
+            : visibleTabEntries.map { index, tab in
+            let sourceId = tab.props.getString("id", default: "tab_\(index)")
+            let label = tab.props.getString("label", default: "")
+            let url = tab.props.getString("url", default: "")
+            let role: NativeTabRole = tab.props.getBool("search")
+                ? .search
+                : (url.isEmpty ? .action : .navigation)
+            let badge = tab.props.getString("badge", default: "")
+            return (
+                index: index,
+                descriptor: NativeTabDescriptor(
+                    id: nativeTabPresentationIdentifier(sourceIdentifier: sourceId, index: index),
+                    label: label,
+                    accessibilityLabel: label,
+                    icon: tab.props.getString("icon", default: "circle"),
+                    badge: badge.isEmpty ? nil : badge,
+                    showsNews: tab.props.getBool("news"),
+                    role: role
+                )
+            )
+        }
+        let tabDescriptors = descriptorEntries.map(\.descriptor)
+        let isRegularTabSelected = searchTabIdString.map { selection != $0 } ?? true
+        let hidesCustomPresentation = nativeTabPresentationIsHidden(
+            explicitlyHidden: node.props.getBool("hide_tab_bar"),
+            hasPushedDestination: isRegularTabSelected && customPresentationHiddenForPush
+        )
+        let presentationContext = presentationConfiguration.map { configuration in
+            return NativeTabPresentationContext(
+                tabs: tabDescriptors,
+                selectedTabIdentifier: nativeTabPresentationSelectedIdentifier(
+                    sourceIdentifiers: tabs.enumerated().map { index, tab in
+                        tab.props.getString("id", default: "tab_\(index)")
+                    },
+                    selectedSourceIdentifier: selection,
+                    fallbackIndex: owningIdx
+                ),
+                configuration: configuration,
+                isHidden: hidesCustomPresentation,
+                activate: { identifier in
+                    guard let entry = descriptorEntries.first(where: { $0.descriptor.id == identifier }) else { return }
+                    requestTabActivation(at: entry.index, tabs: tabs, owningId: owningId)
+                }
+            )
+        }
+
         return TabView(selection: $selection) {
             // Regular (non-search) tabs via ForEach. Keyed off the
             // stable PHP-side id so SwiftUI preserves identity across
@@ -235,10 +299,20 @@ struct NativeRootTabsRenderer: View {
                         coordinator: coord,
                         hasNavBar: hasNavBar,
                         fallbackTitle: navTitleText,
+                        fallbackDisplayMode: node.props.getString("nav_display_mode", default: "inline"),
                         fallbackShowBack: navBack,
                         fallbackTextArgb: navTextArgb,
-                        fallbackBgArgb: navBgArgb
+                        fallbackBgArgb: navBgArgb,
+                        isSelected: tabId == selection,
+                        onPushVisibilityChange: { hidden in
+                            if customPresentationHiddenForPush != hidden {
+                                customPresentationHiddenForPush = hidden
+                            }
+                        }
                     )
+                    .modifier(SystemTabBarSuppressionModifier(
+                        suppressed: customPresenter != nil
+                    ))
 
                 }
                 .badge(badgeFor(tab))
@@ -261,6 +335,9 @@ struct NativeRootTabsRenderer: View {
                         onQueryCallbackId: searchOnQueryCb,
                         debounceMs: searchDebounceMs
                     )
+                    .modifier(SystemTabBarSuppressionModifier(
+                        suppressed: customPresenter != nil
+                    ))
                 }
                 .badge(badgeFor(searchTab))
             }
@@ -272,9 +349,28 @@ struct NativeRootTabsRenderer: View {
         ))
         .preferredColorScheme(isDark ? .dark : nil)
         .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility, fontName: chromeFontName))
-        .modifier(TabBarAccessoryModifier(accessory: accessory))
+        .modifier(TabBarAccessoryModifier(accessory: customPresenter == nil ? accessory : nil))
+        .modifier(CustomTabPresentationModifier(
+            presenter: customPresenter,
+            context: presentationContext,
+            accessory: accessory
+        ))
         .onAppear {
             selection = owningId
+            if requestsCustomPresentation, customPresenter == nil {
+                let reason = presentationConfiguration == nil ? "invalid configuration" : "is not registered"
+                NativeTabPresentationRegistry.diagnostic(
+                    "Tab presenter '\(presentationIdentifier)' \(reason); using the system tab bar."
+                )
+            }
+        }
+        .onChange(of: presentationIdentifier) { _ in
+            if requestsCustomPresentation, customPresenter == nil {
+                let reason = presentationConfiguration == nil ? "invalid configuration" : "is not registered"
+                NativeTabPresentationRegistry.diagnostic(
+                    "Tab presenter '\(presentationIdentifier)' \(reason); using the system tab bar."
+                )
+            }
         }
         .onChange(of: owningId) { newId in
             // PHP-driven owning-tab change (publish landed under a
@@ -323,44 +419,45 @@ struct NativeRootTabsRenderer: View {
             }
         }
         .onChange(of: selection) { newId in
-            // User tapped a tab — fire its press handler so PHP runs
-            // the BottomNavItem-auto-wired `replace` navigation. Skip
-            // only the PHP-driven sync echo (we just set selection to
-            // match a publish and nothing is in flight). A tap BACK to
-            // the owning tab while a navigation IS in flight is a real
-            // user action: PHP is already navigating away, so it must
-            // be told to come back.
-            if newId == owningId && pendingTabId == nil { return }
-            guard let tab = tabs.first(where: { $0.props.getString("id", default: "") == newId }) else { return }
-            let url = tab.props.getString("url", default: "")
-            let isSearch = tab.props.getBool("search")
-            if tab.onPress != 0 {
-                // URL-backed tabs navigate — record the user's latest
-                // intent so the publish handler can tell the pending
-                // navigation's publish from a superseded one arriving
-                // late (see "Rapid re-taps" in the header comment).
-                if !url.isEmpty && !isSearch {
-                    if let prev = pendingTabId, prev != newId {
-                        supersededTabIds.insert(prev)
-                    }
-                    pendingTabId = newId
+            activateSelection(newId, tabs: tabs, owningId: owningId)
+        }
+    }
+
+    private func requestTabActivation(at index: Int, tabs: [NativeUINode], owningId: String) {
+        guard tabs.indices.contains(index) else { return }
+        let identifier = tabs[index].props.getString("id", default: "tab_\(index)")
+        if selection == identifier {
+            activateTab(at: index, tabs: tabs, owningId: owningId)
+        } else {
+            selection = identifier
+        }
+    }
+
+    private func activateSelection(_ newId: String, tabs: [NativeUINode], owningId: String) {
+        if newId == owningId && pendingTabId == nil { return }
+        guard let index = tabs.firstIndex(where: { $0.props.getString("id", default: "") == newId }) else { return }
+        activateTab(at: index, tabs: tabs, owningId: owningId)
+    }
+
+    private func activateTab(at index: Int, tabs: [NativeUINode], owningId: String) {
+        guard tabs.indices.contains(index) else { return }
+        let tab = tabs[index]
+        let newId = tab.props.getString("id", default: "tab_\(index)")
+        if newId == owningId && pendingTabId == nil { return }
+        let url = tab.props.getString("url", default: "")
+        let isSearch = tab.props.getBool("search")
+        if tab.onPress != 0 {
+            if !url.isEmpty && !isSearch {
+                if let previous = pendingTabId, previous != newId {
+                    supersededTabIds.insert(previous)
                 }
-                NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
+                pendingTabId = newId
             }
-            // Action-only tab (no URL, no press handler) — the press
-            // fires something off-screen instead of navigating, so PHP
-            // won't republish to switch the owning tab. Snap selection
-            // back so the visible "selected" indicator doesn't get
-            // stuck: to the pending tab when a navigation is in flight
-            // (that's where the user is headed), else to the owning
-            // tab. Search-role tabs also have `on_press == 0` (they're
-            // iOS-owned, no PHP destination) but should keep selection
-            // on themselves while the user interacts with the search
-            // UI — we skip snap-back for them.
-            if url.isEmpty && !isSearch {
-                DispatchQueue.main.async {
-                    selection = pendingTabId ?? owningId
-                }
+            NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
+        }
+        if url.isEmpty && !isSearch {
+            DispatchQueue.main.async {
+                selection = pendingTabId ?? owningId
             }
         }
     }
@@ -423,9 +520,12 @@ private struct PerTabContent: View {
     @ObservedObject var coordinator: PerTabNavigationCoordinator
     let hasNavBar: Bool
     let fallbackTitle: String
+    let fallbackDisplayMode: String
     let fallbackShowBack: Bool
     let fallbackTextArgb: Int
     let fallbackBgArgb: Int
+    let isSelected: Bool
+    let onPushVisibilityChange: (Bool) -> Void
 
     var body: some View {
         if hasNavBar {
@@ -438,10 +538,20 @@ private struct PerTabContent: View {
             .id(coordinator.rootUri)
             .onChange(of: coordinator.path) { newPath in
                 coordinator.onPathChange(newPath: newPath)
+                reportPushVisibility(path: newPath)
             }
+            .onAppear { reportPushVisibility(path: coordinator.path) }
+            .onChange(of: isSelected) { _ in reportPushVisibility(path: coordinator.path) }
         } else {
             levelContent(for: coordinator.rootNodeCache[coordinator.rootLevelUri])
+                .onAppear { reportPushVisibility(path: []) }
+                .onChange(of: isSelected) { _ in reportPushVisibility(path: []) }
         }
+    }
+
+    private func reportPushVisibility(path: [String]) {
+        guard isSelected else { return }
+        onPushVisibilityChange(!path.isEmpty)
     }
 
     @ViewBuilder
@@ -453,16 +563,18 @@ private struct PerTabContent: View {
             // the rendered path; this branch never reaches it, so it takes
             // the window background itself rather than flashing the
             // TabView's container on the first tap of a fresh tab.
+            let titleDisplayMode = tabsTitleDisplayMode(fallbackDisplayMode, hasTitleView: false)
             Color.clear
                 .navigationTitle(fallbackTitle)
-                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarTitleDisplayMode(titleDisplayMode)
                 .modifier(TabsToolbarModifier(
                     showBack: fallbackShowBack && isRoot,
                     title: fallbackTitle,
                     titleNode: nil,
                     actions: [],
                     textArgb: fallbackTextArgb,
-                    bgArgb: fallbackBgArgb
+                    bgArgb: fallbackBgArgb,
+                    inline: titleDisplayMode == .inline
                 ))
                 .modifier(WindowBackgroundModifier())
         }
@@ -531,6 +643,10 @@ private struct PerTabContent: View {
             : root.props.getString("nav_search_placeholder", default: "")
         let searchOnQueryCb = Int(root.props.getCallbackId("nav_search_on_query"))
         let searchDebounceMs = root.props.getInt("nav_search_debounce_ms", default: 300)
+        let titleDisplayMode = tabsTitleDisplayMode(
+            root.props.getString("nav_display_mode", default: fallbackDisplayMode),
+            hasTitleView: titleNode != nil
+        )
 
         levelContent(for: root, screenContent: screenContent)
             // Always set the string title, even when a titleView lockup owns
@@ -539,21 +655,26 @@ private struct PerTabContent: View {
             // accessibility label this level from `navigationTitle` —
             // blanking it renders those entries as empty glass pills.
             .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(titleDisplayMode)
             .modifier(TabsToolbarModifier(
                 showBack: manualBack,
                 title: title,
                 titleNode: titleNode,
                 actions: actions,
                 textArgb: textArgb,
-                bgArgb: bgArgb
+                bgArgb: bgArgb,
+                inline: titleDisplayMode == .inline
             ))
             .modifier(HideNavBarModifier(hidden: hideNavBar))
             .modifier(SearchableNavBarModifier(
                 placeholder: searchPlaceholder,
                 callbackId: searchOnQueryCb,
                 nodeId: root.id,
-                debounceMs: searchDebounceMs
+                debounceMs: searchDebounceMs,
+                // Same mapping as the stack renderer.
+                alwaysVisible: ["collapse", "pinned"].contains(
+                    root.props.getString("nav_scroll_behavior", default: "")
+                )
             ))
             // Hide the parent TabView's tab bar on any pushed level
             // FIRST — matches Apple's iMessage / Music / Mail pattern
@@ -615,6 +736,7 @@ private struct TabsToolbarModifier: ViewModifier {
     let actions: [NativeUINode]
     let textArgb: Int
     let bgArgb: Int
+    let inline: Bool
 
     func body(content: Content) -> some View {
         let textColor: Color = textArgb != 0 ? Color(argb: textArgb) : .primary
@@ -665,10 +787,36 @@ private struct TabsToolbarModifier: ViewModifier {
                 }
             }
             .toolbarColorScheme(toolbarScheme, for: .navigationBar)
-            .modifier(ExplicitBarBackgroundModifier(
-                argb: bgArgb,
-                placement: .navigationBar
-            ))
+            .modifier(TabsNavBarBackgroundModifier(argb: bgArgb, inline: inline))
+    }
+}
+
+/// Inline bars keep the tabs renderer's existing background treatment.
+/// Large and automatic bars use the stack renderer's, which doesn't force
+/// the bar background visible: under Liquid Glass that drops the large
+/// title row (see `StackBarBackgroundModifier`).
+private struct TabsNavBarBackgroundModifier: ViewModifier {
+    let argb: Int
+    let inline: Bool
+
+    func body(content: Content) -> some View {
+        if inline {
+            content.modifier(ExplicitBarBackgroundModifier(argb: argb, placement: .navigationBar))
+        } else {
+            content.modifier(StackBarBackgroundModifier(argb: argb, inline: false))
+        }
+    }
+}
+
+/// Maps the folded `nav_display_mode` prop the same way the stack renderer
+/// maps `display_mode`. A custom title view lives in the centered
+/// `.principal` slot, which only reads right inline.
+private func tabsTitleDisplayMode(_ mode: String, hasTitleView: Bool) -> NavigationBarItem.TitleDisplayMode {
+    if hasTitleView { return .inline }
+    switch mode {
+    case "large":     return .large
+    case "automatic": return .automatic
+    default:          return .inline
     }
 }
 
@@ -683,25 +831,41 @@ private struct TabsActionView: View {
         let disabled = action.props.getBool("disabled")
         let subItems = action.children.filter { $0.type == "top_bar_action" }
 
+        let label = action.props.getString("label", default: "")
+        let showLabel = action.props.getBool("show_label") && !label.isEmpty
+        let hasIcon = !action.props.getString("icon", default: "").isEmpty
+        let image = action.props.getString("image", default: "")
+
         if subItems.isEmpty {
             Button {
                 if action.onPress != 0 {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                TopBarActionGlyph(
-                    icon: icon,
-                    image: action.props.getString("image", default: "")
-                )
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(textColor)
-                    // Explicit dim: the hard-set foregroundColor above keeps
-                    // SwiftUI's automatic disabled greying from showing.
-                    .opacity(disabled ? 0.4 : 1)
-                    // same pill-sized hit region for
-                    // the trailing actions (plain Button and Menu labels alike).
-                    .frame(minWidth: 32, minHeight: 44)
-                    .contentShape(Rectangle().inset(by: -6))
+                Group {
+                    if showLabel && (hasIcon || !image.isEmpty) {
+                        // Toolbars collapse a Label to icon-only by default.
+                        Label {
+                            Text(label)
+                        } icon: {
+                            TopBarActionGlyph(icon: icon, image: image)
+                        }
+                        .labelStyle(.titleAndIcon)
+                    } else if showLabel {
+                        Text(label)
+                    } else {
+                        TopBarActionGlyph(icon: icon, image: image)
+                    }
+                }
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(textColor)
+                // Explicit dim: the hard-set foregroundColor above keeps
+                // SwiftUI's automatic disabled greying from showing.
+                .opacity(disabled ? 0.4 : 1)
+                // same pill-sized hit region for
+                // the trailing actions (plain Button and Menu labels alike).
+                .frame(minWidth: 32, minHeight: 44)
+                .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
             .modifier(TopBarActionA11yLabelModifier(action: action))
@@ -994,6 +1158,49 @@ private struct TabBarAccessoryModifier: ViewModifier {
         #else
         content
         #endif
+    }
+}
+
+/// Replaces only the visual tab strip. The underlying TabView and every
+/// per-tab NavigationStack remain mounted and owned by NativePHP.
+private struct CustomTabPresentationModifier: ViewModifier {
+    let presenter: NativeTabPresenter?
+    let context: NativeTabPresentationContext?
+    let accessory: NativeUINode?
+
+    func body(content: Content) -> some View {
+        if let presenter, let context {
+            content
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !context.isHidden {
+                        VStack(spacing: 0) {
+                            if let inner = accessory?.children.first {
+                                NodeView(node: inner)
+                            }
+                            presenter(context)
+                        }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+/// Tab-bar visibility is a preference produced by the selected TabView
+/// content. Apply custom-presentation suppression inside every tab rather than
+/// to the TabView container, matching the placement used by hide-on-push.
+private struct SystemTabBarSuppressionModifier: ViewModifier {
+    let suppressed: Bool
+
+    func body(content: Content) -> some View {
+        if suppressed {
+            content
+                .toolbar(.hidden, for: .tabBar)
+                .ignoresSafeArea(.container, edges: .bottom)
+        } else {
+            content
+        }
     }
 }
 

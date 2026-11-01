@@ -4,6 +4,7 @@ use Illuminate\Events\Dispatcher;
 use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally as OldMarker;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Native\Mobile\Events\GlobalEventDispatcher as OldDispatcher;
 use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\Support\Lane;
@@ -71,7 +72,7 @@ it('keeps the old name of the marker as an interface of its own, which extends t
 
     expect($oldName->getName())->toBe('Native\Mobile\Events\Concerns\BroadcastsGlobally')
         ->and($oldName->isInterface())->toBeTrue()
-        ->and($oldName->getInterfaceNames())->toBe([BroadcastsGlobally::class])
+        ->and($oldName->getInterfaceNames())->toBe([BroadcastsGlobally::class, DispatchableFromNative::class])
         ->and(is_subclass_of(OldMarker::class, BroadcastsGlobally::class))->toBeTrue()
         ->and(str_replace('\\', '/', $oldName->getFileName()))->toEndWith('/src/Events/Concerns/BroadcastsGlobally.php');
 });
@@ -86,7 +87,7 @@ it('passes every check under the old name and under the name in core, for an eve
         ->and(is_subclass_of($event::class, BroadcastsGlobally::class))->toBeTrue()
         ->and($byOldName($event))->toBe($event)
         ->and($byNameInCore($event))->toBe($event)
-        ->and(array_values(class_implements($event)))->toEqualCanonicalizing([OldMarker::class, BroadcastsGlobally::class]);
+        ->and(array_values(class_implements($event)))->toEqualCanonicalizing([OldMarker::class, BroadcastsGlobally::class, DispatchableFromNative::class]);
 })->with('carrying the old name');
 
 it('takes an event that names the name in core alone as marked, and as no instance of the old name', function () {
@@ -125,7 +126,7 @@ it('marks an event whose class names the old name, when that class is the first 
     expect($marked)->toBe([
         'by the name in core' => true,
         'by the old name' => true,
-        'interfaces' => [OldMarker::class, BroadcastsGlobally::class],
+        'interfaces' => [OldMarker::class, DispatchableFromNative::class, BroadcastsGlobally::class],
     ]);
 });
 

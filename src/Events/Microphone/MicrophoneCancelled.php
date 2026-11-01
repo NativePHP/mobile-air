@@ -4,8 +4,9 @@ namespace Native\Mobile\Events\Microphone;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
-class MicrophoneCancelled
+class MicrophoneCancelled implements DispatchableFromNative
 {
     use Dispatchable, SerializesModels;
 

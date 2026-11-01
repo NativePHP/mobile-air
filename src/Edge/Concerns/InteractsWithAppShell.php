@@ -21,9 +21,9 @@ use Native\Mobile\Facades\System as SystemFacade;
  * `handlePlatformEvent()` and `handlePlatformNativeEvent()` whether anyone
  * owns an event, and this is what answers on a phone.
  *
- * Reads `EVENT_SHUTDOWN` off the using class rather than declaring it here —
- * see the note on RestartsOnHotReload for why a trait is the wrong home for a
- * constant an app's own component may read.
+ * Reads `EVENT_SHUTDOWN` and `EVENT_SYSTEM_BACK` off the using class rather
+ * than declaring them here — see the note on RestartsOnHotReload for why a
+ * trait is the wrong home for a constant an app's own component may read.
  */
 trait InteractsWithAppShell
 {
@@ -43,10 +43,10 @@ trait InteractsWithAppShell
         return true;
     }
 
-    /** System back button (type 8). */
+    /** System back button. */
     protected function handleBackButtonEvent(array $event): bool
     {
-        if (($event['type'] ?? -1) !== 8) {
+        if (($event['type'] ?? -1) !== self::EVENT_SYSTEM_BACK) {
             return false;
         }
 

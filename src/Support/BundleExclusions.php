@@ -8,6 +8,7 @@ class BundleExclusions
     public const ANY_DEPTH = [
         '.git',
         '.github',
+        '.claude',
         '.idea',
         '.vscode',
         'node_modules',

@@ -57,7 +57,7 @@ void initialize_php_with_request_bytes(const char *body, size_t body_len, const 
     // Step 3: Populate $_COOKIE from HTTP_COOKIE env var
     const char* cookie_header = getenv("HTTP_COOKIE");
     if (cookie_header) {
-        LOGI("🍪 HTTP_COOKIE from env: %s", cookie_header);
+        LOGI("🍪 HTTP_COOKIE from env (%zu bytes)", strlen(cookie_header));
 
         zval cookie_array;
         array_init(&cookie_array);
@@ -71,10 +71,10 @@ void initialize_php_with_request_bytes(const char *body, size_t body_len, const 
                 *equal = '\0';
                 const char* key = token;
                 const char* val = equal + 1;
-                LOGI("🍪 Parsed cookie → %s = %s", key, val);
+                LOGI("🍪 Parsed cookie → %s", key);
                 add_assoc_string(&cookie_array, key, val);
             } else {
-                LOGI("⚠️ Skipping malformed cookie token: %s", token);
+                LOGI("⚠️ Skipping malformed cookie token");
             }
             token = strtok(NULL, ";");
         }

@@ -108,6 +108,24 @@ it('renders a horizontal pan binding with a drag-end handler from Blade', functi
         ->and($child['props']['rotate_sv'])->toBe("__sv:{$dx->id}|interp:-300,300:-15,15");
 });
 
+it('renders a snapping pan from Blade', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-snap-x.blade.php',
+        '<native:gesture-area :pan-x="$dx" :snap-x="[-96, 0]" @dragEnd="settled">'
+        .'<native:row :translate-x="$dx"><native:text>row</native:text></native:row>'
+        .'</native:gesture-area>'
+    );
+
+    $dx = SharedValue::make(-96);
+
+    NativeElementCollector::reset();
+    view('gesture-snap-x', ['dx' => $dx])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props']['pan-x-snap'])->toBe('-96,0')
+        ->and($tree['props']['pan-x-initial'])->toBe(-96.0);
+});
+
 it('renders a bounded zoom and pan area from Blade', function () {
     file_put_contents(
         __DIR__.'/views/gesture-bounded.blade.php',

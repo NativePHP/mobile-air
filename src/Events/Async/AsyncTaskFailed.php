@@ -3,6 +3,7 @@
 namespace Native\Mobile\Events\Async;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Native\Mobile\Exceptions\AsyncTaskException;
 use Native\Mobile\PendingAsyncTask;
 
@@ -14,7 +15,7 @@ use Native\Mobile\PendingAsyncTask;
  *
  * @see PendingAsyncTask
  */
-class AsyncTaskFailed
+class AsyncTaskFailed implements DispatchableFromNative
 {
     use Dispatchable;
 

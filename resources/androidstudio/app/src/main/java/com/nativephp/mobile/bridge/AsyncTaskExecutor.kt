@@ -49,6 +49,18 @@ class AsyncTaskExecutor(
         @Volatile
         var shared: AsyncTaskExecutor? = null
             private set
+
+        /** True on the threads of the pool, where a dispatched task runs. */
+        private val laneThread = ThreadLocal.withInitial { false }
+
+        /**
+         * Whether the calling thread is a thread of the pool. A bridge call
+         * that PHP makes runs on the thread of the PHP that made it, so this
+         * tells a call from a task apart from the same call made by
+         * JavaScript in a web view.
+         */
+        val onLaneThread: Boolean
+            get() = laneThread.get() == true
     }
 
     /**
@@ -146,6 +158,8 @@ class AsyncTaskExecutor(
     }
 
     private fun workerLoop(index: Int) {
+        laneThread.set(true)
+
         var booted = false
 
         while (running) {

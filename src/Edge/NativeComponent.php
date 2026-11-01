@@ -45,7 +45,7 @@ abstract class NativeComponent extends CoreNativeComponent
     use RunsAsyncTasks;
     use WrapsScreensInNativeChrome;
 
-    // The two shell event types live here rather than in the traits that
+    // The three shell event types live here rather than in the traits that
     // handle them. PHP 8.2 would allow a trait constant, but PHPStan cannot
     // see one from a SUBCLASS of the using class — so every
     // `self::EVENT_HOT_RELOAD` in BenchmarkComponent, and the same read in any
@@ -53,6 +53,13 @@ abstract class NativeComponent extends CoreNativeComponent
     // are also documented API that a reader expects to find on the class, so
     // this is the better home either way. Core's own EVENT_NATIVE = 20 is
     // inherited from the parent.
+
+    /**
+     * The hardware back button, the back chevron, or an edge-swipe pop.
+     * On iOS native navigation has usually popped the screen already, and
+     * PHP pops to match.
+     */
+    const EVENT_SYSTEM_BACK = 8;
 
     /** Dev-time hot reload: the runtime reboots and replays the stack. */
     const EVENT_HOT_RELOAD = 15;
@@ -283,6 +290,20 @@ abstract class NativeComponent extends CoreNativeComponent
     protected function skipsUnchangedFrames(): bool
     {
         return ! System::runningInJump();
+    }
+
+    /**
+     * Close every bottom sheet and modal in the farewell frame, child
+     * components' too. Both are presented over the whole window, so one
+     * still open would cover the next screen until its first frame
+     * arrives. The frame is a full emit (no REUSE markers), so each of
+     * them is in it with all of its props.
+     *
+     * @return list<string>
+     */
+    protected function typesClosedInFarewellFrame(): array
+    {
+        return ['bottom_sheet', 'modal'];
     }
 
     /**

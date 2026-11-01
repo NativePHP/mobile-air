@@ -103,7 +103,7 @@ class BundleFileManager
         $excludes = array_merge(self::excludes($configPaths, $source), $extraExcludes);
         $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".str_replace("'", "'\\''", $d)."'", $excludes));
 
-        $result = Process::run("rsync -a --copy-links --delete --itemize-changes {$excludeFlags} \"{$source}/\" \"{$destination}/\"");
+        $result = Process::forever()->run("rsync -a --copy-links --delete --itemize-changes {$excludeFlags} \"{$source}/\" \"{$destination}/\"");
 
         if (! $result->successful()) {
             throw new \Exception('Failed to copy app bundle: '.$result->errorOutput());
@@ -162,7 +162,9 @@ class BundleFileManager
         $excludes = self::excludes($configPaths, $source);
         $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".str_replace("'", "'\\''", $d)."'", $excludes));
 
-        $result = Process::run("rsync -a --copy-links {$excludeFlags} \"{$source}/\" \"{$destination}/\"");
+        // No timeout, the same as robocopy. A large app on a busy machine
+        // takes well over the default minute to copy.
+        $result = Process::forever()->run("rsync -a --copy-links {$excludeFlags} \"{$source}/\" \"{$destination}/\"");
 
         if (! $result->successful()) {
             throw new \Exception('Failed to copy app bundle: '.$result->errorOutput());

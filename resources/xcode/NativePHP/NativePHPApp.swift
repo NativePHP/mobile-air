@@ -227,10 +227,12 @@ struct NativePHPApp: App {
         NSLog("%@", "[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
 
         if (300...399).contains(status), let location, !location.isEmpty {
-            // Keep the query. The web route reads it from request()->query(),
-            // and Foundation's `query` is still percent-encoded.
+            // Keep the query, and keep both it and the path percent-encoded so
+            // PHP decodes them once. The web route reads the query from
+            // request()->query(); Foundation's `query` is still encoded, but
+            // `path` is not.
             let path = location.hasPrefix("http") || location.hasPrefix("php:")
-                ? (URL(string: location).map { url in url.path + (url.query.map { "?" + $0 } ?? "") } ?? "/")
+                ? (URL(string: location).map { url in url.path(percentEncoded: true) + (url.query.map { "?" + $0 } ?? "") } ?? "/")
                 : location
             DispatchQueue.main.async {
                 NSLog("%@", "[NativeBoot] ⇄ EXIT_WEB → \(path)")

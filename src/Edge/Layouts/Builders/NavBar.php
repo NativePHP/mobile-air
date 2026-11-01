@@ -251,8 +251,9 @@ class NavBar
     /**
      * Title display mode. `large` gives the iOS-native large-title-on-top,
      * left-aligned, collapses to inline when content scrolls beneath.
-     * `inline` is the small centered title. `automatic` lets iOS pick
-     * (large at the root of a stack, inline after a push).
+     * `inline` is the small centered title. `automatic` lets iOS pick:
+     * large at the root of a stack, and a pushed screen inherits the
+     * mode of the screen it was pushed from. Android draws the small bar.
      *
      *   ->displayMode('large')   // big left-aligned hero title
      *   ->displayMode('inline')  // current default

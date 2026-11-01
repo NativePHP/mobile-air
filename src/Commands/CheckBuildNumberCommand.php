@@ -5,7 +5,9 @@ namespace Native\Mobile\Commands;
 use Illuminate\Console\Command;
 use Native\Mobile\Concerns\ChecksLatestBuildNumber;
 use Native\Mobile\Concerns\PublishesToPlayStore;
+use Native\Mobile\Exceptions\AppStoreConnectLookupFailed;
 
+use function Laravel\Prompts\error;
 use function Laravel\Prompts\intro;
 use function Laravel\Prompts\outro;
 
@@ -27,7 +29,9 @@ class CheckBuildNumberCommand extends Command
 
     protected $description = 'Check latest build numbers from app stores';
 
-    public function handle(): void
+    private bool $lookupFailed = false;
+
+    public function handle(): int
     {
         $platform = match (strtolower($this->argument('platform'))) {
             'a' => 'android',
@@ -38,7 +42,7 @@ class CheckBuildNumberCommand extends Command
         if (! in_array($platform, ['android', 'ios', 'both'])) {
             $this->error('❌ Platform must be android (a), ios (i), or both');
 
-            return;
+            return self::FAILURE;
         }
 
         intro('🔍 Checking latest build numbers...');
@@ -51,7 +55,13 @@ class CheckBuildNumberCommand extends Command
             $this->checkIosBuildNumber();
         }
 
+        if ($this->lookupFailed) {
+            return self::FAILURE;
+        }
+
         outro('✅ Build number check complete!');
+
+        return self::SUCCESS;
     }
 
     private function checkAndroidBuildNumber(): void
@@ -115,7 +125,16 @@ class CheckBuildNumberCommand extends Command
             return;
         }
 
-        $latestBuildNumber = $this->getLatestBuildNumberFromStore('ios');
+        try {
+            $latestBuildNumber = $this->getLatestBuildNumberFromStore('ios');
+        } catch (AppStoreConnectLookupFailed $e) {
+            error($e->getMessage());
+            $this->line('💻 Local current: '.($currentLocal ?: 'not set'));
+            $this->newLine();
+            $this->lookupFailed = true;
+
+            return;
+        }
 
         if ($latestBuildNumber !== null) {
             $this->line("📱 App Store latest: {$latestBuildNumber}");

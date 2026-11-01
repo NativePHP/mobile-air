@@ -4,6 +4,7 @@ namespace Native\Mobile\Events\Async;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Native\Mobile\PendingAsyncTask;
 
 /**
@@ -17,7 +18,7 @@ use Native\Mobile\PendingAsyncTask;
  * @see PendingAsyncTask
  * @see NativeComponent
  */
-class AsyncTaskFinished
+class AsyncTaskFinished implements DispatchableFromNative
 {
     use Dispatchable;
 

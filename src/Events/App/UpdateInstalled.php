@@ -3,8 +3,9 @@
 namespace Native\Mobile\Events\App;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
-class UpdateInstalled
+class UpdateInstalled implements DispatchableFromNative
 {
     use Dispatchable;
 

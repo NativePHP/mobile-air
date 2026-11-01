@@ -37,8 +37,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.animation.core.animate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -57,6 +59,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -422,38 +426,15 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             } else {
                 levelPaddings[uri] ?: padding
             }
-            // Expose the bar's collapse state to scrolling content. Only when
-            // the bar actually reacts to scroll — a pinned bar stays put, and
-            // handing content a controller that silently does nothing would be
-            // worse than handing it null.
-            val chromeScrollController = remember(scrollBehavior, barReactsToScroll) {
-                if (!barReactsToScroll) {
-                    null
-                } else {
-                    object : ChromeScrollController {
-                        override suspend fun collapse() {
-                            val state = scrollBehavior.state
-                            val target = state.heightOffsetLimit
-                            if (target >= 0f || state.heightOffset <= target) {
-                                return
-                            }
-                            animate(
-                                initialValue = state.heightOffset,
-                                targetValue = target,
-                                animationSpec = tween(durationMillis = 250),
-                            ) { value, _ -> state.heightOffset = value }
-                        }
-                    }
-                }
-            }
+            val chromeScrollController = rememberChromeScrollController(scrollBehavior, barReactsToScroll)
 
             CompositionLocalProvider(LocalChromeScrollController provides chromeScrollController) {
-                Box(modifier = scrollModifier.fillMaxSize().padding(levelPadding)) {
-                    val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
-                    val levelContent = levelNode?.children?.firstOrNull {
-                        it.type != "top_bar_action" && it.type != "top_bar_title" &&
-                            it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
-                    }
+                val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
+                val levelContent = levelNode?.children?.firstOrNull {
+                    it.type != "top_bar_action" && it.type != "top_bar_title" &&
+                        it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
+                }
+                Box(modifier = scrollModifier.fillMaxSize().screenBackground(levelContent).padding(levelPadding)) {
                     if (levelContent != null) {
                         NodeView(node = levelContent)
                     } else if (uri == currentUri && screenContent != null) {
@@ -489,6 +470,38 @@ interface ChromeScrollController {
 val LocalChromeScrollController = compositionLocalOf<ChromeScrollController?> { null }
 
 /**
+ * Exposes the bar's collapse state to scrolling content. Only when the bar
+ * actually reacts to scroll — a pinned bar stays put, and handing content a
+ * controller that silently does nothing would be worse than handing it null.
+ * Shared by the stack and tabs renderers.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun rememberChromeScrollController(
+    scrollBehavior: TopAppBarScrollBehavior,
+    barReactsToScroll: Boolean,
+): ChromeScrollController? = remember(scrollBehavior, barReactsToScroll) {
+    if (!barReactsToScroll) {
+        null
+    } else {
+        object : ChromeScrollController {
+            override suspend fun collapse() {
+                val state = scrollBehavior.state
+                val target = state.heightOffsetLimit
+                if (target >= 0f || state.heightOffset <= target) {
+                    return
+                }
+                animate(
+                    initialValue = state.heightOffset,
+                    targetValue = target,
+                    animationSpec = tween(durationMillis = 250),
+                ) { value, _ -> state.heightOffset = value }
+            }
+        }
+    }
+}
+
+/**
  * Renders a single trailing toolbar action — plain IconButton when no
  * sub-items, DropdownMenu when `NavAction::items()` produced
  * `top_bar_action` children. Module-internal so the tabs renderer can
@@ -503,7 +516,26 @@ internal fun TopBarActionView(action: NativeUINode) {
     // Screen-reader name: `a11y_label` (NavAction::a11yLabel()), else the visible label.
     val a11yLabel = action.props.getString("a11y_label").ifEmpty { action.props.getString("label") }
 
+    val label = action.props.getString("label", "")
+    val showLabel = action.props.getBool("show_label") && label.isNotEmpty()
+    val hasIcon = action.props.getString("icon", "").isNotEmpty()
+
     if (subItems.isEmpty()) {
+        if (showLabel) {
+            // Text action ("Edit"-style); with an icon, icon + text.
+            TextButton(modifier = Modifier.semantics { contentDescription = a11yLabel }, enabled = !disabled, onClick = {
+                if (action.onPress != 0) {
+                    NativeElementBridge.sendPressEvent(action.onPress, action.id)
+                }
+            }) {
+                if (hasIcon || action.props.getString("image", "").isNotEmpty()) {
+                    TopBarActionGlyph(action, icon, "")
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(label)
+            }
+            return
+        }
         // `enabled=false` swallows the tap and swaps LocalContentColor for
         // the M3 disabled tone, so the icon greys out on its own.
         IconButton(enabled = !disabled, onClick = {
@@ -565,6 +597,21 @@ internal fun TopBarActionView(action: NativeUINode) {
             }
         }
     }
+}
+
+/**
+ * Paints a screen's flat background (`bg-*`, or its dark variant) on the
+ * box that the root renderers inset by the Scaffold padding. Without it the
+ * safe-area strips — beside the camera cutout and behind the navigation bar
+ * in landscape — showed the Scaffold colour instead of the screen's own,
+ * where iOS fills them with the screen background.
+ */
+@Composable
+internal fun Modifier.screenBackground(screen: NativeUINode?): Modifier {
+    val darkBg = if (isSystemInDarkTheme()) screen?.props?.getColor("dark_bg_color", 0) ?: 0 else 0
+    val bg = if (darkBg != 0) darkBg else (screen?.style?.bgColor ?: 0)
+
+    return if (bg != 0) this.background(argbToComposeColor(bg)) else this
 }
 
 /**

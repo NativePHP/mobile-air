@@ -106,6 +106,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     // Last appearance pushed to PHP, so onConfigurationChanged (which also fires
     // on rotation) only emits AppearanceChanged when the theme actually flips.
     private var lastAppearance: String? = null
+    // Last system font scale seen, so onConfigurationChanged only touches the
+    // WebView's textZoom when the font size really changed (not on rotation
+    // or a theme flip, which would undo a textZoom an app set itself).
+    private var lastFontScale: Float = 1f
 
     private var showSplash by mutableStateOf(true)
     // Gates composition of the heavy MainScreen tree (Scaffold + WebView)
@@ -148,6 +152,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // only emits AppearanceChanged when the theme genuinely differs.
         lastAppearance = if ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
+        lastFontScale = resources.configuration.fontScale
 
         // Compare before reseeding: some multi-window changes recreate the
         // activity rather than calling onConfigurationChanged. The companion
@@ -559,6 +564,14 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             configureStatusBar()
         }
 
+        // Font size changes no longer recreate the activity (fontScale is in
+        // configChanges), and a WebView only reads the system font scale into
+        // textZoom when it is created. Keep web screens in step with it.
+        if (newConfig.fontScale != lastFontScale) {
+            lastFontScale = newConfig.fontScale
+            webRenderer?.webView?.settings?.textZoom = kotlin.math.round(newConfig.fontScale * 100).toInt()
+        }
+
         // Push a native AppearanceChanged event to PHP when the theme flips.
         // onConfigurationChanged also fires on rotation, so guard on an actual
         // change. Drives reactive System::appearance() / #[On(AppearanceChanged)].
@@ -798,7 +811,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             val scheme = uri.scheme
             val route = if (scheme != null && scheme != "http" && scheme != "https") {
                 val host = uri.host ?: ""
-                val path = uri.path ?: ""
+                val path = uri.encodedPath ?: ""
                 val query = uri.encodedQuery?.let { "?$it" } ?: ""
                 if (host.isNotEmpty()) "/$host$path$query" else "$path$query"
             } else {
@@ -838,24 +851,26 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             }
         }
 
-        // Keep the query percent-encoded, as iOS does. PHP decodes it once;
-        // uri.query is already decoded, so a code like a%2Bb would reach
-        // PHP as "a b" and an encoded & would split the parameter.
+        // Keep the path and query percent-encoded, as iOS does. PHP decodes
+        // them once; uri.query is already decoded, so a code like a%2Bb would
+        // reach PHP as "a b" and an encoded & would split the parameter.
+        // uri.path is decoded too, so a literal %41 in a path segment would
+        // reach PHP as "A" and an encoded / would split the segment.
+        val path = uri.encodedPath
         val query = uri.encodedQuery
         val laravelUrl = if (uri.scheme != "http" && uri.scheme != "https") {
             // Custom scheme (e.g., myapp://profile/settings): treat host as first path segment
             // This matches iOS behavior where the entire URI after scheme:// is the path
             val host = uri.host ?: ""
-            val path = uri.path ?: ""
             buildString {
                 if (host.isNotEmpty()) append("/$host")
-                if (path.isNotEmpty()) append(path) else if (host.isEmpty()) append("/")
+                if (!path.isNullOrEmpty()) append(path) else if (host.isEmpty()) append("/")
                 if (!query.isNullOrBlank()) append("?$query")
             }
         } else {
             // HTTP(S) app links: just use the path (host is the verified domain)
             buildString {
-                append(uri.path ?: "/")
+                append(path ?: "/")
                 if (!query.isNullOrBlank()) append("?$query")
             }
         }
@@ -952,12 +967,18 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
     /**
      * Web delivery arm for device events (NativeElementBridge.WebEventSink).
-     * While an EDGE screen owns the UI its runloop already drains the queue,
-     * and injecting into the page behind it would deliver the same event a
-     * second time when that page returns. Skips when no WebView exists yet.
+     * php-mode `<webview>` elements always get the event: their pages are
+     * part of the EDGE screen. The root page doesn't while an EDGE screen
+     * owns the UI: its runloop already drains the queue, and injecting into
+     * the page behind it would deliver the same event a second time when
+     * that page returns. Skips when no WebView exists yet.
      */
     override fun onNativeEvent(eventName: String, payloadJson: String) {
         runOnUiThread {
+            WebViewManager.embeddedWebViews().forEach {
+                NativeActionCoordinator.dispatchToWebView(it, eventName, payloadJson)
+            }
+
             if (NativeUIBridge.isActive.value) return@runOnUiThread
 
             webRenderer?.webView?.let {

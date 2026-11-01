@@ -3,8 +3,9 @@
 namespace Native\Mobile\Events\Geolocation;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
-class PermissionStatusReceived
+class PermissionStatusReceived implements DispatchableFromNative
 {
     use Dispatchable;
 

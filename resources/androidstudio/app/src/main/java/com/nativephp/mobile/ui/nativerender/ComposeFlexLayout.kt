@@ -18,13 +18,24 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.MeasurePolicy
+import androidx.compose.ui.layout.MeasureResult
+import androidx.compose.ui.layout.MeasureScope
+import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sign
 
 // MARK: - Flex Enums (match PHP/binary protocol values)
 
@@ -360,19 +371,219 @@ private fun FlexRow(
         return
     }
 
+    val flowNodes = childNodes.filter {
+        (it.layout?.display ?: 0) != Display.NONE && (it.layout?.positionType ?: 0) != PositionType.ABSOLUTE
+    }
+
+    // Once a row has needed KeptWidthsFirstRowPolicy it keeps it. Switching
+    // back to Row composes every child from scratch, losing animations,
+    // loaded images and text field focus, and a sibling that comes and goes
+    // would do that on every change. The policy lays a row out exactly as Row
+    // does whenever nothing has to be measured out of order.
+    val keptWidthsFirst = remember { RowLayoutChoice() }
+    if (rowMeasuresKeptWidthsFirst(flowNodes)) {
+        keptWidthsFirst.isChosen = true
+    }
+
+    if (keptWidthsFirst.isChosen) {
+        Layout(
+            content = {
+                flowNodes.forEach { node ->
+                    // Outside a RowScope, buildChildModifier leaves out
+                    // weight() and align(); the RowChildSpec carries them.
+                    val childMod = buildChildModifier(node, isRow = true, align = align, scope = Unit)
+                    CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                        NodeView(node = node, overrideModifier = Modifier.layoutId(rowChildSpec(node, alignment)).then(childMod))
+                    }
+                }
+            },
+            modifier = modifier,
+            measurePolicy = remember(arrangement, alignment) { KeptWidthsFirstRowPolicy(arrangement, alignment) }
+        )
+        return
+    }
+
     Row(
         modifier = modifier,
         horizontalArrangement = arrangement,
         verticalAlignment = alignment
     ) {
-        childNodes.forEachIndexed { i, node ->
-            if ((node.layout?.display ?: 0) == Display.NONE) return@forEachIndexed
-            if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) return@forEachIndexed
-
+        flowNodes.forEach { node ->
             val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
             // a row child's width is definite only when it grows or is sized.
             CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
                 NodeView(node = node, overrideModifier = childMod)
+            }
+        }
+    }
+}
+
+private class RowLayoutChoice {
+    var isChosen = false
+}
+
+/**
+ * Does this row child keep its width when the row runs out of room?
+ * `flex-shrink-0` says so, and so does a fixed `w-*`. Children that grow
+ * are left out, because Row measures them last anyway.
+ */
+internal fun rowChildKeepsWidth(node: NativeUINode): Boolean {
+    val layout = node.layout ?: return false
+    if (rowChildWeight(node) > 0f) return false
+    return layout.flexShrink == 0f || (layout.widthMode == SizeMode.FIXED && layout.width > 0f)
+}
+
+/** The Row weight `buildChildModifier` gives a row child: its flex-grow, or 1 for `w-full`. */
+internal fun rowChildWeight(node: NativeUINode): Float {
+    val layout = node.layout ?: return 0f
+    return when {
+        layout.flexGrow > 0f -> layout.flexGrow
+        layout.widthMode == SizeMode.FILL -> 1f
+        else -> 0f
+    }
+}
+
+/**
+ * Compose's Row measures its unweighted children in order, each with the
+ * width the earlier ones left. Every child can shrink unless it says
+ * otherwise (flex-shrink defaults to 1), so a long text ahead of a
+ * `w-[98] flex-shrink-0` sibling takes the whole line and the sibling is
+ * measured at zero width. iOS's FlexContainer shrinks the text instead.
+ *
+ * Only a row where a child that keeps its width comes after one that
+ * shrinks needs measuring in another order. A row that never has one
+ * keeps Compose's Row.
+ */
+internal fun rowMeasuresKeptWidthsFirst(flowNodes: List<NativeUINode>): Boolean {
+    var sawShrinkingChild = false
+    for (node in flowNodes) {
+        if (rowChildWeight(node) > 0f) continue
+        if (!rowChildKeepsWidth(node)) {
+            sawShrinkingChild = true
+        } else if (sawShrinkingChild) {
+            return true
+        }
+    }
+    return false
+}
+
+/** What [KeptWidthsFirstRowPolicy] needs to know about a child, carried as its layoutId. */
+private data class RowChildSpec(
+    val weight: Float,
+    val keepsWidth: Boolean,
+    val alignment: Alignment.Vertical
+)
+
+private fun rowChildSpec(node: NativeUINode, rowAlignment: Alignment.Vertical): RowChildSpec {
+    val alignSelf = node.layout?.alignSelf ?: 0
+    val alignment = when {
+        alignSelf <= 0 || alignSelf == AlignItems.STRETCH -> rowAlignment
+        alignSelf == AlignItems.CENTER -> Alignment.CenterVertically
+        alignSelf == AlignItems.END -> Alignment.Bottom
+        else -> Alignment.Top
+    }
+    return RowChildSpec(rowChildWeight(node), rowChildKeepsWidth(node), alignment)
+}
+
+/**
+ * Compose's Row measuring, with one change: the unweighted children that
+ * keep their width are measured first, and the ones that shrink share
+ * whatever is left. Weights, gaps, arrangement and alignment follow
+ * RowColumnMeasurePolicy line for line, so a row that fits lays out
+ * exactly as Row would lay it out.
+ *
+ * Several shrinking children still take the room in order, as they do in
+ * Row. iOS shrinks them in proportion to their content width, which needs
+ * intrinsic measurements that not every renderer supports.
+ */
+private class KeptWidthsFirstRowPolicy(
+    private val arrangement: Arrangement.Horizontal,
+    private val rowAlignment: Alignment.Vertical
+) : MeasurePolicy {
+    override fun MeasureScope.measure(measurables: List<Measurable>, constraints: Constraints): MeasureResult {
+        val mainMax = constraints.maxWidth
+        val spacing = arrangement.spacing.roundToPx()
+        val specs = measurables.map { it.layoutId as? RowChildSpec }
+        val placeables = arrayOfNulls<Placeable>(measurables.size)
+
+        var totalWeight = 0f
+        var weightedCount = 0
+        var fixedSpace = 0
+        var crossSpace = 0
+        var spaceAfterLastUnweighted = 0
+
+        fun measureUnweighted(i: Int) {
+            val remaining = mainMax - fixedSpace
+            val placeable = measurables[i].measure(
+                Constraints(
+                    maxWidth = if (mainMax == Constraints.Infinity) Constraints.Infinity else remaining.coerceAtLeast(0),
+                    maxHeight = constraints.maxHeight
+                )
+            )
+            spaceAfterLastUnweighted = min(spacing, (remaining - placeable.width).coerceAtLeast(0))
+            fixedSpace += placeable.width + spaceAfterLastUnweighted
+            crossSpace = max(crossSpace, placeable.height)
+            placeables[i] = placeable
+        }
+
+        measurables.indices.forEach { i ->
+            val weight = specs[i]?.weight ?: 0f
+            if (weight > 0f) {
+                totalWeight += weight
+                weightedCount++
+            } else if (specs[i]?.keepsWidth == true) {
+                measureUnweighted(i)
+            }
+        }
+        measurables.indices.forEach { i ->
+            if (placeables[i] == null && (specs[i]?.weight ?: 0f) <= 0f) measureUnweighted(i)
+        }
+
+        var weightedSpace = 0
+        if (weightedCount == 0) {
+            fixedSpace -= spaceAfterLastUnweighted
+        } else {
+            val targetSpace = if (mainMax != Constraints.Infinity) mainMax else constraints.minWidth
+            val spacingTotal = spacing.toLong() * (weightedCount - 1)
+            val remainingToTarget = (targetSpace - fixedSpace - spacingTotal).coerceAtLeast(0)
+            val weightUnitSpace = remainingToTarget / totalWeight
+            var remainder = remainingToTarget
+            measurables.indices.forEach { i ->
+                remainder -= (weightUnitSpace * (specs[i]?.weight ?: 0f)).roundToInt()
+            }
+            measurables.indices.forEach { i ->
+                val weight = specs[i]?.weight ?: 0f
+                if (weight <= 0f) return@forEach
+                val remainderUnit = remainder.sign
+                remainder -= remainderUnit
+                val childWidth = max(0, (weightUnitSpace * weight).roundToInt() + remainderUnit)
+                // Modifier.weight() fills its share, as `fill = true` does in Row.
+                val placeable = measurables[i].measure(
+                    Constraints.fitPrioritizingWidth(
+                        minWidth = if (childWidth != Constraints.Infinity) childWidth else 0,
+                        maxWidth = childWidth,
+                        minHeight = 0,
+                        maxHeight = constraints.maxHeight
+                    )
+                )
+                weightedSpace += placeable.width
+                crossSpace = max(crossSpace, placeable.height)
+                placeables[i] = placeable
+            }
+            weightedSpace = (weightedSpace + spacingTotal).toInt().coerceIn(0, (mainMax - fixedSpace).coerceAtLeast(0))
+        }
+
+        val mainSize = max((fixedSpace + weightedSpace).coerceAtLeast(0), constraints.minWidth)
+        val crossSize = max(crossSpace, constraints.minHeight)
+        val widths = IntArray(measurables.size) { placeables[it]?.width ?: 0 }
+        val positions = IntArray(measurables.size)
+        with(arrangement) { arrange(mainSize, widths, layoutDirection, positions) }
+
+        return layout(mainSize, crossSize) {
+            placeables.forEachIndexed { i, placeable ->
+                if (placeable == null) return@forEachIndexed
+                val alignment = specs[i]?.alignment ?: rowAlignment
+                placeable.place(positions[i], alignment.align(placeable.height, crossSize))
             }
         }
     }

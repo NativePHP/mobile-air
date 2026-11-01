@@ -1408,17 +1408,55 @@ typedef struct {
 static async_php_slot_t async_slots[ASYNC_PHP_MAX_SLOTS];
 static pthread_mutex_t async_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Set on the thread of each async slot and on no other. Only a task that this
+// lane runs may report its outcome through AsyncTask.Complete, and JavaScript in
+// a web view makes the same bridge call from a thread of its own.
+static __thread int async_lane_thread = 0;
+
+int async_php_on_lane_thread(void) {
+    return async_lane_thread;
+}
+
+// Whether a task id has the shape of the one PHP makes for a task with
+// Str::uuid(): hex digits in groups of 8-4-4-4-12, split by hyphens.
+static int async_task_id_is_uuid(const char *id) {
+    if (id == NULL || strlen(id) != 36) {
+        return 0;
+    }
+
+    for (int i = 0; i < 36; i++) {
+        char c = id[i];
+
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') {
+                return 0;
+            }
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 static void do_async_run(async_php_slot_t *slot) {
     clear_output_buffer();
+
+    // The id is spliced into the PHP evaluated below, and it comes from the
+    // AsyncTask.Dispatch bridge call, which JavaScript in a web view can make
+    // with any string. Only the UUID that PHP made for the task gets this far.
+    if (!async_task_id_is_uuid(slot->task_id)) {
+        fprintf(stderr, "ASYNC-PHP: refused a task id that is not a UUID\n");
+        fflush(stderr);
+        slot->result = strdup("");
+        return;
+    }
 
     // No setenv() here. This lane is CONCURRENT: several slots run at once, and
     // setenv()/getenv() are neither thread-safe nor per-thread — the value one
     // slot sets is the value every other slot (and the UI lane) sees. The eval
     // below sets the per-thread $_SERVER values instead, which is what Laravel
     // reads anyway.
-    //
-    // task_id is a framework-generated UUID (Str::uuid()), so it's safe to
-    // embed directly; no user input reaches this string.
     char eval_code[1024];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
@@ -1428,7 +1466,7 @@ static void do_async_run(async_php_slot_t *slot) {
         "} catch (\\Throwable $e) {\n"
         "    error_log('async run error: ' . $e->getMessage());\n"
         "}\n",
-        slot->task_id ? slot->task_id : "");
+        slot->task_id);
 
     zend_first_try {
         zend_eval_string(eval_code, NULL, "async_run");
@@ -1443,6 +1481,8 @@ static void *async_thread_main(void *arg) {
 
     fprintf(stderr, "ASYNC-PHP: thread started tid=%p\n", (void *)pthread_self());
     fflush(stderr);
+
+    async_lane_thread = 1;
 
     clear_output_buffer();
 

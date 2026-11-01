@@ -4,6 +4,7 @@ namespace Native\Mobile\Events\Scanner;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
 /**
  * QR code or barcode scanned event
@@ -11,7 +12,7 @@ use Illuminate\Queue\SerializesModels;
  * This event is dispatched from native code (Kotlin/Swift) via JavaScript injection,
  * directly triggering Livewire listeners with #[OnNative(CodeScanned::class)]
  */
-class CodeScanned
+class CodeScanned implements DispatchableFromNative
 {
     use Dispatchable, SerializesModels;
 

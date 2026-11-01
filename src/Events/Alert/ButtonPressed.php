@@ -4,8 +4,9 @@ namespace Native\Mobile\Events\Alert;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
-class ButtonPressed
+class ButtonPressed implements DispatchableFromNative
 {
     use Dispatchable, SerializesModels;
 

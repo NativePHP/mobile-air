@@ -34,6 +34,9 @@ class TopBarAction extends Element
         if (isset($attrs['material-variant']) && ! isset($attrs['material_variant'])) {
             $attrs['material_variant'] = $attrs['material-variant'];
         }
+        if (isset($attrs['show-label']) && ! isset($attrs['show_label'])) {
+            $attrs['show_label'] = $attrs['show-label'];
+        }
 
         foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image'] as $key) {
             if (isset($attrs[$key])) {
@@ -45,6 +48,9 @@ class TopBarAction extends Element
         $this->androidIcon = $attrs['android-icon'] ?? $attrs['androidIcon'] ?? $attrs['android'] ?? $this->androidIcon;
         if (isset($attrs['destructive'])) {
             $this->props['destructive'] = (bool) $attrs['destructive'];
+        }
+        if (isset($attrs['show_label'])) {
+            $this->props['show_label'] = (bool) $attrs['show_label'];
         }
         if (isset($attrs['disabled'])) {
             $this->props['disabled'] = (bool) $attrs['disabled'];

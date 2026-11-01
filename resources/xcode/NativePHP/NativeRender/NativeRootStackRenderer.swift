@@ -137,7 +137,7 @@ struct NativeRootStackRenderer: View {
 
         // Map the PHP-side string to SwiftUI's NavigationBarItem.TitleDisplayMode.
         //   `large`     — iOS-native big title, left-aligned, collapses on scroll
-        //   `automatic` — iOS picks (large at root, inline after a push)
+        //   `automatic` — iOS picks (large at root; a push inherits the previous mode)
         //   else        — small centered title (previous default)
         let titleDisplayMode: NavigationBarItem.TitleDisplayMode = {
             // A custom title view lives in the centered `.principal` slot,
@@ -307,25 +307,41 @@ struct NativeRootStackRenderer: View {
         let disabled = action.props.getBool("disabled")
         let subItems = action.children.filter { $0.type == "top_bar_action" }
 
+        let label = action.props.getString("label", default: "")
+        let showLabel = action.props.getBool("show_label") && !label.isEmpty
+        let hasIcon = !action.props.getString("icon", default: "").isEmpty
+        let image = action.props.getString("image", default: "")
+
         if subItems.isEmpty {
             Button {
                 if action.onPress != 0 {
                     NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
                 }
             } label: {
-                TopBarActionGlyph(
-                    icon: icon,
-                    image: action.props.getString("image", default: "")
-                )
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(textColor)
-                    // Explicit dim: the hard-set foregroundColor above keeps
-                    // SwiftUI's automatic disabled greying from showing.
-                    .opacity(disabled ? 0.4 : 1)
-                    // same pill-sized hit region for
-                    // the trailing actions (plain Button and Menu labels alike).
-                    .frame(minWidth: 32, minHeight: 44)
-                    .contentShape(Rectangle().inset(by: -6))
+                Group {
+                    if showLabel && (hasIcon || !image.isEmpty) {
+                        // Toolbars collapse a Label to icon-only by default.
+                        Label {
+                            Text(label)
+                        } icon: {
+                            TopBarActionGlyph(icon: icon, image: image)
+                        }
+                        .labelStyle(.titleAndIcon)
+                    } else if showLabel {
+                        Text(label)
+                    } else {
+                        TopBarActionGlyph(icon: icon, image: image)
+                    }
+                }
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(textColor)
+                // Explicit dim: the hard-set foregroundColor above keeps
+                // SwiftUI's automatic disabled greying from showing.
+                .opacity(disabled ? 0.4 : 1)
+                // same pill-sized hit region for
+                // the trailing actions (plain Button and Menu labels alike).
+                .frame(minWidth: 32, minHeight: 44)
+                .contentShape(Rectangle().inset(by: -6))
             }
             .disabled(disabled)
             .modifier(TopBarActionA11yLabelModifier(action: action))
@@ -477,7 +493,9 @@ private struct StackBottomBarInsetModifier: ViewModifier {
 /// `.visible` and get their band back. Pre-18 still needs the pair
 /// unconditionally — without it the color is applied to a hidden bar and
 /// never shows.
-private struct StackBarBackgroundModifier: ViewModifier {
+///
+/// Module-internal so the tabs renderer can use it for large-title bars.
+struct StackBarBackgroundModifier: ViewModifier {
     let argb: Int
     let inline: Bool
 

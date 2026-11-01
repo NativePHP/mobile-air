@@ -22,6 +22,12 @@ class PendingMicrophone
 
     protected bool $started = false;
 
+    protected string $format = 'm4a';
+
+    protected int $sampleRate = 16000;
+
+    protected float $maxDuration = 0;
+
     public function __construct()
     {
         // Default to the MicrophoneRecorded event
@@ -74,6 +80,37 @@ class PendingMicrophone
     }
 
     /**
+     * Record mono 16-bit PCM WAV at the given sample rate instead of AAC (M4A), for a server that
+     * takes uncompressed audio. MicrophoneRecorded then says "audio/wav".
+     */
+    public function wav(int $sampleRate = 16000): self
+    {
+        if ($sampleRate < 8000 || $sampleRate > 48000) {
+            throw new InvalidArgumentException("A WAV sample rate must be between 8000 and 48000 Hz, not {$sampleRate}");
+        }
+
+        $this->format = 'wav';
+        $this->sampleRate = $sampleRate;
+
+        return $this;
+    }
+
+    /**
+     * Stop recording by itself after this many seconds, as if stop() was called: MicrophoneRecorded
+     * is dispatched with what was recorded.
+     */
+    public function maxDuration(float $seconds): self
+    {
+        if ($seconds <= 0) {
+            throw new InvalidArgumentException('A maximum duration must be more than 0 seconds');
+        }
+
+        $this->maxDuration = $seconds;
+
+        return $this;
+    }
+
+    /**
      * Store this microphone recorder's ID in the session for later retrieval in event handlers.
      * The ID will be flashed and available on the next request.
      */
@@ -109,6 +146,15 @@ class PendingMicrophone
                 'id' => $this->getId(),
                 'event' => $this->eventClass,
             ];
+
+            if ($this->format === 'wav') {
+                $payload['format'] = 'wav';
+                $payload['sampleRate'] = $this->sampleRate;
+            }
+
+            if ($this->maxDuration > 0) {
+                $payload['maxDuration'] = $this->maxDuration;
+            }
 
             $result = nativephp_call('Microphone.Start', json_encode($payload));
 

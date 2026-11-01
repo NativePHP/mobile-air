@@ -3,6 +3,7 @@
 namespace Native\Mobile\Events\Screen;
 
 use Illuminate\Foundation\Events\Dispatchable;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 
 /**
  * A screen was revealed again after the screen above it was popped.
@@ -16,7 +17,7 @@ use Illuminate\Foundation\Events\Dispatchable;
  * breadcrumbs — that need the screen lifecycle without competing with the
  * app for the `mount()` / `onResume()` / `unmount()` overrides.
  */
-class ScreenResumed
+class ScreenResumed implements DispatchableFromNative
 {
     use Dispatchable;
 

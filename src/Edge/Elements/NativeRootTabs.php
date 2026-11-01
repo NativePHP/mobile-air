@@ -71,6 +71,12 @@ class NativeRootTabs extends Element
         if (isset($attrs['minimizeOnScroll'])) {
             $this->props['minimize_on_scroll'] = (bool) $attrs['minimizeOnScroll'];
         }
+        if (isset($attrs['tabPresentationId'])) {
+            $this->props['tab_presentation_id'] = $attrs['tabPresentationId'];
+        }
+        if (isset($attrs['tabPresentationConfiguration'])) {
+            $this->props['tab_presentation_configuration'] = $attrs['tabPresentationConfiguration'];
+        }
 
         // Optional folded NavBar config (when this layout supplies both bars).
         if (isset($attrs['navTitle'])) {
@@ -93,6 +99,12 @@ class NativeRootTabs extends Element
         }
         if (isset($attrs['navElevation'])) {
             $this->props['nav_elevation'] = (int) $attrs['navElevation'];
+        }
+        if (isset($attrs['navDisplayMode'])) {
+            $this->props['nav_display_mode'] = $attrs['navDisplayMode'];
+        }
+        if (isset($attrs['navScrollBehavior'])) {
+            $this->props['nav_scroll_behavior'] = $attrs['navScrollBehavior'];
         }
 
         // The URI of the active tab's screen. The iOS bridge keys its
