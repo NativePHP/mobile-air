@@ -5,6 +5,8 @@ use Native\Mobile\Events\Camera\PhotoCancelled;
 use Native\Mobile\Events\Camera\PhotoTaken;
 use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Native\Mobile\Support\NativeCallbacks;
+use SupaNative\Core\Contracts\BroadcastsGlobally;
+use Tests\Fixtures\Edge\OrderArchived;
 
 it('accepts the takenAt and location keys the camera sends with PhotoTaken', function () {
     Event::fake([PhotoTaken::class]);
@@ -133,6 +135,20 @@ it('still dispatches a core device event, which implements the marker', function
     ])->assertOk()->assertJson(['success' => true]);
 
     Event::assertDispatched(PhotoTaken::class);
+});
+
+it('also dispatches an event that implements only the marker in core', function () {
+    Event::fake([OrderArchived::class]);
+
+    expect(is_subclass_of(OrderArchived::class, DispatchableFromNative::class))->toBeFalse()
+        ->and(is_subclass_of(OrderArchived::class, BroadcastsGlobally::class))->toBeTrue();
+
+    $this->postJson('/_native/api/events', [
+        'event' => OrderArchived::class,
+        'payload' => ['orderId' => 42],
+    ])->assertOk()->assertJson(['success' => true]);
+
+    Event::assertDispatched(OrderArchived::class, fn (OrderArchived $event) => $event->orderId === 42);
 });
 
 it('marks every core event class as dispatchable from native', function () {

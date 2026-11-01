@@ -8,6 +8,7 @@ use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Native\Mobile\Support\NativeCallbacks;
 use ReflectionClass;
 use ReflectionFunction;
+use SupaNative\Core\Contracts\BroadcastsGlobally;
 use SupaNative\Core\Support\GlobalEventDispatcher;
 
 class DispatchEventFromAppController
@@ -23,9 +24,13 @@ class DispatchEventFromAppController
         // device event implements DispatchableFromNative — or a page could name
         // any autoloadable class and hand it constructor arguments of its own,
         // an object-injection gadget (e.g. SplFileObject to truncate a file).
+        // An event marked with core's BroadcastsGlobally passes too, for the
+        // reason mobile's marker extends DispatchableFromNative: a global event
+        // is one the native side delivers across lanes.
         if (! is_string($eventClass)
             || ! class_exists($eventClass)
-            || ! is_subclass_of($eventClass, DispatchableFromNative::class)) {
+            || ! (is_subclass_of($eventClass, DispatchableFromNative::class)
+                || is_subclass_of($eventClass, BroadcastsGlobally::class))) {
             return response()->json([
                 'success' => false,
             ]);
