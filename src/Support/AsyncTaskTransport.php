@@ -2,11 +2,11 @@
 
 namespace Native\Mobile\Support;
 
-use Illuminate\Encryption\Encrypter;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
+use SupaNative\Core\Support\AsyncTaskSeal;
 use Symfony\Component\Process\Process;
 
 /**
@@ -17,7 +17,7 @@ use Symfony\Component\Process\Process;
  * The payload (a PHP-serialized work envelope) is handed off through a temp
  * file under `storage/framework/async/` — the async lane and the UI lane share
  * the app's filesystem, so no native RAM courier is needed. The file is sealed
- * with the app key ({@see seal()}), because the runner unserializes what it
+ * with the app key ({@see AsyncTaskSeal}), because the runner unserializes what it
  * reads and anything that can write to the spool, or call the bridge with an
  * id of its choosing, could otherwise have the app run it. Completion, though,
  * must WAKE the UI runloop, which differs by environment:
@@ -32,15 +32,6 @@ use Symfony\Component\Process\Process;
  */
 class AsyncTaskTransport
 {
-    /**
-     * Written in front of a work envelope before it is encrypted, and checked
-     * after it is decrypted. The app key encrypts other things too (cookies,
-     * `encrypted` model casts), so a ciphertext made for one of those must not
-     * open as a task. The task id goes in as well, so a sealed payload copied
-     * to another task's file doesn't open either.
-     */
-    protected const SEAL_PURPOSE = 'nativephp.async-task:';
-
     /** Absolute path to the async spool root (optionally a subdirectory). */
     public static function directory(string $sub = ''): string
     {
@@ -91,70 +82,16 @@ class AsyncTaskTransport
         return false;
     }
 
+    /**
+     * Seal the work envelope under the current app key alone, then spool it.
+     * Every lane boots with that key: on a device the shell hands it over
+     * from the Keychain or Keystore, and under Jump both use the .env.
+     */
     protected static function writePayload(string $id, string $payload): void
     {
         $dir = static::directory('payload');
         static::ensureDir($dir);
-        static::writeSpoolFile($dir.DIRECTORY_SEPARATOR.$id.'.task', static::seal($id, $payload));
-    }
-
-    /**
-     * Encrypt a work envelope under the app key with Laravel's encrypter, which
-     * also signs it (a MAC, or the GCM tag), so {@see unseal()} can tell the
-     * file was written by this app and hasn't been touched since.
-     *
-     * Every lane boots with the same key: on a device the shell hands it over
-     * from the Keychain/Keystore, and under Jump both processes read it from
-     * the project's .env.
-     */
-    protected static function seal(string $id, string $payload): string
-    {
-        return static::encrypter()->encryptString(static::SEAL_PURPOSE.$id."\n".$payload);
-    }
-
-    /**
-     * Decrypt a sealed work envelope, or return null when it doesn't open: not
-     * encrypted under this app's key, changed since, made for something else,
-     * or sealed for a different task.
-     */
-    protected static function unseal(string $id, string $sealed): ?string
-    {
-        try {
-            $plain = static::encrypter()->decryptString($sealed);
-        } catch (\Throwable) {
-            return null;
-        }
-
-        $prefix = static::SEAL_PURPOSE.$id."\n";
-
-        if (! str_starts_with($plain, $prefix)) {
-            return null;
-        }
-
-        return substr($plain, strlen($prefix));
-    }
-
-    /**
-     * An encrypter for the current app key only. The app's own encrypter also
-     * accepts previous keys when decrypting (Laravel 11+), and a task is always
-     * sealed and opened within one run of the app, so it never needs them.
-     *
-     * @throws \RuntimeException when the app has no usable app key
-     */
-    protected static function encrypter(): Encrypter
-    {
-        try {
-            $key = app('encrypter')->getKey();
-
-            return new Encrypter($key, (string) config('app.cipher', 'AES-256-CBC'));
-        } catch (\Throwable $e) {
-            throw new \RuntimeException(
-                'Async tasks need an app key: the task payload is sealed with it, and the background lane '
-                .'runs nothing it cannot open. ('.$e->getMessage().')',
-                0,
-                $e,
-            );
-        }
+        static::writeSpoolFile($dir.DIRECTORY_SEPARATOR.$id.'.task', AsyncTaskSeal::forAppKey()->seal($id, $payload));
     }
 
     /** Drop a spooled payload for a task that will never run. */
@@ -397,7 +334,7 @@ class AsyncTaskTransport
             return null;
         }
 
-        $payload = static::unseal($id, $contents);
+        $payload = AsyncTaskSeal::forAppKey()->unseal($id, $contents);
 
         if ($payload === null) {
             Log::warning("An async task payload for [{$id}] was not sealed by this app for that task, and was dropped unread.");
