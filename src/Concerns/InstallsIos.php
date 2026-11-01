@@ -8,7 +8,6 @@ use Illuminate\Support\Facades\Process;
 use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
-use SupaNative\Core\Support\CaBundle;
 use ZipArchive;
 
 use function Laravel\Prompts\note;
@@ -16,6 +15,8 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
+    use InstallsCaBundle;
+
     public string $iosPath;
 
     protected ?bool $includeIcuIos = null;
@@ -56,10 +57,7 @@ trait InstallsIos
                 return false;
             }
 
-            // The CA bundle PHP uses for HTTPS comes from core, which keeps it
-            // current. Xcode ships each file in NativePHP/ with the app, so
-            // the app finds it in its bundle under its name, cacert.pem.
-            return File::copy(CaBundle::path(), $this->iosPath.'/NativePHP/cacert.pem');
+            return $this->installIosCaBundle();
         });
     }
 
