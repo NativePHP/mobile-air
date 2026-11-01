@@ -176,11 +176,13 @@ sync", however many syncs there have been.
 
 **3. Deal with each group.**
 
-- **Main changed a file that moved to core.** The merge will drop that change without a
-  conflict, because the file is deleted on the refactor branch. Nothing warns you. Port
-  the change into core by hand under `SupaNative\Core\`. Main's tests for it usually merge
-  cleanly into mobile's `tests/` and run against core through the aliases, so a missed port
-  often shows up as a failing test. Not every change comes with a test, so don't rely on it.
+- **Main changed a file that moved to core.** The merge stops with
+  `CONFLICT (modify/delete)`, because the file is deleted on the refactor branch. Keep it
+  deleted, then port main's change into core by hand under `SupaNative\Core\`. Keeping the
+  deletion without the port loses the change, and nothing else warns you. Main's tests for
+  it usually merge cleanly into mobile's `tests/` and run against core through the aliases,
+  so a missed port often shows up as a failing test. Not every change comes with a test, so
+  don't rely on it.
 - **Main changed a file the refactor also changed.** Check the merged file still has main's
   change, even where git merged it without a conflict.
 - **Main added a file in an area that moved** (`src/Edge`, `src/Attributes`, `src/Support`,
