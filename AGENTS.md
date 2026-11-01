@@ -252,10 +252,11 @@ were working in when you made it.
 - Desktop has to stay close to the v2 `nativephp/laravel` API. Any change from it gets a row
   in desktop's `docs/v2-to-v3-api.md` in the same PR.
 - On desktop, check every new facade, and every new method on one, from a PHP child
-  (`ChildProcess`) and from an async task, not only from the app. Both run a PHP of their
-  own, where a call goes to the shell or is forwarded to the app with `#[RunsInApp]`. See
-  "Facades from a child" in desktop's `docs/api/child-process.md` and "Facades from a task"
-  in its `docs/api/async-tasks.md`.
+  (`ChildProcess`), from an async task and from a queued job, not only from the app. All
+  three run a PHP of their own, where a call goes to the shell or is forwarded to the app
+  with `#[RunsInApp]`. See "Facades from a child" in desktop's `docs/api/child-process.md`,
+  "Facades from a task" in its `docs/api/async-tasks.md` and "Facades from a job" in its
+  `docs/api/queues.md`.
 - Don't edit `nativephp/mobile-ui` to make an extraction work. Fix it on our side.
 - Package names are still `supanative/*`. Whether they become `nativephp/*` is an open
   question, so don't rename anything in passing.
