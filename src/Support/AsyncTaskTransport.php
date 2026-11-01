@@ -91,7 +91,7 @@ class AsyncTaskTransport
     {
         $dir = static::directory('payload');
         static::ensureDir($dir);
-        static::writeSpoolFile($dir.DIRECTORY_SEPARATOR.$id.'.task', AsyncTaskSeal::forAppKey()->seal($id, $payload));
+        static::writeSpoolFile($dir.DIRECTORY_SEPARATOR.$id.'.task', app(AsyncTaskSeal::class)->seal($id, $payload));
     }
 
     /** Drop a spooled payload for a task that will never run. */
@@ -334,7 +334,7 @@ class AsyncTaskTransport
             return null;
         }
 
-        $payload = AsyncTaskSeal::forAppKey()->unseal($id, $contents);
+        $payload = app(AsyncTaskSeal::class)->unseal($id, $contents);
 
         if ($payload === null) {
             Log::warning("An async task payload for [{$id}] was not sealed by this app for that task, and was dropped unread.");
