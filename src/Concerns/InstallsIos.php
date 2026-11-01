@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Process;
 use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
+use SupaNative\Core\Support\CaBundle;
 use ZipArchive;
 
 use function Laravel\Prompts\note;
@@ -50,10 +51,13 @@ trait InstallsIos
             mkdir($this->iosPath, 0755, true);
         }
 
+        // The CA bundle PHP uses for HTTPS comes from core, which keeps it
+        // current. Xcode ships each file in NativePHP/ with the app, so
+        // the app finds it in its bundle under its name, cacert.pem.
         $this->components->task('Creating Xcode project', fn () => File::copyDirectory(
             base_path('vendor/nativephp/mobile/resources/xcode'),
             $this->iosPath
-        ));
+        ) && File::copy(CaBundle::path(), $this->iosPath.'/NativePHP/cacert.pem'));
     }
 
     private function installPHPIos(): void

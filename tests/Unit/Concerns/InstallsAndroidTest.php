@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\File;
 use Mockery;
 use Native\Mobile\Concerns\InstallsAndroid;
 use Orchestra\Testbench\TestCase;
+use SupaNative\Core\Support\CaBundle;
 
 class InstallsAndroidTest extends TestCase
 {
@@ -96,6 +97,42 @@ class InstallsAndroidTest extends TestCase
         // Assert old file was removed and new file exists
         $this->assertFileDoesNotExist($androidPath.'/existing.txt');
         $this->assertFileExists($androidPath.'/new.txt');
+    }
+
+    public function test_create_android_studio_project_adds_the_ca_bundle_from_core()
+    {
+        // Create mock vendor directory with no assets folder
+        $vendorPath = $this->testProjectPath.'/vendor/nativephp/mobile/resources/androidstudio';
+        File::makeDirectory($vendorPath.'/app', 0755, true);
+        File::put($vendorPath.'/app/build.gradle.kts', 'app content');
+
+        // Execute
+        $this->createAndroidStudioProject();
+
+        // Assert core's file is where LaravelEnvironment reads it
+        $this->assertFileEquals(
+            CaBundle::path(),
+            $this->testProjectPath.'/nativephp/android/app/src/main/assets/cacert.pem'
+        );
+    }
+
+    public function test_create_android_studio_project_replaces_an_older_ca_bundle()
+    {
+        // Create existing android directory with its own copy
+        $assetsPath = $this->testProjectPath.'/nativephp/android/app/src/main/assets';
+        File::makeDirectory($assetsPath, 0755, true);
+        File::put($assetsPath.'/cacert.pem', 'older bundle');
+
+        // Create mock vendor directory
+        $vendorPath = $this->testProjectPath.'/vendor/nativephp/mobile/resources/androidstudio';
+        File::makeDirectory($vendorPath, 0755, true);
+        File::put($vendorPath.'/build.gradle', 'test content');
+
+        // Execute
+        $this->createAndroidStudioProject();
+
+        // Assert core's file replaced the older copy
+        $this->assertFileEquals(CaBundle::path(), $assetsPath.'/cacert.pem');
     }
 
     public function test_install_php_android_with_icu_lock()

@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\File;
 use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
 use Native\Mobile\Support\TransferFailure;
+use SupaNative\Core\Support\CaBundle;
 use ZipArchive;
 
 use function Laravel\Prompts\note;
@@ -55,7 +56,15 @@ trait InstallsAndroid
 
         $source = base_path('vendor/nativephp/mobile/resources/androidstudio');
 
-        $this->components->task('Creating Android project', fn () => $this->platformOptimizedCopy($source, $androidPath));
+        $this->components->task('Creating Android project', function () use ($source, $androidPath) {
+            $this->platformOptimizedCopy($source, $androidPath);
+
+            // The CA bundle PHP uses for HTTPS comes from core, which keeps it
+            // current. LaravelEnvironment reads it from the APK's assets by
+            // its name, so the copy must go in the assets as cacert.pem.
+            File::ensureDirectoryExists($androidPath.'/app/src/main/assets');
+            File::copy(CaBundle::path(), $androidPath.'/app/src/main/assets/cacert.pem');
+        });
     }
 
     private function writeAndroidTheme(): void
