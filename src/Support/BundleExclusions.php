@@ -109,5 +109,9 @@ class BundleExclusions
         'vendor/endroid',
         'vendor/laravel/pint/builds',
         'vendor/livewire/livewire/src/Features/SupportFileUploads/browser_test_image_big.jpg',
+        // Install copies core's CA bundle into each native project, where
+        // the apps read it, so the one in core's own folder would ride
+        // along in the bundle as a second copy which nothing reads.
+        'vendor/supanative/core/resources/cacert.pem',
     ];
 }

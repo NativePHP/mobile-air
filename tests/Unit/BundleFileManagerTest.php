@@ -61,6 +61,8 @@ class BundleFileManagerTest extends TestCase
             'vendor/livewire/livewire/src/Features/SupportFileUploads/browser_test_image_big.jpg',
             $files
         );
+
+        $this->assertContains('vendor/supanative/core/resources/cacert.pem', $files);
     }
 
     public function test_excludes_with_config_anchors_and_merges(): void
