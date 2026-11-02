@@ -532,7 +532,9 @@ private struct PerTabContent: View {
             NavigationStack(path: $coordinator.path) {
                 levelView(uri: coordinator.rootLevelUri, isRoot: true)
                     .navigationDestination(for: String.self) { uri in
-                        levelView(uri: uri, isRoot: false)
+                        StackLevelView(level: coordinator.level(for: uri)) {
+                            levelView(uri: uri, isRoot: false)
+                        }
                     }
             }
             .id(coordinator.rootUri)

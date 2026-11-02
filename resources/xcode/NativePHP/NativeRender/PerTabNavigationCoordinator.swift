@@ -41,6 +41,9 @@ final class PerTabNavigationCoordinator: ObservableObject {
 
     var rootNodeCache: [String: NativeUINode] { nodeCache }
 
+    /// Per-URI observable trees for the pushed levels' views. See `StackLevel`.
+    private let levels = StackLevels()
+
     private func storeNode(_ node: NativeUINode?, for uri: String) {
         if let node {
             nodeCache[uri] = node
@@ -105,6 +108,9 @@ final class PerTabNavigationCoordinator: ObservableObject {
         guard !uri.isEmpty else { return }
 
         storeNode(rootNode, for: uri)
+        // Redraw the level showing this URI: a pushed destination doesn't
+        // redraw with the renderer's body while its push animates.
+        levels.publish(rootNode, for: uri)
 
         if lastProcessedNode === rootNode {
             return
@@ -225,6 +231,12 @@ final class PerTabNavigationCoordinator: ObservableObject {
         }
     }
 
+    /// The observable tree for the pushed level at `uri`, for its view
+    /// to observe. Safe to call from a view's `body`.
+    func level(for uri: String) -> StackLevel {
+        levels.level(for: uri)
+    }
+
     /// Drop cache entries whose URI is no longer on this tab's stack.
     /// `rootUri` and the root level's URI are always live; pushed entries
     /// are live while present.
@@ -235,6 +247,7 @@ final class PerTabNavigationCoordinator: ObservableObject {
         for uri in nodeCache.keys where !live.contains(uri) {
             storeNode(nil, for: uri)
         }
+        levels.retain(live)
     }
 }
 
