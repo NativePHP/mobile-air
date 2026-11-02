@@ -17,7 +17,7 @@ use Symfony\Component\Process\Process as SymfonyProcess;
 
 trait PreparesBuild
 {
-    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, InstallsCustomIcons, PlatformFileOperations;
+    use CleansEnvFile, DeclaresReleaseAudience, InstallsAndroidSplashScreen, InstallsAppIcon, InstallsCaBundle, InstallsCustomIcons, PlatformFileOperations;
 
     /**
      * Validate required environment variables for building
@@ -71,6 +71,7 @@ trait PreparesBuild
         }
 
         $this->updateAndroidConfiguration();
+        $this->installAndroidCaBundle();
         $this->installAndroidIcon();
         $this->installAndroidSplashScreen();
 
