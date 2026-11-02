@@ -39,6 +39,16 @@ final class NavigationCoordinator: ObservableObject {
     /// path length as `depth - rootDepth`.
     private var rootDepth: Int = 1
 
+    /// Whether an edge swipe on the stack's root should go back: the root
+    /// is showing (nothing pushed) and PHP's router has a level beneath it,
+    /// because this stack session started on a level pushed from another
+    /// chrome (e.g. a detail screen opened from a tab). `NavigationStack`
+    /// has nothing to pop there, so `StackRootEdgeSwipeBack` sends the
+    /// back to PHP instead, like the root's back chevron does.
+    var canGoBackFromRoot: Bool {
+        path.isEmpty && rootDepth > 1
+    }
+
     /// Most-recent rendered tree per URI (root and pushed levels). Used
     /// by the renderer's destination resolver so each stack level can
     /// render its actual content during transitions.
