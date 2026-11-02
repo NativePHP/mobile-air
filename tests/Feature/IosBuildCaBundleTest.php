@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use Illuminate\Console\OutputStyle;
-use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Commands\BuildIosAppCommand;
 use SupaNative\Core\Support\CaBundle;
@@ -24,7 +23,6 @@ class IosBuildCaBundleTest extends TestCase
 
         app()->setBasePath($this->testProjectPath);
 
-        putenv('NATIVEPHP_XCODE_BUILD');
     }
 
     protected function tearDown(): void
@@ -35,13 +33,13 @@ class IosBuildCaBundleTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_an_xcode_driven_build_replaces_an_older_ca_bundle_with_cores()
+    public function test_an_xcode_driven_build_replaces_an_older_ca_bundle_with_the_one_from_core(): void
     {
         // Create an installed project with an older copy
         $caBundlePath = $this->testProjectPath.'/nativephp/ios/NativePHP/cacert.pem';
         File::put($caBundlePath, 'older bundle');
 
-        // Execute the build Xcode's build phase starts
+        // Execute the build as Xcode's build phase starts it
         putenv('NATIVEPHP_XCODE_BUILD=1');
         $result = $this->makeCommand()->handle();
 
@@ -68,7 +66,6 @@ class IosBuildCaBundleProbe extends BuildIosAppCommand
     {
         $this->input = $input;
         $this->output = $output;
-        $this->components = new Factory($output);
     }
 
     protected function runningOnMacOs(): bool

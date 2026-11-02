@@ -6,9 +6,9 @@ use Illuminate\Support\Facades\File;
 use SupaNative\Core\Support\CaBundle;
 
 /**
- * Core keeps the CA bundle PHP uses for HTTPS current. Install copies
- * it so a new project is complete, and each build copies it again,
- * so an app always ships the bundle core had when it was built.
+ * Core keeps the CA bundle PHP uses for HTTPS current. The install
+ * copies it into a new project, and each build copies it again,
+ * so an app ships the bundle core has on the day it's built.
  */
 trait InstallsCaBundle
 {

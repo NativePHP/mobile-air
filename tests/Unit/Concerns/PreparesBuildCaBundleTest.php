@@ -18,9 +18,7 @@ class PreparesBuildCaBundleTest extends TestCase
         parent::setUp();
 
         $this->testProjectPath = sys_get_temp_dir().'/nativephp_prepare_build_ca_bundle_test_'.uniqid();
-        File::makeDirectory($this->testProjectPath.'/nativephp/android/app/src/main/res', 0755, true);
 
-        // Set up base path for testing
         app()->setBasePath($this->testProjectPath);
     }
 
@@ -31,7 +29,7 @@ class PreparesBuildCaBundleTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_prepare_android_build_replaces_an_older_ca_bundle_with_cores()
+    public function test_prepare_android_build_replaces_an_older_ca_bundle_with_the_one_from_core(): void
     {
         // Create an installed project with an older copy
         $assetsPath = $this->testProjectPath.'/nativephp/android/app/src/main/assets';
