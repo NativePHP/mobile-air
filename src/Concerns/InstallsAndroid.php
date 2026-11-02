@@ -14,7 +14,7 @@ use function Laravel\Prompts\warning;
 
 trait InstallsAndroid
 {
-    use PlatformFileOperations;
+    use InstallsCaBundle, PlatformFileOperations;
 
     protected ?bool $includeIcu = null;
 
@@ -55,7 +55,10 @@ trait InstallsAndroid
 
         $source = base_path('vendor/nativephp/mobile/resources/androidstudio');
 
-        $this->components->task('Creating Android project', fn () => $this->platformOptimizedCopy($source, $androidPath));
+        $this->components->task('Creating Android project', function () use ($source, $androidPath) {
+            $this->platformOptimizedCopy($source, $androidPath);
+            $this->installAndroidCaBundle();
+        });
     }
 
     private function writeAndroidTheme(): void

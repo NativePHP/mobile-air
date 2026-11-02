@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
+use SupaNative\Core\Support\CaBundle;
 use Tests\TestCase;
 
 class BundleFileManagerTest extends TestCase
@@ -61,6 +62,11 @@ class BundleFileManagerTest extends TestCase
             'vendor/livewire/livewire/src/Features/SupportFileUploads/browser_test_image_big.jpg',
             $files
         );
+
+        $this->assertContains('vendor/supanative/core/resources/cacert.pem', $files);
+
+        // The entry above names core's file by hand, so a move in core fails here.
+        $this->assertStringEndsWith('/resources/cacert.pem', CaBundle::path());
     }
 
     public function test_excludes_with_config_anchors_and_merges(): void

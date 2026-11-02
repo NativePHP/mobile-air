@@ -15,6 +15,8 @@ use function Laravel\Prompts\warning;
 
 trait InstallsIos
 {
+    use InstallsCaBundle;
+
     public string $iosPath;
 
     protected ?bool $includeIcuIos = null;
@@ -50,10 +52,13 @@ trait InstallsIos
             mkdir($this->iosPath, 0755, true);
         }
 
-        $this->components->task('Creating Xcode project', fn () => File::copyDirectory(
-            base_path('vendor/nativephp/mobile/resources/xcode'),
-            $this->iosPath
-        ));
+        $this->components->task('Creating Xcode project', function () {
+            if (! File::copyDirectory(base_path('vendor/nativephp/mobile/resources/xcode'), $this->iosPath)) {
+                return false;
+            }
+
+            return $this->installIosCaBundle();
+        });
     }
 
     private function installPHPIos(): void
