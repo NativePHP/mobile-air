@@ -11,7 +11,7 @@ use PHPUnit\Framework\TestCase;
  */
 class PhpBinariesIntegrityTest extends TestCase
 {
-    private const URL = 'https://bin.nativephp.com/main/8.4/ios/ios-4.1.0-php8.4.27.zip';
+    private const URL = 'https://bin.nativephp.com/main/8.4/ios/ios-4.2.1-php8.4.27.zip';
 
     private string $file;
 
@@ -37,7 +37,7 @@ class PhpBinariesIntegrityTest extends TestCase
         $this->assertSame(
             ['sha256' => str_repeat('a', 64), 'size' => 123],
             PhpBinaries::expectedFile($this->manifest([
-                ['url' => 'https://bin.nativephp.com/main/8.4/ios/ios-4.1.0-php8.4.27-icu.zip', 'sha256' => str_repeat('b', 64), 'size' => 456],
+                ['url' => 'https://bin.nativephp.com/main/8.4/ios/ios-4.2.1-php8.4.27-icu.zip', 'sha256' => str_repeat('b', 64), 'size' => 456],
                 ['url' => self::URL, 'sha256' => str_repeat('A', 64), 'size' => 123],
             ]), '8.4', 'ios', self::URL)
         );
