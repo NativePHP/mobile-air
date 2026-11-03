@@ -80,6 +80,7 @@ class NativeTagPrecompiler
         'swipe',
         'pinchEnd',
         'dragEnd',
+        'trigger',
         'navigated',
     ];
 

@@ -126,6 +126,25 @@ it('renders a snapping pan from Blade', function () {
         ->and($tree['props']['pan-x-initial'])->toBe(-96.0);
 });
 
+it('renders a trigger pull from Blade', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-trigger-x.blade.php',
+        '<native:gesture-area :pan-x="$dx" trigger-x="-56" @trigger="reply(5)">'
+        .'<native:row :translate-x="$dx"><native:text>row</native:text></native:row>'
+        .'</native:gesture-area>'
+    );
+
+    $dx = SharedValue::make();
+    $registry = new CallbackRegistry;
+
+    NativeElementCollector::reset();
+    view('gesture-trigger-x', ['dx' => $dx])->render();
+    $tree = NativeElementCollector::collect()->toArray($registry);
+
+    expect($tree['props']['pan-x-trigger'])->toBe(-56.0)
+        ->and($registry->resolve($tree['props']['on_trigger']))->toBe(['method' => 'reply', 'args' => [5]]);
+});
+
 it('renders a bounded zoom and pan area from Blade', function () {
     file_put_contents(
         __DIR__.'/views/gesture-bounded.blade.php',
