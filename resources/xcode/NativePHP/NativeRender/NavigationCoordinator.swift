@@ -28,9 +28,15 @@ final class NavigationCoordinator: ObservableObject {
     @Published var path: [String] = []
 
     /// Bottommost URI in the stack — the root of the NavigationStack
-    /// closure. Set once on the first publish, then updated only when the
-    /// renderer detects a fresh stack (different layout / cold remount).
-    private(set) var rootUri: String?
+    /// closure. Seeded by the first publish, and changed when PHP
+    /// `replace()`s the screen at the root of the stack session.
+    ///
+    /// `@Published` because the renderer's root level reads it: a
+    /// `replace()` at the root changes only this URI (`path` stays empty),
+    /// so without a publish nothing redraws and the old screen stays up.
+    /// Only written from `receive()` (deferred to the next main-queue turn
+    /// by the renderer) and `reset()`, never from inside a view update.
+    @Published private(set) var rootUri: String?
 
     /// PHP router stack depth at the moment this stack session's root was
     /// seeded. A stack session can start on an already-pushed PHP level
@@ -167,7 +173,11 @@ final class NavigationCoordinator: ObservableObject {
 
         // At (or somehow below) the session root — re-root and clear.
         if target <= 0 {
-            rootUri = uri
+            // A state change at the root republishes the same URI; only a
+            // replace() changes it, and only that needs to redraw.
+            if rootUri != uri {
+                rootUri = uri
+            }
             rootDepth = depth
             if !path.isEmpty {
                 path = []
