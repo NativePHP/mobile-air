@@ -44,6 +44,9 @@ final class NavigationCoordinator: ObservableObject {
     /// render its actual content during transitions.
     private(set) var rootNodeCache: [String: NativeUINode] = [:]
 
+    /// Per-URI observable trees for the pushed levels' views. See `StackLevel`.
+    private let levels = StackLevels()
+
     /// Snapshot of `path` immediately after each PHP-driven mutation.
     /// `onPathChange` compares against this to differentiate PHP changes
     /// (no-op) from user-initiated pops (fire `sendSystemBackEvent`).
@@ -81,8 +84,11 @@ final class NavigationCoordinator: ObservableObject {
     func receive(uri: String, depth: Int = 0, rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
-        // Always cache the latest content for this URI.
+        // Always cache the latest content for this URI, and redraw the
+        // level showing it (a pushed destination doesn't redraw with the
+        // renderer's body while its push animates).
         rootNodeCache[uri] = rootNode
+        levels.publish(rootNode, for: uri)
 
         // Stale body re-run guard. SwiftUI re-runs the renderer's body
         // whenever `@Published path` changes — including the moment a
@@ -242,6 +248,12 @@ final class NavigationCoordinator: ObservableObject {
         }
     }
 
+    /// The observable tree for the pushed level at `uri`, for its view
+    /// to observe. Safe to call from a view's `body`.
+    func level(for uri: String) -> StackLevel {
+        levels.level(for: uri)
+    }
+
     /// Drop cache entries whose URI is no longer on the stack. Keeps
     /// memory bounded under deep navigation.
     private func evictStaleCacheEntries() {
@@ -250,6 +262,7 @@ final class NavigationCoordinator: ObservableObject {
         for uri in rootNodeCache.keys where !live.contains(uri) {
             rootNodeCache.removeValue(forKey: uri)
         }
+        levels.retain(live)
     }
 
     /// Clear all stack state. Called by `NativeElementBridge`'s shadow
@@ -263,6 +276,7 @@ final class NavigationCoordinator: ObservableObject {
         path = []
         phpSnapshot = []
         rootNodeCache = [:]
+        levels.removeAll()
         lastProcessedNode = nil
     }
 }

@@ -51,7 +51,9 @@ struct NativeRootStackRenderer: View {
             let rootUri = coordinator.rootUri ?? currentUri
             destination(uri: rootUri, isRoot: true)
                 .navigationDestination(for: String.self) { uri in
-                    destination(uri: uri, isRoot: false)
+                    StackLevelView(level: coordinator.level(for: uri)) {
+                        destination(uri: uri, isRoot: false)
+                    }
                 }
         }
         .onChange(of: coordinator.path) { newPath in
