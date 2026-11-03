@@ -119,6 +119,41 @@ it('leaves snap points off an axis with no pan bound, or fewer than two points',
         ->and($props)->not->toHaveKey('pan-y-snap');
 });
 
+it('carries a trigger distance for a bound pan axis in place of its snap points', function () {
+    $area = GestureArea::make();
+    $area->applyAttributes(['pan-x' => SharedValue::make(), 'trigger-x' => '-56', 'snap-x' => [-96, 0], 'pan-y' => SharedValue::make(), 'trigger-y' => 40]);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props['pan-x-trigger'])->toBe(-56.0)
+        ->and($props['pan-y-trigger'])->toBe(40.0)
+        ->and($props)->not->toHaveKey('pan-x-snap');
+});
+
+it('leaves the trigger off an axis with no pan bound, or a distance of zero', function () {
+    $area = GestureArea::make();
+    $area->applyAttributes(['trigger-x' => 56, 'pan-y' => SharedValue::make(), 'trigger-y' => 0]);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props)->not->toHaveKey('pan-x-trigger')
+        ->and($props)->not->toHaveKey('pan-y-trigger');
+});
+
+it('registers on_trigger as a plain callback, which rides the press event', function () {
+    $registry = new CallbackRegistry;
+
+    $props = GestureArea::make()
+        ->onTrigger('reply(5)')
+        ->getResolvedProps($registry);
+
+    expect($props['on_trigger'])->toBeInt()->toBeGreaterThan(0)
+        ->and($registry->resolve($props['on_trigger']))->toBe(['method' => 'reply', 'args' => [5]])
+        ->and($registry->kind($props['on_trigger']))->toBeNull();
+
+    expect(GestureArea::make()->getResolvedProps(new CallbackRegistry))->not->toHaveKey('on_trigger');
+});
+
 // ── Bounded ─────────────────────────────────────────
 
 it('carries bounded and content-ratio to the wire', function () {
@@ -214,6 +249,14 @@ describe('precompiler @swipe / @pinchEnd conversion', function () {
         );
 
         expect($result)->toContain("'_dragEnd' => 'onRelease'");
+    });
+
+    it('converts @trigger to an underscored attr', function () {
+        $result = ($this->precompiler)(
+            '<native:gesture-area :pan-x="$dx" trigger-x="64" @trigger="reply(5)">x</native:gesture-area>'
+        );
+
+        expect($result)->toContain("'_trigger' => 'reply(5)'");
     });
 
     it('still converts @swipeDelete despite the shared prefix with @swipe', function () {

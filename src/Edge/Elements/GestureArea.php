@@ -84,6 +84,28 @@ use Native\Mobile\Edge\SharedValue;
  * A pan bound on one axis only takes drags along that axis, so an
  * enclosing scroll view still scrolls the other way.
  *
+ * Trigger — a pull that acts when let go far enough, the swipe-to-reply
+ * pattern. With `trigger-x` (or `trigger-y`) the bound axis moves with
+ * the finger from where it rests toward the trigger point only, as far
+ * as the point and then with growing resistance, and springs back to
+ * rest on release. The point is a distance from rest, and its sign is
+ * the way the pull goes. Each time the pull goes out past the point a
+ * light haptic plays; let go past it and `@trigger` fires, with no
+ * arguments. Drive whatever comes in behind from the same SharedValue,
+ * so it follows the finger and is in place at the point:
+ *
+ *     $dx = SharedValue::make();   // kept on the component across renders
+ *
+ *     <native:gesture-area :pan-x="$dx" trigger-x="64" @trigger="reply(5)">
+ *         <native:icon … :opacity="$dx->interpolate([0, 64], [0, 1])" />
+ *         <native:row :translate-x="$dx">…</native:row>
+ *     </native:gesture-area>
+ *
+ * The pull only starts when the finger moves the trigger's way, so a
+ * drag the other way is left to whatever else wants it, such as iOS's
+ * swipe back. A trigger needs a pan bound on its axis alone, and takes
+ * the place of snap points there.
+ *
  * Swipe — discrete directional flick. `swipe-fingers` sets how many
  * touches must participate (e.g. 3 for a Jump-style three-finger
  * swipe; defaults to 1). The callback receives the direction as a
@@ -128,6 +150,12 @@ class GestureArea extends Element
 
     private ?array $snapY = null;
 
+    /** How far from rest a pull on each axis goes to trigger, and which
+     *  way (see the class docblock). Null = the axis doesn't trigger. */
+    private ?float $triggerX = null;
+
+    private ?float $triggerY = null;
+
     /** Keep the zoomed content inside the area's edges. */
     private bool $bounded = false;
 
@@ -140,6 +168,8 @@ class GestureArea extends Element
     protected ?string $pinchEndMethod = null;
 
     protected ?string $dragEndMethod = null;
+
+    protected ?string $triggerMethod = null;
 
     public static function make(): static
     {
@@ -178,6 +208,14 @@ class GestureArea extends Element
             $this->snapY(self::points($attrs['snap-y']));
         }
 
+        if (isset($attrs['trigger-x'])) {
+            $this->triggerX((float) $attrs['trigger-x']);
+        }
+
+        if (isset($attrs['trigger-y'])) {
+            $this->triggerY((float) $attrs['trigger-y']);
+        }
+
         if (isset($attrs['swipe-fingers'])) {
             $this->swipeFingers = max(1, (int) $attrs['swipe-fingers']);
         }
@@ -204,6 +242,24 @@ class GestureArea extends Element
     public function snapY(array $points): static
     {
         $this->snapY = self::sortedPoints($points);
+
+        return $this;
+    }
+
+    /** How far from rest a horizontal pull goes to trigger, negative for
+     *  a pull to the left (see the class docblock). Zero means none. */
+    public function triggerX(float $distance): static
+    {
+        $this->triggerX = $distance != 0.0 ? $distance : null;
+
+        return $this;
+    }
+
+    /** How far from rest a vertical pull goes to trigger, negative for a
+     *  pull upward. */
+    public function triggerY(float $distance): static
+    {
+        $this->triggerY = $distance != 0.0 ? $distance : null;
 
         return $this;
     }
@@ -274,6 +330,15 @@ class GestureArea extends Element
         return $this;
     }
 
+    /** Trigger handler, fired with no arguments when a pull is let go
+     *  past its trigger point (see `triggerX()`). */
+    public function onTrigger(string $method): static
+    {
+        $this->triggerMethod = $method;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         $props = [];
@@ -281,9 +346,12 @@ class GestureArea extends Element
             $props['pan-x-id'] = $this->panXId;
             $props['pan-x-initial'] = $this->panXInitial;
 
-            // A comma-separated string, so both platforms read it with
-            // their plain string getter.
-            if ($this->snapX !== null) {
+            // A trigger axis always springs back to rest, so it doesn't
+            // snap. Snap points go as a comma-separated string, so both
+            // platforms read them with their plain string getter.
+            if ($this->triggerX !== null) {
+                $props['pan-x-trigger'] = $this->triggerX;
+            } elseif ($this->snapX !== null) {
                 $props['pan-x-snap'] = implode(',', $this->snapX);
             }
         }
@@ -292,7 +360,9 @@ class GestureArea extends Element
             $props['pan-y-id'] = $this->panYId;
             $props['pan-y-initial'] = $this->panYInitial;
 
-            if ($this->snapY !== null) {
+            if ($this->triggerY !== null) {
+                $props['pan-y-trigger'] = $this->triggerY;
+            } elseif ($this->snapY !== null) {
                 $props['pan-y-snap'] = implode(',', $this->snapY);
             }
         }
@@ -339,6 +409,11 @@ class GestureArea extends Element
             // Rides the TEXT_CHANGE event format as "x,y"; the `drag_end`
             // kind tells dispatch to decode it into two floats.
             $props['on_drag_end'] = $registry->register($this->dragEndMethod, 'drag_end');
+        }
+
+        if ($this->triggerMethod !== null) {
+            // Rides the PRESS event format, which carries nothing.
+            $props['on_trigger'] = $registry->register($this->triggerMethod);
         }
 
         return $props;
