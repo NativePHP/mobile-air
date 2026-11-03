@@ -111,6 +111,42 @@ it('marks the threads of the async lane and no other', function () {
         ->and(strpos($workerLoop, 'laneThread.set(true)'))->toBeLessThan(strpos($workerLoop, 'phpBridge.runAsyncTask'));
 });
 
+/**
+ * A slot runs one task at a time, so a task handed to a busy slot waits out
+ * whatever is running there — while the other slots may sit idle. Both twins
+ * must give the next task to the first slot that is free: Android by every
+ * thread taking from one shared queue, iOS by a list of idle slots and one
+ * shared backlog. Never to a slot chosen by turn, which is what iOS once did:
+ * one slow task then held up every fourth dispatch behind it.
+ */
+it('gives each task to a free slot, not to the next slot in turn', function () {
+    $ios = asyncBridgeSource('xcode/NativePHP/Bridge/AsyncTaskExecutor.swift');
+    $android = asyncBridgeSource('androidstudio/app/src/main/java/com/nativephp/mobile/bridge/AsyncTaskExecutor.kt');
+
+    $swiftFunction = function (string $signature) use ($ios): string {
+        $start = strpos($ios, $signature);
+        expect($start)->not->toBeFalse("{$signature} not found");
+
+        $end = strpos($ios, "\n    private func ", $start + 1);
+
+        return substr($ios, $start, $end === false ? null : $end - $start);
+    };
+
+    $submit = $swiftFunction('private func submit(');
+    $run = $swiftFunction('private func run(');
+    $workerLoop = substr($android, strpos($android, 'private fun workerLoop'));
+
+    expect($ios)->not->toContain('nextSlot')
+        // A task takes an idle slot, or waits for the first one to free up...
+        ->and($submit)->toContain('idleSlots.popLast()')
+        ->and($submit)->toContain('waiting.append(taskId)')
+        // ...which, once its task is done, takes the oldest waiting one or goes idle.
+        ->and(strpos($run, '_async_php_run'))->toBeLessThan(strpos($run, 'waiting.removeFirst()'))
+        ->and($run)->toContain('idleSlots.append(index)')
+        ->and(substr_count($android, 'LinkedBlockingQueue<String>()'))->toBe(1)
+        ->and($workerLoop)->toContain('queue.poll(');
+});
+
 it('logs a warning when native refuses the outcome of a task', function () {
     Log::spy();
 

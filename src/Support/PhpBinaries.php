@@ -51,7 +51,7 @@ class PhpBinaries
      *
      * Matches NATIVEPHP_VERSION in php-bin-mobile's config/versions.sh.
      */
-    public const VERSION = '4.1.0';
+    public const VERSION = '4.2.1';
 
     public const HOST = 'https://bin.nativephp.com';
 

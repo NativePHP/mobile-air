@@ -20,7 +20,7 @@ use Tests\TestCase;
  */
 class InstallManifestSignatureTest extends TestCase
 {
-    private const URL = 'https://bin.nativephp.com/main/4.1.0.json';
+    private const URL = 'https://bin.nativephp.com/main/4.2.1.json';
 
     private const MANIFEST = '{"versions":{"8.4":{"php_version":"8.4.27"}}}';
 

@@ -65,3 +65,19 @@ it('decodes a payload with a missing component as 0', function () {
         ->assertSet('releasedX', -90.0)
         ->assertSet('releasedY', 0.0);
 });
+
+// ── Trigger ─────────────────────────────────────────
+
+it('dispatches a trigger with no arguments by method name', function () {
+    Native::test(GestureScreen::class)
+        ->trigger('pulled')
+        ->assertSet('triggered', 1);
+});
+
+it('dispatches a trigger by ref through on_trigger, not the other handlers on the same node', function () {
+    Native::test(GestureScreen::class)
+        ->trigger('gesture-surface')
+        ->assertSet('triggered', 1)
+        ->assertSet('releasedX', 0.0)
+        ->assertSet('swiped', 'none');
+});

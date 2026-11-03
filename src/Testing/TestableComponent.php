@@ -502,6 +502,16 @@ class TestableComponent
         return $this->fireEvent($target, self::EVENT_TEXT_CHANGE, ['text' => $x.','.$y], ['on_drag_end']);
     }
 
+    /**
+     * Fire a gesture-area trigger bound to `@trigger`: a pull let go past
+     * its trigger point. It rides the PRESS wire event at the area's
+     * `on_trigger` id, with nothing in it.
+     */
+    public function trigger(string $target): static
+    {
+        return $this->firePropsPress($target, 'on_trigger');
+    }
+
     public function selectRadio(string $target, string $value): static
     {
         return $this->fireEvent($target, self::EVENT_RADIO_CHANGE, ['value' => $value]);

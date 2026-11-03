@@ -290,7 +290,12 @@ per-thread TSRM contexts that boot the persistent bootstrap once and run
 `native:async:run` for tasks handed to them — concurrent, reused, and with no
 coupling to the persistent runtime's request mutex. Android
 (`AsyncTaskExecutor.kt`) pins each context to a pool thread; iOS
-(`AsyncTaskExecutor.swift`) pins each C slot to a serial `DispatchQueue`.
+(`AsyncTaskExecutor.swift`) pins each C slot to a serial `DispatchQueue`. Both
+give a task to a free context: Android's threads all take from one blocking
+queue, and iOS hands a task to an idle slot or holds it in one shared FIFO until
+a slot frees up. iOS must not pick a slot by turn — a slot's queue is serial, so
+a task handed to a busy slot waits out whatever is running there while the
+others sit idle.
 
 Payload handoff via temp file (rather than a native RAM map keyed by id) keeps
 the native surface minimal and truly persistence-free — no database, no queue. The

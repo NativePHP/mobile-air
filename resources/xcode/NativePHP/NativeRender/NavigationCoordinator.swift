@@ -28,9 +28,15 @@ final class NavigationCoordinator: ObservableObject {
     @Published var path: [String] = []
 
     /// Bottommost URI in the stack — the root of the NavigationStack
-    /// closure. Set once on the first publish, then updated only when the
-    /// renderer detects a fresh stack (different layout / cold remount).
-    private(set) var rootUri: String?
+    /// closure. Seeded by the first publish, and changed when PHP
+    /// `replace()`s the screen at the root of the stack session.
+    ///
+    /// `@Published` because the renderer's root level reads it: a
+    /// `replace()` at the root changes only this URI (`path` stays empty),
+    /// so without a publish nothing redraws and the old screen stays up.
+    /// Only written from `receive()` (deferred to the next main-queue turn
+    /// by the renderer) and `reset()`, never from inside a view update.
+    @Published private(set) var rootUri: String?
 
     /// PHP router stack depth at the moment this stack session's root was
     /// seeded. A stack session can start on an already-pushed PHP level
@@ -43,6 +49,9 @@ final class NavigationCoordinator: ObservableObject {
     /// by the renderer's destination resolver so each stack level can
     /// render its actual content during transitions.
     private(set) var rootNodeCache: [String: NativeUINode] = [:]
+
+    /// Per-URI observable trees for the pushed levels' views. See `StackLevel`.
+    private let levels = StackLevels()
 
     /// Snapshot of `path` immediately after each PHP-driven mutation.
     /// `onPathChange` compares against this to differentiate PHP changes
@@ -81,8 +90,11 @@ final class NavigationCoordinator: ObservableObject {
     func receive(uri: String, depth: Int = 0, rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
-        // Always cache the latest content for this URI.
+        // Always cache the latest content for this URI, and redraw the
+        // level showing it (a pushed destination doesn't redraw with the
+        // renderer's body while its push animates).
         rootNodeCache[uri] = rootNode
+        levels.publish(rootNode, for: uri)
 
         // Stale body re-run guard. SwiftUI re-runs the renderer's body
         // whenever `@Published path` changes — including the moment a
@@ -161,7 +173,11 @@ final class NavigationCoordinator: ObservableObject {
 
         // At (or somehow below) the session root — re-root and clear.
         if target <= 0 {
-            rootUri = uri
+            // A state change at the root republishes the same URI; only a
+            // replace() changes it, and only that needs to redraw.
+            if rootUri != uri {
+                rootUri = uri
+            }
             rootDepth = depth
             if !path.isEmpty {
                 path = []
@@ -242,6 +258,12 @@ final class NavigationCoordinator: ObservableObject {
         }
     }
 
+    /// The observable tree for the pushed level at `uri`, for its view
+    /// to observe. Safe to call from a view's `body`.
+    func level(for uri: String) -> StackLevel {
+        levels.level(for: uri)
+    }
+
     /// Drop cache entries whose URI is no longer on the stack. Keeps
     /// memory bounded under deep navigation.
     private func evictStaleCacheEntries() {
@@ -250,6 +272,7 @@ final class NavigationCoordinator: ObservableObject {
         for uri in rootNodeCache.keys where !live.contains(uri) {
             rootNodeCache.removeValue(forKey: uri)
         }
+        levels.retain(live)
     }
 
     /// Clear all stack state. Called by `NativeElementBridge`'s shadow
@@ -263,6 +286,7 @@ final class NavigationCoordinator: ObservableObject {
         path = []
         phpSnapshot = []
         rootNodeCache = [:]
+        levels.removeAll()
         lastProcessedNode = nil
     }
 }

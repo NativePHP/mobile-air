@@ -126,10 +126,10 @@ class InstalledBinariesTest extends TestCase
 
     public function test_describe_names_the_branch_only_when_it_is_not_main(): void
     {
-        $this->assertSame('4.1.0', InstalledBinaries::describe(['release' => '4.1.0', 'branch' => 'main']));
+        $this->assertSame('4.2.1', InstalledBinaries::describe(['release' => '4.2.1', 'branch' => 'main']));
         $this->assertSame(
-            '4.1.0 (feat/opcache branch)',
-            InstalledBinaries::describe(['release' => '4.1.0', 'branch' => 'feat/opcache'])
+            '4.2.1 (feat/opcache branch)',
+            InstalledBinaries::describe(['release' => '4.2.1', 'branch' => 'feat/opcache'])
         );
     }
 
