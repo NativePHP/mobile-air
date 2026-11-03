@@ -1321,8 +1321,9 @@ class TestableComponent
             case 'chip':
             case 'tab':
             case 'top_bar_action':
-                // Divider sentinels render as separator lines, not buttons.
-                if (! empty($props['divider'])) {
+                // Dividers render as separator lines, and sections and rows
+                // only group the items inside them, so none is a button.
+                if ($this->isMenuStructure($node)) {
                     break;
                 }
                 if ($prop('label') === '' && $prop('title') === '' && ! $hasA11yLabel) {
@@ -2083,7 +2084,9 @@ class TestableComponent
 
     protected function navActionIds(array $node, bool $inNavBar = false, array &$ids = []): array
     {
-        if ($inNavBar && ! ($node['props']['divider'] ?? false) && is_string($node['props']['id'] ?? null)) {
+        // Dividers, sections and rows are menu structure, not actions. Their
+        // ids are sentinels; the actions inside them are still collected below.
+        if ($inNavBar && ! $this->isMenuStructure($node) && is_string($node['props']['id'] ?? null)) {
             $ids[] = $node['props']['id'];
         }
 
@@ -2094,6 +2097,14 @@ class TestableComponent
         }
 
         return $ids;
+    }
+
+    /** A divider, section or row inside a menu: drawn as structure, never tapped. */
+    protected function isMenuStructure(array $node): bool
+    {
+        $props = $node['props'] ?? [];
+
+        return ! empty($props['divider']) || ! empty($props['section']) || ! empty($props['row']);
     }
 
     protected function tabLabels(): array

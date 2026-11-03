@@ -38,7 +38,7 @@ class TopBarAction extends Element
             $attrs['show_label'] = $attrs['show-label'];
         }
 
-        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'label', 'subtitle', 'url', 'event', 'image'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }
@@ -57,6 +57,17 @@ class TopBarAction extends Element
         }
         if (isset($attrs['divider'])) {
             $this->props['divider'] = (bool) $attrs['divider'];
+        }
+        if (isset($attrs['checked'])) {
+            $this->props['checked'] = (bool) $attrs['checked'];
+        }
+        // A section groups its child actions inline under `label`; a row
+        // draws its child actions as the compact header row of the menu.
+        if (isset($attrs['section'])) {
+            $this->props['section'] = (bool) $attrs['section'];
+        }
+        if (isset($attrs['row'])) {
+            $this->props['row'] = (bool) $attrs['row'];
         }
     }
 

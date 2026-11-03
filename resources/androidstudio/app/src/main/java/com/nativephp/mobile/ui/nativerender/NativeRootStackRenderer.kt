@@ -27,10 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
@@ -47,9 +44,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -503,7 +498,7 @@ internal fun rememberChromeScrollController(
 
 /**
  * Renders a single trailing toolbar action — plain IconButton when no
- * sub-items, DropdownMenu when `NavAction::items()` produced
+ * sub-items, [TopBarActionMenu] when `NavAction::items()` produced
  * `top_bar_action` children. Module-internal so the tabs renderer can
  * reuse the same plumbing when the layout folds NavBar actions onto a
  * `native_root_tabs` sentinel.
@@ -546,56 +541,7 @@ internal fun TopBarActionView(action: NativeUINode) {
             TopBarActionGlyph(action, icon, a11yLabel)
         }
     } else {
-        var expanded by remember { mutableStateOf(false) }
-        IconButton(enabled = !disabled, onClick = { expanded = true }) {
-            TopBarActionGlyph(action, icon, a11yLabel)
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            subItems.forEach { item ->
-                if (item.props.getBool("divider")) {
-                    // Inline visual separator emitted by `NavAction::divider()`.
-                    HorizontalDivider()
-                    return@forEach
-                }
-                val itemLabel = item.props.getString("label", "")
-                val itemIcon = item.props.getString("icon", "")
-                val isDestructive = item.props.getBool("destructive")
-                val destructiveColor = MaterialTheme.colorScheme.error
-                DropdownMenuItem(
-                    enabled = !item.props.getBool("disabled"),
-                    text = {
-                        Text(
-                            itemLabel,
-                            color = if (isDestructive) destructiveColor else Color.Unspecified
-                        )
-                    },
-                    leadingIcon = if (itemIcon.isNotEmpty()) {
-                        {
-                            // `destructive()` should tint the whole row red — text +
-                            // icon — to mirror SwiftUI's `Button(role: .destructive)`
-                            // which colors both. Using the bare default leaves the
-                            // icon at LocalContentColor while the text reads red,
-                            // which scans as a styling glitch.
-                            if (isDestructive) {
-                                MaterialIcon(
-                                    name = itemIcon,
-                                    contentDescription = null,
-                                    tint = destructiveColor,
-                                )
-                            } else {
-                                MaterialIcon(name = itemIcon, contentDescription = null)
-                            }
-                        }
-                    } else null,
-                    onClick = {
-                        expanded = false
-                        if (item.onPress != 0) {
-                            NativeElementBridge.sendPressEvent(item.onPress, item.id)
-                        }
-                    }
-                )
-            }
-        }
+        TopBarActionMenu(action, subItems, icon, a11yLabel, disabled)
     }
 }
 

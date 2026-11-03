@@ -234,12 +234,11 @@ struct NativeRootStackRenderer: View {
                         }
                     }
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    ForEach(actions) { action in
-                        actionView(action, textColor: textColor)
-                    }
-                }
             }
+            // Trailing actions are real UIBarButtonItems, not toolbar items
+            // (see `TopBarActionItemsModifier` for why). Nothing above may
+            // declare a `.topBarTrailing` item.
+            .modifier(TopBarActionItemsModifier(actions: actions, textArgb: textArgb))
             .toolbarColorScheme(toolbarScheme, for: .navigationBar)
             .modifier(HideNavBarModifier(hidden: hideNavBar))
             .modifier(StackBarBackgroundModifier(argb: bgArgb, inline: displayModeStr == "inline"))
@@ -295,107 +294,6 @@ struct NativeRootStackRenderer: View {
         // preserving the stock appearance. The tabs renderer applies the
         // same modifier.
         .modifier(WindowBackgroundModifier())
-    }
-
-    /// Renders one trailing action — plain Button when the action has
-    /// no sub-items, SwiftUI `Menu` of sub-items when `NavAction.items()`
-    /// was set on the PHP side (which puts sub-actions in
-    /// `action.children`).
-    @ViewBuilder
-    private func actionView(_ action: NativeUINode, textColor: Color) -> some View {
-        let icon = action.props.getString("icon", default: "ellipsis")
-        let disabled = action.props.getBool("disabled")
-        let subItems = action.children.filter { $0.type == "top_bar_action" }
-
-        let label = action.props.getString("label", default: "")
-        let showLabel = action.props.getBool("show_label") && !label.isEmpty
-        let hasIcon = !action.props.getString("icon", default: "").isEmpty
-        let image = action.props.getString("image", default: "")
-
-        if subItems.isEmpty {
-            Button {
-                if action.onPress != 0 {
-                    NativeElementBridge.sendPressEvent(action.onPress, nodeId: action.id)
-                }
-            } label: {
-                Group {
-                    if showLabel && (hasIcon || !image.isEmpty) {
-                        // Toolbars collapse a Label to icon-only by default.
-                        Label {
-                            Text(label)
-                        } icon: {
-                            TopBarActionGlyph(icon: icon, image: image)
-                        }
-                        .labelStyle(.titleAndIcon)
-                    } else if showLabel {
-                        Text(label)
-                    } else {
-                        TopBarActionGlyph(icon: icon, image: image)
-                    }
-                }
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(textColor)
-                // Explicit dim: the hard-set foregroundColor above keeps
-                // SwiftUI's automatic disabled greying from showing.
-                .opacity(disabled ? 0.4 : 1)
-                // same pill-sized hit region for
-                // the trailing actions (plain Button and Menu labels alike).
-                .frame(minWidth: 32, minHeight: 44)
-                .contentShape(Rectangle().inset(by: -6))
-            }
-            .disabled(disabled)
-            .modifier(TopBarActionA11yLabelModifier(action: action))
-        } else {
-            Menu {
-                ForEach(subItems) { item in
-                    if item.props.getBool("divider") {
-                        // Inline visual separator emitted by `NavAction::divider()`.
-                        Divider()
-                    } else {
-                        let itemLabel = item.props.getString("label", default: "")
-                        let itemIcon = item.props.getString("icon", default: "")
-                        let isDestructive = item.props.getBool("destructive")
-                        Button(role: isDestructive ? .destructive : nil) {
-                            if item.onPress != 0 {
-                                NativeElementBridge.sendPressEvent(item.onPress, nodeId: item.id)
-                            }
-                        } label: {
-                            if !itemIcon.isEmpty {
-                                Label {
-                                    Text(itemLabel)
-                                } icon: {
-                                    NativeIcon.image(itemIcon)
-                                }
-                            } else {
-                                Text(itemLabel)
-                            }
-                        }
-                        .disabled(item.props.getBool("disabled"))
-                        // SwiftUI's Menu won't propagate `.foregroundStyle(.red)`
-                        // applied inside the Button label down to the Label's
-                        // icon — it stays on the menu's accent color
-                        // even with `Button(role: .destructive)`. Applying `.tint`
-                        // on the Button itself is the path Menu actually honors;
-                        // both the text and the symbol then render in the tint.
-                        .tint(isDestructive ? .red : nil)
-                    }
-                }
-            } label: {
-                TopBarActionGlyph(
-                    icon: icon,
-                    image: action.props.getString("image", default: "")
-                )
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(textColor)
-                    .opacity(disabled ? 0.4 : 1)
-                    // same pill-sized hit region for
-                    // the trailing actions (plain Button and Menu labels alike).
-                    .frame(minWidth: 32, minHeight: 44)
-                    .contentShape(Rectangle().inset(by: -6))
-            }
-            .disabled(disabled)
-            .modifier(TopBarActionA11yLabelModifier(action: action))
-        }
     }
 }
 
@@ -595,58 +493,6 @@ struct WindowBackgroundModifier: ViewModifier {
             }
         } else {
             content
-        }
-    }
-}
-
-/// A top-bar action's icon, with its `image` (e.g. the signed-in user's
-/// avatar) laid over it as a 28pt circle when one is set. The icon is drawn
-/// first, so it shows while the image loads and stays if it fails.
-/// `.font`, `.foregroundColor` and `.opacity` applied by the caller still
-/// reach the icon, and opacity fades the image too, so disabled actions dim
-/// either way. Accessible naming comes from `TopBarActionA11yLabelModifier`.
-struct TopBarActionGlyph: View {
-    let icon: String
-    let image: String
-
-    var body: some View {
-        if let url = URL(string: image), !image.isEmpty {
-            ZStack {
-                NativeIconView(icon, pointSize: 17)
-                AsyncImage(url: url) { phase in
-                    if case .success(let loaded) = phase {
-                        loaded
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 28, height: 28)
-                            .clipShape(Circle())
-                    } else {
-                        Color.clear.frame(width: 0, height: 0)
-                    }
-                }
-            }
-        } else {
-            NativeIconView(icon, pointSize: 17)
-        }
-    }
-}
-
-/// Accessible name for an icon-only top-bar action (plain Button or Menu
-/// trigger): `a11y_label` (`NavAction::a11yLabel()`), else the visible
-/// `label`, else SwiftUI's default — which for a bare SF Symbol is the
-/// symbol's own name (`building.2` reads as "Business").
-///
-/// Shared by both chrome renderers' trailing action views.
-struct TopBarActionA11yLabelModifier: ViewModifier {
-    let action: NativeUINode
-
-    func body(content: Content) -> some View {
-        let a11yLabel = action.props.getString("a11y_label")
-        let label = a11yLabel.isEmpty ? action.props.getString("label") : a11yLabel
-        if label.isEmpty {
-            content
-        } else {
-            content.accessibilityLabel(Text(label))
         }
     }
 }
