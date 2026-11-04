@@ -605,6 +605,14 @@ struct NativePHPApp: App {
         if let appKey = getOrGenerateAppKey() {
             setenv("APP_KEY", appKey, 1)
         }
+
+        // Tell the embedded PHP to enforce signatures on device events. This
+        // shell signs every event it posts (see LaravelBridge.dispatch), so PHP
+        // can reject a forged one. It is set only here, on the on-device shell
+        // boot, so it never reaches a shared PHP bootstrap or the dev-machine
+        // PHP under Jump — there the native setenv does not apply, events stay
+        // unsigned, and enforcement stays off.
+        setenv("NATIVEPHP_EVENTS_SIGNED", "1", 1)
     }
 
     /// Retrieves APP_KEY from Keychain or generates a new one on first launch
