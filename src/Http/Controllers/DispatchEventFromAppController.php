@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Support\NativeCallbacks;
+use Native\Mobile\Support\NativeEventSignature;
 use ReflectionClass;
 use ReflectionFunction;
 
@@ -17,12 +18,22 @@ class DispatchEventFromAppController
         $eventClass = $request->input('event');
         $payload = $request->input('payload', []);
 
-        // This endpoint constructs the named class and fires it, and JavaScript
-        // in a web view can reach it (the `api` routes carry no middleware). So
-        // the class must be one the native side is allowed to dispatch — every
-        // device event implements DispatchableFromNative — or a page could name
-        // any autoloadable class and hand it constructor arguments of its own,
-        // an object-injection gadget (e.g. SplFileObject to truncate a file).
+        // JavaScript in a web view can POST here (the `api` routes carry no
+        // middleware), so a page could forge a device event — firing the app's
+        // listeners and pending callbacks as if the device sent it (a forged
+        // PaymentCompleted, or Biometric\Completed(success: true)). Once the
+        // native shell signs its events, require a valid signature and drop
+        // anything a page fabricates. The marker gate below still runs as
+        // defense-in-depth on which classes may be constructed at all.
+        if (NativeEventSignature::enforced() && ! NativeEventSignature::verify($request)) {
+            return response()->json(['success' => false], 403);
+        }
+
+        // This endpoint constructs the named class and fires it. The class must
+        // be one the native side is allowed to dispatch — every device event
+        // implements DispatchableFromNative — or a page could name any
+        // autoloadable class and hand it constructor arguments of its own, an
+        // object-injection gadget (e.g. SplFileObject to truncate a file).
         if (! is_string($eventClass)
             || ! class_exists($eventClass)
             || ! is_subclass_of($eventClass, DispatchableFromNative::class)) {
