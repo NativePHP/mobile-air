@@ -17,6 +17,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
+import org.json.JSONArray
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
 import com.nativephp.mobile.security.LogRedaction
@@ -40,6 +41,15 @@ class WebViewManager(
 
     companion object {
         var shared: WebViewManager? = null
+
+        /**
+         * The origins the app serves its own pages from. Both the request-body
+         * shim (addDocumentStartJavaScript) and the AndroidPOST bridge
+         * (addWebMessageListener) are scoped to this set, so only first-party
+         * page content — never a cross-origin iframe the app happens to load —
+         * can reach them. Keep the two in sync via this single constant.
+         */
+        private val APP_ORIGIN_RULES = setOf("http://127.0.0.1", "http://localhost")
 
         /** php-mode `<webview>` elements, which show app pages inside a native screen. Main thread only. */
         private val embeddedWebViews = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
@@ -77,7 +87,7 @@ class WebViewManager(
             WebViewCompat.addDocumentStartJavaScript(
                 webView,
                 RequestBodyShim.SCRIPT,
-                setOf("http://127.0.0.1", "http://localhost")
+                APP_ORIGIN_RULES
             )
             Log.d(TAG, "✅ Request body shim installed at document start")
         } catch (e: Exception) {
@@ -503,16 +513,29 @@ class WebViewManager(
             }
             window.__nphpCsrfWatch = true;
 
+            // AndroidPOST is a WebMessageListener on modern WebViews (postMessage
+            // only, scoped to the app origin) and an addJavascriptInterface object
+            // on old ones (direct methods). Send through whichever is present.
+            function sendCsrfToken(token) {
+                var bridge = window.AndroidPOST;
+                if (!bridge) return;
+                if (typeof bridge.postMessage === 'function') {
+                    bridge.postMessage(JSON.stringify({ method: 'storeCsrfToken', args: [token] }));
+                } else if (typeof bridge.storeCsrfToken === 'function') {
+                    bridge.storeCsrfToken(token);
+                }
+            }
+
             // Find CSRF token
             function findAndSendCsrfToken() {
                 var tokenField = document.querySelector('input[name="_token"]');
                 if (tokenField) {
-                    AndroidPOST.storeCsrfToken(tokenField.value);
+                    sendCsrfToken(tokenField.value);
                     return;
                 }
 
                 if (window.livewire && window.livewire.csrfToken) {
-                    AndroidPOST.storeCsrfToken(window.livewire.csrfToken);
+                    sendCsrfToken(window.livewire.csrfToken);
                 }
             }
 
@@ -538,7 +561,38 @@ class WebViewManager(
 
 
     private fun setupJavaScriptInterfaces() {
-        webView.addJavascriptInterface(JSBridge(phpBridge, TAG), "AndroidPOST")
+        val jsBridge = JSBridge(phpBridge, TAG)
+
+        // addJavascriptInterface exposes the bridge object to EVERY frame in the
+        // web view, including any cross-origin iframe the app loads — a foreign
+        // frame could poison the stored CSRF token or feed body data to PHP. A
+        // WebMessageListener is injected only into frames whose origin is in the
+        // allow-list, so the request-body/CSRF plumbing is reachable from
+        // first-party page content alone. The page talks to it through
+        // AndroidPOST.postMessage(JSON) instead of calling methods directly;
+        // onPostMessage unpacks the {method, args} envelope and dispatches to the
+        // same JSBridge logic (see JSBridge.handleMessage / RequestBodyShim).
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(
+                webView,
+                "AndroidPOST",
+                APP_ORIGIN_RULES
+            ) { _, message, _, _, _ ->
+                message.data?.let { jsBridge.handleMessage(it) }
+            }
+            Log.d(TAG, "✅ AndroidPOST registered as an origin-scoped WebMessageListener")
+        } else {
+            // Pre-WebMessageListener WebView (very old / unupdated). Fall back to
+            // addJavascriptInterface so forms and every non-GET request still
+            // work — refusing the bridge would break them outright. The bridge is
+            // exposed to all frames on these devices, so an app that loads
+            // untrusted cross-origin content in the web view is not hardened here;
+            // that trade keeps the app usable on legacy WebViews, where the
+            // allow-listed listener simply isn't available.
+            webView.addJavascriptInterface(jsBridge, "AndroidPOST")
+            Log.w(TAG, "⚠️ WebView lacks WEB_MESSAGE_LISTENER: AndroidPOST falls back to " +
+                "addJavascriptInterface (exposed to all frames)")
+        }
     }
 
     // Helper methods
@@ -566,6 +620,51 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
 
     companion object {
         private const val MAX_PRESIZE = 16 * 1024 * 1024
+    }
+
+    /**
+     * Entry point for the origin-scoped WebMessageListener. The page sends
+     * `AndroidPOST.postMessage(JSON.stringify({ method, args: [...] }))` because
+     * addWebMessageListener exposes only postMessage, not arbitrary methods.
+     * Unpack the envelope and dispatch to the @JavascriptInterface methods
+     * below — the method bodies are shared with the addJavascriptInterface
+     * fallback, so behaviour is identical on both transports. Arg order and
+     * types mirror each method's signature. Runs on the UI thread; the work is
+     * a map put plus a base64 decode, and the stores it touches are concurrent.
+     */
+    fun handleMessage(raw: String) {
+        val envelope = try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            Log.e("$TAG-JS", "Ignoring a malformed AndroidPOST message: ${e.message}")
+            return
+        }
+        val method = envelope.optString("method")
+        val args = envelope.optJSONArray("args") ?: JSONArray()
+        try {
+            when (method) {
+                "beginBody" -> beginBody(
+                    args.getString(0),
+                    args.getString(1),
+                    args.getString(2),
+                    args.getInt(3),
+                    args.getBoolean(4)
+                )
+                "appendBody" -> appendBody(args.getString(0), args.getString(1))
+                "commitBody" -> commitBody(args.getString(0))
+                "logPostData" -> logPostData(
+                    args.getString(0),
+                    args.getString(1),
+                    args.getString(2),
+                    args.getString(3)
+                )
+                "logFormPostData" -> logFormPostData(args.getString(0), args.getString(1))
+                "storeCsrfToken" -> storeCsrfToken(args.getString(0))
+                else -> Log.w("$TAG-JS", "Unknown AndroidPOST method: $method")
+            }
+        } catch (e: Exception) {
+            Log.e("$TAG-JS", "AndroidPOST $method failed: ${e.message}")
+        }
     }
 
     /**
