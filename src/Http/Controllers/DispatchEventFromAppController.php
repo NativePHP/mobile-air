@@ -4,6 +4,7 @@ namespace Native\Mobile\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Native\Mobile\Events\Contracts\DispatchableFromNative;
+use Native\Mobile\Support\NativeEventSignature;
 
 class DispatchEventFromAppController
 {
@@ -11,6 +12,17 @@ class DispatchEventFromAppController
     {
         $event = $request->get('event');
         $payload = $request->get('payload', []);
+
+        // JavaScript in a web view can POST here (the `api` routes carry no
+        // middleware), so a page could forge a device event — firing the app's
+        // listeners as if the device sent it (a forged PaymentCompleted, or
+        // Biometric\Completed(success: true)). Once the native shell signs its
+        // events, require a valid signature and drop anything a page fabricates.
+        // The marker gate below still runs as defense-in-depth on which classes
+        // may be constructed at all.
+        if (NativeEventSignature::enforced() && ! NativeEventSignature::verify($request)) {
+            return response()->json(['success' => false], 403);
+        }
 
         // This endpoint constructs the named class and fires it, and JavaScript
         // in a web view can reach it (the `api` routes carry no middleware). So

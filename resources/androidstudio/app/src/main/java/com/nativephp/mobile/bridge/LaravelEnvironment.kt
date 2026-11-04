@@ -787,6 +787,10 @@ class LaravelEnvironment(private val context: Context) {
                 generateAndSaveAppKey(appKeyFile)
             }
 
+            // Hand the signer the current app key so it can sign device events
+            // this shell posts to /_native/api/events (see NativeActionCoordinator).
+            com.nativephp.mobile.security.NativeEventSignature.configure(appKey)
+
             // Set all environment variables in batches for better performance
             setEnvironmentVariables(
                 "APP_KEY" to appKey,
@@ -799,7 +803,13 @@ class LaravelEnvironment(private val context: Context) {
                 "LARAVEL_STORAGE_PATH" to "${appStorageDir.absolutePath}/persisted_data/storage",
                 "LARAVEL_BOOTSTRAP_PATH" to "${appStorageDir.absolutePath}/laravel/bootstrap",
                 "VIEW_COMPILED_PATH" to "${appStorageDir.absolutePath}/persisted_data/storage/framework/views",
-                "CACHE_PATH" to "${appStorageDir.absolutePath}/persisted_data/storage/framework/cache"
+                "CACHE_PATH" to "${appStorageDir.absolutePath}/persisted_data/storage/framework/cache",
+                // Tell the embedded PHP to enforce signatures on device events.
+                // This shell signs every event it posts, so PHP can reject a
+                // forged one. Set only here, on the on-device shell boot — it
+                // never reaches a shared PHP bootstrap or a dev-machine PHP,
+                // where events stay unsigned and enforcement is off.
+                "NATIVEPHP_EVENTS_SIGNED" to "1"
             )
 
             setEnvironmentVariables(

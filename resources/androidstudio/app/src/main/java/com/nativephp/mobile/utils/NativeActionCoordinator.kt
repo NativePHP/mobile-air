@@ -57,6 +57,28 @@ class NativeActionCoordinator : Fragment() {
             Log.d("JSFUNC", "native:$event");
             Log.d("JSFUNC", "$payloadJson");
             val eventForJs = event.replace("\\", "\\\\")
+
+            // The exact body bytes PHP reads back as request()->getContent() and,
+            // when enforcing, verifies the signature against. Built by
+            // concatenation and posted verbatim — never rebuilt by JSON.stringify,
+            // which could reorder keys or renumber values and break the match.
+            val body = "{\"event\":" + JSONObject.quote(event) + ",\"payload\":" + payloadJson + "}"
+
+            // A JS string literal that evaluates back to `body` verbatim, so
+            // fetch posts exactly these bytes.
+            val bodyLiteral = JSONObject.quote(body)
+
+            // Sign on device so PHP can tell this event from one a page forged.
+            // The app key lives in the Keystore and never reaches the page. 3.x
+            // has no Jump dev session, so events are always signed here; PHP
+            // enforces only when NATIVEPHP_EVENTS_SIGNED is set, which the shell
+            // sets on-device at boot.
+            val signatureHeaders = com.nativephp.mobile.security.NativeEventSignature.sign(body)?.let { s ->
+                ",\n'${com.nativephp.mobile.security.NativeEventSignature.NONCE_HEADER}': '${s.nonce}'," +
+                    "\n'${com.nativephp.mobile.security.NativeEventSignature.TIMESTAMP_HEADER}': '${s.timestamp}'," +
+                    "\n'${com.nativephp.mobile.security.NativeEventSignature.SIGNATURE_HEADER}': '${s.signature}'"
+            } ?: ""
+
             val js = """
                 (function () {
                     const payload = $payloadJson;
@@ -73,12 +95,9 @@ class NativeActionCoordinator : Fragment() {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
+                            'X-Requested-With': 'XMLHttpRequest'$signatureHeaders
                         },
-                        body: JSON.stringify({
-                            event: "$eventForJs",
-                            payload: payload
-                        })
+                        body: $bodyLiteral
                     }).then(response => response.json())
                       .then(data => {
                           if (data.message && data.message.includes("Unknown named parameter")) {
