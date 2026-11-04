@@ -96,8 +96,14 @@ class NativeEventSignature
             return false;
         }
 
-        // One-time use. Cache::add is atomic on the file store the device uses,
-        // so a replay within the window loses the race and is refused here.
+        // One-time use within the window. This relies on a cache store that
+        // persists across the per-request embedded PHP calls — on device that
+        // is the file store (the same one NativeCallbacks relies on), where
+        // Cache::add is atomic, so a replay loses the race and is refused here.
+        // If an app runs a non-persistent store (e.g. array) this check weakens,
+        // but the timestamp window above and the body-bound signature still
+        // hold: a captured request can at most be replayed as the identical
+        // genuine event for a few seconds, never forged into a different one.
         return Cache::add(self::NONCE_PREFIX.$nonce, 1, self::WINDOW);
     }
 
