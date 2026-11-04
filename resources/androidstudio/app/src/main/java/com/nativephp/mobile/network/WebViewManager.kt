@@ -103,7 +103,11 @@ class WebViewManager(
             cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK // Prefer cache for faster loads
         }
 
-        WebView.setWebContentsDebuggingEnabled(true)
+        // Remote WebView debugging (chrome://inspect over ADB) must be off in a
+        // production build — left on, anyone with device/ADB access can inspect
+        // and drive the web view. Enable it only for a debuggable (debug) build.
+        val debuggable = (webView.context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        WebView.setWebContentsDebuggingEnabled(debuggable)
     }
 
     private fun setupCookieManager() {
