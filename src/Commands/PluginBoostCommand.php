@@ -346,6 +346,18 @@ BLADE;
 @endverbatim
 BLADE;
 
+        $content .= <<<'BLADE'
+
+
+### Security
+
+`unserialize()` runs the code of whatever classes its bytes name. If this plugin caches or
+persists a serialized PHP value that a later request could read back, sign or encrypt it with
+the app key (`app('encrypter')->getKey()`) on write and verify or decrypt it before you
+unserialize — then drop anything whose signature or shape does not match. Prefer JSON for
+data that does not need PHP objects.
+BLADE;
+
         return $content;
     }
 

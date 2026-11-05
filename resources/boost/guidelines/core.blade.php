@@ -135,3 +135,16 @@ Other commands: `native:open` (Xcode or Android Studio), `native:install` (insta
 The `./native` shortcut wraps the `native:` namespace. The Vite dev server is **opt-in** in v4: add `--vite` only
 when the app uses JS/CSS HMR; native UI screens hot-reload without it. `npm run build -- --mode=ios|android` is only
 needed for apps with web-view assets.
+
+### Never Unserialize Bytes You Didn't Authenticate
+
+A NativePHP app runs PHP on the device, and a screen can embed a web view, so treat anything a
+web view can reach as untrusted. `unserialize()` runs the code of whatever classes its bytes
+name (their `__wakeup`/`__destruct`), so **never hand it bytes the app did not create and
+authenticate.** If you persist a serialized PHP value that any later request could read back —
+a cached closure or callback, a job payload, a model graph — sign or encrypt it with the app
+key (`app('encrypter')->getKey()`) when you write it, verify or decrypt it **before** you
+unserialize, and drop anything whose signature, key, or shape doesn't match instead of
+unserializing it anyway. Prefer `json_encode`/`json_decode` for data that doesn't need PHP
+objects. The core transports (async tasks, cross-lane events, native callbacks) already work
+this way — match the pattern for your own.

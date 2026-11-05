@@ -80,6 +80,26 @@ Registered names are **global** at compile time (the same as `@change`). If a pl
 - Test your plugin's events and facades from a `NativeComponent` (SuperNative screen) using `#[On]` — native UI
   is the primary consumer context in v4 — in addition to the Livewire/Inertia web-view contexts below.
 
+## Security: Authenticate Anything You Unserialize
+
+`unserialize()` runs the code of whatever classes its bytes name (their `__wakeup`/`__destruct`).
+A plugin routinely moves data across a boundary a web view can reach — a bridge payload, a cached
+result, a spool or temp file, a native-event payload — so **never unserialize such data until your
+plugin has proven it wrote it.**
+
+- Sign or encrypt serialized bytes with the app key (`app('encrypter')->getKey()`) on write, and
+  verify (`hash_equals`) or decrypt **before** you unserialize — never after.
+- Bind a purpose string (and any correlating id) into the signature so a value signed for one
+  thing can't be replayed as another.
+- Discard anything whose signature, key, or shape doesn't match — drop it and log, don't
+  unserialize it as a fallback. A missing app key means skip the durable copy, not write it
+  unprotected.
+- Prefer JSON for data that doesn't need PHP objects.
+
+The core `AsyncTaskTransport` (encrypt-seal), `GlobalEventTransport` and `NativeCallbacks`
+(HMAC sign) are the reference pattern. Add a test that proves a tampered or forged value is
+dropped without being unserialized.
+
 ## Directory Structure
 
 ```
