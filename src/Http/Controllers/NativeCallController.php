@@ -3,9 +3,23 @@
 namespace Native\Mobile\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class NativeCallController
 {
+    /**
+     * Bridge-function prefixes an app's lanes call among themselves and a web
+     * view never legitimately does, so they are refused here.
+     *
+     * Ota.* downloads and stages an app update for next-boot apply — from a page
+     * it would take an attacker-chosen URL and let a web view stage a malicious
+     * bundle, so OTA is driven from app PHP only (in-process via nativephp_call,
+     * which does not pass through this controller). Native also checks this, but
+     * an app keeps the native project it installed until it reinstalls, so it
+     * stops here too — and this gate ships with the composer package.
+     */
+    protected const INTERNAL_PREFIXES = ['Ota.'];
+
     public function __invoke(Request $request)
     {
         $method = $request->input('method');
@@ -18,6 +32,14 @@ class NativeCallController
                 'code' => 'MISSING_METHOD',
                 'message' => 'Method parameter is required',
             ], 400);
+        }
+
+        if (is_string($method) && Str::startsWith($method, static::INTERNAL_PREFIXES)) {
+            return response()->json([
+                'status' => 'error',
+                'code' => 'INTERNAL_METHOD',
+                'message' => "Method '{$method}' is internal to NativePHP and cannot be called from a web view",
+            ], 403);
         }
 
         // Check if nativephp_call function exists

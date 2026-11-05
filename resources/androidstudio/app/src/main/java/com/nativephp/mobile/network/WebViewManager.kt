@@ -12,9 +12,12 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.content.pm.ActivityInfo
 import android.app.Activity
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.ui.MainActivity
 import com.nativephp.mobile.ui.NativeUIState
+import org.json.JSONArray
 import org.json.JSONObject
 import com.nativephp.mobile.security.LaravelSecurity
 import com.nativephp.mobile.security.LogRedaction
@@ -30,6 +33,14 @@ class WebViewManager(
 
     companion object {
         var shared: WebViewManager? = null
+
+        /**
+         * The origins the app serves its own pages from. The AndroidPOST bridge
+         * (addWebMessageListener) is scoped to this set, so only first-party page
+         * content — never a cross-origin iframe the app happens to load — can
+         * reach it. Every loadUrl is http://127.0.0.1$path.
+         */
+        private val APP_ORIGIN_RULES = setOf("http://127.0.0.1", "http://localhost")
     }
 
     fun setup() {
@@ -58,7 +69,11 @@ class WebViewManager(
             cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK // Prefer cache for faster loads
         }
 
-        WebView.setWebContentsDebuggingEnabled(true)
+        // Remote WebView debugging (chrome://inspect over ADB) must be off in a
+        // production build — left on, anyone with device/ADB access can inspect
+        // and drive the web view. Enable it only for a debuggable (debug) build.
+        val debuggable = (webView.context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        WebView.setWebContentsDebuggingEnabled(debuggable)
     }
 
     private fun setupCookieManager() {
@@ -396,6 +411,20 @@ class WebViewManager(
             }
             window.__nphpPostPatched = true;
 
+            // AndroidPOST is a WebMessageListener on modern WebViews (postMessage
+            // only, scoped to the app origin) and an addJavascriptInterface object
+            // on old ones (direct methods). Send through whichever is present, so
+            // the same shim works on both transports.
+            function sendToBridge(method, args) {
+                var bridge = window.AndroidPOST;
+                if (!bridge) return;
+                if (typeof bridge.postMessage === 'function') {
+                    bridge.postMessage(JSON.stringify({ method: method, args: args }));
+                } else if (typeof bridge[method] === 'function') {
+                    bridge[method].apply(bridge, args);
+                }
+            }
+
             // Unique request ID counter
             var _nphpReqId = 0;
 
@@ -413,7 +442,7 @@ class WebViewManager(
 
                     var bodyStr = urlEncodedData.toString();
                     // Store by URL — native form submissions don't support custom headers
-                    AndroidPOST.logFormPostData(bodyStr, form.action);
+                    sendToBridge('logFormPostData', [bodyStr, form.action]);
                 }
             });
 
@@ -431,7 +460,7 @@ class WebViewManager(
             XMLHttpRequest.prototype.send = function(data) {
                 if (["post", "patch", "put"].includes(this._method.toLowerCase()) && data) {
                     var reqId = 'nphp_' + (++_nphpReqId) + '_' + Date.now();
-                    AndroidPOST.logPostData(String(data), this._url, "", reqId);
+                    sendToBridge('logPostData', [String(data), this._url, "", reqId]);
                     originalXHRSetHeader.call(this, 'X-NativePHP-Req-Id', reqId);
                 }
                 return originalXHRSend.apply(this, arguments);
@@ -456,7 +485,7 @@ class WebViewManager(
                         bodyStr = JSON.stringify(options.body);
                     }
 
-                    AndroidPOST.logPostData(String(bodyStr), url, "", reqId);
+                    sendToBridge('logPostData', [String(bodyStr), url, "", reqId]);
 
                     // Add request ID header to the actual fetch request
                     if (!options.headers) {
@@ -475,12 +504,12 @@ class WebViewManager(
             function findAndSendCsrfToken() {
                 var tokenField = document.querySelector('input[name="_token"]');
                 if (tokenField) {
-                    AndroidPOST.storeCsrfToken(tokenField.value);
+                    sendToBridge('storeCsrfToken', [tokenField.value]);
                     return;
                 }
 
                 if (window.livewire && window.livewire.csrfToken) {
-                    AndroidPOST.storeCsrfToken(window.livewire.csrfToken);
+                    sendToBridge('storeCsrfToken', [window.livewire.csrfToken]);
                 }
             }
 
@@ -506,7 +535,38 @@ class WebViewManager(
 
 
     private fun setupJavaScriptInterfaces() {
-        webView.addJavascriptInterface(JSBridge(phpBridge, TAG), "AndroidPOST")
+        val jsBridge = JSBridge(phpBridge, TAG)
+
+        // addJavascriptInterface exposes the bridge object to EVERY frame in the
+        // web view, including any cross-origin iframe the app loads — a foreign
+        // frame could poison the stored CSRF token or feed body data to PHP. A
+        // WebMessageListener is injected only into frames whose origin is in the
+        // allow-list, so the request-body/CSRF plumbing is reachable from
+        // first-party page content alone. The page talks to it through
+        // AndroidPOST.postMessage(JSON) instead of calling methods directly;
+        // onPostMessage unpacks the {method, args} envelope and dispatches to the
+        // same JSBridge logic (see JSBridge.handleMessage).
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(
+                webView,
+                "AndroidPOST",
+                APP_ORIGIN_RULES
+            ) { _, message, _, _, _ ->
+                message.data?.let { jsBridge.handleMessage(it) }
+            }
+            Log.d(TAG, "✅ AndroidPOST registered as an origin-scoped WebMessageListener")
+        } else {
+            // Pre-WebMessageListener WebView (very old / unupdated). Fall back to
+            // addJavascriptInterface so forms and every non-GET request still
+            // work — refusing the bridge would break them outright. The bridge is
+            // exposed to all frames on these devices, so an app that loads
+            // untrusted cross-origin content in the web view is not hardened here;
+            // that trade keeps the app usable on legacy WebViews, where the
+            // allow-listed listener simply isn't available.
+            webView.addJavascriptInterface(jsBridge, "AndroidPOST")
+            Log.w(TAG, "⚠️ WebView lacks WEB_MESSAGE_LISTENER: AndroidPOST falls back to " +
+                "addJavascriptInterface (exposed to all frames)")
+        }
     }
 
     // Helper methods
@@ -520,6 +580,41 @@ class WebViewManager(
 }
 
 class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
+    /**
+     * Entry point for the origin-scoped WebMessageListener. The page sends
+     * `AndroidPOST.postMessage(JSON.stringify({ method, args: [...] }))` because
+     * addWebMessageListener exposes only postMessage, not arbitrary methods.
+     * Unpack the envelope and dispatch to the @JavascriptInterface methods
+     * below — the method bodies are shared with the addJavascriptInterface
+     * fallback, so behaviour is identical on both transports. Arg order and
+     * types mirror each method's signature.
+     */
+    fun handleMessage(raw: String) {
+        val envelope = try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            Log.e("$TAG-JS", "Ignoring a malformed AndroidPOST message: ${e.message}")
+            return
+        }
+        val method = envelope.optString("method")
+        val args = envelope.optJSONArray("args") ?: JSONArray()
+        try {
+            when (method) {
+                "logPostData" -> logPostData(
+                    args.getString(0),
+                    args.getString(1),
+                    args.getString(2),
+                    args.getString(3)
+                )
+                "logFormPostData" -> logFormPostData(args.getString(0), args.getString(1))
+                "storeCsrfToken" -> storeCsrfToken(args.getString(0))
+                else -> Log.w("$TAG-JS", "Unknown AndroidPOST method: $method")
+            }
+        } catch (e: Exception) {
+            Log.e("$TAG-JS", "AndroidPOST $method failed: ${e.message}")
+        }
+    }
+
     @JavascriptInterface
     fun logPostData(data: String, url: String, headers: String, requestId: String) {
         Log.d("$TAG-JS", "📦 POST data captured (fetch/XHR) for: $url reqId=$requestId (length=${data.length})")

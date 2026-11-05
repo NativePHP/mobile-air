@@ -283,6 +283,39 @@ struct WebView: UIViewRepresentable {
             if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []),
                let jsonString = String(data: jsonData, encoding: .utf8) {
 
+                // The exact body bytes PHP reads back as `request()->getContent()`
+                // and, when enforcing, verifies the signature against. Built by
+                // concatenation and posted verbatim — never rebuilt by
+                // `JSON.stringify`, which could reorder keys or renumber values
+                // and break the match. `event` is already the JSON-quoted class
+                // string; `jsonString` the payload JSON.
+                let body = "{\"event\":\(event),\"payload\":\(jsonString)}"
+
+                // A JS string literal that evaluates back to `body` verbatim, so
+                // `fetch` posts exactly these bytes.
+                let bodyLiteral: String = {
+                    let data = try! JSONSerialization.data(withJSONObject: [body])
+                    var literal = String(data: data, encoding: .utf8)!
+                    literal.removeFirst()
+                    literal.removeLast()
+                    return literal
+                }()
+
+                // Sign on device so PHP can tell this event from one a page
+                // forged. The app key lives in the Keychain and never reaches the
+                // page. 3.x has no Jump dev session, so events are always signed
+                // here; PHP enforces only when NATIVEPHP_EVENTS_SIGNED is set,
+                // which the shell sets on-device at boot.
+                var signatureHeaders = ""
+                if let signed = NativeEventSignature.sign(body: body) {
+                    signatureHeaders = """
+                    ,
+                            '\(NativeEventSignature.nonceHeader)': '\(signed.nonce)',
+                            '\(NativeEventSignature.timestampHeader)': '\(signed.timestamp)',
+                            '\(NativeEventSignature.signatureHeader)': '\(signed.signature)'
+                    """
+                }
+
                 let js = """
                 (function() {
                     const event = new CustomEvent(
@@ -300,12 +333,9 @@ struct WebView: UIViewRepresentable {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
+                            'X-Requested-With': 'XMLHttpRequest'\(signatureHeaders)
                         },
-                        body: JSON.stringify({
-                            event: \(event),
-                            payload: \(jsonString),
-                        })
+                        body: \(bodyLiteral)
                     }).then(response => response.json())
                       .then(data => console.log("API Event Dispatch Success:", JSON.stringify(data, null, 2)))
                       .catch(error => console.error("API Event Dispatch Error:", error));
