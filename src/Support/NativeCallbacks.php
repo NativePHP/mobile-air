@@ -4,6 +4,7 @@ namespace Native\Mobile\Support;
 
 use Closure;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Laravel\SerializableClosure\SerializableClosure;
 use Throwable;
 
@@ -24,6 +25,15 @@ use Throwable;
  *      Requires the closure to be serializable; if it isn't we fall back to
  *      tier 1 only and report the exception so the tradeoff is visible.
  *
+ *      The durable copy is signed with the app key before it is written and
+ *      verified before it is read back. resolve() runs the result event that
+ *      reads this copy, and JavaScript in a web view can reach that event, so
+ *      the serialized bytes are never handed to unserialize() — which runs the
+ *      code of whatever class they name — until an HMAC the app key made over
+ *      them has matched. A value that is not a signed envelope this app wrote
+ *      is dropped; the in-memory copy still stands for this process. This
+ *      mirrors how {@see GlobalEventTransport} signs an event across lanes.
+ *
  * Callbacks are correlated by the `id` the Pending* builder already passes to
  * native and that comes back on the result event.
  */
@@ -38,6 +48,17 @@ class NativeCallbacks
 
     /** How long a pending callback may wait for its result before it's considered abandoned. */
     protected static int $ttlMinutes = 5;
+
+    /**
+     * Written in front of the serialized bytes before they are signed, and
+     * checked after. The app key signs other things too (cookies, the
+     * `encrypted` model cast, events that cross lanes), so a signature made
+     * for one of those must not pass as a callback, and vice versa.
+     */
+    protected const SIGNATURE_PURPOSE = 'nativephp.native-callback:';
+
+    /** @var array<string, true> What this interpreter has warned about, each of which it logs once. */
+    protected static array $warned = [];
 
     /**
      * @param  bool  $durable  Whether to keep the tier-2 copy. Pass false for a
@@ -72,9 +93,26 @@ class NativeCallbacks
                 $serializable = new SerializableClosure($serializable);
             }
 
+            $key = static::signingKey();
+
+            // resolve() reads this copy back with unserialize(), so nothing is
+            // written that the app key cannot later prove this app wrote. With
+            // no key to sign with, the durable copy is skipped; the in-memory
+            // copy still stands for this process.
+            if ($key === null) {
+                static::warnOnce('key', 'A native callback was not kept in the durable cache: the app has no usable app key to sign it with, and an unsigned copy is never read back. It survives in memory for this process only. This is logged once.');
+
+                return;
+            }
+
+            $serialized = serialize($serializable);
+
+            // Store the serialized bytes next to an HMAC the app key made over
+            // them. base64 keeps the bytes out of a text column unharmed and
+            // mirrors the envelope GlobalEventTransport sends across lanes.
             Cache::put(
                 static::key($id, $eventClass),
-                serialize($serializable),
+                ['data' => base64_encode($serialized), 'sig' => static::sign($serialized, $key)],
                 now()->addMinutes(static::$ttlMinutes),
             );
         } catch (Throwable $e) {
@@ -96,8 +134,14 @@ class NativeCallbacks
             return static::$memory[$id][$eventClass];
         }
 
-        $key = static::key($id, $eventClass);
-        $serialized = $consume ? Cache::pull($key) : Cache::get($key);
+        $cacheKey = static::key($id, $eventClass);
+        $envelope = $consume ? Cache::pull($cacheKey) : Cache::get($cacheKey);
+
+        if ($envelope === null) {
+            return null;
+        }
+
+        $serialized = static::verified($envelope);
 
         if ($serialized === null) {
             return null;
@@ -108,6 +152,50 @@ class NativeCallbacks
         return $restored instanceof SerializableClosure
             ? $restored->getClosure()
             : $restored;
+    }
+
+    /**
+     * Take the serialized callback bytes out of a durable envelope, once the
+     * app key has proven this app wrote them. Null — and the bytes are never
+     * unserialized — when the value is not a signed envelope (a legacy bare
+     * string lands here too), when its signature was not made with this app
+     * key, or when there is no app key to check it with.
+     */
+    protected static function verified(mixed $envelope): ?string
+    {
+        $data = is_array($envelope) ? ($envelope['data'] ?? null) : null;
+        $sig = is_array($envelope) ? ($envelope['sig'] ?? null) : null;
+
+        if (! is_string($data) || ! is_string($sig)) {
+            static::warnOnce('shape', 'A durable native callback copy was dropped unread: it was not a signed envelope this app wrote. Any in-memory copy still stands for this process. This is logged once.');
+
+            return null;
+        }
+
+        $serialized = base64_decode($data, true);
+
+        if ($serialized === false) {
+            return null;
+        }
+
+        $key = static::signingKey();
+
+        if ($key === null) {
+            static::warnOnce('unchecked', 'A durable native callback copy was dropped unread: the app has no usable app key to check its signature with. This is logged once.');
+
+            return null;
+        }
+
+        // JavaScript in a web view can reach the result event that reads this
+        // copy, and unserialize() runs the code of whatever class the bytes
+        // name. So the bytes are returned only once the signature matches.
+        if (! hash_equals(static::sign($serialized, $key), $sig)) {
+            static::warnOnce('signature', 'A durable native callback copy was dropped unread: its signature was not made with this app key. This is logged once.');
+
+            return null;
+        }
+
+        return $serialized;
     }
 
     /**
@@ -162,18 +250,60 @@ class NativeCallbacks
     }
 
     /**
-     * Drop every in-memory pending callback. The static tier survives
-     * across tests in one process, so the testing harness flushes it at
-     * the start of each test for isolation. Durable cache copies belong
-     * to the per-test application and reset with it.
+     * Drop every in-memory pending callback, and forget what this interpreter
+     * has warned about. The static tier survives across tests in one process,
+     * so the testing harness flushes it at the start of each test for
+     * isolation. Durable cache copies belong to the per-test application and
+     * reset with it.
      */
     public static function flush(): void
     {
         static::$memory = [];
+        static::$warned = [];
     }
 
     protected static function key(string $id, string $eventClass): string
     {
         return 'native_cb:'.$id.':'.$eventClass;
+    }
+
+    /**
+     * The app key as Laravel's encrypter holds it, so the `base64:` form is
+     * read by the framework. The current key alone, never a previous one.
+     * Null when the app has no usable key. Named apart from key() above,
+     * which builds the cache key for an entry.
+     */
+    protected static function signingKey(): ?string
+    {
+        try {
+            $key = app('encrypter')->getKey();
+        } catch (Throwable) {
+            return null;
+        }
+
+        return is_string($key) && $key !== '' ? $key : null;
+    }
+
+    /** The signature of the serialized callback bytes: their HMAC-SHA256 under the app key, in hex, bound to this transport's purpose. */
+    protected static function sign(string $serialized, string $key): string
+    {
+        return hash_hmac('sha256', static::SIGNATURE_PURPOSE.$serialized, $key);
+    }
+
+    /**
+     * Log a warning the first time this interpreter has it to give, and never
+     * again after that. A screen that keeps asking native for a result, or a
+     * page that keeps posting one, would otherwise fill the log with one line
+     * for every attempt.
+     */
+    protected static function warnOnce(string $about, string $message): void
+    {
+        if (isset(static::$warned[$about])) {
+            return;
+        }
+
+        static::$warned[$about] = true;
+
+        Log::warning($message);
     }
 }
