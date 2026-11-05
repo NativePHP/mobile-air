@@ -130,6 +130,10 @@ static void (*jni_output_callback_ptr)(const char *) = NULL;
 
 // Worker state
 static int worker_initialized = 0;
+// The thread that booted the worker. Its TSRM context is thread-local, so
+// worker_initialized only holds for that thread: any other thread has no PHP
+// context, and running PHP on it segfaults.
+static pthread_t worker_thread;
 static pthread_mutex_t g_worker_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Ephemeral state — generic background TSRM context for plugin use
@@ -1441,6 +1445,12 @@ JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBo
     pthread_mutex_lock(&g_worker_mutex);
 
     if (worker_initialized) {
+        if (!pthread_equal(worker_thread, pthread_self())) {
+            LOGE("worker_boot: another thread's worker is still running, refusing");
+            pthread_mutex_unlock(&g_worker_mutex);
+            return -1;
+        }
+
         LOGI("worker_boot: already initialized, skipping");
         pthread_mutex_unlock(&g_worker_mutex);
         return 0;
@@ -1475,6 +1485,7 @@ JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBo
         LOGE("worker_boot: bootstrap produced errors: %.200s", worker_boot_output);
     }
 
+    worker_thread = pthread_self();
     worker_initialized = 1;
     LOGI("worker_boot: worker PHP interpreter ready");
 
@@ -1490,8 +1501,8 @@ JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBo
 JNIEXPORT jstring JNICALL native_worker_artisan(JNIEnv *env, jobject thiz, jstring jCommand) {
     pthread_mutex_lock(&g_worker_mutex);
 
-    if (!worker_initialized) {
-        LOGE("worker_artisan: worker not initialized!");
+    if (!worker_initialized || !pthread_equal(worker_thread, pthread_self())) {
+        LOGE("worker_artisan: worker not initialized on this thread!");
         pthread_mutex_unlock(&g_worker_mutex);
         return (*env)->NewStringUTF(env, "Worker runtime not initialized.");
     }
@@ -1536,8 +1547,8 @@ JNIEXPORT jstring JNICALL native_worker_artisan(JNIEnv *env, jobject thiz, jstri
 JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_lock(&g_worker_mutex);
 
-    if (!worker_initialized) {
-        LOGI("worker_shutdown: not initialized, nothing to do");
+    if (!worker_initialized || !pthread_equal(worker_thread, pthread_self())) {
+        LOGI("worker_shutdown: not initialized on this thread, nothing to do");
         pthread_mutex_unlock(&g_worker_mutex);
         return;
     }
