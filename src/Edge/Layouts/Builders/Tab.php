@@ -10,7 +10,7 @@ use Native\Mobile\Icon\IosSymbol;
 /**
  * Fluent builder for a single bottom-tab-bar item.
  *
- * Two constructor styles:
+ * Constructor styles:
  *   - `Tab::search($label, icon: ..., placeholder: ..., debounceMs: ...)`
  *     — iOS 26 floating Liquid Glass search capsule. No URL; the search
  *     experience is an iOS-side overlay driven by the active screen's
@@ -25,13 +25,6 @@ use Native\Mobile\Icon\IosSymbol;
  *
  * Either form can be customised with `->press('method')` to override the
  * default URL-driven navigation with an arbitrary handler.
- *
- * Usage:
- *   Tab::link('Home', '/', icon: 'home')
- *   Tab::link('Profile', '/profile', icon: 'person')->badge('3')
- *   Tab::link('Messages', '/syncup-native',
- *       ios: Ios::BubbleLeft, android: Android::ChatBubble)
- *   Tab::search('Search', icon: 'search', placeholder: '…')
  *
  * All three icon slots are nullable so each call site picks the
  * combination it needs. The string `icon:` is the cross-platform
@@ -67,6 +60,8 @@ class Tab
     private ?array $searchItems = null;
 
     private ?string $pressMethod = null;
+
+    private ?string $reselectMethod = null;
 
     private function __construct(string $id, string $label, string $url)
     {
@@ -158,6 +153,14 @@ class Tab
     public function press(string $method): self
     {
         $this->pressMethod = $method;
+
+        return $this;
+    }
+
+    /** Handle a user tapping this tab while it is already selected. */
+    public function onReselect(string $method): self
+    {
+        $this->reselectMethod = $method;
 
         return $this;
     }
@@ -282,6 +285,10 @@ class Tab
         // is already attached, so this cleanly overrides the default.
         if ($this->pressMethod !== null) {
             $item->onPress($this->pressMethod);
+        }
+
+        if ($this->reselectMethod !== null) {
+            $item->onReselect($this->reselectMethod);
         }
 
         return $item;
