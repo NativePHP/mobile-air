@@ -1,7 +1,9 @@
 <?php
 
+use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
+use Tests\Fixtures\Edge\DragEndInteractionScreen;
 use Tests\Fixtures\Edge\GestureScreen;
 
 beforeEach(function () {
@@ -64,6 +66,36 @@ it('decodes a payload with a missing component as 0', function () {
         ->fireEvent('released', 2, ['text' => '-90'])
         ->assertSet('releasedX', -90.0)
         ->assertSet('releasedY', 0.0);
+});
+
+it('refuses a drag-end bound to a protected method, as it does for a tap', function () {
+    $test = Native::test(DragEndInteractionScreen::class);
+
+    expect(fn () => $test->dragEnd('hidden', 10, 20))
+        ->toThrow(ComponentMethodNotFoundException::class)
+        ->and($test->instance()->hiddenRan)->toBeFalse();
+});
+
+it('puts a validation failure in a drag-end handler in the error bag', function () {
+    $test = Native::test(DragEndInteractionScreen::class)
+        ->dragEnd('rejectDrag', 10, 20);
+
+    expect($test->instance()->getErrorBag()->first('position'))->toBe('Dropped out of bounds.');
+});
+
+it('flushes events dispatched from a drag-end handler inside the interaction', function () {
+    $screen = Native::test(DragEndInteractionScreen::class)->instance();
+
+    // Drive the component directly: the test harness and navigate() both
+    // flush on their own, which would hide a missing flush here.
+    $events = (function () {
+        $id = $this->nativeCallbacks->lookup('dropped');
+        $this->dispatchUiEvent(['type' => 2, 'callback_id' => $id, 'text' => '42,0']);
+
+        return $this->events;
+    })->call($screen);
+
+    expect($events)->toBe(['dropped:42']);
 });
 
 // ── Trigger ─────────────────────────────────────────
