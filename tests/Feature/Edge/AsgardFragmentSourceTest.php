@@ -123,6 +123,24 @@ it('drops an answer that lands after the component unmounted', function () {
 
 // ── The null source ─────────────────────────────────
 
+it('keeps a source another provider bound before this one registered', function () {
+    $mine = new class implements FragmentSource
+    {
+        public function request(RegionRequest $request): void {}
+    };
+
+    app()->forgetInstance(FragmentSource::class);
+    app()->offsetUnset(FragmentSource::class);
+    app()->instance(FragmentSource::class, $mine);
+
+    // Registering mobile's provider again stands in for it running after
+    // midgard's, which is the order that used to drop midgard's binding.
+    $provider = new \Native\Mobile\NativeServiceProvider(app());
+    Closure::bind(fn () => $this->registerAsgardTransport(), $provider, $provider::class)();
+
+    expect(app(FragmentSource::class))->toBe($mine);
+});
+
 it('binds a source that asks nobody by default, so the placeholder stays', function () {
     expect(app(FragmentSource::class))->toBeInstanceOf(NullFragmentSource::class);
 

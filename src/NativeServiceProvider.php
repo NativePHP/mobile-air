@@ -239,13 +239,16 @@ class NativeServiceProvider extends PackageServiceProvider
      */
     protected function registerAsgardTransport(): void
     {
-        $this->app->bind(ServerTransport::class, NullServerTransport::class);
+        // `bindIf`, because these are defaults: a client package such as
+        // midgard binds the real one from its own provider, and package
+        // providers register in an order neither side controls. A plain
+        // bind here would silently replace midgard's when it ran first.
+        $this->app->bindIf(ServerTransport::class, NullServerTransport::class);
 
         // Where `@server` regions get their fragments. The default asks
         // nobody, so every region keeps its placeholder until a client
-        // package (midgard) binds a real one. `bind` for the same reason
-        // as above.
-        $this->app->bind(FragmentSource::class, NullFragmentSource::class);
+        // package (midgard) binds a real one.
+        $this->app->bindIf(FragmentSource::class, NullFragmentSource::class);
     }
 
     protected function registerPluginServices(): void
