@@ -42,7 +42,9 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
+use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
+use Native\Mobile\Edge\Asgard\NullFragmentSource;
 use Native\Mobile\Edge\Asgard\NullServerTransport;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\Contracts\NativeRouteFallback;
@@ -238,6 +240,12 @@ class NativeServiceProvider extends PackageServiceProvider
     protected function registerAsgardTransport(): void
     {
         $this->app->bind(ServerTransport::class, NullServerTransport::class);
+
+        // Where `@server` regions get their fragments. The default asks
+        // nobody, so every region keeps its placeholder until a client
+        // package (midgard) binds a real one. `bind` for the same reason
+        // as above.
+        $this->app->bind(FragmentSource::class, NullFragmentSource::class);
     }
 
     protected function registerPluginServices(): void

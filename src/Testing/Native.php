@@ -52,4 +52,14 @@ final class Native
     {
         return FakeServerTransport::enable();
     }
+
+    /**
+     * The fake Asgard fragment source for the current test. Enable it
+     * before the component mounts to capture the region requests its
+     * first frame makes, then answer them with respond().
+     */
+    public static function fakeFragmentSource(): FakeFragmentSource
+    {
+        return FakeFragmentSource::enable();
+    }
 }

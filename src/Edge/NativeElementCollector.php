@@ -201,6 +201,12 @@ class NativeElementCollector
         static::$owner = $owner;
     }
 
+    /** The component whose render is emitting, if any. */
+    public static function owner(): ?NativeComponent
+    {
+        return static::$owner;
+    }
+
     public static function inComponentScope(): bool
     {
         return static::$componentDepth > 0;

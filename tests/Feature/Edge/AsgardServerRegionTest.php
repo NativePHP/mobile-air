@@ -399,7 +399,8 @@ it('renders a screen whose region never resolves', function () {
 it('paints a fragment on the next frame of a live screen', function () {
     $screen = Native::test(ServerRegionScreen::class)->assertSee('Loading sales…');
 
-    ServerRegion::applyFragment('sales-summary', [
+    // Fragments belong to the component that renders the region.
+    $screen->instance()->receiveFragment('sales-summary', [
         'type' => 'text',
         'key' => 'total',
         'props' => ['text' => 'Revenue: £12,400'],

@@ -30,3 +30,15 @@ if (! function_exists(__NAMESPACE__.'\\nphp_node_open')) {
         $GLOBALS['nphp_stream'][] = ['close'];
     }
 }
+
+if (! function_exists(__NAMESPACE__.'\\nphp_frame_begin')) {
+    function nphp_frame_begin(): void
+    {
+        $GLOBALS['nphp_stream'][] = ['frame_begin'];
+    }
+
+    function nphp_frame_end(): void
+    {
+        $GLOBALS['nphp_stream'][] = ['frame_end'];
+    }
+}

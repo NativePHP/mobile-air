@@ -266,6 +266,10 @@ abstract class NativeComponent
 
         $this->endChildComponentFrame();
 
+        // Regions that painted a placeholder this frame ask for their
+        // fragment now, once per component (ASGARD-PROTOCOL.md §3).
+        Asgard\ServerRegion::requestMissing();
+
         return $element;
     }
 
@@ -1583,6 +1587,9 @@ abstract class NativeComponent
             nphp_frame_end();
             $t2 = microtime(true);
 
+            // Same as renderToElement(): ask for what this frame is missing.
+            Asgard\ServerRegion::requestMissing();
+
             NativeRouter::debugLog(sprintf(
                 'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
                 $name, ($t1 - $t0) * 1000, ($t2 - $t1) * 1000, ($t2 - $t0) * 1000
@@ -1769,6 +1776,13 @@ abstract class NativeComponent
 
         if ($this->nativeHasError) {
             return -1;
+        }
+
+        // An Asgard fragment landed since the last frame without an event
+        // to wake the loop (a FragmentSource that answered at once, from a
+        // cache say). Take the next turn now so it paints.
+        if (Asgard\ServerRegion::repaintPending()) {
+            return 0;
         }
 
         $deadlines = array_map(fn ($def) => $def['next'], $definitions);
@@ -2959,6 +2973,53 @@ abstract class NativeComponent
         // leaving entries behind keeps a dead screen alive; a response that
         // arrives after this is discarded (ASGARD-SERVER-METHODS.md §4).
         Asgard\ServerMethods::forget($this);
+
+        // Same for region requests: an answer that lands after this is
+        // dropped, and this component's fragments go with it.
+        Asgard\ServerRegion::forget($this);
+    }
+
+    /**
+     * Fetch this component's `@server` regions again: one by name, or all
+     * of them. Call it from your own action:
+     *
+     *     public function refresh(): void
+     *     {
+     *         $this->refreshServerRegions();
+     *     }
+     *
+     * The requests go out after the next frame, so they carry the state
+     * the action leaves behind. The fragment on screen stays until the
+     * new one lands. Not callable from a template: the interaction guard
+     * refuses NativeComponent's own methods.
+     */
+    public function refreshServerRegions(?string $region = null): void
+    {
+        Asgard\ServerRegion::refresh($this, $region);
+    }
+
+    /**
+     * Paint a fragment that a FragmentSource fetched. Made to be called
+     * from an AsyncTask `->finished()` callback, which runs on the UI
+     * thread bound to the screen:
+     *
+     *     ->finished(fn ($tree) => $this->receiveFragment($request, $tree))
+     *
+     * Pass the RegionRequest the source was handed. It names the
+     * component that rendered the region, which may be a child of the
+     * screen this runs on, and lets a late answer to a superseded request
+     * be dropped. A bare region name applies to this component directly.
+     *
+     * `$tree` is the decoded fragment or the raw `tree/json` body.
+     * Returns whether it was applied. The screen repaints either way it
+     * arrives: an AsyncTask completion is an event the runloop renders
+     * after, and anything else is caught by the runloop's repaint check.
+     */
+    public function receiveFragment(Asgard\RegionRequest|string $region, array|string $tree): bool
+    {
+        return $region instanceof Asgard\RegionRequest
+            ? Asgard\ServerRegion::deliver($region, $tree)
+            : Asgard\ServerRegion::applyFragment($region, $tree, $this);
     }
 
     /**

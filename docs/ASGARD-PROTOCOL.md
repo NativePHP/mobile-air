@@ -62,6 +62,24 @@ A region that never resolves keeps its placeholder. A screen with no network
 is a screen with skeletons where the server regions would be, and everything
 else working. That is the intended degraded state, not an error case.
 
+### 3.1 When the client asks
+
+After a frame in which a region painted its placeholder, the component that
+rendered it asks the bound `FragmentSource` for a fragment, once per
+component instance. Regions belong to the component whose view declares
+them, so a region in a child component is requested and delivered as that
+child. `NativeComponent::refreshServerRegions()` asks again after the next
+frame, with the fragment on screen kept until the new one lands. Fragments
+are held per component instance, so two screens with a region of the same
+name never share one.
+
+The source is fire and forget. It answers later with
+`ServerRegion::deliver($request, $tree)`, or with
+`$this->receiveFragment($request, $tree)` from an AsyncTask `->finished()`
+callback. An answer to a request that a newer one superseded, or for a
+component that has gone, is dropped. The default `NullFragmentSource` asks
+nobody.
+
 ## 4. Addressing components
 
 A region names its server component by the client component's fully-qualified

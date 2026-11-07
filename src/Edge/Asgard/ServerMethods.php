@@ -220,6 +220,7 @@ class ServerMethods
         );
 
         $refusedFragments = static::applyFragments(
+            $component,
             is_array($payload['fragments'] ?? null) ? $payload['fragments'] : []
         );
 
@@ -383,7 +384,7 @@ class ServerMethods
      *
      * @return array region => why the fragment was refused
      */
-    protected static function applyFragments(array $fragments): array
+    protected static function applyFragments(NativeComponent $component, array $fragments): array
     {
         $refused = [];
 
@@ -397,7 +398,9 @@ class ServerMethods
             }
 
             try {
-                if (! ServerRegion::applyFragment($region, $tree)) {
+                // The regions are the calling component's own: a fragment
+                // in a response lands where that component renders it.
+                if (! ServerRegion::applyFragment($region, $tree, $component)) {
                     $refused[$region] = 'the fragment cannot be rendered by this build';
                 }
             } catch (\Throwable $e) {
