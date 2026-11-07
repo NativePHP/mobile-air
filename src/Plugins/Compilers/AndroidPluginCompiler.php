@@ -5,6 +5,7 @@ namespace Native\Mobile\Plugins\Compilers;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\CoreFeatures;
 use Native\Mobile\Plugins\LegacyFirebaseConfig;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
@@ -194,6 +195,10 @@ class AndroidPluginCompiler
         // declares it, this heals scaffolds installed before it existed
         // (runs even when the list is empty: registrations live there).
         $this->registerPluginSourceRoot();
+
+        // Core references PluginFeatures unconditionally, and clean() just
+        // deleted it, so it is written before any early return.
+        $this->generatePluginFeatures($allPlugins);
 
         // Emit ProGuard/R8 keep rules for every plugin (runs even when the
         // list is empty so a removed plugin's stale rules are cleared).
@@ -895,6 +900,28 @@ class AndroidPluginCompiler
         array_pop($parts); // Remove method name
 
         return implode('.', $parts);
+    }
+
+    /**
+     * Generate PluginFeatures.kt: one constant per CoreFeatures entry, true
+     * when the plugin that drives it is installed. Core checks them before
+     * running that code (see CoreFeatures).
+     */
+    protected function generatePluginFeatures(Collection $plugins): void
+    {
+        $this->files->ensureDirectoryExists($this->registrationPath);
+
+        $features = collect(CoreFeatures::for($plugins))
+            ->map(fn (bool $on, string $feature) => "    const val {$feature} = ".($on ? 'true' : 'false'))
+            ->implode("\n");
+
+        $content = Stub::make('android/PluginFeatures.kt.stub')
+            ->replace('FEATURES', $features)
+            ->render();
+
+        $path = $this->registrationPath.'/PluginFeatures.kt';
+        $this->files->put($path, $content);
+        $this->generatedFiles[] = $path;
     }
 
     /**

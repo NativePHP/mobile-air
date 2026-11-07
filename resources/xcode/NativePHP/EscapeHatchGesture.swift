@@ -1,6 +1,11 @@
 import SwiftUI
 import UIKit
 
+// Only Jump needs this (its mobile-discovery plugin sets NATIVEPHP_JUMP).
+// Keep it out of everyone else's release builds: App Review reads a
+// "leave this demo app" gesture as an app that loads other apps.
+#if DEBUG || NATIVEPHP_JUMP
+
 /// Global three-finger swipe-right recognizer, attached to the key window so it
 /// fires over ANY content — the local native-ui tree, the WebView, or a remote
 /// app rendered through Jump. On fire it posts `JumpEscapeHatch`; the Jump
@@ -60,3 +65,5 @@ struct EscapeHatchGesture: UIViewRepresentable {
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     }
 }
+
+#endif
