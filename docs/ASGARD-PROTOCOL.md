@@ -407,10 +407,11 @@ one version per build; servers may support several.
    the app, and there probably should be.
 4. Offline queueing of events fired against a fragment that is no longer
    current.
-5. `server_region` has no native renderer on iOS or Android. A region is
-   visible in the tree the client builds but will not paint on a device until
-   either platform learns the type as a plain container, or the element
-   serialises as a `column`.
+5. ~~`server_region` has no native renderer on iOS or Android.~~ Settled: the
+   element serialises as a bare `column` (`Element::wireType()`), keyed with
+   the region name and carrying no props of its own, on the flat-buffer, Jump
+   and streaming paths alike. `server_region` remains the PHP-side type, so
+   validation still refuses one inside a fragment. No native change needed.
 
 ## 13. Notes for implementers
 

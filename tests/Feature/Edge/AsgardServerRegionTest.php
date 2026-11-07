@@ -70,8 +70,10 @@ it('renders a server region with its placeholder as children', function () {
 
     $region = $tree['children'][0];
 
-    expect($region['type'])->toBe('server_region');
-    expect($region['props']['region'])->toBe('sales-summary');
+    // On the wire a region is a bare column, identified only by its key.
+    expect($region['type'])->toBe('column');
+    expect($region['id'])->toBe(Element::fnv1a32('/sales-summary'));
+    expect($region)->not->toHaveKey('props');
     expect($region['children'])->toHaveCount(1);
     expect($region['children'][0]['type'])->toBe('text');
     expect($region['children'][0]['props']['text'])->toBe('Loading sales…');
@@ -102,7 +104,8 @@ it('replaces the placeholder with an applied fragment', function () {
     $after = renderNativeView('asgard-replace', $template)->toArray(new CallbackRegistry);
     $region = $after['children'][0];
 
-    expect($region['type'])->toBe('server_region');
+    expect($region['type'])->toBe('column');
+    expect($region['id'])->toBe(Element::fnv1a32('/sales-summary'));
     expect($region['children'])->toHaveCount(1);
     expect($region['children'][0]['type'])->toBe('column');
     expect($region['children'][0]['children'][0]['props']['text'])->toBe('Revenue: £12,400');
@@ -206,7 +209,7 @@ it('renders a screen with an unresolved region and everything around it', functi
 
     expect($rendered['children'])->toHaveCount(3);
     expect($rendered['children'][0]['props']['text'])->toBe('Dashboard');
-    expect($rendered['children'][1]['type'])->toBe('server_region');
+    expect($rendered['children'][1]['id'])->toBe(Element::fnv1a32('/sales-summary'));
     expect($rendered['children'][1]['children'][0]['props']['text'])->toBe('Loading sales…');
     expect($rendered['children'][2]['props']['text'])->toBe('Refresh');
     expect($registry->resolve($rendered['children'][2]['on_press']))
@@ -289,10 +292,10 @@ it('suffixes a duplicate region name in production', function () {
 
     // First one keeps the name and therefore the fragment; the duplicate
     // resolves to nothing and keeps its placeholder.
-    expect($tree['children'][0]['props']['region'])->toBe('sales-summary');
+    expect($tree['children'][0]['id'])->toBe(Element::fnv1a32('/sales-summary'));
     expect($tree['children'][0]['children'][0]['props']['text'])->toBe('Fragment');
 
-    expect($tree['children'][1]['props']['region'])->toBe('sales-summary#2');
+    expect($tree['children'][1]['id'])->toBe(Element::fnv1a32('/sales-summary#2'));
     expect($tree['children'][1]['children'][0]['props']['text'])->toBe('Two');
 });
 
@@ -382,7 +385,7 @@ it('goes back to the placeholder when a fragment is cleared', function () {
 
 it('renders a screen whose region never resolves', function () {
     Native::test(ServerRegionScreen::class)
-        ->assertElement('server_region')
+        ->assertElement('column', fn (array $node) => $node['id'] === Element::fnv1a32('/sales-summary'))
         ->assertSee('Dashboard')
         ->assertSee('Loading sales…')
         ->tap('refresh')
@@ -427,7 +430,70 @@ it('names a region from a runtime expression and styles it from extra attrs', fu
 
     $region = $tree['children'][0];
 
-    expect($region['props']['region'])->toBe('sales-summary');
+    expect($region['type'])->toBe('column');
     expect($region['id'])->toBe(Element::fnv1a32('/sales-summary'));
     expect($region['layout']['padding'])->toBe(16.0);
+});
+
+// ── What reaches native (§12 q5) ────────────────────
+
+it('keeps server_region as the PHP identity while sending a column', function () {
+    $region = \Native\Mobile\Edge\Elements\ServerRegion::make('sales-summary');
+
+    expect($region->getType())->toBe('server_region');
+    expect($region->wireType())->toBe('column');
+    expect(\Native\Mobile\Edge\ElementRegistry::has('server_region'))->toBeTrue();
+
+    $node = $region->toArray(new CallbackRegistry);
+
+    expect($node['type'])->toBe('column');
+    expect($node['id'])->toBe(Element::fnv1a32('/sales-summary'));
+    expect($node)->not->toHaveKeys(['props', 'layout', 'style']);
+});
+
+it('still refuses a fragment that opens a region of its own', function () {
+    config(['app.debug' => false]);
+
+    expect(ServerRegion::applyFragment('sales-summary', [
+        'type' => 'column',
+        'children' => [['type' => 'server_region', 'props' => ['region' => 'x']]],
+    ]))->toBeFalse();
+});
+
+it('streams a region as a bare keyed column with the fragment under its path', function () {
+    require_once __DIR__.'/../../Support/streaming-writer.php';
+
+    ServerRegion::applyFragment('sales-summary', [
+        'type' => 'text',
+        'key' => 'total',
+        'props' => ['text' => 'Revenue'],
+    ]);
+
+    file_put_contents(__DIR__.'/views/asgard-stream.blade.php', <<<'BLADE'
+        @server('sales-summary')
+            <native:text>Loading…</native:text>
+        @endserver
+        BLADE);
+
+    $GLOBALS['nphp_stream'] = [];
+    ServerRegion::beginFrame();
+    NativeElementCollector::reset();
+    NativeElementCollector::setCallbacks(new CallbackRegistry);
+    NativeElementCollector::setStreaming(true);
+
+    try {
+        view('asgard-stream')->render();
+    } finally {
+        NativeElementCollector::setStreaming(false);
+    }
+
+    $calls = $GLOBALS['nphp_stream'];
+
+    expect($calls[0])->toBe(['open', 'column', null, null, null, Element::fnv1a32('/sales-summary')]);
+    expect($calls[1][0])->toBe('leaf');
+    expect($calls[1][1])->toBe('text');
+    expect($calls[1][4]['text'])->toBe('Revenue');
+    expect($calls[1][5])->toBe(Element::fnv1a32('/sales-summary/total'));
+    expect($calls[2])->toBe(['close']);
+    expect(json_encode($calls))->not->toContain('server_region');
 });

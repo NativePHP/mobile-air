@@ -455,7 +455,7 @@ class NativeElementCollector
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
             nphp_node_open(
-                $type,
+                $element->wireType(),
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
                 ! empty($props) ? $props : null,
@@ -550,7 +550,7 @@ class NativeElementCollector
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
             nphp_node_leaf(
-                $type,
+                $element->wireType(),
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
                 ! empty($props) ? $props : null,

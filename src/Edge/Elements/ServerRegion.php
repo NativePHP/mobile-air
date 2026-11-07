@@ -25,9 +25,18 @@ use Native\Mobile\Edge\Element;
  * direction. A region must not impose styling the placeholder or the
  * fragment did not ask for.
  *
- * NOTE: the iOS/Android renderers don't know `server_region` yet. Until
- * they map it to a plain vertical container, a region is visible in the
- * tree the client builds but not on a device.
+ * ## On the wire it is a `column`
+ *
+ * Neither renderer knows `server_region`, and neither needs to. The node
+ * leaves PHP as a `column` (see wireType()) with no props of its own,
+ * which both platforms already paint as a plain vertical container
+ * (ASGARD-PROTOCOL.md §12 q5). Only its key travels, because that is
+ * what puts fragment nodes under `/<region>/…`. Anything the author
+ * passed through `@server('x', ['class' => '…'])` still applies, the
+ * same as on any other column.
+ *
+ * `server_region` stays the PHP identity: getType() reports it, the
+ * element registry resolves it, and fragment validation refuses it.
  */
 class ServerRegion extends Element
 {
@@ -72,8 +81,18 @@ class ServerRegion extends Element
         }
     }
 
+    /** Paint as a plain `column`; see the class comment. */
+    public function wireType(): string
+    {
+        return 'column';
+    }
+
+    /**
+     * Nothing of the region's own goes to native. The name is already the
+     * node's key, and a renderer has no use for it as a prop.
+     */
     protected function resolveProps(CallbackRegistry $registry): array
     {
-        return $this->props;
+        return [];
     }
 }
