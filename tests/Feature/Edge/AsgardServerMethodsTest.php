@@ -4,6 +4,7 @@ use Native\Mobile\Edge\Asgard\ComponentAddress;
 use Native\Mobile\Edge\Asgard\ServerMethods;
 use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\Asgard\ServerResponse;
+use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
 use Native\Mobile\Testing\FakeServerTransport;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\ServerMethodScreen;
@@ -94,6 +95,29 @@ it('refuses to call a method that is not marked #[Server]', function () {
         ->toThrow(RuntimeException::class, 'is not marked #[Server]');
 
     expect($screen->get('note'))->toBe('');
+});
+
+it('routes a tapped #[Server] method through the interaction entry point', function () {
+    $server = Native::fakeServerTransport();
+
+    $screen = Native::test(ServerMethodScreen::class);
+
+    $screen->instance()->__invokeInteraction('refreshChart', ['90d']);
+
+    expect($server->lastRequest()->args)->toBe(['90d']);
+    expect($screen->get('loading'))->toBeTrue();
+});
+
+it('keeps the method guard in front of a #[Server] method', function () {
+    $server = Native::fakeServerTransport();
+
+    $screen = Native::test(ServerMethodScreen::class);
+
+    expect(fn () => $screen->instance()->__invokeInteraction('dehydrateChart', []))
+        ->toThrow(DirectlyCallingLifecycleHooksNotAllowedException::class);
+
+    expect($screen->get('note'))->toBe('');
+    expect($server->sent())->toBe([]);
 });
 
 // ── Delivery (§4) ───────────────────────────────────

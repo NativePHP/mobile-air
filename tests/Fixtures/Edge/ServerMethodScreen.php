@@ -76,6 +76,17 @@ class ServerMethodScreen extends NativeComponent
         $this->note = 'pinged';
     }
 
+    /**
+     * Marked, but named like a lifecycle hook. The attribute narrows what
+     * an interaction may call; it must not widen it past the
+     * ComponentMethodInvoker guard.
+     */
+    #[Server]
+    public function dehydrateChart(): void
+    {
+        $this->note = 'dehydrated';
+    }
+
     /** Not marked, so not callable through the server path (§8). */
     public function deleteAccount(): void
     {

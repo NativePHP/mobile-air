@@ -49,8 +49,12 @@ then fatals on invocation, so it is rejected with a clear exception instead.
 
 ### 1.1 How it gets called, and the trap in this shape
 
-Dispatch is intercepted in two places: the `@tap` path through
-`NativeComponent::dispatch()`, and an explicit `callServerMethod()`.
+Dispatch is intercepted in two places: `NativeComponent::__invokeInteraction()`,
+which every `@tap` and every `TestableComponent::call()` goes through, and an
+explicit `callServerMethod()`. Both run the client body through
+`ComponentMethodInvoker`, so `#[Server]` never makes callable a method the
+interaction guard refuses: lifecycle hooks, non-public methods and anything
+declared on `NativeComponent` stay out of reach.
 
 **A direct `$this->refreshChart('30d')` is a silent no-op.** The body runs, a
 closure comes back, and nothing is sent, because PHP gives no way to intercept
