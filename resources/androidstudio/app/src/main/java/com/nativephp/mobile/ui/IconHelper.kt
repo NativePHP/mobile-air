@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -24,7 +25,6 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
 import com.nativephp.mobile.R
 
@@ -151,7 +151,8 @@ fun MaterialIcon(
         Text(
             text = getIconName(name),
             fontFamily = MaterialIconsFont,
-            fontSize = size.value.sp,
+            // In sp the glyph would follow the system font scale and outgrow its dp box.
+            fontSize = with(LocalDensity.current) { size.toSp() },
             color = tint,
             textAlign = TextAlign.Center,
             // Icons are rendered as an icon-font glyph; like regular text, Android's
