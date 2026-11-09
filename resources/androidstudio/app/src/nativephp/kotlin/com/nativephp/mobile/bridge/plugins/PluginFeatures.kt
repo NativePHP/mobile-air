@@ -5,5 +5,4 @@ package com.nativephp.mobile.bridge.plugins
 
 object PluginFeatures {
     const val OTA = false
-    const val JUMP = false
 }

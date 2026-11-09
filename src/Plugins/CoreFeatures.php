@@ -10,10 +10,10 @@ use Illuminate\Support\Collection;
  *
  * The code lives in core because it has to run before any plugin does (OTA
  * payloads are applied at boot, before PHP starts). But an app that never
- * installs the plugin should not ship it. An update-and-run-new-code path,
- * or a "leave this demo app" gesture, is the kind of thing App Review's
- * automated scan is likely to flag, and NativePHP apps keep being asked for
- * a demo video before anyone at Apple looks at them.
+ * installs the plugin should not ship it. An update-and-run-new-code path
+ * is the kind of thing App Review's automated scan is likely to flag, and
+ * NativePHP apps keep being asked for a demo video before anyone at Apple
+ * looks at them.
  *
  * iOS gets each enabled feature as a Swift compilation condition
  * (NATIVEPHP_OTA), so the code is not in the binary at all. Android gets a
@@ -28,7 +28,6 @@ class CoreFeatures
      */
     public const PLUGINS = [
         'nativephp/mobile-ota' => 'OTA',
-        'nativephp/mobile-discovery' => 'JUMP',
     ];
 
     /**

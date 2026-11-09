@@ -1493,21 +1493,6 @@ class NestedClass {}');
 
     /**
      * @test
-     */
-    public function it_compiles_the_jump_escape_hatch_in_when_the_discovery_plugin_is_installed(): void
-    {
-        $this->installTemplatePbxproj();
-
-        $this->compileWithPlugins([$this->createTestPlugin(['name' => 'nativephp/mobile-discovery'])]);
-
-        $this->assertSame(
-            ['Debug' => 'DEBUG NATIVEPHP_JUMP $(inherited)', 'Release' => 'NATIVEPHP_JUMP $(inherited)'],
-            $this->projectCompilationConditions()
-        );
-    }
-
-    /**
-     * @test
      *
      * Removing the plugin has to compile the code back out, so the conditions
      * are rewritten on every compile, including one with no plugins at all.
@@ -1553,7 +1538,7 @@ class NestedClass {}');
         $this->installTemplatePbxproj();
         $this->files->put($this->pbxprojPath(), str_replace(
             'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";',
-            'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG STAGING NATIVEPHP_JUMP $(inherited)";',
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG STAGING $(inherited)";',
             $this->files->get($this->pbxprojPath())
         ));
 

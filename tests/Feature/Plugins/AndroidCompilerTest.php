@@ -2057,7 +2057,6 @@ object TestFunctions {
 
         $features = $this->files->get($this->pluginFeaturesPath());
         $this->assertStringContainsString('const val OTA = true', $features);
-        $this->assertStringContainsString('const val JUMP = false', $features);
     }
 
     /**

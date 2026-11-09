@@ -1,10 +1,9 @@
 import SwiftUI
 import UIKit
 
-// Only Jump needs this (its mobile-discovery plugin sets NATIVEPHP_JUMP).
-// Keep it out of everyone else's release builds: App Review reads a
-// "leave this demo app" gesture as an app that loads other apps.
-#if DEBUG || NATIVEPHP_JUMP
+// Debug builds only. A "leave this demo app" gesture in a release build is
+// the kind of thing App Review reads as an app that loads other apps.
+#if DEBUG
 
 /// Global three-finger swipe-right recognizer, attached to the key window so it
 /// fires over ANY content — the local native-ui tree, the WebView, or a remote
