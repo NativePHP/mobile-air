@@ -206,6 +206,18 @@ it('lets an app opt its own middleware out of per-navigation runs', function () 
 
 // ── Guard failure must not fail open ────────────────
 
+it('sends a guest to the login screen when the auth middleware refuses them', function () {
+    $reported = captureReports();
+
+    Route::native('/login', CounterScreen::class)->name('login');
+    Route::native('/guarded', GuardedScreen::class)->middleware('auth');
+
+    Native::visit('/guarded')->assertReplacedWith('/login');
+
+    expect(GuardedScreen::$mounts)->toBe(0);
+    expect($reported)->toHaveCount(0);
+});
+
 it('sends the user to the start_url when the middleware itself blows up', function () {
     // An unresolvable alias throws inside the pipeline. Failing OPEN here
     // would silently grant access, the exact bug this mechanism exists to
