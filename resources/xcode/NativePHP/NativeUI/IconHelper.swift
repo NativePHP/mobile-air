@@ -58,6 +58,10 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "person.circle.fill"
     case "person":
         return "person.fill"
+    case "people", "connections", "contacts":
+        return "person.2.fill"
+    case "group", "groups":
+        return "person.3.fill"
 
     // Business/commerce icons
     case "orders", "receipt":
@@ -239,6 +243,8 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "doc.text.fill"
     case "book-open":
         return "book.fill"
+    case "news", "article":
+        return "newspaper.fill"
 
     // Device & Hardware
     case "camera":
@@ -261,10 +267,14 @@ private func getManualMapping(_ iconName: String) -> String? {
         return "globe"
     case "bolt", "flash":
         return "bolt.fill"
-    case "speaker":
+    case "speaker", "speaker-wave", "volume-up":
         return "speaker.wave.3.fill"
-    case "speaker-muted", "speaker-off", "mute":
+    case "volume-down":
+        return "speaker.wave.1.fill"
+    case "speaker-muted", "speaker-off", "mute", "volume-mute", "volume-off":
         return "speaker.slash.fill"
+    case "music", "audio", "music-note":
+        return "music.note"
 
     // Communication (extended)
     case "chat-bubble-left-right", "chat-bubbles":
