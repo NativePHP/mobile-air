@@ -120,7 +120,7 @@ and sends it with each region request.
 It is **untrusted input**. The signature in §7 proves it arrived intact from a
 holder of a valid session. It does not prove the values are true, because the
 client that produced them is a program on someone else's device. A server must
-authorise every action against the authenticated identity from §7.4, never
+authorise every action against the authenticated identity from §7.5, never
 against something the state claims.
 
 Hydration on the server follows the rules `EdgeSnapshot` already uses in
@@ -146,7 +146,7 @@ staging.
 ## 6. Sessions
 
 Asgard sessions exist to correlate state across requests and to make requests
-cheap to reject early. **They are not authentication.** See §7.4.
+cheap to reject early. **They are not authentication.** See §7.5.
 
 They deliberately do not reuse cookie semantics. Cookies ride along
 automatically; this exchange is explicit, so a client always knows whether it
@@ -199,26 +199,112 @@ one retry per originating request; a second failure surfaces.
 
 ## 7. Security
 
+Asgard does not define its own signing or encryption. It uses two published
+specs and says which parts of each it needs:
+
+- [RFC 9421](https://www.rfc-editor.org/rfc/rfc9421), HTTP Message
+  Signatures, for integrity in both directions.
+- [RFC 8188](https://www.rfc-editor.org/rfc/rfc8188), the `aes128gcm`
+  content encoding, for the bodies.
+
+Both have existing libraries and test vectors, and a reviewer can check an
+implementation against the RFC instead of against this document.
+
 ### 7.1 Threat model
 
 Assume: TLS everywhere, but intermediaries that terminate it and log. Assume
 the client binary is readable and `asgard_key` is extractable, because it is
 compiled into an app anyone can download. Assume some clients are hostile.
 
-### 7.2 What a signature proves
+### 7.2 Keys
 
-Requests are signed with a key derived from the session `secret` from §6.1.
-A valid signature proves the request was produced by something holding a live
-session secret and arrived unmodified.
+Every key comes from the session `secret` returned by the handshake in §6.1.
+Neither side uses `secret` directly. Each derives four keys from it with
+HKDF-SHA256 ([RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)), with an
+empty salt and these `info` labels:
 
-It does not prove the sender is a genuine copy of the app, and it cannot.
-`asgard_key` is public by construction, so anyone can complete a handshake.
-The signature is an integrity check and a cheap early filter, not
-authentication.
+| Key | `info` | Used for |
+|---|---|---|
+| `sig_c` | `asgard/1 sig client` | HMAC signing of requests |
+| `sig_s` | `asgard/1 sig server` | HMAC signing of responses |
+| `enc_c` | `asgard/1 enc client` | IKM for request bodies |
+| `enc_s` | `asgard/1 enc server` | IKM for response bodies |
 
-### 7.3 Encryption
+Each key is 32 bytes, except `enc_c` and `enc_s`, which are 16. Separate keys
+per direction mean a captured request can never be passed off as a response,
+and separate keys per purpose mean a bug in one use cannot leak another.
 
-Bodies are encrypted with AEAD under a key derived from the session `secret`.
+**`keyid` is the session id.** It is already on every request in
+`Asgard-Session-Id` and is not secret, so naming the key with it tells an
+observer nothing new. The receiver looks the session up by `keyid`, derives
+the key for the direction it is checking, and verifies. An unknown `keyid` is
+the 419 in §6.3; a known one that fails is the 403.
+
+Key agreement is out of scope, the same way RFC 8291 leaves it out of Web
+Push encryption. The handshake is the one place the secret crosses the wire.
+See §12.
+
+### 7.3 Signatures (RFC 9421)
+
+Both sides sign with `hmac-sha256` (RFC 9421 §3.3.3) under the label `asgard`,
+with `tag="asgard/1"`, so a signature made for Asgard cannot be confused with
+any other signature the app's HTTP stack adds.
+
+Bodies are covered through `Content-Digest`
+([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530)) using `sha-256`. The
+digest is taken over the content as sent, which is the ciphertext from §7.4.
+That is what lets the receiver check the signature before it decrypts
+anything (§7.6).
+
+**A region request** covers:
+
+```
+("@method" "@authority" "@path" "content-type" "content-encoding"
+ "content-digest" "asgard-protocol" "asgard-session-id" "authorization")
+;created=…;expires=…;keyid="<session>";alg="hmac-sha256";tag="asgard/1"
+```
+
+`@method` is the method on the wire. When the client falls back to POST plus
+`X-Asgard-Method: QUERY` (§8), it also covers `"x-asgard-method"`, so the
+verb it meant is signed too. Covering
+`authorization` binds the bearer token to the session: a token cannot be
+lifted from one signed request and replayed under another session's
+signature.
+
+A `#[Server]` method call is not a safe request, so it also carries a
+`nonce` parameter. The server remembers nonces until their `expires` and
+refuses a repeat. Region renders are reads and skip the nonce.
+
+**A response** covers:
+
+```
+("@status" "content-type" "content-encoding" "content-digest"
+ "asgard-protocol" "signature";req;key="asgard")
+;created=…;keyid="<session>";alg="hmac-sha256";tag="asgard/1"
+```
+
+`"signature";req;key="asgard"` pulls the request's own signature into the
+response's (RFC 9421 §2.4). A response therefore only verifies against the
+request it answers, and a fragment captured from one request cannot be
+replayed as the answer to another.
+
+Clock skew: `created` may be up to 60 seconds in the future, and `expires`
+is at most 300 seconds after `created`.
+
+What a valid signature proves: the message was produced by something holding
+a live session secret and arrived unmodified. It does not prove the sender is
+a genuine copy of the app, and it cannot. `asgard_key` is public by
+construction, so anyone can complete a handshake. The signature is an
+integrity check and a cheap early filter, not authentication.
+
+### 7.4 Encryption (RFC 8188)
+
+Request and response bodies use `Content-Encoding: aes128gcm`. The input key
+material is `enc_c` for requests and `enc_s` for responses. Every message gets
+a fresh random 16-byte salt, so the content-encryption key and nonce RFC 8188
+derives from them never repeat. The `keyid` in the RFC 8188 header is the
+session id, the same as in the signature. The record size is the default 4096.
+
 Inside TLS this is redundant against a network attacker. It is not redundant
 against a logging proxy, which is the case it exists for.
 
@@ -228,7 +314,11 @@ that logs headers and bodies could decrypt everything it logged, and the
 encryption would protect against nothing it was added for. The identifier
 travels on every request; the key never travels again after the handshake.
 
-### 7.4 Authentication is separate
+Fragments in `tree/json` are encrypted before signing, and the `Content-Type`
+stays `application/json`. The encoding is a property of the transfer, not of
+the fragment format, so §9 is unchanged.
+
+### 7.5 Authentication is separate
 
 **A client never tells the server who the user is.** Identity comes from an
 ordinary `Authorization: Bearer` credential the server verifies independently:
@@ -236,11 +326,15 @@ its own session, an OAuth access token, a personal access token. The Asgard
 session correlates state; the bearer token establishes identity. A request with
 a valid signature and an invalid token is rejected.
 
-### 7.5 Rejecting early
+### 7.6 Rejecting early
 
-Order of checks, cheapest and most decisive first: session id known → signature
-valid → decrypt → bearer token → component resolvable → hydrate. A request that
-fails any of the first three is discarded before anything parses its body.
+Order of checks, cheapest and most decisive first: session id known →
+`Content-Digest` matches the body → signature valid → decrypt → bearer token →
+component resolvable → hydrate. A request that fails any of the first four is
+discarded before anything parses its body.
+
+A client checks a response in the same order and keeps the placeholder on any
+failure. It never renders a fragment whose signature did not verify.
 
 ## 8. Transport
 
@@ -430,6 +524,11 @@ one version per build; servers may support several.
    the region name and carrying no props of its own, on the flat-buffer, Jump
    and streaming paths alike. `server_region` remains the PHP-side type, so
    validation still refuses one inside a fragment. No native change needed.
+6. The handshake response carries the session `secret` in its body, so a
+   logging proxy that sees the handshake sees every key derived from it.
+   Closing that needs key agreement in the handshake, for example an
+   ephemeral ECDH exchange the way RFC 8291 does for Web Push. §7 leaves it
+   out for now.
 
 ## 13. Notes for implementers
 
