@@ -39,6 +39,8 @@ class BottomNavItem extends Element
      */
     private ?array $rawSearchItems = null;
 
+    private ?string $reselectMethod = null;
+
     public static function make(): static
     {
         return new static;
@@ -46,6 +48,8 @@ class BottomNavItem extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        $this->reselectMethod = $attrs['on-reselect'] ?? $attrs['on_reselect'] ?? $this->reselectMethod;
+
         foreach ([
             'badge-color' => 'badgeColor',
             'material-variant' => 'material_variant',
@@ -156,6 +160,13 @@ class BottomNavItem extends Element
         return $this;
     }
 
+    public function onReselect(string $method): static
+    {
+        $this->reselectMethod = $method;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         // Resolve the platform icon triple down to the single wire icon.
@@ -199,6 +210,10 @@ class BottomNavItem extends Element
                 'data' => [],
                 'transition' => 'none',
             ]);
+        }
+
+        if ($this->reselectMethod !== null) {
+            $this->props['on_reselect'] = $registry->register($this->reselectMethod);
         }
 
         return $this->props;
