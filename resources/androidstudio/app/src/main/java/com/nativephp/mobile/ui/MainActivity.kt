@@ -20,6 +20,7 @@ import com.nativephp.mobile.bridge.LaravelEnvironment
 import com.nativephp.mobile.bridge.NativeSession
 import com.nativephp.mobile.bridge.registerBridgeFunctions
 import com.nativephp.mobile.bridge.plugins.registerPluginRenderers
+import com.nativephp.mobile.ui.nativerender.NativeRendererRegistry
 import com.nativephp.mobile.ui.nativerender.registerNativeChromeRenderers
 import com.nativephp.mobile.network.WebViewManager
 import android.view.ViewGroup
@@ -662,10 +663,16 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             // precede it. These are cheap registry inserts; running them here (off
             // the main thread and ahead of the PHP boot) keeps them off the
             // cold-start critical path while preserving ordering.
+            //
+            // Core's chrome renderers go first so they own their types before
+            // any plugin code runs (plugin init functions run inside
+            // registerBridgeFunctions). Once the generated plugin renderers
+            // are in, the renderer registry locks and refuses new types.
             Log.d("MainActivity", "🔌 Registering bridge functions...")
-            registerBridgeFunctions(this, applicationContext)
             registerNativeChromeRenderers()
+            registerBridgeFunctions(this, applicationContext)
             registerPluginRenderers()
+            NativeRendererRegistry.lockRegistrations()
             Log.d("MainActivity", "✅ Bridge functions registered")
 
             Log.d("LaravelInit", "Starting async Laravel extraction...")

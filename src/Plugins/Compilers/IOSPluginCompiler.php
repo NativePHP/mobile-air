@@ -413,7 +413,9 @@ class IOSPluginCompiler
 
         $registerCalls = collect($registrations)
             ->map(function ($reg) {
-                return "    // Plugin: {$reg['plugin']}\n    SwiftUIRendererRegistry.shared.register(\"{$reg['type']}\") { AnyView({$reg['renderer']}(node: \$0)) }";
+                // The owner lets the registry refuse a type core or another
+                // plugin already holds instead of quietly replacing it.
+                return "    // Plugin: {$reg['plugin']}\n    SwiftUIRendererRegistry.shared.register(\"{$reg['type']}\", owner: \"{$reg['plugin']}\") { AnyView({$reg['renderer']}(node: \$0)) }";
             })
             ->implode("\n\n");
 

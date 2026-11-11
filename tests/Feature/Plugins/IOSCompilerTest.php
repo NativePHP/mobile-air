@@ -197,6 +197,43 @@ let package = Package(
     /**
      * @test
      *
+     * Each generated renderer registration names the plugin that declared the
+     * component, so the registry can refuse one that would take over a type
+     * core or another plugin already holds.
+     */
+    public function it_generates_renderer_registrations_that_name_their_plugin(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'name' => 'acme/widgets',
+            'components' => [
+                [
+                    'type' => 'acme_widget',
+                    'element' => 'Acme\\Elements\\Widget',
+                    'blade' => 'Acme\\Components\\Widget',
+                    'ios_renderer' => 'AcmeWidgetRenderer',
+                    'android_renderer' => 'com.acme.ui.AcmeWidgetRenderer',
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift');
+
+        $this->assertStringContainsString(
+            "    // Plugin: acme/widgets\n".
+            '    SwiftUIRendererRegistry.shared.register("acme_widget", owner: "acme/widgets") { AnyView(AcmeWidgetRenderer(node: $0)) }',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
      * Should copy Swift source files from plugin to iOS project.
      */
     public function it_copies_swift_source_files(): void

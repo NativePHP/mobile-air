@@ -951,7 +951,9 @@ class AndroidPluginCompiler
                 $parts = explode('.', $reg['renderer']);
                 $className = end($parts);
 
-                return "    // Plugin: {$reg['plugin']}\n    NativeRendererRegistry.register(\"{$reg['type']}\", NodeRenderer { node, modifier ->\n        {$className}.Render(node, modifier)\n    })";
+                // The owner lets the registry refuse a type core or another
+                // plugin already holds instead of quietly replacing it.
+                return "    // Plugin: {$reg['plugin']}\n    NativeRendererRegistry.register(\"{$reg['type']}\", \"{$reg['plugin']}\", NodeRenderer { node, modifier ->\n        {$className}.Render(node, modifier)\n    })";
             })
             ->implode("\n\n");
 

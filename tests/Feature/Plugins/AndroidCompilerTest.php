@@ -238,6 +238,46 @@ dependencies {
     /**
      * @test
      *
+     * Each generated renderer registration names the plugin that declared the
+     * component, so the registry can refuse one that would take over a type
+     * core or another plugin already holds.
+     */
+    public function it_generates_renderer_registrations_that_name_their_plugin(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'name' => 'acme/widgets',
+            'components' => [
+                [
+                    'type' => 'acme_widget',
+                    'element' => 'Acme\\Elements\\Widget',
+                    'blade' => 'Acme\\Components\\Widget',
+                    'ios_renderer' => 'AcmeWidgetRenderer',
+                    'android_renderer' => 'com.acme.ui.AcmeWidgetRenderer',
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt');
+
+        $this->assertStringContainsString('import com.acme.ui.AcmeWidgetRenderer', $content);
+        $this->assertStringContainsString(
+            "    // Plugin: acme/widgets\n".
+            "    NativeRendererRegistry.register(\"acme_widget\", \"acme/widgets\", NodeRenderer { node, modifier ->\n".
+            "        AcmeWidgetRenderer.Render(node, modifier)\n".
+            '    })',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
      * Should copy Kotlin source files from plugin to Android project.
      */
     public function it_copies_kotlin_source_files(): void

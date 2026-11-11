@@ -66,24 +66,31 @@ func registerBridgeFunctions() {
     // Built-in framework-level renderers for chrome sentinels emitted
     // by `wrapWithChrome` when a layout opts into native chrome via
     // `NativeLayout::usesNativeChrome() = true`. These aren't plugin
-    // components — they ship with mobile-air.
-    SwiftUIRendererRegistry.shared.register("native_root_stack") {
+    // components — they ship with mobile-air. They register first and
+    // under the core owner, so no plugin can take them over. Keep this
+    // list in step with `CoreRenderers::IOS` in PHP (CoreRenderersTest
+    // checks it).
+    SwiftUIRendererRegistry.shared.register("native_root_stack", owner: SwiftUIRendererRegistry.coreOwner) {
         AnyView(NativeRootStackRenderer(node: $0))
     }
-    SwiftUIRendererRegistry.shared.register("native_root_tabs") {
+    SwiftUIRendererRegistry.shared.register("native_root_tabs", owner: SwiftUIRendererRegistry.coreOwner) {
         AnyView(NativeRootTabsRenderer(node: $0))
     }
     // `bottom_bar` is a marker element — its content is extracted by
     // the parent chrome renderer (NavigationStack / TabView) and pinned
     // via `.safeAreaInset(edge: .bottom)`. The marker itself renders
     // nothing if it ever falls through to the default container path.
-    SwiftUIRendererRegistry.shared.register("bottom_bar") { _ in
+    SwiftUIRendererRegistry.shared.register("bottom_bar", owner: SwiftUIRendererRegistry.coreOwner) { _ in
         AnyView(EmptyView())
     }
 
     // Register plugin renderers
     registerPluginRenderers()
 
-    // Register plugin bridge functions
+    // Register plugin bridge functions (this also runs plugin init functions)
     registerPluginBridgeFunctions()
+
+    // Startup registration is done: refuse any renderer for a new type from
+    // here on. Android locks at the same point, after plugin init functions.
+    SwiftUIRendererRegistry.shared.lockRegistrations()
 }
