@@ -3,7 +3,6 @@
 namespace Native\Mobile\Edge\Asgard;
 
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
-use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeElementCollector;
@@ -38,10 +37,22 @@ use Native\Mobile\System;
  *
  * Callback ids are namespaced the other way, because they are derived
  * from a registry scope rather than a key path: fragment nodes register
- * into a `CallbackRegistry` scoped `server:<region>`, exactly as a child
- * component's nodes register into one scoped by its identity key. That
- * scope is applied by pinning it on the region node, which
- * `Element::toArray()` then hands down to every descendant.
+ * into a `FragmentCallbacks` registry scoped `server:<region>`, exactly
+ * as a child component's nodes register into one scoped by its identity
+ * key. A region in a child component chains the child's scope in front
+ * (`cards|key:a>server:<region>`), so two cards with the same region
+ * never derive the same ids. That scope is applied by pinning it on the
+ * region node, which `Element::toArray()` then hands down to every
+ * descendant.
+ *
+ * ## Taps inside a fragment (§10)
+ *
+ * A callback slot is an object, `{"call", "args", "target"}`, checked
+ * when the fragment is applied (FragmentCallbacks::parseSlot()). The
+ * component's dispatch resolves a fragment id through registriesOf():
+ * a `client` target runs a `#[NativeAction]` method on the component
+ * that owns the region, and a `server` target goes out through action()
+ * as an ActionRequest, whose answer comes back through deliver().
  *
  * ## Asking for fragments
  *
@@ -53,18 +64,17 @@ use Native\Mobile\System;
  *
  * ## What is deliberately NOT here
  *
- * HTTP, sessions, crypto, and event dispatch back to a server (§10) all
- * belong to other packages and later workstreams. This class holds
- * fragments, paints them and says when one is wanted. It never fetches
- * one itself.
+ * HTTP, sessions and crypto belong to other packages. This class holds
+ * fragments, paints them and says when one is wanted or an action is
+ * sent. It never fetches one itself.
  */
 class ServerRegion
 {
     /**
      * Wire callback slot => the collector attr that carries an
-     * expression. Servers send expressions, never ids (§9.1) — the two
-     * sides derive ids in different scopes, so an id from a server is
-     * meaningless here.
+     * expression. Servers send `{"call", "args", "target"}` objects,
+     * never ids (§9.1) — the two sides derive ids in different scopes,
+     * so an id from a server is meaningless here.
      */
     private const CALLBACK_ATTRS = [
         'on_press' => '_press',
@@ -115,8 +125,23 @@ class ServerRegion
      */
     protected static array $detached = [];
 
-    /** Per-region callback registries, keyed by region name. */
+    /**
+     * Callback registries for regions rendered outside any component,
+     * keyed by region name.
+     *
+     * @var array<string, FragmentCallbacks>
+     */
     protected static array $registries = [];
+
+    /**
+     * Callback registries per owning component: `owner => [region =>
+     * registry]`. A registry is dropped when its region's fragment is
+     * replaced or cleared, so an id from a fragment no longer on screen
+     * resolves to nothing.
+     *
+     * @var \WeakMap<NativeComponent, array<string, FragmentCallbacks>>|null
+     */
+    protected static ?\WeakMap $ownedRegistries = null;
 
     /**
      * Regions recorded in the current frame, in render order. Each is
@@ -199,7 +224,10 @@ class ServerRegion
             return true;
         }
 
-        $callbacks = static::registryFor($name);
+        // The collector's bound registry is the owner's own, so its
+        // scope is what a child's region chains in front of its own.
+        $callbacks = static::registryFor($name, $owner)
+            ?? static::newRegistry($name, $owner, NativeElementCollector::callbacks()?->scope() ?? '');
 
         // Element-tree path: pinning the region node is enough. toArray()
         // resolves `ownedCallbacks` first and passes the result down, so
@@ -273,12 +301,16 @@ class ServerRegion
             return false;
         }
 
+        $nodes = static::checkCallbacks($nodes, $region);
+
         if ($owner === null) {
             static::$detached[$region] = $nodes;
+            unset(static::$registries[$region]);
         } else {
             $held = static::fragments()[$owner] ?? [];
             $held[$region] = $nodes;
             static::fragments()[$owner] = $held;
+            static::dropRegistry($region, $owner);
         }
 
         static::$repaint = true;
@@ -295,6 +327,9 @@ class ServerRegion
      * returned, when the request is unknown, when a newer request for the
      * same region has gone out since, or when the component has gone.
      * Otherwise this is applyFragment() for that component.
+     *
+     * An ActionRequest is a RegionRequest, and its answer is delivered
+     * the same way.
      */
     public static function deliver(RegionRequest $request, array|string $tree): bool
     {
@@ -332,7 +367,7 @@ class ServerRegion
     public static function clearFragment(string $region, ?NativeComponent $owner = null): void
     {
         if ($owner === null) {
-            unset(static::$detached[$region]);
+            unset(static::$detached[$region], static::$registries[$region]);
 
             return;
         }
@@ -340,6 +375,7 @@ class ServerRegion
         $held = static::fragments()[$owner] ?? [];
         unset($held[$region]);
         static::fragments()[$owner] = $held;
+        static::dropRegistry($region, $owner);
     }
 
     public static function hasFragment(string $region, ?NativeComponent $owner = null): bool
@@ -489,18 +525,73 @@ class ServerRegion
             }
         }
 
-        unset(static::requested()[$owner], static::refreshing()[$owner], static::fragments()[$owner]);
+        unset(
+            static::requested()[$owner],
+            static::refreshing()[$owner],
+            static::fragments()[$owner],
+            static::ownedRegistries()[$owner],
+        );
     }
 
     /**
-     * The registry a region's fragment callbacks are derived in.
+     * The registry a region's current fragment registered its callbacks
+     * in, or null when no fragment has rendered since it last changed.
      *
-     * Scoped by region name alone. Ids stay content-addressed within
-     * that scope, so a re-render of the same fragment reproduces them.
+     * Scoped `server:<region>`, after the owner's own scope when the
+     * owner is a child component. Ids stay content-addressed within that
+     * scope, so a re-render of the same fragment reproduces them.
      */
-    public static function registryFor(string $region): CallbackRegistry
+    public static function registryFor(string $region, ?NativeComponent $owner = null): ?FragmentCallbacks
     {
-        return static::$registries[$region] ??= new CallbackRegistry('server:'.$region);
+        if ($owner === null) {
+            return static::$registries[$region] ?? null;
+        }
+
+        return (static::ownedRegistries()[$owner] ?? [])[$region] ?? null;
+    }
+
+    /**
+     * Every fragment registry a component holds, `region => registry`.
+     * Dispatch reads these to resolve a tap on a fragment node.
+     *
+     * @return array<string, FragmentCallbacks>
+     */
+    public static function registriesOf(NativeComponent $owner): array
+    {
+        return static::ownedRegistries()[$owner] ?? [];
+    }
+
+    /**
+     * Send a server action for a tap inside a component's region (§10).
+     *
+     * The request carries the component's state as it is now, and it
+     * becomes the region's latest request, so an answer to an older one
+     * is dropped when it lands. The answer comes back through deliver().
+     * A source that throws is logged and otherwise ignored, as for
+     * request().
+     */
+    public static function action(NativeComponent $owner, string $region, string $call, array $args): ActionRequest
+    {
+        $request = new ActionRequest(
+            id: 'action-'.(++static::$sequence),
+            component: ComponentAddress::for($owner),
+            region: $region,
+            state: static::stateOf($owner),
+            platform: static::platform(),
+            call: $call,
+            args: array_values($args),
+            componentClass: $owner::class,
+        );
+
+        static::track($owner, $region, $request->id);
+
+        try {
+            app(FragmentSource::class)->action($request);
+        } catch (\Throwable $e) {
+            NativeRouter::debugLog("Asgard: action [{$call}] for region [{$region}] could not start: ".$e->getMessage());
+        }
+
+        return $request;
     }
 
     /** Forget every fragment, request, registry and frame record. */
@@ -509,6 +600,7 @@ class ServerRegion
         static::$fragments = null;
         static::$detached = [];
         static::$registries = [];
+        static::$ownedRegistries = null;
         static::$frame = [];
         static::$open = [];
         static::$duplicates = [];
@@ -576,20 +668,55 @@ class ServerRegion
             componentClass: $owner::class,
         );
 
-        $requested = static::requested()[$owner] ?? [];
-        $requested[$region] = $request->id;
-        static::requested()[$owner] = $requested;
-
-        static::$pending[$request->id] = [
-            'owner' => \WeakReference::create($owner),
-            'region' => $region,
-        ];
+        static::track($owner, $region, $request->id);
 
         try {
             app(FragmentSource::class)->request($request);
         } catch (\Throwable $e) {
             NativeRouter::debugLog("Asgard: request for region [{$region}] could not start: ".$e->getMessage());
         }
+    }
+
+    /** Make an id the region's latest request, and remember it as in flight. */
+    protected static function track(NativeComponent $owner, string $region, string $id): void
+    {
+        $requested = static::requested()[$owner] ?? [];
+        $requested[$region] = $id;
+        static::requested()[$owner] = $requested;
+
+        static::$pending[$id] = [
+            'owner' => \WeakReference::create($owner),
+            'region' => $region,
+        ];
+    }
+
+    protected static function newRegistry(string $region, ?NativeComponent $owner, string $ownerScope): FragmentCallbacks
+    {
+        $scope = $ownerScope === '' ? 'server:'.$region : $ownerScope.'>server:'.$region;
+        $registry = new FragmentCallbacks($scope);
+
+        if ($owner === null) {
+            return static::$registries[$region] = $registry;
+        }
+
+        $held = static::ownedRegistries()[$owner] ?? [];
+        $held[$region] = $registry;
+        static::ownedRegistries()[$owner] = $held;
+
+        return $registry;
+    }
+
+    protected static function dropRegistry(string $region, NativeComponent $owner): void
+    {
+        $held = static::ownedRegistries()[$owner] ?? [];
+        unset($held[$region]);
+        static::ownedRegistries()[$owner] = $held;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, FragmentCallbacks>> */
+    protected static function ownedRegistries(): \WeakMap
+    {
+        return static::$ownedRegistries ??= new \WeakMap;
     }
 
     /**
@@ -731,11 +858,12 @@ class ServerRegion
             $attrs['native-key'] = (string) $node['key'];
         }
 
-        // Callback slots carry an expression string. Anything else in one
-        // (an id, a number, an array) is dropped rather than registered.
+        // Callback slots were checked when the fragment was applied
+        // (checkCallbacks()). Each becomes an expression only this
+        // region's FragmentCallbacks registry reads, carrying its target.
         foreach (self::CALLBACK_ATTRS as $slot => $attr) {
-            if (isset($node[$slot]) && is_string($node[$slot]) && $node[$slot] !== '') {
-                $attrs[$attr] = $node[$slot];
+            if (isset($node[$slot]) && ($callback = FragmentCallbacks::parseSlot($node[$slot])) !== null) {
+                $attrs[$attr] = FragmentCallbacks::expressionFor($callback);
             }
         }
 
@@ -743,6 +871,49 @@ class ServerRegion
         unset($attrs['id'], $attrs['node_id']);
 
         return $attrs;
+    }
+
+    /**
+     * Check every callback slot in a fragment, keeping the canonical
+     * form of a good one. A bad one (a string, a bad method name, args
+     * that are not JSON values, an unknown target) is dropped, so the
+     * node renders without that handler, and logged. With `app.debug` on
+     * it throws instead, as an unrenderable fragment does.
+     */
+    protected static function checkCallbacks(array $nodes, string $region): array
+    {
+        foreach ($nodes as $i => $node) {
+            foreach (array_keys(self::CALLBACK_ATTRS) as $slot) {
+                if (! array_key_exists($slot, $node)) {
+                    continue;
+                }
+
+                $callback = FragmentCallbacks::parseSlot($node[$slot], $reason);
+
+                if ($callback !== null) {
+                    $node[$slot] = $callback;
+
+                    continue;
+                }
+
+                $message = "Asgard fragment for region '{$region}' has a bad {$slot} on a '{$node['type']}': {$reason}";
+
+                if (config('app.debug')) {
+                    throw new \RuntimeException($message);
+                }
+
+                NativeRouter::debugLog($message.' — the handler was dropped.');
+                unset($node[$slot]);
+            }
+
+            if (isset($node['children'])) {
+                $node['children'] = static::checkCallbacks(static::normalize($node['children']), $region);
+            }
+
+            $nodes[$i] = $node;
+        }
+
+        return $nodes;
     }
 
     /** Accept a single node or a list of them; always return a list. */

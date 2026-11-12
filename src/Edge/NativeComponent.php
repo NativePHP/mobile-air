@@ -27,6 +27,9 @@ use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
 use Native\Mobile\Edge\Enums\ActionSource;
+use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
+use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
+use Native\Mobile\Edge\Exceptions\FragmentActionNotAllowedException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
@@ -4887,6 +4890,10 @@ abstract class NativeComponent
             ComponentMethodInvoker::assertCallable($this, $method);
         }
 
+        if ($source->fromFragment()) {
+            ComponentMethodInvoker::assertFragmentCallable($this, $method, $args);
+        }
+
         return $this->callAction($method, $args, $source);
     }
 
@@ -4902,12 +4909,18 @@ abstract class NativeComponent
      *
      * @param  string  $method  Method to call. It exists, and is callable for this source.
      * @param  array  $args  Arguments, resolved with container injection and
-     *                       implicit model / enum binding.
+     *                       implicit model / enum binding. Not for
+     *                       {@see ActionSource::FragmentClient}: a server
+     *                       chose those, so they are passed as they are.
      * @param  ActionSource  $source  What triggered the call.
      * @return mixed The return value. {@see ActionSource::SearchQuery} depends on it.
      */
     protected function callAction(string $method, array $args, ActionSource $source): mixed
     {
+        if ($source === ActionSource::FragmentClient) {
+            return (new \ReflectionMethod($this, $method))->invokeArgs($this, array_values($args));
+        }
+
         return ComponentMethodInvoker::invokeLifecycle($this, $method, $args);
     }
 
@@ -4923,6 +4936,26 @@ abstract class NativeComponent
         // child as $this, and `native:model` syncs the child's property.
         // Ids no component owns are dropped, exactly as before.
         $owner = $this->findCallbackOwner($callbackId);
+
+        // A tap on a server-rendered fragment resolves in that region's
+        // own registry (docs/ASGARD-PROTOCOL.md §9.2, §10). A fragment's
+        // ids are derived from expressions a server wrote, so one could be
+        // made to equal a screen callback's id, or another region's. An id
+        // more than one scope claims is dropped rather than guessed at.
+        $fragmentCallbacks = $this->findFragmentCallbacks($callbackId);
+
+        if ($fragmentCallbacks !== []) {
+            if ($owner !== null || count($fragmentCallbacks) > 1) {
+                NativeRouter::debugLog("Asgard: callback id [{$callbackId}] is claimed by more than one scope — dropped.");
+
+                return;
+            }
+
+            [$component, $region, $callback] = $fragmentCallbacks[0];
+            $component->dispatchFragmentCallback($region, $callback, $event);
+
+            return;
+        }
 
         if ($owner === null) {
             return;
@@ -4947,16 +4980,7 @@ abstract class NativeComponent
             return;
         }
 
-        $type = $event['type'] ?? -1;
-
-        $eventArgs = match ($type) {
-            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
-            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
-            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
-            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
-            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
-            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
-        };
+        $eventArgs = $this->uiEventArgs($event);
 
         // Dispatch path forks based on callback kind. Default kind
         // (null) is fire-and-forget — return value is discarded.
@@ -5035,6 +5059,85 @@ abstract class NativeComponent
         $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::Interaction);
     }
 
+    /** The value a UI event carries, as the arguments appended to a callback's own. */
+    private function uiEventArgs(array $event): array
+    {
+        return match ($event['type'] ?? -1) {
+            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
+            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
+            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
+            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
+            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
+            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
+        };
+    }
+
+    /**
+     * Every fragment registry in this component's tree that resolves the
+     * id, as `[component, region, callback]`. More than one is a clash.
+     *
+     * @return list<array{0: NativeComponent, 1: string, 2: array}>
+     */
+    private function findFragmentCallbacks(int $callbackId): array
+    {
+        if ($callbackId === 0) {
+            return [];
+        }
+
+        $matches = [];
+
+        foreach ($this->componentTree() as $component) {
+            foreach (Asgard\ServerRegion::registriesOf($component) as $region => $registry) {
+                if (($callback = $registry->resolve($callbackId)) !== null) {
+                    $matches[] = [$component, $region, $callback];
+                }
+            }
+        }
+
+        return $matches;
+    }
+
+    /**
+     * Run a tap on one of this component's fragment callbacks (§10).
+     *
+     * A `server` target sends an ActionRequest with the state as it is
+     * now, and nothing runs here, whatever methods this component has. A
+     * `client` target runs a `#[NativeAction]` method of this component
+     * through runAction(). A method the fragment may not call runs
+     * nothing and is logged, or throws with `app.debug` on. Either way a
+     * client callback never falls back to the server.
+     */
+    private function dispatchFragmentCallback(string $region, array $callback, array $event): void
+    {
+        $target = $callback['target'] ?? null;
+        $method = $callback['method'];
+        $args = [...$callback['args'], ...$this->uiEventArgs($event)];
+
+        if ($target === Asgard\FragmentCallbacks::TARGET_SERVER) {
+            Asgard\ServerRegion::action($this, $region, $method, $args);
+
+            return;
+        }
+
+        if ($target !== Asgard\FragmentCallbacks::TARGET_CLIENT) {
+            return;
+        }
+
+        try {
+            ComponentMethodInvoker::assertFragmentCallable($this, $method, $args);
+        } catch (ComponentMethodNotFoundException|DirectlyCallingLifecycleHooksNotAllowedException|FragmentActionNotAllowedException $e) {
+            if (config('app.debug')) {
+                throw $e;
+            }
+
+            NativeRouter::debugLog("Asgard: fragment in region [{$region}] asked for [{$method}], refused: ".$e->getMessage());
+
+            return;
+        }
+
+        $this->invokeUiInteraction($method, $args, ActionSource::FragmentClient);
+    }
+
     private function invokeUiInteraction(string $method, array $parameters, ActionSource $source): mixed
     {
         $result = $this->__invokeInteraction($method, $parameters, $source);
@@ -5052,6 +5155,12 @@ abstract class NativeComponent
         array $parameters,
         ActionSource $source = ActionSource::Interaction,
     ): mixed {
+        // A fragment's client callback goes straight to the chokepoint: a
+        // server chose the name, so none of the shortcuts below apply.
+        if ($source->fromFragment()) {
+            return $this->runAction($method, $parameters, $source);
+        }
+
         $internalCallbacks = [
             '__navigate',
             '__overlayBack',

@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Edge\Asgard\ActionRequest;
 use Native\Mobile\Edge\Asgard\ComponentAddress;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\Asgard\NullFragmentSource;
@@ -127,6 +128,8 @@ it('keeps a source another provider bound before this one registered', function 
     $mine = new class implements FragmentSource
     {
         public function request(RegionRequest $request): void {}
+
+        public function action(ActionRequest $request): void {}
     };
 
     app()->forgetInstance(FragmentSource::class);
@@ -159,6 +162,8 @@ it('keeps the screen up when the source throws', function () {
         {
             throw new RuntimeException('offline');
         }
+
+        public function action(ActionRequest $request): void {}
     });
 
     Native::test(FragmentSourceScreen::class)
@@ -240,6 +245,8 @@ it('repaints when the fragment arrives through an AsyncTask completion', functio
                 $this->receiveFragment($request, $tree);
             }, durable: false);
         }
+
+        public function action(ActionRequest $request): void {}
     });
 
     $screen = Native::test(FragmentSourceScreen::class)->assertSee('Loading sales…');
@@ -260,6 +267,8 @@ it('flags a repaint for a fragment that lands outside an event, until the next f
             // A source answering at once, from a cache say.
             ServerRegion::deliver($request, SUMMARY);
         }
+
+        public function action(ActionRequest $request): void {}
     });
 
     $screen = Native::test(FragmentSourceScreen::class);

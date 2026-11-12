@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge\Asgard\Contracts;
 
+use Native\Mobile\Edge\Asgard\ActionRequest;
 use Native\Mobile\Edge\Asgard\RegionRequest;
 
 /**
@@ -17,8 +18,16 @@ use Native\Mobile\Edge\Asgard\RegionRequest;
  *
  * Never delivering is allowed. The region keeps its placeholder, which
  * is the intended offline state rather than an error.
+ *
+ * action() is a tap inside a fragment whose callback targets the server
+ * (§10). It is fire and forget in the same way: send it, and deliver the
+ * fragment the server answers with through the same
+ * `ServerRegion::deliver($request, $tree)`. An ActionRequest is a
+ * RegionRequest, so the answer path is the same one.
  */
 interface FragmentSource
 {
     public function request(RegionRequest $request): void;
+
+    public function action(ActionRequest $request): void;
 }

@@ -3,6 +3,7 @@
 namespace Tests\Fixtures\Edge;
 
 use Illuminate\View\View;
+use Native\Mobile\Attributes\NativeAction;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Edge\Enums\ActionSource;
@@ -125,6 +126,13 @@ class ActionPipelineScreen extends NativeComponent
     public function onChildSaid(string $word): void
     {
         $this->ran[] = 'onChildSaid:'.$word;
+    }
+
+    /** A client action a server-rendered fragment may call. */
+    #[NativeAction]
+    public function pick(string $colour, int $times): void
+    {
+        $this->ran[] = "pick:{$colour}:{$times}";
     }
 
     public function markSaved(string $bound, string $word): void

@@ -17,7 +17,7 @@ namespace Native\Mobile\Edge\Asgard;
  * the wire body. Nor is `componentClass`, which is here for local use
  * only: the server MUST NOT see a class name (§4).
  */
-final class RegionRequest
+class RegionRequest
 {
     public function __construct(
         public readonly string $id,

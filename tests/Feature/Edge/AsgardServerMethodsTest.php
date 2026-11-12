@@ -384,7 +384,7 @@ it('puts a fragment in a response through the same validation a region render ge
 
     $screen->assertSee('Revenue £12,400')->assertDontSee('Loading sales…');
 
-    expect(ServerRegion::registryFor('sales-summary')->lookup('deleteAccount'))->toBeNull();
+    expect(ServerRegion::registryFor('sales-summary', $screen->instance())->expressions())->toBe([]);
     expect($screen->get('note'))->toBe('');
 });
 

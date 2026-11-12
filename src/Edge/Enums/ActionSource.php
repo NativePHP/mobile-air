@@ -54,6 +54,15 @@ enum ActionSource: string
     case DragEnd = 'drag_end';
 
     /**
+     * A tap inside a server-rendered fragment whose callback targets the
+     * client (docs/ASGARD-PROTOCOL.md §10). A server chose the name, so on
+     * top of the guard the method must carry `#[NativeAction]` and take
+     * only JSON-shaped parameters, and its arguments are passed as they
+     * came, with no container injection or model / enum binding.
+     */
+    case FragmentClient = 'fragment_client';
+
+    /**
      * Whether the method name must pass ComponentMethodInvoker's callable
      * guard: public, not static, not a lifecycle hook, not declared on
      * NativeComponent itself.
@@ -80,11 +89,21 @@ enum ActionSource: string
             self::VirtualWindow,
             self::TextSelection,
             self::DragEnd,
+            self::FragmentClient,
             self::ParentBinding,
             self::NativeEvent => true,
 
             self::Poll,
             self::ComponentEvent => false,
         };
+    }
+
+    /**
+     * Whether the name came from a server-rendered fragment, so the method
+     * must also pass ComponentMethodInvoker::assertFragmentCallable().
+     */
+    public function fromFragment(): bool
+    {
+        return $this === self::FragmentClient;
     }
 }

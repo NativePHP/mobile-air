@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
@@ -45,6 +46,21 @@ function fireKinded(TestableComponent $screen, string $expression, string $kind,
         $id = $this->nativeCallbacks->register($expression, $kind);
         $this->dispatchUiEvent([...$event, 'callback_id' => $id]);
     });
+}
+
+/**
+ * Paint a fragment whose button calls a client action, then tap it the
+ * way a user would. set() repaints without going through callAction().
+ */
+function tapFragmentClientAction(TestableComponent $screen): void
+{
+    ServerRegion::applyFragment('picks', [
+        'type' => 'pressable',
+        'on_press' => ['call' => 'pick', 'args' => ['red', 2], 'target' => 'client'],
+        'children' => [['type' => 'text', 'props' => ['text' => 'Pick red']]],
+    ], $screen->instance());
+
+    $screen->set('count', $screen->get('count'))->tap('Pick red');
 }
 
 /**
@@ -160,6 +176,15 @@ it('routes a drag_end callback through callAction with the decoded translation',
         ->and($screen->instance()->ran)->toBe(['dragged:card:12.5,-3']);
 });
 
+it('routes a fragment client callback through callAction with its args as sent', function () {
+    $screen = Native::test(ActionPipelineScreen::class);
+
+    tapFragmentClientAction($screen);
+
+    expect($screen->instance()->actions)->toBe([['fragment_client', 'pick', ['red', 2]]])
+        ->and($screen->instance()->ran)->toBe(['pick:red:2']);
+});
+
 // ── No route bypasses the chokepoint ────────────────
 
 it('reaches no handler by any route when callAction declines to delegate', function () {
@@ -180,6 +205,7 @@ it('reaches no handler by any route when callAction declines to delegate', funct
     fireKinded($screen, "loadRange('rows')", 'virtual_window', ['type' => 2, 'text' => '5,9']);
     fireKinded($screen, "selectionChanged('field')", 'text_selection', ['type' => 2, 'text' => "1,4\x1Fhello"]);
     fireKinded($screen, "dragged('card')", 'drag_end', ['type' => 2, 'text' => '1,2']);
+    tapFragmentClientAction($screen);
 
     // Every source was seen...
     expect($screen->instance()->sources())->toBe([
@@ -194,6 +220,7 @@ it('reaches no handler by any route when callAction declines to delegate', funct
         'virtual_window',
         'text_selection',
         'drag_end',
+        'fragment_client',
     ]);
 
     // ...and every case of the enum was among them, so a new
@@ -308,5 +335,6 @@ it('guards every source a template or the device names, and only those', functio
         'virtual_window' => true,
         'text_selection' => true,
         'drag_end' => true,
+        'fragment_client' => true,
     ]);
 });

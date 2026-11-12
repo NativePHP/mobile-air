@@ -148,7 +148,7 @@ it('derives fragment callback ids in the region scope, not the screen scope', fu
     ServerRegion::applyFragment('sales-summary', [
         'type' => 'column',
         'key' => 'summary',
-        'on_press' => 'drillDown',
+        'on_press' => ['call' => 'drillDown', 'args' => ['eu']],
     ]);
 
     $tree = renderNativeView('asgard-callbacks', <<<'BLADE'
@@ -165,15 +165,20 @@ it('derives fragment callback ids in the region scope, not the screen scope', fu
     $fragmentRoot = $rendered['children'][0]['children'][0];
     $regionScoped = ServerRegion::registryFor('sales-summary');
 
-    expect($fragmentRoot['on_press'])->toBe($regionScoped->lookup('drillDown'));
+    expect($regionScoped->scope())->toBe('server:sales-summary');
+    expect(array_values($regionScoped->expressions()))->toBe([$fragmentRoot['on_press']]);
+
+    // What the id resolves to carries its target, so it can only be
+    // dispatched the way the server asked.
     expect($regionScoped->resolve($fragmentRoot['on_press']))
-        ->toBe(['method' => 'drillDown', 'args' => []]);
+        ->toBe(['method' => 'drillDown', 'args' => ['eu'], 'target' => 'server']);
 
     // The screen never sees it, and the id is not the one an unscoped
     // registration of the same expression would have produced.
-    expect($screen->lookup('drillDown'))->toBeNull();
+    expect($screen->expressions())->toBe([]);
     expect($screen->resolve($fragmentRoot['on_press']))->toBeNull();
-    expect($fragmentRoot['on_press'])->not->toBe((new CallbackRegistry)->register('drillDown'));
+    $expression = array_key_first($regionScoped->expressions());
+    expect($fragmentRoot['on_press'])->not->toBe((new CallbackRegistry)->register($expression));
 });
 
 it('leaves placeholder callbacks in the screen scope', function () {

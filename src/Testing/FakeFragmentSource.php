@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Native\Mobile\Edge\Asgard\ActionRequest;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\Asgard\RegionRequest;
 use Native\Mobile\Edge\Asgard\ServerRegion;
@@ -23,11 +24,22 @@ use PHPUnit\Framework\Assert;
  * when an answer lands and whether it ever does. respond() goes through
  * ServerRegion::deliver(), the same path a real source takes, so a stale
  * or orphaned answer is dropped here exactly as it would be on a device.
+ *
+ * A tap on a fragment callback that targets the server is recorded the
+ * same way, as an action, and answered with respondToAction():
+ *
+ *     $screen->tap('Shuffle');
+ *
+ *     $source->assertActionSent('sales-summary', 'shuffle');
+ *     $source->respondToAction('sales-summary', ['type' => 'text', 'props' => ['text' => 'Shuffled']]);
  */
 class FakeFragmentSource implements FragmentSource
 {
     /** @var list<RegionRequest> oldest first */
     protected array $requests = [];
+
+    /** @var list<ActionRequest> oldest first */
+    protected array $actions = [];
 
     /** Bind a fake source for this test (idempotent) and return it. */
     public static function enable(): static
@@ -60,6 +72,11 @@ class FakeFragmentSource implements FragmentSource
     public function request(RegionRequest $request): void
     {
         $this->requests[] = $request;
+    }
+
+    public function action(ActionRequest $request): void
+    {
+        $this->actions[] = $request;
     }
 
     // ── Inspection ──────────────────────────────────
@@ -99,6 +116,48 @@ class FakeFragmentSource implements FragmentSource
         return $this;
     }
 
+    /** @return list<ActionRequest> */
+    public function actions(?string $region = null): array
+    {
+        return $region === null
+            ? $this->actions
+            : array_values(array_filter($this->actions, fn (ActionRequest $a) => $a->region === $region));
+    }
+
+    public function lastAction(?string $region = null): ?ActionRequest
+    {
+        $actions = $this->actions($region);
+
+        return $actions === [] ? null : $actions[array_key_last($actions)];
+    }
+
+    /** Assert a region sent a server action, optionally of one `call` and a number of times. */
+    public function assertActionSent(string $region, ?string $call = null, ?int $times = null): static
+    {
+        $actions = array_filter(
+            $this->actions($region),
+            fn (ActionRequest $a) => $call === null || $a->call === $call,
+        );
+
+        $what = $call === null ? "Region [{$region}]" : "Region [{$region}] action [{$call}]";
+        $count = count($actions);
+
+        if ($times === null) {
+            Assert::assertGreaterThan(0, $count, "{$what} was never sent.");
+        } else {
+            Assert::assertSame($times, $count, "{$what} was sent {$count} times, not {$times}.");
+        }
+
+        return $this;
+    }
+
+    public function assertNoActionsSent(): static
+    {
+        Assert::assertSame([], array_map(fn (ActionRequest $a) => $a->region.':'.$a->call, $this->actions));
+
+        return $this;
+    }
+
     // ── Answering ───────────────────────────────────
 
     /**
@@ -118,5 +177,21 @@ class FakeFragmentSource implements FragmentSource
         }
 
         return ServerRegion::deliver($request, $tree);
+    }
+
+    /**
+     * Answer a server action: the ActionRequest itself, or a region name
+     * for the latest action sent from it. Same rules as respond().
+     */
+    public function respondToAction(ActionRequest|string $action, array|string $tree): bool
+    {
+        if (is_string($action)) {
+            $region = $action;
+            $action = $this->lastAction($region);
+
+            Assert::assertNotNull($action, "Region [{$region}] never sent an action, so there is nothing to answer.");
+        }
+
+        return ServerRegion::deliver($action, $tree);
     }
 }
