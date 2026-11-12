@@ -4,7 +4,7 @@ namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
-use Native\Mobile\Edge\ComponentMethodInvoker;
+use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
 use Native\Mobile\Edge\NativeRouter;
@@ -608,7 +608,7 @@ class TestableComponent
             /** @var NativeComponent $this */
             foreach ($this->pollDefinitions() as $def) {
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
+                    $this->runAction($def['method'], [], ActionSource::Poll);
                 }
             }
         }));
@@ -632,7 +632,10 @@ class TestableComponent
             "No #[Poll] method [{$method}] on ".get_class($this->component).'. Declared: '.(implode(', ', $defined) ?: '(none)')
         );
 
-        $this->guard(fn () => ComponentMethodInvoker::invokeLifecycle($this->component, $method));
+        $this->guard(fn () => $this->scoped(function () use ($method) {
+            /** @var NativeComponent $this */
+            $this->runAction($method, [], ActionSource::Poll);
+        }));
 
         return $this->afterInteraction();
     }
@@ -658,7 +661,7 @@ class TestableComponent
 
         $this->guard(fn () => $this->scoped(function () use ($query) {
             /** @var NativeComponent $this */
-            $result = $this->onSearchQuery($query);
+            $result = $this->runAction('onSearchQuery', [$query], ActionSource::SearchQuery);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
