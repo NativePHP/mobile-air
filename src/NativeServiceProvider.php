@@ -47,7 +47,6 @@ use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
 use Native\Mobile\Edge\Asgard\NullFragmentSource;
 use Native\Mobile\Edge\Asgard\NullServerTransport;
 use Native\Mobile\Edge\ComponentRegistry;
-use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeComponent;
@@ -58,15 +57,15 @@ use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
+use Native\Mobile\Http\Middleware\OpensServerRoutes;
+use Native\Mobile\Http\NativeScreenEntry;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
-use Native\Mobile\Support\Lane;
 use Native\Mobile\Support\PathHelper;
-use RuntimeException;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -398,115 +397,7 @@ class NativeServiceProvider extends PackageServiceProvider
         });
 
         Route::macro('native', function (string $uri, string $componentClass) {
-            $route = Route::get($uri, function () use ($componentClass) {
-                // A lane other than the main one asked for a native screen,
-                // most often a link or redirect in a php web view inside a
-                // native screen. It must never enter the runloop (see
-                // NativeRouter::openOnMainLane()), so the screen on show
-                // opens the route instead and the web view keeps its page.
-                if (! Lane::isMain()) {
-                    $path = '/'.ltrim(request()->path(), '/');
-                    $queryString = (string) request()->server('QUERY_STRING', '');
-                    $target = $queryString === '' ? $path : "$path?$queryString";
-
-                    if (! NativeRouter::openOnMainLane($target)) {
-                        throw new RuntimeException("Native screen [{$target}] can only run on the main lane, and native did not take the request to open it there.");
-                    }
-
-                    return response()->noContent();
-                }
-
-                // Native route reached without a native runtime — a shared
-                // app link opened in a plain browser, a crawler, a
-                // misconfigured deploy. The runloop can never satisfy these
-                // (no device is attached to the request), so if the app
-                // bound a fallback, let it answer (landing page, app-store
-                // redirect). Unbound, everything below is unchanged.
-                if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')
-                    && app()->bound(NativeRouteFallback::class)) {
-                    return app(NativeRouteFallback::class)->handle($componentClass);
-                }
-
-                // HTTP feature tests ($this->get('/')) must never enter the
-                // runloop: it blocks in wait_event against the REAL bridge —
-                // with a live Jump session that's ~90s of reconnect spinning
-                // per request. Answer 200 so route-level smoke tests pass,
-                // and point at the component harness for actual coverage.
-                if (app()->runningUnitTests()) {
-                    return response(
-                        "Native screen [{$componentClass}] — test it with Native::test() / Native::visit().",
-                        200
-                    );
-                }
-
-                $router = new NativeRouter;
-                $path = '/'.ltrim(request()->path(), '/');
-                $resolved = NativeRouter::resolve($path);
-                $params = $resolved ? $resolved['params'] : [];
-
-                // Hot-reload stack restoration. PHP wrote the full
-                // navigation stack to `.hot_restart` when the user
-                // saved a file; replay the entries below the current
-                // top so back-button history survives the PHP reboot.
-                // We delete the file here (PHP becomes the sole
-                // consumer); iOS / Android just peek at it for the
-                // top URI to dispatch.
-                $restartPath = storage_path('framework/.hot_restart');
-                if (is_file($restartPath)) {
-                    $raw = @file_get_contents($restartPath);
-                    $data = $raw ? @json_decode($raw, true) : null;
-                    $age = time() - (int) ($data['ts'] ?? 0);
-
-                    // The hot-reload re-exec lands on the WebView's URL (almost
-                    // always "/"), but the user may have navigated deeper before
-                    // saving. Redirect to the saved top screen so ITS route
-                    // restores onto it — otherwise the entry screen ("/") gets
-                    // pushed on top of the restored stack and the user is dumped
-                    // back at root. Leave .hot_restart in place; the target
-                    // route is the sole consumer. Compare paths alone so we can't
-                    // redirect-loop: the saved top keeps its query string and
-                    // $path never has one.
-                    $savedTop = is_array($data) ? ($data['uri'] ?? null) : null;
-                    $savedTopNorm = $savedTop !== null ? '/'.ltrim($savedTop, '/') : null;
-                    if ($age <= 30 && $savedTopNorm && NativeRouter::pathOf($savedTopNorm) !== $path) {
-                        return redirect($savedTopNorm);
-                    }
-
-                    @unlink($restartPath);
-                    $stack = is_array($data['stack'] ?? null) ? $data['stack'] : [];
-                    // Drop the entry matching the current request URI —
-                    // `start()` will push that as the top itself.
-                    if ($age <= 30 && ! empty($stack)) {
-                        $last = end($stack);
-                        if (is_array($last) && is_string($last['uri'] ?? null)
-                            && NativeRouter::pathOf($last['uri']) === $path) {
-                            array_pop($stack);
-                        }
-                        if (! empty($stack)) {
-                            $router->preloadStack($stack);
-                        }
-                    }
-                }
-
-                NativeRouter::logRestartAfterCrash();
-
-                // Hand the launch screen its query the way a warm link does: in
-                // the URI, parsed by the router. request()->query() has been
-                // through TrimStrings and ConvertEmptyStringsToNull by now.
-                $queryString = (string) request()->server('QUERY_STRING', '');
-                $exitUri = $router->start($componentClass, $params, $queryString === '' ? $path : "$path?$queryString");
-
-                if ($exitUri !== null) {
-                    return redirect($exitUri);
-                }
-
-                // Hot reload exit — return 204 so the WebView doesn't load stale content
-                if (file_exists(storage_path('framework/.hot_restart'))) {
-                    return response()->noContent();
-                }
-
-                return '';
-            });
+            $route = Route::get($uri, fn () => NativeScreenEntry::handle($componentClass));
 
             // Register the route itself so native navigation shares its
             // constraints and binders. Its URI includes any group prefix, and
@@ -795,6 +686,11 @@ class NativeServiceProvider extends PackageServiceProvider
         // and getting it wrong would silently disable the middleware. Pushing
         // it in a console context is harmless — nothing dispatches a request.
         $this->app->make(HttpKernel::class)->pushMiddleware(HonorsRequestedNativeScreen::class);
+
+        // Server routes live only in NativeRouter, so a cold deep link or a
+        // hot-reload restore to one would 404 in Laravel's router. This
+        // opens them when no Laravel route claims the path.
+        $this->app->make(HttpKernel::class)->pushMiddleware(OpensServerRoutes::class);
     }
 
     /**

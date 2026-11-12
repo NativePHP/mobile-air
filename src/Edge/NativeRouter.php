@@ -546,6 +546,19 @@ class NativeRouter
         return null;
     }
 
+    /**
+     * The server screen address a URI opens, or null when it matches an app
+     * route or no route at all. Nothing is bound, so it is safe to ask.
+     */
+    public static function serverScreenFor(string $uri): ?string
+    {
+        try {
+            return static::matchRoute($uri)['entry']['screen'] ?? null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     public static function isNativeRoute(string $uri): bool
     {
         try {
@@ -752,11 +765,16 @@ class NativeRouter
 
         try {
             static::debugLog("start: class=$class uri=$uri");
-            $component = $this->createComponent($class, $params, query: static::queryOf($uri));
+
+            // A server route launches the generic ServerScreen, which needs
+            // the address of the screen it shows. Only the route knows it.
+            $resolved = $uri !== '' ? static::resolve($uri) : null;
+            $screen = ($resolved['class'] ?? null) === $class ? ($resolved['screen'] ?? null) : null;
+
+            $component = $this->createComponent($class, $params, query: static::queryOf($uri), screen: $screen);
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
-            $resolved = $uri !== '' ? static::resolve($uri) : null;
             if ($resolved !== null && ! empty($resolved['layout'])) {
                 $component->setLayout($resolved['layout']);
             }
