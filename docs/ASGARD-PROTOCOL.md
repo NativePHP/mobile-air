@@ -34,7 +34,10 @@ described, and never lets it replace a route of the app's own. The server is
 a renderer for fragments and screens, not the owner of the app.
 
 It is also not remote code. The server sends a description of elements. It
-never sends Blade, PHP, or anything the client compiles or executes.
+never sends Blade, PHP, or anything the client compiles or executes. A
+server may still write its fragments in Blade (§9.5), but it compiles them
+itself. What crosses the wire is the same fragment JSON a tree built in code
+would make, and the client cannot tell the two apart.
 
 ## 2. Roles
 
@@ -51,7 +54,8 @@ never sends Blade, PHP, or anything the client compiles or executes.
 
 ## 3. Regions
 
-A client view marks a server-rendered region with a Blade directive:
+A client view marks a server-rendered region with a Blade directive. This
+is the app's own Blade, compiled on the device like the rest of the screen:
 
 ```blade
 @server('sales-summary')
@@ -106,15 +110,14 @@ Backslashes become dots; each segment is snake-cased.
 identifier arrives from a client and is therefore attacker-controlled. Turning
 it into a class name and instantiating it is arbitrary object instantiation.
 
-Instead the server resolves it through a map built at boot:
-
-- **Autodiscovery (default).** The package scans the configured namespace and
-  builds `dot-notation → FQCN` for every server component it finds. Convention:
-  same FQCN on both sides means the two halves of one component.
-- **Explicit mapping.** Autodiscovery is switchable off in the published config.
-  With it off, the developer registers pairs in a service provider. This is the
-  supported path for apps whose two halves do not share a namespace, and the
-  only path for non-PHP servers.
+Instead the server resolves it through a map the developer writes. The
+reference server takes it from `config('asgard.components')`
+(`address => class`) and from `Asgard::component($address, $class)` calls at
+boot. Server screens join the same map when they are registered (§12.1).
+Nothing is discovered by scanning, and nothing outside the map resolves. The
+convention is that the address is the client component's class in dot
+notation, so the two halves of one component share a name, but the map is
+what decides. A non-PHP server keeps the same kind of table.
 
 An unknown identifier is a 404. It is never a lookup failure that leaks whether
 a class exists.
@@ -668,7 +671,7 @@ breaking change. v1 defines one: `tree/json`.
   "key": "total",             // optional, stable identity among siblings
   "props": { "text": "42" },  // optional, see 9.4
   "class": "p-4 gap-2",       // optional, Tailwind, resolved client-side
-  "on_press": "select('a')",  // optional callback expressions, see 9.3
+  "on_press": {"call": "select", "args": ["a"]},  // optional callback slots, see 10.1
   "children": [ /* nodes */ ]
 }
 ```
@@ -688,8 +691,9 @@ with the screen's own.
   (`server:<region>`), pinned on the region node so the whole subtree inherits
   it.
 
-A server sends relative keys and callback **expressions**, never ids. It never
-needs to know how either is computed.
+A server sends relative keys and callback **slots** (§10.1), never ids. The
+client turns each slot into an expression and registers it. The server never
+needs to know how either id is computed.
 
 Placeholder callbacks stay in the screen's own scope. The placeholder is the
 client's markup, and a server-scoped id on it would silently fail to dispatch.
@@ -727,6 +731,87 @@ what §3 promises.
 A fragment is therefore **validated before it is stored**, not during render.
 One that fails validation is rejected whole and the region keeps its
 placeholder, exactly as if the request had failed.
+
+### 9.5 Server Blade
+
+A server may author a fragment in the same Blade dialect an app uses for its
+native screens. This is a server convenience. The wire format does not
+change: the server compiles and renders the view itself, turns it into a
+§9.1 tree, and validates it under §9.3 exactly as it would a tree built in
+code. Blade never crosses the wire, and a client cannot tell the two apart.
+
+The reference server accepts a view anywhere it accepts a tree: a region
+method's return value, a server screen's body (§12.1), and the chrome
+content slots `bottom_bar` and `tab_accessory` (§12.2).
+
+**Tags.** `<native:x-y>` always becomes a node of type `x_y`. The bare
+`<x-y>` does too when `x_y` is a known type: the server keeps a list of
+core and first-party UI element types, plus any it adds. The list includes
+chrome types such as `top_bar`, so a bare `<top-bar>` compiles to a node
+and is then refused by §9.3, rather than vanishing as markup. An unknown
+hyphenated bare tag is a compile error in debug and is reported and left
+out otherwise. Other markup is dropped. Several root tags make a list
+fragment.
+
+**Attributes.**
+
+| Blade | Fragment |
+| --- | --- |
+| `class="..."`, `:class="[...]"` | `class`, passed through as written (Tailwind is resolved on the device) |
+| `key="..."`, `:key="$id"`, `native:key="..."` | `key` |
+| `@press="m(args)"` | `on_press: {call: "m", args: [...]}` (server) |
+| `@press.client="m(args)"` | `on_press: {call: "m", args: [...], target: "client"}` |
+| `@navigate="/path/{{ $id }}"` | `on_press: {navigate: "/path/7"}` |
+| `@navigate.replace.fade="/path"` | `on_press: {navigate: "/path", replace: true, transition: "fade"}` |
+| `@navigate.back`, `@navigate.back.fade` | `on_press: {back: true}`, with `transition` when given |
+| any other `name="..."` / `:name="expr"` | `props.name`, under the name as written |
+
+`<text>` and `<button>` slots become `props.text` and `props.label`, with
+entities decoded and whitespace collapsed the way the device collapses it.
+A `<text>` holding nested `<text>` runs becomes a `text` node with `text`
+children.
+
+**The `.client` rule.** In server Blade an event names a server `#[Action]`
+by default, because the server owns the fragment (§10). `.client` is the
+only way to target the device, and it maps to `"target": "client"`, so the
+device still applies every check in §10.3. The same rule covers `@press`,
+`@longPress`, `@doubleTap`, `@change` and `@submit` (and the `@tap` /
+`@longTap` spellings). Any other event has no slot and is a compile error,
+not a silently dropped handler.
+
+**Args.** Call arguments are parsed when the view compiles, not at render
+time. Each must be a literal (quoted string without interpolation, number,
+`true`, `false`, `null`, or a `[...]` array of those) or one whole
+`{{ $expr }}`, which is evaluated and sent as a JSON value. `{{ }}` inside a
+quoted string is refused, so data can never add or reshape arguments. The
+result is then checked against §10.1 like any other callback.
+
+**`@navigate`.** It fills the `on_press` slot with a navigation (§12.4).
+
+- The value is a path, not a PHP expression. `{{ }}` is interpolated into
+  it as text, so the result is always a string, and the server checks it is
+  an app path when the node is built and again under §12.4.
+- Modifiers are the device's own: `replace`, `back`, and one transition in
+  camelCase (`fade`, `slideFromRight`, `slideFromLeft`, `slideFromBottom`,
+  `fadeFromBottom`, `scaleFromCenter`, `parallaxPush`, `morph`, `none`),
+  which maps to the snake_case value in §12.4.
+- `.back` takes no path and cannot be combined with `.replace`.
+- Compile errors: `.exitToWeb`, since §12.4 has no way to leave the app; any
+  other modifier; more than one transition; a value that does not start
+  with `/` or `{{`; and the device's `@navigate('/x', [...])` form, whose
+  data the slot has no room for.
+- `@navigate` and `@press` (or `@tap`, or `.client` forms) on one element
+  are a compile error. On the device `@navigate` wins and the press is
+  ignored without a word. In a fragment a press does one thing, so the
+  server refuses rather than drop a handler. Long press and double tap are
+  separate slots and combine freely with `@navigate`.
+
+**Not supported.** `native:model`, `@model` and `native:poll` are compile
+errors. A fragment has no client props to sync and re-renders by push.
+
+**Isolation.** A server must compile region views apart from its web views
+(separate compiler and cache), so bare tags like `<button>` in ordinary web
+pages are never rewritten.
 
 ## 10. Events
 
@@ -922,6 +1007,9 @@ server cannot point a route at app code. Its body is a single region named
   and it has none, so a client target in a server screen runs nothing.
 - A server screen has one body. `#[Region]` methods on a screen class are
   an error.
+- `render()` may return a Blade view (§9.5). Chrome comes only from
+  `chrome()`, so a `<top-bar>` in the body view is refused like any other
+  chrome in a fragment (§9.3).
 
 The answer to a screen's render, action or push carries the chrome next to
 the fragment:
@@ -976,8 +1064,8 @@ so a chrome tap dispatches exactly like a tap in the body.
 | `Tab::press()` | `tabs[].on_press` |
 | `$hidesTabBar`, `TabBarOptions::hidden()` | `tab_bar.hidden` |
 | `TabBarOptions::highlight()` | `tab_bar.highlight` |
-| `NativeLayout::bottomBar()` | `bottom_bar`: a fragment (native chrome only, as in the app) |
-| `NativeLayout::tabBarAccessory()` | `tab_accessory`: a fragment (native chrome only) |
+| `NativeLayout::bottomBar()` | `bottom_bar`: a fragment (native chrome only, as in the app). The reference server takes a Blade view here too (§9.5) |
+| `NativeLayout::tabBarAccessory()` | `tab_accessory`: a fragment (native chrome only), or a Blade view on the reference server |
 | `$this->setNavBar()` / `setTabBar()` | Not needed: the next answer's chrome replaces the old one. |
 | Inline `<native:top-bar>`, `<native:bottom-nav>`, `<native:side-nav>`, `<native:fab>` | Not in chrome. Side nav and FAB have no layout builder in the app either. |
 | `searchItems()` / `onSearchQuery()` for the search tab | Not yet. A search tab shows only while selected, as for a screen without them. |
@@ -1019,6 +1107,22 @@ again and drops one that is malformed, or whose pattern is already an app
 route. Server routes are matched only after every app route, literal and
 parameterized, so a server route can add a screen but never replace one of
 the app's.
+
+A server route can also arrive as a request rather than a navigation: a
+cold deep link the shell loads, or the hot-reload restore that sends the
+app back to the screen that was on top. The app's HTTP router has no route
+for it. So on the device, a page load (`Accept: text/html`, or no `Accept`
+at all for a direct dispatch from the shell) for a path that no HTTP route
+matches, and that a registered server route does, opens the generic
+`ServerScreen` the way an app route opens its screen. Every HTTP route
+keeps priority, including the app's native routes. A catch-all fallback
+route does not count as a match. Because the cached list is registered at
+boot, this works offline for any route the app has seen before.
+
+The shells' boot planners only know the app's routes, so a cold link to a
+server route never boots straight into it. It reaches PHP as a WebView page
+load, or is replayed as a warm link once the start screen is up, and opens
+from there.
 
 ### 12.4 Navigation
 
