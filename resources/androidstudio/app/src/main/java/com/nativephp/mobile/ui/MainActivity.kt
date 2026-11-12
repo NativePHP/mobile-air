@@ -169,6 +169,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // skipped inside the monitor so launch doesn't look like a change.
         ThermalStateMonitor.start(this)
 
+        // Tell PHP when the app goes to the background and comes back.
+        AppLifecycleMonitor.start(application)
+
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
