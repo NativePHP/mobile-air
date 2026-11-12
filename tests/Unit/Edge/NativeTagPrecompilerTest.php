@@ -215,6 +215,26 @@ it('compiles dotted native model paths through view data', function () {
         ->toContain("'sync-mode' => 'live'");
 });
 
+it('folds native:model and @change on one element into a single change callback', function (string $tag, string $syncMode) {
+    $result = ($this->precompiler)($tag);
+
+    expect(substr_count($result, "'_change' =>"))->toBe(1)
+        ->and($result)
+        ->toContain("'_change' => '__syncPropertyThen(\\'email\\', '")
+        ->toContain("'sync-mode' => '{$syncMode}'");
+})->with([
+    'model first' => ['<native:text-input native:model="email" @change="check" />', 'live'],
+    'change first' => ['<native:text-input @change="check({{ $id }})" native:model.debounce.300ms="email" />', 'debounce'],
+    'legacy @model' => ['<native:text-input @change="check" @model="email" />', 'live'],
+]);
+
+it('compiles native:model and @change alone exactly as before', function () use ($collector, $marker) {
+    expect(($this->precompiler)('<native:text-input native:model="email" />'))
+        ->toBe($marker."<?php {$collector}::leaf('text_input', ['value' => (data_get(get_defined_vars(), 'email')), '_change' => '__syncProperty(\\'email\\')', 'sync-mode' => 'live']); ?>")
+        ->and(($this->precompiler)('<native:text-input @change="check" />'))
+        ->toBe($marker."<?php {$collector}::leaf('text_input', ['_change' => 'check']); ?>");
+});
+
 it('preserves Blade directives like @foreach', function () {
     $input = '@foreach($items as $item) <native:text>{{ $item }}</native:text> @endforeach';
     $result = ($this->precompiler)($input);

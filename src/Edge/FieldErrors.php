@@ -75,10 +75,11 @@ final class FieldErrors
             }
         }
 
-        // `native:model="email"` precompiles to `_change="__syncProperty('email')"`.
+        // `native:model="email"` precompiles to `_change="__syncProperty('email')"`,
+        // or to `_change="__syncPropertyThen('email', 'handler')"` alongside `@change`.
         $change = $attrs['_change'] ?? null;
 
-        if (is_string($change) && preg_match("/^__syncProperty\\('([^']+)'\\)$/", $change, $matches) === 1) {
+        if (is_string($change) && preg_match("/^__syncProperty(?:Then)?\\('([^']+)'(?:\\)$|, )/", $change, $matches) === 1) {
             return $matches[1];
         }
 

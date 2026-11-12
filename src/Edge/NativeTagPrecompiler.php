@@ -744,6 +744,7 @@ class NativeTagPrecompiler
         }
 
         $parts = [];
+        $changes = [];
         $remaining = $rawAttrs;
 
         while (($remaining = ltrim($remaining)) !== '') {
@@ -765,6 +766,9 @@ class NativeTagPrecompiler
 
             // Static attribute name="value"
             if (preg_match('/^([a-zA-Z0-9_\-]+)\s*=\s*"([^"]*)"/s', $remaining, $m)) {
+                if ($m[1] === '_change') {
+                    $changes[count($parts)] = $m[2];
+                }
                 $parts[] = "'".addslashes($m[1])."' => ".$this->compileAttributeValue($m[2]);
                 $remaining = substr($remaining, strlen($m[0]));
 
@@ -773,6 +777,9 @@ class NativeTagPrecompiler
 
             // Static attribute name='value'
             if (preg_match("/^([a-zA-Z0-9_\\-]+)\\s*=\\s*'([^']*)'/s", $remaining, $m)) {
+                if ($m[1] === '_change') {
+                    $changes[count($parts)] = $m[2];
+                }
                 $parts[] = "'".addslashes($m[1])."' => ".$this->compileAttributeValue($m[2]);
                 $remaining = substr($remaining, strlen($m[0]));
 
@@ -789,6 +796,28 @@ class NativeTagPrecompiler
 
             // Skip unrecognized character
             $remaining = substr($remaining, 1);
+        }
+
+        // `native:model` (and legacy `@model`) expand to
+        // `_change="__syncProperty('prop')"`, so an authored `@change` on
+        // the same element is a second `_change` key and the later one
+        // would silently win. Fold the pair into one callback instead —
+        // sync the property, then call the handler with the same value
+        // (see NativeComponent::__syncPropertyThen) — so the element still
+        // carries a single change callback id. The handler is quoted at
+        // runtime, after any `{{ }}` inside it has been interpolated.
+        if (count($changes) === 2) {
+            $syncs = preg_grep("/^__syncProperty\\('[^']+'\\)$/", $changes);
+
+            if (count($syncs) === 1) {
+                $syncAt = array_key_first($syncs);
+                $handlerAt = array_key_first(array_diff_key($changes, $syncs));
+                $property = substr($syncs[$syncAt], strlen("__syncProperty('"), -2);
+
+                $parts[$syncAt] = "'_change' => '__syncPropertyThen(\\'".addslashes($property)."\\', '"
+                    .'.var_export((string) '.$this->compileAttributeValue($changes[$handlerAt]).", true).')'";
+                unset($parts[$handlerAt]);
+            }
         }
 
         return '['.implode(', ', $parts).']';

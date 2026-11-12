@@ -5,6 +5,7 @@ use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\FieldErrors;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
+use Tests\Fixtures\Edge\CheckedSignupScreen;
 use Tests\Fixtures\Edge\ErrorProbeElement;
 use Tests\Fixtures\Edge\SignupScreen;
 
@@ -106,4 +107,36 @@ it('keeps a message thrown from an updated*() hook during native:model sync', fu
     $test->input('email', 'ada@example.com');
 
     expect(probeErrors($test)[1])->toBeNull();
+});
+
+it('syncs native:model and then runs @change on the same input, in either order', function () {
+    $test = Native::test(CheckedSignupScreen::class)
+        ->input('name', 'Ada')              // native:model first
+        ->input('nickname', 'ace')          // legacy @model
+        ->input('email', 'not-an-email');   // @change first, with an argument
+
+    $screen = $test->instance();
+
+    // updatedEmail() ran, and its message shows under the input bound to email.
+    expect($screen->email)->toBe('not-an-email')
+        ->and(probeErrors($test))->toBe([null, 'The email address field must be a valid email address.', null]);
+
+    $test->input('email', 'ada@example.com');
+
+    expect($screen->name)->toBe('Ada')
+        ->and($screen->nickname)->toBe('ace')
+        ->and($screen->email)->toBe('ada@example.com')
+        // Each handler got the typed value, after the property had synced.
+        ->and($screen->checks)->toBe([
+            ['Ada', 'Ada'],
+            ['ace', 'ace'],
+            [5, 'ada@example.com', 'ada@example.com'],
+        ])
+        ->and(probeErrors($test))->toBe([null, null, null]);
+});
+
+it('finds the bound field of an input that also carries @change', function () {
+    expect(FieldErrors::fieldFor(['_change' => "__syncPropertyThen('email', 'check')"]))->toBe('email')
+        ->and(FieldErrors::fieldFor(['_change' => "__syncProperty('email')"]))->toBe('email')
+        ->and(FieldErrors::fieldFor(['_change' => 'check']))->toBeNull();
 });

@@ -4282,6 +4282,22 @@ abstract class NativeComponent
         ComponentState::set($this, $property, $value);
     }
 
+    /**
+     * `native:model` and `@change` on the same element: sync the property
+     * exactly as `native:model` alone does, then call the authored handler
+     * with the same value, exactly as `@change` alone would.
+     */
+    public function __syncPropertyThen(string $property, string $handler, mixed $value): void
+    {
+        $this->__syncProperty($property, $value);
+
+        $callback = CallbackRegistry::parse($handler);
+
+        if (method_exists($this, $callback['method'])) {
+            $this->__invokeInteraction($callback['method'], [...$callback['args'], $value]);
+        }
+    }
+
     /** @internal State pipeline hook dispatch, scoped inside the component. */
     final public function __invokeStateHook(string $method, array $parameters): void
     {
@@ -4885,6 +4901,7 @@ abstract class NativeComponent
             '__overlayDismiss',
             '__overlaySetFontSize',
             '__syncProperty',
+            '__syncPropertyThen',
         ];
 
         // Direct template navigation remains supported for compatibility.
