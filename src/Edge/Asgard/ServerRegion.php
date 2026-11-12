@@ -363,6 +363,38 @@ class ServerRegion
         return static::applyFragment($entry['region'], $tree, $owner);
     }
 
+    /**
+     * Apply a fragment the server pushed, rather than one answering a request.
+     *
+     * A push (an SSE event, say) carries no request id, so deliver() would
+     * drop it. It names a component address and a region instead, and lands
+     * on every live instance of that component that has asked for that
+     * region. A region a screen never declared gets nothing, so a server
+     * cannot use a push to paint somewhere the client did not offer it.
+     *
+     * Returns how many instances it painted.
+     */
+    public static function push(string $component, string $region, array|string $tree): int
+    {
+        $painted = 0;
+
+        foreach (static::requested() as $owner => $regions) {
+            if (! isset($regions[$region]) || ComponentAddress::for($owner) !== $component) {
+                continue;
+            }
+
+            if (static::applyFragment($region, $tree, $owner)) {
+                $painted++;
+            }
+        }
+
+        if ($painted === 0) {
+            NativeRouter::debugLog("Asgard: pushed fragment for [{$component}] [{$region}] has no live region — dropped.");
+        }
+
+        return $painted;
+    }
+
     /** Drop a region's fragment; it goes back to its placeholder. */
     public static function clearFragment(string $region, ?NativeComponent $owner = null): void
     {

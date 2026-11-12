@@ -329,3 +329,39 @@ it('requests a region drawn on the streaming path', function () {
     $source->assertRequested('sales-summary', times: 2);
     expect($GLOBALS['nphp_stream'][0])->toBe(['frame_begin']);
 });
+
+// ── Pushed fragments ────────────────────────────────
+
+it('paints a pushed fragment on every live instance that asked for the region', function () {
+    Native::fakeFragmentSource();
+
+    $screen = Native::test(FragmentSourceScreen::class)->assertSee('Loading sales…');
+
+    $painted = ServerRegion::push(ComponentAddress::for(FragmentSourceScreen::class), 'sales-summary', SUMMARY);
+
+    expect($painted)->toBe(1);
+    $screen->tap('tap')->assertSee('Revenue: £12,400')->assertDontSee('Loading sales…');
+});
+
+it('keeps painting pushes after the first one', function () {
+    Native::fakeFragmentSource();
+
+    $screen = Native::test(FragmentSourceScreen::class);
+    $address = ComponentAddress::for(FragmentSourceScreen::class);
+
+    ServerRegion::push($address, 'sales-summary', SUMMARY);
+    ServerRegion::push($address, 'sales-summary', ['type' => 'text', 'key' => 'total', 'props' => ['text' => 'Revenue: £99']]);
+
+    $screen->tap('tap')->assertSee('Revenue: £99');
+});
+
+it('drops a push for a region the screen never declared or another component', function () {
+    Native::fakeFragmentSource();
+
+    $screen = Native::test(FragmentSourceScreen::class);
+
+    expect(ServerRegion::push(ComponentAddress::for(FragmentSourceScreen::class), 'elsewhere', SUMMARY))->toBe(0);
+    expect(ServerRegion::push('app.some.other.screen', 'sales-summary', SUMMARY))->toBe(0);
+
+    $screen->tap('tap')->assertSee('Loading sales…')->assertDontSee('Revenue');
+});
