@@ -240,6 +240,12 @@ The split between 419 and 403 matters. A signature bug that returned 419 would
 make every client re-handshake and retry forever. Exactly one re-handshake and
 one retry per originating request; a second failure surfaces.
 
+Some failures only the client can see: a response or pushed event whose
+signature does not verify, that does not decrypt, that names a coding the
+client does not know, or that inflates past the cap in §7.4. The client
+treats all of them alike. It keeps the placeholder (or the last fragment it
+painted), logs why, and does not retry.
+
 ## 7. Security
 
 Asgard does not define its own signing or encryption. It uses published
@@ -362,8 +368,8 @@ are reads and skip the nonce.
 **A response** covers:
 
 ```
-("@status" "content-type" "content-encoding" "content-digest"
- "asgard-protocol" "signature";req;key="asgard")
+("@status" "content-type" "content-encoding" "asgard-content-coding"
+ "content-digest" "asgard-protocol" "signature";req;key="asgard")
 ;created=…;keyid="<session>";alg="hmac-sha256";tag="asgard/1"
 ```
 
@@ -418,6 +424,46 @@ travels on every request. The secret never travels at all.
 Fragments in `tree/json` are encrypted before signing, and the `Content-Type`
 stays `application/json`. The encoding is a property of the transfer, not of
 the fragment format, so §9 is unchanged.
+
+**Compression.** Nothing between the server and the client can compress an
+encrypted body, so the server compresses fragments itself, before encrypting
+them. A 200-row list fragment of about 52 KB went over the wire as 2.4 KB.
+
+- Only responses and pushed events are compressed. Requests never are: they
+  are small, and they carry client state. A server refuses a request with any
+  coding other than `aes128gcm`.
+- `Content-Encoding` stays `aes128gcm`. Every sealed response also carries
+  `Asgard-Content-Coding`, which is `gzip` when the plaintext was gzipped
+  before encryption and `identity` when it was not. The header is a covered
+  component of every response (§7.3), so it cannot be stripped or flipped.
+  The receiver undoes the steps in reverse: it decrypts, then gunzips when
+  the header says `gzip`. Any other value, or no header, is refused.
+- Why not the stacked `Content-Encoding: gzip, aes128gcm` that RFC 9110 §8.4
+  allows: Cloudflare rewrites that header to `aes128gcm` and passes the body
+  through unchanged, so the signature fails and the response is lost. A
+  header of Asgard's own is left alone.
+- Only a region's fragment is compressed, and only when it is at least 1024
+  bytes. Below that the saving is too small to matter. An action's answer is
+  the region's fragment, so it follows the region. Errors are never
+  compressed: they are small and may echo what the client sent.
+- The gzip member has a fixed header (no file name, mtime 0, OS 255) and is
+  deflated at level 6, so the same input gives the same bytes on any server.
+- A client inflates in small steps and gives up as soon as the output passes
+  **8 MiB** (8,388,608 bytes). Going over is a failure like a bad signature
+  (§6.3). No real fragment comes near it, and it stops a small body from
+  expanding into one that exhausts the device's memory.
+
+**When to turn it off.** Compressing a body that holds both a secret and text
+someone else can choose leaks the secret through the body's length. That is
+the BREACH attack, and encryption does not stop it, because encryption hides
+the bytes and not how many there are. An attacker who can put guesses into a
+fragment (a search term echoed back, a display name they set) and see the
+size of the answer can recover the secret a character at a time. So a region
+whose fragment shows a secret, such as a token, a recovery code or a full
+account number, next to anything another person controls, turns compression
+off: `#[Region('account', compress: false)]` on the server. Its responses and
+events then go out as plain `aes128gcm`. A region that shows only the user's
+own data, or only public data, has nothing to leak and keeps it on.
 
 ### 7.5 Authentication is separate
 
@@ -510,13 +556,19 @@ give, sealed the same way.
 ```
 id: 7
 event: fragment
-data: {"body":"<base64url>","sig":"<base64url>"}
+data: {"body":"<base64url>","enc":"gzip","sig":"<base64url>"}
 ```
 
+The three members are always present, in this order, and there are no others.
+
 `body` is the region's message, `{"protocol":1,"region":…,"fragment":…}`,
-encrypted as `aes128gcm` under `enc_s` with the session id as `keyid`, a fresh
-salt per event and record size 4096, then encoded as base64url without
-padding.
+compressed when `enc` says so, encrypted as `aes128gcm` under `enc_s` with
+the session id as `keyid`, a fresh salt per event and record size 4096, then
+encoded as base64url without padding.
+
+`enc` is `gzip` when the message was gzipped before encryption and
+`identity` when it was not. The rules are those for responses in §7.4: the
+1024-byte minimum, the region's opt-out and the 8 MiB cap.
 
 `sig` is HMAC-SHA256 under `sig_s`, in base64url without padding, of this
 string:
@@ -526,10 +578,11 @@ asgard/1 event
 <the stream request's signature>
 <id>
 <event>
+<enc>
 <body>
 ```
 
-The five lines are joined by a single LF (0x0A), with no LF after `body`. The
+The six lines are joined by a single LF (0x0A), with no LF after `body`. The
 stream request's signature is the 32 raw bytes from its `Signature` header,
 in base64 with padding (RFC 4648 §4), as that header carries it. `id` and
 `event` are the SSE fields as sent. `body` is the base64url text exactly as it
@@ -539,11 +592,13 @@ Covering the request's signature binds every event to the one request that
 opened its stream, the way `"signature";req` binds a response (§7.3). An event
 replayed into another session, another stream, or the same stream after it
 reconnects carries the wrong request signature and fails. Covering `id` and
-`event` stops an event being renumbered or renamed. The fixed first line means
+`event` stops an event being renumbered or renamed. Covering `enc` stops the
+marker being stripped or flipped, which would otherwise make a client gunzip
+a body that was never compressed, or paint a compressed one as it stands. The fixed first line means
 the string can never be read as an RFC 9421 signature base.
 
-The client verifies `sig`, then decrypts, then checks that the region is one
-it subscribed to. An event that fails any of those is logged and dropped,
+The client verifies `sig`, then decrypts, then gunzips when `enc` is `gzip`,
+then checks that the region is one it subscribed to. An event that fails any of those is logged and dropped,
 never painted. `retry:` lines and `: ping` comments are not covered. They
 carry nothing a client paints. Within one live connection, ordering and
 duplication are TLS's job, as for any response.
