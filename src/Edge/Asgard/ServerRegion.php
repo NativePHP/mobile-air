@@ -182,6 +182,25 @@ class ServerRegion
     protected static int $sequence = 0;
 
     /**
+     * The state each owner sent with its latest region request:
+     * `owner => [region => state]`. Kept as it was sent, so a prop that
+     * changed since does not make the owner look like another instance.
+     *
+     * @var \WeakMap<NativeComponent, array<string, array>>|null
+     */
+    protected static ?\WeakMap $requestedStates = null;
+
+    /**
+     * The state of the latest region request per component address and
+     * region: `address => [region => state]`. A server's push stream for
+     * an address is opened with the state of the latest request, so that
+     * is the state every pushed fragment was rendered for.
+     *
+     * @var array<string, array<string, array>>
+     */
+    protected static array $streamStates = [];
+
+    /**
      * Open a region. Returns true when the caller should render the
      * placeholder body, false when a fragment was painted in its place.
      *
@@ -382,15 +401,30 @@ class ServerRegion
      * region. A region a screen never declared gets nothing, so a server
      * cannot use a push to paint somewhere the client did not offer it.
      *
+     * Instances of one address can hold different state: two server
+     * screens of one route with other parameters (`/promos/1` under
+     * `/promos/2`), or two cards. The server rendered the push for one
+     * state, the one its stream was opened with, which is the state of
+     * the latest request for that address. Only instances that asked
+     * with that state are painted, so a screen further down the stack
+     * keeps its own fragment and chrome.
+     *
      * Returns how many instances it painted. A server screen's chrome
      * rides along as for deliver().
      */
     public static function push(string $component, string $region, array|string $tree, ?array $chrome = null): int
     {
         $painted = 0;
+        $state = static::$streamStates[$component][$region] ?? null;
 
         foreach (static::requested() as $owner => $regions) {
             if (! isset($regions[$region]) || ComponentAddress::for($owner) !== $component) {
+                continue;
+            }
+
+            $asked = (static::requestedStates()[$owner] ?? [])[$region] ?? null;
+
+            if ($state !== null && $asked !== null && $asked !== $state) {
                 continue;
             }
 
@@ -574,6 +608,7 @@ class ServerRegion
             static::refreshing()[$owner],
             static::fragments()[$owner],
             static::ownedRegistries()[$owner],
+            static::requestedStates()[$owner],
         );
     }
 
@@ -652,6 +687,8 @@ class ServerRegion
         static::$refreshing = null;
         static::$pending = [];
         static::$repaint = false;
+        static::$requestedStates = null;
+        static::$streamStates = [];
     }
 
     /**
@@ -776,6 +813,11 @@ class ServerRegion
 
         static::track($owner, $region, $request->id);
 
+        $states = static::requestedStates()[$owner] ?? [];
+        $states[$region] = $request->state;
+        static::requestedStates()[$owner] = $states;
+        static::$streamStates[$request->component][$region] = $request->state;
+
         try {
             app(FragmentSource::class)->request($request);
         } catch (\Throwable $e) {
@@ -817,6 +859,12 @@ class ServerRegion
         $held = static::ownedRegistries()[$owner] ?? [];
         unset($held[$region]);
         static::ownedRegistries()[$owner] = $held;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, array>> */
+    protected static function requestedStates(): \WeakMap
+    {
+        return static::$requestedStates ??= new \WeakMap;
     }
 
     /** @return \WeakMap<NativeComponent, array<string, FragmentCallbacks>> */

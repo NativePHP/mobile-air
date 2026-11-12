@@ -272,6 +272,34 @@ it('applies chrome pushed with a fragment', function () {
     repaint($screen)->assertNavTitle('Pushed')->assertSee('Promo 42');
 });
 
+it('keeps a pushed fragment off a screen of the same route with other parameters', function () {
+    $body = fn (string $text) => ['type' => 'text', 'props' => ['text' => $text]];
+
+    $first = Native::visit('/promos/1');
+    answer($first, $body('Promo 1'), ['nav_bar' => ['title' => 'Promo #1']]);
+
+    // The next screen up the stack opens the address's stream with its own
+    // state, and the server pushes its body down it.
+    $second = Native::visit('/promos/2');
+    expect(ServerRegion::push('promos.show', 'screen', $body('Promo 2'), ['nav_bar' => ['title' => 'Promo #2']]))->toBe(1);
+
+    repaint($second)->assertSee('Promo 2')->assertNavTitle('Promo #2');
+
+    // Going back shows the screen underneath as it was, not a copy of the
+    // one that just left.
+    repaint($first)->assertSee('Promo 1')->assertDontSee('Promo 2')->assertNavTitle('Promo #1');
+});
+
+it('paints a push on every screen that asked with the same state', function () {
+    $first = Native::visit('/promos/7');
+    $second = Native::visit('/promos/7');
+
+    expect(ServerRegion::push('promos.show', 'screen', PROMO_BODY))->toBe(2);
+
+    repaint($first)->assertSee('Promo 42');
+    repaint($second)->assertSee('Promo 42');
+});
+
 // ── Navigation slots in fragments ───────────────────
 
 it('navigates from a fragment to an app route or a server route', function (string $uri, string $mode) {
