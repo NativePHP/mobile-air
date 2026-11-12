@@ -1816,7 +1816,8 @@ class TestableComponent
 
             foreach ($registry->expressions() as $expression => $id) {
                 if (str_starts_with($expression, $target.'(')
-                    || str_starts_with($expression, "__syncProperty('{$target}'")) {
+                    || str_starts_with($expression, "__syncProperty('{$target}'")
+                    || str_starts_with($expression, "__syncPropertyThen('{$target}'")) {
                     return $id;
                 }
             }
