@@ -28,6 +28,10 @@ We also publish weekly livestreams and tutorials on our [YouTube channel](https:
 
 Join the [Discord community](https://discord.gg/nativephp) to ask questions and share what you're building.
 
+## Build with Bifrost
+
+[Bifrost](https://bifrost.nativephp.com) is the build & distribution service for your NativePHP apps. Simply connect your Apple App Store Connect and Google Play Console accounts and Bifrost takes care of the rest. It's the fastest way to ship your apps. Plans start at just $10/month with 50 builds/month included.
+
 ## Contributing
 
 Thank you for considering contributing to NativePHP for Mobile! The contribution guide can be found in the [NativePHP documentation](https://nativephp.com/docs/mobile/getting-started/contributing).
