@@ -11,11 +11,16 @@ import org.json.JSONObject
  * Tells PHP when the app goes to the background and when it comes back, as
  * `Native\Mobile\Events\App\AppBackgrounded` and `AppForegrounded`.
  *
- * The app is in the background once no activity is started. Counting started
- * activities, rather than watching MainActivity alone, keeps the camera,
- * browser and other activities the app opens from looking like a trip to the
- * background, and an activity recreated for a configuration change is not
- * one either. A cold launch fires neither event.
+ * The app is in the background once none of its own activities is started.
+ * Counting them, rather than watching MainActivity alone, keeps another
+ * activity of this app from looking like a trip to the background, and an
+ * activity recreated for a configuration change is not one either. A cold
+ * launch fires neither event.
+ *
+ * Activities of other apps are not counted. The system camera and a Chrome
+ * Custom Tab run in their own processes, so opening them backgrounds this
+ * app, and the OS may kill it there. That differs from iOS, where the image
+ * picker and SFSafariViewController run inside the app.
  *
  * Time away is measured on `SystemClock.elapsedRealtime()`, which keeps
  * counting while the device sleeps, so a timeout still holds after the phone
