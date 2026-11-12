@@ -290,6 +290,62 @@ it('keeps a pushed fragment off a screen of the same route with other parameters
     repaint($first)->assertSee('Promo 1')->assertDontSee('Promo 2')->assertNavTitle('Promo #1');
 });
 
+/** Resume a screen as the router does when the one above it pops. */
+function resume(TestableComponent $screen): TestableComponent
+{
+    Closure::bind(fn () => $this->resumeFromFlow(), $screen, TestableComponent::class)();
+
+    return $screen;
+}
+
+it('takes its stream back when it comes back to the top of the stack', function () {
+    $body = fn (string $text) => ['type' => 'text', 'props' => ['text' => $text]];
+    $source = Native::fakeFragmentSource();
+
+    $first = Native::visit('/promos/1');
+    answer($first, $body('Promo 1'));
+
+    $second = Native::visit('/promos/2');
+    answer($second, $body('Promo 2'));
+    Closure::bind(fn () => $this->component->unmount(), $second, TestableComponent::class)();
+
+    resume($first);
+
+    // It asks again with its own state, so the answer reopens the stream
+    // for /promos/1, and keeps what it had on screen meanwhile.
+    $source->assertRequested('screen', 3);
+    expect($source->lastRequest('screen')->state)->toMatchArray(['id' => '1']);
+    $first->assertSee('Promo 1');
+
+    answer($first, $body('Promo 1 again'));
+    expect(ServerRegion::push('promos.show', 'screen', $body('Pushed to 1')))->toBe(1);
+    repaint($first)->assertSee('Pushed to 1');
+});
+
+it('leaves a resumed screen alone when its stream still has its state', function () {
+    $source = Native::fakeFragmentSource();
+
+    $first = Native::visit('/promos/1');
+    answer($first, PROMO_BODY);
+
+    resume($first);
+
+    $source->assertRequested('screen', 1);
+});
+
+it('only takes the stream back on the frame after a resume', function () {
+    $source = Native::fakeFragmentSource();
+
+    $first = Native::visit('/promos/1');
+    answer($first, PROMO_BODY);
+    $second = Native::visit('/promos/2');
+    answer($second, PROMO_BODY);
+
+    repaint($first);
+
+    $source->assertRequested('screen', 2);
+});
+
 it('paints a push on every screen that asked with the same state', function () {
     $first = Native::visit('/promos/7');
     $second = Native::visit('/promos/7');

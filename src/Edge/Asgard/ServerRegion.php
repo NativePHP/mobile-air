@@ -201,6 +201,12 @@ class ServerRegion
     protected static array $streamStates = [];
 
     /**
+     * Set when a screen comes back to the top of the stack, so the next
+     * frame's requestMissing() can win its stream back. See resumed().
+     */
+    protected static bool $resuming = false;
+
+    /**
      * Open a region. Returns true when the caller should render the
      * placeholder body, false when a fragment was painted in its place.
      *
@@ -529,6 +535,9 @@ class ServerRegion
      */
     public static function requestMissing(): void
     {
+        $resuming = static::$resuming;
+        static::$resuming = false;
+
         foreach (static::$frame as $record) {
             $owner = $record['owner']?->get();
 
@@ -538,7 +547,8 @@ class ServerRegion
 
             $name = $record['name'];
             $refreshing = static::refreshing()[$owner] ?? [];
-            $wanted = isset($refreshing['*']) || isset($refreshing[$name]);
+            $wanted = isset($refreshing['*']) || isset($refreshing[$name])
+                || ($resuming && $record['has_fragment'] && static::lostStream($owner, $name));
 
             if (! $wanted && ($record['has_fragment'] || isset((static::requested()[$owner] ?? [])[$name]))) {
                 continue;
@@ -581,6 +591,37 @@ class ServerRegion
         $refreshing = static::refreshing()[$owner] ?? [];
         $refreshing[$region ?? '*'] = true;
         static::refreshing()[$owner] = $refreshing;
+    }
+
+    /**
+     * A screen came back to the top of the stack. Called by
+     * `NativeComponent::resumeComponent()` before onResume().
+     *
+     * The push stream is one per component address, opened with the
+     * state of the latest request. A screen pushed on top with the same
+     * address and other state (`/promos/2` over `/promos/1`) took it over,
+     * so the screen coming back would miss its pushes and show whatever
+     * it last had. On the next frame, every region it draws whose stream
+     * now carries other state is fetched again. That catches up on what
+     * it missed while it was covered, and the answer reopens the stream
+     * with its own state. A region whose stream still carries its state
+     * kept getting pushes all along and is left alone.
+     */
+    public static function resumed(): void
+    {
+        static::$resuming = true;
+    }
+
+    /** Whether the stream for a region's address now carries other state than the owner asked with. */
+    protected static function lostStream(NativeComponent $owner, string $region): bool
+    {
+        $asked = (static::requestedStates()[$owner] ?? [])[$region] ?? null;
+
+        if ($asked === null) {
+            return false;
+        }
+
+        return (static::$streamStates[ComponentAddress::for($owner)][$region] ?? null) !== $asked;
     }
 
     /** Whether a fragment has landed since the current frame was drawn. */
@@ -689,6 +730,7 @@ class ServerRegion
         static::$repaint = false;
         static::$requestedStates = null;
         static::$streamStates = [];
+        static::$resuming = false;
     }
 
     /**

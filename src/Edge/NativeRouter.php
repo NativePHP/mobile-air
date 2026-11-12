@@ -864,7 +864,7 @@ class NativeRouter
 
                     if (! $component->hasNavigationIntent()) {
                         static::debugLog('loop: calling onResume() on '.get_class($component));
-                        $component->onResume();
+                        $component->resumeComponent();
                         $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
                     }
                 }

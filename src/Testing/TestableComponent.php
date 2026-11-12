@@ -799,7 +799,7 @@ class TestableComponent
         NativeComponent::markActive($this->component);
 
         $this->guard(function () {
-            $this->component->onResume();
+            $this->component->resumeComponent();
             $this->component->flushDispatchedEvents();
             $this->takeTurns(render: true);
         });
