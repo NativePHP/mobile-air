@@ -9,6 +9,7 @@ use Native\Mobile\Edge\FieldErrors;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
+use Tests\Fixtures\Edge\CheckedSignupScreen;
 use Tests\Fixtures\Edge\ErrorProbeElement;
 use Tests\Fixtures\Edge\PingReceived;
 use Tests\Fixtures\Edge\PlainValidatingHostScreen;
@@ -192,4 +193,49 @@ it('lets a parent without the trait fail as it would without this child', functi
     expect(fn () => $test->tap('Save draft'))->toThrow(ValidationException::class, 'The title field is required.')
         ->and(validatingChild($test)->getErrorBag()->isEmpty())->toBeTrue()
         ->and(validatingChild($test)->emitted)->toBeFalse();
+});
+
+it('syncs native:model and then runs @change on the same input, in either order', function () {
+    $test = Native::test(CheckedSignupScreen::class)
+        ->input('name', 'Ada')              // native:model first
+        ->input('nickname', 'ace')          // legacy @model
+        ->input('email', 'not-an-email');   // @change first, with an argument
+
+    $screen = $test->instance();
+
+    // updatedEmail() ran, and its message shows under the input bound to email.
+    expect($screen->email)->toBe('not-an-email')
+        ->and(probeErrors($test))->toBe([null, 'The email address field must be a valid email address.', null]);
+
+    $test->input('email', 'ada@example.com');
+
+    expect($screen->name)->toBe('Ada')
+        ->and($screen->nickname)->toBe('ace')
+        ->and($screen->email)->toBe('ada@example.com')
+        // Each handler got the typed value, after the property had synced.
+        ->and($screen->checks)->toBe([
+            ['Ada', 'Ada'],
+            ['ace', 'ace'],
+            [5, 'not-an-email', 'not-an-email'],
+            [5, 'ada@example.com', 'ada@example.com'],
+        ])
+        ->and(probeErrors($test))->toBe([null, null, null]);
+});
+
+it('runs @change after a native:model sync that fails validation, and keeps both messages', function () {
+    // updatedEmail() rejects the email, then checkWith() rejects the empty name.
+    $test = Native::test(CheckedSignupScreen::class)->input('email', 'not-an-email');
+
+    expect($test->instance()->checks)->toBe([[5, 'not-an-email', 'not-an-email']])
+        ->and(probeErrors($test))->toBe([
+            'The name field is required.',
+            'The email address field must be a valid email address.',
+            null,
+        ]);
+});
+
+it('finds the bound field of an input that also carries @change', function () {
+    expect(FieldErrors::fieldFor(['_change' => "__syncPropertyThen('email', 'check')"]))->toBe('email')
+        ->and(FieldErrors::fieldFor(['_change' => "__syncProperty('email')"]))->toBe('email')
+        ->and(FieldErrors::fieldFor(['_change' => 'check']))->toBeNull();
 });
