@@ -24,6 +24,11 @@ class ComponentAddress
 {
     public static function for(object|string $component): string
     {
+        // A component that is a stand-in for many (a ServerScreen) says which.
+        if ($component instanceof Contracts\AddressedComponent) {
+            return $component->asgardAddress();
+        }
+
         $class = is_object($component) ? $component::class : $component;
 
         return implode('.', array_map(

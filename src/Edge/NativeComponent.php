@@ -612,9 +612,7 @@ abstract class NativeComponent
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
-            ? new ($this->nativeLayout)()
-            : null;
+        $layout = $this->chromeLayout();
 
         // ── Inline chrome (screen blade) ──
         // Non-custom bars are hoisted out of the content tree so they
@@ -742,6 +740,18 @@ abstract class NativeComponent
         }
 
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * The layout whose chrome wraps this screen: the route's layout class,
+     * or null for none. Asgard's ServerScreen answers with one built from
+     * the chrome the server sent instead.
+     */
+    protected function chromeLayout(): ?NativeLayout
+    {
+        return ($this->nativeLayout !== null && class_exists($this->nativeLayout))
+            ? new ($this->nativeLayout)()
+            : null;
     }
 
     /**
@@ -5119,6 +5129,12 @@ abstract class NativeComponent
             return;
         }
 
+        if ($target === Asgard\FragmentCallbacks::TARGET_NAVIGATE) {
+            $this->followFragmentNavigation($region, $method, $callback['args']);
+
+            return;
+        }
+
         if ($target !== Asgard\FragmentCallbacks::TARGET_CLIENT) {
             return;
         }
@@ -5136,6 +5152,43 @@ abstract class NativeComponent
         }
 
         $this->invokeUiInteraction($method, $args, ActionSource::FragmentClient);
+    }
+
+    /**
+     * Move the app for a navigation slot in a fragment or a server screen's
+     * chrome (§12, "Navigation"). Any route the app knows may be the
+     * target, its own or a server screen's, and nothing else: a URI that
+     * matches no route runs nothing and is logged, or throws with
+     * `app.debug` on. It never falls through to the web the way an
+     * unmatched navigate() would.
+     *
+     * @param  array{0: ?string, 1: ?string}  $args  [uri, transition]
+     */
+    private function followFragmentNavigation(string $region, string $mode, array $args): void
+    {
+        [$uri, $transition] = $args;
+
+        if ($mode !== 'back' && ! NativeRouter::isNativeRoute((string) $uri)) {
+            $message = "Asgard: region [{$region}] asked to navigate to [{$uri}], which is not a route this app knows.";
+
+            if (config('app.debug')) {
+                throw new \RuntimeException($message);
+            }
+
+            NativeRouter::debugLog($message.' Nothing happened.');
+
+            return;
+        }
+
+        match ($mode) {
+            'back' => $this->back(),
+            'replace' => $this->replace((string) $uri),
+            default => $this->navigate((string) $uri),
+        };
+
+        if ($transition !== null) {
+            $this->transition(Transition::from($transition));
+        }
     }
 
     private function invokeUiInteraction(string $method, array $parameters, ActionSource $source): mixed

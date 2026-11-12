@@ -5,7 +5,9 @@ commitments.
 
 Asgard lets a server render part of a NativePHP app's native UI. A client app
 marks a region of a screen as server-rendered, sends its state to a server, and
-gets back a description of a native element subtree to paint in place.
+gets back a description of a native element subtree to paint in place. A
+server can also own whole screens inside the app's shell, with their own
+chrome and routes (§12).
 
 The point of writing this as a protocol rather than a Laravel package is that
 the server half is replaceable. Nothing below requires the server to be PHP.
@@ -13,16 +15,23 @@ the server half is replaceable. Nothing below requires the server to be PHP.
 is the reference client. A Rails or Go server that speaks this document is a
 first-class participant.
 
-## 1. What this is not
+## 1. Who owns what
+
+The client owns the shell and its own screens. The server may own screens
+inside that shell.
 
 It is not Jump. Jump is a dev bridge: the dev machine owns the whole screen,
 renders every frame, and ships full view state to a device that renders and
 sends events back. State lives on the dev box.
 
-Asgard inverts that. The **client owns the screen and the state**. It ships
-locally, renders offline, and asks a server only for the regions it has been
-told to ask about. The server is a renderer for a fragment, not the owner of
-the app.
+Asgard inverts that. The **client owns the shell**: the app, its navigation
+stack, its own screens and their state. It ships locally, renders offline,
+and asks a server only for what it has been told to ask about. That is
+either a region inside one of its own screens (§3), or a whole server screen
+at a route the server listed (§12). A server screen lives inside the shell:
+the client opens it, keeps it on its stack, wraps it in chrome the server
+described, and never lets it replace a route of the app's own. The server is
+a renderer for fragments and screens, not the owner of the app.
 
 It is also not remote code. The server sends a description of elements. It
 never sends Blade, PHP, or anything the client compiles or executes.
@@ -37,6 +46,8 @@ never sends Blade, PHP, or anything the client compiles or executes.
 | **Client component** | The half of a split component that ships in the app. Owns state, renders the placeholder. |
 | **Server component** | The half that lives on the server. Renders the fragment. |
 | **Fragment** | The element subtree a server returns for one region. |
+| **Server screen** | A whole screen the server owns, opened at a route the server listed (§12). Its body is one region. |
+| **Chrome** | A server screen's nav bar, tab bar and other bars, sent next to its fragment (§12.2). |
 
 ## 3. Regions
 
@@ -689,7 +700,8 @@ A fragment describes a subtree inside a region. It is not a screen.
 
 - **No screen chrome.** `top_bar`, `bottom_nav`, `bottom_bar`, `fab` and the
   root stack/tabs elements are rejected. A region is a subtree; chrome belongs
-  to the screen that owns it.
+  to the screen that owns it. A server screen describes its chrome too, but
+  as its own checked part of the answer (§12.2), never inside a fragment.
 - **No nested `server_region`.** Regions are declared by the client, in client
   markup. A server cannot create one.
 - **No compiler-internal prop keys.** `props` is a free-form bag authored by a
@@ -736,6 +748,13 @@ The slots are `on_press`, `on_long_press`, `on_double_tap`, `on_change` and
 - `args` is a list of at most 16 JSON values (null, booleans, numbers,
   strings, and lists or objects of those), nested at most 4 deep.
 - `target` is absent, `"server"` or `"client"`. No other keys are allowed.
+
+A slot may instead move the app (§12.4):
+
+```json
+"on_press": {"navigate": "/promos/42", "replace": true, "transition": "fade"}
+"on_press": {"back": true}
+```
 
 A server always sends `args`, even when empty. A client treats a missing
 `args` as empty. For `on_change` and `on_submit`, the control's value is
@@ -804,9 +823,11 @@ If any of these fail, nothing runs and the device logs it. It **never** falls
 back to sending the call to the server. A misspelt client action that quietly
 became a server call would change where code runs without anyone noticing.
 
-Framework callbacks are out of reach. A fragment cannot name navigation,
+Framework callbacks are out of reach. A fragment cannot name `navigate`,
 `emit`, `__syncProperty` or any other `NativeComponent` method, and §9.3
-already strips the attribute spellings that would bind them.
+already strips the attribute spellings that would bind them. The one way a
+fragment moves the app is the navigation slot in §12.4, which the device
+checks against its own routes.
 
 **What this leaves a hostile server.** It can only trigger what the app chose
 to expose with `#[NativeAction]`, and it could already draw a button the user
@@ -841,7 +862,194 @@ same fragment never share callback ids.
 client's version says so at handshake, not mid-render. Clients support exactly
 one version per build; servers may support several.
 
-## 12. Open questions
+## 12. Server screens
+
+A region fills part of a screen the app owns. A server screen is a whole
+screen the server owns: its body, its chrome, and the route that opens it.
+It still lives inside the app's shell. The app opens it, stacks it, and
+can always go back from it, and an app route always wins over a server
+route.
+
+### 12.1 Screens
+
+On the server a screen is a class with a route:
+
+```php
+#[Screen('/promos/{id}')]
+class PromoScreen extends ServerScreen
+{
+    public int $id;
+
+    #[Action]
+    public function like(): void { /* ... */ }
+
+    public function render(): Node
+    {
+        return Node::column(Node::text("Promo {$this->id}"));
+    }
+
+    public function chrome(): Chrome
+    {
+        return Chrome::make()->navBar(NavBar::make()->title('Promo')->back());
+    }
+}
+```
+
+The reference server registers screens by class, in
+`config('asgard.screens')` or with `Asgard::screen()`, and reads the route
+from the attribute. That keeps the route next to the class, and keeps the
+same rule as §4: the developer writes the map, and nothing from the wire
+names a class. Registering a screen also registers it as a component at
+its **screen address**, by default its class name in dot notation, or the
+attribute's `name`. Two screens may not share a route or an address.
+
+On the device a server route always opens one generic screen,
+`ServerScreen`. It never opens one of the app's own screen classes, so a
+server cannot point a route at app code. Its body is a single region named
+`screen`, so everything in §3, §8.1 and §10 applies unchanged:
+
+- It asks for its fragment with the usual region request. `component` is
+  the screen address and `region` is `screen`.
+- Its `state` is the route's parameters over its query string. Route
+  values are strings on the wire. A server converts a numeric string to an
+  `int` or `float` property and `"true"`, `"false"`, `"1"` or `"0"` to a
+  `bool` property, for screens only. Anything else must match exactly, as
+  in §5.1.
+- Until an answer lands, it shows a placeholder skeleton. Offline, that is
+  all it shows, as for a region.
+- Server actions, client actions and pushed fragments work as in regions.
+  A client target can only reach a `#[NativeAction]` on the generic screen,
+  and it has none, so a client target in a server screen runs nothing.
+- A server screen has one body. `#[Region]` methods on a screen class are
+  an error.
+
+The answer to a screen's render, action or push carries the chrome next to
+the fragment:
+
+```json
+{"protocol": 1, "region": "screen", "fragment": {...}, "chrome": {...}}
+```
+
+`chrome` is always an object for a screen, `{}` for none, and absent for
+any other component. On a push it rides in the same event body (§8.1).
+
+### 12.2 Chrome
+
+Chrome is to a server screen what a layout is to an app screen. In the app,
+a `NativeLayout` gives a screen its nav bar, tab bar and bottom content, and
+the screen tweaks them with `navigationOptions()`, `tabBarOptions()` and
+the `$hidesNavBar` / `$hidesTabBar` shortcuts. A server screen has no layout
+class, so its chrome says all of that at once.
+
+The client checks chrome again before it uses it, against a closed
+vocabulary: every key known, every value its type, every button slot a
+valid slot (§10.1, §12.4), every tab URL an app path, every content slot a
+valid fragment (§9.3, §9.4). Chrome that fails keeps the screen on the
+chrome it had and is logged, or throws with `app.debug` on. Until the first
+answer, a screen wears the chrome it last had in this process, or a plain
+nav bar with a back button when it is not the root.
+
+Buttons in chrome register in the `screen` region's callback scope (§10.4),
+so a chrome tap dispatches exactly like a tap in the body.
+
+| Layout capability today | Chrome field |
+|---|---|
+| `NativeLayout::usesNativeChrome()` | `native` (bool, default false) |
+| `NativeLayout::$font` | `font` |
+| `NativeLayout::navBar()` returning a bar, or null | `nav_bar` present, or absent |
+| `NavBar::title()` / `subtitle()` | `nav_bar.title` / `nav_bar.subtitle` |
+| `NavBar::back()` | `nav_bar.back` |
+| `NavBar::backgroundColor()` / `textColor()` / `font()` / `elevation()` | `nav_bar.background_color` / `text_color` / `font` / `elevation` (0 to 64) |
+| `NavBar::displayMode()` | `nav_bar.display_mode`: `large`, `inline`, `automatic` |
+| `NavBar::scrollBehavior()` | `nav_bar.scroll_behavior`: `collapse`, `pinned`, `enterAlways` |
+| `NavBar::logo()` | `nav_bar.logo`: `{"src", "height"?}` |
+| `NavBar::titleView()` | `nav_bar.title_view`: a fragment |
+| `NavBar::searchBar()` | `nav_bar.search`: `{"placeholder"?, "debounce_ms"?, "on_query"?}`. `on_query` is a call slot; the query is appended to its args |
+| `NavBar::action()`, `NavAction` | `nav_bar.actions[]`: `{"id", "label"?, "a11y_label"?, "icon"?, "ios_icon"?, "android_icon"?, "image"? (https), "destructive"?, "disabled"?, "on_press"?}` |
+| `NavAction::items()`, `NavAction::divider()` | `actions[].items[]`, one level deep; `{"id", "divider": true}` |
+| `$hidesNavBar`, `NavBarOptions::hidden()` | `nav_bar.hidden` |
+| `NativeLayout::tabBar()` returning a bar, or null | `tab_bar` present, or absent |
+| `TabBar::activeColor()` / `backgroundColor()` / `textColor()` / `font()` | `tab_bar.active_color` / `background_color` / `text_color` / `font` |
+| `TabBar::labelVisibility()` / `dark()` / `minimizeOnScroll()` | `tab_bar.label_visibility` / `dark` / `minimize_on_scroll` |
+| `TabBar::presentation()` | `tab_bar.presentation`: `{"id", "configuration"?}` |
+| `Tab::link()` / `Tab::action()` / `Tab::search()` | `tab_bar.tabs[]`: `{"id", "label", "url"?, "icon"?, "ios_icon"?, "android_icon"?, "badge"?, "badge_color"?, "news"?, "active"?, "search"?, "on_press"?}` |
+| `Tab::press()` | `tabs[].on_press` |
+| `$hidesTabBar`, `TabBarOptions::hidden()` | `tab_bar.hidden` |
+| `TabBarOptions::highlight()` | `tab_bar.highlight` |
+| `NativeLayout::bottomBar()` | `bottom_bar`: a fragment (native chrome only, as in the app) |
+| `NativeLayout::tabBarAccessory()` | `tab_accessory`: a fragment (native chrome only) |
+| `$this->setNavBar()` / `setTabBar()` | Not needed: the next answer's chrome replaces the old one. |
+| Inline `<native:top-bar>`, `<native:bottom-nav>`, `<native:side-nav>`, `<native:fab>` | Not in chrome. Side nav and FAB have no layout builder in the app either. |
+| `searchItems()` / `onSearchQuery()` for the search tab | Not yet. A search tab shows only while selected, as for a screen without them. |
+| Chrome contributors (plugins) | Still apply. They run on the device, as for any screen. |
+
+A link tab opens its route with `replace`, like an app tab, but through the
+checked navigation path in §12.4. Its URL must match a route when tapped.
+
+### 12.3 Routes
+
+A server lists its screens' routes at one more endpoint, sealed like render
+(§7.3, §7.4) and read-only like it, so it carries no nonce:
+
+```
+→  QUERY {path}/routes        (or POST plus X-Asgard-Method: QUERY)
+   {"protocol": 1}
+
+←  200
+   {"protocol": 1, "version": "3f9c0a1b2c3d4e5f",
+    "routes": [{"uri": "/promos/{id}", "screen": "promos.show"}]}
+```
+
+- `uri` is a route pattern of literal segments (`A-Za-z0-9._~-`) and
+  `{name}` parameters, with an optional `{name?}` allowed last. `/` is the
+  root. Nothing else.
+- `screen` is a dot-notation screen address, as in §4.
+- `version` changes whenever the list does.
+
+The client fetches the list **in the background, never in the way of boot
+or a frame.** At boot it registers the list it cached last time, from the
+same shared cache store as the session (§6.2), with no network. Once the
+first screen has mounted, it fetches the list on an AsyncTask lane, caches
+it, and registers it if the version changed. A failed fetch keeps the
+cached list and may be retried a minute later. An app that has never
+reached its server has no server routes.
+
+Registering replaces the whole server table. The router checks each entry
+again and drops one that is malformed, or whose pattern is already an app
+route. Server routes are matched only after every app route, literal and
+parameterized, so a server route can add a screen but never replace one of
+the app's.
+
+### 12.4 Navigation
+
+A press slot (`on_press`, `on_long_press`, `on_double_tap`) in a fragment or
+in chrome can move the app instead of calling a method:
+
+```json
+{"navigate": "/promos/42"}
+{"navigate": "/inbox?unread=1", "replace": true, "transition": "fade"}
+{"back": true, "transition": "slide_from_left"}
+```
+
+- `navigate` is an app path: one leading `/`, no scheme or host, no
+  backslash, no whitespace or control characters, at most 2048 bytes. A web
+  URL is never one.
+- `replace` is a boolean. `transition` is one of the client's transitions:
+  `slide_from_right`, `slide_from_left`, `slide_from_bottom`, `fade`,
+  `fade_from_bottom`, `scale_from_center`, `parallax_push`, `morph`,
+  `none`.
+- `{"back": true}` takes only `transition`.
+- No other keys. `on_change` and `on_submit` cannot navigate, and neither
+  can a search field's `on_query`.
+
+The server checks the shape. The client checks it again, and when the tap
+lands it checks that the path matches a route it knows right now: one of
+its own or a server screen's. Any route qualifies; no opt-in is needed. A
+path that matches nothing runs nothing and is logged, or throws with
+`app.debug` on. It never falls through to the web the way an unmatched
+`navigate()` in app code does, and there is no way to exit to the web.
+
+## 13. Open questions
 
 1. Whether a region can be rendered without a bearer token at all, for public
    screens shown before sign-in.
@@ -851,10 +1059,11 @@ one version per build; servers may support several.
    documented as not overridable. Symfony's `HttpCache` does mix the request
    body into the cache key, so an in-app cache works. Do not design around
    edge-cached fragments.
-3. Navigation from inside a fragment. §9.3 forbids a server writing
-   `_navigate`, which settles the security question but not the product one:
-   there is currently no sanctioned way for a server-rendered element to move
-   the app, and there probably should be.
+3. ~~Navigation from inside a fragment.~~ Settled: a press slot can hold a
+   navigation (§12.4). Any route the app knows is a target, its own or a
+   server screen's, and the client checks the route exists when the tap
+   lands. Web URLs and exiting to the web are not possible. `_navigate` in
+   `props` is still stripped (§9.3).
 4. Offline queueing of events fired against a fragment that is no longer
    current.
 5. ~~`server_region` has no native renderer on iOS or Android.~~ Settled: the
@@ -868,7 +1077,7 @@ one version per build; servers may support several.
    of RFC 8291, and the secret never crosses the wire (§6.1). An active
    attacker that terminates TLS is still TLS's to stop (§7.1).
 
-## 13. Notes for implementers
+## 14. Notes for implementers
 
 `NativeElementCollector::reset()` is not a frame boundary, despite reading like
 one. It is called at both ends of a Blade render, and not at all for a screen

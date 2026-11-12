@@ -110,6 +110,18 @@ class TabBar
         return $this;
     }
 
+    /**
+     * Add a tab that is already an element, after the builder tabs. For
+     * callers that wire the element's callbacks themselves, as Asgard's
+     * server chrome does.
+     */
+    public function tabElement(BottomNavItem $item): self
+    {
+        $this->prebuiltTabElements[] = $item;
+
+        return $this;
+    }
+
     public function activeColor(string $color): self
     {
         $this->activeColor = $color;

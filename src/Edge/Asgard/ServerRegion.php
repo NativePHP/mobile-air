@@ -330,8 +330,12 @@ class ServerRegion
      *
      * An ActionRequest is a RegionRequest, and its answer is delivered
      * the same way.
+     *
+     * `$chrome` is the chrome part of a server screen's answer (§12). It
+     * goes to the ServerScreen that asked, once its fragment is accepted,
+     * and is ignored for any other component.
      */
-    public static function deliver(RegionRequest $request, array|string $tree): bool
+    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null): bool
     {
         $entry = static::$pending[$request->id] ?? null;
 
@@ -360,7 +364,13 @@ class ServerRegion
             return false;
         }
 
-        return static::applyFragment($entry['region'], $tree, $owner);
+        if (! static::applyFragment($entry['region'], $tree, $owner)) {
+            return false;
+        }
+
+        static::applyChrome($owner, $chrome);
+
+        return true;
     }
 
     /**
@@ -372,9 +382,10 @@ class ServerRegion
      * region. A region a screen never declared gets nothing, so a server
      * cannot use a push to paint somewhere the client did not offer it.
      *
-     * Returns how many instances it painted.
+     * Returns how many instances it painted. A server screen's chrome
+     * rides along as for deliver().
      */
-    public static function push(string $component, string $region, array|string $tree): int
+    public static function push(string $component, string $region, array|string $tree, ?array $chrome = null): int
     {
         $painted = 0;
 
@@ -384,6 +395,7 @@ class ServerRegion
             }
 
             if (static::applyFragment($region, $tree, $owner)) {
+                static::applyChrome($owner, $chrome);
                 $painted++;
             }
         }
@@ -649,6 +661,10 @@ class ServerRegion
      */
     public static function stateOf(NativeComponent $component): array
     {
+        if ($component instanceof Contracts\AddressedComponent) {
+            return array_filter($component->asgardState(), static::jsonSafe(...));
+        }
+
         $state = [];
 
         foreach ((new \ReflectionClass($component))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
@@ -664,6 +680,64 @@ class ServerRegion
         }
 
         return $state;
+    }
+
+    // ── Server screens (§12) ─────────────────────────
+
+    /**
+     * Check a fragment that sits in a server screen's chrome (a title view,
+     * bottom bar or tab accessory) by the same rules as a region's, and
+     * give back its node list, or null with `$reason`. Never throws.
+     */
+    public static function checkContent(mixed $tree, ?string &$reason = null): ?array
+    {
+        $reason = null;
+        $nodes = is_array($tree) ? static::normalize($tree) : null;
+
+        if ($nodes === null || $nodes === []) {
+            $reason = 'it is not a fragment';
+
+            return null;
+        }
+
+        if (($reason = static::rejectionReason($nodes)) !== null) {
+            return null;
+        }
+
+        try {
+            return static::checkCallbacks($nodes, 'chrome');
+        } catch (\RuntimeException $e) {
+            $reason = $e->getMessage();
+
+            return null;
+        }
+    }
+
+    /**
+     * Emit checked content through the collector, as a region paints its
+     * fragment. The caller pins the callback registry.
+     */
+    public static function paint(array $nodes): void
+    {
+        static::emit($nodes);
+    }
+
+    /**
+     * The callback registry of a component's region, made now if no
+     * fragment has made it yet. A server screen's chrome registers into
+     * its `screen` region's registry, so a chrome button resolves and
+     * dispatches exactly like a button in the body.
+     */
+    public static function registryForChrome(string $region, NativeComponent $owner): FragmentCallbacks
+    {
+        return static::registryFor($region, $owner) ?? static::newRegistry($region, $owner, '');
+    }
+
+    protected static function applyChrome(NativeComponent $owner, ?array $chrome): void
+    {
+        if ($chrome !== null && $owner instanceof ServerScreen) {
+            $owner->receiveChrome($chrome);
+        }
     }
 
     // ── Internals ────────────────────────────────────
@@ -894,7 +968,11 @@ class ServerRegion
         // (checkCallbacks()). Each becomes an expression only this
         // region's FragmentCallbacks registry reads, carrying its target.
         foreach (self::CALLBACK_ATTRS as $slot => $attr) {
-            if (isset($node[$slot]) && ($callback = FragmentCallbacks::parseSlot($node[$slot])) !== null) {
+            $callback = is_array($node[$slot] ?? null)
+                ? FragmentCallbacks::canonical($node[$slot]['target'] ?? null, $node[$slot]['call'] ?? null, $node[$slot]['args'] ?? null)
+                : null;
+
+            if ($callback !== null) {
                 $attrs[$attr] = FragmentCallbacks::expressionFor($callback);
             }
         }
@@ -920,7 +998,7 @@ class ServerRegion
                     continue;
                 }
 
-                $callback = FragmentCallbacks::parseSlot($node[$slot], $reason);
+                $callback = FragmentCallbacks::parseSlot($node[$slot], $reason, $slot);
 
                 if ($callback !== null) {
                     $node[$slot] = $callback;

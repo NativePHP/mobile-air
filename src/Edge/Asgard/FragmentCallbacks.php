@@ -13,6 +13,16 @@ use Native\Mobile\Edge\CallbackRegistry;
  *     "on_press": {"call": "shuffle", "args": [3, "x"]}
  *     "on_press": {"call": "celebrate", "args": [], "target": "client"}
  *
+ * A slot can also move the app (§12, "Navigation"):
+ *
+ *     "on_press": {"navigate": "/promos/42", "replace": true, "transition": "fade"}
+ *     "on_press": {"back": true}
+ *
+ * That canonical form has the `navigate` target, a `call` of navigate,
+ * replace or back, and args of [uri, transition]. Only the press slots
+ * may navigate, and the URI must be an app path. Whether a route matches
+ * it is checked when the tap lands, against the routes the app has then.
+ *
  * parseSlot() checks one and gives back its canonical form. The
  * collector only speaks expression strings, so expressionFor() turns
  * that form into one, and this registry reads it back. What a fragment
@@ -27,6 +37,19 @@ final class FragmentCallbacks extends CallbackRegistry
 
     public const TARGET_CLIENT = 'client';
 
+    public const TARGET_NAVIGATE = 'navigate';
+
+    /** The device's Transition values a navigation may name. */
+    public const TRANSITIONS = [
+        'slide_from_right', 'slide_from_left', 'slide_from_bottom', 'fade',
+        'fade_from_bottom', 'scale_from_center', 'parallax_push', 'morph', 'none',
+    ];
+
+    /** Slots a navigation may sit in. A value change or a submit never moves the app. */
+    public const NAVIGABLE_SLOTS = ['on_press', 'on_long_press', 'on_double_tap'];
+
+    public const MAX_URI_LENGTH = 2048;
+
     public const MAX_ARGS = 16;
 
     public const MAX_DEPTH = 4;
@@ -39,9 +62,19 @@ final class FragmentCallbacks extends CallbackRegistry
      * The canonical `['call', 'args', 'target']` form of a wire slot, or
      * null with `$reason` saying why it was refused.
      */
-    public static function parseSlot(mixed $slot, ?string &$reason = null): ?array
+    public static function parseSlot(mixed $slot, ?string &$reason = null, string $slotName = 'on_press'): ?array
     {
         $reason = null;
+
+        if (is_array($slot) && (array_key_exists('navigate', $slot) || array_key_exists('back', $slot))) {
+            if (! in_array($slotName, self::NAVIGABLE_SLOTS, true)) {
+                $reason = "{$slotName} cannot navigate";
+
+                return null;
+            }
+
+            return self::parseNavigation($slot, $reason);
+        }
 
         if (is_string($slot)) {
             $reason = 'a callback is an object with a "call", not a string';
@@ -102,6 +135,70 @@ final class FragmentCallbacks extends CallbackRegistry
         return ['call' => $call, 'args' => $args, 'target' => $target];
     }
 
+    /**
+     * The canonical form of a navigation slot, or null with `$reason`.
+     */
+    private static function parseNavigation(array $slot, ?string &$reason): ?array
+    {
+        $back = array_key_exists('back', $slot);
+        $allowed = $back ? ['back', 'transition'] : ['navigate', 'replace', 'transition'];
+
+        if (($unknown = array_diff(array_keys($slot), $allowed)) !== []) {
+            $reason = 'unknown keys '.implode(', ', array_map(fn ($key) => json_encode((string) $key), $unknown));
+
+            return null;
+        }
+
+        $transition = $slot['transition'] ?? null;
+
+        if ($transition !== null && ! in_array($transition, self::TRANSITIONS, true)) {
+            $reason = '"transition" must be one of '.implode(', ', self::TRANSITIONS);
+
+            return null;
+        }
+
+        if ($back) {
+            if ($slot['back'] !== true) {
+                $reason = '"back" must be true';
+
+                return null;
+            }
+
+            return ['call' => 'back', 'args' => [null, $transition], 'target' => self::TARGET_NAVIGATE];
+        }
+
+        if (! self::isAppPath($slot['navigate'])) {
+            $reason = '"navigate" must be an app path starting with one "/", not a web URL';
+
+            return null;
+        }
+
+        $replace = $slot['replace'] ?? false;
+
+        if (! is_bool($replace)) {
+            $reason = '"replace" must be a boolean';
+
+            return null;
+        }
+
+        return ['call' => $replace ? 'replace' : 'navigate', 'args' => [$slot['navigate'], $transition], 'target' => self::TARGET_NAVIGATE];
+    }
+
+    /**
+     * An app path: one leading slash, no scheme or host, no backslash, no
+     * whitespace or control characters. A web URL is never one.
+     */
+    public static function isAppPath(mixed $uri): bool
+    {
+        return is_string($uri)
+            && $uri !== ''
+            && strlen($uri) <= self::MAX_URI_LENGTH
+            && $uri[0] === '/'
+            && ! str_starts_with($uri, '//')
+            && ! str_contains($uri, '\\')
+            && preg_match('/[\x00-\x20\x7f]/', $uri) !== 1;
+    }
+
     /** The expression string a canonical slot registers as. */
     public static function expressionFor(array $slot): string
     {
@@ -132,11 +229,31 @@ final class FragmentCallbacks extends CallbackRegistry
 
         [$target, $call, $args] = $decoded;
 
-        $slot = self::parseSlot(['call' => $call, 'args' => $args, 'target' => $target]);
+        $slot = self::canonical($target, $call, $args);
 
         return $slot === null
             ? $refused
             : ['method' => $slot['call'], 'args' => $slot['args'], 'target' => $slot['target']];
+    }
+
+    /**
+     * Check a slot already in canonical form (what parseSlot() returns) and
+     * give it back, or null when it is not one. The fragment store and
+     * expressions only ever hold this form.
+     */
+    public static function canonical(mixed $target, mixed $call, mixed $args): ?array
+    {
+        if ($target === self::TARGET_NAVIGATE) {
+            $valid = is_array($args) && array_is_list($args) && count($args) === 2
+                && ($args[1] === null || in_array($args[1], self::TRANSITIONS, true))
+                && ($call === 'back'
+                    ? $args[0] === null
+                    : in_array($call, ['navigate', 'replace'], true) && self::isAppPath($args[0]));
+
+            return $valid ? ['call' => $call, 'args' => $args, 'target' => $target] : null;
+        }
+
+        return self::parseSlot(['call' => $call, 'args' => $args, 'target' => $target]);
     }
 
     /** null, a bool, an int, a finite float, a string, or a list/object of those. */

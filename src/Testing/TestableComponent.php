@@ -3,6 +3,7 @@
 namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
+use Native\Mobile\Edge\Asgard\ServerScreen;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\NativeComponent;
@@ -175,10 +176,10 @@ class TestableComponent
         // regression can hide from an otherwise thorough suite.
         $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial);
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial, $resolved['screen'] ?? null);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null, ?string $screen = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
@@ -201,6 +202,11 @@ class TestableComponent
 
         if (! $component instanceof NativeComponent) {
             Assert::fail("[$componentClass] is not a NativeComponent.");
+        }
+
+        // A server route opens the generic ServerScreen for one server screen.
+        if ($screen !== null && $component instanceof ServerScreen) {
+            $component->showScreen($screen);
         }
 
         $this->component = $component;
