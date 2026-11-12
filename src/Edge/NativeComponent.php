@@ -3718,14 +3718,18 @@ abstract class NativeComponent
 
     /**
      * Close every bottom sheet and modal in the farewell frame, child
-     * components' too. Both are presented over the whole window, so one
-     * still open would cover the next screen until its first frame
-     * arrives. The frame is a full emit (no REUSE markers), so each of
-     * them is in it with all of its props.
+     * components' too, along with any plugin element whose class opts in
+     * through Element::closesOnNavigation(). All are presented over the
+     * whole window, so one still open would cover the next screen until
+     * its first frame arrives. The frame is a full emit (no REUSE
+     * markers), so each of them is in it with all of its props.
+     *
+     * `bottom_sheet` and `modal` are listed by type because the UI plugin
+     * that registers them may not declare closesOnNavigation().
      */
     private static function closeSheetsAndModals(array $node): array
     {
-        if (in_array($node['type'], ['bottom_sheet', 'modal'], true)) {
+        if (in_array($node['type'], ['bottom_sheet', 'modal'], true) || ElementRegistry::closesOnNavigation($node['type'])) {
             $node['props']['visible'] = false;
         }
 
